@@ -1,11 +1,16 @@
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
+const { OnionGateRefusal } = require('../ipfs/onion-gate');
+const { isOnionGatewayUrl } = require('../ipfs/gateway-transport');
+const { LookupsExhausted } = require('../networks/blockscout-logs');
 const {
   registerNamingShell,
   unlessAborted,
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  redirectAllowed,
+  isOk,
   MAX_ATTEMPTS,
   MAX_ABANDONED,
 } = require('./naming-shell');
@@ -184,6 +189,36 @@ describe("main's FetchRequest loop matches ethers'", () => {
     });
   }
 
+  test("chain data's plain policy: a 429 is the answer, redirects still followed", async () => {
+    let t = 0;
+    const answers = script([
+      { status: 302, headers: { location: 'https://b.rpc.example/' } },
+      { status: 429, headers: { 'retry-after': '7' }, body: 'slow down' },
+      { status: 200 },
+    ]);
+    const calls = [];
+    const response = await fetchLoop(START, BODY, {
+      hop: async (url, init) => {
+        const next = answers[calls.length];
+        calls.push({ url, read: init.read, max: init.max, charge: init.charge });
+        return { status: next.status, headers: next.headers, body: Buffer.from(next.body) };
+      },
+      allowed: () => true,
+      plain: true,
+      read: isOk,
+      max: 1000,
+      charge: () => true,
+      now: () => t,
+      wait: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(response.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([START, 'https://b.rpc.example/']);
+    expect(calls.every((c) => c.read === isOk && c.max === 1000 && c.charge)).toBe(true);
+    expect(t).toBe(0);
+  });
+
   test('a hop the endpoint policy refuses ends the exchange (deviation rpc-redirects)', async () => {
     const answers = script([
       { status: 302, headers: { location: 'https://10.0.0.1/' } },
@@ -192,6 +227,110 @@ describe("main's FetchRequest loop matches ethers'", () => {
     const main = await viaLoop(answers, [], (url) => !url.includes('10.0.0.1'));
     expect(main.calls).toHaveLength(1);
     expect(main.outcome).toEqual({ error: 'refused' });
+  });
+});
+
+// Review of #692 (security, M2): an endpoint the user configured doesn't
+// make a redirect target one.
+describe("an RPC redirect's target", () => {
+  const PUBLIC = [{ address: '104.18.12.34', family: 4 }];
+  const check = (location, origin, lookup = jest.fn(async () => PUBLIC), signal) =>
+    redirectAllowed(location, origin, { lookup, signal });
+
+  test("on the configured endpoint's origin, as a node the user runs redirects within itself", async () => {
+    const lookup = jest.fn();
+    expect(await check('http://127.0.0.1:8545/rpc', 'http://127.0.0.1:8545', lookup)).toBe(true);
+    expect(await check('http://localhost:8545/v2', 'http://localhost:8545', lookup)).toBe(true);
+    expect(await check('https://a.rpc.example/v2', 'https://a.rpc.example', lookup)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['another loopback port', 'http://127.0.0.1:9443/admin', 'http://127.0.0.1:8545'],
+    ['loopback, from a public host', 'https://127.0.0.1:9443/admin', 'https://public.example'],
+    ['a shorthand loopback', 'https://127.1/', 'https://public.example'],
+    ['IPv6 loopback', 'https://[::1]/', 'https://public.example'],
+    ['mapped loopback', 'https://[::ffff:127.0.0.1]/', 'https://public.example'],
+    ['localhost', 'https://localhost/', 'https://public.example'],
+    ['a .localhost name', 'https://wallet.localhost/', 'https://public.example'],
+    ['a private address', 'https://192.168.1.1/', 'https://public.example'],
+    ['a link-local address', 'https://169.254.169.254/', 'https://public.example'],
+    ['plain http', 'http://b.rpc.example/', 'https://a.rpc.example'],
+  ])('off its origin, %s is refused unresolved', async (_name, location, origin) => {
+    const lookup = jest.fn(async () => PUBLIC);
+    expect(await check(location, origin, lookup)).toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('a clearnet name off its origin is followed only once it resolves to no local address', async () => {
+    const local = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    expect(await check('https://rebind.example/', 'https://a.rpc.example', local)).toBe(false);
+    expect(local).toHaveBeenCalledWith('rebind.example', { all: true, verbatim: true });
+    const mixed = jest.fn(async () => [...PUBLIC, { address: '10.1.2.3', family: 4 }]);
+    expect(await check('https://mixed.example/', 'https://a.rpc.example', mixed)).toBe(false);
+    const failing = jest.fn(async () => {
+      throw new Error('ENOTFOUND');
+    });
+    expect(await check('https://nowhere.example/', 'https://a.rpc.example', failing)).toBe(false);
+    expect(await check('https://b.rpc.example/', 'https://a.rpc.example')).toBe(true);
+    // A public address literal needs no lookup.
+    const lookup = jest.fn();
+    expect(await check('https://8.8.8.8/', 'https://a.rpc.example', lookup)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('an .onion name goes to the onion gate, never to the system resolver', async () => {
+    const lookup = jest.fn(async () => PUBLIC);
+    for (const location of [
+      'https://next.onion/',
+      'https://NEXT.ONION../',
+      'https://next%2eonion/',
+    ]) {
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+    }
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // Review of #692 (security, round 2): one onion test on both sides.
+  test('the onion gate takes every name the check passes to it unresolved', async () => {
+    for (const location of [
+      'https://next.onion/',
+      'https://NEXT.ONION./',
+      'https://next.onion../',
+      'https://next%2eonion/',
+    ]) {
+      const lookup = jest.fn(async () => PUBLIC);
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+      expect(lookup).not.toHaveBeenCalled();
+      expect(isOnionGatewayUrl(location)).toBe(true);
+    }
+    // And a name that only looks onion is resolved, never gated.
+    for (const location of ['https://onion.example/', 'https://next.onion.example/']) {
+      const lookup = jest.fn(async () => PUBLIC);
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(isOnionGatewayUrl(location)).toBe(false);
+    }
+  });
+
+  test('its lookup ends with the exchange, and past the lookup bound it is busy', async () => {
+    const cancel = new AbortController();
+    const pending = check(
+      'https://slow.example/',
+      'https://a.rpc.example',
+      jest.fn(() => new Promise(() => {})),
+      cancel.signal
+    ).catch((e) => e);
+    cancel.abort();
+    expect(await pending).toBeInstanceOf(Error);
+    const exhausted = jest.fn(async () => {
+      throw new LookupsExhausted();
+    });
+    await expect(
+      check('https://b.rpc.example/', 'https://a.rpc.example', exhausted)
+    ).rejects.toMatchObject({
+      code: 'busy',
+    });
   });
 });
 
@@ -225,6 +364,38 @@ describe('a hop', () => {
     expect(response.status).toBe(200);
     expect(response.headers['retry-after']).toBe('3');
     expect(response.body.toString()).toBe('abcd');
+  });
+
+  test('each chunk is charged as it is read; one past the pool is busy, and cancelled', async () => {
+    const charged = [];
+    const chunks = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(Buffer.from('ab')));
+        controller.enqueue(new Uint8Array(Buffer.from('cde')));
+        controller.close();
+      },
+    });
+    const hop = makeHop({ fetch: jest.fn(async () => new Response(chunks)) });
+    const charge = (bytes) => {
+      charged.push(bytes);
+      return true;
+    };
+    const response = await hop('https://a.example', { charge });
+    expect(response.body.toString()).toBe('abcde');
+    expect(charged).toEqual([2, 3]);
+    const { stream, state } = endless('x'.repeat(10));
+    const refusing = makeHop({ fetch: jest.fn(async () => new Response(stream)) });
+    await expect(refusing('https://a.example', { charge: () => false })).rejects.toMatchObject({
+      code: 'busy',
+    });
+    await tick();
+    expect(state.cancelled).toBe(true);
+  });
+
+  test('a browser-style opaque redirect, whose target is hidden, is refused', async () => {
+    const opaque = { type: 'opaqueredirect', status: 0, headers: new Headers(), body: null };
+    const hop = makeHop({ fetch: jest.fn(async () => opaque) });
+    await expect(hop('https://a.example', {})).rejects.toMatchObject({ code: 'refused' });
   });
 
   test('an answer over the cap is too_large', async () => {
@@ -361,14 +532,50 @@ describe('a hop', () => {
     expect(unhandled).toEqual([]);
   });
 
+  // Review of #692 (security, M1): a body that fails, even with a refusal
+  // in hand, never proves the request unsent.
+  test("a body's failure is the network, whatever it says", async () => {
+    for (const thrown of [
+      new Error('.onion gateway read failed'),
+      new OnionGateRefusal('.onion gateway is not routed through a proxy'),
+    ]) {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1]));
+        },
+        pull(controller) {
+          controller.error(thrown);
+        },
+      });
+      const err = await makeHop({ fetch: jest.fn(async () => new Response(stream)) })(
+        'https://a.example',
+        {}
+      ).catch((e) => e);
+      expect(err).toMatchObject({ code: 'network' });
+      expect(err.unsent).toBeUndefined();
+    }
+  });
+
   test('a network failure, an onion refusal and inactivity', async () => {
     await expect(
       makeHop({ fetch: fakeFetch({ fail: new Error('ECONNRESET') }) })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'network' });
-    const onion = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
+    // The onion gate refuses before the request exists: nothing was sent.
+    const onion = new OnionGateRefusal(
+      '.onion gateway is not routed through a proxy (resolveProxy: DIRECT)'
+    );
     await expect(
       makeHop({ fetch: fakeFetch({ fail: onion }) })('https://a.onion', {})
-    ).rejects.toMatchObject({ code: 'refused' });
+    ).rejects.toMatchObject({ code: 'refused', unsent: true });
+    // Only the gate's own refusal: the same text from anything else may
+    // follow a send.
+    const said = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
+    const lookalike = await makeHop({ fetch: fakeFetch({ fail: said }) })(
+      'https://a.onion',
+      {}
+    ).catch((e) => e);
+    expect(lookalike).toMatchObject({ code: 'network' });
+    expect(lookalike.unsent).toBeUndefined();
     await expect(
       makeHop({ fetch: fakeFetch({ hang: true }), inactivityMs: 5 })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'timeout' });
@@ -425,6 +632,38 @@ describe('the executors', () => {
     expect(hop).not.toHaveBeenCalled();
     await call('shell.rpc', { endpoint: 'e1', body: BODY, generations: { ens: 3 } });
     expect(hop).toHaveBeenCalledTimes(1);
+  });
+
+  test("a redirect off the endpoint's origin to a local one is refused, before it is dialled", async () => {
+    const lookup = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    for (const location of ['http://127.0.0.1:9443/admin', 'https://rebind.example/']) {
+      const hop = jest.fn(async () => ({
+        status: 307,
+        headers: { location },
+        body: Buffer.alloc(0),
+      }));
+      const { call } = setUp({ hop, lookup });
+      await expect(
+        call('shell.rpc', { endpoint: 'e3', body: BODY, generations: { ens: 2 } })
+      ).rejects.toMatchObject({ code: 'refused' });
+      expect(hop).toHaveBeenCalledTimes(1);
+    }
+    // Within the node's own origin, it is followed.
+    const hop = jest
+      .fn()
+      .mockResolvedValueOnce({
+        status: 307,
+        headers: { location: 'http://127.0.0.1:8545/rpc' },
+        body: Buffer.alloc(0),
+      })
+      .mockResolvedValueOnce({ status: 200, headers: {}, body: Buffer.from('{}') });
+    const { call } = setUp({ hop, lookup });
+    await call('shell.rpc', { endpoint: 'e3', body: BODY, generations: { ens: 2 } });
+    expect(hop.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:8545',
+      'http://127.0.0.1:8545/rpc',
+    ]);
+    expect(lookup).toHaveBeenCalledTimes(1);
   });
 
   test('the first RPC hop meets the endpoint policy too', async () => {

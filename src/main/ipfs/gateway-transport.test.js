@@ -11,6 +11,7 @@ const {
   isOnionHostname,
   isOnionGatewayUrl,
   isGatewayTransportRequest,
+  OnionGateRefusal,
 } = require('./gateway-transport');
 
 // What the Tor PAC resolves an onion URL to once Arti is up. Dials in these
@@ -140,6 +141,9 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     // trailing root dot is the same name to Chromium and to the resolver.
     ['onion', true],
     ['abc.onion.', true],
+    // More than one root dot: still onion, so the gate fails closed (and
+    // agrees with the redirect checks, which ask this same test).
+    ['abc.onion..', true],
     ['abc.onion.example', false],
     ['onionsite.example', false],
     ['gateway.example', false],
@@ -147,6 +151,21 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     ['', false],
   ])('isOnionHostname(%s) === %s', (hostname, expected) => {
     expect(isOnionHostname(hostname)).toBe(expected);
+  });
+
+  test('a name with trailing root dots is gated like the bare name', async () => {
+    const requestImpl = jest.fn();
+    for (const url of ['https://hidden.onion./x', 'https://hidden.onion../x']) {
+      expect(isOnionGatewayUrl(url)).toBe(true);
+      await expect(
+        netGatewayFetch(
+          url,
+          { redirect: 'manual' },
+          { requestImpl, resolveProxy: async () => 'DIRECT' }
+        )
+      ).rejects.toBeInstanceOf(OnionGateRefusal);
+    }
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
   test('a URL that cannot be parsed is not onion (it takes the ordinary path)', () => {
@@ -167,9 +186,10 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     const requestImpl = jest.fn();
     const resolveProxy = jest.fn(async () => resolved);
 
-    await expect(
-      netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy })
-    ).rejects.toThrow('not routed through a proxy');
+    const refusal = netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy });
+    await expect(refusal).rejects.toThrow('not routed through a proxy');
+    // The gate's own refusal: evidence that no request was made.
+    await expect(refusal).rejects.toBeInstanceOf(OnionGateRefusal);
 
     expect(resolveProxy).toHaveBeenCalledWith(ONION);
     // The point of the whole guard: Chromium is never handed the name.
@@ -184,10 +204,28 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
       throw new Error('session gone');
     });
 
-    await expect(
-      netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy })
-    ).rejects.toThrow('proxy route could not be resolved: session gone');
+    const refusal = netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy });
+    await expect(refusal).rejects.toThrow('proxy route could not be resolved: session gone');
+    await expect(refusal).rejects.toBeInstanceOf(OnionGateRefusal);
     expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  test('only the gate refuses: a failure once the request exists is none, whatever it says', async () => {
+    const requests = [];
+    const requestImpl = jest.fn((options) => {
+      const request = new FakeClientRequest(options);
+      requests.push(request);
+      setImmediate(() => request.emit('error', new Error('.onion gateway connection lost')));
+      return request;
+    });
+    const err = await netGatewayFetch(
+      'https://gateway.example/rpc',
+      { method: 'POST', body: '{"id":1}', redirect: 'manual' },
+      { requestImpl }
+    ).catch((e) => e);
+    expect(requests[0].written.length).toBeGreaterThan(0);
+    expect(err.message).toContain('.onion gateway');
+    expect(err).not.toBeInstanceOf(OnionGateRefusal);
   });
 
   test('with no session at all (no resolveProxy on it) the dial is refused', async () => {

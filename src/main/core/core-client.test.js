@@ -12,6 +12,8 @@ const {
   RESTART_DELAYS_MS,
   MAX_PENDING,
   MAX_INCOMING,
+  POOL_BYTES,
+  POOL_EXEMPT_BYTES,
 } = require('./core-client');
 const {
   encodeBegin,
@@ -198,6 +200,7 @@ function makeClient(handlers, options = {}) {
       if (timer) timer.cleared = true;
     },
     now: options.now || (() => 0),
+    poolBytes: options.poolBytes,
   });
   const runTimers = (ms) => {
     for (const timer of timers.splice(0)) {
@@ -1078,6 +1081,31 @@ describe('CoreClient', () => {
       ]);
     });
 
+    test('a method two threads share goes by its params: a shaped handler first, then the other', async () => {
+      const chain = jest.fn(async () => ({ from: 'chain' }));
+      const naming = jest.fn(async () => ({ from: 'naming' }));
+      const chainOnly = jest.fn(async () => ({ from: 'chain' }));
+      const isChain = (params) => typeof params.generation === 'number';
+      const { send, replies } = await served((client) => {
+        client.handle('shell.rpc', chain, { when: isChain });
+        client.handle('shell.rpc', naming);
+        client.handle('shell.blockscout', chainOnly, { when: isChain });
+      });
+      send({ id: 1, method: 'shell.rpc', params: { generations: { ens: 1 } } });
+      send({ id: 2, method: 'shell.rpc', params: { generation: 1 } });
+      send({ id: 3, method: 'shell.blockscout', params: { generation: 1 } });
+      send({ id: 4, method: 'shell.blockscout', params: { generations: {} } });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(naming).toHaveBeenCalledWith({ generations: { ens: 1 } }, expect.anything());
+      expect(chain).toHaveBeenCalledWith({ generation: 1 }, expect.anything());
+      expect(replies().sort((a, b) => a.id - b.id)).toEqual([
+        { type: 'response', id: 1, result: { from: 'naming' } },
+        { type: 'response', id: 2, result: { from: 'chain' } },
+        { type: 'response', id: 3, result: { from: 'chain' } },
+        { type: 'response', id: 4, error: { code: 'unknown_method', message: 'Unknown method' } },
+      ]);
+    });
+
     test("errors are fixed codes and messages, never a handler's text", async () => {
       const { send, replies } = await served((client) => {
         client.handle('shell.gateway', async () => {
@@ -1524,17 +1552,175 @@ describe('CoreClient', () => {
     });
   });
 
+  describe("main's cancels", () => {
+    /** A ready client whose core holds every request; `send` makes one
+     * that `cancel` aborts, and `id` is the ID it went with. */
+    async function held() {
+      const made = makeClient([helloHandler()]);
+      await made.client.start();
+      const core = made.children[0];
+      const gen = made.client.current;
+      const send = (options = {}) => {
+        const controller = new AbortController();
+        const pending = made.client
+          .requestTo(
+            gen,
+            'chain.request',
+            { n: 1 },
+            { caller: 'chrome' },
+            {
+              signal: controller.signal,
+              ...options,
+            }
+          )
+          .then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+        const sent = core.requests.filter((r) => r.method === 'chain.request');
+        return { pending, cancel: () => controller.abort(), id: () => sent.at(-1)?.id };
+      };
+      const cancels = () => core.requests.filter((m) => m.type === 'cancel');
+      return { ...made, core, gen, send, cancels };
+    }
+
+    test('a cancel answers the caller at once and tells the core; its late response is dropped', async () => {
+      const { core, gen, send, cancels } = await held();
+      const request = send();
+      await tick();
+      const id = request.id();
+      request.cancel();
+      expect((await request.pending).error).toMatchObject({ code: 'cancelled' });
+      await tick();
+      expect(cancels()).toEqual([{ type: 'cancel', id }]);
+      // Still pending at the core: its one response is consumed.
+      expect(gen.pending.has(id)).toBe(true);
+      core.reply({ type: 'response', id, result: { late: true } });
+      await tick();
+      expect(gen.pending.size).toBe(0);
+      expect(core.killed).toBeNull();
+    });
+
+    test("a fragmented response to a cancelled request still returns the core's credit", async () => {
+      const { core, send } = await held();
+      const request = send();
+      await tick();
+      request.cancel();
+      core.replyFragmented({ type: 'response', id: request.id(), result: 'x'.repeat(2 * MIB) }, 3);
+      await tick();
+      expect((await request.pending).error).toMatchObject({ code: 'cancelled' });
+      expect(core.credits).toBe(1);
+      expect(core.killed).toBeNull();
+    });
+
+    // Review of #692 (client): serializing runs the params' own code, which
+    // can abort the signal before the listener exists.
+    test.each([
+      [
+        'toJSON',
+        (abort) => ({
+          toJSON() {
+            abort();
+            return { chain_id: 1, raw: '0x1234', deadline_ms: 1000 };
+          },
+        }),
+      ],
+      [
+        'a getter',
+        (abort) => ({
+          chain_id: 1,
+          get raw() {
+            abort();
+            return '0x1234';
+          },
+        }),
+      ],
+    ])(
+      'an abort from %s while it is serialized: cancelled, and never sent',
+      async (_name, make) => {
+        const { client, core, gen, cancels } = await held();
+        const controller = new AbortController();
+        const params = make(() => controller.abort());
+        const outcome = await client
+          .requestTo(
+            gen,
+            'chain.broadcast',
+            params,
+            { caller: 'shell' },
+            { signal: controller.signal }
+          )
+          .then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+        expect(outcome.error).toMatchObject({ code: 'cancelled' });
+        await tick();
+        expect(core.requests.filter((r) => r.method === 'chain.broadcast')).toEqual([]);
+        expect(cancels()).toEqual([]);
+        expect(gen.pending.size).toBe(0);
+        // Its ID was never taken: the next request has the one after the
+        // hello's.
+        client.requestTo(gen, 'vault.status').catch(() => {});
+        await tick();
+        expect(core.requests.at(-1)).toMatchObject({ method: 'vault.status', id: 2 });
+      }
+    );
+
+    test('a signal already aborted sends nothing; one after the response cancels nothing', async () => {
+      const { client, core, gen, send, cancels } = await held();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        client.requestTo(
+          gen,
+          'chain.request',
+          {},
+          { caller: 'chrome' },
+          {
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toMatchObject({ code: 'cancelled' });
+      await tick();
+      expect(core.requests.filter((r) => r.method === 'chain.request')).toEqual([]);
+      const request = send();
+      await tick();
+      core.reply({ type: 'response', id: request.id(), result: { ok: true } });
+      await tick();
+      request.cancel();
+      expect(await request.pending).toEqual({ result: { ok: true } });
+      await tick();
+      expect(cancels()).toEqual([]);
+    });
+
+    test("a cancelled request's hang watchdog runs on until the core answers", async () => {
+      const { client, core, gen, send, runTimers } = await held();
+      const request = send({ watchdogMs: 1000 });
+      await tick();
+      request.cancel();
+      await request.pending;
+      // The core still owes it a response: the hang watchdog still runs.
+      runTimers(1000);
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+      expect(client.serves(gen)).toBe(false);
+    });
+  });
+
   describe("main's fragmented replies", () => {
     /** A ready client whose core offers fragments, or not, and sends it
-     * requests. */
-    async function served(register, { offer = true } = {}) {
+     * requests; `poolBytes` sizes main's pool. */
+    async function served(register, { offer = true, poolBytes } = {}) {
       const capabilities = offer ? ['vault.status', 'fragments'] : ['vault.status'];
-      const made = makeClient([
-        (message, core) => {
-          if (message.method !== 'core.hello') return;
-          core.reply({ type: 'response', id: message.id, result: helloResult({ capabilities }) });
-        },
-      ]);
+      const made = makeClient(
+        [
+          (message, core) => {
+            if (message.method !== 'core.hello') return;
+            core.reply({ type: 'response', id: message.id, result: helloResult({ capabilities }) });
+          },
+        ],
+        { poolBytes }
+      );
       register(made.client);
       await made.client.start();
       const core = made.children[0];
@@ -1556,7 +1742,7 @@ describe('CoreClient', () => {
     const L = KIND_LAST;
 
     test('a reply over one frame goes as a begin and fragments, and the credit comes back', async () => {
-      const { core, gen, send, replies } = await served((c) =>
+      const { client, core, gen, send, replies } = await served((c) =>
         c.handle('shell.rpc', sized(3 * MIB))
       );
       send({ id: 1, method: 'shell.rpc', params: {} });
@@ -1568,7 +1754,7 @@ describe('CoreClient', () => {
       expect(wire(core)).toEqual([B, F, F, F, L]);
       expect(core.killed).toBeNull();
       expect(gen.credit).toBe(true);
-      expect(gen.bulkBytes).toBe(0);
+      expect(client.pool.held).toBe(0);
       expect(gen.incoming.size).toBe(0);
     });
 
@@ -1666,27 +1852,29 @@ describe('CoreClient', () => {
       ]);
     });
 
-    test('past the room for fragmented replies, a reply is busy', async () => {
-      const { core, gen, send, replies } = await served((c) =>
-        c.handle('shell.rpc', sized(17 * MIB))
+    test("past main's pool, a reply is busy", async () => {
+      const { client, core, send, replies } = await served(
+        (c) => c.handle('shell.rpc', sized(17 * MIB)),
+        { poolBytes: MAX_MESSAGE }
       );
       core.stuck = true;
       send({ id: 1, method: 'shell.rpc', params: {} });
       send({ id: 2, method: 'shell.rpc', params: {} });
       await settle();
-      expect(gen.bulkBytes).toBeGreaterThan(17 * MIB);
+      expect(client.pool.held).toBeGreaterThan(17 * MIB);
       core.release();
       await settle();
       expect(replies()).toEqual([
         { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
         { type: 'response', id: 1, result: { body: 'x'.repeat(17 * MIB) } },
       ]);
-      expect(gen.bulkBytes).toBe(0);
+      expect(client.pool.held).toBe(0);
     });
 
     test("a reply's buffer stays charged whole until its last fragment is written", async () => {
-      const { core, gen, send, replies } = await served((c) =>
-        c.handle('shell.rpc', sized(17 * MIB))
+      const { client, core, gen, send, replies } = await served(
+        (c) => c.handle('shell.rpc', sized(17 * MIB)),
+        { poolBytes: MAX_MESSAGE }
       );
       const body = 'x'.repeat(17 * MIB);
       const size = Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }));
@@ -1696,7 +1884,7 @@ describe('CoreClient', () => {
       send({ id: 1, method: 'shell.rpc', params: {} });
       await settle();
       expect(wire(core)).toEqual([B, ...Array(17).fill(F), L]);
-      expect(gen.bulkBytes).toBe(size);
+      expect(client.pool.held).toBe(size);
       // So a second near-cap reply finds no room.
       send({ id: 2, method: 'shell.rpc', params: {} });
       await settle();
@@ -1708,11 +1896,11 @@ describe('CoreClient', () => {
         { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
       ]);
       expect(gen.sending).toBeNull();
-      expect(gen.bulkBytes).toBe(0);
+      expect(client.pool.held).toBe(0);
     });
 
     test('a generation that ends writes no more of a begun reply, and drops the waiting ones', async () => {
-      const { core, gen, send, replies } = await served((c) =>
+      const { client, core, gen, send, replies } = await served((c) =>
         c.handle('shell.rpc', sized(2 * MIB))
       );
       core.holdCredit = true;
@@ -1725,14 +1913,14 @@ describe('CoreClient', () => {
       expect(gen.bulk).toEqual([]);
       // The fragment in flight still holds the first reply's buffer.
       const body = 'x'.repeat(2 * MIB);
-      expect(gen.bulkBytes).toBe(
+      expect(client.pool.held).toBe(
         Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }))
       );
       core.release();
       await settle();
       expect(wire(core)).toEqual([B, F]);
       expect(replies()).toEqual([]);
-      expect(gen.bulkBytes).toBe(0);
+      expect(client.pool.held).toBe(0);
     });
 
     test('a credit main already holds is a protocol fault', async () => {
@@ -1742,6 +1930,166 @@ describe('CoreClient', () => {
       expect(core.killed).toBe('SIGKILL');
       expect(log.error).toHaveBeenCalledWith('[Core] protocol error', {
         category: 'unsolicited_credit',
+      });
+    });
+
+    describe("main's chain I/O pool", () => {
+      /** The bytes of reply `id` with result `result`, serialized. */
+      const sizeOf = (id, result) =>
+        Buffer.byteLength(JSON.stringify({ type: 'response', id, result }));
+
+      test('is 192 MiB, and exempts replies under 64 KiB', () => {
+        expect(POOL_BYTES).toBe(192 * MIB);
+        expect(POOL_EXEMPT_BYTES).toBe(64 * 1024);
+        expect(makeClient([helloHandler()]).client.pool.limit).toBe(POOL_BYTES);
+      });
+
+      test('charges a whole reply of 64 KiB or more until it is written; smaller ones are exempt', async () => {
+        const body = (bytes) => 'x'.repeat(bytes);
+        const { client, core, send, replies } = await served((c) => {
+          c.handle('shell.rpc', async (params) => ({ body: body(params.bytes) }));
+        });
+        core.stuck = true;
+        // Just under the exemption, and just at it.
+        const small = POOL_EXEMPT_BYTES - sizeOf(1, { body: '' }) - 1;
+        send({ id: 1, method: 'shell.rpc', params: { bytes: small } });
+        await settle();
+        expect(sizeOf(1, { body: body(small) })).toBe(POOL_EXEMPT_BYTES - 1);
+        expect(client.pool.held).toBe(0);
+        send({ id: 2, method: 'shell.rpc', params: { bytes: small + 1 } });
+        await settle();
+        expect(client.pool.held).toBe(POOL_EXEMPT_BYTES);
+        core.release();
+        await settle();
+        expect(replies().map((r) => r.id)).toEqual([1, 2]);
+        expect(client.pool.held).toBe(0);
+      });
+
+      test("a handler's charges last until its reply is serialized, and none past the pool", async () => {
+        const seen = [];
+        let finish;
+        const { client, send, replies } = await served(
+          (c) =>
+            c.handle('shell.rpc', (_params, { charge }) => {
+              seen.push(charge(1000), charge(-1), charge(1.5), charge(MIB));
+              return new Promise((resolve) => {
+                finish = () => resolve({ late: charge(1) });
+              });
+            }),
+          { poolBytes: MIB }
+        );
+        send({ id: 1, method: 'shell.rpc', params: {} });
+        await settle();
+        expect(seen).toEqual([true, false, false, false]);
+        expect(client.pool.held).toBe(1000);
+        finish();
+        await settle();
+        expect(replies()).toEqual([{ type: 'response', id: 1, result: { late: true } }]);
+        expect(client.pool.held).toBe(0);
+      });
+
+      test('a reply dropped unwritten still returns what its handler held', async () => {
+        let finish;
+        const { client, core, send, replies } = await served((c) =>
+          c.handle('shell.rpc', (_params, { charge }) => {
+            charge(4096);
+            return new Promise((resolve) => {
+              finish = resolve;
+            });
+          })
+        );
+        send({ id: 1, method: 'shell.rpc', params: {} });
+        await settle();
+        expect(client.pool.held).toBe(4096);
+        core.exit(1, null, { close: false });
+        finish({ body: 'x'.repeat(2 * MIB) });
+        await settle();
+        expect(replies()).toEqual([]);
+        expect(client.pool.held).toBe(0);
+      });
+
+      test('a retired core releases what its unfinished writes held', async () => {
+        const { client, core, send } = await served((c) =>
+          c.handle('shell.rpc', async () => ({ body: 'x'.repeat(512 * 1024) }))
+        );
+        // The pipe takes the reply and never reports it written.
+        core.stuck = true;
+        send({ id: 1, method: 'shell.rpc', params: {} });
+        await settle();
+        expect(client.pool.held).toBeGreaterThan(512 * 1024);
+        core.exit(1);
+        await settle();
+        expect(client.pool.held).toBe(0);
+      });
+
+      test('with the bulk credit stalled until the pool is full, credit, cancels and small failure replies are still written', async () => {
+        const reply = { body: 'x'.repeat(2 * MIB) };
+        const size = sizeOf(2, reply);
+        const { client, core, gen, send, replies } = await served(
+          (c) => {
+            c.handle('shell.rpc', async () => reply);
+            c.handle('shell.tezos', async () => {
+              throw new ShellError('timeout');
+            });
+            c.handle('shell.gateway', async (_params, { charge }) => {
+              if (!charge(64 * 1024)) throw new ShellError('busy');
+              return { small: true };
+            });
+          },
+          { poolBytes: 2 * size + 1024 }
+        );
+        // The core never returns main's credit: the first reply is
+        // written, and those after it wait, charged, until none fits.
+        core.holdCredit = true;
+        for (const id of [1, 2, 3, 4]) {
+          send({ id, method: 'shell.rpc', params: {} });
+          await settle();
+        }
+        expect(gen.credit).toBe(false);
+        expect(gen.bulk.map((r) => r.id)).toEqual([2, 3]);
+        expect(client.pool.held).toBe(2 * size);
+        expect(replies().map((r) => [r.id, r.error?.code])).toEqual([
+          [1, undefined],
+          [4, 'busy'],
+        ]);
+        const written = core.wire.length;
+        // Small failure replies: a handler's own, and one whose charge
+        // the full pool refused.
+        send({ id: 5, method: 'shell.tezos', params: {} });
+        send({ id: 6, method: 'shell.gateway', params: {} });
+        // The core's fragmented response to main: its credit goes back.
+        const status = client.requestTo(gen, 'vault.status');
+        // Main's cancel.
+        const cancel = new AbortController();
+        const lock = client
+          .requestTo(gen, 'vault.lock', {}, { caller: 'chrome' }, { signal: cancel.signal })
+          .catch((e) => e);
+        await settle();
+        const [statusId, lockId] = ['vault.status', 'vault.lock'].map(
+          (method) => core.requests.find((r) => r.method === method).id
+        );
+        core.replyFragmented({ type: 'response', id: statusId, result: 'y'.repeat(MIB) }, 2);
+        cancel.abort();
+        await settle();
+        expect(await status).toBe('y'.repeat(MIB));
+        expect((await lock).code).toBe('cancelled');
+        expect(replies().slice(2)).toEqual([
+          { type: 'response', id: 5, error: { code: 'timeout', message: 'Timed out' } },
+          { type: 'response', id: 6, error: { code: 'busy', message: 'Busy' } },
+        ]);
+        expect(core.requests.filter((m) => m.type === 'cancel')).toEqual([
+          { type: 'cancel', id: lockId },
+        ]);
+        // The two replies, main's two requests, the credit and the cancel:
+        // nothing waited behind the stalled replies.
+        expect(core.wire.slice(written)).toEqual([W, W, W, W, KIND_CREDIT, W]);
+        // Its credit back, main writes what waited, and the pool empties.
+        core.holdCredit = false;
+        core.returnCredit();
+        await settle();
+        expect(replies().map((r) => r.id)).toEqual([1, 4, 5, 6, 2, 3]);
+        expect(client.pool.held).toBe(0);
+        expect(core.killed).toBeNull();
       });
     });
   });

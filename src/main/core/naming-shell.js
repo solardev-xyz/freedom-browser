@@ -9,10 +9,18 @@
  * cancelled, stale_generation): none carries a URL or a server's text.
  */
 
+const dns = require('node:dns');
 const { isIP } = require('net');
 const { ShellError } = require('./core-client');
-const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { netGatewayFetch, isOnionHostname } = require('../ipfs/gateway-transport');
+const { OnionGateRefusal } = require('../ipfs/onion-gate');
 const { validateRpcUrl } = require('../networks/network-registry');
+const {
+  LookupsExhausted,
+  boundLookups,
+  isLocalHostname,
+  resolvesToLocalAddress,
+} = require('../networks/blockscout-logs');
 const { prefetchGatewayUrl } = require('../ens-prefetch');
 
 // ethers' FetchRequest (6.17.0): at most 12 attempts, a 250 ms back-off
@@ -34,12 +42,25 @@ function isAbort(err) {
   return err?.name === 'AbortError';
 }
 
-/** A failed hop as a transport error: an onion name the session isn't
- * proxying is refused (never dialled); anything else is the network. */
-function hopError(err) {
+/** A transport error main raised before the hop's request existed:
+ * `unsent` says no byte of it left main (design 0005, `not_sent`). Only the
+ * hop's own pre-request refusals make one. */
+function unsent(code) {
+  const err = new ShellError(code);
+  err.unsent = true;
+  return err;
+}
+
+/**
+ * A failed hop as a transport error. While its request is being made
+ * (`dialling`), the onion gate's own refusal, an OnionGateRefusal raised
+ * before the request exists, is `refused` and proves nothing was sent. No
+ * other failure does, whatever its text says: a request's or a body's
+ * failure may follow a send, so it is the network.
+ */
+function hopError(err, { dialling = false } = {}) {
   if (err instanceof ShellError) return err;
-  const message = String(err?.message || '');
-  if (message.includes('.onion gateway')) return new ShellError('refused');
+  if (dialling && err instanceof OnionGateRefusal) return unsent('refused');
   return new ShellError('network');
 }
 
@@ -97,10 +118,13 @@ function unlessAborted(promise, signal) {
  * redirect taken). `read(status)` says whether the body is wanted: one that
  * isn't, as the references discard it, is cancelled unread and answered
  * empty. A body is read up to `max` bytes (a larger declared length is
- * refused unread); `inactivityMs` of silence ends the attempt as `timeout`.
- * Every wait settles as the request is cancelled or times out, even one the
- * transport can't abort (its proxy lookup): that work is abandoned, its late
- * response discarded, and bounded.
+ * refused unread), each chunk charged as it arrives (`charge(bytes)`, false
+ * past main's pool: `busy`); `inactivityMs` of silence ends the attempt as
+ * `timeout`. A redirect whose target is hidden (a browser-style opaque
+ * redirect) can't be checked, so it is refused. Every wait settles as the
+ * request is cancelled or times out, even one the transport can't abort
+ * (its proxy lookup): that work is abandoned, its late response discarded,
+ * and bounded.
  *
  * @returns {Promise<{status: number, headers: object, body: Buffer}>}
  */
@@ -108,9 +132,17 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
   let abandoned = 0;
   const hop = async (
     url,
-    { method = 'GET', headers, body, signal, max = ANSWER_BYTES, read = () => true }
+    {
+      method = 'GET',
+      headers,
+      body,
+      signal,
+      max = ANSWER_BYTES,
+      read = () => true,
+      charge = () => true,
+    }
   ) => {
-    if (abandoned >= MAX_ABANDONED) throw new ShellError('network');
+    if (abandoned >= MAX_ABANDONED) throw unsent('network');
     const idle = new AbortController();
     let timer = null;
     const touch = () => {
@@ -118,10 +150,10 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
       timer = setTimeout(() => idle.abort(), inactivityMs);
     };
     const combined = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
-    const failed = (err) => {
+    const failed = (err, phase) => {
       if (idle.signal.aborted) return new ShellError('timeout');
       if (signal?.aborted || isAbort(err)) return err;
-      return hopError(err);
+      return hopError(err, phase);
     };
     touch();
     try {
@@ -146,12 +178,16 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
               abandoned -= 1;
             });
         }
-        throw failed(err);
+        throw failed(err, { dialling: true });
       }
       touch();
       const responseHeaders = {};
       for (const [name, value] of response.headers) responseHeaders[name.toLowerCase()] = value;
       const discard = () => response.body?.cancel().catch(() => {});
+      if (response.type === 'opaqueredirect') {
+        discard();
+        throw new ShellError('refused');
+      }
       if (!read(response.status)) {
         discard();
         return { status: response.status, headers: responseHeaders, body: Buffer.alloc(0) };
@@ -175,6 +211,10 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
             if (size > max) {
               reader.cancel().catch(() => {});
               throw new ShellError('too_large');
+            }
+            if (!charge(next.value.byteLength)) {
+              reader.cancel().catch(() => {});
+              throw new ShellError('busy');
             }
             chunks.push(next.value);
           }
@@ -202,15 +242,21 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
  * `250 × trunc(r × 2^attempt)` ms, or a positive integer Retry-After read as
  * milliseconds; the exchange's 300 s checked before each attempt's wait.
  *
- * Main adds one rule (deviation `rpc-redirects`): a hop the endpoint policy
- * refuses ends the exchange as `refused`.
+ * Main adds one rule (deviation `rpc-redirects`): a hop `allowed` refuses
+ * (`redirectAllowed`) ends the exchange as `refused`.
+ *
+ * `plain` is chain data's policy (design 0005, Transport): no back-off, so
+ * a 429 is the answer, as today's router has it; redirects are followed as
+ * above. `read`, `max` and `charge` go to each hop.
  *
  * @param {string} url
  * @param {string} body - the JSON-RPC request
- * @param {object} deps - { hop, allowed, signal, now, random, wait }
+ * @param {object} deps - { hop, allowed, signal, plain, read, max, charge,
+ *   now, random, wait }
  */
 async function fetchLoop(url, body, deps) {
-  const { hop, allowed, signal, now = Date.now, random = Math.random, wait = sleep } = deps;
+  const { hop, allowed, signal, plain = false, read, max, charge } = deps;
+  const { now = Date.now, random = Math.random, wait = sleep } = deps;
   const expires = now() + EXCHANGE_MS;
   let last = { status: 0, headers: {}, body: Buffer.alloc(0) };
   let delay = 0;
@@ -224,19 +270,22 @@ async function fetchLoop(url, body, deps) {
       headers: { 'content-type': 'application/json' },
       body,
       signal,
+      read,
+      max,
+      charge,
     });
     if (REDIRECTS.has(response.status)) {
       const location = response.headers.location || '';
       const current = url.split(':')[0].toLowerCase();
       const target = location.split(':')[0].toLowerCase();
       if ((current === 'https' && target === 'http') || !/^https?:/.test(location)) return response;
-      if (!allowed(location)) throw new ShellError('refused');
+      if (!(await allowed(location))) throw new ShellError('refused');
       url = location;
       delay = 0;
       last = response;
       continue;
     }
-    if (response.status === 429) {
+    if (response.status === 429 && !plain) {
       const retryAfter = response.headers['retry-after'];
       delay = SLOT_INTERVAL_MS * Math.trunc(random() * 2 ** attempt);
       if (typeof retryAfter === 'string' && /^[1-9][0-9]*$/.test(retryAfter)) {
@@ -246,6 +295,36 @@ async function fetchLoop(url, body, deps) {
       continue;
     }
     return response;
+  }
+}
+
+/**
+ * Whether an RPC exchange may follow a redirect to `location` (deviation
+ * `rpc-redirects`). That the endpoint policy would take the URL as an
+ * endpoint isn't enough: it admits loopback, for a node the user runs, and
+ * the user configured the endpoint, not the target.
+ * - On the configured endpoint's `origin`, the policy suffices: a node the
+ *   user runs may redirect within itself.
+ * - Off it, never to this machine or its networks: no local name or
+ *   address literal, and a clearnet name only once it resolves to no local
+ *   address (blockscout-logs.js's checks; not pinned against rebinding). An
+ *   `.onion` name isn't resolved: the onion gate decides, before any lookup.
+ *
+ * A lookup cut short by `signal` throws its abort; past the lookup bound,
+ * the hop is `busy`.
+ */
+async function redirectAllowed(location, origin, { lookup, signal }) {
+  if (validateRpcUrl(location) !== null) return false;
+  const target = new URL(location);
+  if (target.origin === origin) return true;
+  if (isLocalHostname(target.hostname)) return false;
+  if (isOnionHostname(target.hostname)) return true;
+  try {
+    return !(await resolvesToLocalAddress(target.hostname, { lookup, signal }));
+  } catch (err) {
+    if (err instanceof LookupsExhausted) throw new ShellError('busy');
+    if (signal?.aborted) throw err;
+    return false;
   }
 }
 
@@ -304,10 +383,12 @@ function answer({ status, body }) {
  * @param {import('./core-client').CoreClient} client
  * @param {import('./naming-config').NamingConfig} config - references and
  *   the current generations
- * @param {object} [deps] - test seams: hop, prefetch, now, random, wait
+ * @param {object} [deps] - test seams: hop, lookup, prefetch, now, random, wait
  */
 function registerNamingShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
+  // A redirect's DNS check, its lookups bounded while they run.
+  const lookup = boundLookups(deps.lookup || dns.promises.lookup);
   const prefetch = deps.prefetch || prefetchGatewayUrl;
   // Prefetches replied to while their own work (a proxy lookup) hadn't
   // ended: past MAX_ABANDONED, a new one is skipped, as it's only a warm-up.
@@ -332,11 +413,12 @@ function registerNamingShell(client, config, deps = {}) {
     // Every hop meets the endpoint policy, the first one too.
     if (validateRpcUrl(url) !== null) throw new ShellError('refused');
     if (typeof params.body !== 'string') throw new ShellError('refused');
+    const origin = new URL(url).origin;
     return withDeadline(params, signal, (within) =>
       fetchLoop(url, params.body, {
         hop,
         signal: within,
-        allowed: (location) => validateRpcUrl(location) === null,
+        allowed: (location) => redirectAllowed(location, origin, { lookup, signal: within }),
         now: deps.now,
         random: deps.random,
         wait: deps.wait,
@@ -438,6 +520,8 @@ module.exports = {
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  redirectAllowed,
+  isOk,
   MAX_ATTEMPTS,
   SLOT_INTERVAL_MS,
   ANSWER_BYTES,

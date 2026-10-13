@@ -2,8 +2,10 @@ const {
   BlockscoutError,
   BLOCKSCOUT_MAX_PAGES,
   ERC20_TRANSFER_TOPIC,
+  LookupsExhausted,
   agreedRpcLogs,
   blockscoutTransfer,
+  boundLookups,
   fetchBlockscoutTransferLogs,
   isLocalHostname,
   logIndexFilter,
@@ -604,6 +606,16 @@ describe('fetchBlockscoutTransferLogs', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    'https://wallet.onion/api',
+    'https://WALLET.ONION./api',
+    'https://wallet.onion../api',
+  ])('a redirect to %s is refused without asking the resolver', async (location) => {
+    const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+    await expect(read(redirectTo(location), 10_000, lookup)).rejects.toThrow('does not resolve');
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   test('a redirect to a public name is resolved, then followed', async () => {
     const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
     const fetchImpl = redirectTo('https://gnosisscan.io/api');
@@ -620,6 +632,37 @@ describe('fetchBlockscoutTransferLogs', () => {
       .mockImplementationOnce(() => ok([]));
     await read(fetchImpl, 10_000, lookup);
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // Review of #692 (security, N1): the resolver can't cancel a lookup, so
+  // one given up on keeps its slot until it settles.
+  test('lookups still outstanding are bounded, given up on or not', async () => {
+    const settle = [];
+    const lookup = jest.fn(
+      () =>
+        new Promise((resolve, reject) => {
+          settle.push({ resolve, reject });
+        })
+    );
+    const bounded = boundLookups(lookup, 2);
+    const first = bounded('a.example', { all: true });
+    const second = bounded('b.example', { all: true });
+    await expect(bounded('c.example', { all: true })).rejects.toBeInstanceOf(LookupsExhausted);
+    await Promise.resolve();
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(bounded.outstanding()).toBe(2);
+    // Settled, either way, a slot is free again.
+    settle[0].resolve([{ address: '104.18.12.34', family: 4 }]);
+    settle[1].reject(new Error('ENOTFOUND'));
+    await first;
+    await second.catch(() => {});
+    await Promise.resolve();
+    expect(bounded.outstanding()).toBe(0);
+    const throwing = boundLookups(() => {
+      throw new Error('sync');
+    }, 1);
+    await expect(throwing('d.example')).rejects.toThrow('sync');
+    expect(throwing.outstanding()).toBe(0);
   });
 
   test('a hung lookup is bounded by the read timeout', async () => {

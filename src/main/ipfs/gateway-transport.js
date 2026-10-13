@@ -74,6 +74,8 @@
  * the PAC lands).
  */
 
+const { OnionGateRefusal } = require('./onion-gate');
+
 const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 // `localhost` counts as loopback here: it resolves there, and Kubo binds its
@@ -100,12 +102,14 @@ function isLoopbackGatewayUrl(url) {
 
 // The PAC's own host test, mirrored (`dnsDomainIs(host, ".onion") || host ===
 // "onion"` in src/main/tor-proxy.js), so the two cannot disagree about what
-// counts as an onion address. A trailing root dot is stripped: `abc.onion.`
-// is the same name to Chromium and to the resolver.
+// counts as an onion address. Trailing root dots are stripped: `abc.onion.`
+// is the same name to Chromium and to the resolver, and `abc.onion..` is
+// taken as onion too, failing closed. The one onion test in main: this gate
+// and the redirect checks (blockscout-logs.js, naming-shell.js) all ask it.
 function isOnionHostname(hostname) {
   const host = String(hostname || '')
     .toLowerCase()
-    .replace(/\.$/, '');
+    .replace(/\.+$/, '');
   return host === 'onion' || host.endsWith('.onion');
 }
 
@@ -151,12 +155,13 @@ async function assertOnionRoutable(url, deps) {
   } catch (err) {
     // A session we cannot ask is a session we cannot trust to proxy: refuse
     // rather than dial and hope.
-    throw new Error(`.onion gateway proxy route could not be resolved: ${err?.message || err}`, {
-      cause: err,
-    });
+    throw new OnionGateRefusal(
+      `.onion gateway proxy route could not be resolved: ${err?.message || err}`,
+      { cause: err }
+    );
   }
   if (!isProxiedResolution(resolved)) {
-    throw new Error(
+    throw new OnionGateRefusal(
       `.onion gateway is not routed through a proxy (resolveProxy: ${resolved || '(empty)'}) — not dialled, so the onion hostname is never sent to the system resolver`
     );
   }
@@ -583,6 +588,7 @@ async function gatewayFetch(url, init = {}, deps = {}) {
 module.exports = {
   gatewayFetch,
   netGatewayFetch,
+  OnionGateRefusal,
   isLoopbackHostname,
   isLoopbackGatewayUrl,
   isOnionHostname,
