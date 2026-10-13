@@ -2,12 +2,13 @@
  * Which chain-data reads were running — for the event-loop watchdog (#498).
  *
  * `instrumentChainData(chainData)` wraps chain data's exported
- * `request()`, `getFeeQuote()` and `broadcastRawTransaction()`
+ * `request()`, `getFeeQuote()`, `chainHtml()` and `broadcastRawTransaction()`
  * (chain-data.js) once, from the outside: every caller in the main process
  * reaches them as properties of the module object at call time
- * (`chainData.request(...)`, `router.request(...)`, a
- * `chainRequest = chainData.request` default parameter,
- * `chainData.getFeeQuote(...)`, `router.broadcastRawTransaction(...)`), so
+ * (`chainData.request(...)`, `router.request(...)`,
+ * `chainData.getFeeQuote(...)`, the `web3:` handler's
+ * `chainHtml = chainData.chainHtml` default parameter,
+ * `router.broadcastRawTransaction(...)`), so
  * wrapping the exports covers them all without touching the module itself.
  *
  * What it can see from out here: chain, method, start/settle time and, once
@@ -106,7 +107,8 @@ function createChainDataActivity({
     return true;
   }
 
-  // `request()` plus the fee quote and the broadcast (#498 R1-M4). Both are
+  // `request()` plus the fee quote and the broadcast (#498 R1-M4), and the
+  // `web3:` handler's `html()` read (design 0006, `chain.html`). They are
   // reached as properties of the module object at call time too
   // (`chainData.getFeeQuote`, `router.broadcastRawTransaction`). Returns
   // whether `request` was newly wrapped.
@@ -116,6 +118,7 @@ function createChainDataActivity({
     }
     const wrappedRequest = wrapExport(chainData, 'request', ([method]) => method);
     wrapExport(chainData, 'getFeeQuote', () => 'fee quote');
+    wrapExport(chainData, 'chainHtml', () => 'html()');
     wrapExport(chainData, 'broadcastRawTransaction', () => 'eth_sendRawTransaction');
     return wrappedRequest;
   }

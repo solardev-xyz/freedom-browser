@@ -2,20 +2,23 @@
  * `web3:` — the trust gate, in order, with chain data stubbed.
  *
  * Roadmap 4.7, design 0006 ("Tests first"). Design 0006 moves the decode and
- * the trust decision into the core (`chain.html`); these cases pin the order
- * the handler applies them in today, driven with real `Request` objects
- * through the default `chainRequest` (the stubbed `chain-data`) and the
- * real decode worker:
+ * the trust classification into the core (`chain.html`); these cases pin the
+ * order the handler applies them in (design 0006, "Main decides, in today's
+ * order"), driven with real `Request` objects through the default `chainHtml`
+ * (the stubbed `chain-data`):
  *
  *   1. a GET carrying a valid approval token is served from the staged
  *      document, with no chain read;
- *   2. otherwise the chain is read and decoded (413 for size, before any
- *      decode work);
- *   3. `verified` and `user-configured` are served;
+ *   2. otherwise the core reads, decodes and classifies the document (413
+ *      only for the core's own size error);
+ *   3. the class `trusted` (`verified` and `user-configured`) is served;
  *   4. a hash approved earlier this session is served, dissenters or not;
- *   5. an untrusted GET is staged behind a single-use token and answered 451
- *      — or, on a conflict, answered 451 with no token at all;
+ *   5. an `untrusted` GET is staged behind a single-use token and answered
+ *      451 — or, on a `conflict`, answered 451 with no token at all;
  *   6. an untrusted HEAD is answered 200 with no body and stages nothing.
+ *
+ * The 8 MiB boundary, 413 against 502, cancel and a configuration change
+ * through the real core are onchain-app-protocol.core.integration.test.js.
  */
 
 jest.mock('../logger', () => ({
@@ -26,7 +29,7 @@ jest.mock('../logger', () => ({
 }));
 
 jest.mock('../networks/chain-data', () => ({
-  request: jest.fn(),
+  chainHtml: jest.fn(),
 }));
 
 jest.mock('../networks/network-registry', () => ({
@@ -38,15 +41,14 @@ const chainData = require('../networks/chain-data');
 const {
   APPROVAL_HEADER,
   GATE_HEADER,
-  HTML_SELECTOR,
-  MAX_HTML_BYTES,
   PROVENANCE_HEADER,
+  REQUEST_TIMEOUT_MS,
   createOnchainAppTrustState,
   decodeOnchainProvenance,
   handleOnchainAppRequest,
-  htmlWorker,
   registerOnchainAppProtocol,
 } = require('./onchain-app-protocol');
+const { markFailure } = require('../core/chain-driver');
 const { waitFor } = require('../../../test/helpers/fake-http-node');
 
 const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
@@ -55,19 +57,12 @@ const HTML = '<!doctype html><title>app</title><script>window.ran = true</script
 const OTHER_HTML = '<!doctype html><title>changed</title>';
 
 const hashOf = (html) => ethers.keccak256(ethers.toUtf8Bytes(html));
+// The core's cap on a document (design 0006, `chain.html`).
+const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
-// The ABI encoding of `html()`'s string result, built by hand: ethers takes
-// seconds to encode the 8 MiB boundary documents.
-function encodeHtml(html) {
-  const bytes = Buffer.from(html, 'utf8');
-  const word = (n) => n.toString(16).padStart(64, '0');
-  const padding = (32 - (bytes.length % 32)) % 32;
-  return `0x${word(32)}${word(bytes.length)}${bytes.toString('hex')}${'00'.repeat(padding)}`;
-}
-
-// What chain data resolves with `includeTrust: true` (chain-data.js
-// `request`, as the router did): the result, the source that answered and its
-// trust record.
+// What chain data's `chainHtml` resolves besides the document (the core's
+// `chain.html`): the source that answered, its trust record and the core's
+// class.
 const TRUST = {
   myotis: {
     source: 'myotis',
@@ -80,6 +75,7 @@ const TRUST = {
       dissented: [],
       queried: ['myotis-p2p'],
     },
+    class: 'trusted',
   },
   colibri: {
     source: 'colibri',
@@ -93,6 +89,7 @@ const TRUST = {
       dissented: [],
       queried: ['prover.example'],
     },
+    class: 'trusted',
   },
   quorumWithDissent: {
     source: 'quorum',
@@ -105,6 +102,7 @@ const TRUST = {
       dissented: ['c.example'],
       queried: ['a.example', 'b.example', 'c.example'],
     },
+    class: 'trusted',
   },
   userConfigured: {
     source: 'direct',
@@ -117,6 +115,7 @@ const TRUST = {
       dissented: [],
       queried: ['node.example'],
     },
+    class: 'trusted',
   },
   unverified: {
     source: 'direct',
@@ -129,6 +128,7 @@ const TRUST = {
       dissented: [],
       queried: ['rpc.example'],
     },
+    class: 'untrusted',
   },
   conflict: {
     source: 'direct',
@@ -141,11 +141,12 @@ const TRUST = {
       dissented: ['other.example'],
       queried: ['rpc.example', 'other.example'],
     },
+    class: 'conflict',
   },
 };
 
-function routerAnswers(html, trust) {
-  chainData.request.mockResolvedValue({ result: encodeHtml(html), ...TRUST[trust] });
+function coreAnswers(html, trust) {
+  chainData.chainHtml.mockResolvedValue({ html, htmlHash: hashOf(html), ...TRUST[trust] });
 }
 
 function gateUrl(res) {
@@ -159,47 +160,43 @@ let trustState;
 let staged;
 let consumed;
 
-// The handler with the default chainRequest (the stubbed router) and a trust
-// state the test can watch.
+// The handler with the default chainHtml (the stubbed chain data) and a
+// trust state the test can watch.
 const handle = (request) => handleOnchainAppRequest(request, { trustState });
 
 beforeEach(() => {
-  chainData.request.mockReset();
+  chainData.chainHtml.mockReset();
   trustState = createOnchainAppTrustState();
   staged = jest.spyOn(trustState, 'stage');
   consumed = jest.spyOn(trustState, 'consume');
 });
 
 describe('web3: the gate, in order', () => {
-  test('reads html() through the router as an interactive, trust-labelled eth_call', async () => {
-    routerAnswers(HTML, 'myotis');
+  test("reads html() as the core's chain.html, interactive for the page's origin", async () => {
+    coreAnswers(HTML, 'myotis');
     await handle(get());
 
-    expect(chainData.request).toHaveBeenCalledWith(
-      1,
-      'eth_call',
-      [{ to: ethers.getAddress(ADDRESS), data: HTML_SELECTOR }, 'latest'],
-      // objectContaining: the `web3-cancel` change adds a `signal` here.
-      expect.objectContaining({
-        includeTrust: true,
-        routingContext: { origin: `web3://${ADDRESS.toLowerCase()}` },
-      })
-    );
+    expect(chainData.chainHtml).toHaveBeenCalledWith(1, ethers.getAddress(ADDRESS), {
+      origin: `web3://${ADDRESS.toLowerCase()}`,
+      // Deviation `web3-cancel`: the navigation's abort reaches the read.
+      signal: expect.any(AbortSignal),
+      deadlineMs: REQUEST_TIMEOUT_MS,
+    });
   });
 
   test('1. an approval-token GET is served from the staged document with no chain read', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
     const blocked = await handle(get());
     const token = gateUrl(blocked).searchParams.get('token');
-    expect(chainData.request).toHaveBeenCalledTimes(1);
+    expect(chainData.chainHtml).toHaveBeenCalledTimes(1);
 
     // Whatever the chain would say now is never asked.
-    chainData.request.mockRejectedValue(new Error('must not be read'));
+    chainData.chainHtml.mockRejectedValue(new Error('must not be read'));
     const approved = await handle(get({ [APPROVAL_HEADER]: token }));
 
     expect(approved.status).toBe(200);
     await expect(approved.text()).resolves.toBe(HTML);
-    expect(chainData.request).toHaveBeenCalledTimes(1);
+    expect(chainData.chainHtml).toHaveBeenCalledTimes(1);
     expect(approved.headers.get('x-freedom-onchain-app-verified')).toBe('false');
     expect(approved.headers.get('x-freedom-onchain-app-source')).toBe('direct');
     expect(decodeOnchainProvenance(approved.headers.get(PROVENANCE_HEADER))).toMatchObject({
@@ -209,19 +206,19 @@ describe('web3: the gate, in order', () => {
   });
 
   test('1. the token is single-use: a replay reads the chain, and the now-approved hash passes', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
     const token = gateUrl(await handle(get())).searchParams.get('token');
     await handle(get({ [APPROVAL_HEADER]: token }));
 
     const replay = await handle(get({ [APPROVAL_HEADER]: token }));
 
-    expect(chainData.request).toHaveBeenCalledTimes(2);
+    expect(chainData.chainHtml).toHaveBeenCalledTimes(2);
     expect(replay.status).toBe(200);
     await expect(replay.text()).resolves.toBe(HTML);
   });
 
   test('1. HEAD never consumes a token: it reads the chain, and the token still works after', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
     const token = gateUrl(await handle(get())).searchParams.get('token');
     consumed.mockClear();
 
@@ -229,12 +226,12 @@ describe('web3: the gate, in order', () => {
       new Request(APP_URL, { method: 'HEAD', headers: { [APPROVAL_HEADER]: token } })
     );
     expect(consumed).not.toHaveBeenCalled();
-    expect(chainData.request).toHaveBeenCalledTimes(2);
+    expect(chainData.chainHtml).toHaveBeenCalledTimes(2);
     expect(probe.status).toBe(200);
 
     const approved = await handle(get({ [APPROVAL_HEADER]: token }));
     expect(approved.status).toBe(200);
-    expect(chainData.request).toHaveBeenCalledTimes(2);
+    expect(chainData.chainHtml).toHaveBeenCalledTimes(2);
   });
 
   test.each([
@@ -243,7 +240,7 @@ describe('web3: the gate, in order', () => {
     ['verified (quorum) even with a dissenter', 'quorumWithDissent', 'true', 'quorum'],
     ['user-configured', 'userConfigured', 'false', 'direct'],
   ])('3. %s is served at once', async (_label, trust, verified, source) => {
-    routerAnswers(HTML, trust);
+    coreAnswers(HTML, trust);
 
     const res = await handle(get());
 
@@ -256,12 +253,12 @@ describe('web3: the gate, in order', () => {
   });
 
   test('4. an approved hash passes on later reads, even when the RPCs now disagree', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
     const token = gateUrl(await handle(get())).searchParams.get('token');
     await handle(get({ [APPROVAL_HEADER]: token }));
     staged.mockClear();
 
-    routerAnswers(HTML, 'conflict');
+    coreAnswers(HTML, 'conflict');
     const res = await handle(get());
 
     expect(res.status).toBe(200);
@@ -269,14 +266,14 @@ describe('web3: the gate, in order', () => {
     expect(staged).not.toHaveBeenCalled();
 
     // The approval is for that exact document, not the contract.
-    routerAnswers(OTHER_HTML, 'unverified');
+    coreAnswers(OTHER_HTML, 'unverified');
     const changed = await handle(get());
     expect(changed.status).toBe(451);
     expect(gateUrl(changed).searchParams.get('hash')).toBe(hashOf(OTHER_HTML));
   });
 
   test('5. untrusted is staged behind a single-use token and answered 451', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
 
     const res = await handle(get());
 
@@ -301,7 +298,7 @@ describe('web3: the gate, in order', () => {
   });
 
   test('5. a conflict is answered 451 with no token, so it cannot be approved', async () => {
-    routerAnswers(HTML, 'conflict');
+    coreAnswers(HTML, 'conflict');
 
     const res = await handle(get());
 
@@ -317,7 +314,7 @@ describe('web3: the gate, in order', () => {
   // record of code a GET would block — but it carries no body and stages
   // nothing, so nothing runs and no token is minted.
   test('6. an untrusted HEAD gets 200 with a null body and stages nothing', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
 
     const res = await handle(head());
 
@@ -330,52 +327,52 @@ describe('web3: the gate, in order', () => {
 });
 
 describe('web3: the size limit', () => {
-  const ZEROS = (bytes) => `0x${'00'.repeat(bytes)}`;
+  const sizeError = (kind) =>
+    markFailure(
+      Object.assign(new Error("html() response exceeds Freedom's 8 MiB limit"), {
+        code: 'ONCHAIN_APP_TOO_LARGE',
+      }),
+      { code: 'chain_error', kind }
+    );
 
-  test('413 for an encoded result past MAX_HTML_BYTES + 95, before any decode work', async () => {
-    const run = jest.spyOn(htmlWorker, 'run');
-    chainData.request.mockResolvedValue({ result: ZEROS(MAX_HTML_BYTES + 96), ...TRUST.myotis });
+  test("413 is the core's own size error, with its text", async () => {
+    chainData.chainHtml.mockRejectedValue(sizeError('core'));
 
     const res = await handle(get());
 
     expect(res.status).toBe(413);
     await expect(res.text()).resolves.toBe("html() response exceeds Freedom's 8 MiB limit");
-    expect(run).not.toHaveBeenCalled();
-    run.mockRestore();
+    expect(staged).not.toHaveBeenCalled();
   });
 
-  // Design 0006 bounds: encoded <= MAX_HTML_BYTES + 95, document <= 8 MiB. An
-  // 8 MiB document encodes to MAX_HTML_BYTES + 64 bytes; one byte more pads
-  // to MAX_HTML_BYTES + 96 and is refused by the precheck alone.
-  test('a document of exactly 8 MiB is served; one byte more is a 413 before any decode', async () => {
-    const run = jest.spyOn(htmlWorker, 'run');
+  // Deviation `web3-413`: today a node's error carrying the code was a 413
+  // with the node's message; only the core's own size error is now.
+  test("a node's error carrying the same code is a 502", async () => {
+    chainData.chainHtml.mockRejectedValue(sizeError('node'));
+
+    const res = await handle(get());
+
+    expect(res.status).toBe(502);
+  });
+
+  test('a document of exactly 8 MiB is served whole', async () => {
     const atLimit = 'a'.repeat(MAX_HTML_BYTES);
-    routerAnswers(atLimit, 'myotis');
+    coreAnswers(atLimit, 'myotis');
     const served = await handle(get());
     expect(served.status).toBe(200);
     expect((await served.text()).length).toBe(MAX_HTML_BYTES);
-    expect(run).toHaveBeenCalledTimes(1);
-
-    routerAnswers(`${atLimit}a`, 'myotis');
-    const tooLarge = await handle(get());
-    expect(tooLarge.status).toBe(413);
-    expect(run).toHaveBeenCalledTimes(1);
-    run.mockRestore();
-  }, 20_000);
+  });
 });
 
 describe('web3: cancellation', () => {
-  // Design 0006, deviation `web3-cancel`: today an aborted navigation stops
-  // the handler waiting, but the chain read itself is never told — no signal
-  // is handed to the router (onchain-app-protocol.js, the `chainRequest(...)`
-  // call), although the router honours one. When `web3-cancel` lands, the
-  // read sees the navigation's abort and the one assertion marked below
-  // flips to `true`.
-  test('TODAY (deviation web3-cancel): an aborted navigation does not cancel the chain read', async () => {
-    let routerOptions = null;
+  // Design 0006, deviation `web3-cancel`: an aborted navigation cancels the
+  // chain read. Before it, the handler stopped waiting but the read was
+  // never told.
+  test("an aborted navigation cancels the core's read (deviation web3-cancel)", async () => {
+    let readOptions = null;
     let finishRead;
-    chainData.request.mockImplementation((_chainId, _method, _params, options) => {
-      routerOptions = options;
+    chainData.chainHtml.mockImplementation((_chainId, _contract, options) => {
+      readOptions = options;
       return new Promise((resolve) => {
         finishRead = resolve;
       });
@@ -383,18 +380,18 @@ describe('web3: cancellation', () => {
     const controller = new AbortController();
 
     const pending = handle(new Request(APP_URL, { signal: controller.signal }));
-    await waitFor(() => routerOptions !== null, { what: 'the chain read to start' });
+    await waitFor(() => readOptions !== null, { what: 'the chain read to start' });
+    expect(readOptions.signal.aborted).toBe(false);
     controller.abort();
     const res = await pending;
 
     // The handler stops waiting at once…
     expect(res.status).toBe(504);
-    // …but the read it started is not cancelled.
-    const chainReadCancelled = routerOptions.signal?.aborted === true;
-    expect(chainReadCancelled).toBe(false); // web3-cancel flips this to true
+    // …and the read it started is cancelled.
+    expect(readOptions.signal.aborted).toBe(true);
 
-    // The orphaned read finishing later changes nothing.
-    finishRead({ result: encodeHtml(HTML), ...TRUST.unverified });
+    // A read finishing late anyway changes nothing.
+    finishRead({ html: HTML, htmlHash: hashOf(HTML), ...TRUST.unverified });
     await new Promise((resolve) => setImmediate(resolve));
     expect(staged).not.toHaveBeenCalled();
   });
@@ -408,7 +405,7 @@ describe('web3: through the registered handler', () => {
   }
 
   test('each session keeps its own approvals: a second session (a private window) gates again', async () => {
-    routerAnswers(HTML, 'unverified');
+    coreAnswers(HTML, 'unverified');
     const main = registerSession();
     const privateWindow = registerSession();
 

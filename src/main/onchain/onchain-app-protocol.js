@@ -6,6 +6,11 @@
  * top-level response under the contract-and-chain-scoped `web3:` origin.
  * Network access from the document is denied by response policy; Ethereum
  * reads and signing continue through Freedom's existing EIP-1193 bridge.
+ *
+ * The read is the core's `chain.html` (freedom-core design 0006): the core
+ * makes the call, decodes and caps the document, hashes it and classifies
+ * its trust; the handler keeps the approvals, the interstitial and the
+ * response, and an aborted navigation cancels the read (`web3-cancel`).
  */
 
 const crypto = require('crypto');
@@ -15,21 +20,11 @@ const { ethers } = require('ethers');
 const log = require('../logger');
 const chainData = require('../networks/chain-data');
 const networkRegistry = require('../networks/network-registry');
+const { failureOf } = require('../core/chain-driver');
 const { getPermissionKey } = require('../../shared/origin-utils');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
-const { createTaskWorkerHost, TaskWorkerUnavailable } = require('../task-worker-host');
-const {
-  MAX_HTML_BYTES,
-  assertHtmlResultSize,
-  decodeHtmlDocument,
-  decodeHtmlResult,
-} = require('./onchain-html');
-const {
-  runWithPrivateLogContext,
-  redactUrlForLog,
-} = require('../private/private-log-context');
+const { runWithPrivateLogContext, redactUrlForLog } = require('../private/private-log-context');
 
-const HTML_SELECTOR = '0x33c34ac3';
 const PROVENANCE_HEADER = 'X-Freedom-Onchain-App-Provenance';
 const GATE_HEADER = 'X-Freedom-Onchain-App-Gate';
 const APPROVAL_HEADER = 'X-Freedom-Onchain-App-Approval';
@@ -39,17 +34,9 @@ const PENDING_DOCUMENT_TTL_MS = 5 * 60 * 1000;
 const MAX_PENDING_DOCUMENTS = 8;
 const MAX_APPROVED_DOCUMENTS = 1024;
 const ETHEREUM_ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
-// Decoding an 8 MiB document takes ~0.7 s (hex check, ABI decode, pure-JS
-// keccak), so it runs in a worker; see onchain-html.js. The input is bounded
-// by MAX_HTML_BYTES, so a decode still running after this is a broken worker,
-// not a big document.
-const DECODE_TIMEOUT_MS = 15_000;
-const htmlWorker = createTaskWorkerHost({
-  name: 'OnchainHtml',
-  workerPath: path.join(__dirname, 'onchain-html-worker.js'),
-  timeoutMs: DECODE_TIMEOUT_MS,
-  resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 },
-});
+// The core's error for a document over its 8 MiB limit (design 0006,
+// `chain.html`, Errors): the one failure answered 413.
+const TOO_LARGE_CODE = 'ONCHAIN_APP_TOO_LARGE';
 const provenanceByWebContentsId = new Map();
 const observedWebContentsIds = new Set();
 const ONCHAIN_INTERSTITIAL_URL = pathToFileURL(
@@ -269,7 +256,17 @@ function hasTrustConflict(trust = {}) {
   return Array.isArray(trust.dissented) && trust.dissented.length > 0;
 }
 
-function buildOnchainInterstitialUrl({ app, provenance, requestUrl, token = null }) {
+// `conflict` is the core's class (design 0006, `chain.html`); without it, as
+// before, the trust's own dissenters decide. The core counts dissenters by
+// endpoint reference, so a conflict may name none that parse as hosts
+// (deviation `web3-dissent`): it is still a conflict, with no token.
+function buildOnchainInterstitialUrl({
+  app,
+  provenance,
+  requestUrl,
+  token = null,
+  conflict = hasTrustConflict(provenance.trust || {}),
+}) {
   const url = new URL(ONCHAIN_INTERSTITIAL_URL);
   const trust = provenance.trust || {};
   url.searchParams.set('target', documentUrl(requestUrl));
@@ -279,9 +276,12 @@ function buildOnchainInterstitialUrl({ app, provenance, requestUrl, token = null
   url.searchParams.set('hash', provenance.htmlHash);
   url.searchParams.set('source', trustEndpoint(trust));
   if (token) url.searchParams.set('token', token);
-  if (hasTrustConflict(trust)) {
+  if (conflict) {
     url.searchParams.set('conflict', '1');
-    url.searchParams.set('dissented', trust.dissented.join(', '));
+    url.searchParams.set(
+      'dissented',
+      Array.isArray(trust.dissented) ? trust.dissented.join(', ') : ''
+    );
   }
   return url.toString();
 }
@@ -334,63 +334,85 @@ function abortError(message) {
   return error;
 }
 
-async function withDeadline(promise, timeoutMs, signal) {
-  let timeoutId;
-  let abortHandler;
-  const deadline = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(abortError('onchain app request timed out')), timeoutMs);
-    if (signal) {
-      abortHandler = () => reject(abortError('onchain app request aborted'));
-      if (signal.aborted) abortHandler();
-      else signal.addEventListener('abort', abortHandler, { once: true });
-    }
-  });
-  try {
-    return await Promise.race([promise, deadline]);
-  } finally {
-    clearTimeout(timeoutId);
-    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
-  }
-}
-
-// `{ html, htmlHash }` for an html() result, decoded and hashed off the main
-// thread. Done here instead only when the worker cannot start, or crashes
-// while on this very document (see task-worker-host.js) — then this one
-// document costs the main thread its ~1 s, as it did before the worker.
-async function decodeHtmlInWorker(result, signal) {
-  // O(1), before an oversized result is copied to the worker at all.
-  assertHtmlResultSize(result);
-  try {
-    return await htmlWorker.run('decode', { result }, { signal });
-  } catch (error) {
-    if (!(error instanceof TaskWorkerUnavailable)) throw error;
-    if (signal?.aborted) throw abortError('onchain app request aborted');
-    return decodeHtmlDocument(result);
-  }
-}
-
-// The decode shares the request's deadline and cancellation with the chain
-// read: a navigation that was aborted, or has used up its budget, stops
-// holding (or waiting for) the single decode worker.
-async function decodeWithinDeadline(result, remainingMs, signal) {
+// The handler's deadline and the page's abort, as one signal: either one
+// cancels the core's read (deviation `web3-cancel`) and answers 504.
+function readSignal(signal, timeoutMs) {
   const controller = new AbortController();
-  try {
-    return await withDeadline(
-      decodeHtmlInWorker(result, controller.signal),
-      Math.max(0, remainingMs),
-      signal
-    );
-  } finally {
-    // A no-op once the decode has settled; otherwise drops it from the queue
-    // or stops the worker that is on it.
-    controller.abort();
+  const timer = setTimeout(
+    () => controller.abort(abortError('onchain app request timed out')),
+    Math.max(0, timeoutMs)
+  );
+  const onAbort = () => controller.abort(abortError('onchain app request aborted'));
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener?.('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    done() {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+    },
+  };
+}
+
+// Starts the read and settles as it does, or rejects with the signal's
+// reason once it aborts: the handler answers on time whatever the read does.
+// A signal already aborted starts nothing.
+function untilAborted(read, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  let onAbort;
+  return Promise.race([
+    Promise.resolve().then(read),
+    new Promise((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+    }),
+  ]).finally(() => signal.removeEventListener('abort', onAbort));
+}
+
+// The status a failed read answers (design 0006, `chain.html`, Errors):
+// - 413 only for the core's own error for a document over the limit; a
+//   node's error carrying the same code is a 502 (deviation `web3-413`);
+// - 504 for the handler's deadline, the page's abort, and the core's
+//   `deadline` or `cancelled`, as today's timeouts;
+// - 503 for `busy`;
+// - 502 for everything else: `budget`, `too_large`, a second
+//   `reconfigured`, a node's error, the core's own decode errors.
+function failureStatus(error, aborted = false) {
+  if (aborted || error?.name === 'AbortError') return 504;
+  const failure = failureOf(error);
+  if (failure?.code === 'chain_error' && failure.kind === 'core' && error.code === TOO_LARGE_CODE) {
+    return 413;
+  }
+  if (failure?.code === 'deadline' || failure?.code === 'cancelled') return 504;
+  if (failure?.code === 'busy') return 503;
+  return 502;
+}
+
+function failureResponse(error, requestUrl, aborted) {
+  const loggedUrl = redactUrlForLog(requestUrl);
+  switch (failureStatus(error, aborted)) {
+    case 413:
+      log.warn(`[onchain-app] rejected oversized html() response for ${loggedUrl}`);
+      return textResponse(413, error.message);
+    case 504:
+      log.warn(`[onchain-app] timed out loading ${loggedUrl}`);
+      return textResponse(504, 'onchain application read timed out');
+    case 503:
+      log.warn(`[onchain-app] chain data busy loading ${loggedUrl}`);
+      return textResponse(503, 'onchain application read is busy; try again shortly');
+    default:
+      log.warn(`[onchain-app] failed to load ${loggedUrl}: ${error?.message || error}`);
+      return textResponse(
+        502,
+        'the contract did not return a valid ERC-8244 html() document on this chain'
+      );
   }
 }
 
 async function handleOnchainAppRequest(
   request,
   {
-    chainRequest = chainData.request,
+    chainHtml = chainData.chainHtml,
     timeoutMs = REQUEST_TIMEOUT_MS,
     trustState = standaloneTrustState,
   } = {}
@@ -424,65 +446,58 @@ async function handleOnchainAppRequest(
     }
   }
 
-  const startedAt = Date.now();
+  const read = readSignal(request.signal, timeoutMs);
   try {
-    const chainResult = await withDeadline(
-      Promise.resolve(
-        chainRequest(
-          app.chainId,
-          'eth_call',
-          [{ to: app.address, data: HTML_SELECTOR }, 'latest'],
-          {
-            includeTrust: true,
-            // The document fetch is the first app-driven read. Give it the
-            // same per-origin latency budget and adaptive fall-through as the
-            // EIP-1193 calls the loaded document will make afterwards.
-            routingContext: { origin: getPermissionKey(request.url) },
-          }
-        )
-      ),
-      timeoutMs,
-      request.signal
+    const answer = await untilAborted(
+      () =>
+        chainHtml(app.chainId, app.address, {
+          // The document fetch is the first app-driven read. Give it the
+          // same per-origin latency budget and adaptive fall-through as the
+          // EIP-1193 calls the loaded document will make afterwards.
+          origin: getPermissionKey(request.url),
+          signal: read.signal,
+          deadlineMs: timeoutMs,
+        }),
+      read.signal
     );
-    const { html, htmlHash } = await decodeWithinDeadline(
-      chainResult?.result,
-      timeoutMs - (Date.now() - startedAt),
-      request.signal
-    );
-    const provenance = buildOnchainProvenance(htmlHash, app, chainResult || {});
-    const trustLevel = provenance.trust?.level;
-    const trusted = trustLevel === 'verified' || trustLevel === 'user-configured';
-    if (method === 'GET' && !trusted && !trustState.isApproved(app, provenance.htmlHash)) {
-      const conflict = hasTrustConflict(provenance.trust);
+    const chainResult = {
+      source: answer.source,
+      verified: answer.verified,
+      trust: answer.trust,
+    };
+    const provenance = buildOnchainProvenance(answer.htmlHash, app, chainResult);
+    // The core's class is the gate's input (`trusted`, `conflict` or
+    // `untrusted`); an exactly approved document passes whatever it says.
+    if (
+      method === 'GET' &&
+      answer.class !== 'trusted' &&
+      !trustState.isApproved(app, provenance.htmlHash)
+    ) {
+      const conflict = answer.class === 'conflict';
       const token = conflict
         ? null
         : trustState.stage({
             app,
-            chainResult: chainResult || {},
-            html,
+            chainResult,
+            html: answer.html,
             provenance,
             requestUrl: documentUrl(request.url),
           });
       return interstitialResponse(
-        buildOnchainInterstitialUrl({ app, provenance, requestUrl: request.url, token })
+        buildOnchainInterstitialUrl({
+          app,
+          provenance,
+          requestUrl: request.url,
+          token,
+          conflict,
+        })
       );
     }
-    return htmlResponse(html, app, provenance, chainResult || {}, method);
+    return htmlResponse(answer.html, app, provenance, chainResult, method);
   } catch (error) {
-    const loggedUrl = redactUrlForLog(request.url);
-    if (error?.code === 'ONCHAIN_APP_TOO_LARGE') {
-      log.warn(`[onchain-app] rejected oversized html() response for ${loggedUrl}`);
-      return textResponse(413, error.message);
-    }
-    if (error?.name === 'AbortError') {
-      log.warn(`[onchain-app] timed out loading ${loggedUrl}`);
-      return textResponse(504, 'onchain application read timed out');
-    }
-    log.warn(`[onchain-app] failed to load ${loggedUrl}: ${error?.message || error}`);
-    return textResponse(
-      502,
-      'the contract did not return a valid ERC-8244 html() document on this chain'
-    );
+    return failureResponse(error, request.url, read.signal.aborted);
+  } finally {
+    read.done();
   }
 }
 
@@ -643,8 +658,6 @@ module.exports = {
   APPROVAL_HEADER,
   DEFAULT_CHAIN_ID,
   GATE_HEADER,
-  HTML_SELECTOR,
-  MAX_HTML_BYTES,
   ONCHAIN_APP_CSP,
   ONCHAIN_APP_PERMISSIONS_POLICY,
   REQUEST_TIMEOUT_MS,
@@ -653,10 +666,8 @@ module.exports = {
   buildOnchainInterstitialUrl,
   captureOnchainProvenance,
   decodeOnchainProvenance,
-  decodeHtmlInWorker,
-  decodeHtmlResult,
   encodeOnchainProvenance,
-  htmlWorker,
+  failureStatus,
   guardOnchainAppRequest,
   handleOnchainAppRequest,
   installOnchainProvenanceCapture,
