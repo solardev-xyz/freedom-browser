@@ -47,7 +47,13 @@ function lockTimeoutError() {
   return error;
 }
 
-function acquire(key, waitMs) {
+function keyLockTimeoutError() {
+  const error = new Error('This payment is already being sent. Wait for that to finish.');
+  error.code = 'INTENT_KEY_LOCK_TIMEOUT';
+  return error;
+}
+
+function acquire(key, waitMs, timeoutError = lockTimeoutError) {
   const lock = locks.get(key);
   if (!lock) {
     locks.set(key, { waiters: [] });
@@ -58,7 +64,7 @@ function acquire(key, waitMs) {
     waiter.timer = setTimeout(() => {
       const index = lock.waiters.indexOf(waiter);
       if (index !== -1) lock.waiters.splice(index, 1);
-      reject(lockTimeoutError());
+      reject(timeoutError());
     }, waitMs);
     waiter.timer.unref?.();
     lock.waiters.push(waiter);
@@ -110,6 +116,33 @@ function holdsAccountLock(lock, chainId, sender) {
   }
 }
 
+/**
+ * Run `fn` holding the lock of one intent key (an operation that may be
+ * retried, such as one Safe deployment). The decision to create the intent
+ * or send it again is made under it, so two first sends of one operation
+ * can't both create one, whichever accounts they would use. Taken before
+ * an account's lock, never inside one.
+ *
+ * @template T
+ * @param {{ intentKey: string, waitMs?: number }} options
+ * @param {() => Promise<T>|T} fn
+ * @returns {Promise<T>}
+ */
+async function withIntentKeyLock({ intentKey, waitMs = WAIT_TIMEOUT_MS }, fn) {
+  if (typeof intentKey !== 'string' || intentKey.length === 0) {
+    throw new TypeError('Invalid intent key');
+  }
+  if (!(waitMs > 0)) throw new TypeError(`Invalid lock wait: ${waitMs}`);
+  // Account keys are `<chainId>:<address>`; this prefix keeps them apart.
+  const key = `intent-key:${intentKey}`;
+  await acquire(key, waitMs, keyLockTimeoutError);
+  try {
+    return await fn();
+  } finally {
+    release(key);
+  }
+}
+
 function toNonce(value) {
   let nonce;
   try {
@@ -155,4 +188,5 @@ module.exports = {
   holdsAccountLock,
   reserve,
   withAccountLock,
+  withIntentKeyLock,
 };

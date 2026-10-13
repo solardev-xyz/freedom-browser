@@ -4,6 +4,7 @@ const {
   holdsAccountLock,
   reserve,
   withAccountLock,
+  withIntentKeyLock,
 } = require('./nonce-reservations');
 
 const CHAIN = 100;
@@ -309,5 +310,48 @@ describe('withAccountLock', () => {
       'Invalid sender address'
     );
     expect(accountKey(CHAIN, SENDER)).toBe(`${CHAIN}:${SENDER.toLowerCase()}`);
+  });
+});
+
+describe('withIntentKeyLock', () => {
+  test('serializes one key, whatever accounts its callers use; other keys run alongside', async () => {
+    const order = [];
+    const gate = deferred();
+    const first = withIntentKeyLock({ intentKey: 'safe-deploy:100:0xabc' }, async () => {
+      order.push('first start');
+      await gate.promise;
+      order.push('first end');
+    });
+    const second = withIntentKeyLock({ intentKey: 'safe-deploy:100:0xabc' }, () => {
+      order.push('second');
+    });
+    await withIntentKeyLock({ intentKey: 'safe-deploy:100:0xdef' }, () => {
+      order.push('other key');
+    });
+    // An account's lock isn't the key's: one with the same text is free.
+    await withAccountLock({ chainId: CHAIN, sender: SENDER }, () => order.push('account'));
+    gate.resolve();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['first start', 'other key', 'account', 'first end', 'second']);
+  });
+
+  test('a waiter gives up with a clear error; the holder keeps the key', async () => {
+    const gate = deferred();
+    const holder = withIntentKeyLock({ intentKey: 'k' }, () => gate.promise);
+    await expect(
+      withIntentKeyLock({ intentKey: 'k', waitMs: 20 }, () => 'never')
+    ).rejects.toMatchObject({
+      code: 'INTENT_KEY_LOCK_TIMEOUT',
+      message: 'This payment is already being sent. Wait for that to finish.',
+    });
+    gate.resolve('held');
+    await expect(holder).resolves.toBe('held');
+    await expect(withIntentKeyLock({ intentKey: 'k' }, () => 'free')).resolves.toBe('free');
+  });
+
+  test('refuses a key that is not one', async () => {
+    await expect(withIntentKeyLock({ intentKey: '' }, () => {})).rejects.toThrow(
+      'Invalid intent key'
+    );
   });
 });
