@@ -439,3 +439,149 @@ describe('NamingDriver', () => {
     expect(exited.client.requestTo).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('NamingDriver.open (dweb.open, freedom-core design 0006)', () => {
+  const HASH = 'ab'.repeat(32);
+  const params = (url) => ({
+    url,
+    method: 'GET',
+    headers: [['accept', '*/*']],
+    backend: { ant: 'bundled', up: true },
+  });
+  const FETCH = { fetch: { node: 'ant' } };
+  const planned = (plan = FETCH, extra = {}) => ({ plan, generations: GEN, attempts: 0, ...extra });
+
+  test("a plan is asked of the serving process as main's own, with its privacy and deadline", async () => {
+    const { driver, client } = setUp(() => planned());
+    const signal = new AbortController().signal;
+    expect(await driver.open(params(`bzz://${HASH}/`), { signal })).toEqual(planned());
+    await runWithPrivateLogContext(true, () => driver.open(params('bzz://x.eth/')));
+    const [first, second] = client.requestTo.mock.calls;
+    expect(first.slice(1)).toEqual([
+      'dweb.open',
+      { ...params(`bzz://${HASH}/`), private: false, deadline_ms: DEADLINE_MS },
+      // Caller kind `shell`: pages never reach the core, and it refuses them.
+      { caller: 'shell' },
+      // The page's abort reaches the core as 0001's `cancel`.
+      { watchdogMs: DEADLINE_MS + WATCHDOG_MARGIN_MS, signal },
+    ]);
+    expect(second[2]).toEqual({
+      ...params('bzz://x.eth/'),
+      private: true,
+      deadline_ms: DEADLINE_MS,
+    });
+  });
+
+  test('an overtaken plan is planned again with attempts_used, within the remaining deadline', async () => {
+    let t = 1_000;
+    const replies = [
+      planned({ error: { status: 502 } }, { generations: { ...GEN, lifecycle: 2 }, attempts: 1 }),
+      planned(FETCH, { attempts: 1 }),
+    ];
+    const { driver, client } = setUp(
+      (_method, _params, n) => {
+        t += 10_000;
+        return replies[n - 1];
+      },
+      { now: () => t }
+    );
+    expect((await driver.open(params('bzz://x.eth/'))).plan).toEqual(FETCH);
+    const sent = client.requestTo.mock.calls.map(([, , sentParams]) => sentParams);
+    expect(sent[0].attempts_used).toBeUndefined();
+    expect(sent[1]).toMatchObject({ attempts_used: 1, deadline_ms: DEADLINE_MS - 10_000 });
+  });
+
+  test("a .tez host's plan is fenced by Tezos' generation, any other host's by ENS's", async () => {
+    const tezosMoved = { ...GEN, tezos: 0 };
+    const ensMoved = { ...GEN, ens: 1 };
+    const tez = setUp(() => planned(FETCH, { generations: ensMoved }));
+    await tez.driver.open(params('bzz://site.tez/'));
+    expect(tez.client.requestTo).toHaveBeenCalledTimes(1);
+    const hash = setUp(() => planned(FETCH, { generations: tezosMoved }));
+    await hash.driver.open(params(`bzz://${HASH}/`));
+    expect(hash.client.requestTo).toHaveBeenCalledTimes(1);
+    // A plan made with no lookup depends on nothing: overtaken, it is only
+    // planned again, and costs no attempt.
+    const replanned = setUp((_method, _params, n) =>
+      planned(FETCH, { generations: n === 1 ? ensMoved : GEN })
+    );
+    await replanned.driver.open(params(`bzz://${HASH}/`));
+    expect(replanned.client.requestTo.mock.calls.map(([, , p]) => p.attempts_used)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test('three overtaken plans are today\'s "changed repeatedly", by today\'s subject', async () => {
+    const stale = setUp((_method, sentParams) =>
+      planned(FETCH, {
+        generations: { ...GEN, lifecycle: 2 },
+        attempts: (sentParams.attempts_used ?? 0) + 1,
+      })
+    );
+    const failure = await stale.driver.open(params('bzz://Vitalik.ETH/')).catch((err) => err);
+    expect(failure.code).toBe('repeated');
+    expect(failure.message).toBe(
+      'Myotis availability changed repeatedly while resolving vitalik.eth'
+    );
+    expect(stale.client.requestTo).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+  });
+
+  test('a plan that waited for admission is judged again after the wait', async () => {
+    const { driver, client, config } = setUp((_method, _params, n) =>
+      planned({ fetch: { n } }, { attempts: 1, generations: { ...config.generations } })
+    );
+    const ready = jest.fn(async (reply) => {
+      // A control lands while the first plan waits for its slot.
+      if (reply.plan.fetch.n === 1) {
+        config.controls.push((generations) => (generations.lifecycle += 1));
+      }
+    });
+    expect((await driver.open(params('ipfs://x.eth/'), { ready })).plan).toEqual({
+      fetch: { n: 2 },
+    });
+    expect(ready.mock.calls.map(([reply]) => reply.plan.fetch.n)).toEqual([1, 2]);
+    expect(client.requestTo.mock.calls[1][2].attempts_used).toBe(1);
+  });
+
+  test("the core's errors keep their codes; a lost process is core_unavailable", async () => {
+    const coreError = (code) => Object.assign(new Error(code), { code });
+    for (const code of ['busy', 'deadline', 'invalid_argument', 'forbidden', 'internal']) {
+      const { driver } = setUp(() => Promise.reject(coreError(code)));
+      await expect(driver.open(params(`bzz://${HASH}/`))).rejects.toMatchObject({ code });
+    }
+    const lost = setUp(() => Promise.reject(coreError('core_unavailable')));
+    await expect(lost.driver.open(params(`bzz://${HASH}/`))).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    const none = setUp(() => planned(), { core: null });
+    none.client.whenReady.mockRejectedValue(new Error('not running'));
+    await expect(none.driver.open(params(`bzz://${HASH}/`))).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    expect(none.client.requestTo).not.toHaveBeenCalled();
+  });
+
+  test('a plan stays with its process: a restart plans nothing again', async () => {
+    const { driver, client, config, gen } = setUp(() => planned());
+    client.requestTo.mockImplementationOnce(async (to) => {
+      expect(to).toBe(gen);
+      config.core = { gen: { id: 'replacement' } };
+      return planned(FETCH, { generations: { ...GEN, ens: 1 } });
+    });
+    await expect(driver.open(params('bzz://x.eth/'))).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    expect(client.requestTo).toHaveBeenCalledTimes(1);
+  });
+
+  test('a request already cancelled asks nothing', async () => {
+    const { driver, client } = setUp(() => planned());
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      driver.open(params(`bzz://${HASH}/`), { signal: controller.signal })
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(client.requestTo).not.toHaveBeenCalled();
+  });
+});

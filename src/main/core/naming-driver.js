@@ -12,9 +12,14 @@
  * A reply computed under a generation main has since moved past was
  * overtaken in the pipe: main discards it and sends the lookup again, with
  * the attempts and the time it has left (design 0004, Generations).
+ *
+ * `dweb.open` (design 0006) is fenced the same way: a plan is a lookup's
+ * result shaped as the request main will make, so an overtaken plan is
+ * planned again with `attempts_used`, within the remaining deadline.
  */
 
 const { isPrivateLogContext } = require('../private/private-log-context');
+const { isTezosDomainHost } = require('../../shared/origin-utils');
 
 /** A caller's lifecycle attempts, in all (resolveAcrossStableLifecycle). */
 const MAX_ATTEMPTS = 3;
@@ -36,9 +41,26 @@ const UNAVAILABLE = 'Name resolution is unavailable';
 /** The core's own text for its `deadline` (`overall-deadline`). */
 const DEADLINE = "The resolution's deadline passed";
 
+/** A driver's own failure, with the code the dweb handlers map. */
+function failure(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isRef = (value) =>
   isObject(value) && typeof value.ref === 'string' && Object.keys(value).length === 1;
+
+/** A dweb URL's hostname, as the handlers read it; empty when it doesn't
+ * parse. */
+function dwebHost(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
 
 /** Today's `hostOf`: the input when it doesn't parse. */
 function hostOf(url) {
@@ -203,6 +225,89 @@ class NamingDriver {
         throw new Error(typeof message === 'string' ? message : failed.message);
       }
       return this.published(reply, system, gen);
+    }
+  }
+
+  /**
+   * `dweb.open` (design 0006): the request's plan, `{ plan, generations,
+   * attempts }`, fenced exactly as a lookup is (#672). It is sent and judged
+   * only with no naming control in flight; an overtaken plan is planned
+   * again with `attempts_used`, within the remaining deadline. A plan is
+   * bound to the core process that made it: a restart plans nothing again.
+   *
+   * The plan's lookup is the host's: a `.tez` name's generation is Tezos',
+   * any other host's ENS's and the lifecycle's. A plan made with no lookup
+   * (a hash host, a redirect, an error) depends on none, so a fence that
+   * finds it overtaken only plans it again.
+   *
+   * `ready`, when given, runs once a plan is judged current and before it
+   * is used: main's fetch admission, which may wait. The plan is judged
+   * again after it, so a plan that waited is never used stale.
+   *
+   * Failures carry a `code`: the core's (`busy`, `deadline`, `cancelled`,
+   * `invalid_argument`, `forbidden`, `internal`), `core_unavailable` with no
+   * core process (or a restart), and `repeated` when the generations moved
+   * under every attempt.
+   *
+   * @param {{url: string, method: string, headers: string[][], backend: object}} params
+   * @param {{signal?: AbortSignal|null, ready?: ((reply: object) => Promise<void>)|null}} [options]
+   */
+  async open(params, { signal = null, ready = null } = {}) {
+    const host = dwebHost(params.url);
+    const system = isTezosDomainHost(host) ? 'tezos' : 'ens';
+    const subjectOf = () =>
+      system === 'tezos' ? host.trim().toLowerCase() : this.ensSubject(host);
+    const until = this.now() + DEADLINE_MS;
+    let attempts = 0;
+    let pinned = null;
+    // Waits out any control in flight, then judges the reply: true when it
+    // was overtaken, its attempts counted as a lookup's are.
+    const overtaken = async (reply, gen) => {
+      while (!this.config.idle(gen)) await this.quietFor(gen, until);
+      if (!this.overtaken(reply?.generations, system, gen)) return false;
+      attempts =
+        Number.isSafeInteger(reply?.attempts) && reply.attempts >= attempts
+          ? reply.attempts
+          : attempts + 1;
+      if (attempts >= MAX_ATTEMPTS) throw failure('repeated', REPEATED[system](subjectOf()));
+      return true;
+    };
+    for (;;) {
+      if (signal?.aborted) throw failure('cancelled', 'Cancelled');
+      if (until - this.now() <= 0) throw failure('deadline', DEADLINE);
+      const gen = await this.quietFor(pinned, until);
+      pinned = gen;
+      if (!this.config.idle(gen)) continue;
+      const remaining = Math.floor(until - this.now());
+      if (remaining <= 0) throw failure('deadline', DEADLINE);
+      const request = { ...params, private: isPrivateLogContext(), deadline_ms: remaining };
+      if (attempts > 0) request.attempts_used = attempts;
+      let reply;
+      try {
+        reply = await this.client.requestTo(
+          gen,
+          'dweb.open',
+          request,
+          { caller: 'shell' },
+          { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal }
+        );
+      } catch (err) {
+        if (err?.code === 'core_unavailable') throw failure('core_unavailable', RESTARTED);
+        throw err ?? failure('internal', 'Internal error');
+      }
+      if (await overtaken(reply, gen)) continue;
+      if (!ready) return reply;
+      await ready(reply);
+      if (!(await overtaken(reply, gen))) return reply;
+    }
+  }
+
+  /** `quiet`, its failures with the codes `open` gives them. */
+  async quietFor(pinned, until) {
+    try {
+      return await this.quiet(pinned, until);
+    } catch (err) {
+      throw failure(err?.message === DEADLINE ? 'deadline' : 'core_unavailable', err?.message);
     }
   }
 
