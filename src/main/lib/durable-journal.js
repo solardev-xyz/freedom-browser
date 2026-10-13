@@ -20,9 +20,12 @@
  * - **A failed append** is cut back off the file. If that fails too, the end
  *   of the file is unknown, and the journal refuses every later write until
  *   it is opened again.
- * - **Reading** ignores a torn last line, one without its newline: an append
- *   that never completed, so it was never acknowledged. A damaged complete
- *   line is skipped and reported. `open()` cuts a torn tail off, so the next
+ * - **Reading** accepts a last line without its newline when it is a whole
+ *   record whose checksum holds: the record landed, only its delimiter
+ *   didn't, and it may have been acknowledged. Any other tail is torn, an
+ *   append that never completed, so never acknowledged: it is ignored. A
+ *   damaged complete line is skipped and reported. `open()` ends a whole
+ *   last record with its newline and cuts a torn tail off, so the next
  *   append starts a line of its own.
  * - **Compaction** replaces the file with the records given: a temp file,
  *   sync, rename, directory sync. A crash before the rename keeps the old
@@ -109,8 +112,10 @@ function decodeLine(line) {
  *   corrupt: Array<{ line: number, offset: number, reason: 'malformed'|'checksum' }>,
  *   completeLength: number,
  *   tornTail: number,
- * }} `completeLength` is where the last complete line ends; `tornTail` is
- *   how many bytes follow it.
+ *   unterminated: boolean,
+ * }} `completeLength` is where the last complete record ends; `tornTail` is
+ *   how many bytes follow it; `unterminated` is set when the last record is
+ *   whole but lacks its newline.
  */
 function parseJournal(buffer) {
   const records = [];
@@ -126,7 +131,21 @@ function parseJournal(buffer) {
     else corrupt.push({ line, offset: start, reason: decoded.reason });
     start = end + 1;
   }
-  return { records, corrupt, completeLength: start, tornTail: buffer.length - start };
+  if (start < buffer.length) {
+    // A whole record whose newline never landed is still a record.
+    const decoded = decodeLine(buffer.subarray(start));
+    if (decoded.record) {
+      records.push(decoded.record);
+      return { records, corrupt, completeLength: buffer.length, tornTail: 0, unterminated: true };
+    }
+  }
+  return {
+    records,
+    corrupt,
+    completeLength: start,
+    tornTail: buffer.length - start,
+    unterminated: false,
+  };
 }
 
 /**
@@ -140,7 +159,15 @@ async function readJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
     stat = await fs.lstat(filePath);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    return { missing: true, size: 0, records: [], corrupt: [], completeLength: 0, tornTail: 0 };
+    return {
+      missing: true,
+      size: 0,
+      records: [],
+      corrupt: [],
+      completeLength: 0,
+      tornTail: 0,
+      unterminated: false,
+    };
   }
   if (!stat.isFile()) {
     throw journalError(`Journal is not a regular file: ${filePath}`, 'JOURNAL_NOT_A_FILE');
@@ -228,6 +255,16 @@ function createJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
     }
   }
 
+  async function terminateLastRecord() {
+    const handle = await fs.open(filePath, 'a');
+    try {
+      await handle.appendFile('\n');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
   async function cutTornTail(length) {
     const handle = await fs.open(filePath, 'r+');
     try {
@@ -246,7 +283,8 @@ function createJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
 
   /**
    * Read the journal and make it ready for appends: remove a crashed
-   * compaction's temp file, cut a torn tail off and set the mode to 0600.
+   * compaction's temp file, end a whole last record with its newline or cut
+   * a torn tail off, and set the mode to 0600.
    * Opening again (after a failed write) re-reads the file.
    *
    * @returns {Promise<ReturnType<typeof readJournal>>}
@@ -256,13 +294,19 @@ function createJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
       opened = false;
       await removeStaleTemps();
       const result = await readJournal(filePath, { maxBytes });
+      let length = result.completeLength;
       if (!result.missing) {
-        if (result.tornTail > 0) await cutTornTail(result.completeLength);
+        if (result.unterminated) {
+          await terminateLastRecord();
+          length += 1;
+        } else if (result.tornTail > 0) {
+          await cutTornTail(length);
+        }
         await restrictMode();
       }
       exists = !result.missing;
       entryUnsynced = false;
-      size = result.completeLength;
+      size = length;
       broken = null;
       opened = true;
       return result;

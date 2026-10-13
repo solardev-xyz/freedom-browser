@@ -292,6 +292,32 @@ describe('reading', () => {
     expect(after.records).toEqual([{ n: 1 }, { n: 2 }, { n: 4 }]);
   });
 
+  test('a whole last record without its newline is a record, and open() ends its line', async () => {
+    // Review 702-M2: the record (and its checksum) landed; only the delimiter didn't.
+    const whole = encodeLine({ n: 1 }) + encodeLine({ type: 'void', n: 2 }).slice(0, -1);
+    fs.writeFileSync(file, whole);
+
+    const read = await readJournal(file);
+    expect(read.records).toEqual([{ n: 1 }, { type: 'void', n: 2 }]);
+    expect(read).toMatchObject({ corrupt: [], tornTail: 0, unterminated: true });
+
+    const journal = createJournal(file);
+    await journal.open();
+    expect(fs.readFileSync(file, 'utf8')).toBe(whole + '\n');
+    expect(journal.size).toBe(Buffer.byteLength(whole) + 1);
+    await journal.append({ n: 3 });
+    expect((await readJournal(file)).records).toEqual([{ n: 1 }, { type: 'void', n: 2 }, { n: 3 }]);
+  });
+
+  test('a last line cut inside its record is torn, even without its newline', async () => {
+    const line = encodeLine({ type: 'settle', n: 2 });
+    // Its closing brace and newline are missing: the checksum can't hold.
+    fs.writeFileSync(file, encodeLine({ n: 1 }) + line.slice(0, -2));
+    const read = await readJournal(file);
+    expect(read.records).toEqual([{ n: 1 }]);
+    expect(read).toMatchObject({ unterminated: false, tornTail: Buffer.byteLength(line) - 2 });
+  });
+
   test('a tail of zero bytes (size extended, data lost) is torn too', async () => {
     fs.writeFileSync(file, Buffer.concat([Buffer.from(encodeLine({ n: 1 })), Buffer.alloc(512)]));
     const read = await readJournal(file);
