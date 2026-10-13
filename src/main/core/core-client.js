@@ -61,6 +61,7 @@ const {
   FrameDecoder,
   FrameError,
   KIND_FRAGMENT,
+  KIND_JSON,
   KIND_LAST,
   MAX_MESSAGE,
   MAX_PAYLOAD,
@@ -190,6 +191,33 @@ class JsonParams {
   /** @param {string} json - one JSON value's text */
   constructor(json) {
     this.json = json;
+  }
+}
+
+/**
+ * A result already written as JSON: the parts of its text, in order, each
+ * an ASCII string or a Buffer of UTF-8 JSON. A reply carrying one is
+ * assembled straight into its frame's buffer, with no JSON.stringify of
+ * the whole, no measuring of its UTF-8 and no re-encode: for a large body
+ * (base64 of up to 18 MiB) those cost main's thread more than everything
+ * else in the reply. The text must be exactly what JSON.stringify of the
+ * result would write, and a string part must be ASCII (an escape-free
+ * base64 body, digits, punctuation), so its length is its size in bytes.
+ */
+class JsonText {
+  /** @param {Array<string|Buffer>} parts */
+  constructor(parts) {
+    this.parts = parts;
+    this.length = parts.reduce((bytes, part) => bytes + part.length, 0);
+  }
+
+  /** Writes the text into `buffer` from `offset`; returns where it ends. */
+  writeInto(buffer, offset) {
+    let at = offset;
+    for (const part of this.parts) {
+      at += typeof part === 'string' ? buffer.write(part, at, 'latin1') : part.copy(buffer, at);
+    }
+    return at;
   }
 }
 
@@ -1171,7 +1199,25 @@ class CoreClient extends EventEmitter {
     const { id } = message;
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     gen.incoming.get(id)?.abort();
+    this.replaceCancelledBulk(gen, id);
     return undefined;
+  }
+
+  /**
+   * A reply over one frame still waiting to begin, for a request the core
+   * has cancelled: the core drops whatever answers a cancelled request (its
+   * one terminal reply is still due), so `cancelled` goes in its place at
+   * once, one small frame, and the waiting reply's buffer and its pool
+   * charge go. A reply already begun is written to its end.
+   */
+  replaceCancelledBulk(gen, id) {
+    const at = gen.bulk.findIndex((reply) => reply.id === id);
+    if (at < 0) return;
+    const [reply] = gen.bulk.splice(at, 1);
+    reply.release();
+    if (!this.owes(gen, id, reply.controller)) return;
+    const error = shellError('cancelled');
+    this.writeReply(gen, id, reply.controller, encodeFrame({ type: 'response', id, error }));
   }
 
   /** Whether a reply is still owed and can be written: its entry is the
@@ -1203,6 +1249,10 @@ class CoreClient extends EventEmitter {
    */
   respond(gen, id, controller, outcome, lease = null) {
     if (!this.owes(gen, id, controller)) return;
+    if (outcome.result instanceof JsonText) {
+      this.respondText(gen, id, controller, outcome.result, lease);
+      return;
+    }
     // Serialized once, so a result's toJSON runs once and what is checked
     // is what is sent: a result JSON can't represent (a function, a symbol,
     // a toJSON returning nothing) leaves the bare envelope, and is internal
@@ -1235,6 +1285,52 @@ class CoreClient extends EventEmitter {
       } else {
         code = 'too_large';
       }
+    }
+    const error = shellError(code);
+    this.writeReply(gen, id, controller, encodeFrame({ type: 'response', id, error }));
+  }
+
+  /**
+   * `respond` for a result already written as JSON ({@link JsonText}): the
+   * same reply, byte for byte, as JSON.stringify of the envelope would make
+   * (`{"type":"response","id":…,"result":…}`), its size known without
+   * measuring, and the pool's rules unchanged. The handler's lease is
+   * released, then a reply of POOL_EXEMPT_BYTES or more is charged whole
+   * before its buffer is made, until it is written or dropped; past the
+   * pool it is `busy`, past one frame for a core that didn't offer
+   * fragments (or past the message cap) `too_large`.
+   */
+  respondText(gen, id, controller, text, lease) {
+    const head = `{"type":"response","id":${JSON.stringify(id)},"result":`;
+    const size = head.length + text.length + 1;
+    lease?.close();
+    let code = 'too_large';
+    const whole = size <= MAX_PAYLOAD;
+    // The core cancelled it before it was ready: as for one waiting to
+    // begin (`replaceCancelledBulk`), `cancelled` goes in its place, and no
+    // buffer is made.
+    if (!whole && controller.signal.aborted) {
+      code = 'cancelled';
+    } else if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
+      const release = this.hold(gen, size >= POOL_EXEMPT_BYTES ? size : 0);
+      if (release) {
+        const payload = Buffer.allocUnsafe(size);
+        const at = text.writeInto(payload, payload.write(head, 0, 'latin1'));
+        payload.write('}', at, 'latin1');
+        if (whole) {
+          this.writeReply(
+            gen,
+            id,
+            controller,
+            Buffer.concat([frameHeader(KIND_JSON, size), payload]),
+            release
+          );
+        } else {
+          this.queueBulk(gen, { id, controller, payload, release });
+        }
+        return;
+      }
+      code = 'busy';
     }
     const error = shellError(code);
     this.writeReply(gen, id, controller, encodeFrame({ type: 'response', id, error }));
@@ -1488,6 +1584,7 @@ module.exports = {
   CoreClient,
   CoreError,
   JsonParams,
+  JsonText,
   ShellError,
   SHELL_ERRORS,
   MAX_INCOMING,

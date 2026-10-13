@@ -1,4 +1,4 @@
-const { ShellError } = require('./core-client');
+const { JsonText, ShellError } = require('./core-client');
 const { makeHop } = require('./naming-shell');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { MAX_LOOKUPS } = require('../networks/blockscout-logs');
@@ -11,6 +11,17 @@ const {
   PAGE_BYTES,
 } = require('./chain-shell');
 const { BroadcastRecords } = require('./chain-broadcasts');
+
+/** A reply's text, as the core reads it: a result written as JSON text
+ * ({@link JsonText}) is its bytes. */
+function textOf(text) {
+  const bytes = Buffer.alloc(text.length);
+  text.writeInto(bytes, 0);
+  return bytes.toString('utf8');
+}
+
+/** A handler's result as the core reads it: parsed, if written as text. */
+const asParsed = (result) => (result instanceof JsonText ? JSON.parse(textOf(result)) : result);
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 
@@ -70,7 +81,9 @@ function setUp({ hop, lookup, charge = () => true, broadcasts } = {}) {
   const call = (method, params, signal = new AbortController().signal) => {
     const route = routes.find((r) => r.method === method);
     expect(route.options.when(params)).toBe(true);
-    return Promise.resolve().then(() => route.fn(params, { signal, charge }));
+    return Promise.resolve()
+      .then(() => route.fn(params, { signal, charge }))
+      .then(asParsed);
   };
   return { call, hop, lookup, routes, generations };
 }

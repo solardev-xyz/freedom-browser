@@ -8,6 +8,7 @@ const {
   CoreClient,
   CoreError,
   JsonParams,
+  JsonText,
   ShellError,
   scrubbedEnv,
   RESTART_DELAYS_MS,
@@ -1897,26 +1898,64 @@ describe('CoreClient', () => {
       expect(replies().map((r) => r.id)).toEqual([2, 1]);
     });
 
-    test('a cancel after begin, or while it waits for credit, changes nothing', async () => {
-      const { core, send, replies } = await served((c) => c.handle('shell.rpc', sized(2 * MIB)));
+    test('a cancel after begin changes nothing; one while it waits for credit answers cancelled in its place', async () => {
+      const { client, core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(2 * MIB))
+      );
       core.holdCredit = true;
       core.stuck = true;
       send({ id: 1, method: 'shell.rpc', params: {} });
       send({ id: 2, method: 'shell.rpc', params: {} });
       await settle();
-      // 1 has begun, 2 waits for the credit: the core cancels both.
+      const one = Buffer.byteLength(
+        JSON.stringify({ type: 'response', id: 1, result: { body: 'x'.repeat(2 * MIB) } })
+      );
+      expect(client.pool.held).toBe(2 * one);
+      // 1 has begun, 2 waits for the credit: the core cancels both. The
+      // core drops whatever answers a cancelled request, so 2's 2 MiB never
+      // goes: `cancelled` goes at once, and its charge with its buffer.
       core.reply({ type: 'cancel', id: 1 });
       core.reply({ type: 'cancel', id: 2 });
+      await settle();
+      expect(gen.bulk).toEqual([]);
+      expect(client.pool.held).toBe(one);
       core.release();
       await settle();
       core.holdCredit = false;
       core.returnCredit();
       await settle();
-      const body = { body: 'x'.repeat(2 * MIB) };
       expect(replies()).toEqual([
-        { type: 'response', id: 1, result: body },
-        { type: 'response', id: 2, result: body },
+        { type: 'response', id: 2, error: { code: 'cancelled', message: 'Cancelled' } },
+        { type: 'response', id: 1, result: { body: 'x'.repeat(2 * MIB) } },
       ]);
+      expect(wire(core).filter((kind) => kind === B)).toHaveLength(1);
+      expect(client.pool.held).toBe(0);
+      expect(gen.incoming.size).toBe(0);
+    });
+
+    test('a JSON text result the core cancelled before it was ready answers cancelled, with no buffer made', async () => {
+      const { bodyReply } = require('./chain-shell');
+      let finish;
+      const { client, core, send, replies } = await served((c) =>
+        c.handle(
+          'shell.rpc',
+          () =>
+            new Promise((resolve) => {
+              finish = () => resolve(bodyReply(200, Buffer.alloc(2 * MIB)));
+            })
+        )
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      core.reply({ type: 'cancel', id: 1 });
+      await settle();
+      finish();
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+      expect(wire(core).filter((kind) => kind === B)).toHaveLength(0);
+      expect(client.pool.held).toBe(0);
     });
 
     test("past main's pool, a reply is busy", async () => {
@@ -1963,6 +2002,160 @@ describe('CoreClient', () => {
         { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
       ]);
       expect(gen.sending).toBeNull();
+      expect(client.pool.held).toBe(0);
+    });
+
+    /** The replies main wrote, as their raw payload bytes by id: a whole
+     * frame's, or a fragmented reply's fragments joined. Frames are split
+     * here by their headers alone, so a whole frame's bytes stay as main
+     * wrote them. */
+    function rawReplies(core) {
+      const raw = new Map();
+      const write = core.stdin.write.bind(core.stdin);
+      let pending = Buffer.alloc(0);
+      let begun = null;
+      core.stdin.write = (chunk, ...rest) => {
+        pending = Buffer.concat([pending, Buffer.from(chunk)]);
+        while (pending.length >= 5 && pending.length >= 4 + pending.readUInt32BE(0)) {
+          const length = pending.readUInt32BE(0);
+          const kind = pending[4];
+          const payload = pending.subarray(5, 4 + length);
+          pending = pending.subarray(4 + length);
+          if (kind === KIND_JSON) {
+            const message = JSON.parse(payload.toString('utf8'));
+            if (message.type === 'response') raw.set(message.id, Buffer.from(payload));
+          } else if (kind === KIND_BEGIN) {
+            begun = { id: JSON.parse(payload.toString('utf8')).id, parts: [] };
+          } else if (kind === KIND_FRAGMENT || kind === KIND_LAST) {
+            begun.parts.push(Buffer.from(payload));
+            if (kind === KIND_LAST) raw.set(begun.id, Buffer.concat(begun.parts));
+          }
+        }
+        return write(chunk, ...rest);
+      };
+      return raw;
+    }
+
+    /** Deterministic bytes, every value among them. */
+    const bodyOf = (n) => {
+      const bytes = Buffer.allocUnsafe(n);
+      for (let i = 0; i < n; i++) bytes[i] = (i * 131 + 7) % 256;
+      return bytes;
+    };
+
+    test('a result written as JSON text is the reply JSON.stringify makes, byte for byte', async () => {
+      const { bodyReply } = require('./chain-shell');
+      // Body sizes around every boundary the reply crosses: base64's
+      // padding, the pool's exemption, one frame, and the message cap.
+      const envelope = (id, bytes) =>
+        Buffer.byteLength(`{"type":"response","id":${id},"result":{"status":200,"body":""}}`) +
+        4 * Math.ceil(bytes / 3);
+      const forSize = (id, size) => {
+        let bytes = Math.max(0, Math.floor(((size - envelope(id, 0)) * 3) / 4) - 3);
+        while (envelope(id, bytes + 1) <= size) bytes += 1;
+        return bytes;
+      };
+      const cases = [
+        { status: 200, bytes: 0 },
+        { status: 204, bytes: 0 },
+        { status: 200, bytes: 1 },
+        { status: 404, bytes: 2 },
+        { status: 429, bytes: 3 },
+        { status: 500, bytes: 4 },
+        { status: 599, bytes: 1000 },
+        {
+          status: 200,
+          bytes: 1000,
+          headers: { 'content-length': '1000', 'retry-after': String.fromCharCode(0xe9) },
+        },
+        { status: 200, bytes: forSize(9, POOL_EXEMPT_BYTES) - 1 },
+        { status: 200, bytes: forSize(10, POOL_EXEMPT_BYTES) },
+        { status: 200, bytes: forSize(11, MAX_PAYLOAD) },
+        { status: 200, bytes: forSize(12, MAX_PAYLOAD) + 1 },
+        { status: 200, bytes: forSize(13, MAX_MESSAGE) },
+      ];
+      const { core, send } = await served((c) => {
+        c.handle('shell.rpc', async ({ n }) => {
+          const { status, bytes, headers } = cases[n];
+          return bodyReply(status, bodyOf(bytes), headers);
+        });
+      });
+      const raw = rawReplies(core);
+      const ids = cases.map((_, n) => n + 1);
+      for (const [n, id] of ids.entries()) {
+        send({ id, method: 'shell.rpc', params: { n } });
+        await settle();
+      }
+      for (const [n, id] of ids.entries()) {
+        const { status, bytes, headers } = cases[n];
+        const result = {
+          status,
+          ...(headers ? { headers } : {}),
+          body: bodyOf(bytes).toString('base64'),
+        };
+        const expected = Buffer.from(JSON.stringify({ type: 'response', id, result }), 'utf8');
+        expect(raw.get(id)?.equals(expected)).toBe(true);
+      }
+      // The largest fits the message cap exactly or nearly; one 3-byte step
+      // more is past it.
+      expect(raw.get(13).length).toBeLessThanOrEqual(MAX_MESSAGE);
+      expect(envelope(13, cases[12].bytes + 3)).toBeGreaterThan(MAX_MESSAGE);
+    }, 30_000);
+
+    test('past the message cap, or to a core that took no fragments, a JSON text result is too_large', async () => {
+      const { bodyReply } = require('./chain-shell');
+      const over = new JsonText(['{"body":"', 'A'.repeat(MAX_MESSAGE), '"}']);
+      const offered = await served((c) => c.handle('shell.rpc', async () => over));
+      offered.send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      const refused = await served(
+        (c) => c.handle('shell.rpc', async () => bodyReply(200, bodyOf(2 * MIB))),
+        { offer: false }
+      );
+      refused.send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      for (const { replies, client } of [offered, refused]) {
+        expect(replies()).toEqual([
+          { type: 'response', id: 1, error: { code: 'too_large', message: 'Too large' } },
+        ]);
+        expect(client.pool.held).toBe(0);
+      }
+    });
+
+    test("a JSON text result keeps the pool's rules: its handler's charges until it is written as text, then the reply whole", async () => {
+      const { bodyReply } = require('./chain-shell');
+      const body = bodyOf(13 * MIB);
+      const charged = [];
+      const { client, core, gen, send, replies } = await served(
+        (c) =>
+          c.handle('shell.rpc', async (_params, { charge }) => {
+            // As an executor charges the body it read.
+            charged.push(charge(body.length), client.pool.held);
+            return bodyReply(200, body);
+          }),
+        { poolBytes: MAX_MESSAGE }
+      );
+      const size = Buffer.byteLength(
+        JSON.stringify({
+          type: 'response',
+          id: 1,
+          result: { status: 200, body: body.toString('base64') },
+        })
+      );
+      core.stallOn = KIND_LAST;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(charged).toEqual([true, body.length]);
+      // The body's charge went with the lease; the reply's buffer is
+      // charged whole while its last fragment is in flight.
+      expect(client.pool.held).toBe(size);
+      // A second one finds no room: busy, and nothing is made for it.
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(gen.bulk).toEqual([]);
+      core.release();
+      await settle();
+      expect(replies().map((r) => r.error?.code ?? 'result')).toEqual(['result', 'busy']);
       expect(client.pool.held).toBe(0);
     });
 
