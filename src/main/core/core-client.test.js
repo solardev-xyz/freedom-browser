@@ -37,7 +37,7 @@ class FakeCore extends EventEmitter {
     const decoder = new FrameDecoder();
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
-        for (const message of decoder.push(chunk)) {
+        for (const { message } of decoder.push(chunk)) {
           this.requests.push(message);
           handler(message, this);
         }
@@ -930,8 +930,8 @@ describe('CoreClient', () => {
         const { FrameDecoder, encodeFrame } = require(${JSON.stringify(require.resolve('./frame'))});
         const decoder = new FrameDecoder();
         process.stdin.on('data', (chunk) => {
-          for (const m of decoder.push(chunk)) {
-            if (m.method !== 'core.hello') continue;
+          for (const { message: m } of decoder.push(chunk)) {
+            if (m?.method !== 'core.hello') continue;
             const reply = { type: 'response', id: m.id,
               result: { protocol: 1, core_version: '0.0.0', capabilities: [] } };
             process.stdout.write(encodeFrame(reply), () => {

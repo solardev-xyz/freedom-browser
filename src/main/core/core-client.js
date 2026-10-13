@@ -29,7 +29,14 @@
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
-const { encodeFrame, encodeJsonFrame, FrameDecoder, FrameError, MAX_PAYLOAD } = require('./frame');
+const {
+  encodeFrame,
+  encodeJsonFrame,
+  FrameDecoder,
+  FrameError,
+  KIND_JSON,
+  MAX_PAYLOAD,
+} = require('./frame');
 
 const PROTOCOL_VERSION = 1;
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
@@ -805,17 +812,22 @@ class CoreClient extends EventEmitter {
   onStdout(gen, chunk) {
     // After a protocol fault nothing more from this child is trusted.
     if (gen.retired || gen.distrusted) return;
-    let messages;
+    let frames;
     try {
-      messages = gen.decoder.push(chunk);
+      frames = gen.decoder.push(chunk);
     } catch (err) {
       this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
       return;
     }
-    for (const message of messages) {
+    for (const frame of frames) {
       if (gen.retired || gen.distrusted) return;
+      // Main doesn't offer fragmented responses: whole messages only.
+      if (frame.kind !== KIND_JSON) {
+        this.protocolFault(gen, 'unknown_kind');
+        return;
+      }
       try {
-        this.onMessage(gen, message);
+        this.onMessage(gen, frame.message);
       } catch {
         this.protocolFault(gen, 'handler');
       }
