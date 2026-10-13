@@ -483,6 +483,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         const restore = backend.hooks.inflate('list_seeded_repos', 3 * MIB);
         const entered = [];
         const settle = [];
+        const values = [];
         const controllers = Array.from({ length: 7 }, () => new AbortController());
         try {
           const calls = controllers.map((controller, index) =>
@@ -490,8 +491,10 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
               .callScoped(
                 'list_seeded_repos',
                 {},
-                () =>
+                (value) =>
                   new Promise((resolve) => {
+                    // The scope keeps the value it was handed until it settles.
+                    values[index] = value;
                     entered.push(index);
                     settle[index] = resolve;
                   }),
@@ -502,14 +505,23 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
                 (err) => err.code
               )
           );
+          // Wait for the first result to be handed over (within the read
+          // deadline), then for admissions to stop.
+          await waitUntil(() => entered.length > 0, 60_000);
           await quiet(() => entered.length);
           const room = entered.length;
           const { held, limit } = backend.embedded.collectionBudget();
           expect(limit).toBe(16 * MIB);
           expect(held).toBeLessThanOrEqual(limit);
-          // The budget lets some in and holds the rest back.
+          // Each admitted scope holds a value of at least 3 MiB, and is
+          // charged at least that much: so at most five fit in 16 MiB, and
+          // at least one of the seven calls is still waiting after a release.
+          for (const index of entered) {
+            expect(JSON.stringify(values[index]).length).toBeGreaterThanOrEqual(3 * MIB);
+          }
+          expect(held).toBeGreaterThanOrEqual(room * 3 * MIB);
           expect(room).toBeGreaterThan(0);
-          expect(room).toBeLessThan(7);
+          expect(room).toBeLessThanOrEqual(Math.floor((16 * MIB) / (3 * MIB)));
 
           // An aborted scope keeps its reservation while its callback runs.
           const aborted = entered[0];
@@ -527,7 +539,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           await sleep(5500);
           for (const index of entered) settle[index]?.();
           const outcomes = await Promise.all(calls);
-          expect(outcomes.filter((outcome) => outcome === 'busy')).toHaveLength(7 - room - 1);
+          const busy = outcomes.filter((outcome) => outcome === 'busy');
+          expect(busy.length).toBeGreaterThanOrEqual(1);
+          expect(busy).toHaveLength(7 - room - 1);
           expect(backend.embedded.collectionBudget().held).toBe(0);
         } finally {
           for (const resolve of settle) resolve?.();
@@ -923,8 +937,9 @@ function progressEvent(envelope) {
 }
 
 /** Polls `predicate` until it holds, for up to 5 s. */
-async function waitUntil(predicate) {
-  for (let i = 0; i < 1000 && !predicate(); i++) {
+async function waitUntil(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   if (!predicate()) throw new Error('timed out waiting');
