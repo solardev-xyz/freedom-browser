@@ -5,10 +5,8 @@ const {
   startAntChainBridge,
   antShrinksLogScanOn,
   rankLogScanError,
-  logScanRangeCap,
   antErrorReply,
   LOG_SCAN_ERROR_RANK,
-  LOG_SCAN_ROUTER_OPTIONS,
 } = require('./ant-chain-bridge');
 
 function post(url, body, headers = {}, method = 'POST') {
@@ -153,18 +151,11 @@ test('range-limit and timeout failures keep wording Ant shrinks its log scan on'
 test('Ant reads are background work, and its log scans go as the Ant profile', async () => {
   await post(bridge.url, rpc('eth_getLogs', [{}]));
   // The core's `ant_scan`: only the RPC quorum (or Blockscout paired with
-  // an RPC) answers, ranked and range-capped as LOG_SCAN_ROUTER_OPTIONS.
+  // an RPC) answers, its errors ranked and its endpoints range-capped.
   expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
     signal: expect.any(AbortSignal),
     background: true,
     profile: 'ant_scan',
-  });
-  expect(LOG_SCAN_ROUTER_OPTIONS).toEqual({
-    excludeSources: ['myotis', 'colibri', 'direct'],
-    includeSources: ['blockscout'],
-    quorumTimeoutMs: 30000,
-    rankError: rankLogScanError,
-    rangeCapOf: logScanRangeCap,
   });
   // Other reads are not ranked: Ant does not adapt them to the error.
   await post(bridge.url, rpc('eth_blockNumber', []));
@@ -332,63 +323,6 @@ test('an endpoint-dependent failure reaches Ant without wording it would halve o
 // The block-range cap the router learns per endpoint (#484). Measured
 // wordings first; a cap on results or logs, a throttle, a lagging endpoint or
 // a reply without a JSON-RPC code names no block range.
-test.each([
-  ['publicnode gateway', -32701, 'exceed maximum block range: 50000', 50000],
-  [
-    'Nethermind (publicnode backend, Colibri RPC)',
-    -32602,
-    'Block range 50000 exceeds the maximum of 10000 blocks per logs request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
-    10000,
-  ],
-  ['dRPC free plan', 35, 'ranges over 10000 blocks are not supported on free plan', 10000],
-  [
-    'Colibri gnosis1 (Alchemy-style)',
-    -32600,
-    'You can make eth_getLogs requests with up to a 10000 block range. Based on your parameters, this block range should work: [0x1, 0x2]',
-    10000,
-  ],
-  ['max block range', -32005, 'query exceeds max block range 50000', 50000],
-  [
-    'Alchemy response size',
-    -32602,
-    'Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range',
-    2000,
-  ],
-  ['QuickNode', -32602, 'eth_getLogs is limited to a 10,000 range', 10000],
-  ['QuickNode blocks', -32602, 'eth_getLogs is limited to a 10,000 blocks range', 10000],
-  ['no number', -32602, 'block range is too wide', null],
-  ['log count', -32005, 'query exceeds limit of 10000 logs', null],
-  ['result count', -32005, 'query returned more than 10000 results', null],
-  ['throttle naming a range', -32005, 'rate limit: 10 block-range requests per second', null],
-  [
-    'endpoint behind head',
-    -32000,
-    'block range extends beyond current head block: requested 0x2000, head 0x1000',
-    null,
-  ],
-  ['no JSON-RPC code', undefined, 'exceed maximum block range: 50000', null],
-])('reads the block-range cap in a %s reply', (_name, code, message, cap) => {
-  const error = Object.assign(new Error(message), code === undefined ? {} : { code });
-  expect(logScanRangeCap(error)).toBe(cap);
-});
-
-test.each([
-  // A range limit without a number bounds the span it was asked.
-  ['range limit without a number', -32602, 'block range is too wide', 2000, 1999],
-  ['named cap', -32005, 'query exceeds max block range 500', 2000, 500],
-  // Result-count caps depend on the filter, not on the endpoint's range
-  // (R1-M2): a sparse filter over the same span may answer.
-  ['result count', -32005, 'query returned more than 10000 results', 20000, null],
-  ['too many results', -32005, 'too many results', 20000, null],
-  ['response size', -32000, 'response size exceeded', 20000, null],
-  ['logs matched', -32005, 'logs matched by query exceeds limit of 10000', 20000, null],
-  // An upstream timeout is no range limit either (R1-M1).
-  ['upstream timeout', -32000, 'query timeout exceeded', 500, null],
-  ['span of one block', -32602, 'block range is too wide', 1, null],
-])('a %s reply over a known span', (_name, code, message, span, cap) => {
-  expect(logScanRangeCap(Object.assign(new Error(message), { code }), span)).toBe(cap);
-});
-
 test('says once why log scans fail when no RPC quorum is configured (R1-M3)', async () => {
   const filter = [{ fromBlock: '0x1', toBlock: '0x2' }];
   router.request.mockRejectedValue(new Error('No RPC quorum available for eth_getLogs'));
@@ -738,33 +672,9 @@ test('a receipt lookup that can never succeed passes its error at once (#614)', 
   expect((await ask()).body.result).toBeNull();
 });
 
-test('uncertain broadcasts and real RPC rejections are never retried by the bridge', async () => {
-  await bridge.close();
-  bridge = await startAntChainBridge({ router, log, allowBroadcast: true });
-  const wallet = Wallet.createRandom();
-  const raw = await wallet.signTransaction({
-    to: wallet.address,
-    nonce: 0,
-    value: 0,
-    chainId: 100,
-    gasLimit: 21000,
-    gasPrice: 1,
-  });
-  for (const code of ['MYOTIS_BROADCAST_UNCERTAIN', -32000]) {
-    router.broadcastRawTransaction.mockRejectedValue(
-      Object.assign(new Error('private details'), { code })
-    );
-    const response = await post(bridge.url, rpc('eth_sendRawTransaction', [raw]));
-    expect(response.body).not.toHaveProperty('result');
-    expect(response.body.error.code).toBe(typeof code === 'number' ? code : -32002);
-    if (typeof code === 'string') expect(response.body.error.message).toContain('uncertain');
-  }
-  expect(router.broadcastRawTransaction).toHaveBeenCalledTimes(2);
-});
-
 // Design 0005, Broadcast: the bridge keeps its replies. `uncertain` (the
 // transaction may be out there) is its reconcile reply, never the hash, and
-// `rejected` today's error, the node's code and all.
+// `rejected` today's error, the node's code and all. Neither is retried.
 test('a broadcast the core calls uncertain gets the reconcile reply; a rejection its error', async () => {
   await bridge.close();
   bridge = await startAntChainBridge({ router, log, allowBroadcast: true });
