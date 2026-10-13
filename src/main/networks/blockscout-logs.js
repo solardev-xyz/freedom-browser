@@ -39,6 +39,7 @@
 
 const dns = require('node:dns');
 const net = require('node:net');
+const { isOnionHostname } = require('../ipfs/gateway-transport');
 
 const LOG_INDEX_URLS = Object.freeze({ 100: 'https://gnosis.blockscout.com/api' });
 // The token whose Transfer logs Ant scans: xBZZ on Gnosis.
@@ -390,6 +391,40 @@ async function resolvesToLocalAddress(hostname, { lookup, signal }) {
   return addresses.some((address) => !net.isIP(address) || isLocalHostname(address));
 }
 
+// Where a redirect from `current` to `location` (its Location header) goes,
+// checked before the hop is dialled: a parseable location, on https, and
+// off `origin` never to this machine or its LAN, by name or by what the name
+// resolves to. A `.onion` name is refused unresolved: it has no DNS answer,
+// and asking the system resolver would leak it. Throws BlockscoutError
+// naming the refusal; a lookup cut short by `signal` throws its own error.
+async function redirectTarget(location, current, origin, { lookup, signal }) {
+  if (!location) throw new BlockscoutError('redirected with no location');
+  let next;
+  try {
+    next = new URL(location, current);
+  } catch {
+    throw new BlockscoutError('redirected to a malformed location');
+  }
+  // A redirect must stay on https; checked before the hop is dialled.
+  if (next.protocol !== 'https:') throw new BlockscoutError('redirected off https');
+  // Off the configured origin, never to this machine or its LAN.
+  if (next.origin !== origin) {
+    if (isLocalHostname(next.hostname)) throw new BlockscoutError('redirected to a local host');
+    if (isOnionHostname(bareHost(next.hostname))) {
+      throw new BlockscoutError('redirected to a host that does not resolve');
+    }
+    let local;
+    try {
+      local = await resolvesToLocalAddress(next.hostname, { lookup, signal });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new BlockscoutError('redirected to a host that does not resolve');
+    }
+    if (local) throw new BlockscoutError('redirected to a local host');
+  }
+  return next;
+}
+
 // One page, within `deadline` (a Date.now() instant shared by every page and
 // redirect hop of a read, so the read as a whole stays inside `timeoutMs`).
 async function fetchPage(
@@ -431,34 +466,17 @@ async function fetchPage(
       }
       if (!REDIRECT_STATUSES.has(response.status)) break;
       response.body?.cancel?.().catch?.(() => {});
-      const location = response.headers?.get?.('location');
-      if (!location) throw new BlockscoutError('redirected with no location');
       let next;
       try {
-        next = new URL(location, current);
-      } catch {
-        throw new BlockscoutError('redirected to a malformed location');
-      }
-      // A redirect must stay on https; checked before the hop is dialled.
-      if (next.protocol !== 'https:') throw new BlockscoutError('redirected off https');
-      // Off the configured origin, never to this machine or its LAN.
-      if (next.origin !== origin) {
-        if (isLocalHostname(next.hostname)) throw new BlockscoutError('redirected to a local host');
-        let local;
-        try {
-          local = await resolvesToLocalAddress(next.hostname, {
-            lookup,
-            signal: controller.signal,
-          });
-        } catch {
-          signal?.throwIfAborted?.();
-          throw new BlockscoutError(
-            timedOut
-              ? `no answer within ${timeoutMs}ms`
-              : 'redirected to a host that does not resolve'
-          );
-        }
-        if (local) throw new BlockscoutError('redirected to a local host');
+        next = await redirectTarget(response.headers?.get?.('location'), current, origin, {
+          lookup,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err instanceof BlockscoutError) throw err;
+        // Its lookup was cut short: by the caller, or by the deadline.
+        signal?.throwIfAborted?.();
+        throw new BlockscoutError(`no answer within ${timeoutMs}ms`);
       }
       if (hop + 1 > MAX_REDIRECTS) throw new BlockscoutError('redirected too often');
       current = next.toString();
@@ -584,6 +602,8 @@ function logIndexHost(chainId) {
 module.exports = {
   BlockscoutError,
   BLOCKSCOUT_MAX_PAGES,
+  MAX_REDIRECTS,
+  REDIRECT_STATUSES,
   ERC20_TRANSFER_TOPIC,
   LOG_INDEX_TOKENS,
   LOG_INDEX_URLS,
@@ -596,6 +616,7 @@ module.exports = {
   logIndexFilter,
   logIndexHost,
   logsAgree,
+  redirectTarget,
   rpcTransfer,
   rpcTransferLogsWellFormed,
 };

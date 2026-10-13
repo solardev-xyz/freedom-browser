@@ -6,6 +6,7 @@ const {
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  isOk,
   MAX_ATTEMPTS,
   MAX_ABANDONED,
 } = require('./naming-shell');
@@ -184,6 +185,36 @@ describe("main's FetchRequest loop matches ethers'", () => {
     });
   }
 
+  test("chain data's plain policy: a 429 is the answer, redirects still followed", async () => {
+    let t = 0;
+    const answers = script([
+      { status: 302, headers: { location: 'https://b.rpc.example/' } },
+      { status: 429, headers: { 'retry-after': '7' }, body: 'slow down' },
+      { status: 200 },
+    ]);
+    const calls = [];
+    const response = await fetchLoop(START, BODY, {
+      hop: async (url, init) => {
+        const next = answers[calls.length];
+        calls.push({ url, read: init.read, max: init.max, charge: init.charge });
+        return { status: next.status, headers: next.headers, body: Buffer.from(next.body) };
+      },
+      allowed: () => true,
+      plain: true,
+      read: isOk,
+      max: 1000,
+      charge: () => true,
+      now: () => t,
+      wait: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(response.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([START, 'https://b.rpc.example/']);
+    expect(calls.every((c) => c.read === isOk && c.max === 1000 && c.charge)).toBe(true);
+    expect(t).toBe(0);
+  });
+
   test('a hop the endpoint policy refuses ends the exchange (deviation rpc-redirects)', async () => {
     const answers = script([
       { status: 302, headers: { location: 'https://10.0.0.1/' } },
@@ -225,6 +256,38 @@ describe('a hop', () => {
     expect(response.status).toBe(200);
     expect(response.headers['retry-after']).toBe('3');
     expect(response.body.toString()).toBe('abcd');
+  });
+
+  test('each chunk is charged as it is read; one past the pool is busy, and cancelled', async () => {
+    const charged = [];
+    const chunks = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(Buffer.from('ab')));
+        controller.enqueue(new Uint8Array(Buffer.from('cde')));
+        controller.close();
+      },
+    });
+    const hop = makeHop({ fetch: jest.fn(async () => new Response(chunks)) });
+    const charge = (bytes) => {
+      charged.push(bytes);
+      return true;
+    };
+    const response = await hop('https://a.example', { charge });
+    expect(response.body.toString()).toBe('abcde');
+    expect(charged).toEqual([2, 3]);
+    const { stream, state } = endless('x'.repeat(10));
+    const refusing = makeHop({ fetch: jest.fn(async () => new Response(stream)) });
+    await expect(refusing('https://a.example', { charge: () => false })).rejects.toMatchObject({
+      code: 'busy',
+    });
+    await tick();
+    expect(state.cancelled).toBe(true);
+  });
+
+  test('a browser-style opaque redirect, whose target is hidden, is refused', async () => {
+    const opaque = { type: 'opaqueredirect', status: 0, headers: new Headers(), body: null };
+    const hop = makeHop({ fetch: jest.fn(async () => opaque) });
+    await expect(hop('https://a.example', {})).rejects.toMatchObject({ code: 'refused' });
   });
 
   test('an answer over the cap is too_large', async () => {
@@ -365,10 +428,11 @@ describe('a hop', () => {
     await expect(
       makeHop({ fetch: fakeFetch({ fail: new Error('ECONNRESET') }) })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'network' });
+    // The onion gate refuses before the request exists: nothing was sent.
     const onion = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
     await expect(
       makeHop({ fetch: fakeFetch({ fail: onion }) })('https://a.onion', {})
-    ).rejects.toMatchObject({ code: 'refused' });
+    ).rejects.toMatchObject({ code: 'refused', unsent: true });
     await expect(
       makeHop({ fetch: fakeFetch({ hang: true }), inactivityMs: 5 })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'timeout' });

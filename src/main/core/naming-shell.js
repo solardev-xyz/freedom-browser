@@ -34,12 +34,21 @@ function isAbort(err) {
   return err?.name === 'AbortError';
 }
 
+/** A transport error raised before the hop's request existed: `unsent`
+ * says no byte of it left main (design 0005, `not_sent`). */
+function unsent(code) {
+  const err = new ShellError(code);
+  err.unsent = true;
+  return err;
+}
+
 /** A failed hop as a transport error: an onion name the session isn't
- * proxying is refused (never dialled); anything else is the network. */
+ * proxying is refused, before its request exists (never dialled); anything
+ * else is the network. */
 function hopError(err) {
   if (err instanceof ShellError) return err;
   const message = String(err?.message || '');
-  if (message.includes('.onion gateway')) return new ShellError('refused');
+  if (message.includes('.onion gateway')) return unsent('refused');
   return new ShellError('network');
 }
 
@@ -97,10 +106,13 @@ function unlessAborted(promise, signal) {
  * redirect taken). `read(status)` says whether the body is wanted: one that
  * isn't, as the references discard it, is cancelled unread and answered
  * empty. A body is read up to `max` bytes (a larger declared length is
- * refused unread); `inactivityMs` of silence ends the attempt as `timeout`.
- * Every wait settles as the request is cancelled or times out, even one the
- * transport can't abort (its proxy lookup): that work is abandoned, its late
- * response discarded, and bounded.
+ * refused unread), each chunk charged as it arrives (`charge(bytes)`, false
+ * past main's pool: `busy`); `inactivityMs` of silence ends the attempt as
+ * `timeout`. A redirect whose target is hidden (a browser-style opaque
+ * redirect) can't be checked, so it is refused. Every wait settles as the
+ * request is cancelled or times out, even one the transport can't abort
+ * (its proxy lookup): that work is abandoned, its late response discarded,
+ * and bounded.
  *
  * @returns {Promise<{status: number, headers: object, body: Buffer}>}
  */
@@ -108,9 +120,17 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
   let abandoned = 0;
   const hop = async (
     url,
-    { method = 'GET', headers, body, signal, max = ANSWER_BYTES, read = () => true }
+    {
+      method = 'GET',
+      headers,
+      body,
+      signal,
+      max = ANSWER_BYTES,
+      read = () => true,
+      charge = () => true,
+    }
   ) => {
-    if (abandoned >= MAX_ABANDONED) throw new ShellError('network');
+    if (abandoned >= MAX_ABANDONED) throw unsent('network');
     const idle = new AbortController();
     let timer = null;
     const touch = () => {
@@ -152,6 +172,10 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
       const responseHeaders = {};
       for (const [name, value] of response.headers) responseHeaders[name.toLowerCase()] = value;
       const discard = () => response.body?.cancel().catch(() => {});
+      if (response.type === 'opaqueredirect') {
+        discard();
+        throw new ShellError('refused');
+      }
       if (!read(response.status)) {
         discard();
         return { status: response.status, headers: responseHeaders, body: Buffer.alloc(0) };
@@ -175,6 +199,10 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
             if (size > max) {
               reader.cancel().catch(() => {});
               throw new ShellError('too_large');
+            }
+            if (!charge(next.value.byteLength)) {
+              reader.cancel().catch(() => {});
+              throw new ShellError('busy');
             }
             chunks.push(next.value);
           }
@@ -205,12 +233,18 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
  * Main adds one rule (deviation `rpc-redirects`): a hop the endpoint policy
  * refuses ends the exchange as `refused`.
  *
+ * `plain` is chain data's policy (design 0005, Transport): no back-off, so
+ * a 429 is the answer, as today's router has it; redirects are followed as
+ * above. `read`, `max` and `charge` go to each hop.
+ *
  * @param {string} url
  * @param {string} body - the JSON-RPC request
- * @param {object} deps - { hop, allowed, signal, now, random, wait }
+ * @param {object} deps - { hop, allowed, signal, plain, read, max, charge,
+ *   now, random, wait }
  */
 async function fetchLoop(url, body, deps) {
-  const { hop, allowed, signal, now = Date.now, random = Math.random, wait = sleep } = deps;
+  const { hop, allowed, signal, plain = false, read, max, charge } = deps;
+  const { now = Date.now, random = Math.random, wait = sleep } = deps;
   const expires = now() + EXCHANGE_MS;
   let last = { status: 0, headers: {}, body: Buffer.alloc(0) };
   let delay = 0;
@@ -224,6 +258,9 @@ async function fetchLoop(url, body, deps) {
       headers: { 'content-type': 'application/json' },
       body,
       signal,
+      read,
+      max,
+      charge,
     });
     if (REDIRECTS.has(response.status)) {
       const location = response.headers.location || '';
@@ -236,7 +273,7 @@ async function fetchLoop(url, body, deps) {
       last = response;
       continue;
     }
-    if (response.status === 429) {
+    if (response.status === 429 && !plain) {
       const retryAfter = response.headers['retry-after'];
       delay = SLOT_INTERVAL_MS * Math.trunc(random() * 2 ** attempt);
       if (typeof retryAfter === 'string' && /^[1-9][0-9]*$/.test(retryAfter)) {
@@ -438,6 +475,7 @@ module.exports = {
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  isOk,
   MAX_ATTEMPTS,
   SLOT_INTERVAL_MS,
   ANSWER_BYTES,
