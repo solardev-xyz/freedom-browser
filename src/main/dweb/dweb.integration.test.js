@@ -338,9 +338,17 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
   let rpc;
   let dials;
   let backend;
+  // What each case holds, released in afterEach whatever happened, so a
+  // failure stays in its case and nothing keeps Jest alive: the requests it
+  // started (aborted), the slots it took and the RPCs it held.
+  let lives;
+  let slots;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockAdmission = createFetchAdmission();
+    lives = [];
+    slots = [];
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-dweb-names-'));
     client = new CoreClient({
       spawn,
@@ -398,20 +406,39 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
     };
   });
   afterEach(async () => {
+    for (const life of lives) life.abort();
+    for (const slot of slots) slot.release();
+    for (const entry of rpc?.held || []) entry.release();
     await client?.stop();
+    mockAdmission = createFetchAdmission();
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const handle = (url, options = {}) =>
-    handleDwebRequest(new Request(url, options.signal ? { signal: options.signal } : {}), {
+  /** A request, which afterEach aborts if the case leaves it running. */
+  const handle = (url, options = {}) => {
+    const life = new AbortController();
+    lives.push(life);
+    const signal = options.signal ? AbortSignal.any([options.signal, life.signal]) : life.signal;
+    return handleDwebRequest(new Request(url, { signal }), {
       backend,
       partition: options.partition ?? null,
       tag: '[bzz-protocol]',
     });
-  const tick = () => new Promise((resolve) => setImmediate(resolve));
-  async function until(predicate) {
-    for (let turn = 0; turn < 2000 && !predicate(); turn++) await tick();
-    expect(predicate()).toBe(true);
+  };
+  /** A one-slot admission whose slot this case holds. */
+  async function holdTheOnlySlot() {
+    mockAdmission = createFetchAdmission({ maxActive: 1, maxWaiting: 1 });
+    const slot = await mockAdmission.acquire();
+    slots.push(slot);
+    return slot;
+  }
+  /** Waits, in wall-clock time, for daemon work main can only observe. */
+  async function until(predicate, what, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
   }
   const plansSent = (sent) => sent.mock.calls.filter(([, method]) => method === 'dweb.open');
 
@@ -422,19 +449,18 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
   });
 
   test("a private window's close during a re-plan held in its slot cancels it and frees the slot", async () => {
-    mockAdmission = createFetchAdmission({ maxActive: 1, maxWaiting: 1 });
-    const held = await mockAdmission.acquire();
+    const held = await holdTheOnlySlot();
     const sent = jest.spyOn(client, 'requestTo');
     const pending = runWithPrivateLogContext(true, () =>
       handle('bzz://site.eth/index.html', { partition: 'private-real' })
     );
-    await until(() => mockAdmission.stats().waiting === 1);
+    await until(() => mockAdmission.stats().waiting === 1, 'the plan to wait for its slot');
     // A provider reset while the plan waits: once admitted, it is overtaken.
     rpc.hash = OTHER_HASH;
     await config.configure({ reset: true });
     rpc.hold = true;
     held.release();
-    await until(() => rpc.held.length > 0);
+    await until(() => rpc.held.length > 0, "the lookup's RPCs");
     expect(plansSent(sent).map(([, , params]) => params.attempts_used)).toEqual([undefined, 1]);
     expect(plansSent(sent).map(([, , params]) => params.private)).toEqual([true, true]);
 
@@ -448,7 +474,7 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
     // The core was told: it detached the request and answered it (its
     // lookup's session runs on, as design 0004 has it, bounded by naming's
     // own deadline and admission).
-    await until(() => client.current.pending.size === 0);
+    await until(() => client.current.pending.size === 0, 'the core to answer the cancel');
     // Another session's fetch gets the slot.
     (await mockAdmission.acquire()).release();
     for (const entry of rpc.held) entry.release();
@@ -458,11 +484,11 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
     rpc.hold = true;
     const page = new AbortController();
     const pending = handle('bzz://cancel.eth/', { signal: page.signal });
-    await until(() => rpc.held.length > 0);
+    await until(() => rpc.held.length > 0, "the lookup's RPCs");
     page.abort();
     const res = await pending;
     expect(res.status).toBe(502);
-    await until(() => client.current.pending.size === 0);
+    await until(() => client.current.pending.size === 0, 'the core to answer the cancel');
     expect(dials).toHaveLength(0);
     expect(mockAdmission.stats().active).toBe(0);
   });
@@ -495,10 +521,9 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
   });
 
   test('a core that ended while the plan waited for its slot is a 503, never dialled', async () => {
-    mockAdmission = createFetchAdmission({ maxActive: 1, maxWaiting: 1 });
-    const held = await mockAdmission.acquire();
+    const held = await holdTheOnlySlot();
     const pending = handle('bzz://site.eth/index.html');
-    await until(() => mockAdmission.stats().waiting === 1);
+    await until(() => mockAdmission.stats().waiting === 1, 'the plan to wait for its slot');
     // Fenced off before its exit is delivered.
     client.end(client.current, 'protocol');
     held.release();
