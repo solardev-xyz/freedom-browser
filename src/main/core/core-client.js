@@ -23,6 +23,13 @@
  * exit can make the client ready or restart it, until `start()` is called
  * again after the stop completed.
  *
+ * **Fragmented responses** (design 0005, Frames): main's hello offers
+ * them, so a response of the core's over one frame, up to 32 MiB, comes as a
+ * begin, fragments and a last fragment. Its bytes are reserved at the begin,
+ * which must name a pending request while the core holds main's bulk credit.
+ * Main returns the credit (`0x13`) once the request's caller has the
+ * response. Every malformed sequence is a protocol fault.
+ *
  * **Logs** carry fixed categories and validated public fields only: never
  * request or response bodies, peer-supplied IDs, types or error text.
  */
@@ -30,12 +37,13 @@
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
 const {
+  encodeCredit,
   encodeFrame,
   encodeJsonFrame,
   FrameDecoder,
   FrameError,
-  KIND_JSON,
   MAX_PAYLOAD,
+  Reassembler,
 } = require('./frame');
 
 const PROTOCOL_VERSION = 1;
@@ -244,6 +252,9 @@ class Generation {
     this.nextId = 1;
     this.writeBytes = 0;
     this.decoder = new FrameDecoder();
+    // The core's fragmented responses: one at a time, while it holds main's
+    // bulk credit.
+    this.reassembler = new Reassembler();
     this.stderrText = new StringDecoder('utf8');
     this.stderrLine = '';
     this.stderrDropping = false;
@@ -490,6 +501,9 @@ class CoreClient extends EventEmitter {
         protocol: PROTOCOL_VERSION,
         shell_version: this.shellVersion,
         auto_lock_ms: this.autoLockMs,
+        // Main takes fragmented responses: the handshake grants the core
+        // main's bulk credit.
+        frames: ['fragment'],
       },
       { caller: 'shell' },
       { control: true, onReply: (outcome) => this.onHelloReply(gen, outcome) }
@@ -582,6 +596,8 @@ class CoreClient extends EventEmitter {
     for (const timer of gen.timers) this.clearTimer(timer);
     gen.timers.clear();
     this.teardown(gen);
+    // A response cut short by EOF is discarded with its reservation.
+    gen.reassembler.discard();
     // The core's requests die with it: their handlers stop, and their
     // replies have nowhere to go.
     this.fence(gen);
@@ -821,13 +837,23 @@ class CoreClient extends EventEmitter {
     }
     for (const frame of frames) {
       if (gen.retired || gen.distrusted) return;
-      // Main doesn't offer fragmented responses: whole messages only.
-      if (frame.kind !== KIND_JSON) {
-        this.protocolFault(gen, 'unknown_kind');
+      let delivery;
+      try {
+        // A begin must name a request still waiting for its response.
+        delivery = gen.reassembler.push(frame, (id) => gen.pending.has(id));
+      } catch (err) {
+        this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
         return;
       }
+      if (!delivery) continue;
       try {
-        this.onMessage(gen, frame.message);
+        if (delivery.type === 'message') {
+          this.onMessage(gen, delivery.message);
+        } else if (delivery.type === 'response') {
+          this.onFragmentedResponse(gen, delivery.id, delivery.message);
+        } else {
+          this.onCredit(gen);
+        }
       } catch {
         this.protocolFault(gen, 'handler');
       }
@@ -837,6 +863,9 @@ class CoreClient extends EventEmitter {
   onStdoutEnd(gen) {
     if (gen.retired) return;
     if (!gen.decoder.isAtBoundary()) this.log.warn('[Core] stdout closed in the middle of a frame');
+    if (gen.reassembler.inProgress()) {
+      this.log.warn('[Core] stdout closed in the middle of a fragmented response');
+    }
     // A live child that closes stdout can't answer any more.
     if (!gen.exited) this.connectionFailed(gen, 'stdout_closed');
   }
@@ -999,6 +1028,43 @@ class CoreClient extends EventEmitter {
     gen.pending.delete(id);
     entry.settle(outcome);
     return undefined;
+  }
+
+  /**
+   * A fragmented response, reassembled: it must be the response its begin
+   * named. Once its caller has it, the core's credit goes back, so it may
+   * begin another.
+   */
+  onFragmentedResponse(gen, id, message) {
+    if (!isObject(message) || message.type !== 'response' || message.id !== id) {
+      return this.protocolFault(gen, 'fragmented_not_its_response');
+    }
+    this.onResponse(gen, message);
+    if (!gen.distrusted) this.returnCredit(gen);
+    return undefined;
+  }
+
+  /**
+   * Returns the core's bulk credit (`0x13`), a control frame written at
+   * once. A generation that can no longer take it is going away, and the
+   * credit with it.
+   */
+  returnCredit(gen) {
+    if (gen.retired || gen.exited || gen.ending || gen.stdinEnded || !gen.child) return;
+    gen.reassembler.grant();
+    try {
+      gen.child.stdin.write(encodeCredit(), (err) => {
+        if (err) this.connectionFailed(gen, 'stdin_error');
+      });
+    } catch {
+      this.connectionFailed(gen, 'stdin_error');
+    }
+  }
+
+  /** The core returned a credit main never spent: main sends no fragmented
+   * replies. */
+  onCredit(gen) {
+    return this.protocolFault(gen, 'unsolicited_credit');
   }
 
   onEvent(gen, message) {
