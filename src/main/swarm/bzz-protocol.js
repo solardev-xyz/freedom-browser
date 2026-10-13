@@ -29,6 +29,7 @@ const { MODE, getAntApiUrl, getService } = require('../service-registry');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
+const { unlessAborted } = require('../lib/unless-aborted');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 
 // Chromium's network errors, read as the codes undici gives the same
@@ -46,6 +47,12 @@ function withChromiumCode(err) {
   return err;
 }
 
+// Remote Ant dials abandoned while their transport hadn't returned (a session
+// proxy lookup that ignores the abort): past this many, new ones fail at
+// once, as naming's abandoned hops do.
+const MAX_ABANDONED_DIALS = 64;
+let abandonedDials = 0;
+
 /**
  * Dials the Ant once.
  *
@@ -58,13 +65,36 @@ function withChromiumCode(err) {
  *   session's `webRequest` with no frame, where `ant-api-guard.js` cancels
  *   anything on the node's origin, so this exact URL is announced to the
  *   guard (`ant-api-main-dials.js`) and released once the dial settles.
+ *
+ * The remote dial is waited on only while the attempt lives: its header
+ * deadline, the page's abort or the session's close ends the wait at once,
+ * even while the session's proxy lookup ignores it. That work is abandoned:
+ * the transport refuses to dial an aborted request once the lookup returns,
+ * anything it still brings is discarded, and it is counted until it settles.
  */
 async function dialAnt(url, init, { session, fetchImpl }) {
   if (isLoopbackGatewayUrl(url)) return fetchImpl(url, init);
+  if (abandonedDials >= MAX_ABANDONED_DIALS) {
+    throw new Error('too many abandoned Ant dials');
+  }
   const release = announceMainProcessAntDial(url);
+  const dialling = Promise.resolve().then(() =>
+    netGatewayFetch(url, init, session ? { session } : {})
+  );
   try {
-    return await netGatewayFetch(url, init, session ? { session } : {});
+    return await unlessAborted(dialling, init.signal);
   } catch (err) {
+    if (init.signal.aborted) {
+      abandonedDials += 1;
+      dialling
+        .then(
+          (late) => late?.body?.cancel().catch(() => {}),
+          () => {}
+        )
+        .finally(() => {
+          abandonedDials -= 1;
+        });
+    }
     throw withChromiumCode(err);
   } finally {
     release();
@@ -201,4 +231,6 @@ module.exports = {
   registerBzzProtocol,
   handleBzzRequest,
   antBackend,
+  abandonedAntDials: () => abandonedDials,
+  MAX_ABANDONED_DIALS,
 };
