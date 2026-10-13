@@ -11,7 +11,11 @@
  *   itself: its id, chain, sender, nonce and the hash of the bytes. The
  *   handler builds what the confirmation must match from main's own record
  *   of the intent, never from fields the caller submits. Unlike a send, no
- *   request fields are taken at all.
+ *   request fields are taken at all. A refusal of any kind (a lapsed or
+ *   stale confirmation, a refused broadcast, a failed write) still says
+ *   where the intent stands: its current summary, so the chrome keeps
+ *   offering that payment, at that nonce, and never a new one. Only an
+ *   intent main doesn't know (`INTENT_UNKNOWN`) comes without one.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
  *   change.
  */
@@ -91,6 +95,22 @@ function intentFailure(err) {
   return fields;
 }
 
+/**
+ * Main's current word on an intent a request named: its id and summary
+ * (whose `state` says whether it is still held), or nothing for an intent
+ * main doesn't know.
+ */
+function currentIntent(intentId) {
+  if (typeof intentId !== 'string') return {};
+  try {
+    const view = getIntentStore().get(intentId);
+    return view ? { intentId: view.intentId, intent: intentSummary(view) } : {};
+  } catch {
+    // The records aren't loaded: no word either way.
+    return {};
+  }
+}
+
 async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
@@ -145,7 +165,12 @@ function registerIntentIpc({
       return { success: true, ...(await resendHeldIntent(intentId, authorization)) };
     } catch (err) {
       console.error('[WalletIPC] Sending a payment again failed:', err);
-      return { success: false, error: err.message, ...intentFailure(err) };
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
     }
   });
 
@@ -163,6 +188,7 @@ function registerIntentIpc({
 
 module.exports = {
   attentionOf,
+  currentIntent,
   intentFailure,
   intentSummary,
   registerIntentIpc,

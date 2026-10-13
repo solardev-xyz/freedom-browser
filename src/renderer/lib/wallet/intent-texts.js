@@ -56,6 +56,8 @@ export function attentionText(summary) {
 export const ACTIONS = Object.freeze({
   sendAgain: 'Send again',
   sendingAgain: 'Sending again…',
+  // A failed send's payment that is no longer held: nothing to send again.
+  close: 'Close',
 });
 
 /** Titles of the send screen's result views. */
