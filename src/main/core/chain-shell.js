@@ -16,6 +16,9 @@
  *   failure is mapped into the set (`chainHandler`).
  * - **Main's pool:** a body is charged as it is read; past the pool, the
  *   exchange is `busy`.
+ * - **Main's broadcast record:** an exchange that sends a raw transaction
+ *   marks the record of each broadcast of it in flight, as it starts
+ *   (chain-broadcasts.js).
  */
 
 const dns = require('node:dns');
@@ -162,16 +165,18 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
  * @param {object} config - main's chain configuration: `endpoint(ref)`, the
  *   `{ url, chainId }` behind a reference it knows (each names one chain's
  *   endpoint), and `generation(chainId)`, the chain's current generation
- * @param {object} [deps] - test seams: hop, lookup
+ * @param {object} [deps] - broadcasts: main's broadcast record
+ *   (chain-broadcasts.js); test seams: hop, lookup
  */
 function registerChainShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
+  const broadcasts = deps.broadcasts || null;
   // A redirect's DNS check (RPC and Blockscout): the lookups a cancel or a
   // deadline left running keep their slots until they settle.
   const lookup = boundLookups(deps.lookup || dns.promises.lookup);
-  // The URL behind a request's reference while the request runs under its
-  // chain's current generation (one main hasn't seen yet is newer, never
-  // stale); null otherwise.
+  // The endpoint behind a request's reference while the request runs under
+  // its chain's current generation (one main hasn't seen yet is newer,
+  // never stale); null otherwise.
   const current = (params) => {
     const endpoint = config.endpoint(params.endpoint);
     if (!endpoint) return null;
@@ -179,7 +184,7 @@ function registerChainShell(client, config, deps = {}) {
     if (!Number.isSafeInteger(generation) || generation < config.generation(endpoint.chainId)) {
       return null;
     }
-    return endpoint.url;
+    return endpoint;
   };
 
   // One exchange, as today's router makes it: no 429 back-off and no
@@ -188,12 +193,15 @@ function registerChainShell(client, config, deps = {}) {
   client.handle(
     'shell.rpc',
     chainHandler(async (params, { signal, charge }) => {
-      const url = current(params);
+      const endpoint = current(params);
+      const url = endpoint?.url;
       if (!url || signal.aborted || validateRpcUrl(url) !== null) return NOT_SENT;
       const max = answerCap(params.max_bytes, ANSWER_BYTES);
       if (params.policy !== 'plain' || typeof params.body !== 'string' || max === null) {
         throw new ShellError('refused');
       }
+      // From here the body may leave main.
+      broadcasts?.exchanging(endpoint.chainId, params.body);
       const origin = new URL(url).origin;
       let hops = 0;
       try {
@@ -225,7 +233,7 @@ function registerChainShell(client, config, deps = {}) {
   client.handle(
     'shell.blockscout',
     chainHandler(async (params, { signal, charge }) => {
-      const base = current(params);
+      const base = current(params)?.url;
       if (!base || signal.aborted) return NOT_SENT;
       const url = pageUrl(base, params.query);
       const max = answerCap(params.max_bytes, PAGE_BYTES);

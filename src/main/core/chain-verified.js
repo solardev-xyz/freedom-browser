@@ -18,7 +18,8 @@
  * read outcomes); Colibri's adds `capacity`, set exactly where the router's
  * isCapacityFailure holds, a revert's too. A reply over the message cap is `too_large`, and
  * one main's pool can't hold is `busy`. Naming's operations share the
- * per-verifier bound.
+ * per-verifier bound. A Myotis broadcast marks main's record of each
+ * broadcast of its bytes in flight as it starts (chain-broadcasts.js).
  */
 
 const { ShellError } = require('./core-client');
@@ -158,7 +159,7 @@ function defaultAdapters() {
  * adapters, and what its adapter's error answers. Anything malformed is
  * refused.
  */
-function operation(params, adapters) {
+function operation(params, adapters, broadcasts) {
   const read = typeof params.myotis === 'string' && MYOTIS_READS.get(params.myotis);
   if (read) {
     const call = params.myotis === 'call_tx' || params.myotis === 'estimate_tx';
@@ -186,6 +187,8 @@ function operation(params, adapters) {
     return {
       verifier: 'myotis',
       run: async () => {
+        // From here the bytes may leave main.
+        broadcasts?.sending(params.chain_id, params.raw, 'myotis');
         const hash = broadcastHash(await adapters.myotisBroadcast(params.raw, params.chain_id));
         return hash === undefined ? { uncertain: true } : { hash };
       },
@@ -244,11 +247,13 @@ function held(reply, charge) {
  * @param {object} config - main's chain configuration: `generation(chainId)`,
  *   the chain's current generation
  * @param {object} [deps] - running: the operations running per verifier,
- *   shared with naming's executor; test seam: adapters
+ *   shared with naming's executor; broadcasts: main's broadcast record
+ *   (chain-broadcasts.js); test seam: adapters
  */
 function registerChainVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
   const running = deps.running || { myotis: 0, colibri: 0 };
+  const broadcasts = deps.broadcasts || null;
 
   client.handle(
     'shell.verified',
@@ -261,7 +266,7 @@ function registerChainVerified(client, config, deps = {}) {
         return NOT_SENT;
       }
       if (signal.aborted) return NOT_SENT;
-      const { verifier, run, failed } = operation(params, adapters);
+      const { verifier, run, failed } = operation(params, adapters, broadcasts);
       if (running[verifier] >= MAX_PER_VERIFIER) return { failure: 'busy' };
       running[verifier] += 1;
       let reply;
