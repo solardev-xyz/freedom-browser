@@ -368,14 +368,16 @@ describe('handoffs and outcomes', () => {
     ).rejects.toMatchObject({ code: 'INTENT_INVALID' });
   });
 
-  test('handoffs per intent are bounded', async () => {
-    const { store } = await started({ limits: { handoffsPerIntent: 2 } });
+  test('open handoffs per intent are bounded; finished ones are not', async () => {
+    const { store } = await started({ limits: { openHandoffsPerIntent: 2 } });
     const intent = await commitNew(store, { nonce: 0 });
-    await store.handoff(intent.intentId);
+    const first = await store.handoff(intent.intentId);
     await store.handoff(intent.intentId);
     await expect(store.handoff(intent.intentId)).rejects.toMatchObject({
       code: 'INTENT_HANDOFF_LIMIT',
     });
+    await store.outcome({ intentId: intent.intentId, handoffId: first.handoffId, outcome: 'sent' });
+    await expect(store.handoff(intent.intentId)).resolves.toMatchObject({ hash: intent.hash });
   });
 });
 
@@ -415,8 +417,12 @@ describe('settle and void', () => {
     expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([2]);
     expect(store.held().map((intent) => intent.intentId)).toEqual([kept.intentId]);
     expect(store.get(paid.intentId)).toMatchObject({ state: 'settled', raw: null });
-    // Startup compaction left only the held intent's line.
-    expect((await records()).map((record) => record.intent_id)).toEqual([kept.intentId]);
+    // Startup compaction left tombstones of the settled ones, without bytes.
+    expect((await records()).map((record) => [record.type, record.intent_id])).toEqual([
+      ['tombstone', paid.intentId],
+      ['tombstone', taken.intentId],
+      ['held', kept.intentId],
+    ]);
     expect(fs.readFileSync(filePath(), 'utf8')).not.toContain(paid.raw.slice(2));
   });
 
@@ -440,7 +446,10 @@ describe('settle and void', () => {
     const { store } = await started();
     expect(store.get(voided.intentId)).toMatchObject({ state: 'voided', raw: null });
     expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
-    expect(await records()).toEqual([]);
+    expect(await records()).toEqual([
+      expect.objectContaining({ type: 'tombstone', intent_id: voided.intentId, closed: 'voided' }),
+    ]);
+    expect(fs.readFileSync(filePath(), 'utf8')).not.toContain(voided.raw.slice(2));
   });
 
   test("voiding needs the account's lock token", async () => {
@@ -515,11 +524,12 @@ describe('settle and void', () => {
     // Main dies before the reply is recorded.
 
     const { store, reservations } = await started();
-    // That handoff's outcome can't be recorded by a later run: it stays
-    // possibly sent.
+    // That handoff's outcome can't be recorded by a later run: it was folded
+    // into the summary as possibly sent.
     await expect(
       store.outcome({ intentId: intent.intentId, handoffId: lost.handoffId, outcome: 'not_sent' })
-    ).rejects.toMatchObject({ message: expect.stringContaining('earlier run of main') });
+    ).rejects.toMatchObject({ message: expect.stringContaining('unknown handoff') });
+    expect(store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: true });
     // Sent again in this run, and that one provably wasn't sent.
     await sendNotSent(store, intent.intentId);
 
@@ -623,8 +633,9 @@ describe('settle and void', () => {
     await underLock(reservations, intent, (lock) => store.void(intent.intentId, lock));
 
     expect(await reservations.reserve(account, async (nonce) => nonce)).toBe(7);
-    // The voided intent's bytes are gone from the file too.
-    expect(await records()).toEqual([]);
+    // The voided intent's bytes are gone from the file too: a tombstone stays.
+    expect((await records()).map((record) => record.type)).toEqual(['tombstone']);
+    expect(fs.readFileSync(filePath(), 'utf8')).not.toContain(intent.raw.slice(2));
   });
 });
 
@@ -771,23 +782,28 @@ describe('bounds', () => {
     await expect(commitNew(store, { nonce: 32 })).resolves.toMatchObject({ nonce: 32 });
   });
 
-  test('a commit past the byte cap is refused, after compaction has tried to make room', async () => {
-    // Room for two commit lines of about 900 bytes, not three.
-    const { store } = await started({ limits: { journalBytes: 2000 } });
+  test('a new intent past the budget is refused, after compaction has tried to make room', async () => {
+    // One small intent's budget, measured.
+    const scratch = await started();
+    await commitNew(scratch.store, { nonce: 0 });
+    const perIntent = scratch.store.usage().budget;
+    fs.rmSync(filePath());
+
+    // Room for two intents' budgets, not three.
+    const { store } = await started({ limits: { journalBytes: Math.floor(perIntent * 2.5) } });
     const first = await commitNew(store, { nonce: 0 });
     await commitNew(store, { nonce: 1 });
     const size = fs.statSync(filePath()).size;
-    expect(size).toBeGreaterThan(1500);
     await expect(commitNew(store, { nonce: 2 })).rejects.toMatchObject({
       code: 'INTENT_STORE_FULL',
       message: expect.stringContaining('are full'),
     });
     expect(fs.statSync(filePath()).size).toBe(size);
 
-    // Settling one frees its lines at the next compaction, which the commit triggers.
+    // Settling one turns its budget into a tombstone's: room for one more.
     await store.settle({ intentId: first.intentId, label: 'paid', hash: first.hash, block: 1 });
     await expect(commitNew(store, { nonce: 2 })).resolves.toMatchObject({ nonce: 2 });
-    expect((await records()).filter((record) => record.type === 'commit')).toHaveLength(2);
+    expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(Math.floor(perIntent * 2.5));
   });
 
   test('a transaction too large for any txpool is refused', async () => {
@@ -832,5 +848,547 @@ describe('separate from payment history', () => {
       const source = fs.readFileSync(path.join(__dirname, file), 'utf8');
       expect(source).not.toMatch(/wallet-intents|intent-store/);
     }
+  });
+});
+
+describe('review fixes (#702)', () => {
+  const EIO = () => Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+  const voidUnderLock = (running, intent) =>
+    underLock(running.reservations, intent, (lock) => running.store.void(intent.intentId, lock));
+
+  describe('702-M1, durability HIGH: closed is final, across reloads and compactions', () => {
+    test.each(['voided', 'settled'])('a %s id is never committed or sent again', async (closed) => {
+      let running = await started();
+      const intent = await commitNew(running.store, { nonce: 7 });
+      if (closed === 'voided') {
+        await voidUnderLock(running, intent);
+      } else {
+        await running.store.settle({
+          intentId: intent.intentId,
+          label: 'paid',
+          hash: intent.hash,
+          block: 1,
+        });
+      }
+      await running.store.compact();
+      const elsewhere = await sign({ nonce: 8 });
+      const bump = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+
+      for (let restart = 0; restart < 3; restart += 1) {
+        running = await started();
+        await running.store.compact();
+        expect(running.store.quarantined).toBeNull();
+        expect(running.store.get(intent.intentId)).toMatchObject({ state: closed, raw: null });
+        // The reviewer's probe: the same id as a new original at another nonce.
+        await expect(
+          running.store.commit({
+            intentId: intent.intentId,
+            chainId: CHAIN,
+            sender: ALICE.address,
+            nonce: 8,
+            ...elsewhere,
+            via: 'original',
+            context: { kind: 'wallet-send' },
+          })
+        ).rejects.toMatchObject({
+          code: 'INTENT_INVALID',
+          message: expect.stringContaining('already committed'),
+        });
+        await expect(
+          running.store.commit({
+            intentId: intent.intentId,
+            chainId: CHAIN,
+            sender: ALICE.address,
+            nonce: 7,
+            ...bump,
+            via: 'replacement',
+          })
+        ).rejects.toMatchObject({ code: 'INTENT_NOT_HELD' });
+        await expect(running.store.handoff(intent.intentId)).rejects.toMatchObject({
+          code: 'INTENT_NOT_HELD',
+        });
+      }
+      expect(await records()).toEqual([
+        expect.objectContaining({ type: 'tombstone', intent_id: intent.intentId, closed }),
+      ]);
+    });
+
+    test('a late outcome after settlement and compaction is ignored, and the file stays sound', async () => {
+      // The durability review's probe.
+      const first = await started();
+      const a = await commitNew(first.store, { nonce: 0 });
+      const handoff = await first.store.handoff(a.intentId);
+      await first.store.settle({ intentId: a.intentId, label: 'paid', hash: a.hash, block: 10 });
+      await first.store.compact();
+      const b = await commitNew(first.store, { nonce: 1 });
+      const before = fs.readFileSync(filePath());
+
+      await expect(
+        first.store.outcome({ intentId: a.intentId, handoffId: handoff.handoffId, outcome: 'sent' })
+      ).resolves.toMatchObject({ state: 'settled' });
+      expect(fs.readFileSync(filePath())).toEqual(before);
+
+      const { store } = await started();
+      expect(store.quarantined).toBeNull();
+      expect(store.held().map((intent) => intent.intentId)).toEqual([b.intentId]);
+    });
+
+    test('a late outcome before compaction is ignored too', async () => {
+      const first = await started();
+      const a = await commitNew(first.store, { nonce: 0 });
+      const handoff = await first.store.handoff(a.intentId);
+      await first.store.settle({ intentId: a.intentId, label: 'paid', hash: a.hash, block: 10 });
+      await first.store.outcome({
+        intentId: a.intentId,
+        handoffId: handoff.handoffId,
+        outcome: 'sent',
+      });
+      expect((await records()).map((record) => record.type)).toEqual([
+        'commit',
+        'handoff',
+        'settle',
+      ]);
+      const { store } = await started();
+      expect(store.quarantined).toBeNull();
+    });
+  });
+
+  describe('702-M2: a whole last record whose newline was lost', () => {
+    test.each(['void', 'settle'])(
+      'a terminal %s still closes the intent on reload',
+      async (kind) => {
+        const first = await started();
+        const intent = await commitNew(first.store, { nonce: 7 });
+        if (kind === 'void') {
+          // Its compaction fails, so the void line stays the file's last.
+          jest.spyOn(require('fs/promises'), 'rename').mockRejectedValueOnce(EIO());
+          await voidUnderLock(first, intent);
+        } else {
+          await first.store.settle({
+            intentId: intent.intentId,
+            label: 'taken',
+            hash: null,
+            block: 3,
+          });
+        }
+        const bytes = fs.readFileSync(filePath());
+        expect((await records()).at(-1).type).toBe(kind);
+        fs.writeFileSync(filePath(), bytes.subarray(0, bytes.length - 1));
+
+        const { store } = await started();
+        expect(store.quarantined).toBeNull();
+        expect(store.get(intent.intentId)).toMatchObject({
+          state: kind === 'void' ? 'voided' : 'settled',
+          raw: null,
+        });
+        await expect(store.handoff(intent.intentId)).rejects.toMatchObject({
+          code: 'INTENT_NOT_HELD',
+        });
+      }
+    );
+  });
+
+  describe('702-M3, durability MEDIUM: the file never outgrows what the reader takes', () => {
+    test('64 handoffs of one intent keep the file within journalBytes, and it reloads', async () => {
+      // The durability review's probe, at production's ratio of the bounds.
+      const limits = { journalBytes: 6000, readBytes: 48000 };
+      const first = await started({ limits });
+      const intent = await commitNew(first.store, { nonce: 0 });
+      for (let n = 0; n < 64; n += 1) {
+        await sendNotSent(first.store, intent.intentId);
+        expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
+      }
+
+      const { store } = await started({ limits });
+      expect(store.quarantined).toBeNull();
+      expect(store.get(intent.intentId)).toMatchObject({ state: 'held', handoffCount: 64 });
+    });
+
+    test('a bound too small for an intent refuses the intent, and loses nothing', async () => {
+      // The safety review's scaled limits: no room for even one intent's budget.
+      const limits = { journalBytes: 2000, readBytes: 4000 };
+      const { store } = await started({ limits });
+      await expect(commitNew(store, { nonce: 7 })).rejects.toMatchObject({
+        code: 'INTENT_STORE_FULL',
+      });
+      expect(fs.existsSync(filePath())).toBe(false);
+    });
+
+    test('random operations keep the file within journalBytes, and every reload is clean', async () => {
+      // Deterministic pseudo-random walk over commits, sends, outcomes,
+      // replacements, settlements, voids and restarts, at a bound tight
+      // enough to make compaction and refusals happen often.
+      let seed = 702;
+      const random = () => {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        return seed / 2147483648;
+      };
+      const limits = { journalBytes: 24000, readBytes: 192000 };
+      const signers = [ALICE, BOB];
+      const nextNonce = new Map(signers.map((signer) => [signer.address, 0]));
+      const open = new Map();
+      let running = await started({ limits });
+      let refused = 0;
+
+      for (let step = 0; step < 220; step += 1) {
+        const held = running.store.held();
+        const pick = random();
+        const intent = held.length ? held[Math.floor(random() * held.length)] : null;
+        try {
+          if (pick < 0.3 || !intent) {
+            const signer = signers[Math.floor(random() * signers.length)];
+            const nonce = nextNonce.get(signer.address);
+            await commitNew(running.store, { nonce, signer });
+            nextNonce.set(signer.address, nonce + 1);
+          } else if (pick < 0.65) {
+            const handoff = await running.store.handoff(intent.intentId);
+            if (random() < 0.85) {
+              const outcomes = ['sent', 'uncertain', 'rejected', 'not_sent'];
+              await running.store.outcome({
+                intentId: intent.intentId,
+                handoffId: handoff.handoffId,
+                outcome: outcomes[Math.floor(random() * outcomes.length)],
+              });
+            } else {
+              open.set(handoff.handoffId, intent.intentId);
+            }
+          } else if (pick < 0.72) {
+            const signer = signers.find((s) => s.address.toLowerCase() === intent.sender);
+            const bump = await sign({
+              nonce: intent.nonce,
+              signer,
+              maxFeePerGas: BigInt(3_000_000_000 + step),
+            });
+            await running.store.commit({
+              intentId: intent.intentId,
+              chainId: CHAIN,
+              sender: intent.sender,
+              nonce: intent.nonce,
+              ...bump,
+              via: 'replacement',
+            });
+          } else if (pick < 0.85) {
+            await running.store.settle({
+              intentId: intent.intentId,
+              label: 'taken',
+              hash: null,
+              block: step,
+            });
+          } else if (pick < 0.93) {
+            await voidUnderLock(running, intent);
+          } else {
+            running = await started({ limits });
+            expect(running.store.quarantined).toBeNull();
+            open.clear();
+          }
+        } catch (error) {
+          expect(error.code).toMatch(
+            /^INTENT_(STORE_FULL|VOID_REFUSED|REPLACEMENT_LIMIT|HANDOFF_LIMIT|ACCOUNT_LIMIT)$/
+          );
+          refused += 1;
+        }
+        if (fs.existsSync(filePath())) {
+          expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
+        }
+      }
+      expect(refused).toBeGreaterThan(0);
+      const { store } = await started({ limits });
+      expect(store.quarantined).toBeNull();
+    });
+
+    test('the arithmetic: the reader cap is above anything the store can write', () => {
+      const { mod } = start();
+      const { LIMITS, LINE_MAX } = mod;
+      // The file never exceeds journalBytes (`budget` in intent-store.js).
+      // Even a file written under other bounds, at journalBytes, can only
+      // grow by the lines still owed to it before its first compaction.
+      const owedMax =
+        LIMITS.held * (LINE_MAX.terminal + LIMITS.openHandoffsPerIntent * LINE_MAX.outcome);
+      expect(LIMITS.journalBytes + owedMax).toBeLessThan(LIMITS.readBytes);
+      // 256 × (403 + 8 × 686) = 1,508,096 bytes: 8 MiB + 1.44 MiB < 16 MiB.
+      expect(LINE_MAX).toEqual({ handoff: 442, outcome: 686, terminal: 403 });
+      expect(owedMax).toBe(1_508_096);
+    });
+  });
+
+  describe('702-M4: no lifetime cap strands a nonce', () => {
+    test('64 not_sent handoffs and a restart: send again and a replacement still work', async () => {
+      // The safety review's probe.
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 7 });
+      for (let n = 0; n < 64; n += 1) await sendNotSent(first.store, intent.intentId);
+
+      const running = await started();
+      expect(running.store.get(intent.intentId)).toMatchObject({
+        recovered: true,
+        handoffCount: 64,
+        possiblySent: false,
+      });
+      await expect(running.store.handoff(intent.intentId)).resolves.toMatchObject({
+        raw: intent.raw,
+      });
+      await expect(voidUnderLock(running, intent)).rejects.toMatchObject({
+        code: 'INTENT_VOID_REFUSED',
+      });
+      const bump = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+      await running.store.commit({
+        intentId: intent.intentId,
+        chainId: CHAIN,
+        sender: ALICE.address,
+        nonce: 7,
+        ...bump,
+        via: 'replacement',
+      });
+      await expect(running.store.handoff(intent.intentId)).resolves.toMatchObject({
+        hash: bump.hash,
+        raw: bump.raw,
+      });
+    });
+
+    test('replacements per intent are bounded', async () => {
+      const { store } = await started({ limits: { hashesPerIntent: 2 } });
+      const intent = await commitNew(store, { nonce: 0 });
+      const replace = async (fee) =>
+        store.commit({
+          intentId: intent.intentId,
+          chainId: CHAIN,
+          sender: ALICE.address,
+          nonce: 0,
+          ...(await sign({ nonce: 0, maxFeePerGas: fee })),
+          via: 'replacement',
+        });
+      await replace(3_000_000_000n);
+      await expect(replace(4_000_000_000n)).rejects.toMatchObject({
+        code: 'INTENT_REPLACEMENT_LIMIT',
+      });
+    });
+  });
+
+  describe('702-M5: reload recovers the signer', () => {
+    test('bytes signed by another account than the record names quarantine the file', async () => {
+      // The safety review's probe.
+      const first = await started();
+      await commitNew(first.store, { nonce: 7 });
+      const [commit] = await records();
+      fs.writeFileSync(filePath(), encodeLine({ ...commit, sender: BOB.address.toLowerCase() }));
+
+      const { store } = await started();
+      expect(store.quarantined.reason).toContain('not signed by its sender');
+      expect(store.held()).toEqual([]);
+    });
+
+    test('so do they in a snapshot', async () => {
+      const first = await started();
+      await commitNew(first.store, { nonce: 7 });
+      await started(); // compacts the commit into a snapshot
+      const [held] = await records();
+      expect(held.type).toBe('held');
+      fs.writeFileSync(filePath(), encodeLine({ ...held, sender: BOB.address.toLowerCase() }));
+
+      const { store } = await started();
+      expect(store.quarantined.reason).toContain('not signed by its sender');
+    });
+  });
+
+  describe('702-M6: replay applies the live cross-intent rules', () => {
+    test('two originals at one nonce of one account quarantine the file', async () => {
+      // The safety review's probe.
+      const first = await started();
+      await commitNew(first.store, { nonce: 7 });
+      const [commit] = await records();
+      const other = await sign({ nonce: 7, value: 2n });
+      fs.appendFileSync(
+        filePath(),
+        encodeLine({
+          ...commit,
+          ...other,
+          raw: other.raw.toLowerCase(),
+          fields: { ...commit.fields, value: '2' },
+          intent_id: 'another-intent-0001',
+        })
+      );
+
+      const { store } = await started();
+      expect(store.quarantined.reason).toContain("not above the account's held nonce 7");
+      expect(store.held()).toEqual([]);
+    });
+
+    test('two held intents with one key quarantine the file', async () => {
+      const first = await started();
+      await commitNew(first.store, { nonce: 7, key: 'safe-exec:100:0xabc' });
+      const [commit] = await records();
+      const other = await sign({ nonce: 8 });
+      fs.appendFileSync(
+        filePath(),
+        encodeLine({
+          ...commit,
+          ...other,
+          raw: other.raw.toLowerCase(),
+          nonce: 8,
+          intent_id: 'another-intent-0002',
+        })
+      );
+
+      const { store } = await started();
+      expect(store.quarantined.reason).toContain('same key');
+    });
+
+    test.each(['void', 'settle'])(
+      'a %s, then a new intent at the same nonce, is a valid history',
+      async (kind) => {
+        const first = await started();
+        const a = await commitNew(first.store, { nonce: 7, key: 'safe-deploy:100:0xabc' });
+        if (kind === 'void') {
+          jest.spyOn(require('fs/promises'), 'rename').mockRejectedValueOnce(EIO());
+          await voidUnderLock(first, a);
+        } else {
+          await first.store.settle({
+            intentId: a.intentId,
+            label: 'failed',
+            hash: a.hash,
+            block: 9,
+          });
+        }
+        const c = await commitNew(first.store, {
+          nonce: 7,
+          value: 5n,
+          key: 'safe-deploy:100:0xabc',
+        });
+        expect((await records()).map((record) => record.type)).toEqual(['commit', kind, 'commit']);
+
+        // The whole history, then its compacted form.
+        for (let restart = 0; restart < 2; restart += 1) {
+          const { store } = await started();
+          expect(store.quarantined).toBeNull();
+          expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
+          expect(store.get(c.intentId).state).toBe('held');
+          expect(store.get(a.intentId).state).toBe(kind === 'void' ? 'voided' : 'settled');
+          expect(store.byKey('safe-deploy:100:0xabc').intentId).toBe(c.intentId);
+        }
+      }
+    );
+  });
+
+  describe('bounds', () => {
+    test('held intents are bounded in all, across accounts', async () => {
+      const { store } = await started({ limits: { held: 3 } });
+      await commitNew(store, { nonce: 0 });
+      await commitNew(store, { nonce: 1 });
+      await commitNew(store, { nonce: 0, signer: BOB });
+      await expect(commitNew(store, { nonce: 1, signer: BOB })).rejects.toMatchObject({
+        code: 'INTENT_STORE_LIMIT',
+      });
+    });
+
+    test('the newest tombstones are kept; an older id is forgotten, and nothing can be sent for it', async () => {
+      const first = await started({ limits: { tombstones: 2 } });
+      const closed = [];
+      for (let nonce = 0; nonce < 3; nonce += 1) {
+        const intent = await commitNew(first.store, { nonce });
+        await first.store.settle({
+          intentId: intent.intentId,
+          label: 'taken',
+          hash: null,
+          block: nonce,
+        });
+        closed.push(intent);
+      }
+      await first.store.compact();
+      expect((await records()).map((record) => record.intent_id)).toEqual([
+        closed[1].intentId,
+        closed[2].intentId,
+      ]);
+
+      const { store } = await started({ limits: { tombstones: 2 } });
+      expect(store.get(closed[0].intentId)).toBeNull();
+      expect(store.get(closed[2].intentId)).toMatchObject({ state: 'settled' });
+      await expect(store.handoff(closed[0].intentId)).rejects.toMatchObject({
+        code: 'INTENT_UNKNOWN',
+      });
+    });
+  });
+
+  describe('snapshots', () => {
+    test('a held intent compacts to one line: its latest bytes, every hash, a handoff summary', async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 3 });
+      const bump = await sign({ nonce: 3, maxFeePerGas: 3_000_000_000n });
+      await first.store.commit({
+        intentId: intent.intentId,
+        chainId: CHAIN,
+        sender: ALICE.address,
+        nonce: 3,
+        ...bump,
+        via: 'replacement',
+      });
+      await sendNotSent(first.store, intent.intentId);
+      const sent = await first.store.handoff(intent.intentId);
+      await first.store.outcome({
+        intentId: intent.intentId,
+        handoffId: sent.handoffId,
+        outcome: 'sent',
+      });
+      await first.store.handoff(intent.intentId); // open when this run ends
+
+      const second = await started();
+      const [held] = await records();
+      expect(held).toMatchObject({
+        type: 'held',
+        intent_id: intent.intentId,
+        hash: bump.hash,
+        raw: bump.raw.toLowerCase(),
+        hashes: [
+          expect.objectContaining({ hash: intent.hash, via: 'original' }),
+          expect.objectContaining({ hash: bump.hash, via: 'replacement' }),
+        ],
+        handoffs: { count: 3, possibly_sent: true },
+      });
+      expect(await records()).toHaveLength(1);
+      expect(second.store.get(intent.intentId)).toMatchObject({
+        raw: bump.raw.toLowerCase(),
+        hashes: [{ raw: null }, { raw: bump.raw.toLowerCase() }],
+        handoffCount: 3,
+        possiblySent: true,
+      });
+      await expect(second.store.handoff(intent.intentId, intent.hash)).rejects.toMatchObject({
+        message: expect.stringContaining('no longer kept'),
+      });
+
+      // Already compact: a restart leaves the file as it is.
+      const bytes = fs.readFileSync(filePath());
+      await started();
+      expect(fs.readFileSync(filePath())).toEqual(bytes);
+    });
+
+    test("a compaction mid-run keeps this run's open handoffs, so their outcomes replay", async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 0 });
+      const handoff = await first.store.handoff(intent.intentId);
+      await first.store.compact();
+      expect((await records()).map((record) => record.type)).toEqual(['held', 'handoff']);
+      await first.store.outcome({
+        intentId: intent.intentId,
+        handoffId: handoff.handoffId,
+        outcome: 'not_sent',
+      });
+
+      const { store } = await started();
+      expect(store.quarantined).toBeNull();
+      expect(store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: false });
+    });
+
+    test('a void after a compaction mid-run replays as valid', async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 0 });
+      await sendNotSent(first.store, intent.intentId);
+      await first.store.compact();
+      jest.spyOn(require('fs/promises'), 'rename').mockRejectedValueOnce(EIO());
+      await voidUnderLock(first, intent);
+      expect((await records()).map((record) => record.type)).toEqual(['held', 'void']);
+
+      const { store } = await started();
+      expect(store.quarantined).toBeNull();
+      expect(store.get(intent.intentId).state).toBe('voided');
+    });
   });
 });
