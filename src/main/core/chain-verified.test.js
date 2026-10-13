@@ -92,7 +92,7 @@ describe('Myotis reads', () => {
     const reply = await call({ myotis: op, ...args });
     expect(adapters[adapter]).toHaveBeenCalledWith(...expected);
     expect(Object.keys(reply)).toEqual(['payload', 'block_before', 'block_after']);
-    expect(reply.block_before).toBe(21_000_000);
+    expect(reply.block_before).toBe(op === 'fee' ? null : 21_000_000);
   });
 
   test("the payload's own keys in snake_case, in its order; the head before and after", async () => {
@@ -179,14 +179,31 @@ describe('Myotis reads', () => {
     expect(await call({ myotis: 'fee' })).toEqual({ failure: 'error' });
   });
 
-  test('a status sample that throws fails the read, as in the router', async () => {
-    const { call } = setUp({
+  test("a status sample that throws fails the read, as in the router's trust read", async () => {
+    const { call, adapters } = setUp({
       myotisStatus: jest.fn(() => {
         throw new Error('native binding');
       }),
     });
-    expect(await call({ myotis: 'fee' })).toEqual({ failure: 'error' });
+    expect(await call({ myotis: 'account', address: ADDRESS })).toEqual({ failure: 'error' });
+    expect(adapters.myotisAccount).not.toHaveBeenCalled();
     expect(myotisClass(undefined)).toBe('error');
+  });
+
+  // Review of #692 (parity): the router's fee quote reads the estimate
+  // with no status sample around it.
+  test('a fee estimate takes no status sample', async () => {
+    const { call, adapters } = setUp({
+      myotisStatus: jest.fn(() => {
+        throw new Error('native binding');
+      }),
+    });
+    expect(await call({ myotis: 'fee' })).toEqual({
+      payload: { gas_price_wei: '7', max_priority_fee_per_gas_wei: '1' },
+      block_before: null,
+      block_after: null,
+    });
+    expect(adapters.myotisStatus).not.toHaveBeenCalled();
   });
 });
 

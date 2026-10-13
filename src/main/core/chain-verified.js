@@ -155,12 +155,17 @@ function operation(params, adapters) {
     if (call && !Object.hasOwn(params, 'tx')) throw refused();
     return {
       verifier: 'myotis',
-      // The head sampled around the read, as the router samples it for its
-      // trust label: inside the operation, so a throwing sample fails it.
       run: async () => {
-        const before = blockOf(adapters.myotisStatus(params.chain_id));
+        // The head sampled around a state or call read, as the router
+        // samples it for a trust label: inside the operation, so a throwing
+        // sample fails it. A fee estimate is read with none, as the
+        // router's fee quote reads it (and only an `eth_call` asks for
+        // trust today).
+        const sample = () =>
+          params.myotis === 'fee' ? null : blockOf(adapters.myotisStatus(params.chain_id));
+        const before = sample();
         const payload = await read(params, adapters);
-        const after = blockOf(adapters.myotisStatus(params.chain_id));
+        const after = sample();
         return { payload: wirePayload(payload), block_before: before, block_after: after };
       },
       failed: (err) => ({ failure: myotisClass(err) }),
