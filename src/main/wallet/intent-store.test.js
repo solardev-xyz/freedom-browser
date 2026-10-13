@@ -1020,7 +1020,8 @@ describe('review fixes (#702)', () => {
     test('random operations keep the file within journalBytes, and every reload is clean', async () => {
       // Deterministic pseudo-random walk over commits, sends, outcomes,
       // replacements, settlements, voids and restarts, at a bound tight
-      // enough to make compaction and refusals happen often.
+      // enough to make compaction and refusals happen often. About 2.6 s
+      // alone; the timeout leaves room for a loaded machine.
       let seed = 702;
       const random = () => {
         seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -1097,7 +1098,7 @@ describe('review fixes (#702)', () => {
       expect(refused).toBeGreaterThan(0);
       const { store } = await started({ limits });
       expect(store.quarantined).toBeNull();
-    });
+    }, 60000);
 
     test('the arithmetic: the reader cap is above anything the store can write', () => {
       const { mod } = start();
