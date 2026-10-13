@@ -22,7 +22,7 @@
  */
 
 const dns = require('node:dns');
-const { ShellError } = require('./core-client');
+const { JsonText, ShellError } = require('./core-client');
 const { fetchLoop, makeHop, withDeadline, isOk, redirectAllowed } = require('./naming-shell');
 const { validateRpcUrl } = require('../networks/network-registry');
 const {
@@ -33,6 +33,21 @@ const {
   boundLookups,
   redirectTarget,
 } = require('../networks/blockscout-logs');
+
+/**
+ * An exchange's reply, `{ status, headers?, body }` with the body as
+ * base64, written as JSON once, around the body ({@link JsonText}): the
+ * same text JSON.stringify of that object writes, since a status is an
+ * integer and base64 needs no escape, without stringifying, measuring and
+ * re-encoding a body of up to 18 MiB on main's thread. The headers, short
+ * and possibly not ASCII, are stringified on their own.
+ */
+function bodyReply(status, body, headers = undefined) {
+  const parts = [`{"status":${JSON.stringify(status)}`];
+  if (headers !== undefined) parts.push(Buffer.from(`,"headers":${JSON.stringify(headers)}`));
+  parts.push(',"body":"', body.toString('base64'), '"}');
+  return new JsonText(parts);
+}
 
 /** The largest answer main reads for chain data (deviation
  * `response-caps`): an `html()` document at its 8 MiB limit, as hex in a
@@ -139,11 +154,7 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
       charge,
     });
     if (!REDIRECT_STATUSES.has(response.status)) {
-      return {
-        status: response.status,
-        headers: pageHeaders(response.headers),
-        body: response.body.toString('base64'),
-      };
+      return bodyReply(response.status, response.body, pageHeaders(response.headers));
     }
     let next;
     try {
@@ -220,7 +231,7 @@ function registerChainShell(client, config, deps = {}) {
             charge,
           })
         );
-        return { status: response.status, body: response.body.toString('base64') };
+        return bodyReply(response.status, response.body);
       } catch (err) {
         // The onion gate refused the first hop before its request existed.
         if (hops === 1 && err?.unsent) return NOT_SENT;
@@ -248,6 +259,7 @@ function registerChainShell(client, config, deps = {}) {
 
 module.exports = {
   registerChainShell,
+  bodyReply,
   isChainRequest,
   chainHandler,
   NOT_SENT,
