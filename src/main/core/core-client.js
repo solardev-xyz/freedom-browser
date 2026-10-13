@@ -88,7 +88,8 @@ const MAX_INCOMING = 256;
 // Fragmented replies held for the core, waiting for its credit or being
 // written: one message cap in all, a single buffer's worth for this
 // direction, until main's chain I/O pool (design 0005, Main's pool) bounds
-// what its executors hold.
+// what its executors hold. Each is charged whole for as long as its buffer
+// is referenced, which a fragment being written does.
 const MAX_BULK_BYTES = MAX_MESSAGE;
 const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 // fc-protocol's ErrorCode (crates/fc-protocol/src/error.rs). Only these are
@@ -273,11 +274,11 @@ class Generation {
     this.reassembler = new Reassembler();
     // Main's fragmented replies: only if the core offered them, one at a
     // time while main holds the core's credit. Those waiting to begin, the
-    // one being written, and the bytes of both still to write.
+    // one being written, and the bytes of the buffers they keep.
     this.fragments = false;
     this.credit = false;
     this.bulk = [];
-    this.sending = null; // { id, controller, payload, offset }
+    this.sending = null; // { id, controller, payload, offset, writing }
     this.bulkBytes = 0;
     this.stderrText = new StringDecoder('utf8');
     this.stderrLine = '';
@@ -1070,7 +1071,7 @@ class CoreClient extends EventEmitter {
         continue;
       }
       gen.credit = false;
-      gen.sending = { ...reply, offset: 0 };
+      gen.sending = { ...reply, offset: 0, writing: false };
       try {
         gen.child.stdin.write(encodeBegin(reply.id, reply.payload.length));
       } catch {
@@ -1086,6 +1087,10 @@ class CoreClient extends EventEmitter {
    * once this one is written, so the whole frames written meanwhile go
    * between them. Once begun, a reply is written to its end; its entry goes
    * with its last fragment.
+   *
+   * Each fragment is a view of the reply's buffer, so the buffer stays
+   * charged whole until the last write that holds it completes: its last
+   * fragment's, or the one in flight when the rest was dropped.
    */
   writeFragment(gen) {
     const sending = gen.sending;
@@ -1093,19 +1098,23 @@ class CoreClient extends EventEmitter {
     const end = Math.min(payload.length, offset + MAX_PAYLOAD);
     const last = end === payload.length;
     sending.offset = end;
+    sending.writing = true;
     const written = (err) => {
-      gen.bulkBytes -= end - offset;
+      sending.writing = false;
+      // Its generation ended meanwhile, and the rest was dropped; or the
+      // write failed; or this was the last fragment.
+      const done = err || gen.sending !== sending || last;
+      if (!done) {
+        this.writeFragment(gen);
+        return;
+      }
+      gen.bulkBytes -= payload.length;
+      if (gen.sending !== sending) return;
+      gen.sending = null;
       if (err) {
         this.connectionFailed(gen, 'stdin_error');
         return;
       }
-      // Its generation ended meanwhile: the rest was dropped.
-      if (gen.sending !== sending) return;
-      if (!last) {
-        this.writeFragment(gen);
-        return;
-      }
-      gen.sending = null;
       if (gen.incoming.get(sending.id) === sending.controller) gen.incoming.delete(sending.id);
       this.pumpBulk(gen);
     };
@@ -1118,9 +1127,10 @@ class CoreClient extends EventEmitter {
   }
 
   /** Drops the replies waiting to begin, and the rest of the one being
-   * written: the core reads no more of this generation's. */
+   * written: the core reads no more of this generation's. A fragment still
+   * being written holds its reply's buffer: its write releases the charge. */
   dropBulk(gen) {
-    if (gen.sending) gen.bulkBytes -= gen.sending.payload.length - gen.sending.offset;
+    if (gen.sending && !gen.sending.writing) gen.bulkBytes -= gen.sending.payload.length;
     gen.sending = null;
     for (const reply of gen.bulk) gen.bulkBytes -= reply.payload.length;
     gen.bulk = [];

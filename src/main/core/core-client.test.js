@@ -74,6 +74,7 @@ class FakeCore extends EventEmitter {
     this.killCalls = 0;
     this.stuck = false; // stdin accepts bytes but never completes writes
     this.held = []; // the write callbacks `stuck` holds back
+    this.stallOn = null; // a frame kind whose write turns `stuck` on
     this.requests = [];
     this.wire = [];
     this.credits = 0;
@@ -85,6 +86,10 @@ class FakeCore extends EventEmitter {
       write: (chunk, _encoding, callback) => {
         for (const frame of decoder.push(chunk)) {
           this.wire.push(frame.kind);
+          if (frame.kind === this.stallOn) {
+            this.stallOn = null;
+            this.stuck = true;
+          }
           const delivery = this.reassembler.push(frame, (id) => this.outstanding.has(id));
           if (delivery?.type === 'credit') this.credits += 1;
           if (delivery?.type !== 'message' && delivery?.type !== 'response') continue;
@@ -1679,6 +1684,33 @@ describe('CoreClient', () => {
       expect(gen.bulkBytes).toBe(0);
     });
 
+    test("a reply's buffer stays charged whole until its last fragment is written", async () => {
+      const { core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(17 * MIB))
+      );
+      const body = 'x'.repeat(17 * MIB);
+      const size = Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }));
+      // The pipe stalls on the first reply's last fragment: every fragment
+      // before it is written, and each is a view of the one buffer.
+      core.stallOn = KIND_LAST;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(wire(core)).toEqual([B, ...Array(17).fill(F), L]);
+      expect(gen.bulkBytes).toBe(size);
+      // So a second near-cap reply finds no room.
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(gen.bulk).toEqual([]);
+      core.release();
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, result: { body } },
+        { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
+      ]);
+      expect(gen.sending).toBeNull();
+      expect(gen.bulkBytes).toBe(0);
+    });
+
     test('a generation that ends writes no more of a begun reply, and drops the waiting ones', async () => {
       const { core, gen, send, replies } = await served((c) =>
         c.handle('shell.rpc', sized(2 * MIB))
@@ -1691,6 +1723,11 @@ describe('CoreClient', () => {
       core.exit(1, null, { close: false });
       expect(gen.sending).toBeNull();
       expect(gen.bulk).toEqual([]);
+      // The fragment in flight still holds the first reply's buffer.
+      const body = 'x'.repeat(2 * MIB);
+      expect(gen.bulkBytes).toBe(
+        Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }))
+      );
       core.release();
       await settle();
       expect(wire(core)).toEqual([B, F]);
