@@ -74,6 +74,39 @@ const MALFORMED_DOCUMENT = 'The chain.html reply is malformed';
 /** `chain.html`'s classes (design 0006): the gate's input. */
 const DOCUMENT_CLASSES = new Set(['trusted', 'conflict', 'untrusted']);
 const DOCUMENT_HASH = /^0x[0-9a-f]{64}$/;
+/** The core's cap on a document (design 0006, `chain.html`): 8 MiB of UTF-8. */
+const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
+/** The standard base64 alphabet, padding last. One character class, so a
+ * 10.7 MiB document is checked in a single pass, without backtracking; the
+ * padding's place and the unused bits are checked by re-encoding. */
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+/** Fatal: a byte sequence that isn't UTF-8 fails, never becomes U+FFFD. A
+ * leading BOM stays in the text, as the document's own bytes. */
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * A document's text from its `html_base64`, or null for one the core
+ * couldn't have written: anything but canonical base64 (Buffer's decoder
+ * would drop what isn't base64, and ignore bad padding), more than 8 MiB of
+ * bytes, or bytes that aren't UTF-8. The core's hash is trusted as it is:
+ * this checks the encoding, not the content.
+ */
+function documentText(base64) {
+  if (
+    base64.length % 4 !== 0 ||
+    base64.length > Math.ceil(MAX_DOCUMENT_BYTES / 3) * 4 ||
+    !BASE64.test(base64)
+  ) {
+    return null;
+  }
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length > MAX_DOCUMENT_BYTES || bytes.toString('base64') !== base64) return null;
+  try {
+    return UTF8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 /** The call-object quantities the router turned into hex
  * (`normalizeCallObject`), in its order. */
@@ -562,7 +595,9 @@ class ChainDriver {
 
   /** A `chain.html` result as the `web3:` handler takes it: the document's
    * UTF-8 as text, and its trust label's references mapped by the process
-   * that made it. A reply main can't read fails, as a malformed one. */
+   * that made it. A reply main can't read fails, as a malformed one: no
+   * document, one not in the core's encoding (documentText), a hash that
+   * isn't 32 lowercase hex bytes, an unknown class. */
   document(reply, gen) {
     if (
       !isObject(reply) ||
@@ -573,8 +608,10 @@ class ChainDriver {
     ) {
       throw new Error(MALFORMED_DOCUMENT);
     }
+    const html = documentText(reply.html_base64);
+    if (html === null) throw new Error(MALFORMED_DOCUMENT);
     const document = {
-      html: Buffer.from(reply.html_base64, 'base64').toString('utf8'),
+      html,
       htmlHash: reply.hash,
       source: reply.source,
       verified: reply.verified,

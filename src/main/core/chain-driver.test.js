@@ -881,6 +881,42 @@ describe('chain.html (design 0006)', () => {
     await expect(driver.chainHtml(1, CONTRACT)).rejects.toThrow(MALFORMED_DOCUMENT);
   });
 
+  // Security review of #703, N1: the document is the core's encoding or
+  // nothing. Buffer's decoder would drop what isn't base64 and ignore bad
+  // padding, and a lax UTF-8 decode would serve U+FFFD for a byte that
+  // isn't UTF-8: bytes other than the ones the core's hash names.
+  const base64 = (bytes) => Buffer.from(bytes).toString('base64');
+  const B64 = base64(HTML);
+  test.each([
+    ['a character outside base64', `${B64.slice(0, 4)}*${B64.slice(5)}`],
+    ['a line break', `${B64.slice(0, 4)}\n${B64.slice(4)}`],
+    ['URL-safe base64', Buffer.from('?>?').toString('base64url')],
+    ['no padding', base64('ab').replace(/=+$/, '')],
+    ['padding bits set', 'YWJ='],
+    ['padding where none belongs', `${base64('abc')}=`],
+    ['bytes that are not UTF-8', base64([0x3c, 0xff, 0x3e])],
+    ['an encoded surrogate', base64([0x3c, 0xed, 0xa0, 0x80, 0x3e])],
+    ['a document over 8 MiB', base64(Buffer.alloc(8 * 1024 * 1024 + 1, 0x61))],
+  ])('a document with %s is malformed, whatever its hash and class', async (_label, encoded) => {
+    const { driver } = setUp(() => document({ html_base64: encoded }));
+    await expect(driver.chainHtml(1, CONTRACT)).rejects.toThrow(MALFORMED_DOCUMENT);
+  });
+
+  test("the core's encoding is the document's bytes: 8 MiB, an empty one, a BOM kept", async () => {
+    const atLimit = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(HTML)]);
+    const documents = [atLimit, Buffer.alloc(0), withBom, Buffer.from('?>?')];
+    const { driver } = setUp((method, params, n) =>
+      document({ html_base64: base64(documents[n - 1]) })
+    );
+    for (const bytes of documents) {
+      const { html, htmlHash } = await driver.chainHtml(1, CONTRACT);
+      expect(Buffer.from(html, 'utf8').equals(bytes)).toBe(true);
+      // The core's hash, as it sent it.
+      expect(htmlHash).toBe(HTML_HASH);
+    }
+  });
+
   test('failures throw as reads do, and say what the core ended them with', async () => {
     const errors = [
       chainError({

@@ -30,7 +30,7 @@ const {
   parseOnchainAppUrl,
   registerOnchainAppProtocol,
 } = require('./onchain-app-protocol');
-const { markFailure } = require('../core/chain-driver');
+const { markFailure, MALFORMED_DOCUMENT } = require('../core/chain-driver');
 
 const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
 const CANONICAL_ADDRESS = ethers.getAddress(ADDRESS);
@@ -481,6 +481,9 @@ describe('failureStatus (design 0006, chain.html, Errors)', () => {
     ],
     ['an AbortError', Object.assign(new Error('aborted'), { name: 'AbortError' }), 504],
     ['the core unavailable', new Error('Chain data is unavailable'), 502],
+    // A reply main can't read (core/chain-driver.js `document`): no
+    // document, not the core's encoding, a bad hash or class.
+    ['a malformed chain.html reply', new Error(MALFORMED_DOCUMENT), 502],
     // A size code alone, with nothing to say the core sent it, is no 413.
     [
       'an unmarked size code',
