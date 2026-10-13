@@ -1,25 +1,23 @@
 /**
  * Which chain-data reads were running — for the event-loop watchdog (#498).
  *
- * `instrumentChainDataRouter(router)` wraps the router's exported `request()`,
- * `getFeeQuote()` and `broadcastRawTransaction()` once, from the outside:
- * every caller in the main process reaches them as properties of the module
- * object at call time (`chainData.request(...)`, `router.request(...)`, a
+ * `instrumentChainDataRouter(router)` wraps chain data's exported
+ * `request()`, `getFeeQuote()` and `broadcastRawTransaction()`
+ * (chain-data.js) once, from the outside: every caller in the main process
+ * reaches them as properties of the module object at call time
+ * (`chainData.request(...)`, `router.request(...)`, a
  * `chainRequest = chainData.request` default parameter,
  * `chainData.getFeeQuote(...)`, `router.broadcastRawTransaction(...)`), so
- * wrapping the exports covers them all without touching chain-data-router.js
- * itself. (Calls the router makes to its own functions internally are not
- * seen; none of the three is called that way today.)
+ * wrapping the exports covers them all without touching the module itself.
  *
  * What it can see from out here: chain, method, start/settle time and, once
- * settled, the source that answered (the router's own `{ source }` field).
+ * settled, the source that answered (the result's own `{ source }` field).
  * What it cannot: which tier is being asked *while* a request is still in
- * flight — that lives inside `request()`'s source loop. For a synchronous
- * stall that is rarely a loss (the blocked call usually settles right as the
- * loop comes back, so it is reported with its answering source), but a stall
- * whose read failed over to another tier is reported as "failed" or "in
- * flight" without naming the tier. Naming it needs a hook in the router
- * (a follow-up; see #498).
+ * flight — that lives in the core's source loop (freedom-core design 0005).
+ * For a synchronous stall in main that is rarely a loss (the blocked call
+ * usually settles right as the loop comes back, so it is reported with its
+ * answering source), but a stall whose read failed over to another tier is
+ * reported as "failed" or "in flight" without naming the tier.
  *
  * Cost per request: one Map insert/delete and one ring-buffer write.
  */
@@ -108,10 +106,8 @@ function createChainDataActivity({
     return true;
   }
 
-  // `request()` plus the two router exports that call Myotis natively without
-  // going through it (#498 R1-M4): `getFeeQuote` (`myotis.feeEstimate`) and
-  // `broadcastRawTransaction` (`myotis.sendRawTransaction`). Both are reached
-  // as properties of the module object at call time too
+  // `request()` plus the fee quote and the broadcast (#498 R1-M4). Both are
+  // reached as properties of the module object at call time too
   // (`chainData.getFeeQuote`, `router.broadcastRawTransaction`). Returns
   // whether `request` was newly wrapped.
   function instrumentChainDataRouter(router) {

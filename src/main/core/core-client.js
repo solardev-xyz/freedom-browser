@@ -185,6 +185,14 @@ class ShellError extends Error {
   }
 }
 
+/** A request's params already serialized: `json` is sent as it is. */
+class JsonParams {
+  /** @param {string} json - one JSON value's text */
+  constructor(json) {
+    this.json = json;
+  }
+}
+
 /** Main's chain I/O pool: bytes held, within a limit. */
 class IoPool {
   constructor(limit) {
@@ -498,17 +506,26 @@ class CoreClient extends EventEmitter {
    *
    * `signal` cancels it (0001's `cancel`): the caller gets `cancelled` at
    * once and the core is told, unless its response came first. A signal
-   * already aborted sends nothing.
+   * already aborted sends nothing. With `untilResponse`, the core is told
+   * and the caller still gets its one response: a broadcast's is its
+   * outcome, which a cancel doesn't make unknown (design 0005,
+   * Cancellation).
+   *
+   * `fence()` is the caller's last word: it runs once the request is
+   * encoded and the signal checked, with nothing between it and the ID
+   * being taken and the frame written. False sends nothing, and the
+   * request fails `fenced`. `params` may be a JsonParams, already
+   * serialized, so no caller code runs while the request is encoded.
    */
   requestTo(
     gen,
     method,
     params = {},
     context = { caller: 'chrome' },
-    { watchdogMs = null, signal = null } = {}
+    { watchdogMs = null, signal = null, untilResponse = false, fence = null } = {}
   ) {
     if (!this.serves(gen)) return Promise.reject(unavailable());
-    return this.send(gen, method, params, context, { watchdogMs, signal });
+    return this.send(gen, method, params, context, { watchdogMs, signal, untilResponse, fence });
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
@@ -872,10 +889,18 @@ class CoreClient extends EventEmitter {
   /**
    * Writes one request. `control` frames (hello, shutdown) skip the
    * admission limits; `onReply` receives the outcome synchronously instead
-   * of a promise; `signal` cancels it.
+   * of a promise; `signal` cancels it, its caller waiting for the core's
+   * response with `untilResponse`; a `fence` that fails sends nothing.
    */
   send(gen, method, params, context, options) {
-    const { control = false, onReply = null, watchdogMs = null, signal = null } = options || {};
+    const {
+      control = false,
+      onReply = null,
+      watchdogMs = null,
+      signal = null,
+      untilResponse = false,
+      fence = null,
+    } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
       if (!onReply) return Promise.reject(error);
@@ -896,7 +921,13 @@ class CoreClient extends EventEmitter {
     const id = gen.nextId;
     let frame;
     try {
-      frame = encodeFrame({ type: 'request', id, method, params, context });
+      frame =
+        params instanceof JsonParams
+          ? encodeJsonFrame(
+              `{"type":"request","id":${id},"method":${JSON.stringify(method)},` +
+                `"params":${params.json},"context":${JSON.stringify(context)}}`
+            )
+          : encodeFrame({ type: 'request', id, method, params, context });
     } catch (err) {
       if (err instanceof FrameError) {
         return refuse(new CoreError('invalid_argument', 'Request too large'));
@@ -911,6 +942,9 @@ class CoreClient extends EventEmitter {
     if (!control && gen.writeBytes + frame.length > MAX_WRITE_BYTES) {
       return refuse(new CoreError('busy', 'Too much data in flight'));
     }
+    // After everything that ran the caller's code, and before anything is
+    // taken or written.
+    if (fence && !fence()) return refuse(new CoreError('fenced', 'Fenced'));
     gen.nextId += 1;
 
     let promise = null;
@@ -924,7 +958,7 @@ class CoreClient extends EventEmitter {
         };
       });
     }
-    if (signal) this.cancellable(gen, id, entry, signal);
+    if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
     if (watchdogMs !== null) {
       // The hang watchdog (design 0001): the core enforces the request's
       // deadline and always replies, so no reply by deadline + 15 s means
@@ -967,15 +1001,17 @@ class CoreClient extends EventEmitter {
    * core's one response, which is consumed and dropped; a fragmented one
    * still returns its credit, as a delivered one does (design 0005, Main's
    * pool). A response that came first answers the caller, and nothing is
-   * cancelled.
+   * cancelled. `untilResponse` leaves the caller waiting for that one
+   * response, which then answers it.
    */
-  cancellable(gen, id, entry, signal) {
+  cancellable(gen, id, entry, signal, untilResponse = false) {
     const settle = entry.settle;
     let answered = false;
     const onAbort = () => {
       if (answered || gen.pending.get(id) !== entry) return;
-      answered = true;
       this.writeCancel(gen, id);
+      if (untilResponse) return;
+      answered = true;
       settle({ error: cancelled() });
     };
     entry.settle = (outcome) => {
@@ -1451,6 +1487,7 @@ class CoreClient extends EventEmitter {
 module.exports = {
   CoreClient,
   CoreError,
+  JsonParams,
   ShellError,
   SHELL_ERRORS,
   MAX_INCOMING,

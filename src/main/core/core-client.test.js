@@ -7,6 +7,7 @@ const childProcess = require('child_process');
 const {
   CoreClient,
   CoreError,
+  JsonParams,
   ShellError,
   scrubbedEnv,
   RESTART_DELAYS_MS,
@@ -1597,6 +1598,72 @@ describe('CoreClient', () => {
       expect(gen.pending.has(id)).toBe(true);
       core.reply({ type: 'response', id, result: { late: true } });
       await tick();
+      expect(gen.pending.size).toBe(0);
+      expect(core.killed).toBeNull();
+    });
+
+    // Review of #698 (drivers): the caller's last check runs after
+    // everything that runs its code, with nothing between it and the write.
+    test('a failing fence sends nothing and takes no ID; params already serialized go as they are', async () => {
+      const { client, core, gen } = await held();
+      let inFlight = false;
+      const params = {
+        toJSON() {
+          // The caller's own code, run while the request is encoded.
+          inFlight = true;
+          return { chain_id: 1 };
+        },
+      };
+      const fenced = await client
+        .requestTo(gen, 'chain.request', params, { caller: 'chrome' }, { fence: () => !inFlight })
+        .catch((err) => err);
+      expect(fenced).toMatchObject({ code: 'fenced' });
+      await tick();
+      expect(core.requests.filter((r) => r.method === 'chain.request')).toEqual([]);
+      expect(gen.pending.size).toBe(0);
+      // Pre-serialized params: written as they are, under the next ID.
+      const written = [];
+      const write = gen.child.stdin.write.bind(gen.child.stdin);
+      gen.child.stdin.write = (chunk, ...rest) => {
+        written.push(Buffer.from(chunk).toString('utf8'));
+        return write(chunk, ...rest);
+      };
+      client
+        .requestTo(
+          gen,
+          'chain.request',
+          new JsonParams('{"chain_id":1,"params":[1.50]}'),
+          undefined,
+          {
+            fence: () => true,
+          }
+        )
+        .catch(() => {});
+      await tick();
+      expect(core.requests.at(-1)).toMatchObject({
+        id: 2,
+        method: 'chain.request',
+        params: { chain_id: 1, params: [1.5] },
+        context: { caller: 'chrome' },
+      });
+      expect(written.join('')).toContain('"params":{"chain_id":1,"params":[1.50]}');
+    });
+
+    // Design 0005, Cancellation: a cancelled broadcast still ends with its
+    // outcome, which its caller must have.
+    test('with untilResponse, a cancel tells the core and the caller gets its response', async () => {
+      const { core, gen, send, cancels } = await held();
+      const request = send({ untilResponse: true });
+      await tick();
+      const id = request.id();
+      request.cancel();
+      // Told once, however often it aborts.
+      request.cancel();
+      await tick();
+      expect(cancels()).toEqual([{ type: 'cancel', id }]);
+      expect(gen.pending.has(id)).toBe(true);
+      core.reply({ type: 'response', id, result: { outcome: 'uncertain' } });
+      expect(await request.pending).toEqual({ result: { outcome: 'uncertain' } });
       expect(gen.pending.size).toBe(0);
       expect(core.killed).toBeNull();
     });

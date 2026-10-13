@@ -3,8 +3,17 @@
 Freedom runs Ant v0.5.64 as a separate `antd` process. The host callback added
 in ant#77 is for embedded FFI consumers; the daemon can already use an HTTP
 JSON-RPC endpoint. The main-process Swarm service therefore owns a private
-loopback bridge to the existing chain-data router. No native patch, dependency
+loopback bridge to Freedom's chain data. No native patch, dependency
 upgrade, renderer capability, or public IPC channel is needed.
+
+Chain data runs in the core (freedom-core design 0005): the bridge's reads and
+broadcasts are `chain.*` requests through main's drivers
+(`src/main/networks/chain-data.js`), and the core routes them by the rules
+below, which it ported from `chain-data-router.js` (its replay vectors pin the
+two equal). Ant's log scans go as the core's `ant_scan` profile, which carries
+the bridge's ranking, range caps, exclusions and Blockscout pairing. A
+broadcast whose outcome is uncertain (it may have been sent) gets the bridge's
+reconcile reply; a refused one, the node's error.
 
 ## Routing and authority
 

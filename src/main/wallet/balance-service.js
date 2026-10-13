@@ -7,7 +7,7 @@
  */
 
 const { formatEther, formatUnits, Interface } = require('ethers');
-const chainData = require('../networks/chain-data-router');
+const chainData = require('../networks/chain-data');
 const { getTokens } = require('../token-registry');
 const { isChainAvailable } = require('../networks/network-registry');
 const persistentCache = require('./balance-cache');

@@ -2,6 +2,7 @@ const { ShellError } = require('./core-client');
 const { registerChainVerified, myotisClass, wirePayload } = require('./chain-verified');
 const { registerNamingVerified, MAX_PER_VERIFIER } = require('./naming-verified');
 const { NOT_SENT } = require('./chain-shell');
+const { BroadcastRecords } = require('./chain-broadcasts');
 const { MAX_MESSAGE } = require('./frame');
 
 const ADDRESS = '0x' + 'ab'.repeat(20);
@@ -30,7 +31,7 @@ function uncertain(message) {
 /** The executor on a client that records its registration; chain 1 at
  * generation 4. `call` runs it as the client does, `charge` standing in
  * for main's pool. */
-function setUp(adapters = {}, { charge = () => true, running } = {}) {
+function setUp(adapters = {}, { charge = () => true, running, broadcasts } = {}) {
   const routes = [];
   const client = { handle: (method, fn, options) => routes.push({ method, fn, options }) };
   const config = { generation: (chainId) => (chainId === 1 ? 4 : 0) };
@@ -46,7 +47,11 @@ function setUp(adapters = {}, { charge = () => true, running } = {}) {
     colibriRequest: jest.fn(async () => '0x10'),
     ...adapters,
   };
-  const registered = registerChainVerified(client, config, { adapters: all, running });
+  const registered = registerChainVerified(client, config, {
+    adapters: all,
+    running,
+    broadcasts,
+  });
   const route = routes.find((r) => r.method === 'shell.verified');
   const call = (params, signal = new AbortController().signal) => {
     const full = { chain_id: 1, generation: 4, ...params };
@@ -214,6 +219,25 @@ describe('Myotis broadcasts', () => {
       expect(await call({ myotis: 'broadcast', raw: RAW })).toEqual({ hash: HASH });
       expect(adapters.myotisBroadcast).toHaveBeenCalledWith(RAW, 1);
     }
+  });
+
+  // Design 0005, Main's record.
+  test("a broadcast marks main's record of its bytes as the adapter starts; a stale one doesn't", async () => {
+    const broadcasts = new BroadcastRecords();
+    const record = broadcasts.begin(1, RAW);
+    const { call, adapters } = setUp(
+      {
+        myotisBroadcast: jest.fn(async () => {
+          expect(record).toMatchObject({ sent: true, source: 'myotis' });
+          return { txHash: HASH };
+        }),
+      },
+      { broadcasts }
+    );
+    expect(await call({ myotis: 'broadcast', raw: RAW, generation: 3 })).toEqual(NOT_SENT);
+    expect(record.sent).toBe(false);
+    expect(await call({ myotis: 'broadcast', raw: RAW })).toEqual({ hash: HASH });
+    expect(adapters.myotisBroadcast).toHaveBeenCalledTimes(1);
   });
 
   test('an answer without a hash, or one that is no answer, is uncertain', async () => {

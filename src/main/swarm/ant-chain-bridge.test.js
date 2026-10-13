@@ -8,6 +8,7 @@ const {
   logScanRangeCap,
   antErrorReply,
   LOG_SCAN_ERROR_RANK,
+  LOG_SCAN_ROUTER_OPTIONS,
 } = require('./ant-chain-bridge');
 
 function post(url, body, headers = {}, method = 'POST') {
@@ -149,11 +150,16 @@ test('range-limit and timeout failures keep wording Ant shrinks its log scan on'
   expect(antShrinks(timedOut.body.error.message)).toBe(true);
 });
 
-test('Ant reads are background work, and only the RPC quorum answers its log scans', async () => {
+test('Ant reads are background work, and its log scans go as the Ant profile', async () => {
   await post(bridge.url, rpc('eth_getLogs', [{}]));
+  // The core's `ant_scan`: only the RPC quorum (or Blockscout paired with
+  // an RPC) answers, ranked and range-capped as LOG_SCAN_ROUTER_OPTIONS.
   expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
     signal: expect.any(AbortSignal),
     background: true,
+    profile: 'ant_scan',
+  });
+  expect(LOG_SCAN_ROUTER_OPTIONS).toEqual({
     excludeSources: ['myotis', 'colibri', 'direct'],
     includeSources: ['blockscout'],
     quorumTimeoutMs: 30000,
@@ -753,5 +759,49 @@ test('uncertain broadcasts and real RPC rejections are never retried by the brid
     expect(response.body.error.code).toBe(typeof code === 'number' ? code : -32002);
     if (typeof code === 'string') expect(response.body.error.message).toContain('uncertain');
   }
+  expect(router.broadcastRawTransaction).toHaveBeenCalledTimes(2);
+});
+
+// Design 0005, Broadcast: the bridge keeps its replies. `uncertain` (the
+// transaction may be out there) is its reconcile reply, never the hash, and
+// `rejected` today's error, the node's code and all.
+test('a broadcast the core calls uncertain gets the reconcile reply; a rejection its error', async () => {
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log, allowBroadcast: true });
+  const wallet = Wallet.createRandom();
+  const raw = await wallet.signTransaction({
+    to: wallet.address,
+    nonce: 0,
+    value: 0,
+    chainId: 100,
+    gasLimit: 21000,
+    gasPrice: 1,
+  });
+  router.broadcastRawTransaction.mockResolvedValueOnce({
+    result: '0xhash',
+    source: 'direct',
+    outcome: 'uncertain',
+  });
+  const uncertain = await post(bridge.url, rpc('eth_sendRawTransaction', [raw]));
+  expect(uncertain.body).toEqual({
+    jsonrpc: '2.0',
+    id: 7,
+    error: {
+      code: -32002,
+      message: 'Broadcast outcome uncertain; reconcile the signed transaction',
+    },
+  });
+  router.broadcastRawTransaction.mockRejectedValueOnce(
+    Object.assign(new Error('nonce too low'), {
+      code: -32000,
+      data: undefined,
+      outcome: 'rejected',
+    })
+  );
+  const rejected = await post(bridge.url, rpc('eth_sendRawTransaction', [raw]));
+  expect(rejected.body.error).toEqual({
+    code: -32000,
+    message: 'Chain request failed: nonce too low',
+  });
   expect(router.broadcastRawTransaction).toHaveBeenCalledTimes(2);
 });

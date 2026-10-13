@@ -10,6 +10,7 @@ const {
   ANSWER_BYTES,
   PAGE_BYTES,
 } = require('./chain-shell');
+const { BroadcastRecords } = require('./chain-broadcasts');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 
@@ -45,7 +46,7 @@ const answer = (status, body = '', headers = {}) => ({
  * endpoints at generation 2, chain 100's at 5. `call` runs a handler as the
  * client does, `charge` standing in for main's pool.
  */
-function setUp({ hop, lookup, charge = () => true } = {}) {
+function setUp({ hop, lookup, charge = () => true, broadcasts } = {}) {
   const routes = [];
   const client = { handle: (method, fn, options) => routes.push({ method, fn, options }) };
   const endpoints = new Map([
@@ -65,7 +66,7 @@ function setUp({ hop, lookup, charge = () => true } = {}) {
   };
   hop = hop || jest.fn(async () => answer(200, '{"result":"0x1"}'));
   lookup = lookup || jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
-  registerChainShell(client, config, { hop, lookup });
+  registerChainShell(client, config, { hop, lookup, broadcasts });
   const call = (method, params, signal = new AbortController().signal) => {
     const route = routes.find((r) => r.method === method);
     expect(route.options.when(params)).toBe(true);
@@ -223,6 +224,38 @@ describe('shell.rpc', () => {
     expect(hop).not.toHaveBeenCalled();
     // A generation main hasn't seen yet is newer, never stale.
     expect(await call('shell.rpc', rpc({ generation: 3 }))).toMatchObject({ status: 200 });
+  });
+
+  // Design 0005, Main's record: what the core sends of a broadcast is known
+  // to main even if the core dies before it answers.
+  test("an exchange sending a broadcast's bytes marks its record as it starts; one never started doesn't", async () => {
+    const RAW = '0xf86b80aa';
+    const broadcasts = new BroadcastRecords();
+    const record = broadcasts.begin(1, RAW);
+    const elsewhere = broadcasts.begin(100, RAW);
+    const { call, hop } = setUp({ broadcasts });
+    const send = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 9,
+      method: 'eth_sendRawTransaction',
+      params: [RAW.toUpperCase().replace('0X', '0x')],
+    });
+    // Nothing performed: nothing marked.
+    expect(await call('shell.rpc', rpc({ body: send, generation: 1 }))).toEqual(NOT_SENT);
+    expect(await call('shell.rpc', rpc({ body: send, endpoint: 'e2' }))).toEqual(NOT_SENT);
+    // A read names no transaction.
+    await call('shell.rpc', rpc());
+    expect(record.sent).toBe(false);
+    hop.mockImplementationOnce(async () => {
+      // Marked before the request leaves main.
+      expect(record).toMatchObject({ sent: true, source: 'direct' });
+      return answer(200, '{"result":"0x1"}');
+    });
+    await call('shell.rpc', rpc({ body: send }));
+    expect(record.sent).toBe(true);
+    // Its endpoint is chain 1's: chain 100's broadcast of the bytes isn't
+    // marked.
+    expect(elsewhere.sent).toBe(false);
   });
 
   test('nor for an endpoint refused before connecting, or a request cancelled first', async () => {

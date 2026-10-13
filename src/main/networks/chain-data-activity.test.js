@@ -127,7 +127,7 @@ describe('chain-data activity', () => {
       expect(jest.isMockFunction(router[name])).toBe(false);
     }
     // The real module exports the functions being wrapped.
-    const real = jest.requireActual('./chain-data-router');
+    const real = jest.requireActual('./chain-data');
     for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
       expect(typeof real[name]).toBe('function');
     }

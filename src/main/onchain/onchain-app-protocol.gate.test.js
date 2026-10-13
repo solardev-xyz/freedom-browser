@@ -1,10 +1,10 @@
 /**
- * `web3:` — the trust gate, in order, with the chain-data router stubbed.
+ * `web3:` — the trust gate, in order, with chain data stubbed.
  *
  * Roadmap 4.7, design 0006 ("Tests first"). Design 0006 moves the decode and
  * the trust decision into the core (`chain.html`); these cases pin the order
  * the handler applies them in today, driven with real `Request` objects
- * through the default `chainRequest` (the stubbed `chain-data-router`) and the
+ * through the default `chainRequest` (the stubbed `chain-data`) and the
  * real decode worker:
  *
  *   1. a GET carrying a valid approval token is served from the staged
@@ -25,7 +25,7 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 
-jest.mock('../networks/chain-data-router', () => ({
+jest.mock('../networks/chain-data', () => ({
   request: jest.fn(),
 }));
 
@@ -34,7 +34,7 @@ jest.mock('../networks/network-registry', () => ({
 }));
 
 const { ethers } = require('ethers');
-const chainData = require('../networks/chain-data-router');
+const chainData = require('../networks/chain-data');
 const {
   APPROVAL_HEADER,
   GATE_HEADER,
@@ -65,8 +65,9 @@ function encodeHtml(html) {
   return `0x${word(32)}${word(bytes.length)}${bytes.toString('hex')}${'00'.repeat(padding)}`;
 }
 
-// What the router resolves with `includeTrust: true` (chain-data-router.js
-// `request`): the result, the source that answered and its trust record.
+// What chain data resolves with `includeTrust: true` (chain-data.js
+// `request`, as the router did): the result, the source that answered and its
+// trust record.
 const TRUST = {
   myotis: {
     source: 'myotis',
