@@ -34,6 +34,11 @@
  * then written to its end, with whole frames going first and between its
  * fragments.
  *
+ * **Main's cancels** (0001): a request sent with a `signal` is cancelled
+ * when it aborts. Its caller gets `cancelled` at once, and the core a
+ * `cancel`; the core's one response still comes, and is consumed and
+ * dropped.
+ *
  * **Logs** carry fixed categories and validated public fields only: never
  * request or response bodies, peer-supplied IDs, types or error text.
  */
@@ -171,6 +176,11 @@ class ShellError extends Error {
 
 function unavailable(message = 'The core is not running') {
   return new CoreError('core_unavailable', message);
+}
+
+/** A request main cancelled: its caller's answer. */
+function cancelled() {
+  return new CoreError('cancelled', 'Cancelled');
 }
 
 /** A handler's failure as a reply's error: a ShellError's code, cancelled
@@ -405,10 +415,20 @@ class CoreClient extends EventEmitter {
    * process has ended it fails `unavailable`, so it never reaches another.
    * `watchdogMs` is the request's hang watchdog: the core's deadline for it
    * plus 15 s.
+   *
+   * `signal` cancels it (0001's `cancel`): the caller gets `cancelled` at
+   * once and the core is told, unless its response came first. A signal
+   * already aborted sends nothing.
    */
-  requestTo(gen, method, params = {}, context = { caller: 'chrome' }, { watchdogMs = null } = {}) {
+  requestTo(
+    gen,
+    method,
+    params = {},
+    context = { caller: 'chrome' },
+    { watchdogMs = null, signal = null } = {}
+  ) {
     if (!this.serves(gen)) return Promise.reject(unavailable());
-    return this.send(gen, method, params, context, { watchdogMs });
+    return this.send(gen, method, params, context, { watchdogMs, signal });
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
@@ -770,10 +790,10 @@ class CoreClient extends EventEmitter {
   /**
    * Writes one request. `control` frames (hello, shutdown) skip the
    * admission limits; `onReply` receives the outcome synchronously instead
-   * of a promise.
+   * of a promise; `signal` cancels it.
    */
   send(gen, method, params, context, options) {
-    const { control = false, onReply = null, watchdogMs = null } = options || {};
+    const { control = false, onReply = null, watchdogMs = null, signal = null } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
       if (!onReply) return Promise.reject(error);
@@ -783,6 +803,7 @@ class CoreClient extends EventEmitter {
     if (!gen || gen.retired || gen.exited || gen.stdinEnded || (gen.ending && !control)) {
       return refuse(unavailable());
     }
+    if (signal?.aborted) return refuse(cancelled());
     if (!control && gen.pending.size >= MAX_PENDING) {
       return refuse(new CoreError('busy', 'Too many requests in flight'));
     }
@@ -816,6 +837,7 @@ class CoreClient extends EventEmitter {
         };
       });
     }
+    if (signal) this.cancellable(gen, id, entry, signal);
     if (watchdogMs !== null) {
       // The hang watchdog (design 0001): the core enforces the request's
       // deadline and always replies, so no reply by deadline + 15 s means
@@ -850,6 +872,48 @@ class CoreClient extends EventEmitter {
       entry.settle({ error: unavailable() });
     }
     return promise;
+  }
+
+  /**
+   * Main's cancel (0001), once `signal` aborts: the caller gets `cancelled`
+   * at once, and the core a `cancel`. The request stays pending until the
+   * core's one response, which is consumed and dropped; a fragmented one
+   * still returns its credit, as a delivered one does (design 0005, Main's
+   * pool). A response that came first answers the caller, and nothing is
+   * cancelled.
+   */
+  cancellable(gen, id, entry, signal) {
+    const settle = entry.settle;
+    let answered = false;
+    const onAbort = () => {
+      if (answered || gen.pending.get(id) !== entry) return;
+      answered = true;
+      this.writeCancel(gen, id);
+      settle({ error: cancelled() });
+    };
+    entry.settle = (outcome) => {
+      signal.removeEventListener('abort', onAbort);
+      if (answered) return;
+      answered = true;
+      settle(outcome);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  /**
+   * Writes main's `cancel` for its request `id`: a control frame, one per
+   * outstanding request, so it skips the requests' admission and is never
+   * held back by them or by main's pool.
+   */
+  writeCancel(gen, id) {
+    if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
+    try {
+      gen.child.stdin.write(encodeFrame({ type: 'cancel', id }), (err) => {
+        if (err) this.connectionFailed(gen, 'stdin_error');
+      });
+    } catch {
+      this.connectionFailed(gen, 'stdin_error');
+    }
   }
 
   // ---- reading ----

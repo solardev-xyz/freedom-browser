@@ -1524,6 +1524,108 @@ describe('CoreClient', () => {
     });
   });
 
+  describe("main's cancels", () => {
+    /** A ready client whose core holds every request; `send` makes one
+     * that `cancel` aborts, and `id` is the ID it went with. */
+    async function held() {
+      const made = makeClient([helloHandler()]);
+      await made.client.start();
+      const core = made.children[0];
+      const gen = made.client.current;
+      const send = (options = {}) => {
+        const controller = new AbortController();
+        const pending = made.client
+          .requestTo(
+            gen,
+            'chain.request',
+            { n: 1 },
+            { caller: 'chrome' },
+            {
+              signal: controller.signal,
+              ...options,
+            }
+          )
+          .then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+        const sent = core.requests.filter((r) => r.method === 'chain.request');
+        return { pending, cancel: () => controller.abort(), id: () => sent.at(-1)?.id };
+      };
+      const cancels = () => core.requests.filter((m) => m.type === 'cancel');
+      return { ...made, core, gen, send, cancels };
+    }
+
+    test('a cancel answers the caller at once and tells the core; its late response is dropped', async () => {
+      const { core, gen, send, cancels } = await held();
+      const request = send();
+      await tick();
+      const id = request.id();
+      request.cancel();
+      expect((await request.pending).error).toMatchObject({ code: 'cancelled' });
+      await tick();
+      expect(cancels()).toEqual([{ type: 'cancel', id }]);
+      // Still pending at the core: its one response is consumed.
+      expect(gen.pending.has(id)).toBe(true);
+      core.reply({ type: 'response', id, result: { late: true } });
+      await tick();
+      expect(gen.pending.size).toBe(0);
+      expect(core.killed).toBeNull();
+    });
+
+    test("a fragmented response to a cancelled request still returns the core's credit", async () => {
+      const { core, send } = await held();
+      const request = send();
+      await tick();
+      request.cancel();
+      core.replyFragmented({ type: 'response', id: request.id(), result: 'x'.repeat(2 * MIB) }, 3);
+      await tick();
+      expect((await request.pending).error).toMatchObject({ code: 'cancelled' });
+      expect(core.credits).toBe(1);
+      expect(core.killed).toBeNull();
+    });
+
+    test('a signal already aborted sends nothing; one after the response cancels nothing', async () => {
+      const { client, core, gen, send, cancels } = await held();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        client.requestTo(
+          gen,
+          'chain.request',
+          {},
+          { caller: 'chrome' },
+          {
+            signal: controller.signal,
+          }
+        )
+      ).rejects.toMatchObject({ code: 'cancelled' });
+      await tick();
+      expect(core.requests.filter((r) => r.method === 'chain.request')).toEqual([]);
+      const request = send();
+      await tick();
+      core.reply({ type: 'response', id: request.id(), result: { ok: true } });
+      await tick();
+      request.cancel();
+      expect(await request.pending).toEqual({ result: { ok: true } });
+      await tick();
+      expect(cancels()).toEqual([]);
+    });
+
+    test("a cancelled request's hang watchdog runs on until the core answers", async () => {
+      const { client, core, gen, send, runTimers } = await held();
+      const request = send({ watchdogMs: 1000 });
+      await tick();
+      request.cancel();
+      await request.pending;
+      // The core still owes it a response: the hang watchdog still runs.
+      runTimers(1000);
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+      expect(client.serves(gen)).toBe(false);
+    });
+  });
+
   describe("main's fragmented replies", () => {
     /** A ready client whose core offers fragments, or not, and sends it
      * requests. */
