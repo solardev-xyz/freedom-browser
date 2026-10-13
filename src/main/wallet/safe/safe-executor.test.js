@@ -24,6 +24,7 @@ const mockGetGasPrices = jest.fn(async () => ({
   maxPriorityFeePerGas: '1000000000',
 }));
 const mockSignAndSendTransaction = jest.fn(async () => ({ hash: '0x' + 'aa'.repeat(32) }));
+const mockHeldIntentFor = jest.fn(async () => null);
 
 jest.mock('../signers', () => ({
   getSigner: (...args) => mockGetSigner(...args),
@@ -34,6 +35,7 @@ jest.mock('../transaction-service', () => ({
   // the pure fee-shape mapper stays real so its behaviour is under test
   toFeeFields: jest.requireActual('../transaction-service').toFeeFields,
   signAndSendTransaction: (...args) => mockSignAndSendTransaction(...args),
+  heldIntentFor: (...args) => mockHeldIntentFor(...args),
 }));
 const mockSignAndRecord = jest.fn(async () => ({ hash: '0x' + 'bb'.repeat(32), recorded: true }));
 jest.mock('../tx-recorder', () => ({
@@ -71,6 +73,7 @@ beforeEach(() => {
   mockGetGasPrices.mockClear();
   mockSignAndSendTransaction.mockClear();
   mockSignAndRecord.mockClear();
+  mockHeldIntentFor.mockReset().mockResolvedValue(null);
 });
 
 describe('predictSafeAddress', () => {
@@ -323,7 +326,44 @@ describe('execTransaction', () => {
       toAddress: OWNERS[2],
       amount: '1000',
       metadata: { safeAddress: built.safeAddress, executor: OWNERS[0] },
+      intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`,
     });
+  });
+
+  test('the intent key is the SafeTx hash every owner signed', async () => {
+    const { built, signatures } = await buildSignedTx();
+    await execTransaction({
+      chainId: 100,
+      safeAddress: built.safeAddress,
+      safeTxData: built.safeTxData,
+      signatures,
+      executorIndex: 0,
+    });
+    const [, , options] = mockSignAndSendTransaction.mock.calls[0];
+    expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}` });
+    expect(mockHeldIntentFor).toHaveBeenCalledWith(options.intentKey);
+  });
+
+  test('"Try again" on a held execution sends it again without a new quote', async () => {
+    const { built, signatures } = await buildSignedTx();
+    mockHeldIntentFor.mockResolvedValue({ intentId: 'held-intent-1', state: 'held' });
+    await execTransaction({
+      chainId: 100,
+      safeAddress: built.safeAddress,
+      safeTxData: built.safeTxData,
+      signatures,
+      executorIndex: 0,
+    });
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+    expect(mockGetGasPrices).not.toHaveBeenCalled();
+    const [params, , options] = mockSignAndSendTransaction.mock.calls[0];
+    expect(params).toEqual({
+      to: built.safeAddress,
+      value: '0',
+      data: expect.stringMatching(/^0x/),
+      chainId: 100,
+    });
+    expect(options.intentKey).toBe(`safe-exec:100:${built.safeTxHash.toLowerCase()}`);
   });
 
   test('falls back to legacy gas pricing when the chain has no EIP-1559 data', async () => {
@@ -354,11 +394,12 @@ describe('deploySafe', () => {
     expect(safeAddress).toBe(predicted);
     expect(tx.hash).toBe('0x' + 'aa'.repeat(32));
 
-    const [params, signer] = mockSignAndSendTransaction.mock.calls[0];
+    const [params, signer, options] = mockSignAndSendTransaction.mock.calls[0];
     const factory = deployments.getProxyFactoryDeployment({ version: SAFE_VERSION }).defaultAddress;
     expect(params.to).toBe(factory);
     expect(params.value).toBe('0');
     await expect(signer.getAddress()).resolves.toBe(OWNERS[0]);
+    expect(options).toEqual({ intentKey: `safe-deploy:100:${predicted.toLowerCase()}` });
   });
 });
 

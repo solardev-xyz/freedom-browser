@@ -59,6 +59,18 @@ jest.mock('../../../tx-recorder', () => ({
     jest.requireActual('../../../transaction-service').signAndSendTransaction(params, signer),
 }));
 
+// Every send is an intent (transaction-service): its records live in a
+// temp dir for the run.
+jest.mock('../../../intent-store', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const actual = jest.requireActual('../../../intent-store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-fork-intents-'));
+  const store = actual.createIntentStore({ filePath: path.join(dir, 'wallet-intents.jsonl') });
+  return { ...actual, getIntentStore: () => store };
+});
+
 // Point protocol-kit and Safe's raw reads at the anvil forks.
 jest.mock('../../../provider-manager', () => {
   const { JsonRpcProvider: Provider } = require('ethers');

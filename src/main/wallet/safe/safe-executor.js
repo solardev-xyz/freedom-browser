@@ -36,6 +36,7 @@ const {
   getGasPrices,
   toFeeFields,
   signAndSendTransaction,
+  heldIntentFor,
 } = require('../transaction-service');
 const { signAndRecord } = require('../tx-recorder');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
@@ -90,6 +91,35 @@ function toJsonSafe(value) {
     JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? Number(v) : v))
   );
 }
+
+/**
+ * A SafeTx's EIP-712 payload, as every owner signs it, and its digest.
+ */
+function hashSafeTransaction({ safeAddress, chainId, data }) {
+  const typedData = toJsonSafe(
+    generateTypedData({
+      safeAddress,
+      safeVersion: SAFE_VERSION,
+      chainId: BigInt(chainId),
+      data,
+    })
+  );
+  const safeTxHash = TypedDataEncoder.hash(
+    typedData.domain,
+    withoutDomainType(typedData.types),
+    typedData.message
+  );
+  return { typedData, safeTxHash };
+}
+
+/**
+ * Intent keys (transaction-service's signAndSendTransaction): a retry of
+ * the same SafeTx execution, or of the same Safe's deployment, sends the
+ * held intent's own bytes again at its one nonce instead of signing anew.
+ */
+const execIntentKey = (chainId, safeTxHash) => `safe-exec:${chainId}:${safeTxHash.toLowerCase()}`;
+const deployIntentKey = (chainId, safeAddress) =>
+  `safe-deploy:${chainId}:${safeAddress.toLowerCase()}`;
 
 /**
  * Counterfactual (CREATE2) address for the given init params — the same
@@ -162,19 +192,11 @@ async function buildSafeTransaction({ chainId, safe, tx, provider }) {
   const safeTx = await kit.createTransaction({
     transactions: [{ to: getAddress(tx.to), value: String(tx.value ?? '0'), data: tx.data || '0x' }],
   });
-  const typedData = toJsonSafe(
-    generateTypedData({
-      safeAddress,
-      safeVersion: SAFE_VERSION,
-      chainId: BigInt(chainId),
-      data: safeTx.data,
-    })
-  );
-  const safeTxHash = TypedDataEncoder.hash(
-    typedData.domain,
-    withoutDomainType(typedData.types),
-    typedData.message
-  );
+  const { typedData, safeTxHash } = hashSafeTransaction({
+    safeAddress,
+    chainId,
+    data: safeTx.data,
+  });
 
   return { safeAddress, deployed, safeTxData: toJsonSafe(safeTx.data), safeTxHash, typedData };
 }
@@ -210,31 +232,40 @@ async function collectOwnerSignature({ typedData, ownerIndex }) {
  * Quote gas against the executor account and broadcast through the
  * ordinary transaction-service path (the executor EOA pays the fee).
  *
+ * `intentKey` names the send across retries: while its intent is held, a
+ * retry sends that intent's bytes again, so it needs no new quote.
+ *
  * With a `record` context the tx lands in payment history (the executor
  * address is stamped into the metadata automatically); without one the
  * broadcast is bare — callers own the recording decision.
  */
-async function sendViaExecutor({ chainId, to, data, executorIndex, record }) {
+async function sendViaExecutor({ chainId, to, data, executorIndex, record, intentKey }) {
   const executor = getSigner(executorIndex);
   const from = await executor.getAddress();
-  const [{ gasLimit }, gasPrices] = await Promise.all([
-    estimateGas({ from, to, value: '0', data, chainId }),
-    getGasPrices(chainId),
-  ]);
-  const params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
+  let params = { to, value: '0', data, chainId };
+  if (!(await heldIntentFor(intentKey))) {
+    const [{ gasLimit }, gasPrices] = await Promise.all([
+      estimateGas({ from, to, value: '0', data, chainId }),
+      getGasPrices(chainId),
+    ]);
+    params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
+  }
   if (record) {
     return signAndRecord(params, executor, {
       ...record,
       metadata: { ...record.metadata, executor: from },
+      intentKey,
     });
   }
-  return signAndSendTransaction(params, executor);
+  return signAndSendTransaction(params, executor, { intentKey });
 }
 
 /**
  * Submit a fully-signed SafeTx via `execTransaction`. Encoding is fully
  * local (protocol-kit's SafeTransaction sorts and concatenates the
  * signatures); only gas quoting and the broadcast touch the chain.
+ * Executing the same SafeTx again ("Try again") while its first execution
+ * is held sends that execution's bytes again, at its nonce.
  *
  * @param {Object} params
  * @param {number} params.chainId
@@ -265,12 +296,18 @@ async function execTransaction({ chainId, safeAddress, safeTxData, signatures, e
     refundReceiver,
     safeTx.encodedSignatures(),
   ]);
+  const { safeTxHash } = hashSafeTransaction({
+    safeAddress: getAddress(safeAddress),
+    chainId,
+    data: safeTx.data,
+  });
   return sendViaExecutor({
     chainId,
     to: getAddress(safeAddress),
     data: calldata,
     executorIndex,
     record,
+    intentKey: execIntentKey(chainId, safeTxHash),
   });
 }
 
@@ -280,7 +317,9 @@ async function execTransaction({ chainId, safeAddress, safeTxData, signatures, e
  * chain produce the same address, claiming any funds already sent there.
  *
  * Callers that already built the deployment (e.g. to quote its gas) pass
- * it as `deployment` to skip the second protocol-kit build.
+ * it as `deployment` to skip the second protocol-kit build. Deploying the
+ * same Safe again on the chain while its first deployment is held (an
+ * activation retry) sends that deployment's bytes again, at its nonce.
  *
  * @returns {Promise<{safeAddress: string, tx: Object}>}
  */
@@ -288,7 +327,14 @@ async function deploySafe({ owners, threshold, saltNonce, chainId, executorIndex
   const { safeAddress, to, data } =
     deployment ??
     (await buildDeploymentTransaction({ owners, threshold, saltNonce, chainId, provider }));
-  const tx = await sendViaExecutor({ chainId, to, data, executorIndex, record });
+  const tx = await sendViaExecutor({
+    chainId,
+    to,
+    data,
+    executorIndex,
+    record,
+    intentKey: deployIntentKey(chainId, safeAddress),
+  });
   return { safeAddress, tx };
 }
 

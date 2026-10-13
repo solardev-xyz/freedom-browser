@@ -1,3 +1,6 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { Wallet, Transaction } = require('ethers');
 const mockChainRequest = jest.fn();
 const mockGetFeeQuote = jest.fn();
@@ -16,6 +19,21 @@ const {
 jest.mock('./chains', () => ({
   getTxExplorerUrl: (chainId, hash) => `https://explorer.test/${chainId}/${hash}`,
 }));
+// Every send is an intent: each test gets its own records, in a temp dir.
+let mockIntentStore;
+jest.mock('./intent-store', () => ({
+  ...jest.requireActual('./intent-store'),
+  getIntentStore: () => mockIntentStore,
+}));
+const { createIntentStore } = require('./intent-store');
+let intentDir;
+beforeEach(() => {
+  intentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-service-intents-'));
+  mockIntentStore = createIntentStore({ filePath: path.join(intentDir, 'wallet-intents.jsonl') });
+});
+afterEach(() => {
+  fs.rmSync(intentDir, { recursive: true, force: true });
+});
 
 // Deterministic test key (not a real wallet)
 const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
@@ -127,8 +145,11 @@ describe('signAndSendTransaction (signer-based)', () => {
 
   it('maps insufficient-funds broadcast errors to a friendly message', async () => {
     mockChainRequest.mockResolvedValue({ result: '0x0', source: 'direct' });
+    // The drivers tag a refusal with its outcome (design 0005, "Outcome").
     mockBroadcastRawTransaction.mockRejectedValue(
-      new Error('insufficient funds for gas * price + value')
+      Object.assign(new Error('insufficient funds for gas * price + value'), {
+        outcome: 'rejected',
+      })
     );
 
     await expect(
@@ -136,7 +157,11 @@ describe('signAndSendTransaction (signer-based)', () => {
         { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000', gasPrice: '7', chainId: 1 },
         signer,
       ),
-    ).rejects.toThrow('Insufficient funds for transaction');
+    ).rejects.toMatchObject({
+      message: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      intentId: expect.any(String),
+    });
   });
 
   describe('signer sendTransaction capability (device broadcasts itself)', () => {
@@ -341,7 +366,7 @@ describe('capability-aware transaction routing', () => {
     ).rejects.toThrow('Transaction nonce error. Please try again.');
   });
 
-  test('surfaces the locally computed hash when a broadcaster returns a mismatch', async () => {
+  test('a broadcaster naming another hash makes the send uncertain, with the local hash', async () => {
     let localHash;
     mockChainRequest.mockResolvedValue({ result: '0x0', source: 'direct' });
     mockBroadcastRawTransaction.mockImplementation(async (_chainId, raw) => {
@@ -349,23 +374,22 @@ describe('capability-aware transaction routing', () => {
       return { result: `0x${'11'.repeat(32)}`, source: 'direct' };
     });
 
-    let failure;
-    try {
-      await signAndSendTransaction(
-        {
-          to: testWallet.address,
-          value: '1',
-          gasLimit: '21000',
-          gasPrice: '1',
-          chainId: 100,
-        },
-        signer
-      );
-    } catch (err) {
-      failure = err;
-    }
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure.message).toContain(localHash);
+    const result = await signAndSendTransaction(
+      {
+        to: testWallet.address,
+        value: '1',
+        gasLimit: '21000',
+        gasPrice: '1',
+        chainId: 100,
+      },
+      signer
+    );
+    // It may have been sent: never an error, and never the broadcaster's hash.
+    expect(result).toMatchObject({
+      hash: localHash,
+      outcome: 'uncertain',
+      broadcastSource: 'direct',
+    });
   });
 
   test('keeps polling after a transient confirmation-head failure', async () => {

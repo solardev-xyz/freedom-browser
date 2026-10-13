@@ -6,10 +6,13 @@
  * never touches key material.
  */
 
-const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
+const crypto = require('crypto');
+const { parseUnits, formatUnits, Interface, Transaction, keccak256 } = require('ethers');
 const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
+const { getIntentStore } = require('./intent-store');
+const { reserve, withAccountLock } = require('./nonce-reservations');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -231,12 +234,357 @@ function isPositiveFee(value) {
   }
 }
 
+// Today's friendly texts for send failures (texts are PR 10's). Device
+// backends' errors and the intent records' own refusals carry a stable code
+// and a message meant for the user, so they pass through as they are.
+function toSendError(err) {
+  if (typeof err.code === 'string' && /^(LEDGER|REMOTE|INTENT|NONCE)_/.test(err.code)) {
+    return err;
+  }
+
+  const message = String(err?.message || '');
+  const normalizedMessage = message.toLowerCase();
+  if (normalizedMessage.includes('insufficient funds')) {
+    return new Error('Insufficient funds for transaction', { cause: err });
+  }
+  if (
+    [
+      'nonce too low',
+      'nonce too high',
+      'invalid nonce',
+      'nonce has already been used',
+      'replacement transaction underpriced',
+    ].some((pattern) => normalizedMessage.includes(pattern))
+  ) {
+    return new Error('Transaction nonce error. Please try again.', { cause: err });
+  }
+  if (
+    normalizedMessage.includes('priority fee') ||
+    normalizedMessage.includes('priorityfee') ||
+    normalizedMessage.includes('maxfeepergas') ||
+    normalizedMessage.includes('maxpriorityfeepergas') ||
+    normalizedMessage.includes('fee cap') ||
+    normalizedMessage.includes('base fee')
+  ) {
+    return new Error('Transaction fee data is invalid. Please refresh and try again.', {
+      cause: err,
+    });
+  }
+  if (normalizedMessage.includes('gas')) {
+    return new Error('Gas estimation error. The transaction may fail.', { cause: err });
+  }
+  // Server errors (rate limiting, blocked, etc.)
+  if (
+    err.code === 'SERVER_ERROR' ||
+    message.includes('SERVER_ERROR') ||
+    message.includes('403') ||
+    message.includes('429') ||
+    normalizedMessage.includes('invalid numeric value')
+  ) {
+    return new Error('RPC provider temporarily unavailable. Please try again.', { cause: err });
+  }
+
+  return new Error(`Transaction failed: ${err.message}`, { cause: err });
+}
+
+/**
+ * Phone wallets (the remote signer) populate fees, pick the nonce and
+ * broadcast through their own RPC, so main has neither the nonce nor the
+ * bytes: no intent record, no reservation (design 0005, "Retrying an
+ * intent"). Only the intent fields go over; our gas parameters would be
+ * stale guesses by the time the user confirms on the device.
+ */
+async function sendThroughDevice({ to, value, data, chainId }, signer) {
+  try {
+    const from = await signer.getAddress();
+    const hash = await signer.sendTransaction({ to, value, data, chainId });
+    await verifyDeviceBroadcastFrom(hash, from, chainId);
+    console.log('[TransactionService] Transaction broadcast by signer:', hash);
+    return {
+      hash,
+      from,
+      to,
+      value,
+      chainId,
+      explorerUrl: getTxExplorerUrl(chainId, hash),
+    };
+  } catch (err) {
+    console.error('[TransactionService] Transaction failed:', err);
+    throw toSendError(err);
+  }
+}
+
+// The txpool refusals design 0005 lists ("Refusals"), as a `rejected`
+// outcome's reason class.
+const REFUSAL_CLASSES = [
+  'insufficient funds',
+  'nonce too low',
+  'replacement transaction underpriced',
+  'transaction underpriced',
+  'intrinsic gas too low',
+  'exceeds block gas limit',
+  'max fee per gas less than block base fee',
+  'max priority fee per gas higher than max fee per gas',
+  'invalid sender',
+  'invalid chain id',
+  'oversized data',
+  'transaction type not supported',
+];
+
+function refusalClass(err) {
+  const message = String(err?.message || '');
+  return REFUSAL_CLASSES.find((refusal) => message.startsWith(refusal)) ?? null;
+}
+
+function shortText(value, max) {
+  return typeof value === 'string' && value.length > 0 && value.length <= max ? value : null;
+}
+
+/**
+ * Hand a committed transaction of an intent to the broadcaster, and record
+ * how it ended. The handoff is committed before the bytes leave main.
+ *
+ * Returns for `sent` and `uncertain`: `uncertain` may have been sent, so it
+ * is never a failure, and the hash is always main's own keccak of the bytes.
+ * Throws only for `rejected` and `not_sent` (today's texts, with `outcome`
+ * and `intentId` on the error); nothing after a broadcast that may have gone
+ * out throws.
+ *
+ * @param {Object} intent - Intent store view: intentId, chainId, sender, nonce
+ * @param {{ handoffId: string, hash: string, raw: string }} handoff
+ * @param {{ resent?: boolean }} [extra]
+ */
+async function broadcastIntent(intent, handoff, extra = {}) {
+  const { intentId, chainId } = intent;
+  const { hash, raw } = handoff;
+  // Everything the result needs, before the bytes go anywhere.
+  const parsed = Transaction.from(raw);
+  const result = {
+    hash,
+    nonce: parsed.nonce,
+    from: parsed.from,
+    to: parsed.to,
+    value: parsed.value.toString(),
+    chainId,
+    explorerUrl: getTxExplorerUrl(chainId, hash),
+    intentId,
+    ...extra,
+  };
+
+  let outcome;
+  let source;
+  let failure = null;
+  try {
+    const broadcast = await chainData.broadcastRawTransaction(chainId, raw);
+    source = broadcast?.source ?? null;
+    // `sent` only when the broadcaster names these very bytes.
+    const named = typeof broadcast?.result === 'string' && broadcast.result.toLowerCase() === hash;
+    outcome = broadcast?.outcome !== 'uncertain' && named ? 'sent' : 'uncertain';
+    if (outcome === 'uncertain' && broadcast?.result && !named) {
+      console.warn(
+        `[TransactionService] Broadcaster answered ${broadcast.result} for ${hash}; treating it as uncertain`
+      );
+    }
+  } catch (err) {
+    failure = err;
+    source = err?.source ?? null;
+    // A throw with no outcome may have gone out.
+    outcome =
+      err?.outcome === 'rejected' || err?.outcome === 'not_sent' ? err.outcome : 'uncertain';
+  }
+
+  try {
+    await getIntentStore().outcome({
+      intentId,
+      handoffId: handoff.handoffId,
+      outcome,
+      source: shortText(source, 64),
+      reasonClass: outcome === 'rejected' ? refusalClass(failure) : null,
+    });
+  } catch (err) {
+    // The handoff stays open: possibly sent, which is the safe reading.
+    console.warn(
+      `[TransactionService] Could not record the outcome of intent ${intentId}:`,
+      err.message
+    );
+  }
+
+  if (outcome === 'rejected' || outcome === 'not_sent') {
+    console.error('[TransactionService] Transaction failed:', failure);
+    const error = toSendError(failure);
+    error.outcome = outcome;
+    error.intentId = intentId;
+    throw error;
+  }
+  if (failure) {
+    console.warn(
+      `[TransactionService] Broadcast of ${hash} ended without an outcome:`,
+      failure.message
+    );
+  }
+  console.log(`[TransactionService] Transaction ${outcome}:`, hash);
+  return { ...result, outcome, broadcastSource: source };
+}
+
+// Committed, but not handed off: nothing left main.
+function notSent(err, intentId) {
+  const error = toSendError(err);
+  error.outcome = 'not_sent';
+  error.intentId = intentId;
+  return error;
+}
+
+/**
+ * A new intent: reserve the account's next nonce, build the transaction at
+ * it, sign it (vault through the core, or a Ledger approval) and commit it,
+ * all under the account's lock; then, released, hand it to the broadcaster.
+ * A failure before the commit (a rejection on the device, a locked vault, a
+ * refused commit) leaves nothing recorded and nothing sent.
+ */
+async function sendNewIntent(params, signer, { context = {}, key = null } = {}) {
+  const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
+    params;
+  if (!gasLimit) throw new Error('Missing gas limit: refusing to sign a transaction without one');
+  // All raw-signing backends need complete fee data before device approval.
+  const fees = await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
+  const store = getIntentStore();
+
+  let intent;
+  try {
+    const from = await signer.getAddress();
+    let nonceSource;
+    const readPending = async () => {
+      const response = await chainData.request(chainId, 'eth_getTransactionCount', [
+        from,
+        'pending',
+      ]);
+      nonceSource = response.source;
+      return BigInt(response.result);
+    };
+
+    intent = await reserve({ chainId, sender: from, readPending, store }, async (nonce) => {
+      const tx = buildTransaction({
+        to,
+        value,
+        data,
+        gasLimit,
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        gasPrice: fees.gasPrice,
+        nonce,
+        chainId,
+      });
+
+      console.log('[TransactionService] Signing transaction:', {
+        to: tx.to,
+        value: tx.value,
+        gasLimit: tx.gasLimit,
+        chainId: tx.chainId,
+        nonce: tx.nonce,
+        nonceSource,
+      });
+
+      const raw = await signer.signTransaction(tx);
+      return store.commit({
+        intentId: crypto.randomUUID(),
+        chainId,
+        sender: from,
+        nonce,
+        hash: keccak256(raw),
+        raw,
+        via: 'original',
+        context: intentContext(context, key),
+      });
+    });
+  } catch (err) {
+    console.error('[TransactionService] Transaction failed:', err);
+    throw toSendError(err);
+  }
+
+  let handoff;
+  try {
+    handoff = await store.handoff(intent.intentId);
+  } catch (err) {
+    console.error('[TransactionService] Transaction not sent:', err);
+    throw notSent(err, intent.intentId);
+  }
+  return broadcastIntent(intent, handoff);
+}
+
+const KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
+// What the record keeps of a send's context: display-only, so a value the
+// record can't hold is dropped rather than failing the send.
+function intentContext(context, key) {
+  const walletIndex = context.walletIndex;
+  return {
+    kind: KIND_PATTERN.test(context.kind ?? '') ? context.kind : 'wallet-send',
+    origin: shortText(context.origin, 2048),
+    key,
+    walletIndex: Number.isSafeInteger(walletIndex) && walletIndex >= 0 ? walletIndex : null,
+  };
+}
+
+/**
+ * Send a held intent's latest committed bytes again: no signing and no
+ * nonce read, so it keeps its one nonce. The handoff is taken under the
+ * account's lock, which a void takes too: a voided intent is refused, and a
+ * void can't slip in while this one is under way. The broadcast itself runs
+ * after the lock is released, as a new intent's does.
+ *
+ * @param {string} intentId
+ * @returns {Promise<Object>} as signAndSendTransaction, with `resent: true`
+ */
+async function resendIntent(intentId) {
+  const store = getIntentStore();
+  await store.ready;
+  const intent = store.get(intentId);
+  if (!intent) {
+    const error = new Error(
+      "This payment is not in the wallet's records, so it can't be sent again."
+    );
+    error.code = 'INTENT_UNKNOWN';
+    throw error;
+  }
+  let handoff;
+  try {
+    handoff = await withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () =>
+      store.handoff(intentId)
+    );
+  } catch (err) {
+    console.error('[TransactionService] Transaction not sent:', err);
+    throw notSent(err, intentId);
+  }
+  console.log(`[TransactionService] Sending intent ${intentId} again at nonce ${intent.nonce}`);
+  return broadcastIntent(intent, handoff, { resent: true });
+}
+
+/**
+ * The held intent an intent key names (`safe-exec:<chain>:<safeTxHash>`,
+ * `safe-deploy:<chain>:<safeAddress>`), or null.
+ */
+async function heldIntentFor(intentKey) {
+  if (!intentKey) return null;
+  const store = getIntentStore();
+  await store.ready;
+  return store.byKey(intentKey);
+}
+
 /**
  * Sign and broadcast a transaction.
  *
  * Signing and broadcasting are separate steps so the signer can be
  * anything implementing the signer interface (vault key, hardware
  * device) — the provider only ever sees the serialized signed tx.
+ *
+ * Every send main signs is an intent (freedom-core design 0005, "Retrying
+ * an intent"): signed at one nonce, committed to the intent records before
+ * its bytes go anywhere, and never signed again at another nonce.
+ * - **Phone wallets** sign and broadcast themselves: today's path, no record.
+ * - **An `intentKey` naming a held intent** sends that intent's bytes again
+ *   (resendIntent): how Safe "Try again" and activation retries keep their
+ *   nonce.
+ * - **Anything else** is a new intent (sendNewIntent).
  *
  * Fee parameters are optional: when the caller supplies none they are
  * fetched from the network (see resolveFeeParams) rather than signed as
@@ -252,148 +600,21 @@ function isPositiveFee(value) {
  * @param {string} [params.gasPrice] - Gas price (legacy)
  * @param {number} params.chainId - Chain ID
  * @param {import('./signers').Signer} signer - Signer for the sending account
- * @returns {Promise<Object>} Transaction result
+ * @param {Object} [options]
+ * @param {string} [options.intentKey] - Names the intent across retries
+ * @param {{ kind?: string, origin?: string, walletIndex?: number }} [options.context]
+ *   what the intent record keeps for display
+ * @returns {Promise<Object>} Transaction result: `hash` (main's keccak of
+ *   the bytes), `nonce`, `from`, `to`, `value`, `chainId`, `explorerUrl`,
+ *   `broadcastSource`, `intentId` and `outcome` (`sent` or `uncertain`)
  */
-async function signAndSendTransaction(params, signer) {
-  const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
-
-  // Phone wallets populate fees and broadcast through their own RPC. All
-  // raw-signing backends need complete fee data before device approval.
-  const fees = typeof signer.sendTransaction === 'function'
-    ? null
-    : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
-
-  try {
-    const from = await signer.getAddress();
-
-    // Backends that can only sign-and-broadcast through their own channel
-    // (phone wallets) expose the optional sendTransaction capability: the
-    // remote wallet picks the nonce, estimates gas, and broadcasts via its
-    // own RPC — our gas parameters would be stale guesses by the time the
-    // user confirms on the device, so only the intent fields go over.
-    if (typeof signer.sendTransaction === 'function') {
-      const hash = await signer.sendTransaction({ to, value, data, chainId });
-      await verifyDeviceBroadcastFrom(hash, from, chainId);
-      console.log('[TransactionService] Transaction broadcast by signer:', hash);
-      return {
-        hash,
-        from,
-        to,
-        value,
-        chainId,
-        explorerUrl: getTxExplorerUrl(chainId, hash),
-      };
-    }
-
-    // Get nonce
-    const nonceResponse = await chainData.request(chainId, 'eth_getTransactionCount', [
-      from,
-      'pending',
-    ]);
-    const nonce = Number(BigInt(nonceResponse.result));
-
-    // Build transaction
-    const tx = buildTransaction({
-      to,
-      value,
-      data,
-      gasLimit,
-      maxFeePerGas: fees.maxFeePerGas,
-      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-      gasPrice: fees.gasPrice,
-      nonce,
-      chainId,
-    });
-
-    console.log('[TransactionService] Signing transaction:', {
-      to: tx.to,
-      value: tx.value,
-      gasLimit: tx.gasLimit,
-      chainId: tx.chainId,
-      nonce: tx.nonce,
-      nonceSource: nonceResponse.source,
-    });
-
-    const signedTransaction = await signer.signTransaction(tx);
-    const parsedTransaction = Transaction.from(signedTransaction);
-    const broadcast = await chainData.broadcastRawTransaction(chainId, signedTransaction);
-    if (
-      parsedTransaction.hash &&
-      String(broadcast.result).toLowerCase() !== parsedTransaction.hash.toLowerCase()
-    ) {
-      throw new Error(
-        `Transaction may have been broadcast as ${parsedTransaction.hash}, ` +
-        `but the broadcaster returned ${broadcast.result}`
-      );
-    }
-
-    console.log('[TransactionService] Transaction sent:', broadcast.result);
-
-    return {
-      hash: broadcast.result,
-      nonce: parsedTransaction.nonce,
-      from: parsedTransaction.from || from,
-      to: parsedTransaction.to,
-      value: parsedTransaction.value?.toString(),
-      chainId,
-      broadcastSource: broadcast.source,
-      explorerUrl: getTxExplorerUrl(chainId, broadcast.result),
-    };
-  } catch (err) {
-    console.error('[TransactionService] Transaction failed:', err);
-
-    // Device-backend errors (LEDGER_*/REMOTE_*) carry a stable code and a
-    // user-facing message; rewrapping them here would strip the code and
-    // let the local-provider heuristics below mislabel them.
-    if (typeof err.code === 'string' && /^(LEDGER|REMOTE)_/.test(err.code)) {
-      throw err;
-    }
-
-    // Parse common error messages
-    const message = String(err?.message || '');
-    const normalizedMessage = message.toLowerCase();
-    if (normalizedMessage.includes('insufficient funds')) {
-      throw new Error('Insufficient funds for transaction', { cause: err });
-    }
-    if (
-      [
-        'nonce too low',
-        'nonce too high',
-        'invalid nonce',
-        'nonce has already been used',
-        'replacement transaction underpriced',
-      ].some((pattern) => normalizedMessage.includes(pattern))
-    ) {
-      throw new Error('Transaction nonce error. Please try again.', { cause: err });
-    }
-    if (
-      normalizedMessage.includes('priority fee') ||
-      normalizedMessage.includes('priorityfee') ||
-      normalizedMessage.includes('maxfeepergas') ||
-      normalizedMessage.includes('maxpriorityfeepergas') ||
-      normalizedMessage.includes('fee cap') ||
-      normalizedMessage.includes('base fee')
-    ) {
-      throw new Error('Transaction fee data is invalid. Please refresh and try again.', {
-        cause: err,
-      });
-    }
-    if (normalizedMessage.includes('gas')) {
-      throw new Error('Gas estimation error. The transaction may fail.', { cause: err });
-    }
-    // Server errors (rate limiting, blocked, etc.)
-    if (
-      err.code === 'SERVER_ERROR' ||
-      message.includes('SERVER_ERROR') ||
-      message.includes('403') ||
-      message.includes('429') ||
-      normalizedMessage.includes('invalid numeric value')
-    ) {
-      throw new Error('RPC provider temporarily unavailable. Please try again.', { cause: err });
-    }
-
-    throw new Error(`Transaction failed: ${err.message}`, { cause: err });
+async function signAndSendTransaction(params, signer, { intentKey = null, context = {} } = {}) {
+  if (typeof signer.sendTransaction === 'function') {
+    return sendThroughDevice(params, signer);
   }
+  const held = await heldIntentFor(intentKey);
+  if (held) return resendIntent(held.intentId);
+  return sendNewIntent(params, signer, { context, key: intentKey });
 }
 
 /**
@@ -476,6 +697,8 @@ module.exports = {
   formatAmount,
   buildTransaction,
   signAndSendTransaction,
+  resendIntent,
+  heldIntentFor,
   getTransactionStatus,
   waitForTransaction,
 };
