@@ -2,7 +2,8 @@
  * Chain data's parity with the JS router, through the real freedom-cored
  * (freedom-core design 0005, Replay). freedom-core's replay vectors
  * (`vectors/chain-replay.json`: each call, the I/O it made and today's
- * result, recorded from the pinned chain-data-router.js) run through
+ * result, recorded from the pinned chain-data-router.js of freedom-browser
+ * fb540328, the JS router step 5.5 deleted) run through
  * main's drivers, its executors and a real core:
  *
  * - **Main's configuration** comes from each scenario's world: its registry

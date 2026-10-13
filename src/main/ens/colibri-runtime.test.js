@@ -126,8 +126,8 @@ describe('colibri-runtime disables the native addon before the package loads', (
     // The header claims a single entry point that "cannot be bypassed by a
     // second require site", so this has to scan the whole shipped tree, not
     // just colibri-resolver: a direct require anywhere in the main process
-    // (e.g. chain-data-router) would initialize the runtime with the flag
-    // unset if it loads before colibri-runtime does, re-arming the segfault
+    // (e.g. a chain-data executor) would initialize the runtime with the
+    // flag unset if it loads before colibri-runtime does, re-arming the segfault
     // while every other test here still passes.
     const SRC = path.join(__dirname, '..', '..');
     const offenders = [];
