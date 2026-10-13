@@ -585,3 +585,96 @@ describe('NamingDriver.open (dweb.open, freedom-core design 0006)', () => {
     expect(client.requestTo).not.toHaveBeenCalled();
   });
 });
+
+describe('NamingDriver.open: every wait in the request lifetime', () => {
+  const params = {
+    url: 'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/',
+    method: 'GET',
+    headers: [],
+    backend: { ipfs: 'native', up: true },
+  };
+  const never = new Promise(() => {});
+  const planned = () => ({ plan: { fetch: {} }, generations: GEN, attempts: 0 });
+
+  afterEach(() => jest.useRealTimers());
+
+  test('an abort settles a wait for a quiet configuration at once, with nothing sent', async () => {
+    const { driver, client, config } = setUp(() => planned());
+    // Initializing, a control queued: the configuration never goes quiet.
+    config.idle.mockReturnValue(false);
+    config.whenServing.mockReturnValue(never);
+    client.whenReady.mockReturnValue(never);
+    const page = new AbortController();
+    const opened = driver.open(params, { signal: page.signal }).catch((err) => err);
+    await new Promise(setImmediate);
+    page.abort();
+    expect(await opened).toMatchObject({ code: 'cancelled' });
+    expect(client.requestTo).not.toHaveBeenCalled();
+  });
+
+  test('the deadline settles a wait on `ready`, whose signal aborts with it', async () => {
+    jest.useFakeTimers();
+    const { driver } = setUp(() => planned());
+    let readySignal = null;
+    const ready = jest.fn((_reply, signal) => {
+      readySignal = signal;
+      return never;
+    });
+    const opened = driver.open(params, { ready }).catch((err) => err);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(readySignal.aborted).toBe(false);
+    await jest.advanceTimersByTimeAsync(DEADLINE_MS);
+    expect(await opened).toMatchObject({ code: 'deadline' });
+    expect(readySignal.aborted).toBe(true);
+  });
+
+  test('an abort during `ready` aborts its signal and settles at once', async () => {
+    const { driver } = setUp(() => planned());
+    let readySignal = null;
+    const page = new AbortController();
+    const opened = driver
+      .open(params, {
+        signal: page.signal,
+        ready: (_reply, signal) => {
+          readySignal = signal;
+          return never;
+        },
+      })
+      .catch((err) => err);
+    await new Promise(setImmediate);
+    page.abort();
+    expect(await opened).toMatchObject({ code: 'cancelled' });
+    expect(readySignal.aborted).toBe(true);
+  });
+
+  test("the plan's use follows the final judgment in the same turn, and is its result", async () => {
+    const { driver, config } = setUp(() => planned());
+    const order = [];
+    const idle = config.idle.getMockImplementation();
+    config.idle.mockImplementation((gen) => {
+      order.push('judged');
+      queueMicrotask(() => order.push('next turn'));
+      return idle(gen);
+    });
+    const use = jest.fn(() => {
+      order.push('used');
+      return 'response';
+    });
+    expect(await driver.open(params, { ready: async () => {}, use })).toBe('response');
+    expect(order.slice(-3)).toEqual(['judged', 'used', 'next turn']);
+  });
+
+  test('a process that stops serving before the plan is used is core_unavailable', async () => {
+    const { driver, client } = setUp(() => planned());
+    const use = jest.fn();
+    const ready = async () => {
+      // Fenced off, its exit not yet delivered: the configuration is idle.
+      client.serves.mockReturnValue(false);
+    };
+    await expect(driver.open(params, { ready, use })).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    expect(use).not.toHaveBeenCalled();
+  });
+});
