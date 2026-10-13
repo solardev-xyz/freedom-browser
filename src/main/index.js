@@ -321,6 +321,7 @@ const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-m
 const { startCore, stopCore } = require('./core/core-process');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
+const { getIntentStore } = require('./wallet/intent-store');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
@@ -444,6 +445,12 @@ async function bootstrap() {
   registerWalletIpc();
   registerLedgerIpc();
   registerRemoteSignerIpc();
+  // The wallet's durable intent records (freedom-core design 0005, "Retrying
+  // an intent"): read, checked and compacted once at startup. A damaged file
+  // is set aside here. Sends don't use them yet.
+  getIntentStore()
+    .load()
+    .catch((err) => log.warn(`[App] wallet intent records unavailable: ${err.message}`));
 
   // Let identity (re)injection stop the Bee node before wiping its statestore
   // (which it holds a LevelDB lock on) and restart it with the new key. Without
