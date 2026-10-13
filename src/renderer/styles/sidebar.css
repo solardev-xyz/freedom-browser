@@ -6449,11 +6449,12 @@
 }
 
 /* Keeps its fill: the generic hover above, and the light theme's below,
-   would otherwise put white text on a translucent fill. */
+   would otherwise put white text on a translucent fill. No opacity change
+   either: composited over the row, 90% opacity drops the light theme's
+   white-on-accent below 4.5:1. */
 .safe-status-btn.primary:hover:not(:disabled) {
   background: var(--accent);
   border-color: var(--accent);
-  opacity: 0.9;
 }
 
 [data-theme="light"] .safe-status-card {

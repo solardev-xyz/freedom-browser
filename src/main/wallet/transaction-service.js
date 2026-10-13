@@ -672,15 +672,18 @@ async function replacementFees(intentId) {
       return floor;
     }
   };
+  // The maximum fee and a legacy gas price must be positive in a
+  // replacement (replacementFeesFor). An original sent at 0, with no quote
+  // to raise it, is offered 1 wei: the smallest replacement allowed.
+  const positive = (n) => (n > 0n ? n : 1n);
   if (fields.type === 2) {
     const eip1559 = quote?.type === 'eip1559';
     const maxPriorityFeePerGas = atLeast(
       bumped(fields.maxPriorityFeePerGas),
       eip1559 ? quote.maxPriorityFeePerGas : null
     );
-    let maxFeePerGas = atLeast(
-      bumped(fields.maxFeePerGas),
-      eip1559 ? quote.maxFeePerGas : quote?.gasPrice
+    let maxFeePerGas = positive(
+      atLeast(bumped(fields.maxFeePerGas), eip1559 ? quote.maxFeePerGas : quote?.gasPrice)
     );
     if (maxPriorityFeePerGas > maxFeePerGas) maxFeePerGas = maxPriorityFeePerGas;
     return {
@@ -689,7 +692,9 @@ async function replacementFees(intentId) {
     };
   }
   return {
-    gasPrice: atLeast(bumped(fields.gasPrice), quote?.gasPrice ?? quote?.maxFeePerGas).toString(),
+    gasPrice: positive(
+      atLeast(bumped(fields.gasPrice), quote?.gasPrice ?? quote?.maxFeePerGas)
+    ).toString(),
   };
 }
 

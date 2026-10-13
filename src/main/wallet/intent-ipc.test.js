@@ -1229,29 +1229,51 @@ describe('replacement fees (9)', () => {
   });
 
   // #710 review: an offer the replacement handler refused.
-  test('a zero tip is offered at its zero floor with no quote, and that offer goes through', async () => {
-    const running = startReplacing();
-    const intent = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
-    expect(intent.fields).toMatchObject({ type: 2, maxPriorityFeePerGas: '0' });
-    mockFeeQuote.mockRejectedValue(new Error('quote unavailable'));
-    const offer = await running.fees(intent.intentId);
-    expect(offer).toEqual({
-      success: true,
-      fees: { maxFeePerGas: '110', maxPriorityFeePerGas: '0' },
-    });
+  // #710 review (rounds 1 and 2): an offer the replacement handler
+  // refused. Each original is sent at a zero fee through the send path,
+  // with no quote to raise the offer: the offer is still one the handler
+  // takes, confirmed and signed as offered.
+  test.each([
+    [
+      'a zero tip',
+      { maxFeePerGas: '100', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '110', maxPriorityFeePerGas: '0' },
+      (tx) => [tx.type, tx.maxFeePerGas, tx.maxPriorityFeePerGas],
+      [2, 110n, 0n],
+    ],
+    [
+      'a zero cap and tip',
+      { maxFeePerGas: '0', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '1', maxPriorityFeePerGas: '0' },
+      (tx) => [tx.type, tx.maxFeePerGas, tx.maxPriorityFeePerGas],
+      [2, 1n, 0n],
+    ],
+    [
+      'a zero gas price',
+      { gasPrice: '0' },
+      { gasPrice: '1' },
+      (tx) => [tx.type, tx.gasPrice],
+      [0, 1n],
+    ],
+  ])(
+    '%s is offered a replacement the handler accepts, with no quote',
+    async (_name, original, offered, feesOf, signed) => {
+      const running = startReplacing();
+      const intent = await underpriced(running, original);
+      expect(intent.fields).toMatchObject(original);
+      mockFeeQuote.mockRejectedValue(new Error('quote unavailable'));
+      const offer = await running.fees(intent.intentId);
+      expect(offer).toEqual({ success: true, fees: offered });
 
-    await expect(replaceConfirmed(running, intent, offer.fees)).resolves.toMatchObject({
-      success: true,
-      nonce: 7,
-    });
-    const replacement = broadcasts().at(-1);
-    expect([
-      replacement.type,
-      replacement.nonce,
-      replacement.maxFeePerGas,
-      replacement.maxPriorityFeePerGas,
-    ]).toEqual([2, 7, 110n, 0n]);
-  });
+      await expect(replaceConfirmed(running, intent, offer.fees)).resolves.toMatchObject({
+        success: true,
+        nonce: 7,
+      });
+      const replacement = broadcasts().at(-1);
+      expect(replacement.nonce).toBe(7);
+      expect(feesOf(replacement)).toEqual(signed);
+    }
+  );
 
   test('a zero or negative maximum fee, and a negative tip, are still refused', async () => {
     const running = startReplacing();

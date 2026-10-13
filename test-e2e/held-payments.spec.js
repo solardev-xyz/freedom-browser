@@ -339,23 +339,52 @@ test('a primary button keeps its fill when hovered, in both themes', async ({
   await window.click('#held-payments-row');
   await rowOf(window, UNDERPRICED).locator('[data-action="replace"]').click();
   const confirm = rowOf(window, UNDERPRICED).locator('[data-action="confirm-replace"]');
-  const paint = () =>
-    confirm.evaluate((el) => {
+  // What the screen shows: the element's text and fill composited with its
+  // (and its ancestors') opacity over the backdrop its ancestors paint, so
+  // a translucent fill or a group opacity counts, not just the declared
+  // colours. Colours as [r, g, b] in 0-255.
+  const shown = (locator) =>
+    locator.evaluate((el) => {
+      const parse = (css) => {
+        const [r, g, b, a = 1] = css.match(/[\d.]+/g).map(Number);
+        return { r, g, b, a };
+      };
+      const over = (top, bottom) => ({
+        r: top.r * top.a + bottom.r * (1 - top.a),
+        g: top.g * top.a + bottom.g * (1 - top.a),
+        b: top.b * top.a + bottom.b * (1 - top.a),
+        a: 1,
+      });
+      const ancestors = [];
+      for (let node = el.parentElement; node; node = node.parentElement) ancestors.unshift(node);
+      let backdrop = { r: 255, g: 255, b: 255, a: 1 };
+      for (const node of ancestors)
+        backdrop = over(parse(getComputedStyle(node).backgroundColor), backdrop);
+      let opacity = 1;
+      for (let node = el; node; node = node.parentElement)
+        opacity *= Number(getComputedStyle(node).opacity);
       const style = getComputedStyle(el);
-      return { background: style.backgroundColor, color: style.color };
+      const fill = over(parse(style.backgroundColor), backdrop);
+      const text = over(parse(style.color), fill);
+      const composite = (c) => {
+        const out = over({ ...c, a: opacity }, backdrop);
+        return [out.r, out.g, out.b];
+      };
+      return {
+        opacity,
+        fill: composite(fill),
+        text: composite(text),
+        declared: style.backgroundColor,
+      };
     });
-  // WCAG relative luminance contrast of two rgb() colors.
+  // WCAG relative luminance contrast of two [r, g, b] colours.
   const contrast = (a, b) => {
     const lum = (rgb) => {
-      const [r, g, b] = rgb
-        .match(/[\d.]+/g)
-        .slice(0, 3)
-        .map(Number)
-        .map((c) => {
-          const v = c / 255;
-          return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-        });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const [r, g, bl] = rgb.map((c) => {
+        const v = c / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
     };
     const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
     return (hi + 0.05) / (lo + 0.05);
@@ -363,28 +392,24 @@ test('a primary button keeps its fill when hovered, in both themes', async ({
   for (const theme of ['dark', 'light']) {
     await setTheme(window, theme);
     await window.mouse.move(0, 0);
-    const rest = await paint();
+    const rest = await shown(confirm);
     await confirm.hover();
-    const hovered = await paint();
-    expect({ theme, background: hovered.background }).toEqual({
+    const hovered = await shown(confirm);
+    // The same fill hovered as at rest, opaque, at full opacity.
+    expect({ theme, declared: hovered.declared, opacity: hovered.opacity }).toEqual({
       theme,
-      background: rest.background,
+      declared: rest.declared,
+      opacity: 1,
     });
-    // An opaque fill: no translucent overlay under white text.
-    expect(hovered.background).toMatch(/^rgb\(/);
-    // No worse than the app's own primary button (Send's Confirm), and
-    // AA for normal text in the light theme. (The dark theme's accent
-    // buttons are white on #8ab4f8 throughout the app.)
-    const reference = await window.evaluate(() => {
-      const style = getComputedStyle(document.getElementById('send-confirm-btn'));
-      return { background: style.backgroundColor, color: style.color };
-    });
-    expect(contrast(hovered.color, hovered.background)).toBeGreaterThanOrEqual(
-      contrast(reference.color, reference.background) - 0.01
-    );
-    if (theme === 'light') {
-      expect(contrast(hovered.color, hovered.background)).toBeGreaterThanOrEqual(4.5);
-    }
+    expect(hovered.declared).toMatch(/^rgb\(/);
+    // No worse than the app's own primary button (Send's Confirm), and AA
+    // for normal text in the light theme, as the screen composites them.
+    // (The dark theme's accent buttons are white on #8ab4f8 throughout the
+    // app.)
+    const reference = await shown(window.locator('#send-confirm-btn'));
+    const seen = contrast(hovered.text, hovered.fill);
+    expect(seen).toBeGreaterThanOrEqual(contrast(reference.text, reference.fill) - 0.01);
+    if (theme === 'light') expect(seen).toBeGreaterThanOrEqual(4.5);
   }
   await setTheme(window, 'dark');
 });
