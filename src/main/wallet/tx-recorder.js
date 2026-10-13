@@ -41,17 +41,21 @@ function pollReceipt(rowId, hash, chainId) {
     });
 }
 
-// History rows this run wrote, by intent id: sending an intent again
+// History rows this run wrote, by intent id: any later reply for the
+// intent (a resend's, or its original send's arriving after a resend's)
 // updates its row instead of adding one.
 const rowsByIntent = new Map();
 // How far back a resend after a restart looks for its intent's row.
 const ROW_LOOKBACK = 500;
 
-function findIntentRow(intentId, chainId, kind) {
+function findIntentRow(response, kind) {
+  const { intentId } = response;
   if (rowsByIntent.has(intentId)) return paymentHistory.getById(rowsByIntent.get(intentId));
+  // Only a resend can follow a row written by an earlier run.
+  if (!response.resent) return null;
   return (
     paymentHistory
-      .getRecent({ chainId, kind, limit: ROW_LOOKBACK })
+      .getRecent({ chainId: response.chainId, kind, limit: ROW_LOOKBACK })
       .find((row) => row.metadata?.intentId === intentId) ?? null
   );
 }
@@ -65,7 +69,8 @@ function metadataFor(metadata, response) {
 /**
  * Send, then write the payment-history row: one row per intent. Sending
  * an intent again (a Safe "Try again", for instance) updates the row its
- * first send wrote, or writes it if that send failed before it could.
+ * first send wrote, or writes it if that send failed before it could; so
+ * does a first send whose reply comes after a resend's.
  *
  * @param {object} params       Same shape as signAndSendTransaction.
  * @param {import('./signers').Signer} signer
@@ -87,21 +92,22 @@ function metadataFor(metadata, response) {
  *                                      recipient — pass this explicitly when
  *                                      you have the real recipient)
  * @param {object} [context.metadata]   free-form per-kind extras
- * @param {string} [context.intentKey]  names the intent across retries
- *                                      (signAndSendTransaction)
+ * @param {object} [options]
+ * @param {string} [options.intentKey]  names the intent across retries
+ *                                      (signAndSendTransaction). Main's own
+ *                                      callers only: never read from
+ *                                      `context`, which a renderer may fill.
  */
-async function signAndRecord(params, signer, context) {
+async function signAndRecord(params, signer, context, { intentKey = null } = {}) {
   const response = await signAndSendTransaction(params, signer, {
-    intentKey: context.intentKey ?? null,
+    intentKey,
     context: { kind: context.kind, origin: context.origin },
   });
 
   let row;
   let existing;
   try {
-    existing = response.resent
-      ? findIntentRow(response.intentId, response.chainId, context.kind)
-      : null;
+    existing = response.intentId ? findIntentRow(response, context.kind) : null;
     if (existing) {
       row =
         paymentHistory.update(existing.id, {

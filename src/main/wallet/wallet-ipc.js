@@ -57,11 +57,20 @@ function isAllowedRpcUrl(rpcUrl) {
   return false;
 }
 
+// The renderer's context is display data for the history row. An intent
+// key in it would name a held intent to send again, outside this request's
+// authorization: keys come only from main's own callers (Safe execution and
+// deployment), so any key-like field is dropped here.
+const RENDERER_KEY_FIELD = /^(intent_?key|key)$/i;
+
 // Shared body of the two send-transaction IPC handlers. They differ only
 // in which wallet index signs and which payment-history kind tags the
 // resulting row.
 function buildTxRecordContext(kind, context = {}) {
-  return { ...context, kind };
+  const display = Object.fromEntries(
+    Object.entries(context ?? {}).filter(([name]) => !RENDERER_KEY_FIELD.test(name))
+  );
+  return { ...display, kind };
 }
 
 function notAuthorized(reason) {

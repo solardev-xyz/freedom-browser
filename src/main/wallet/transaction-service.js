@@ -11,7 +11,7 @@ const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
 const { getIntentStore } = require('./intent-store');
-const { reserve, withAccountLock } = require('./nonce-reservations');
+const { reserve, withAccountLock, withIntentKeyLock } = require('./nonce-reservations');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -436,17 +436,19 @@ function notSent(err, intentId) {
 /**
  * A new intent: reserve the account's next nonce, build the transaction at
  * it, sign it (vault through the core, or a Ledger approval) and commit it,
- * all under the account's lock; then, released, hand it to the broadcaster.
- * A failure before the commit (a rejection on the device, a locked vault, a
- * refused commit) leaves nothing recorded and nothing sent.
+ * all under the account's lock. Resolves with the committed intent (its id
+ * named by the store); nothing has been sent yet. A failure before the
+ * commit (a rejection on the device, a locked vault, a refused commit)
+ * leaves nothing recorded.
  */
-async function sendNewIntent(params, signer, { context = {}, key = null } = {}) {
+async function commitNewIntent(params, signer, { context = {}, key = null } = {}) {
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
     params;
   if (!gasLimit) throw new Error('Missing gas limit: refusing to sign a transaction without one');
   // All raw-signing backends need complete fee data before device approval.
   const fees = await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
   const store = getIntentStore();
+  await store.ready;
 
   let intent;
   try {
@@ -500,10 +502,15 @@ async function sendNewIntent(params, signer, { context = {}, key = null } = {}) 
     console.error('[TransactionService] Transaction failed:', err);
     throw toSendError(err);
   }
+  return intent;
+}
 
+// A committed new intent, handed to the broadcaster once the account's
+// lock is released.
+async function handOff(intent) {
   let handoff;
   try {
-    handoff = await store.handoff(intent.intentId);
+    handoff = await getIntentStore().handoff(intent.intentId);
   } catch (err) {
     console.error('[TransactionService] Transaction not sent:', err);
     throw notSent(err, intent.intentId);
@@ -571,6 +578,41 @@ async function heldIntentFor(intentKey) {
 }
 
 /**
+ * A send under an intent key: the operation's first send creates the
+ * intent, any later one sends it again. Keys come from main's own callers
+ * only (Safe execution and deployment derive theirs), never from a
+ * renderer. The decision is made under the key's lock, and the key is
+ * checked again inside it before `pending` is read or anything is signed,
+ * so two first sends can't both create the intent: the second waits and
+ * sends the first's bytes again. A held intent of another chain, sender or
+ * kind is refused, with nothing sent.
+ */
+async function sendUnderKey(params, signer, intentKey, context) {
+  const next = await withIntentKeyLock({ intentKey }, async () => {
+    const held = await heldIntentFor(intentKey);
+    if (!held) {
+      return { committed: await commitNewIntent(params, signer, { context, key: intentKey }) };
+    }
+    const sender = String(await signer.getAddress()).toLowerCase();
+    const { kind } = intentContext(context, intentKey);
+    if (
+      held.chainId !== Number(params.chainId) ||
+      held.sender !== sender ||
+      held.context.kind !== kind
+    ) {
+      const error = new Error(
+        "This payment's records belong to another account, network or kind of payment. " +
+          'Nothing was sent.'
+      );
+      error.code = 'INTENT_KEY_MISMATCH';
+      throw error;
+    }
+    return { held };
+  });
+  return next.held ? resendIntent(next.held.intentId) : handOff(next.committed);
+}
+
+/**
  * Sign and broadcast a transaction.
  *
  * Signing and broadcasting are separate steps so the signer can be
@@ -581,10 +623,11 @@ async function heldIntentFor(intentKey) {
  * an intent"): signed at one nonce, committed to the intent records before
  * its bytes go anywhere, and never signed again at another nonce.
  * - **Phone wallets** sign and broadcast themselves: today's path, no record.
- * - **An `intentKey` naming a held intent** sends that intent's bytes again
- *   (resendIntent): how Safe "Try again" and activation retries keep their
- *   nonce.
- * - **Anything else** is a new intent (sendNewIntent).
+ * - **An `intentKey`**, from main's own callers only, names an operation
+ *   that may be retried (sendUnderKey): its first send creates the intent,
+ *   later ones send its bytes again (resendIntent). That is how Safe "Try
+ *   again" and activation retries keep their nonce.
+ * - **Anything else** is a new intent.
  *
  * Fee parameters are optional: when the caller supplies none they are
  * fetched from the network (see resolveFeeParams) rather than signed as
@@ -601,7 +644,8 @@ async function heldIntentFor(intentKey) {
  * @param {number} params.chainId - Chain ID
  * @param {import('./signers').Signer} signer - Signer for the sending account
  * @param {Object} [options]
- * @param {string} [options.intentKey] - Names the intent across retries
+ * @param {string} [options.intentKey] - Names the intent across retries.
+ *   Main's own callers only: never pass a renderer's value.
  * @param {{ kind?: string, origin?: string, walletIndex?: number }} [options.context]
  *   what the intent record keeps for display
  * @returns {Promise<Object>} Transaction result: `hash` (main's keccak of
@@ -612,9 +656,8 @@ async function signAndSendTransaction(params, signer, { intentKey = null, contex
   if (typeof signer.sendTransaction === 'function') {
     return sendThroughDevice(params, signer);
   }
-  const held = await heldIntentFor(intentKey);
-  if (held) return resendIntent(held.intentId);
-  return sendNewIntent(params, signer, { context, key: intentKey });
+  if (intentKey) return sendUnderKey(params, signer, intentKey, context);
+  return handOff(await commitNewIntent(params, signer, { context }));
 }
 
 /**

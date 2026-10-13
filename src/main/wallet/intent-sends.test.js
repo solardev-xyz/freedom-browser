@@ -29,8 +29,19 @@ jest.mock('electron', () => ({
 }));
 jest.mock('better-sqlite3', () => require('../../../test/helpers/fake-better-sqlite3-payments'));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+// Every signature a Safe executor makes, by wallet index and nonce.
+const mockSignatures = [];
 jest.mock('./signers', () => ({
-  getSigner: (index) => require('./safe/__tests__/helpers/test-owners').createTestSigner(index),
+  getSigner: (index) => {
+    const signer = require('./safe/__tests__/helpers/test-owners').createTestSigner(index);
+    return {
+      ...signer,
+      signTransaction: (tx) => {
+        mockSignatures.push({ index, nonce: tx.nonce });
+        return signer.signTransaction(tx);
+      },
+    };
+  },
 }));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
@@ -68,6 +79,7 @@ const broadcastRaws = () => mockBroadcast.mock.calls.map(([, raw]) => raw);
 const intentFile = () => path.join(mockUserData, 'wallet-intents.jsonl');
 
 beforeEach(() => {
+  mockSignatures.length = 0;
   mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-sends-'));
   pending = 7;
   mockChainRequest.mockReset().mockImplementation(async (_chainId, method) => {
@@ -606,8 +618,162 @@ describe('Safe', () => {
   });
 });
 
+describe('review fixes (#706)', () => {
+  const { ownerWallet } = require('./safe/__tests__/helpers/test-owners');
+  const deployment = {
+    safeAddress: '0x' + '5a'.repeat(20),
+    to: '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67',
+    data: '0x1688f0b9',
+  };
+  const deploy = (safe, executorIndex = 0) =>
+    safe.deploySafe({
+      owners: [ownerWallet(0).address],
+      threshold: 1,
+      saltNonce: '1',
+      chainId: CHAIN,
+      executorIndex,
+      deployment,
+    });
+
+  describe('M1: a key names only an intent of the same chain, sender and kind', () => {
+    test.each([
+      ['another sender', { signer: 'bob' }],
+      ['another chain', { chainId: 1 }],
+      ['another kind', { kind: 'dapp-send' }],
+    ])('a held intent of %s is refused, with nothing signed or sent', async (_name, change) => {
+      const { tx, store } = start();
+      const key = 'safe-exec:100:0xabc';
+      mockBroadcast.mockImplementationOnce(async () => {
+        throw tagged('Myotis is not ready', 'not_sent');
+      });
+      const failure = await tx
+        .signAndSendTransaction(PARAMS, signer, { intentKey: key, context: { kind: 'safe-send' } })
+        .catch((error) => error);
+      const held = store.get(failure.intentId);
+      const bob = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+      const caller =
+        change.signer === 'bob'
+          ? { getAddress: async () => bob.address, signTransaction: jest.fn() }
+          : signer;
+      signer.signTransaction.mockClear();
+
+      await expect(
+        tx.signAndSendTransaction({ ...PARAMS, chainId: change.chainId ?? CHAIN }, caller, {
+          intentKey: key,
+          context: { kind: change.kind ?? 'safe-send' },
+        })
+      ).rejects.toMatchObject({ code: 'INTENT_KEY_MISMATCH' });
+      expect(mockBroadcast).toHaveBeenCalledTimes(1);
+      expect(caller.signTransaction).not.toHaveBeenCalled();
+      expect(store.get(held.intentId).handoffs).toHaveLength(1);
+    });
+  });
+
+  describe('M2: one operation, one signature, however many first sends', () => {
+    test('two simultaneous first deployments sign once; the second sends the same bytes', async () => {
+      // The review's probe.
+      const { store } = start();
+      const safe = require('./safe/safe-executor');
+      const [first, second] = await Promise.all([deploy(safe), deploy(safe)]);
+
+      expect(mockSignatures).toEqual([{ index: 0, nonce: 7 }]);
+      expect(pendingReads()).toHaveLength(1);
+      expect(second.tx).toMatchObject({ intentId: first.tx.intentId, nonce: 7, resent: true });
+      expect(first.tx.resent).toBeUndefined();
+      const [a, b] = broadcastRaws();
+      expect(b).toBe(a);
+      expect(store.held()).toHaveLength(1);
+    });
+
+    test('a first deployment through another executor waits, then is refused, unsigned', async () => {
+      const { store } = start();
+      const safe = require('./safe/safe-executor');
+      const [first, second] = await Promise.allSettled([deploy(safe, 0), deploy(safe, 2)]);
+
+      expect(first).toMatchObject({ status: 'fulfilled' });
+      expect(second).toMatchObject({ status: 'rejected', reason: { code: 'INTENT_KEY_MISMATCH' } });
+      expect(mockSignatures).toEqual([{ index: 0, nonce: 7 }]);
+      expect(store.held()).toHaveLength(1);
+    });
+  });
+
+  describe('N1: one history row, whichever reply comes last', () => {
+    test("the original's reply after its resend's updates the row", async () => {
+      // The review's probe.
+      start();
+      const { signAndRecord } = require('./tx-recorder');
+      const history = require('../payment-history');
+      let release;
+      const held = new Promise((resolve) => {
+        release = resolve;
+      });
+      mockBroadcast.mockImplementationOnce(async (chainId, raw) => {
+        await held;
+        return sent(chainId, raw);
+      });
+      const options = { intentKey: 'safe-exec:100:0xdef' };
+      const original = signAndRecord(PARAMS, signer, { kind: 'safe-send' }, options);
+      await until(() => mockBroadcast.mock.calls.length === 1);
+
+      const resent = await signAndRecord(PARAMS, signer, { kind: 'safe-send' }, options);
+      expect(resent).toMatchObject({ resent: true, recorded: true });
+      release();
+      const first = await original;
+
+      expect(first).toMatchObject({ intentId: resent.intentId, paymentId: resent.paymentId });
+      const rows = history.getRecent({});
+      expect(rows).toHaveLength(1);
+      expect(rows[0].metadata).toMatchObject({ intentId: resent.intentId });
+    });
+  });
+
+  describe('N2: the pending read and the signing wait for the account', () => {
+    test.each([
+      ['a new intent', {}],
+      ['a keyed first send', { intentKey: 'safe-deploy:100:0x' + '7c'.repeat(20) }],
+    ])(
+      '%s reads pending and signs only once another approval releases the account',
+      async (_name, options) => {
+        const { tx, reservations } = start();
+        let releaseOther;
+        const otherApproval = reservations.withAccountLock(
+          { chainId: CHAIN, sender: ALICE.address },
+          () =>
+            new Promise((resolve) => {
+              releaseOther = resolve;
+            })
+        );
+        await until(() => releaseOther);
+
+        const sending = tx.signAndSendTransaction(PARAMS, signer, options);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(pendingReads()).toHaveLength(0);
+        expect(signer.signTransaction).not.toHaveBeenCalled();
+
+        releaseOther();
+        await otherApproval;
+        await expect(sending).resolves.toMatchObject({ nonce: 7, outcome: 'sent' });
+        expect(pendingReads()).toHaveLength(1);
+        expect(signer.signTransaction).toHaveBeenCalledTimes(1);
+      }
+    );
+  });
+});
+
 describe('the only way to sign, and to read pending', () => {
+  // A tripwire, not a proof: it flags code that signs, or reads the pending
+  // count, outside the intent path's reservation. The behavioural tests
+  // above are what show both wait for the account's lock. It parses each
+  // file (with espree, ESLint's parser), so spacing, computed properties,
+  // destructuring and string aliases don't hide a site.
+  const espree = require('espree');
   const MAIN = path.join(__dirname, '..');
+  const SERVICE = 'wallet/transaction-service.js';
+  const FUNCTIONS = new Set([
+    'FunctionDeclaration',
+    'FunctionExpression',
+    'ArrowFunctionExpression',
+  ]);
 
   function sources(dir) {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -617,44 +783,190 @@ describe('the only way to sign, and to read pending', () => {
     });
   }
 
-  function bodyOf(source, name) {
-    const start = source.indexOf(`async function ${name}(`);
-    const next = source
-      .slice(start + 1)
-      .search(/\n(async function|function|const|module\.exports) /);
-    return source.slice(start, start + 1 + next);
-  }
+  const parse = (source) =>
+    espree.parse(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      ecmaFeatures: { globalReturn: true },
+    });
 
-  test('.signTransaction( and the pending count only in the intent path', () => {
-    const signing = [];
-    const pendingCounts = [];
-    for (const file of sources(MAIN)) {
-      const source = fs.readFileSync(file, 'utf8');
-      const name = path.relative(MAIN, file).split(path.sep).join('/');
-      for (const _ of source.matchAll(/\.signTransaction\(/g)) signing.push(name);
-      for (const _ of source.matchAll(
-        /eth_getTransactionCount['"]\s*,\s*\[[^\]]*['"]pending['"]/g
-      )) {
-        pendingCounts.push(name);
+  // Every node, with its parent.
+  function walk(node, visit, parent = null) {
+    visit(node, parent);
+    for (const [name, value] of Object.entries(node)) {
+      if (name === 'parent') continue;
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (child && typeof child.type === 'string') walk(child, visit, node);
       }
     }
-    // The signer layer itself (signers.js delegates to a backend, and the
-    // Ledger backend calls the device) and the intent path: nothing else.
-    expect(signing.sort()).toEqual([
+  }
+
+  function index(ast) {
+    const parents = new Map();
+    const nodes = [];
+    walk(ast, (node, parent) => {
+      parents.set(node, parent);
+      nodes.push(node);
+    });
+    const functionOf = (node) => {
+      for (let at = parents.get(node); at; at = parents.get(at)) {
+        if (FUNCTIONS.has(at.type)) return at;
+      }
+      return null;
+    };
+    return { parents, nodes, functionOf };
+  }
+
+  const isString = (node, value) =>
+    (node.type === 'Literal' && node.value === value) ||
+    (node.type === 'TemplateLiteral' &&
+      node.expressions.length === 0 &&
+      node.quasis[0].value.cooked === value);
+  const isName = (node, value) =>
+    Boolean(node) && ((node.type === 'Identifier' && node.name === value) || isString(node, value));
+
+  function contains(root, predicate) {
+    let found = false;
+    walk(root, (node) => {
+      if (predicate(node)) found = true;
+    });
+    return found;
+  }
+
+  // Identifiers that read `name` inside `scope` (not declarations, keys or
+  // member properties).
+  function readsOf(name, scope, parents) {
+    const reads = [];
+    walk(scope, (node, parent) => {
+      if (node.type !== 'Identifier' || node.name !== name || !parent) return;
+      if (parent.type === 'VariableDeclarator' && parent.id === node) return;
+      if (parent.type === 'Property' && parent.key === node && !parent.computed) return;
+      if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed)
+        return;
+      reads.push({ node, parent: parents.get(node) ?? parent });
+    });
+    return reads;
+  }
+
+  // Every read of `signTransaction` off an object, and the functions in
+  // which the pending count is asked for.
+  function sitesIn(ast) {
+    const { parents, nodes, functionOf } = index(ast);
+    const signing = [];
+    const pending = new Set();
+    for (const node of nodes) {
+      if (
+        node.type === 'MemberExpression' &&
+        (node.computed
+          ? isString(node.property, 'signTransaction')
+          : isName(node.property, 'signTransaction'))
+      ) {
+        signing.push(node);
+      }
+      if (node.type === 'ObjectPattern') {
+        for (const property of node.properties) {
+          if (property.type === 'Property' && isName(property.key, 'signTransaction')) {
+            signing.push(node);
+          }
+        }
+      }
+      if (isString(node, 'eth_getTransactionCount')) {
+        // The literal's function, or, for a name bound to it, every function
+        // that reads the name.
+        const parent = parents.get(node);
+        const uses =
+          parent?.type === 'VariableDeclarator' && parent.id.type === 'Identifier'
+            ? readsOf(parent.id.name, functionOf(parent) ?? ast, parents).map((read) => read.node)
+            : [node];
+        for (const use of uses) {
+          const fn = functionOf(use);
+          if (fn && contains(fn, (other) => isString(other, 'pending'))) pending.add(fn);
+        }
+      }
+    }
+    return { signing, pending: [...pending], parents, functionOf };
+  }
+
+  // The signing site is in the callback of a `reserve(...)` call made by
+  // `commitNewIntent`.
+  function inReservation(site, { parents, functionOf }) {
+    const callback = functionOf(site);
+    const call = parents.get(callback);
+    if (call?.type !== 'CallExpression' || !isName(call.callee, 'reserve')) return false;
+    if (call.arguments[1] !== callback) return false;
+    return functionOf(call)?.id?.name === 'commitNewIntent';
+  }
+
+  // The pending read is `readPending`, read once: as the reservation's
+  // `readPending` option.
+  function readOnlyByReservation(fn, { parents, functionOf }) {
+    const declarator = parents.get(fn);
+    if (declarator?.type !== 'VariableDeclarator' || !isName(declarator.id, 'readPending')) {
+      return false;
+    }
+    const reads = readsOf('readPending', functionOf(declarator), parents);
+    if (reads.length !== 1) return false;
+    const option = reads[0].parent;
+    const call = parents.get(parents.get(option));
+    return (
+      option.type === 'Property' &&
+      isName(option.key, 'readPending') &&
+      call?.type === 'CallExpression' &&
+      isName(call.callee, 'reserve')
+    );
+  }
+
+  test('signTransaction and the pending count appear only inside the reservation', () => {
+    const signing = {};
+    const pending = {};
+    let service;
+    for (const file of sources(MAIN)) {
+      const name = path.relative(MAIN, file).split(path.sep).join('/');
+      const sites = sitesIn(parse(fs.readFileSync(file, 'utf8')));
+      if (sites.signing.length) signing[name] = sites.signing;
+      if (sites.pending.length) pending[name] = sites.pending;
+      if (name === SERVICE) service = sites;
+    }
+    // The signer layer itself (signers.js delegates to a backend; the Ledger
+    // backend calls the device) and the intent path: nothing else.
+    expect(Object.keys(signing).sort()).toEqual([
       'wallet/ledger/signer.js',
       'wallet/signers.js',
-      'wallet/transaction-service.js',
+      SERVICE,
     ]);
-    expect(pendingCounts).toEqual(['wallet/transaction-service.js']);
+    expect(Object.keys(pending)).toEqual([SERVICE]);
 
-    const service = fs.readFileSync(path.join(MAIN, 'wallet/transaction-service.js'), 'utf8');
-    const sendNewIntent = bodyOf(service, 'sendNewIntent');
-    expect(sendNewIntent).toMatch(/\.signTransaction\(/);
-    expect(sendNewIntent).toMatch(/'pending'/);
-    // Signing and the pending read happen inside the reservation.
-    expect(sendNewIntent.indexOf('reserve(')).toBeLessThan(
-      sendNewIntent.indexOf('.signTransaction(')
+    expect(service.signing).toHaveLength(1);
+    expect(inReservation(service.signing[0], service)).toBe(true);
+    expect(service.pending).toHaveLength(1);
+    expect(readOnlyByReservation(service.pending[0], service)).toBe(true);
+  });
+
+  test('the scan catches what its first, textual version missed', () => {
+    // The review's two mutants, as source. First: a spaced, computed and
+    // destructured signing call, and a pending read through a string alias.
+    const unguarded = sitesIn(
+      parse(`
+        async function unguardedSend(signer, chainData, chainId, from, tx) {
+          const method = "eth_getTransactionCount";
+          await chainData.request(chainId, method, [from, "pending"]);
+          const { signTransaction } = signer;
+          return signer [ 'signTransaction' ] (tx) && signTransaction(tx);
+        }`)
     );
-    expect(bodyOf(service, 'resendIntent')).not.toMatch(/signTransaction|eth_getTransactionCount/);
+    expect(unguarded.signing).toHaveLength(2);
+    expect(unguarded.pending).toHaveLength(1);
+
+    // Second: pending read before the lock, its count handed in later.
+    const early = sitesIn(
+      parse(`
+        async function commitNewIntent(signer, from) {
+          const readPending = async () => request('eth_getTransactionCount', [from, 'pending']);
+          const before = await readPending();
+          return reserve({ readPending: async () => before }, async (n) => signer.signTransaction(n));
+        }`)
+    );
+    expect(inReservation(early.signing[0], early)).toBe(true);
+    expect(readOnlyByReservation(early.pending[0], early)).toBe(false);
   });
 });

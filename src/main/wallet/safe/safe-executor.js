@@ -251,11 +251,12 @@ async function sendViaExecutor({ chainId, to, data, executorIndex, record, inten
     params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
   }
   if (record) {
-    return signAndRecord(params, executor, {
-      ...record,
-      metadata: { ...record.metadata, executor: from },
-      intentKey,
-    });
+    return signAndRecord(
+      params,
+      executor,
+      { ...record, metadata: { ...record.metadata, executor: from } },
+      { intentKey }
+    );
   }
   return signAndSendTransaction(params, executor, { intentKey });
 }

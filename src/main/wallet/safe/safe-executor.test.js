@@ -317,7 +317,7 @@ describe('execTransaction', () => {
 
     expect(result.hash).toBe('0x' + 'bb'.repeat(32));
     expect(mockSignAndSendTransaction).not.toHaveBeenCalled();
-    const [params, signer, context] = mockSignAndRecord.mock.calls[0];
+    const [params, signer, context, options] = mockSignAndRecord.mock.calls[0];
     expect(params).toMatchObject({ to: built.safeAddress, value: '0', chainId: 100 });
     await expect(signer.getAddress()).resolves.toBe(OWNERS[0]);
     expect(context).toEqual({
@@ -326,8 +326,9 @@ describe('execTransaction', () => {
       toAddress: OWNERS[2],
       amount: '1000',
       metadata: { safeAddress: built.safeAddress, executor: OWNERS[0] },
-      intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`,
     });
+    // The key is main's own argument, apart from the display context.
+    expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}` });
   });
 
   test('the intent key is the SafeTx hash every owner signed', async () => {
