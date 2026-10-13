@@ -289,15 +289,27 @@ describe('Colibri', () => {
       [{ to: ADDRESS }, 'latest'],
       { deadlineMs: 4500 }
     );
-    // A JSON null is a result; an undefined one is none.
+    // A JSON null is a result.
     const nullish = setUp({ colibriRequest: jest.fn(async () => null) });
     expect(
       await nullish.call({ colibri: 'request', method: 'eth_call', params: [], deadline_ms: 1 })
     ).toEqual({ result: null });
+  });
+
+  // Review of #692 (parity, P2-2): today's router returns an own
+  // `result: undefined` from a verified success; JSON can't carry it, so
+  // the reply names it (freedom-core's follow-up to #57).
+  test('a successful result of undefined is named, still a success', async () => {
     const none = setUp({ colibriRequest: jest.fn(async () => undefined) });
-    expect(
-      await none.call({ colibri: 'request', method: 'eth_call', params: [], deadline_ms: 1 })
-    ).toEqual({ failure: 'error' });
+    const reply = await none.call({
+      colibri: 'request',
+      method: 'eth_blockNumber',
+      params: [],
+      deadline_ms: 1,
+    });
+    expect(reply).toEqual({ undefined_keys: ['result'] });
+    expect(Object.keys(reply)).toEqual(['undefined_keys']);
+    expect(JSON.stringify(reply)).toBe('{"undefined_keys":["result"]}');
   });
 
   const colibri = (thrown) =>
@@ -339,15 +351,30 @@ describe('Colibri', () => {
     expect(await colibri(worker(message))).toEqual({ failure: expected });
   });
 
-  test("an error's own failureKind sets capacity; a verified revert stays a revert", async () => {
+  test("an error's own failureKind sets capacity", async () => {
     expect(await colibri(worker('opaque', { failureKind: 'capacity' }))).toEqual({
       failure: 'capacity',
     });
-    // One shape per reply: a revert carries its data, as the replay's main
-    // answers it, whatever its text says.
-    expect(await colibri(worker('out of gas', { code: 3, data: '0x' }))).toEqual({
-      revert: { data: '0x' },
-    });
+  });
+
+  // Review of #692 (parity, P2-1): the router keeps a verified revert and
+  // blocks the route for its capacity failure too (freedom-core's
+  // follow-up to #57).
+  test('a verified revert that is also a capacity failure keeps both', async () => {
+    for (const [message, extra] of [
+      ['out of gas', {}],
+      [`out  of${NBSP}gas`, {}],
+      ['execution reverted', { failureKind: 'capacity' }],
+    ]) {
+      const reply = await colibri(worker(message, { code: 3, data: '0x', ...extra }));
+      expect(reply).toEqual({ revert: { data: '0x' }, capacity: true });
+      expect(JSON.stringify(reply)).toBe('{"revert":{"data":"0x"},"capacity":true}');
+    }
+    // A plain revert carries no capacity member at all, not even false.
+    for (const message of ['execution reverted', `${'x'.repeat(491)}out of gas`]) {
+      const reply = await colibri(worker(message, { code: 3, data: '0x08c379a0' }));
+      expect(Object.keys(reply)).toEqual(['revert']);
+    }
   });
 });
 

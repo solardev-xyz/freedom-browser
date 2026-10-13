@@ -9,11 +9,14 @@
  *   it, or `{ failure }`;
  * - a Myotis broadcast: `{ hash }`, `{ rejected: { reason } }`,
  *   `{ uncertain: true }`, `{ not_sent: true }` or `{ failure }`;
- * - Colibri: `{ result }`, `{ revert: { data } }` or `{ failure }`.
+ * - Colibri: `{ result }`, `{ undefined_keys: ["result"] }` for a result of
+ *   `undefined`, `{ revert: { data } }` (with `capacity: true` when it is
+ *   also a capacity failure) or `{ failure }`. The `undefined_keys` and
+ *   `capacity` forms are freedom-core's follow-up to #57.
  *
  * A failure is a class of chain data's closed set, without text (Myotis
  * read outcomes); Colibri's adds `capacity`, set exactly where the router's
- * isCapacityFailure holds. A reply over the message cap is `too_large`, and
+ * isCapacityFailure holds, a revert's too. A reply over the message cap is `too_large`, and
  * one main's pool can't hold is `busy`. Naming's operations share the
  * per-verifier bound.
  */
@@ -90,11 +93,18 @@ function broadcastHash(payload) {
 }
 
 /** A Colibri adapter's error: a revert the prover verified (the worker's
- * code 3 with hex data), or a failure, `capacity` where the router would
- * block the route for it. Its text never crosses. */
+ * code 3 with hex data), or a failure. Either is a capacity failure where
+ * the router would block the route for it: a failure's class is then
+ * `capacity`, and a revert keeps its data with `capacity: true` beside it,
+ * a member present only when true. Its text never crosses. */
 function colibriFailure(err) {
-  if (err?.code === 3 && isHexData(err.data)) return { revert: { data: err.data } };
-  return { failure: isCapacityFailure(err) ? 'capacity' : 'error' };
+  const capacity = isCapacityFailure(err);
+  if (err?.code === 3 && isHexData(err.data)) {
+    return capacity
+      ? { revert: { data: err.data }, capacity: true }
+      : { revert: { data: err.data } };
+  }
+  return { failure: capacity ? 'capacity' : 'error' };
 }
 
 /** A Myotis payload with its own keys in snake_case (`codeHex` becomes
@@ -193,8 +203,10 @@ function operation(params, adapters) {
         const result = await adapters.colibriRequest(params.chain_id, method, params.params, {
           deadlineMs,
         });
-        // JSON has no `undefined`: an answer without a result is no result.
-        return result === undefined ? { failure: 'error' } : { result };
+        // JSON has no `undefined`: a success without a value names its
+        // result instead, as the core's own replies do (design 0005,
+        // Replies), and the router's caller gets an own `undefined`.
+        return result === undefined ? { undefined_keys: ['result'] } : { result };
       },
       failed: colibriFailure,
     };
