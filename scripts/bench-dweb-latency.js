@@ -1,8 +1,13 @@
 // Design 0006's latency measurement (freedom-core
 // docs/design/0006-dweb-transports.md, Latency): time to first byte and
-// total time of `bzz:`, `ipfs:` and `ipns:` requests through main's real
-// handlers, planned (the core's `dweb.open`, design 0006 step 4) against
-// today (the handlers before it), on one machine, with nothing on the network.
+// total time of `bzz:` and `ipfs:` requests through main's real handlers,
+// planned (the core's `dweb.open`, design 0006 step 4) against today (the
+// handlers before it), on one machine, with nothing on the network.
+//
+// What it doesn't measure: `ipns:` (no target here), the native IPFS node
+// (the gateway stands in for IPFS), a cold name lookup (names come from the
+// core's cache), a real node's retrieval time, and Chromium's own scheduling
+// and rendering.
 //
 // Each tree's handlers are driven as the real-handler tests drive them (#689):
 // registered on a stand-in session and called with real `Request`s. Below
@@ -32,12 +37,17 @@
 // worktree of integration/rust-core at dca4a4ef) with node_modules; --planned
 // defaults to this checkout. --core defaults to FREEDOM_CORED_PATH, a release
 // build serving `dweb.open`. --vectors defaults to FREEDOM_NAMING_VECTORS, a
-// freedom-core checkout's vectors/naming-replay.json. --local adds a third
-// column: the planned handlers with requests that have no name planned in
-// main instead (the fallback the design names), by the JS planner the
-// real-handler tests use. Each run starts one worker process per column,
-// rotating which goes first; the table gives the median over runs of each
-// percentile.
+// freedom-core checkout's vectors/naming-replay.json. --local adds two
+// columns, the planned handlers with requests that have no name:
+// - `local`: planned in main instead (the fallback the design names), by the
+//   JS planner the real-handler tests use;
+// - `cached`: given a plan made once at warm-up, so main executes plans with
+//   no planning at all, the floor any local planning could reach.
+// planned − cached is the planning round trip; local − cached, local
+// planning's own cost; cached − today, main's executor. The run log also
+// gives the JS planner alone, one plan at a time on an idle loop.
+// Each run starts one worker process per column, rotating which goes first;
+// the table gives the median over runs of each percentile.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -297,19 +307,45 @@ async function worker(opts) {
   registerNamingVerified(client, config, { adapters: {} });
   const driver = new NamingDriver({ client, config });
   let attached = driver;
-  if (opts.plan === 'local') {
-    // What design 0006 falls back to if hash hosts regress: main plans a
-    // request with no name itself, with the JS planner the real-handler tests
-    // use (checked against fc-dweb's `requests` vectors); a name still goes
-    // to the core's `dweb.open`.
-    const { createFakeDwebDriver } = load('test/helpers/fake-dweb-core');
+  // Requests with no name, by URL, as the handlers asked for their plans.
+  const unnamed = new Map();
+  let planner = null;
+  if (opts.plan === 'local' || opts.plan === 'cached') {
+    // `local`: what design 0006 falls back to if hash hosts regress. Main
+    // plans a request with no name itself, with the JS planner the
+    // real-handler tests use (`planDweb`, held to fc-dweb's `requests`
+    // vectors), called directly: the tests' driver keeps every request it
+    // sees, which a benchmark mustn't. `cached`: each such request's plan
+    // made once, at warm-up, and handed back as is, so the column is main's
+    // executor with no planning at all, the floor any local planning could
+    // reach. A name still goes to the core's `dweb.open` in both.
+    const { planDweb } = load('test/helpers/fake-dweb-core');
     const { isDwebNameHost } = load('src/shared/origin-utils');
-    const local = createFakeDwebDriver();
+    planner = planDweb;
+    const plans = new Map();
+    const reply = async (params) => ({
+      plan: await planDweb(params),
+      generations: { ens: 0, tezos: 0, lifecycle: 0 },
+      attempts: 0,
+    });
     attached = Object.create(driver);
-    attached.open = (params, options) =>
-      isDwebNameHost(new URL(params.url).hostname)
-        ? driver.open(params, options)
-        : local.open(params, options);
+    attached.open = async (params, { signal = null, ready = null } = {}) => {
+      if (isDwebNameHost(new URL(params.url).hostname)) {
+        return driver.open(params, { signal, ready });
+      }
+      if (!unnamed.has(params.url)) unnamed.set(params.url, params);
+      if (signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'cancelled' });
+      let answer;
+      if (opts.plan === 'cached') {
+        const key = JSON.stringify(params);
+        if (!plans.has(key)) plans.set(key, Object.freeze(await reply(params)));
+        answer = plans.get(key);
+      } else {
+        answer = await reply(params);
+      }
+      if (ready) await ready(answer);
+      return answer;
+    };
   }
   load('src/main/core/naming').namingDriver = () => attached;
   await client.start();
@@ -318,12 +354,11 @@ async function worker(opts) {
   // The handlers, registered on a stand-in session.
   const manager = load('src/main/ipfs-manager');
   const { registerBzzProtocol } = load('src/main/swarm/bzz-protocol');
-  const { registerIpfsProtocol, registerIpnsProtocol } = load('src/main/ipfs/ipfs-protocol');
+  const { registerIpfsProtocol } = load('src/main/ipfs/ipfs-protocol');
   const handlers = new Map();
   const session = { protocol: { handle: (scheme, fn) => handlers.set(scheme, fn) } };
   registerBzzProtocol(session);
   registerIpfsProtocol(session);
-  registerIpnsProtocol(session);
   await manager.startIpfs();
 
   const targets = {
@@ -376,6 +411,19 @@ async function worker(opts) {
   for (const target of Object.keys(targets)) {
     for (const kase of CASES) await one(target, kase);
   }
+  // The JS planner on its own, one plan at a time on an idle event loop: the
+  // planning work a local plan would add to each request.
+  let plannerUs = null;
+  if (planner) {
+    const perPlan = [];
+    for (const params of unnamed.values()) {
+      const repeats = 2000;
+      const started = performance.now();
+      for (let i = 0; i < repeats; i++) await planner(params);
+      perPlan.push(((performance.now() - started) * 1000) / repeats);
+    }
+    plannerUs = summary(perPlan);
+  }
   for (const target of Object.keys(targets)) {
     for (const kase of CASES) {
       for (const concurrency of opts.quick ? [50] : CONCURRENCY) {
@@ -419,6 +467,7 @@ async function worker(opts) {
     cpus: os.cpus().length,
     load: { before: loadBefore, after: os.loadavg() },
     errors: errors.slice(0, 5),
+    plannerUs,
     results,
   };
   await manager.stopIpfs?.().catch(noop);
@@ -528,12 +577,14 @@ async function main() {
   }
   const today = path.resolve(opts.today);
   const runs = Number(opts.runs || 3);
-  // `local`: the planned handlers with hash hosts planned in main (--local).
-  const trees = opts.local ? ['today', 'planned', 'local'] : ['today', 'planned'];
+  // --local: the planned handlers with requests that have no name planned
+  // in main (`local`), and with their plans made once (`cached`).
+  const trees = opts.local ? ['today', 'planned', 'local', 'cached'] : ['today', 'planned'];
   const workers = {
     today: () => runWorker('today', today, opts),
     planned: () => runWorker('planned', planned, opts),
     local: () => runWorker('local', planned, opts, ['--plan', 'local']),
+    cached: () => runWorker('cached', planned, opts, ['--plan', 'cached']),
   };
   const all = [];
   for (let run = 0; run < runs; run++) {
@@ -548,7 +599,12 @@ async function main() {
           `${((Date.now() - started) / 1000).toFixed(0)} s, load ${result.load.before
             .map((l) => l.toFixed(1))
             .join('/')} → ${result.load.after.map((l) => l.toFixed(1)).join('/')} ` +
-          `on ${result.cpus} CPUs${result.errors.length ? `; errors: ${result.errors.join('; ')}` : ''}`
+          `on ${result.cpus} CPUs` +
+          (result.plannerUs
+            ? `; the JS planner alone: ${result.plannerUs.p50.toFixed(1)} µs a plan at p50, ` +
+              `${result.plannerUs.p99.toFixed(1)} µs at p99 (per request kind)`
+            : '') +
+          (result.errors.length ? `; errors: ${result.errors.join('; ')}` : '')
       );
     }
   }
