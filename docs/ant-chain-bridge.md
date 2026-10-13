@@ -424,6 +424,19 @@ drivers and executors against a real core. `blockscout-logs.test.js` covers
 the redirect policy main's `shell.blockscout` executor checks each hop
 against.
 
+The vectors replay recorded answers, so they cannot see Blockscout change its
+API, which sent first scans back to the window-by-window path once already
+(#596). A nightly canary does (`scripts/check-blockscout-pair.js`,
+`.github/workflows/blockscout-canary.yml`): the pinned core, through main's
+drivers and executors and Gnosis as a fresh profile configures it, scans as
+Ant does, halving what the core refuses as too wide, against live Blockscout
+and the public RPCs. It fails unless every window it reads is answered by
+Blockscout paired with an RPC (source `blockscout`, verified) within a few
+requests: the PostageStamp contract's 166 xBZZ receipts in blocks
+36,000,000–36,299,999, four pages and three requests from a fresh core, and
+one Bee wallet's whole history sent and received, which Blockscout serves
+through `filter=from` and `filter=to` respectively.
+
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No
 existing user profile is touched and no transaction is submitted. The first
