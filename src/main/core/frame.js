@@ -188,6 +188,10 @@ function decodeBegin(payload) {
  * streams, so 0x02–0x0F are refused. */
 const CORE_KINDS = Object.freeze({ fragments: true, streams: null });
 
+/** A service connection before its handshake has granted anything: whole
+ * JSON messages only. */
+const JSON_KINDS = Object.freeze({ fragments: false, streams: null });
+
 /**
  * A service connection whose handshake granted `stream`, as `side` reads
  * it: JSON and the stream frames the other side sends. `receiver` (main)
@@ -481,6 +485,14 @@ class FrameDecoder {
       }
     }
     return frames;
+  }
+
+  /**
+   * Takes the kinds a handshake granted, from the next frame on. The
+   * frames already decoded were checked against the kinds before.
+   */
+  setKinds(kinds) {
+    this.kinds = kinds;
   }
 
   /** True between frames; false if EOF now would cut a frame short. */
@@ -935,6 +947,7 @@ module.exports = {
   frameHeader,
   serviceKinds,
   CORE_KINDS,
+  JSON_KINDS,
   FrameDecoder,
   FrameError,
   Reassembler,
