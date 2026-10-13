@@ -22,7 +22,8 @@ const { MAX_PAYLOAD } = require('./frame');
 const { isHexData } = require('../ens/ccip-fetch');
 
 /** Operations running per verifier, counted until the adapter settles
- * (not when the core cancels): more are `unavailable` at once. */
+ * (not when the core cancels): more are `unavailable` at once. Chain
+ * data's operations share the count (design 0005). */
 const MAX_PER_VERIFIER = 8;
 /** A reply whose response can't fit one frame (1 MiB) is `too_large`
  * (deviation `verified-reply-size`): its envelope, with the largest ID,
@@ -188,11 +189,12 @@ function bounded(reply) {
  * @param {import('./core-client').CoreClient} client
  * @param {import('./naming-config').NamingConfig} config - the current
  *   generations
- * @param {object} [deps] - test seam: adapters
+ * @param {object} [deps] - running: the operations running per verifier,
+ *   shared with chain data's executor; test seam: adapters
  */
 function registerNamingVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
-  const running = { myotis: 0, colibri: 0 };
+  const running = deps.running || { myotis: 0, colibri: 0 };
 
   client.handle('shell.verified', (params, { signal }) => {
     const generation = params.generations?.lifecycle;
