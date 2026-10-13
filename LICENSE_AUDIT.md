@@ -82,7 +82,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 
 ### freedom-cored (Rust Identity Core) — license pending
 
-- **Pin:** `v0.3.0` (an immutable release) in `scripts/fetch-freedom-cored.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
+- **Pin:** `v0.4.0` (an immutable release) in `scripts/fetch-freedom-cored.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
 - **Integration:** a separate binary under `resources/freedom-cored/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation.
 - **License:** not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, musl and LLVM's libunwind and crt objects) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). `scripts/fetch-freedom-cored.js` installs both next to the binary, `package.json` ships them in `resources/freedom-cored/`, and `scripts/check-binaries.js` requires them.
