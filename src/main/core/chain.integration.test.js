@@ -11,12 +11,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { spawn, spawnSync } = require('child_process');
-const { CoreClient, scrubbedEnv } = require('./core-client');
+const { spawn } = require('child_process');
+const { CoreClient } = require('./core-client');
 const { KIND_BEGIN } = require('./frame');
 const { makeHop } = require('./naming-shell');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
+const { servesChain } = require('../../../test/helpers/core-chain-probe');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 
@@ -26,52 +27,7 @@ jest.setTimeout(30_000);
 const quietLog = { info() {}, warn() {}, error() {} };
 const MIB = 1024 * 1024;
 
-/** Whether `binary` runs the chain thread: one without it answers
- * `chain.configure` unknown_method. Asked once, before the suite, by a
- * child that plays main (the handshake first), so the suite is skipped
- * whole (the pinned v0.3.0 has no chain thread). */
-function servesChain() {
-  if (!binary) return false;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-chain-probe-'));
-  const probe = `
-    const { spawn } = require('child_process');
-    const { encodeFrame, FrameDecoder } = require(process.argv[1]);
-    const [binary, root] = process.argv.slice(2);
-    const core = spawn(binary, ['serve', '--data-dir', root + '/identity', '--lock-dir', root + '/locks'], {
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-    const request = (id, method, params) =>
-      core.stdin.write(encodeFrame({ type: 'request', id, method, params, context: { caller: 'shell' } }));
-    const decoder = new FrameDecoder();
-    const done = (answer) => {
-      process.stdout.write(answer);
-      core.kill('SIGKILL');
-      process.exit(0);
-    };
-    core.stdout.on('data', (chunk) => {
-      for (const { message } of decoder.push(chunk)) {
-        if (message?.id === 1) request(2, 'chain.configure', { chains: [] });
-        if (message?.id === 2) done(message.result !== undefined ? 'yes' : 'no');
-      }
-    });
-    core.on('exit', () => done('no'));
-    request(1, 'core.hello', { protocol: 1, shell_version: 'jest', auto_lock_ms: 60000 });
-  `;
-  try {
-    const run = spawnSync(
-      process.execPath,
-      ['-e', probe, require.resolve('./frame'), binary, root],
-      { env: scrubbedEnv(), timeout: 15_000 }
-    );
-    return String(run.stdout) === 'yes';
-  } catch {
-    return false;
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}
-
-const describeIfChain = servesChain() ? describe : describe.skip;
+const describeIfChain = servesChain(binary) ? describe : describe.skip;
 
 /** A signed transaction and its hash (freedom-core vectors/chain.json). */
 const RAW =
