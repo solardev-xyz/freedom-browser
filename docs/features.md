@@ -132,7 +132,7 @@ Input that is not a URL, hash, or name is sent to your search engine — DuckDuc
 ## Contract-hosted Applications (`web3://`)
 
 - **Draft ERC-8244 support**: `web3://<contract>:<chainId>/` loads an application whose HTML lives in contract storage. The chain ID is optional and defaults to Ethereum mainnet.
-- **No gateway**: The document is read through the same chain-data router the wallet uses, not an HTTP gateway or a page-selected RPC endpoint.
+- **No gateway**: The document is read through the same chain data the wallet uses, not an HTTP gateway or a page-selected RPC endpoint.
 - **Chain-scoped origin**: Each contract-and-chain pair gets its own web-storage origin and wallet permission key; the wallet provider is pinned to the app's chain and `wallet_switchEthereumChain` cannot move it.
 
 See [contract-hosted applications](protocols/onchain-apps.md) for the origin model, sandbox, and limits.
@@ -199,7 +199,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Ephemeral by construction**: Every private window runs its webviews on a unique in-memory session (`private-<uuid>` partition, never written to disk). Cookies, logins, caches, and site data evaporate when the window closes.
 - **No local traces**: Nothing browsed in a private window is written to history, the favicon cache, or address-bar autocomplete. Downloads still work, but their entries are kept in memory only — never written to the profile's download database, visible only inside the private window, and gone when it closes (saved files stay on disk). Site-permission decisions made in a private window last only as long as the window — never remembered, even if you tick "remember" — and belong to that window alone: removing one from the address-bar indicator there does not touch the decisions your normal windows are running on.
 - **Wallet disabled**: Your identity and wallet are persistent by design, so they are unavailable in private windows — pages see no `window.ethereum` / `window.swarm` / `window.radicle` (nothing announces via EIP-6963), and x402 pay-per-request interception is off. The wallet toggle still opens the sidebar, but it reads "Wallet is unavailable in private windows" instead of offering identity setup. Use a normal window for anything wallet-related.
-- **Decentralized protocols still work**: `bzz://`, `ipfs://`, `ipns://`, and ENS names resolve and load through the shared local nodes, `web3://` onchain apps render through the chain-data router (without a wallet provider — see above), and `.onion` sites route through Tor in private windows too when Tor is enabled. Publishing (which records publish history) is unavailable from private windows.
+- **Decentralized protocols still work**: `bzz://`, `ipfs://`, `ipns://`, and ENS names resolve and load through the shared local nodes, `web3://` onchain apps render through the wallet's chain data (without a wallet provider — see above), and `.onion` sites route through Tor in private windows too when Tor is enabled. Publishing (which records publish history) is unavailable from private windows.
 - **What private windows do NOT protect**: This is local privacy, not anonymity. Websites you sign in to still know it's you; your network operator can still see your traffic; Swarm/IPFS/Radicle peers still see your nodes' requests; and your IP address remains visible to every site and peer. The private new-tab page spells this out.
 
 ## Downloads

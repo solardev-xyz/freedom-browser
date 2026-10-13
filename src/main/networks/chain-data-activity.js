@@ -1,7 +1,7 @@
 /**
  * Which chain-data reads were running — for the event-loop watchdog (#498).
  *
- * `instrumentChainDataRouter(router)` wraps chain data's exported
+ * `instrumentChainData(chainData)` wraps chain data's exported
  * `request()`, `getFeeQuote()`, `chainHtml()` and `broadcastRawTransaction()`
  * (chain-data.js) once, from the outside: every caller in the main process
  * reaches them as properties of the module object at call time
@@ -75,11 +75,11 @@ function createChainDataActivity({
     return `chain-data: ${listed.join('; ')}${more}`;
   }
 
-  // Wrap one exported router function. `methodOf(args)` names the read for
+  // Wrap one exported chain-data function. `methodOf(args)` names the read for
   // the log line (`request` passes the JSON-RPC method through; the fee quote
   // and broadcast helpers have a fixed label).
-  function wrapExport(router, name, methodOf) {
-    const original = router[name];
+  function wrapExport(chainData, name, methodOf) {
+    const original = chainData[name];
     if (typeof original !== 'function' || original[WRAPPED]) return false;
     const wrapped = function (chainId, ...rest) {
       const finish = track(chainId, methodOf(rest));
@@ -103,7 +103,7 @@ function createChainDataActivity({
     };
     Object.defineProperty(wrapped, 'name', { value: name });
     wrapped[WRAPPED] = true;
-    router[name] = wrapped;
+    chainData[name] = wrapped;
     return true;
   }
 
@@ -112,16 +112,18 @@ function createChainDataActivity({
   // reached as properties of the module object at call time too
   // (`chainData.getFeeQuote`, `router.broadcastRawTransaction`). Returns
   // whether `request` was newly wrapped.
-  function instrumentChainDataRouter(router) {
-    if (typeof router?.request !== 'function') throw new Error('router.request is not a function');
-    const wrappedRequest = wrapExport(router, 'request', ([method]) => method);
-    wrapExport(router, 'getFeeQuote', () => 'fee quote');
-    wrapExport(router, 'chainHtml', () => 'html()');
-    wrapExport(router, 'broadcastRawTransaction', () => 'eth_sendRawTransaction');
+  function instrumentChainData(chainData) {
+    if (typeof chainData?.request !== 'function') {
+      throw new Error('chainData.request is not a function');
+    }
+    const wrappedRequest = wrapExport(chainData, 'request', ([method]) => method);
+    wrapExport(chainData, 'getFeeQuote', () => 'fee quote');
+    wrapExport(chainData, 'chainHtml', () => 'html()');
+    wrapExport(chainData, 'broadcastRawTransaction', () => 'eth_sendRawTransaction');
     return wrappedRequest;
   }
 
-  return { track, describe, instrumentChainDataRouter };
+  return { track, describe, instrumentChainData };
 }
 
 const shared = createChainDataActivity();
@@ -129,5 +131,5 @@ const shared = createChainDataActivity();
 module.exports = {
   createChainDataActivity,
   describeChainDataActivity: shared.describe,
-  instrumentChainDataRouter: shared.instrumentChainDataRouter,
+  instrumentChainData: shared.instrumentChainData,
 };

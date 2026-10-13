@@ -57,7 +57,7 @@ process.env.C4_DISABLE_NATIVE = '1';
 //
 // `--wasm-enforce-bounds-checks` makes V8 compile explicit checks even though a
 // trap handler is available, so the trap is thrown as a `RuntimeError` and the
-// chain-data router falls through to the next source. It is read when a module
+// chain data falls through to the next source. It is read when a module
 // is compiled, and `c4w.wasm` is compiled lazily on the first Colibri call, so
 // setting it here (before the package is even required) covers every Colibri
 // instance in this process. Since #495 that process-side code runs in worker

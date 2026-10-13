@@ -2,19 +2,49 @@ jest.mock('../core/chain', () => ({ chainDriver: jest.fn(() => null) }));
 
 const chain = require('../core/chain');
 const chainData = require('./chain-data');
-const router = require('./chain-data-router');
 const { UNAVAILABLE } = require('../core/chain-driver');
 
 describe("chain data for main's callers", () => {
+  // The router's READ_METHODS and SINGLE_NODE_METHODS, in its order, as
+  // freedom-core's vectors/chain.json (`methods`) pins them from the
+  // pinned JS (freedom-browser fb540328): the core refuses anything else
+  // with the same text.
   test("its read methods are the router's", () => {
+    expect([...chainData.READ_METHODS]).toEqual([
+      'eth_blockNumber',
+      'eth_getBalance',
+      'eth_getCode',
+      'eth_getStorageAt',
+      'eth_getTransactionCount',
+      'eth_getBlockByNumber',
+      'eth_getBlockByHash',
+      'eth_getTransactionByHash',
+      'eth_getTransactionReceipt',
+      'eth_call',
+      'eth_estimateGas',
+      'eth_gasPrice',
+      'eth_feeHistory',
+      'eth_maxPriorityFeePerGas',
+      'eth_getLogs',
+      'web3_clientVersion',
+      'web3_sha3',
+    ]);
+    expect([...chainData.SINGLE_NODE_METHODS]).toEqual([
+      'eth_getFilterChanges',
+      'eth_getFilterLogs',
+      'eth_newFilter',
+      'eth_newBlockFilter',
+      'eth_newPendingTransactionFilter',
+      'eth_uninstallFilter',
+      'web3_clientVersion',
+      'web3_sha3',
+    ]);
     for (const method of [...chainData.READ_METHODS, ...chainData.SINGLE_NODE_METHODS]) {
-      expect(router.isReadMethod(method)).toBe(true);
       expect(chainData.isReadMethod(method)).toBe(true);
     }
     for (const method of ['eth_sendRawTransaction', 'eth_accounts', 'eth_sign', undefined, 5]) {
-      expect(chainData.isReadMethod(method)).toBe(router.isReadMethod(method));
+      expect(chainData.isReadMethod(method)).toBe(false);
     }
-    expect(chainData.isReadMethod('eth_sendRawTransaction')).toBe(false);
   });
 
   test("calls go to the core's drivers, with the router's signatures", async () => {

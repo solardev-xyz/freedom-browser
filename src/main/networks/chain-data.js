@@ -2,9 +2,10 @@
  * Chain data for main's callers: the wallet, the `web3:` handler, the Ant
  * bridge and publish setup. A read, a fee quote or a broadcast is a
  * `chain.*` request to the core, through main's drivers
- * (core/chain-driver.js): the core routes it as chain-data-router.js did
- * (freedom-core design 0005). The calls keep the router's signatures and
- * results, with the design's deviations:
+ * (core/chain-driver.js): the core routes it as the JS router it replaced
+ * did (freedom-core design 0005; the pinned chain-data-router.js of
+ * freedom-browser fb540328 is its reference). The calls keep the router's
+ * signatures and results, with the design's deviations:
  *
  * - `request(chainId, method, params, options)` takes `includeTrust`,
  *   `routingContext`, `signal` and `background` as the router did; the Ant

@@ -1,10 +1,10 @@
-// The chain-data router's reading of an error's text, shared with main's
-// Colibri executor, which answers the core with the one bit of that text the
-// core's adaptive bypass needs (freedom-core design 0005, The rest: Colibri's
-// `capacity`). The core ports both as `fc_chain::safe_error_message` and its
-// capacity pattern, so the two must not drift.
+// How chain data reads an error's text, for main's Colibri executor, which
+// answers the core with the one bit of that text the core's adaptive bypass
+// needs (freedom-core design 0005, The rest: Colibri's `capacity`). The core
+// has both as `fc_chain::safe_error_message` and its capacity pattern, ported
+// from the JS chain-data router, so the two must not drift.
 
-// An error's text as the router quotes it: hex runs of 128 digits or more
+// An error's text as chain data quotes it: hex runs of 128 digits or more
 // elided, whitespace runs collapsed to one space, cut at 500 UTF-16 units.
 function safeErrorMessage(error) {
   return (error?.message || String(error))
@@ -17,7 +17,7 @@ function safeErrorMessage(error) {
 }
 
 // A source that ran out of gas or of its execution budget: the same request
-// would fail there again, so the router blocks that route for the process's
+// would fail there again, so the core blocks that route for the process's
 // life. Matched on the safe text, never the raw message.
 const CAPACITY_FAILURE =
   /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i;
