@@ -9,6 +9,10 @@
  * - `request(chainId, method, params, options)` takes `includeTrust`,
  *   `routingContext`, `signal` and `background` as the router did; the Ant
  *   bridge's log scans name their options as one profile, `ant_scan`.
+ * - `chainHtml(chainId, contract, options)` is the `web3:` handler's
+ *   `html()` read as the core's `chain.html` (design 0006): the document
+ *   decoded, capped, hashed and classified there, within the handler's
+ *   deadline and cancelled with its signal (core/chain-driver.js).
  * - `broadcastRawTransaction()` resolves `{ result, source }` once sent, and
  *   `{ result, source, outcome: 'uncertain' }` when the transaction may
  *   have been sent; `rejected` and `not_sent` throw today's error, tagged
@@ -76,6 +80,10 @@ async function getFeeQuote(chainId) {
   return chainDriver().feeQuote(chainId);
 }
 
+async function chainHtml(chainId, contract, options = {}) {
+  return chainDriver().chainHtml(chainId, contract, options);
+}
+
 async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {}) {
   let driver;
   try {
@@ -93,5 +101,6 @@ module.exports = {
   isReadMethod,
   request,
   getFeeQuote,
+  chainHtml,
   broadcastRawTransaction,
 };

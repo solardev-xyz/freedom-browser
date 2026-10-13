@@ -24,6 +24,14 @@
  * (`reconfigured`), or whose reply such a change overtook in the pipe, is
  * sent again once, within the caller's deadline.
  *
+ * **Documents** (design 0006, `chain.html`): the `web3:` handler's
+ * `html()` read, decoded, capped, hashed and classified by the core, is
+ * fenced as a read is, within the caller's own deadline, and cancelled
+ * with the caller's signal (deviation `web3-cancel`). Its result is the
+ * document's text and hash, the read's source, verified and trust, and
+ * the core's class; a failure throws as a read's does, and `failureOf`
+ * tells the handler what the core said it ended with.
+ *
  * **Broadcasts** are neither fenced nor sent again: an outcome is a fact
  * about the network. `sent` resolves the hash as today; `uncertain`
  * resolves it too, marked (`outcome: 'uncertain'`): sent but unconfirmed,
@@ -60,6 +68,12 @@ const RECONFIGURED = "The chain's configuration changed";
 const TOO_LARGE = 'The chain request is too large';
 /** A request JSON can't carry (a function, a cycle), as the client says. */
 const NOT_SERIALIZABLE = 'Request is not serializable';
+/** A `chain.html` reply main can't read (design 0006, `chain.html`). */
+const MALFORMED_DOCUMENT = 'The chain.html reply is malformed';
+
+/** `chain.html`'s classes (design 0006): the gate's input. */
+const DOCUMENT_CLASSES = new Set(['trusted', 'conflict', 'untrusted']);
+const DOCUMENT_HASH = /^0x[0-9a-f]{64}$/;
 
 /** The call-object quantities the router turned into hex
  * (`normalizeCallObject`), in its order. */
@@ -162,6 +176,31 @@ function oversized(method, head) {
   return Buffer.byteLength(head, 'utf8') - 1 + Buffer.byteLength(envelope, 'utf8') > MAX_PAYLOAD;
 }
 
+/**
+ * What the core said a failed request ended with, kept beside the error
+ * rather than on it, so today's error keeps exactly its own properties:
+ * `{ code }` for 0001's codes (`deadline`, `cancelled`, `busy`, `budget`,
+ * `too_large`, `reconfigured`), `deadline` also when the caller's time ran
+ * out in main; `{ code: 'chain_error', kind }` for today's error, `kind`
+ * `core` for the core's own texts and `node` for a node's error. The
+ * `web3:` handler maps it to a status (design 0006, `chain.html`, Errors).
+ */
+const failures = new WeakMap();
+
+/** `error`, noted as having ended with `failure`. */
+function markFailure(error, failure) {
+  if (error !== null && typeof error === 'object') failures.set(error, failure);
+  return error;
+}
+
+/** What `error` ended with, as markFailure noted it, or null. */
+function failureOf(error) {
+  return (error !== null && typeof error === 'object' && failures.get(error)) || null;
+}
+
+/** The caller's deadline passed in main. */
+const deadlineError = () => markFailure(new Error(DEADLINE), { code: 'deadline' });
+
 /** Today's thrown error, rebuilt from a `chain_error`'s data: its
  * constructor, its message, then its own properties in order, an
  * `undefined` restored where the reply names one. */
@@ -185,7 +224,12 @@ function rebuilt(data) {
 /** The error a failed request throws: a `chain_error` rebuilt, anything
  * else the core's or the client's text. */
 function thrown(err) {
-  return err?.code === 'chain_error' ? rebuilt(err.data) : new Error(String(err?.message));
+  if (err?.code === 'chain_error') {
+    const kind = err.data?.kind === 'core' || err.data?.kind === 'node' ? err.data.kind : null;
+    return markFailure(rebuilt(err.data), { code: 'chain_error', kind });
+  }
+  const error = new Error(String(err?.message));
+  return typeof err?.code === 'string' ? markFailure(error, { code: err.code }) : error;
 }
 
 /** Whether a failure is the core's reply to a chain request: those carry
@@ -325,6 +369,38 @@ class ChainDriver {
     }
   }
 
+  /**
+   * `chain.html` (design 0006): the `web3:` handler's `html()` read of
+   * `contract` on `chainId`, for the page whose permission key is
+   * `origin`, within `deadlineMs` (at most the core's 120 s) and cancelled
+   * when `signal` aborts. Resolves `{ html, htmlHash, source, verified,
+   * trust?, class }`: the document's text, its keccak-256, the read's
+   * source, verified and trust (hosts for references, as a read's), and
+   * the core's class, `trusted`, `conflict` or `untrusted`. Fenced as a
+   * read: a configuration change sends it again once.
+   */
+  chainHtml(chainId, contract, { origin, signal, deadlineMs = DEADLINE_MS } = {}) {
+    const limit = Number.isFinite(deadlineMs)
+      ? Math.min(Math.max(deadlineMs, 0), DEADLINE_MS)
+      : DEADLINE_MS;
+    const until = this.now() + limit;
+    const id = wireChainId(chainId);
+    if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
+    let head;
+    try {
+      head = serialized({
+        chain_id: id,
+        contract,
+        origin: typeof origin === 'string' ? origin : '',
+      });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return this.fenced('chain.html', id, head, { signal, until }, (reply, gen) =>
+      this.document(reply, gen)
+    );
+  }
+
   async sendBroadcast(id, raw, record, { signal, until }) {
     let head;
     try {
@@ -416,7 +492,7 @@ class ChainDriver {
       if (pinned && gen !== pinned && (gen || !this.client.serves(pinned))) {
         throw new Error(RESTARTED);
       }
-      if (!gen) throw new Error(this.now() >= until ? DEADLINE : UNAVAILABLE);
+      if (!gen) throw this.now() >= until ? deadlineError() : new Error(UNAVAILABLE);
       if (this.config.idle(gen)) return gen;
     }
   }
@@ -433,13 +509,13 @@ class ChainDriver {
     let resent = false;
     for (;;) {
       if (signal?.aborted) throw signal.reason;
-      if (this.now() >= until) throw new Error(DEADLINE);
+      if (this.now() >= until) throw deadlineError();
       const gen = await this.quiet(pinned, until, signal);
       pinned = gen;
       // What is left after waiting for the core: the core's deadline for
       // the request, and its watchdog's, agree.
       const remaining = Math.floor(until - this.now());
-      if (remaining <= 0) throw new Error(DEADLINE);
+      if (remaining <= 0) throw deadlineError();
       let reply = null;
       let failed = null;
       try {
@@ -461,7 +537,7 @@ class ChainDriver {
       while (!this.config.idle(gen)) await this.quiet(gen, until, signal);
       const generation = failed ? failed.data.generation : reply?.generation;
       if (failed?.code === 'reconfigured' || this.config.overtaken(gen, chainId, generation)) {
-        if (resent) throw new Error(RECONFIGURED);
+        if (resent) throw markFailure(new Error(RECONFIGURED), { code: 'reconfigured' });
         resent = true;
         continue;
       }
@@ -482,6 +558,30 @@ class ChainDriver {
     };
     if (reply && Object.hasOwn(reply, 'trust')) published.trust = this.hosts(reply.trust, gen);
     return published;
+  }
+
+  /** A `chain.html` result as the `web3:` handler takes it: the document's
+   * UTF-8 as text, and its trust label's references mapped by the process
+   * that made it. A reply main can't read fails, as a malformed one. */
+  document(reply, gen) {
+    if (
+      !isObject(reply) ||
+      typeof reply.html_base64 !== 'string' ||
+      typeof reply.hash !== 'string' ||
+      !DOCUMENT_HASH.test(reply.hash) ||
+      !DOCUMENT_CLASSES.has(reply.class)
+    ) {
+      throw new Error(MALFORMED_DOCUMENT);
+    }
+    const document = {
+      html: Buffer.from(reply.html_base64, 'base64').toString('utf8'),
+      htmlHash: reply.hash,
+      source: reply.source,
+      verified: reply.verified,
+    };
+    if (Object.hasOwn(reply, 'trust')) document.trust = this.hosts(reply.trust, gen);
+    document.class = reply.class;
+    return document;
   }
 
   /** A trust label with its endpoint references as hosts, exactly where
@@ -512,6 +612,8 @@ module.exports = {
   endpointHost,
   wireChainId,
   rebuilt,
+  failureOf,
+  markFailure,
   DEADLINE_MS,
   WATCHDOG_MARGIN_MS,
   RESTARTED,
@@ -519,4 +621,5 @@ module.exports = {
   DEADLINE,
   RECONFIGURED,
   TOO_LARGE,
+  MALFORMED_DOCUMENT,
 };

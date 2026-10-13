@@ -22,6 +22,7 @@ describe("chain data for main's callers", () => {
       request: jest.fn(async () => ({ result: '0x1', source: 'quorum', verified: true })),
       feeQuote: jest.fn(async () => ({ type: 'legacy' })),
       broadcast: jest.fn(async () => ({ result: '0xhash', source: 'direct' })),
+      chainHtml: jest.fn(async () => ({ html: '<h1>x</h1>', class: 'trusted' })),
     };
     chain.chainDriver.mockReturnValue(driver);
     const signal = new AbortController().signal;
@@ -29,12 +30,15 @@ describe("chain data for main's callers", () => {
     await chainData.request(1, 'eth_blockNumber');
     await chainData.getFeeQuote(100);
     await chainData.broadcastRawTransaction(100, '0xraw', { signal });
+    const html = { origin: 'web3://0xc0ffee', signal, deadlineMs: 30_000 };
+    await chainData.chainHtml(1, '0xC0ffee', html);
     expect(driver.request.mock.calls).toEqual([
       [1, 'eth_call', [{}], { includeTrust: true, signal }],
       [1, 'eth_blockNumber', [], {}],
     ]);
     expect(driver.feeQuote).toHaveBeenCalledWith(100);
     expect(driver.broadcast).toHaveBeenCalledWith(100, '0xraw', { signal });
+    expect(driver.chainHtml).toHaveBeenCalledWith(1, '0xC0ffee', html);
   });
 
   test("another method is refused here, with the router's text, before the core is asked", async () => {
@@ -50,6 +54,7 @@ describe("chain data for main's callers", () => {
     chain.chainDriver.mockReturnValue(null);
     await expect(chainData.request(1, 'eth_blockNumber')).rejects.toThrow(UNAVAILABLE);
     await expect(chainData.getFeeQuote(1)).rejects.toThrow(UNAVAILABLE);
+    await expect(chainData.chainHtml(1, '0xC0ffee')).rejects.toThrow(UNAVAILABLE);
     await expect(chainData.broadcastRawTransaction(1, '0xraw')).rejects.toMatchObject({
       message: UNAVAILABLE,
       outcome: 'not_sent',

@@ -114,21 +114,38 @@ describe('chain-data activity', () => {
     expect(router.getFeeQuote).toBe(wrappedFee);
   });
 
+  test("the web3: handler's html() read is attributed too (design 0006, chain.html)", async () => {
+    const { activity, at } = setup();
+    let resolveHtml;
+    const chainHtml = jest.fn(() => new Promise((r) => (resolveHtml = r)));
+    const router = { request: jest.fn(), chainHtml };
+    activity.instrumentChainDataRouter(router);
+    at(0);
+    const html = router.chainHtml(1, '0xC0ffee', { origin: 'web3://0xc0ffee' });
+    at(700);
+    expect(activity.describe()).toBe('chain-data: 1 html() in flight, 700 ms');
+    expect(chainHtml).toHaveBeenCalledWith(1, '0xC0ffee', { origin: 'web3://0xc0ffee' });
+    resolveHtml({ html: '<h1>x</h1>', source: 'quorum', class: 'trusted' });
+    await expect(html).resolves.toEqual({ html: '<h1>x</h1>', source: 'quorum', class: 'trusted' });
+    expect(activity.describe()).toBe('chain-data: 1 html() via quorum, 700 ms');
+  });
+
   test('the real router exports are all wrapped', () => {
     const activity = createChainDataActivity();
     const router = {
       request: jest.fn(),
       getFeeQuote: jest.fn(),
+      chainHtml: jest.fn(),
       broadcastRawTransaction: jest.fn(),
     };
     activity.instrumentChainDataRouter(router);
-    for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
+    for (const name of ['request', 'getFeeQuote', 'chainHtml', 'broadcastRawTransaction']) {
       expect(router[name].name).toBe(name);
       expect(jest.isMockFunction(router[name])).toBe(false);
     }
     // The real module exports the functions being wrapped.
     const real = jest.requireActual('./chain-data');
-    for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
+    for (const name of ['request', 'getFeeQuote', 'chainHtml', 'broadcastRawTransaction']) {
       expect(typeof real[name]).toBe('function');
     }
   });
