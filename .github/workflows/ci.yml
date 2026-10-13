@@ -290,6 +290,17 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
           FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
 
+      # The IPFS backend contract (freedom-core design 0007, "Tests first"):
+      # what `ipfsBackend()` and the `ipfs:` handler must do, against this
+      # runner's add-on and a loopback fixture (no public network). The
+      # freedom-ipfsd service must later pass the same suite. It needs the
+      # add-on downloaded above, so it runs here and not in `test`, where it
+      # is skipped.
+      - name: IPFS backend contract suite (add-on)
+        run: npx jest src/main/ipfs/ipfs-backend.contract.test.js
+        env:
+          FREEDOM_IPFS_CONTRACT_BACKEND: addon
+
       - name: Smoke test issue #102 high-fanout IPFS page
         if: matrix.target == 'linux-x64'
         run: npm run ipfs:native:smoke
