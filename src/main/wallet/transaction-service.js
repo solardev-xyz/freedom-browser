@@ -587,20 +587,26 @@ function feeTooLow() {
  * The fees of a replacement of `fields` (a held intent's latest unsigned
  * fields), checked: the same fee type, every fee at least 10% higher, and a
  * priority fee no higher than the maximum. Returns them as decimal strings.
+ *
+ * The rule is the one nodes apply to a replacement, `new ≥ ceil(old × 1.1)`
+ * for each fee, so a priority fee of 0 may stay 0: its floor is 0 (and
+ * `replacementFees` offers exactly that when no quote is available). The
+ * maximum fee, or a legacy gas price, must be positive, so a replacement
+ * always differs from what it replaces.
  */
 function replacementFeesFor(fields, fees) {
-  const decimal = (value) => {
+  const quantity = (value, { positive }) => {
     try {
       const n = BigInt(value);
-      if (n <= 0n) throw new Error('not positive');
+      if (n < 0n || (positive && n === 0n)) throw new Error('out of range');
       return n;
     } catch {
       throw feeTooLow();
     }
   };
   if (fields.type === 2) {
-    const maxFeePerGas = decimal(fees?.maxFeePerGas);
-    const maxPriorityFeePerGas = decimal(fees?.maxPriorityFeePerGas);
+    const maxFeePerGas = quantity(fees?.maxFeePerGas, { positive: true });
+    const maxPriorityFeePerGas = quantity(fees?.maxPriorityFeePerGas, { positive: false });
     if (fees.gasPrice !== undefined && fees.gasPrice !== null) throw feeTooLow();
     if (
       maxFeePerGas < bumped(fields.maxFeePerGas) ||
@@ -619,7 +625,7 @@ function replacementFeesFor(fields, fees) {
   if (fees?.maxFeePerGas !== undefined || fees?.maxPriorityFeePerGas !== undefined) {
     throw feeTooLow();
   }
-  const gasPrice = decimal(fees?.gasPrice);
+  const gasPrice = quantity(fees?.gasPrice, { positive: true });
   if (gasPrice < bumped(fields.gasPrice)) throw feeTooLow();
   return { gasPrice: gasPrice.toString() };
 }

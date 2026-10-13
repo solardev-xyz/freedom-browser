@@ -1147,6 +1147,125 @@ describe('replacement fees (9)', () => {
     ]).toEqual([2, 7, 2200000000n, 1100000000n]);
   });
 
+  // #710 review probes: what the fee object carries beyond fees changes
+  // nothing; a confirmation is spent once; two at once sign once.
+  test('a fee object smuggling a payment changes nothing, and its confirmation is spent once', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    const fees = {
+      gasPrice: '0x4190ab00', // 1.1 gwei, in hex
+      nonce: 999,
+      chainId: 1,
+      to: CONTRACT,
+      value: '99999999999999999',
+      data: '0xcafe',
+      gasLimit: '1',
+      walletIndex: 1,
+      sender: BOB.address,
+    };
+    const { token } = await running.confirm('intent-replace', null, {
+      intentId: intent.intentId,
+      chainId: intent.chainId,
+      sender: intent.sender,
+      nonce: intent.nonce,
+      to: intent.fields.to,
+      value: intent.fields.value,
+      data: intent.fields.data,
+      gasLimit: intent.fields.gasLimit,
+      gasPrice: fees.gasPrice,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: true,
+    });
+    const tx = broadcasts().at(-1);
+    expect({
+      nonce: tx.nonce,
+      chainId: tx.chainId,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      gasLimit: tx.gasLimit,
+      gasPrice: tx.gasPrice,
+    }).toEqual({
+      nonce: 7,
+      chainId: 100n,
+      from: ALICE.address,
+      to: BOB.address,
+      value: 1000n,
+      data: '0x',
+      gasLimit: 21000n,
+      gasPrice: 1100000000n,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+  });
+
+  test('two replacements at once with the same fees sign once: the second meets the new floor', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    mockSigners[0].signTransaction.mockClear();
+    const fees = { gasPrice: '1100000000' };
+    const replies = await Promise.all([
+      replaceConfirmed(running, intent, fees),
+      replaceConfirmed(running, intent, fees),
+    ]);
+    expect(replies.filter((reply) => reply.success)).toHaveLength(1);
+    expect(replies.filter((reply) => reply.code === 'INTENT_FEE_TOO_LOW')).toHaveLength(1);
+    expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.filter(
+        ([, method, params]) => method === 'eth_getTransactionCount' && params?.[1] === 'pending'
+      )
+    ).toHaveLength(1);
+  });
+
+  // #710 review: an offer the replacement handler refused.
+  test('a zero tip is offered at its zero floor with no quote, and that offer goes through', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
+    expect(intent.fields).toMatchObject({ type: 2, maxPriorityFeePerGas: '0' });
+    mockFeeQuote.mockRejectedValue(new Error('quote unavailable'));
+    const offer = await running.fees(intent.intentId);
+    expect(offer).toEqual({
+      success: true,
+      fees: { maxFeePerGas: '110', maxPriorityFeePerGas: '0' },
+    });
+
+    await expect(replaceConfirmed(running, intent, offer.fees)).resolves.toMatchObject({
+      success: true,
+      nonce: 7,
+    });
+    const replacement = broadcasts().at(-1);
+    expect([
+      replacement.type,
+      replacement.nonce,
+      replacement.maxFeePerGas,
+      replacement.maxPriorityFeePerGas,
+    ]).toEqual([2, 7, 110n, 0n]);
+  });
+
+  test('a zero or negative maximum fee, and a negative tip, are still refused', async () => {
+    const running = startReplacing();
+    const eip1559 = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
+    for (const fees of [
+      { maxFeePerGas: '0', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '-110', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '110', maxPriorityFeePerGas: '-1' },
+    ]) {
+      await expect(replaceConfirmed(running, eip1559, fees)).resolves.toMatchObject({
+        success: false,
+      });
+    }
+    expect(running.store.get(eip1559.intentId).hashes).toHaveLength(1);
+  });
+
   test('a second replacement raises the fee over the first, not over the original', async () => {
     const running = startReplacing();
     const intent = await underpriced(running, LEGACY);
