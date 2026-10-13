@@ -29,7 +29,7 @@ function attachNaming(client) {
   const myotis = require('../myotis/myotis-manager');
   config = new NamingConfig({ client, sources: { ens, tezos, registry, myotis }, log });
   registerNamingShell(client, config);
-  registerNamingVerified(client, config);
+  const { running } = registerNamingVerified(client, config);
   driver = new NamingDriver({ client, config, normalize: ens.fastNormalize });
   // A Myotis transition, for chain 1: the core clears and advances its own
   // lifecycle.
@@ -37,7 +37,8 @@ function attachNaming(client) {
     if (event?.chainId != null && Number(event.chainId) !== 1) return;
     if (config) config.availability().catch(() => {});
   });
-  return { config, driver };
+  // The verifier operations its executor counts, which chain data's share.
+  return { config, driver, running };
 }
 
 /** The core has stopped for good: lookups fail from now on, as the

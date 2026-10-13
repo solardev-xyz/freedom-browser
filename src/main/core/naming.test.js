@@ -35,7 +35,9 @@ test('attached before the core starts: executors, driver, transitions, settings 
   const client = new EventEmitter();
   const handled = [];
   client.handle = (method) => handled.push(method);
-  const { config } = attachNaming(client);
+  const { config, running } = attachNaming(client);
+  // Its count of verifier operations, for chain data's to share.
+  expect(running).toEqual({ myotis: 0, colibri: 0 });
   expect(handled.sort()).toEqual([
     'shell.gateway',
     'shell.prefetch',

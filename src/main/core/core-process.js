@@ -13,6 +13,7 @@ const { getIdentityDataDir } = require('../profile-paths');
 const { CoreClient } = require('./core-client');
 const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
+const { attachChain } = require('./chain');
 
 let client = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
@@ -87,7 +88,9 @@ async function startCore() {
   });
   client.on('exit', () => guard.setRecoveryUnknown());
   // Before it starts, so its first handshake configures naming.
-  attachNaming(client);
+  const naming = attachNaming(client);
+  // Chain data's executors, under naming's bound on verifier operations.
+  attachChain(client, { running: naming.running });
   const starting = client;
   let hello;
   try {
