@@ -1,11 +1,14 @@
 /**
  * Whether a freedom-cored binary serves a method: one that doesn't answers
- * it `unknown_method`. Asked once, before a suite, by a child that plays
- * main (the handshake first), so a suite is skipped whole when it doesn't.
+ * it `unknown_method`, and any other answer (a result, or an error such as
+ * an unconfigured chain's) means it does. Asked once, before a suite, by a
+ * child that plays main (the handshake first), so a suite is skipped whole
+ * when it doesn't.
  *
  * - `servesChain`: the chain thread (freedom-core design 0005); the pinned
  *   v0.3.0 has none.
- * - `servesDweb`: `dweb.open` (design 0006); the pinned v0.4.0 has none.
+ * - `servesChainHtml`: `chain.html` (design 0006); v0.4.0 has none.
+ * - `servesDweb`: `dweb.open` (design 0006); v0.4.0 has none.
  */
 const fs = require('fs');
 const os = require('os');
@@ -34,7 +37,7 @@ function serves(binary, method, params) {
     core.stdout.on('data', (chunk) => {
       for (const { message } of decoder.push(chunk)) {
         if (message?.id === 1) request(2, method, JSON.parse(params));
-        if (message?.id === 2) done(message.result !== undefined ? 'yes' : 'no');
+        if (message?.id === 2) done(message.error?.code === 'unknown_method' ? 'no' : 'yes');
       }
     });
     core.on('exit', () => done('no'));
@@ -66,6 +69,15 @@ function servesChain(binary) {
   return serves(binary, 'chain.configure', { chains: [] });
 }
 
+function servesChainHtml(binary) {
+  return serves(binary, 'chain.html', {
+    chain_id: 1,
+    contract: `0x${'11'.repeat(20)}`,
+    origin: 'web3://probe',
+    deadline_ms: 1000,
+  });
+}
+
 function servesDweb(binary) {
   return serves(binary, 'dweb.open', {
     url: `bzz://${'ab'.repeat(32)}/`,
@@ -77,4 +89,4 @@ function servesDweb(binary) {
   });
 }
 
-module.exports = { servesChain, servesDweb };
+module.exports = { servesChain, servesChainHtml, servesDweb };

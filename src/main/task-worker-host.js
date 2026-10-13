@@ -1,8 +1,9 @@
 // A small request/response host for one lazily spawned `worker_threads`
-// worker (#503 items 9 and 12). Used by the web3:// document decoder
-// (`onchain/onchain-html-worker.js`) and the chainlist catalog
+// worker (#503 item 12). Used by the chainlist catalog
 // (`networks/chain-catalog-worker.js`), so CPU-heavy work on a multi-MB input
-// never runs on Electron's main thread, where it freezes every window.
+// never runs on Electron's main thread, where it freezes every window. (The
+// web3:// document decoder, #503 item 9, was its first user; the core decodes
+// those documents now, freedom-core design 0006.)
 //
 // Protocol: main posts `{ id, op, ...payload }`; the worker answers
 // `{ id, ok: true, result }` or `{ id, ok: false, error, code }`, and may post
@@ -79,7 +80,7 @@ function abortError(message) {
 
 /**
  * @param {object} options
- * @param {string} options.name - log prefix, e.g. 'OnchainHtml'
+ * @param {string} options.name - log prefix, e.g. 'ChainCatalog'
  * @param {string} options.workerPath
  * @param {() => any} [options.workerData] - evaluated at each spawn
  * @param {object} [options.resourceLimits]
