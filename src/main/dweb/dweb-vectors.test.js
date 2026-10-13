@@ -177,7 +177,7 @@ describeIfVectors("fc-dweb's vectors through main", () => {
         },
       });
     }
-    expect(results.map(({ want, ...got }) => got)).toEqual(
+    expect(results.map(({ want: _want, ...got }) => got)).toEqual(
       results.map(({ id, want }) => ({ id, ...want }))
     );
   });

@@ -4,6 +4,7 @@ const {
   TruncatedLogsError,
   SourceUnavailableError,
   rebuilt,
+  failureOf,
   wireChainId,
   endpointHost,
   DEADLINE_MS,
@@ -13,6 +14,7 @@ const {
   DEADLINE,
   RECONFIGURED,
   TOO_LARGE,
+  MALFORMED_DOCUMENT,
 } = require('./chain-driver');
 const { BroadcastRecords } = require('./chain-broadcasts');
 const { JsonParams } = require('./core-client');
@@ -779,5 +781,231 @@ describe('call-object quantities', () => {
       outcome: 'not_sent',
     });
     expect(sent()).toEqual([]);
+  });
+});
+
+describe('chain.html (design 0006)', () => {
+  const CONTRACT = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
+  const HTML = '<!doctype html><h1>caf\u00e9 \u{1f680}</h1>';
+  const HTML_HASH = keccak256(Buffer.from(HTML, 'utf8'));
+  /** The core's `chain.html` result, under `generation`. */
+  const document = (extra = {}) => ({
+    html_base64: Buffer.from(HTML, 'utf8').toString('base64'),
+    hash: HTML_HASH,
+    source: 'quorum',
+    verified: true,
+    class: 'trusted',
+    generation: 3,
+    ...extra,
+  });
+
+  test("goes as the design's params: the contract, the page's key, the caller's deadline", async () => {
+    let clock = 0;
+    const { driver, sent } = setUp(() => document(), { now: () => clock });
+    await driver.chainHtml(1, CONTRACT, { origin: 'web3://0xc0ffee', deadlineMs: 30_000 });
+    // No more than the core's own deadline, and no origin but a string.
+    await driver.chainHtml('100', CONTRACT, { origin: 7, deadlineMs: 10 * DEADLINE_MS });
+    await driver.chainHtml(1, CONTRACT);
+    expect(sent()).toEqual([
+      [
+        'chain.html',
+        { chain_id: 1, contract: CONTRACT, origin: 'web3://0xc0ffee', deadline_ms: 30_000 },
+      ],
+      ['chain.html', { chain_id: 100, contract: CONTRACT, origin: '', deadline_ms: DEADLINE_MS }],
+      ['chain.html', { chain_id: 1, contract: CONTRACT, origin: '', deadline_ms: DEADLINE_MS }],
+    ]);
+    await expect(driver.chainHtml('x', CONTRACT)).rejects.toThrow('Unsupported chain ID: x');
+    expect(sent()).toHaveLength(3);
+  });
+
+  test("the result: the document's text and hash, the read's label with hosts, the class", async () => {
+    const { driver } = setUp((method, params, n) =>
+      n === 1
+        ? document({
+            trust: {
+              level: 'unverified',
+              method: 'quorum',
+              block: null,
+              agreed: [{ ref: 'c1' }],
+              dissented: [{ ref: 'c2' }, { ref: 'c3' }],
+              queried: [{ ref: 'c1' }, { ref: 'c2' }, { ref: 'c3' }],
+            },
+            class: 'conflict',
+            verified: false,
+          })
+        : document({ source: 'direct', verified: false, class: 'untrusted' })
+    );
+    const conflict = await driver.chainHtml(1, CONTRACT);
+    expect(Object.keys(conflict)).toEqual([
+      'html',
+      'htmlHash',
+      'source',
+      'verified',
+      'trust',
+      'class',
+    ]);
+    expect(conflict).toEqual({
+      html: HTML,
+      htmlHash: HTML_HASH,
+      source: 'quorum',
+      verified: false,
+      // A host that doesn't parse is dropped, as for a read; the core's
+      // class counted it (deviation `web3-dissent`).
+      trust: {
+        level: 'unverified',
+        method: 'quorum',
+        block: null,
+        agreed: ['a.rpc.example:8545'],
+        dissented: ['b.rpc.example'],
+        queried: ['a.rpc.example:8545', 'b.rpc.example'],
+      },
+      class: 'conflict',
+    });
+    // No trust: none in the result either.
+    expect(await driver.chainHtml(1, CONTRACT)).toEqual({
+      html: HTML,
+      htmlHash: HTML_HASH,
+      source: 'direct',
+      verified: false,
+      class: 'untrusted',
+    });
+  });
+
+  test.each([
+    ['no document', { html_base64: undefined }],
+    ['a hash that is not 32 bytes', { hash: '0x1234' }],
+    ['an upper-case hash', { hash: HTML_HASH.toUpperCase().replace('0X', '0x') }],
+    ['an unknown class', { class: 'verified' }],
+  ])('a reply with %s is malformed', async (_label, extra) => {
+    const { driver } = setUp(() => document(extra));
+    await expect(driver.chainHtml(1, CONTRACT)).rejects.toThrow(MALFORMED_DOCUMENT);
+  });
+
+  // Security review of #703, N1: the document is the core's encoding or
+  // nothing. Buffer's decoder would drop what isn't base64 and ignore bad
+  // padding, and a lax UTF-8 decode would serve U+FFFD for a byte that
+  // isn't UTF-8: bytes other than the ones the core's hash names.
+  const base64 = (bytes) => Buffer.from(bytes).toString('base64');
+  const B64 = base64(HTML);
+  test.each([
+    ['a character outside base64', `${B64.slice(0, 4)}*${B64.slice(5)}`],
+    ['a line break', `${B64.slice(0, 4)}\n${B64.slice(4)}`],
+    ['URL-safe base64', Buffer.from('?>?').toString('base64url')],
+    ['no padding', base64('ab').replace(/=+$/, '')],
+    ['padding bits set', 'YWJ='],
+    ['padding where none belongs', `${base64('abc')}=`],
+    ['bytes that are not UTF-8', base64([0x3c, 0xff, 0x3e])],
+    ['an encoded surrogate', base64([0x3c, 0xed, 0xa0, 0x80, 0x3e])],
+    ['a document over 8 MiB', base64(Buffer.alloc(8 * 1024 * 1024 + 1, 0x61))],
+  ])('a document with %s is malformed, whatever its hash and class', async (_label, encoded) => {
+    const { driver } = setUp(() => document({ html_base64: encoded }));
+    await expect(driver.chainHtml(1, CONTRACT)).rejects.toThrow(MALFORMED_DOCUMENT);
+  });
+
+  test("the core's encoding is the document's bytes: 8 MiB, an empty one, a BOM kept", async () => {
+    const atLimit = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(HTML)]);
+    const documents = [atLimit, Buffer.alloc(0), withBom, Buffer.from('?>?')];
+    const { driver } = setUp((method, params, n) =>
+      document({ html_base64: base64(documents[n - 1]) })
+    );
+    for (const bytes of documents) {
+      const { html, htmlHash } = await driver.chainHtml(1, CONTRACT);
+      expect(Buffer.from(html, 'utf8').equals(bytes)).toBe(true);
+      // The core's hash, as it sent it.
+      expect(htmlHash).toBe(HTML_HASH);
+    }
+  });
+
+  test('failures throw as reads do, and say what the core ended them with', async () => {
+    const errors = [
+      chainError({
+        kind: 'core',
+        message: "html() response exceeds Freedom's 8 MiB limit",
+        props: { code: 'ONCHAIN_APP_TOO_LARGE' },
+      }),
+      chainError({
+        message: 'too large, says the node',
+        props: { code: 'ONCHAIN_APP_TOO_LARGE', data: null },
+        undefined_keys: ['data'],
+      }),
+      coreError('busy', 'Too many chain requests', { generation: 3 }),
+      coreError('deadline', "The chain request's deadline passed", { generation: 3 }),
+      coreError('budget', 'Chain data is out of memory', { generation: 3 }),
+      coreError('cancelled', 'Cancelled', { generation: 3 }),
+    ];
+    const { driver } = setUp((method, params, n) => {
+      throw errors[n - 1];
+    });
+    const thrown = [];
+    for (let i = 0; i < errors.length; i++) {
+      thrown.push(await driver.chainHtml(1, CONTRACT).catch((err) => err));
+    }
+    expect(thrown[0].message).toBe("html() response exceeds Freedom's 8 MiB limit");
+    expect(Object.entries(thrown[0])).toEqual([['code', 'ONCHAIN_APP_TOO_LARGE']]);
+    expect(thrown.map(failureOf)).toEqual([
+      { code: 'chain_error', kind: 'core' },
+      { code: 'chain_error', kind: 'node' },
+      { code: 'busy' },
+      { code: 'deadline' },
+      { code: 'budget' },
+      { code: 'cancelled' },
+    ]);
+    // Beside the error, not on it: today's own properties only.
+    expect(Object.entries(thrown[2])).toEqual([]);
+    expect(failureOf(new Error('x'))).toBeNull();
+    expect(failureOf(undefined)).toBeNull();
+  });
+
+  test("fenced as a read: sent again once, within what is left of the caller's deadline", async () => {
+    let clock = 0;
+    const reconfigured = () => coreError('reconfigured', RECONFIGURED, { generation: 3 });
+    const { driver, sent } = setUp(
+      (method, params, n) => {
+        clock += 10_000;
+        if (n === 1) throw reconfigured();
+        return document({ generation: 4 });
+      },
+      { now: () => clock }
+    );
+    expect((await driver.chainHtml(1, CONTRACT, { deadlineMs: 30_000 })).html).toBe(HTML);
+    expect(sent().map(([, params]) => params.deadline_ms)).toEqual([30_000, 20_000]);
+
+    const twice = setUp(() => {
+      throw reconfigured();
+    });
+    const failed = await twice.driver.chainHtml(1, CONTRACT).catch((err) => err);
+    expect(failed.message).toBe(RECONFIGURED);
+    expect(failureOf(failed)).toEqual({ code: 'reconfigured' });
+
+    clock = 0;
+    const late = setUp(
+      () => {
+        clock += 30_000;
+        throw reconfigured();
+      },
+      { now: () => clock }
+    );
+    const expired = await late.driver
+      .chainHtml(1, CONTRACT, { deadlineMs: 30_000 })
+      .catch((e) => e);
+    expect(expired.message).toBe(DEADLINE);
+    expect(failureOf(expired)).toEqual({ code: 'deadline' });
+    expect(late.sent()).toHaveLength(1);
+  });
+
+  test("the caller's abort cancels it (deviation web3-cancel) and throws its reason", async () => {
+    const { driver, client } = setUp((method, params, n, { signal }) => {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(coreError('cancelled', 'Cancelled')));
+      });
+    });
+    const controller = new AbortController();
+    const pending = driver.chainHtml(1, CONTRACT, { signal: controller.signal });
+    await new Promise(setImmediate);
+    expect(client.requestTo.mock.calls[0][1]).toBe('chain.html');
+    expect(client.requestTo.mock.calls[0][4].signal).toBe(controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBe(controller.signal.reason);
   });
 });

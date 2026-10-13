@@ -38,10 +38,23 @@ jest.mock('../ipfs/gateway-transport', () => ({
   netGatewayFetch: (...args) => mockNetGatewayFetch(...args),
 }));
 
-const { handleBzzRequest, antBackend } = require('./bzz-protocol');
+// Chromium's `net.request`, for the transport's own path: no test dials it.
+const mockNetRequest = jest.fn(() => {
+  throw new Error('no dial expected');
+});
+jest.mock('electron', () => ({ net: { request: (...args) => mockNetRequest(...args) } }));
+
+const {
+  handleBzzRequest,
+  antBackend,
+  abandonedAntDials,
+  MAX_ABANDONED_DIALS,
+} = require('./bzz-protocol');
 const { getAntApiUrl } = require('../service-registry');
 const { isMainProcessAntDial } = require('./ant-api-main-dials');
-const { OnionGateRefusal } = jest.requireActual('../ipfs/gateway-transport');
+const { closeDwebSession } = require('../dweb/fetch-admission');
+const actualTransport = jest.requireActual('../ipfs/gateway-transport');
+const { OnionGateRefusal } = actualTransport;
 
 const HASH = 'a'.repeat(64);
 
@@ -382,6 +395,7 @@ describe('handleBzzRequest', () => {
       };
       const p = handleBzzRequest(req, { fetchImpl });
       // First attempt runs, schedules a retry, then we abort before it fires.
+      while (fetchImpl.mock.calls.length === 0) await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       controller.abort();
@@ -922,5 +936,145 @@ describe('a non-loopback Ant', () => {
     expect(antBackend().ref).toEqual({ ant: 'bundled', up: true });
     getAntApiUrl.mockReturnValue(null);
     expect(antBackend().ref).toEqual({ ant: 'bundled', up: false });
+  });
+});
+
+// The remote Ant's dial is waited on only while its attempt lives: the
+// header deadline, the page's abort and the session's close each end the
+// wait at once, even while the session's proxy lookup ignores them. That
+// work is abandoned: what it brings is discarded, and it is bounded.
+describe("a remote Ant's dial is bounded by its attempt", () => {
+  const ONION = 'http://antnode.onion:1633';
+  const session = { id: 'the request session' };
+  const held = () => {
+    let settle;
+    const promise = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    return { promise, ...settle };
+  };
+  const request = (signal) => ({
+    url: `bzz://${HASH}/x`,
+    method: 'GET',
+    headers: new Headers({ accept: '*/*' }),
+    body: null,
+    signal: signal ?? new AbortController().signal,
+  });
+
+  beforeEach(() => {
+    mockNetGatewayFetch.mockReset();
+    mockNetRequest.mockClear();
+    getAntApiUrl.mockReturnValue(ONION);
+  });
+  afterEach(() => {
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    jest.useRealTimers();
+  });
+
+  test('a proxy wait spanning the header deadline ends the attempt; a late answer is discarded', async () => {
+    jest.useFakeTimers();
+    const stalled = held();
+    mockNetGatewayFetch
+      .mockImplementationOnce(() => stalled.promise)
+      .mockResolvedValueOnce(new Response('second attempt'));
+    const dialled = `${ONION}/bzz/${HASH}/x`;
+
+    const pending = handleBzzRequest(request(), { session });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    expect(isMainProcessAntDial(dialled)).toBe(true);
+    await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS);
+    // The attempt is over though its transport isn't: abandoned, unannounced.
+    expect(abandonedAntDials()).toBe(1);
+    expect(isMainProcessAntDial(dialled)).toBe(false);
+    await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+    await expect((await pending).text()).resolves.toBe('second attempt');
+
+    let lateCancelled = false;
+    stalled.resolve(new Response(new ReadableStream({ cancel: () => (lateCancelled = true) })));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(lateCancelled).toBe(true);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("the page's abort settles a pending proxy wait at once", async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const page = new AbortController();
+    const pending = handleBzzRequest(request(page.signal), { session });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    page.abort();
+    const res = await pending;
+    expect(res.status).toBe(502);
+    expect(isMainProcessAntDial(`${ONION}/bzz/${HASH}/x`)).toBe(false);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("the session's close settles a pending proxy wait at once", async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const pending = handleBzzRequest(request(), {
+      session,
+      partition: 'private-proxy',
+      isPrivate: true,
+    });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    closeDwebSession('private-proxy');
+    expect((await pending).status).toBe(502);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("through the real transport: a session's held proxy lookup never dials once abandoned", async () => {
+    jest.useFakeTimers();
+    const lookups = [];
+    const lookingUp = {
+      resolveProxy: () => new Promise((resolve) => lookups.push(resolve)),
+    };
+    mockNetGatewayFetch.mockImplementation((...args) => actualTransport.netGatewayFetch(...args));
+    const page = new AbortController();
+    const pending = handleBzzRequest(request(page.signal), { session: lookingUp });
+    while (lookups.length === 0) await Promise.resolve();
+    // The header deadline passes with the lookup still held: the next
+    // attempt starts, and the page then leaves.
+    await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS + RETRY_DELAYS_MS[0]);
+    expect(lookups).toHaveLength(2);
+    page.abort();
+    expect((await pending).status).toBe(502);
+
+    // The lookups come back routed: an aborted attempt is never dialled.
+    for (const resolve of lookups) resolve('SOCKS5 127.0.0.1:9150');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mockNetRequest).not.toHaveBeenCalled();
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test('abandoned dials are bounded: past the bound a new one fails at once', async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const aborted = new AbortController();
+    aborted.abort();
+    const backend = antBackend({ session });
+    const attempt = () =>
+      backend
+        .request({
+          path: `/bzz/${HASH}/x`,
+          method: 'GET',
+          headers: new Headers(),
+          signal: aborted.signal,
+          headersTimeoutMs: BZZ_HEADERS_MS,
+        })
+        .catch((err) => err);
+    for (let n = 0; n < MAX_ABANDONED_DIALS; n++) await attempt();
+    expect(abandonedAntDials()).toBe(MAX_ABANDONED_DIALS);
+    const calls = mockNetGatewayFetch.mock.calls.length;
+
+    expect((await attempt()).message).toBe('too many abandoned Ant dials');
+    expect(mockNetGatewayFetch.mock.calls).toHaveLength(calls);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
   });
 });

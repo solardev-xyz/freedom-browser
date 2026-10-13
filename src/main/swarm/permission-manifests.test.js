@@ -13,11 +13,20 @@ jest.mock('electron', () => ({
   },
 }));
 
+// The private-window bookkeeping, as the asking window's sender reads now:
+// its partition, and whether it is private (by default, whether it has one).
 let mockPrivatePartition = null;
+let mockPrivateWindow = null;
 jest.mock('../private/private-windows', () => ({
   getPartitionForWebContents: () => mockPrivatePartition,
-  isPrivateWebContents: () => Boolean(mockPrivatePartition),
+  isPrivateWebContents: () => mockPrivateWindow ?? Boolean(mockPrivatePartition),
 }));
+
+/** A window's webContents, as an IPC event carries it. */
+function liveSender() {
+  const sender = { destroyed: false, isDestroyed: () => sender.destroyed };
+  return sender;
+}
 
 const mockPermissionState = {};
 jest.mock('./swarm-permissions', () => ({
@@ -109,6 +118,8 @@ beforeEach(() => {
   for (const key of Object.keys(mockFeedState)) delete mockFeedState[key];
   _resetForTests();
   jest.clearAllMocks();
+  mockPrivatePartition = null;
+  mockPrivateWindow = null;
 });
 
 afterEach(() => {
@@ -546,7 +557,7 @@ describe('permission manifests', () => {
     registerPermissionManifestIpc();
     mockHandleBzzRequest.mockResolvedValue(responseFor({}, 404));
     const check = (origin) =>
-      ipcHandlers['swarm:manifest-check']({ sender: { id: 7 } }, {
+      ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
         origin,
         committedUrl: `bzz://${origin}/`,
         eager: true,
@@ -572,6 +583,46 @@ describe('permission manifests', () => {
     });
   });
 
+  // The window is read when its check comes in, not when the origin's lock
+  // lets the check run: a private window that closes while its check waits
+  // gets no fetch at all, least of all one on the default session.
+  test("a check queued behind the origin's lock fetches nothing once its window has gone", async () => {
+    registerPermissionManifestIpc();
+    let releaseFirst;
+    mockHandleBzzRequest.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseFirst = resolve; })
+    );
+    const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
+    const first = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, request);
+    await Promise.resolve();
+
+    mockPrivatePartition = 'private-1';
+    const privateSender = liveSender();
+    const queued = ipcHandlers['swarm:manifest-check']({ sender: privateSender }, request);
+    // The private window closes while its check waits for the lock.
+    privateSender.destroyed = true;
+    mockPrivatePartition = null;
+    releaseFirst(responseFor({}, 404));
+    await first;
+
+    await expect(queued).resolves.toEqual({ kind: 'unresolved' });
+    expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
+  });
+
+  test('a sender that is gone, or private without a partition, is refused at once', async () => {
+    registerPermissionManifestIpc();
+    const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
+    const check = async (event) => ipcHandlers['swarm:manifest-check'](event, request);
+    const destroyed = liveSender();
+    destroyed.destroyed = true;
+    expect(await check({ sender: destroyed })).toEqual({ kind: 'unresolved' });
+    expect(await check({})).toEqual({ kind: 'unresolved' });
+    // Known private, its partition no longer named: never the default session.
+    mockPrivateWindow = true;
+    expect(await check({ sender: liveSender() })).toEqual({ kind: 'unresolved' });
+    expect(mockHandleBzzRequest).not.toHaveBeenCalled();
+  });
+
   test('serializes concurrent manifest IPC checks for the same origin', async () => {
     registerPermissionManifestIpc();
     let releaseFirst;
@@ -579,14 +630,14 @@ describe('permission manifests', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
       .mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
 
-    const first = ipcHandlers['swarm:manifest-check']({}, {
+    const first = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
       origin: 'app.eth',
       committedUrl: 'bzz://app.eth/',
       navigationKey: 'tab-1:1',
       eager: true,
     });
     await Promise.resolve();
-    const second = ipcHandlers['swarm:manifest-check']({}, {
+    const second = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
       origin: 'app.eth',
       committedUrl: 'bzz://app.eth/',
       navigationKey: 'tab-2:1',
