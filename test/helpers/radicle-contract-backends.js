@@ -18,8 +18,14 @@
  *
  * - `manager`, `embedded`, `api` (`radicle-api-protocol.js`) and `rad`
  *   (`radicle/rad-protocol.js`), loaded together in one module registry;
- * - `readText(op, args)`: an op's JSON text, as the backend produces it.
- *   For the add-on, the export's own text: what `rad.read` must reproduce;
+ * - `readText(op, args)`: a `rad.read` op's JSON text, exactly as the
+ *   backend produces it, or a rejection with its error's message. This is
+ *   the contract boundary: the suite compares the text byte for byte. For
+ *   the add-on, the reference for each class: a pass-through op is the
+ *   export's own text; a serialized op is what main's `JSON.stringify`
+ *   writes for the parsed result, as `serveRepoApi` does today; a composed
+ *   op is what main's own code composes today. An error payload rejects
+ *   with its message, as `radicle-embedded.js` does;
  * - `failNext(name, message)`: makes the next `embedded[name]()` call reject
  *   with `message`, for the contracts that hold when a read fails; it
  *   returns the function that undoes it;
@@ -32,12 +38,19 @@
  * `BACKENDS` lists, beside each loader, the design's features beyond
  * today's contract that the backend honours; the suite's tests for the
  * others are pending. Those tests use what only the service has:
- * `call(method, params)` for its methods, `embedded.callStream`,
- * `embedded.callScoped` and `embedded.collectionBudget()` (JSON results),
- * and test hooks: `hooks.holdRepair(rid)`, which holds a repository under
- * repair until the function it returns is called, and
- * `hooks.scriptedClone(rid, { failures, reason })`, which runs a clone whose
- * candidates fail as scripted and returns its progress events.
+ * - `call(method, params)` for its methods;
+ * - in `embedded`: `callStream(op, args)`, `callScoped(op, args, callback,
+ *   { signal })`, `collectionBudget()` (`{ held, limit }`, in bytes) and
+ *   `streamStats()` (`{ streams, buffered }`: main's live streams and the
+ *   bytes their rings hold). Failures carry the design's `code`;
+ * - test hooks:
+ *   - `hooks.holdRepair(rid)` holds a repository under repair until the
+ *     function it returns is called;
+ *   - `hooks.inflate(op, bytes)` makes the op's results that many bytes of
+ *     JSON until the function it returns is called;
+ *   - `hooks.scriptedClone(rid, { failures, reason })` runs a clone whose
+ *     candidates fail as scripted, and resolves to the `rad.progress`
+ *     envelopes main received, each exactly as encoded on the wire.
  */
 
 const path = require('path');
@@ -54,9 +67,15 @@ const SRC = path.join(__dirname, '..', '..', 'src', 'main');
  *   record's `qid` (the escape);
  * - `repository-gate`: COB reads answer 503 while a repository is repaired
  *   or quarantined, and its file reads keep working (the repository gate);
- * - `call-stream`: handlers' reads as a head and a body stream, and
- *   `call-scoped`: collected results inside a scope, under the collection
- *   budget (JSON results);
+ * - `call-stream`: handlers' reads as a head and a body stream, with main
+ *   holding one ring per stream, and `call-scoped`: collected results
+ *   inside a scope, under their caps and the collection budget (JSON
+ *   results);
+ * - `size-caps`: a blob over 64 MiB is `too_large`, 413 at the handlers
+ *   (deviation `size-caps`);
+ * - `malformed-utf8`: a text blob that isn't valid UTF-8 reads as the
+ *   lossy JSON text, byte for byte. Recorded against the service in its
+ *   own step (the blob API: the JSON endpoint stays);
  * - `node-info`: the composed `node_info` read (Methods);
  * - `progress-summary`: clone progress past 8 peer failures folds into one
  *   summary, within 4 KiB, before the terminal event (Progress);
@@ -75,7 +94,16 @@ const FEATURES = [
   'progress-summary',
   'import-in-process',
   'blob-api',
+  'size-caps',
+  'malformed-utf8',
 ];
+
+/** The ops whose text is main's `JSON.stringify` of the parsed result. */
+const SERIALIZED = new Set(['issue', 'patch', 'remotes', 'repo_stats']);
+
+/** Whether parsed add-on output is its one-key error payload. */
+const isErrorPayload = (value) =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value) && 'error' in value;
 
 /** The add-on export, and its positional arguments, for each read op. */
 const ADDON_READS = {
@@ -137,6 +165,36 @@ async function loadAddonBackend({ home }) {
   const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
   const addon = require(embedded.getAddonPath());
 
+  // A handler answer's body, or a rejection with its error's message.
+  const bodyOf = async (res) => {
+    const text = await res.text();
+    if (res.status !== 200) throw new Error(JSON.parse(text).error);
+    return text;
+  };
+  // The page ops' query, from their raw `status`, `page` and `per_page`.
+  const pageQuery = ({ status, page, per_page: perPage }) => {
+    const params = new URLSearchParams();
+    if (status !== null && status !== undefined) params.set('status', status);
+    if (page !== null && page !== undefined) params.set('page', page);
+    if (perPage !== null && perPage !== undefined) params.set('perPage', perPage);
+    return params.toString();
+  };
+  // What main composes today, by its own code.
+  const composed = {
+    readme_at: async ({ rid, revision }) => {
+      const text = await embedded.readmeAtRaw(rid, revision);
+      if (text === null) throw new Error('no readme');
+      return text;
+    },
+    repo_meta: async ({ rid }) => JSON.stringify(await embedded.buildRepoMeta(rid)),
+    repos_meta: async () =>
+      bodyOf(await api.handleRadicleApiRequest(new Request('radapi://local/api/v1/repos'))),
+    issues_page: async (args) =>
+      bodyOf(await api.serveRepoApi(args.rid, '/issues', { search: pageQuery(args) })),
+    patches_page: async (args) =>
+      bodyOf(await api.serveRepoApi(args.rid, '/patches', { search: pageQuery(args) })),
+  };
+
   return {
     name: 'addon',
     home,
@@ -152,10 +210,14 @@ async function loadAddonBackend({ home }) {
       }
     },
     async readText(op, args = {}) {
+      if (composed[op]) return composed[op](args);
       const route = ADDON_READS[op];
       if (!route) throw new Error(`no add-on export for the read op ${op}`);
       const [name, ...positional] = route(args);
-      return addon[name](...positional);
+      const text = await addon[name](...positional);
+      const value = JSON.parse(text);
+      if (isErrorPayload(value)) throw new Error(value.error);
+      return SERIALIZED.has(op) ? JSON.stringify(value) : text;
     },
     failNext(name, message) {
       const original = embedded[name];

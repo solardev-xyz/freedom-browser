@@ -54,6 +54,14 @@ const describeRecord = BACKEND === 'addon' && RECORD ? describe : describe.skip;
 
 const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 const OID_RE = /^[0-9a-f]{40}$/;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+/** A data frame's most, and the one ring main keeps per stream (0007). */
+const CHUNK = 64 * KIB;
+const RING = 128 * KIB;
+const NUL = String.fromCharCode(0);
+const E_ACUTE = String.fromCharCode(0xe9);
+const ROCKET = String.fromCodePoint(0x1f680);
 const VECTORS = fs.existsSync(VECTORS_PATH)
   ? JSON.parse(fs.readFileSync(VECTORS_PATH, 'utf8'))
   : null;
@@ -341,7 +349,78 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           });
           expect(bytes.toString('utf8')).toBe(body);
         }
+        expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
       }
+    );
+
+    pendingTest(
+      'call-stream',
+      'a paused stream holds one ring in main: chunks of at most 64 KiB, at most 128 KiB buffered',
+      async () => {
+        const restore = backend.hooks.inflate('commit', 8 * MIB);
+        try {
+          const { head, body } = await backend.embedded.callStream('commit', {
+            rid: fx.rid,
+            revision: fx.commits.second,
+          });
+          expect(head.bytes).toBe(8 * MIB);
+          const reader = body.getReader();
+          let total = (await reader.read()).value.byteLength;
+          expect(total).toBeLessThanOrEqual(CHUNK);
+
+          // Paused: the service waits for credit, main buffers one ring.
+          await sleep(500);
+          expect(backend.embedded.streamStats()).toEqual({
+            streams: 1,
+            buffered: expect.any(Number),
+          });
+          expect(backend.embedded.streamStats().buffered).toBeLessThanOrEqual(RING);
+
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            expect(value.byteLength).toBeLessThanOrEqual(CHUNK);
+            total += value.byteLength;
+          }
+          expect(total).toBe(head.bytes);
+          expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
+        } finally {
+          restore();
+        }
+      },
+      60_000
+    );
+
+    pendingTest(
+      'call-stream',
+      'four maximum-size results with paused consumers: one ring each in main, the output budget holds',
+      async () => {
+        const restore = backend.hooks.inflate('commit', 32 * MIB);
+        const readers = [];
+        try {
+          for (let i = 0; i < 4; i++) {
+            const { body } = await backend.embedded.callStream('commit', {
+              rid: fx.rid,
+              revision: fx.commits.second,
+            });
+            const reader = body.getReader();
+            await reader.read();
+            readers.push(reader);
+          }
+          await sleep(500);
+          const { streams, buffered } = backend.embedded.streamStats();
+          expect(streams).toBe(4);
+          expect(buffered).toBeLessThanOrEqual(4 * RING);
+          const { budget } = await backend.call('rad.stats', {});
+          expect(budget.output.used).toBeLessThanOrEqual(budget.output.limit);
+          expect(budget.output.limit).toBe(256 * MIB);
+        } finally {
+          for (const reader of readers) await reader.cancel();
+          restore();
+        }
+        expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
+      },
+      60_000
     );
 
     pendingTest(
@@ -353,28 +432,109 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           const value = await backend.embedded.callScoped(op, args, async (parsed) => parsed);
           expect(value).toEqual(JSON.parse(body));
         }
-        expect(backend.embedded.collectionBudget().held).toBe(0);
-
-        // A scope aborted while its callback runs keeps its allowance until
-        // the callback settles.
-        const controller = new AbortController();
-        let finish;
-        const scope = backend.embedded.callScoped(
-          'list_seeded_repos',
-          {},
-          () =>
-            new Promise((resolve) => {
-              finish = resolve;
-            }),
-          { signal: controller.signal }
-        );
-        await waitUntil(() => finish !== undefined);
-        controller.abort();
-        expect(backend.embedded.collectionBudget().held).toBeGreaterThan(0);
-        finish();
-        await scope.catch(() => {});
-        expect(backend.embedded.collectionBudget().held).toBe(0);
+        expect(backend.embedded.collectionBudget()).toEqual({ held: 0, limit: 16 * MIB });
       }
+    );
+
+    pendingTest(
+      'call-scoped',
+      "each collected result has its cap: at the cap it's parsed, one byte past it is too_large",
+      async () => {
+        const capped = [
+          ['status', {}, 64 * KIB],
+          ['identity', {}, 64 * KIB],
+          ['repo_info', { rid: fx.rid }, 64 * KIB],
+          ['seeders', { rid: fx.rid }, 64 * KIB],
+          ['list_seeded_repos', {}, 4 * MIB],
+          ['list_repos', {}, 4 * MIB],
+        ];
+        for (const [op, args, cap] of capped) {
+          for (const [bytes, accepted] of [
+            [cap, true],
+            [cap + 1, false],
+          ]) {
+            const restore = backend.hooks.inflate(op, bytes);
+            let ran = false;
+            try {
+              const call = backend.embedded.callScoped(op, args, async () => {
+                ran = true;
+              });
+              if (accepted) {
+                await call;
+                expect(ran).toBe(true);
+              } else {
+                await expect(call).rejects.toMatchObject({ code: 'too_large' });
+                expect(ran).toBe(false);
+              }
+            } finally {
+              restore();
+            }
+          }
+        }
+        expect(backend.embedded.collectionBudget().held).toBe(0);
+      },
+      60_000
+    );
+
+    pendingTest(
+      'call-scoped',
+      'the 16 MiB budget: held and aborted scopes keep their bytes until they settle, and a call that finds no room is busy after 5 s',
+      async () => {
+        const restore = backend.hooks.inflate('list_seeded_repos', 3 * MIB);
+        const entered = [];
+        const settle = [];
+        const controllers = Array.from({ length: 7 }, () => new AbortController());
+        try {
+          const calls = controllers.map((controller, index) =>
+            backend.embedded
+              .callScoped(
+                'list_seeded_repos',
+                {},
+                () =>
+                  new Promise((resolve) => {
+                    entered.push(index);
+                    settle[index] = resolve;
+                  }),
+                { signal: controller.signal }
+              )
+              .then(
+                () => 'ok',
+                (err) => err.code
+              )
+          );
+          await quiet(() => entered.length);
+          const room = entered.length;
+          const { held, limit } = backend.embedded.collectionBudget();
+          expect(limit).toBe(16 * MIB);
+          expect(held).toBeLessThanOrEqual(limit);
+          // The budget lets some in and holds the rest back.
+          expect(room).toBeGreaterThan(0);
+          expect(room).toBeLessThan(7);
+
+          // An aborted scope keeps its reservation while its callback runs.
+          const aborted = entered[0];
+          controllers[aborted].abort();
+          await sleep(500);
+          expect(entered).toHaveLength(room);
+          expect(backend.embedded.collectionBudget().held).toBe(held);
+
+          // Settled, its bytes go to a call that was waiting.
+          settle[aborted]();
+          await waitUntil(() => entered.length === room + 1);
+          expect(backend.embedded.collectionBudget().held).toBeLessThanOrEqual(limit);
+
+          // The calls still waiting fail busy once 5 s have passed.
+          await sleep(5500);
+          for (const index of entered) settle[index]?.();
+          const outcomes = await Promise.all(calls);
+          expect(outcomes.filter((outcome) => outcome === 'busy')).toHaveLength(7 - room - 1);
+          expect(backend.embedded.collectionBudget().held).toBe(0);
+        } finally {
+          for (const resolve of settle) resolve?.();
+          restore();
+        }
+      },
+      60_000
     );
 
     pendingTest(
@@ -389,18 +549,36 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
 
     pendingTest(
       'progress-summary',
-      'past 8 peer failures, progress folds into one summary within 4 KiB, before the terminal event',
+      'past 8 peer failures, progress folds into one summary; every rad.progress envelope, escaped, fits 4 KiB',
       async () => {
-        const reason = `${'x'.repeat(5000)}\u0000\\`;
-        const events = await backend.hooks.scriptedClone(fx.rid, { failures: 20, reason });
-        const encoded = events.map((event) => Buffer.byteLength(JSON.stringify(event)));
+        // Escapes and multibyte characters all through each reason, so the
+        // part an event keeps has them too: a NUL is 6 bytes in the event's
+        // JSON and 7 in the envelope's, a quote and a backslash 4 each.
+        const mixed = `${NUL}\\"${E_ACUTE}${ROCKET}x`;
+        const reason = mixed.repeat(600);
+        const envelopes = await backend.hooks.scriptedClone(fx.rid, { failures: 20, reason });
+
+        for (const envelope of envelopes) {
+          expect(typeof envelope).toBe('string');
+          expect(Buffer.byteLength(envelope)).toBeLessThanOrEqual(4096);
+        }
+        const events = envelopes.map(progressEvent);
         const failures = events.filter((event) => event.phase === 'peer-failed');
         const summaries = failures.filter((event) => event.summary);
+        const single = failures.filter((event) => !event.summary);
 
-        expect(Math.max(...encoded)).toBeLessThanOrEqual(4096);
-        expect(failures.length - summaries.length).toBeLessThanOrEqual(8);
+        expect(single.length).toBeLessThanOrEqual(8);
         expect(summaries).toHaveLength(1);
-        expect(failures.length - summaries.length + summaries[0].summary.count).toBe(20);
+        const { summary } = summaries[0];
+        expect(single.length + summary.count).toBe(20);
+        expect(summary.reasons.length).toBeGreaterThan(0);
+        expect(summary.reasons.length).toBeLessThanOrEqual(4);
+        for (const text of [...single.map((event) => event.reason), ...summary.reasons]) {
+          // Cut at character boundaries, and still holding what needs escaping.
+          expect(text.isWellFormed()).toBe(true);
+          expect(text.endsWith('…')).toBe(true);
+          for (const part of [NUL, '\\', '"', E_ACUTE, ROCKET]) expect(text).toContain(part);
+        }
         expect(events.at(-1).phase).toMatch(/^(done|failed|cancelled)$/);
       }
     );
@@ -421,6 +599,75 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           );
           expect(rid).toMatch(RID_RE);
           expect(snapshotGitDir(workingCopy)).toEqual(before);
+          await backend.embedded.unseedRepo(rid);
+        } finally {
+          removeDir(workingCopy);
+        }
+      },
+      60_000
+    );
+  });
+
+  // What the service refuses, or reads differently, by design.
+  describe('caps and text', () => {
+    pendingTest(
+      'size-caps',
+      'a blob over 64 MiB is too_large: refused by the read, 413 at both handlers',
+      async () => {
+        const args = { rid: fx.rid, revision: fx.commits.second, path: 'big.bin' };
+        await expect(backend.readText('blob_at', args)).rejects.toMatchObject({
+          code: 'too_large',
+        });
+        for (const [route, method] of [
+          [`/blob/${fx.commits.second}/big.bin`, 'GET'],
+          [`/raw/${fx.commits.second}/big.bin`, 'GET'],
+          [`/raw/${fx.commits.second}/big.bin`, 'HEAD'],
+        ]) {
+          const res = await backend.rad.handleRadRequest(
+            new Request(`rad://${fx.rid.slice('rad:'.length)}${route}`, { method })
+          );
+          expect(res.status).toBe(413);
+          await res.arrayBuffer();
+        }
+        // The rest of the repository reads as before.
+        expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
+          VECTORS.reads.repo_info.body
+        );
+      },
+      60_000
+    );
+
+    pendingTest(
+      'malformed-utf8',
+      "a text blob that isn't valid UTF-8 reads as lossy text, the same bytes through the read and the handler",
+      async () => {
+        const workingCopy = tempDir('rad-contract-wc-');
+        try {
+          // Latin-1 text: each byte above 0x7f is invalid UTF-8 on its own.
+          const content = Buffer.from([
+            0x63, 0x61, 0x66, 0xe9, 0x20, 0x63, 0x72, 0xe8, 0x6d, 0x65, 0x0a,
+          ]);
+          const revision = buildSmallWorkingCopy(workingCopy, { name: 'latin1.txt', content });
+          const { rid } = await backend.embedded.importRepo(
+            workingCopy,
+            'contract-latin1',
+            'Latin-1 text.',
+            'main'
+          );
+          // The JSON endpoint stays as it is: `from_utf8_lossy` text, not
+          // binary, U+FFFD for each invalid byte.
+          const expected = `{"binary":false,"name":"latin1.txt","content":${JSON.stringify(
+            content.toString('utf8')
+          )}}`;
+          expect(expected).toContain(String.fromCharCode(0xfffd));
+          expect(await backend.readText('blob_at', { rid, revision, path: 'latin1.txt' })).toBe(
+            expected
+          );
+          const res = await backend.rad.handleRadRequest(
+            new Request(`rad://${rid.slice('rad:'.length)}/blob/${revision}/latin1.txt`)
+          );
+          expect(res.status).toBe(200);
+          expect(await res.text()).toBe(expected);
           await backend.embedded.unseedRepo(rid);
         } finally {
           removeDir(workingCopy);
@@ -609,8 +856,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
   });
 });
 
-/** A small working copy for imports: one commit with one file. */
-function buildSmallWorkingCopy(dir) {
+/** A small working copy for imports: one commit with one file. Returns the
+ * commit. */
+function buildSmallWorkingCopy(dir, { name = 'file.txt', content = `imported at ${dir}\n` } = {}) {
   const { execFileSync } = require('child_process');
   const env = {
     ...process.env,
@@ -627,10 +875,11 @@ function buildSmallWorkingCopy(dir) {
     execFileSync('git', args, { cwd: dir, env, input }).toString().trim();
   git(['init', '-q']);
   git(['symbolic-ref', 'HEAD', 'refs/heads/main']);
-  const file = git(['hash-object', '-w', '--stdin'], `imported at ${dir}\n`);
-  const tree = git(['mktree'], `100644 blob ${file}\tfile.txt\n`);
+  const file = git(['hash-object', '-w', '--stdin'], content);
+  const tree = git(['mktree'], `100644 blob ${file}\t${name}\n`);
   const commit = git(['commit-tree', tree, '-m', 'Imported']);
   git(['update-ref', 'refs/heads/main', commit]);
+  return commit;
 }
 
 /** A working copy's configuration and refs, as text. */
@@ -649,6 +898,28 @@ function snapshotGitDir(dir) {
     config: fs.readFileSync(path.join(gitDir, 'config'), 'utf8'),
     refs: refs.sort(),
   };
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Waits until `read()` has stayed the same for 500 ms (at most 10 s). */
+async function quiet(read) {
+  let last = read();
+  let stable = 0;
+  for (let i = 0; i < 200 && stable < 10; i++) {
+    await sleep(50);
+    const now = read();
+    stable = now === last ? stable + 1 : 0;
+    last = now;
+  }
+}
+
+/** The progress event a `rad.progress` envelope carries, as a JSON string. */
+function progressEvent(envelope) {
+  const message = JSON.parse(envelope);
+  const params = message.params ?? message;
+  expect(typeof params.event).toBe('string');
+  return JSON.parse(params.event);
 }
 
 /** Polls `predicate` until it holds, for up to 5 s. */

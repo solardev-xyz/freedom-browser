@@ -4,14 +4,15 @@
  * a backend and returns what it read; `vectors.json` holds what the v0.8.0
  * add-on returned, and every backend must return the same bytes.
  *
- * - `reads`: one per `rad.read` op, in the design's three classes.
+ * - `reads`: one per `rad.read` op, in the design's three classes, each
+ *   the backend's `readText` exactly as it answers:
  *   - **pass-through:** the add-on export's own JSON text;
  *   - **serialized:** what main's `JSON.stringify` writes for the parsed
  *     result (`issue`, `patch`, `remotes`, `repo_stats`);
  *   - **composed:** what main composes today (`readme_at`, `repo_meta`,
- *     `repos_meta`, `issues_page`, `patches_page`), each recorded from
- *     main's own code.
- *   A failed read is its error text: `{ error }`.
+ *     `repos_meta`, `issues_page`, `patches_page`), recorded from main's
+ *     own code.
+ *   A failed read is its error's message: `{ error }`.
  * - `handlers`: whole answers (status, headers, body) of the `rad:` and
  *   `radapi:` handlers and of the manager's `getConnections`, including the
  *   node endpoints' contracts when a read fails.
@@ -56,13 +57,18 @@ function pageArgs(rid, query) {
   };
 }
 
-/** A read's record: its text, or its error's message. */
-function readRecord(text, op) {
-  const value = JSON.parse(text);
-  if (value && typeof value === 'object' && !Array.isArray(value) && 'error' in value) {
-    return { error: value.error };
+/**
+ * A read's record: the backend's text exactly as it gave it, or its
+ * error's message. Nothing is normalized here: the text is the contract.
+ * An error's code is a declared deviation (the service adds one beside
+ * the same message), so only the message is recorded.
+ */
+async function readRecord(backend, op, args) {
+  try {
+    return { body: await backend.readText(op, args) };
+  } catch (err) {
+    return { error: err.message };
   }
-  return { body: SERIALIZED.has(op) ? JSON.stringify(value) : text };
 }
 
 const SERIALIZED = new Set(['issue', 'patch', 'remotes', 'repo_stats']);
@@ -90,10 +96,16 @@ function vectorCases(fx) {
       op,
       args,
       class: SERIALIZED.has(op) ? 'serialized' : 'pass-through',
-      run: async (backend) => readRecord(await backend.readText(op, args), op),
+      run: (backend) => readRecord(backend, op, args),
     });
-  const composed = (name, op, args, run) =>
-    cases.set(name, { kind: 'read', op, args, class: 'composed', run });
+  const composed = (name, op, args) =>
+    cases.set(name, {
+      kind: 'read',
+      op,
+      args,
+      class: 'composed',
+      run: (backend) => readRecord(backend, op, args),
+    });
   const handler = (name, run) => cases.set(name, { kind: 'handler', run });
   const rad = (method, path) =>
     handler(`rad ${method} ${path || '(root)'}`, async (backend) =>
@@ -162,27 +174,13 @@ function vectorCases(fx) {
     ['second', second],
     ['first', first],
   ]) {
-    composed(`readme_at ${label}`, 'readme_at', { rid, revision }, async (backend) => {
-      const text = await backend.embedded.readmeAtRaw(rid, revision);
-      return text === null ? { error: 'no readme' } : { body: text };
-    });
+    composed(`readme_at ${label}`, 'readme_at', { rid, revision });
   }
-  composed('repo_meta', 'repo_meta', { rid }, async (backend) => ({
-    body: JSON.stringify(await backend.embedded.buildRepoMeta(rid)),
-  }));
-  composed('repos_meta', 'repos_meta', {}, async (backend) => {
-    const res = await backend.api.handleRadicleApiRequest(
-      new Request('radapi://local/api/v1/repos')
-    );
-    return { body: await res.text() };
-  });
+  composed('repo_meta', 'repo_meta', { rid });
+  composed('repos_meta', 'repos_meta', {});
   for (const op of ['issues_page', 'patches_page']) {
-    const section = op === 'issues_page' ? '/issues' : '/patches';
     for (const query of PAGE_QUERIES) {
-      composed(`${op} ${query || '(defaults)'}`, op, pageArgs(rid, query), async (backend) => {
-        const res = await backend.api.serveRepoApi(rid, section, { search: query.slice(1) });
-        return { body: await res.text() };
-      });
+      composed(`${op} ${query || '(defaults)'}`, op, pageArgs(rid, query));
     }
   }
 
