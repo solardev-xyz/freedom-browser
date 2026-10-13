@@ -6454,11 +6454,14 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .safe-status-btn {
+/* Not on a primary button, which keeps its accent fill: the light override
+   matches `.safe-status-btn.primary`'s specificity and comes later, so it
+   left a primary button white text on a near-white fill. */
+[data-theme="light"] .safe-status-btn:not(.primary) {
   background: rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .safe-status-btn:hover:not(:disabled) {
+[data-theme="light"] .safe-status-btn:not(.primary):hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
 }
 
