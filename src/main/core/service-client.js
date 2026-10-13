@@ -38,6 +38,24 @@
  * holds its credit, then written to its end, with whole frames going first
  * and between its fragments.
  *
+ * **Streams** (design 0007, Frames and Main's side), for a process whose
+ * handshake granted `stream` (`service.streams(hello)`): from then on its
+ * decoder takes the stream frames, and the generation has one
+ * `StreamReceiver` and one `StreamOutbox`. `callStream` resolves to a
+ * request's head and, for a head that says `body: true`, a byte
+ * ReadableStream pulled on demand: each pull copies up to 64 KiB of the
+ * stream's 128 KiB ring and returns those bytes as credit; `end` closes it
+ * once every byte is read; `abort` errors it with the abort's code. Its
+ * cancel, or its signal, retires the stream: `cancel` goes, with no more
+ * credit, and its frames are dropped until the terminal. Credit and
+ * cancels are written through the outbox, one write in flight and the
+ * rest merged, so what waits is at most one of each per stream. Every
+ * request counts against the process's bound (`service.maxPending`; 512 for
+ * a stream service) until its reply or terminal, retiring ones included.
+ * The rings are main's stream storage, apart from the chain I/O pool
+ * below. A generation that ends, or breaks the protocol, errors its open
+ * bodies at once, and nothing of it reaches a later one.
+ *
  * **Main's cancels** (0001): a request sent with a `signal` is cancelled
  * when it aborts. Its caller gets `cancelled` at once, and the process a
  * `cancel`; the process's one response still comes, and is consumed and
@@ -62,15 +80,26 @@ const {
   encodeFrame,
   encodeJsonFrame,
   frameHeader,
+  serviceKinds,
+  CORE_KINDS,
   FrameDecoder,
   FrameError,
+  StreamOutbox,
+  StreamReceiver,
+  KIND_ABORT,
+  KIND_DATA,
+  KIND_END,
   KIND_FRAGMENT,
   KIND_JSON,
   KIND_LAST,
+  KIND_STREAM_CREDIT,
   MAX_MESSAGE,
   MAX_PAYLOAD,
+  MAX_PULL,
   Reassembler,
 } = require('./frame');
+
+const STREAM_FRAME_KINDS = new Set([KIND_DATA, KIND_END, KIND_ABORT, KIND_STREAM_CREDIT]);
 
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
 const HELLO_TIMEOUT_MS = 10_000;
@@ -305,7 +334,7 @@ function scrubbedEnv(env = process.env) {
 
 /** One child process and everything bound to it. */
 class Generation {
-  constructor(number) {
+  constructor(number, kinds) {
     this.number = number;
     this.child = null;
     this.pending = new Map(); // id -> { settle(outcome) }
@@ -318,7 +347,15 @@ class Generation {
     this.replyBytes = 0;
     this.nextId = 1;
     this.writeBytes = 0;
-    this.decoder = new FrameDecoder();
+    this.decoder = new FrameDecoder({ kinds });
+    // Design 0007's streams, once the handshake has granted them: main's
+    // side of every stream (one 128 KiB ring per open one, retirement
+    // records), the credit and cancels it writes (one write in flight, the
+    // rest merged), and the bodies handed to callers, by request ID.
+    this.streams = null;
+    this.outbox = null;
+    this.outboxWriting = false;
+    this.bodies = new Map();
     // The process's fragmented responses: one at a time, while it holds main's
     // bulk credit.
     this.reassembler = new Reassembler();
@@ -360,8 +397,11 @@ class ServiceClient extends EventEmitter {
    *   `unavailableCode` (its unavailability's error code), `helloMethod`
    *   and `helloParams(client)` (its handshake), `validHello(result)` (the
    *   public part of a valid hello result, or null), `protocol` (its
-   *   protocol version, to tell a mismatch), `shutdownMethod`, and
-   *   `fragments(hello)` (whether it takes main's fragmented replies)
+   *   protocol version, to tell a mismatch), `shutdownMethod`,
+   *   `fragments(hello)` (whether it takes main's fragmented replies), and
+   *   for a stream service `streams(hello)` (whether the handshake granted
+   *   `stream`), `initialKinds` (the frame kinds before it: `JSON_KINDS`;
+   *   the core's are `CORE_KINDS`) and `maxPending` (512)
    * @param {Function} options.spawn - child_process.spawn (injectable)
    * @param {string} options.command - path to the binary
    * @param {string[]} options.args - e.g. ['serve', '--data-dir', …]
@@ -376,6 +416,9 @@ class ServiceClient extends EventEmitter {
     super();
     this.service = options.service;
     this.label = options.service.label;
+    // Requests outstanding per process: the core's 256; a stream service's
+    // 512, retiring ones included (design 0007, Bounds).
+    this.maxPending = options.service.maxPending ?? MAX_PENDING;
     this.spawnFn = options.spawn;
     this.command = options.command;
     this.args = options.args;
@@ -583,7 +626,7 @@ class ServiceClient extends EventEmitter {
 
   spawnGeneration() {
     this.generations += 1;
-    const gen = new Generation(this.generations);
+    const gen = new Generation(this.generations, this.service.initialKinds ?? CORE_KINDS);
     this.current = gen;
     this.state = STATE.STARTING;
     let child;
@@ -671,6 +714,13 @@ class ServiceClient extends EventEmitter {
     // the handshake grants main its credit.
     gen.fragments = this.service.fragments(hello);
     gen.credit = gen.fragments;
+    // A process whose handshake granted `stream` (design 0007): its stream
+    // frames are taken from here on.
+    if (this.service.streams?.(hello)) {
+      gen.streams = new StreamReceiver();
+      gen.outbox = new StreamOutbox();
+      gen.decoder.setKinds(serviceKinds('receiver'));
+    }
     if (this.stopRequested || gen !== this.current) return;
     gen.ready = true;
     this.hello = hello;
@@ -737,6 +787,10 @@ class ServiceClient extends EventEmitter {
     this.fence(gen);
     // Writes its stdio held may never report back: what they held goes now.
     for (const release of [...gen.charges]) release();
+    // Open bodies end with it, and every stream record and ring goes.
+    this.failBodies(gen, this.unavailable(`The ${this.service.noun} exited`));
+    gen.streams = null;
+    gen.outbox = null;
     const pending = [...gen.pending.values()];
     gen.pending.clear();
     for (const entry of pending) {
@@ -855,6 +909,8 @@ class ServiceClient extends EventEmitter {
     if (gen.retired || gen.distrusted) return;
     gen.distrusted = true;
     this.fence(gen);
+    // Nothing more of its bodies can be trusted to come.
+    this.failBodies(gen, this.unavailable(`The ${this.service.noun} failed`));
     this.log.error(`${this.label} protocol error`, { category });
     this.end(gen, 'protocol');
   }
@@ -890,6 +946,7 @@ class ServiceClient extends EventEmitter {
       signal = null,
       untilResponse = false,
       fence = null,
+      stream = false,
     } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
@@ -901,7 +958,13 @@ class ServiceClient extends EventEmitter {
       return refuse(this.unavailable());
     }
     if (signal?.aborted) return refuse(cancelled());
-    if (!control && gen.pending.size >= MAX_PENDING) {
+    if (stream && !gen.streams) {
+      return refuse(new CoreError('invalid_argument', 'The connection has no streams'));
+    }
+    // On a stream connection, retiring requests count too: their records
+    // are kept until their terminal frame or reply.
+    const outstanding = gen.streams ? gen.streams.outstanding() : gen.pending.size;
+    if (!control && outstanding >= this.maxPending) {
       return refuse(new CoreError('busy', 'Too many requests in flight'));
     }
     if (gen.nextId > MAX_ID) {
@@ -936,6 +999,9 @@ class ServiceClient extends EventEmitter {
     // taken or written.
     if (fence && !fence()) return refuse(new CoreError('fenced', 'Fenced'));
     gen.nextId += 1;
+    // Every request main sends on a stream connection: a frame for an ID
+    // above the highest is a protocol error.
+    gen.streams?.request(id);
 
     let promise = null;
     let entry;
@@ -947,6 +1013,10 @@ class ServiceClient extends EventEmitter {
           settle: (outcome) => (outcome.error ? reject(outcome.error) : resolve(outcome.result)),
         };
       });
+    }
+    if (stream) {
+      entry.stream = true;
+      entry.signal = signal;
     }
     if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
     if (watchdogMs !== null) {
@@ -1022,6 +1092,12 @@ class ServiceClient extends EventEmitter {
    */
   writeCancel(gen, id) {
     if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
+    if (gen.streams) {
+      // Through the outbox, which drops the request's unwritten credit; its
+      // record retires until its reply or terminal frame.
+      this.retireStream(gen, id);
+      return;
+    }
     try {
       gen.child.stdin.write(encodeFrame({ type: 'cancel', id }), (err) => {
         if (err) this.connectionFailed(gen, 'stdin_error');
@@ -1045,6 +1121,10 @@ class ServiceClient extends EventEmitter {
     }
     for (const frame of frames) {
       if (gen.retired || gen.distrusted) return;
+      if (STREAM_FRAME_KINDS.has(frame.kind)) {
+        this.onStreamFrame(gen, frame);
+        continue;
+      }
       let delivery;
       try {
         // A begin must name a request still waiting for its response.
@@ -1441,9 +1521,204 @@ class ServiceClient extends EventEmitter {
     } else {
       outcome = { result: message.result };
     }
+    let body = null;
+    if (gen.streams) {
+      // A head that says `body: true` opens the stream of a stream request.
+      const opens = Boolean(
+        entry.stream && hasResult && isObject(message.result) && message.result.body === true
+      );
+      let replied;
+      try {
+        replied = gen.streams.reply(id, opens);
+      } catch (err) {
+        return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      }
+      // A request main cancelled is retiring: its caller already has its
+      // answer, and its body's frames are dropped until the terminal.
+      if (opens && replied === 'deliver') body = this.openBody(gen, id, entry.signal);
+    }
+    if (entry.stream && hasResult) outcome = { result: { result: message.result, body } };
     gen.pending.delete(id);
     entry.settle(outcome);
     return undefined;
+  }
+
+  // ---- streams (design 0007) ----
+
+  /**
+   * Sends a request whose response may open a stream, to the process
+   * requests go to now (it must be ready, and have granted `stream`).
+   * Resolves to `{ result, body }`: the head's result, and for a head that
+   * says `body: true` a byte ReadableStream pulled on demand, else null.
+   *
+   * The body: each pull takes up to 64 KiB of the stream's ring, and its
+   * bytes go back to the process as credit; it ends when every byte has
+   * been read after `end`, and errors on `abort` (with the abort's code),
+   * on the process's end, or on a protocol fault. Its `cancel()`, or
+   * `signal` aborting, retires the stream: main sends `cancel` and no more
+   * credit, and drops what is left. Options are `requestTo`'s.
+   */
+  callStream(method, params = {}, context = { caller: 'shell' }, options = {}) {
+    return this.requestStreamTo(this.current, method, params, context, options);
+  }
+
+  /** `callStream` to the ready process `gen` names, as `requestTo`. */
+  requestStreamTo(gen, method, params = {}, context = { caller: 'shell' }, options = {}) {
+    if (!this.serves(gen)) return Promise.reject(this.unavailable());
+    const { watchdogMs = null, signal = null, fence = null } = options;
+    return this.send(gen, method, params, context, { watchdogMs, signal, fence, stream: true });
+  }
+
+  /** What main holds for `gen`'s streams, for diagnostics and tests. */
+  streamStats(gen = this.current) {
+    if (!gen?.streams) return null;
+    return {
+      outstanding: gen.streams.outstanding(),
+      ringBytes: gen.streams.ringBytes(),
+      bodies: gen.bodies.size,
+      outbox: gen.outbox.size,
+    };
+  }
+
+  /** A stream frame from the process, through main's receiver. */
+  onStreamFrame(gen, frame) {
+    let delivery;
+    try {
+      delivery = gen.streams.receive(frame);
+    } catch (err) {
+      this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      return;
+    }
+    const body = gen.bodies.get(delivery.id);
+    if (!body) return; // retiring: dropped
+    if (delivery.type === 'end') body.ended = true;
+    if (delivery.type === 'abort') body.error = new CoreError(delivery.code, delivery.message);
+    this.wakeBody(body);
+  }
+
+  /** The body of stream `id`, a byte ReadableStream pulled on demand. */
+  openBody(gen, id, signal) {
+    const body = {
+      controller: null,
+      waiter: null,
+      ended: false,
+      error: null,
+      done: false,
+      signal,
+      onAbort: null,
+    };
+    gen.bodies.set(id, body);
+    if (signal) {
+      body.onAbort = () => this.abortBody(gen, id, body, cancelled());
+      signal.addEventListener('abort', body.onAbort, { once: true });
+    }
+    return new ReadableStream(
+      {
+        start: (controller) => {
+          body.controller = controller;
+        },
+        pull: () => this.pullBody(gen, id, body),
+        cancel: () => this.abortBody(gen, id, body, null),
+      },
+      { highWaterMark: 0 }
+    );
+  }
+
+  /** A consumer's read: the next bytes of the ring, the end, the error, or
+   * a wait for the next frame of the stream. */
+  pullBody(gen, id, body) {
+    if (body.done) return undefined;
+    if (body.error) return this.endBody(gen, id, body, body.error);
+    const pulled = gen.streams.pull(id, MAX_PULL);
+    if (pulled) {
+      if (pulled.credit !== null) {
+        gen.outbox.credit(id, pulled.credit);
+        this.flushOutbox(gen);
+      }
+      if (pulled.chunk.length) body.controller.enqueue(pulled.chunk);
+      if (pulled.eof) return this.endBody(gen, id, body, null);
+      if (pulled.chunk.length) return undefined;
+    } else if (body.ended) {
+      // `end` came with nothing left: the record is gone.
+      return this.endBody(gen, id, body, null);
+    } else {
+      return this.endBody(gen, id, body, this.unavailable());
+    }
+    return new Promise((resolve) => {
+      body.waiter = resolve;
+    }).then(() => this.pullBody(gen, id, body));
+  }
+
+  wakeBody(body) {
+    const waiter = body.waiter;
+    body.waiter = null;
+    waiter?.();
+  }
+
+  /** The body is over: closed, or errored with `error`. */
+  endBody(gen, id, body, error) {
+    if (body.done) return;
+    body.done = true;
+    gen.bodies.delete(id);
+    if (body.onAbort) body.signal.removeEventListener('abort', body.onAbort);
+    if (error) body.controller.error(error);
+    else body.controller.close();
+    this.wakeBody(body);
+  }
+
+  /** The caller let go of the body (its cancel, or `signal`): the stream
+   * retires, and the body errors with `error`, if any. */
+  abortBody(gen, id, body, error) {
+    if (body.done) return;
+    if (error) {
+      this.endBody(gen, id, body, error);
+    } else {
+      body.done = true;
+      gen.bodies.delete(id);
+      if (body.onAbort) body.signal.removeEventListener('abort', body.onAbort);
+      this.wakeBody(body);
+    }
+    if (!gen.retired && !gen.exited && !gen.stdinEnded && gen.child) this.retireStream(gen, id);
+  }
+
+  /** A local cancel of request `id` on a stream connection: its record
+   * retires (or goes, if its end had come), and `cancel` is queued. */
+  retireStream(gen, id) {
+    if (gen.streams.cancel(id) !== 'send_cancel') return;
+    gen.outbox.cancel(id);
+    this.flushOutbox(gen);
+  }
+
+  /**
+   * Writes the outbox's credit and cancels: everything waiting in one
+   * write, then nothing more until it has gone, so what can't be written
+   * yet merges in the outbox (at most one credit and one cancel per
+   * stream).
+   */
+  flushOutbox(gen) {
+    if (gen.outboxWriting || gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
+    const frames = [];
+    for (let frame = gen.outbox.next(); frame; frame = gen.outbox.next()) frames.push(frame);
+    if (!frames.length) return;
+    gen.outboxWriting = true;
+    try {
+      gen.child.stdin.write(Buffer.concat(frames), (err) => {
+        gen.outboxWriting = false;
+        if (err) {
+          this.connectionFailed(gen, 'stdin_error');
+          return;
+        }
+        this.flushOutbox(gen);
+      });
+    } catch {
+      gen.outboxWriting = false;
+      this.connectionFailed(gen, 'stdin_error');
+    }
+  }
+
+  /** Ends every open body of `gen` with `error`. */
+  failBodies(gen, error) {
+    for (const [id, body] of [...gen.bodies]) this.endBody(gen, id, body, error);
   }
 
   /**
