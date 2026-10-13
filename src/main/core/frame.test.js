@@ -244,6 +244,8 @@ describe('Reassembler', () => {
       '{"id":7}',
       '{"bytes":5}',
       '{"id":7,"bytes":5,"extra":1}',
+      '{"id":7,"id":7,"bytes":5}',
+      '{"id":7,"bytes":5,"bytes":5}',
       '{"id":0,"bytes":5}',
       '{"id":9007199254740992,"bytes":5}',
       '{"id":7,"bytes":-1}',

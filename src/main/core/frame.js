@@ -104,17 +104,22 @@ function decodeJson(payload) {
 }
 
 /** A begin frame's header: an object with exactly `id`, a valid message ID,
- * and `bytes`, a size the reassembler checks. */
+ * and `bytes`, a size the reassembler checks. Each is named once: where
+ * JSON.parse keeps a duplicate's last value, serde refuses it, and a valid
+ * header holds no strings but its two names. */
 function decodeBegin(payload) {
+  let text;
   let header;
   try {
-    header = JSON.parse(UTF8.decode(payload));
+    text = UTF8.decode(payload);
+    header = JSON.parse(text);
   } catch {
     throw new FrameError('begin_header');
   }
   if (
     !isObject(header) ||
     Object.keys(header).length !== 2 ||
+    text.split('"').length !== 5 ||
     !Number.isSafeInteger(header.id) ||
     header.id < 1 ||
     !Number.isInteger(header.bytes) ||
