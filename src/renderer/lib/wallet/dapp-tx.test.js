@@ -116,6 +116,7 @@ async function loadDappTx() {
       }),
       confirmSigning,
       dappSendTransaction: jest.fn(() => send.promise),
+      intentResend: jest.fn(),
     },
   };
 
@@ -378,5 +379,110 @@ describe('dapp-tx approval lifecycle', () => {
 
     expect(elements['dapp-tx-network'].textContent).toBe('Gnosis');
     expect(window.wallet.getGasPrice).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('Confirm again after a failed dApp send (5)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const HELD = {
+    intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a02',
+    chainId: 8453,
+    sender: '0xledger',
+    nonce: 4,
+    hash: '0x' + 'cd'.repeat(32),
+    state: 'held',
+    kind: 'dapp-send',
+    origin: 'https://app.example',
+  };
+
+  test('a refused send turns Confirm into Send again, which sends the same payment', async () => {
+    const { elements, send, confirmSigning, openApproval } = await loadDappTx();
+    const { settled, promise } = await openApproval();
+
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      reasonClass: 'insufficient funds',
+      intentId: HELD.intentId,
+      intent: HELD,
+    });
+    await flush();
+    await flush();
+
+    // The request is still open, and the screen says what happened.
+    expect(settled.state).toBe('pending');
+    expect(elements['dapp-tx-error'].textContent).toBe(
+      'The network refused it: insufficient funds'
+    );
+    expect(elements['dapp-tx-approve'].textContent).toBe('Send again');
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+
+    window.wallet.intentResend.mockResolvedValue({ success: true, hash: HELD.hash, resent: true });
+    elements['dapp-tx-approve'].dispatch('click');
+    await promise;
+
+    expect(confirmSigning).toHaveBeenLastCalledWith('intent-resend', null, {
+      intentId: HELD.intentId,
+      chainId: 8453,
+      sender: '0xledger',
+      nonce: 4,
+      hash: HELD.hash,
+    });
+    expect(window.wallet.intentResend).toHaveBeenCalledWith(HELD.intentId, {
+      confirmation: 'token-2',
+    });
+    // One payment was signed; the dApp gets its hash.
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(settled).toMatchObject({ state: 'resolved', value: HELD.hash });
+  });
+
+  test('a second failure keeps Send again, with the newest outcome', async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    const { settled } = await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: false, error: 'not ready', outcome: 'not_sent', intent: HELD });
+    await flush();
+    await flush();
+    expect(elements['dapp-tx-error'].textContent).toBe('Not sent; nothing left this computer');
+
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      reasonClass: 'insufficient funds',
+      intent: HELD,
+    });
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    await flush();
+    expect(elements['dapp-tx-error'].textContent).toBe(
+      'The network refused it: insufficient funds'
+    );
+    expect(elements['dapp-tx-approve'].textContent).toBe('Send again');
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(settled.state).toBe('pending');
+  });
+
+  test('a failure before any payment existed leaves Confirm as a new send, as before', async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: false, error: 'Rejected on the Ledger' });
+    await flush();
+    await flush();
+    expect(elements['dapp-tx-approve'].textContent).toBe('Confirm');
+    expect(elements['dapp-tx-error'].textContent).toBe('Rejected on the Ledger');
+
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(2);
+    expect(window.wallet.intentResend).not.toHaveBeenCalled();
   });
 });

@@ -529,3 +529,137 @@ describe('send screen sidebar ownership', () => {
     expect(createTab).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('send again after a failed send (5)', () => {
+  afterEach(() => {
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    jest.useRealTimers();
+  });
+
+  const HELD = {
+    intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a01',
+    chainId: 100,
+    sender: ADDRESS,
+    nonce: 7,
+    hash: '0x' + 'ab'.repeat(32),
+    state: 'held',
+    attention: 'refused',
+  };
+
+  async function failedSend(reply) {
+    const loaded = await loadSendScreen();
+    const { mod, elements, send } = loaded;
+    // The result views' titles, which the outcome rewrites.
+    for (const [view, title] of [
+      ['send-error-view', 'send-error-title'],
+      ['send-success-view', 'send-success-title'],
+    ]) {
+      elements[view].appendChild(createElement('h3', { classes: [title] }));
+    }
+    window.wallet.intentResend = jest.fn();
+    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45' });
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    send.resolve(reply);
+    await flush();
+    return loaded;
+  }
+
+  const title = (elements, view) =>
+    elements[view].querySelector(`.${view.replace('-view', '-title')}`);
+
+  test('a refused send says why, and Send again sends the same payment at its nonce', async () => {
+    const { elements } = await failedSend({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      reasonClass: 'insufficient funds',
+      intentId: HELD.intentId,
+      intent: HELD,
+    });
+    expect(elements['send-error-view'].classList.contains('hidden')).toBe(false);
+    expect(title(elements, 'send-error-view').textContent).toBe('Refused by the network');
+    expect(elements['send-error-text'].textContent).toBe(
+      'The network refused it: insufficient funds'
+    );
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+
+    window.wallet.intentResend.mockResolvedValue({
+      success: true,
+      outcome: 'sent',
+      resent: true,
+      explorerUrl: 'https://ex/0xab',
+    });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+
+    // Confirmed as the held payment main reported, then sent again; no new
+    // payment is signed.
+    expect(window.wallet.confirmSigning).toHaveBeenLastCalledWith('intent-resend', null, {
+      intentId: HELD.intentId,
+      chainId: 100,
+      sender: ADDRESS,
+      nonce: 7,
+      hash: HELD.hash,
+    });
+    expect(window.wallet.intentResend).toHaveBeenCalledWith(HELD.intentId, {
+      confirmation: 'confirm-token',
+    });
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(elements['send-success-view'].classList.contains('hidden')).toBe(false);
+    expect(title(elements, 'send-success-view').textContent).toBe('Transaction Sent');
+  });
+
+  test('a payment that never left is said so, and a second refusal keeps Send again', async () => {
+    const { elements } = await failedSend({
+      success: false,
+      error: 'Myotis is not ready',
+      outcome: 'not_sent',
+      intentId: HELD.intentId,
+      intent: { ...HELD, attention: 'not-sent' },
+    });
+    expect(title(elements, 'send-error-view').textContent).toBe('Not sent');
+    expect(elements['send-error-text'].textContent).toBe('Not sent; nothing left this computer');
+
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      reasonClass: 'insufficient funds',
+      intent: HELD,
+    });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(elements['send-error-text'].textContent).toBe(
+      'The network refused it: insufficient funds'
+    );
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+    expect(elements['send-retry-btn'].disabled).toBe(false);
+  });
+
+  test('a send that may have gone out is shown as sent, waiting', async () => {
+    const { elements } = await failedSend({
+      success: true,
+      hash: HELD.hash,
+      outcome: 'uncertain',
+      intentId: HELD.intentId,
+      explorerUrl: 'https://ex/0xab',
+    });
+    expect(elements['send-success-view'].classList.contains('hidden')).toBe(false);
+    expect(title(elements, 'send-success-view').textContent).toBe('Sent, waiting for confirmation');
+  });
+
+  test('a failure before any payment existed goes back to the form, as before', async () => {
+    const { elements } = await failedSend({ success: false, error: 'Rejected on the Ledger' });
+    expect(elements['send-error-text'].textContent).toBe('Rejected on the Ledger');
+    expect(elements['send-retry-btn'].textContent).toBe('Try Again');
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(window.wallet.intentResend).not.toHaveBeenCalled();
+    expect(elements['send-input-view'].classList.contains('hidden')).toBe(false);
+  });
+});

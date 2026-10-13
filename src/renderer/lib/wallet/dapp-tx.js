@@ -23,6 +23,7 @@ import {
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { outcomeText, ACTIONS } from './intent-texts.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
 // DOM references
@@ -412,6 +413,11 @@ async function approveDappTx() {
     }
     setDappTxCancelEnabled(false);
 
+    if (request.failedIntent) {
+      await sendFailedIntentAgain(request);
+      return;
+    }
+
     if (safeAccount) {
       const hash = await sendViaSafeAccount(walletIndex, txParams, permissionKey, chainId);
       console.log('[WalletUI] dApp Safe transaction executed:', hash);
@@ -452,7 +458,13 @@ async function approveDappTx() {
     );
 
     if (!result.success) {
-      throw new Error(result.error || 'Transaction failed');
+      throw Object.assign(new Error(result.error || 'Transaction failed'), {
+        failure: {
+          outcome: result.outcome,
+          reasonClass: result.reasonClass,
+          intent: result.intent,
+        },
+      });
     }
     if (result.recorded === false) {
       console.warn('[WalletUI] dApp transaction broadcast but payment history did not record:', result.recordError);
@@ -476,10 +488,16 @@ async function approveDappTx() {
       return;
     }
     console.error('[WalletUI] dApp transaction failed:', err);
-    showDappTxError(err.message || 'Transaction failed');
+    const failure = err.failure ?? {};
+    // The payment is held: Confirm now sends those same signed bytes again
+    // instead of signing a second payment.
+    if (failure.intent?.state === 'held') request.failedIntent = failure.intent;
+    showDappTxError(
+      outcomeText(failure.outcome, failure.reasonClass) || err.message || 'Transaction failed'
+    );
     if (dappTxApproveBtn) {
       dappTxApproveBtn.disabled = false;
-      dappTxApproveBtn.textContent = 'Confirm';
+      dappTxApproveBtn.textContent = request.failedIntent ? ACTIONS.sendAgain : 'Confirm';
     }
     setDappTxCancelEnabled(true);
     // The signing board may have replaced this screen — bring the
@@ -492,6 +510,41 @@ async function approveDappTx() {
     request.signing = false;
     endSignatureFlight(request);
   }
+}
+
+/**
+ * Confirm again after a send that left a held payment: send its signed
+ * bytes again, at its one nonce. Nothing is signed. The user's press on the
+ * approval that still shows this transaction is the confirmation, bound to
+ * the held intent as main records it ('intent-resend'). "Always allow" is
+ * not recorded from a resend.
+ */
+async function sendFailedIntentAgain(request) {
+  const intent = request.failedIntent;
+  if (dappTxApproveBtn) dappTxApproveBtn.textContent = ACTIONS.sendingAgain;
+  const result = await window.wallet.intentResend(
+    intent.intentId,
+    await confirmSigning('intent-resend', null, {
+      intentId: intent.intentId,
+      chainId: intent.chainId,
+      sender: intent.sender,
+      nonce: intent.nonce,
+      hash: intent.hash,
+    })
+  );
+  if (!result.success) {
+    throw Object.assign(new Error(result.error || 'Transaction failed'), {
+      failure: {
+        outcome: result.outcome,
+        reasonClass: result.reasonClass,
+        intent: result.intent ?? intent,
+      },
+    });
+  }
+  console.log('[WalletUI] dApp transaction sent again:', result.hash);
+  request.failedIntent = null;
+  request.resolve(result.hash);
+  if (dappTxPending === request) closeDappTx();
 }
 
 /**

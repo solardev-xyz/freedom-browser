@@ -7,7 +7,8 @@
  * call, and pass the returned `authorization` along with it.
  *
  * @param {string} kind - 'wallet-send' | 'dapp-send' | 'sign-message' |
- *   'sign-typed-data' | 'safe-send' | 'safe-message'
+ *   'sign-typed-data' | 'safe-send' | 'safe-message' | 'intent-resend'
+ *   (a held payment's {intentId, chainId, sender, nonce, hash}, sent again)
  * @param {number|null} accountIndex - the signing wallet / Safe index
  *   (ignored for 'wallet-send': main binds the active account)
  * @param {*} payload - the request exactly as it will be signed
