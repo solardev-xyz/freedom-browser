@@ -367,6 +367,38 @@ function isLocalHostname(hostname) {
   return LOCAL_ADDRESSES.check(host, version === 4 ? 'ipv4' : 'ipv6');
 }
 
+// A lookup its caller gave up on still runs: the system resolver can't
+// cancel one, and the abort only stops the wait for it. At most this many
+// may be outstanding at once, through one boundLookups.
+const MAX_LOOKUPS = 64;
+
+// A lookup refused because MAX_LOOKUPS are already outstanding.
+class LookupsExhausted extends Error {
+  constructor() {
+    super('too many DNS lookups outstanding');
+    this.name = 'LookupsExhausted';
+  }
+}
+
+// `lookup`, with at most `max` lookups physically outstanding: each holds
+// its slot until it settles, even once its caller has given up on it. Past
+// the bound, a new one fails at once with LookupsExhausted.
+function boundLookups(lookup, max = MAX_LOOKUPS) {
+  let outstanding = 0;
+  const bounded = (host, options) => {
+    if (outstanding >= max) return Promise.reject(new LookupsExhausted());
+    outstanding += 1;
+    const running = Promise.resolve().then(() => lookup(host, options));
+    const release = () => {
+      outstanding -= 1;
+    };
+    running.then(release, release);
+    return running;
+  };
+  bounded.outstanding = () => outstanding;
+  return bounded;
+}
+
 // Whether a DNS name resolves (through the same system resolver the fetch
 // dials with) to any local address, e.g. 127.0.0.1.nip.io. Asked before an
 // off-origin hop is dialled. A name whose answer changes between this lookup
@@ -396,7 +428,8 @@ async function resolvesToLocalAddress(hostname, { lookup, signal }) {
 // off `origin` never to this machine or its LAN, by name or by what the name
 // resolves to. A `.onion` name is refused unresolved: it has no DNS answer,
 // and asking the system resolver would leak it. Throws BlockscoutError
-// naming the refusal; a lookup cut short by `signal` throws its own error.
+// naming the refusal; a lookup cut short by `signal`, or refused by its
+// bound (LookupsExhausted), throws its own error.
 async function redirectTarget(location, current, origin, { lookup, signal }) {
   if (!location) throw new BlockscoutError('redirected with no location');
   let next;
@@ -417,7 +450,7 @@ async function redirectTarget(location, current, origin, { lookup, signal }) {
     try {
       local = await resolvesToLocalAddress(next.hostname, { lookup, signal });
     } catch (err) {
-      if (signal?.aborted) throw err;
+      if (signal?.aborted || err instanceof LookupsExhausted) throw err;
       throw new BlockscoutError('redirected to a host that does not resolve');
     }
     if (local) throw new BlockscoutError('redirected to a local host');
@@ -602,6 +635,8 @@ function logIndexHost(chainId) {
 module.exports = {
   BlockscoutError,
   BLOCKSCOUT_MAX_PAGES,
+  LookupsExhausted,
+  MAX_LOOKUPS,
   MAX_REDIRECTS,
   REDIRECT_STATUSES,
   ERC20_TRANSFER_TOPIC,
@@ -609,6 +644,7 @@ module.exports = {
   LOG_INDEX_URLS,
   agreedRpcLogs,
   blockscoutTransfer,
+  boundLookups,
   canonicalLog,
   fetchBlockscoutTransferLogs,
   isLocalHostname,

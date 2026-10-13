@@ -1,6 +1,7 @@
 const { ShellError } = require('./core-client');
 const { makeHop } = require('./naming-shell');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { MAX_LOOKUPS } = require('../networks/blockscout-logs');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const {
   registerChainShell,
@@ -466,6 +467,47 @@ describe('shell.blockscout', () => {
     };
     const { call } = setUp({ hop: makeHop({ fetch: jest.fn(async () => opaque) }) });
     expect(await failure(call('shell.blockscout', page()))).toBe('refused');
+  });
+
+  // Review of #692 (security, N1).
+  test('lookups a cancel left running keep their slots: past the bound, busy', async () => {
+    const settle = [];
+    const lookup = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          settle.push(resolve);
+        })
+    );
+    const hop = jest.fn(async (url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? answer(302, '', { location: 'https://gnosisscan.io/api' })
+        : answer(200, '{}')
+    );
+    const { call } = setUp({ hop, lookup });
+    // Waves of pages, each cancelled while its redirect's lookup runs on.
+    const wave = async (size) => {
+      const cancels = Array.from({ length: size }, () => new AbortController());
+      const pending = cancels.map((cancel) =>
+        failure(call('shell.blockscout', page(), cancel.signal))
+      );
+      await tick();
+      for (const cancel of cancels) cancel.abort();
+      return Promise.all(pending);
+    };
+    for (let i = 0; i < MAX_LOOKUPS / 16; i++) {
+      expect(new Set(await wave(16))).toEqual(new Set(['cancelled']));
+    }
+    expect(lookup).toHaveBeenCalledTimes(MAX_LOOKUPS);
+    // Every slot is still held: the next page that needs one is busy, and
+    // no lookup starts.
+    expect(await failure(call('shell.blockscout', page()))).toBe('busy');
+    expect(lookup).toHaveBeenCalledTimes(MAX_LOOKUPS);
+    // Once they settle, the slots come back.
+    for (const resolve of settle) resolve([{ address: '104.18.12.34', family: 4 }]);
+    lookup.mockImplementation(async () => [{ address: '104.18.12.34', family: 4 }]);
+    await tick();
+    expect(await call('shell.blockscout', page())).toMatchObject({ status: 200 });
+    expect(lookup).toHaveBeenCalledTimes(MAX_LOOKUPS + 1);
   });
 
   test('a hung lookup ends at the deadline, as timeout', async () => {

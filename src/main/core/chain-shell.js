@@ -24,8 +24,10 @@ const { fetchLoop, makeHop, withDeadline, isOk } = require('./naming-shell');
 const { validateRpcUrl } = require('../networks/network-registry');
 const {
   BlockscoutError,
+  LookupsExhausted,
   MAX_REDIRECTS,
   REDIRECT_STATUSES,
+  boundLookups,
   redirectTarget,
 } = require('../networks/blockscout-logs');
 
@@ -118,7 +120,8 @@ function pageHeaders(headers) {
  * never to a local address, by name or as it resolves), at most three. A
  * refused hop is one `refused`, its reason not told (design 0005, Logs).
  * Only a 2xx body is read: the core judges the status, the size and the
- * cooldown headers itself.
+ * cooldown headers itself. With too many lookups still outstanding, a hop
+ * that needs one is `busy`.
  */
 async function readPage(url, { hop, lookup, signal, max, charge }) {
   const origin = new URL(url).origin;
@@ -144,6 +147,7 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
       next = await redirectTarget(response.headers.location, current, origin, { lookup, signal });
     } catch (err) {
       if (err instanceof BlockscoutError) throw new ShellError('refused');
+      if (err instanceof LookupsExhausted) throw new ShellError('busy');
       throw err;
     }
     if (hops + 1 > MAX_REDIRECTS) throw new ShellError('refused');
@@ -162,7 +166,9 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
  */
 function registerChainShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
-  const lookup = deps.lookup || dns.promises.lookup;
+  // A redirect's DNS check: the lookups a cancel or a deadline left running
+  // keep their slots until they settle.
+  const lookup = boundLookups(deps.lookup || dns.promises.lookup);
   // The URL behind a request's reference while the request runs under its
   // chain's current generation (one main hasn't seen yet is newer, never
   // stale); null otherwise.
