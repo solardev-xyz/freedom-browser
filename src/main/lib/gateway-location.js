@@ -2,11 +2,12 @@
  * Translate a gateway redirect's `Location` into the custom-scheme URL space.
  *
  * Shared by both content-addressed transports that proxy an HTTP gateway
- * behind a custom scheme: `ipfs://` / `ipns://` (see `ipfs-manager.js`) and
- * `bzz://` (see `swarm/bzz-protocol.js`). Both glue a `/<ns>/<ref>` prefix in
- * front of the custom-scheme path to build the gateway URL, so both have the
- * same problem with a gateway-space `Location`, and both must fix it the same
- * way — hence one helper rather than a copy per transport.
+ * behind a custom scheme: `ipfs://` / `ipns://` and `bzz://`, through the
+ * dweb plans' `canonicalize_redirect` (`dweb/response-operations.js`). Both
+ * glue a `/<ns>/<ref>` prefix in front of the custom-scheme path to build the
+ * gateway URL, so both have the same problem with a gateway-space
+ * `Location`, and both must fix it the same way — hence one helper rather
+ * than a copy per transport.
  */
 
 // Whether two path segments name the same thing, comparing what they *mean*
@@ -55,10 +56,10 @@ function decodeSegment(segment) {
 // linked without its trailing slash breaks.
 //
 // The gateway path is the custom-scheme path with a `/<ns>/<ref>` prefix glued
-// in front (see `buildGatewayUrl` in ipfs/ipfs-protocol.js and
-// swarm/bzz-protocol.js), and the prefix is whatever the host resolved to — a
-// CID, an IPNS key, a Swarm ref, or an Ethereum name whose contenthash carries
-// its own base path, none of which this layer knows. A *relative* reference
+// in front (the plan's path, from freedom-core's `dweb.open`), and the prefix
+// is whatever the host resolved to — a CID, an IPNS key, a Swarm ref, or an
+// Ethereum name whose contenthash carries its own base path, none of which
+// this layer knows. A *relative* reference
 // computed from the request's gateway path is therefore the one rewrite that
 // resolves identically in both spaces, whatever the prefix is, so a
 // same-directory-or-below target is re-expressed that way. A target that would

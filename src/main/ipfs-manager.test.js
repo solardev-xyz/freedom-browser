@@ -33,6 +33,48 @@ function mockGatewayFetch(handler) {
   });
 }
 
+// What the `ipfs:` handler does with the backend the manager reports
+// (freedom-core design 0006): a backend that isn't up gets the core's 503 for
+// its mode; otherwise the plan's fetch, with its table for the mode, runs on
+// the bound backend through main's executor, response operations and all.
+const NOT_RUNNING = {
+  native: 'freedom-ipfs node is not running',
+  gateway: 'external IPFS gateway is not running',
+};
+async function serve(mod, { path: gatewayPath, method = 'GET', headers = new Headers(), signal }) {
+  const backend = mod.ipfsBackend();
+  const mode = backend.ref.ipfs;
+  if (!backend.ref.up) {
+    return new Response(JSON.stringify({ code: 503, message: NOT_RUNNING[mode] }), {
+      status: 503,
+    });
+  }
+  const { executeFetch } = require('./dweb/plan-executor');
+  const { redactUrlForLog } = require('./private/private-log-context');
+  const native = mode === 'native';
+  const fetch = {
+    node: 'ipfs',
+    path: gatewayPath,
+    headers: [...headers],
+    retry: { statuses: [], on_error: false, attempts: 1, delays_ms: [] },
+    timers: native
+      ? { queue_ms: 15000, headers_ms: 30000, body_idle_ms: 60000 }
+      : { queue_ms: null, headers_ms: null, body_idle_ms: 60000 },
+    response: native
+      ? ['strip_page_state']
+      : ['strip_decoded_encoding', 'strip_page_state', 'canonicalize_redirect'],
+    trust: { name: null, content: native ? 'node_asserted' : 'unverified' },
+  };
+  return executeFetch(fetch, {
+    backend,
+    method,
+    signal,
+    log: require('./logger'),
+    tag: '[ipfs-protocol]',
+    redactUrl: redactUrlForLog,
+  });
+}
+
 function createWindowMock() {
   return {
     webContents: {
@@ -260,10 +302,10 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node disabled for this profile');
   });
 
-  test('serves native gateway requests only while running', async () => {
+  test('reports the native node as up, and serves on it, only while running', async () => {
     const ctx = loadIpfsManagerModule();
 
-    const stoppedResponse = await ctx.mod.serveNativeGatewayRequest({
+    const stoppedResponse = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -271,7 +313,7 @@ describe('ipfs-manager', () => {
     expect(stoppedResponse.status).toBe(503);
 
     await ctx.mod.startIpfs();
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -279,11 +321,13 @@ describe('ipfs-manager', () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('native-body');
+    // The plan's header deadline goes to the node, which runs it.
     expect(ctx.nativeInstances[0].request).toHaveBeenCalledWith({
       method: 'GET',
       path: '/ipfs/bafy',
       headers: expect.any(Headers),
-      signal: undefined,
+      signal: null,
+      headersTimeoutMs: 30000,
     });
   });
 
@@ -440,7 +484,7 @@ describe('ipfs-manager', () => {
       error: 'dispatcher died',
     });
 
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -472,7 +516,7 @@ describe('ipfs-manager', () => {
     expect(ctx.nativeInstances).toHaveLength(0);
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Native node unavailable');
     await expect(
-      ctx.mod.serveNativeGatewayRequest({
+      serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -516,7 +560,7 @@ describe('ipfs-manager', () => {
         error: null,
       });
 
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -766,7 +810,7 @@ describe('ipfs-manager', () => {
         error: null,
       });
       expect(ctx.setErrorState).not.toHaveBeenCalled();
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -1217,7 +1261,7 @@ describe('ipfs-manager', () => {
           backend: 'external-gateway',
         });
         expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeUndefined();
-        const beforeRecovery = await ctx.mod.serveNativeGatewayRequest({
+        const beforeRecovery = await serve(ctx.mod, {
           path: '/ipfs/bafy',
           method: 'GET',
           headers: new Headers(),
@@ -1250,7 +1294,7 @@ describe('ipfs-manager', () => {
           mode: 'external',
           backend: 'external-gateway',
         });
-        const served = await ctx.mod.serveNativeGatewayRequest({
+        const served = await serve(ctx.mod, {
           path: '/ipfs/bafy',
           method: 'GET',
           headers: new Headers(),
@@ -1474,7 +1518,7 @@ describe('ipfs-manager', () => {
           error: 'External IPFS gateway is unreachable',
         });
         expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeUndefined();
-        const served = await ctx.mod.serveNativeGatewayRequest({
+        const served = await serve(ctx.mod, {
           path: '/ipfs/bafy',
           method: 'GET',
           headers: new Headers(),
@@ -1518,7 +1562,7 @@ describe('ipfs-manager', () => {
         bytes_read: 0,
       });
 
-      const res = await ctx.mod.serveNativeGatewayRequest({
+      const res = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -2138,7 +2182,7 @@ describe('ipfs-manager', () => {
       });
       await ctx.mod.startIpfs();
 
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -2183,7 +2227,7 @@ describe('ipfs-manager', () => {
           },
         });
         await ctx.mod.startIpfs();
-        const response = await ctx.mod.serveNativeGatewayRequest({
+        const response = await serve(ctx.mod, {
           path,
           method: 'GET',
           headers: new Headers(),
@@ -2316,7 +2360,7 @@ describe('ipfs-manager', () => {
         });
         await ctx.mod.startIpfs();
 
-        const response = await ctx.mod.serveNativeGatewayRequest({
+        const response = await serve(ctx.mod, {
           path: '/ipfs/bafy',
           method: 'GET',
           headers: new Headers(),
@@ -2364,7 +2408,7 @@ describe('ipfs-manager', () => {
       });
       await ctx.mod.startIpfs();
 
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -2399,7 +2443,7 @@ describe('ipfs-manager', () => {
       // context it sets is the one redactForLog reads.
       const { runWithPrivateLogContext } = require('./private/private-log-context');
       const response = await runWithPrivateLogContext(true, () =>
-        ctx.mod.serveNativeGatewayRequest({
+        serve(ctx.mod, {
           path: '/ipfs/bafysecret/where-the-user-went',
           method: 'GET',
           headers: new Headers(),
@@ -2495,7 +2539,7 @@ describe('external gateway transport', () => {
       const ctx = loadWithRemoteGateway({ net });
       await ctx.mod.startIpfs();
 
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers({ range: 'bytes=0-5' }),
@@ -2541,7 +2585,7 @@ describe('external gateway transport', () => {
       });
       await ctx.mod.startIpfs();
 
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),
@@ -2588,7 +2632,7 @@ describe('external gateway transport', () => {
     const ctx = loadWithRemoteGateway({ net });
     await ctx.mod.startIpfs();
 
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafydir/docs',
       method: 'GET',
       headers: new Headers(),
@@ -2627,7 +2671,7 @@ describe('external gateway transport', () => {
     const ctx = loadWithRemoteGateway({ net });
     await ctx.mod.startIpfs();
 
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -2654,7 +2698,7 @@ describe('external gateway transport', () => {
     const ctx = loadWithRemoteGateway({ net });
     await ctx.mod.startIpfs();
 
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -2675,7 +2719,7 @@ describe('external gateway transport', () => {
     await ctx.mod.startIpfs();
 
     const controller = new AbortController();
-    const response = await ctx.mod.serveNativeGatewayRequest({
+    const response = await serve(ctx.mod, {
       path: '/ipfs/bafy',
       method: 'GET',
       headers: new Headers(),
@@ -2717,7 +2761,7 @@ describe('external gateway transport', () => {
     // the manager's own instance of the context is the one that counts.
     const { runWithPrivateLogContext } = require('./private/private-log-context');
     const response = await runWithPrivateLogContext(true, () =>
-      ctx.mod.serveNativeGatewayRequest({
+      serve(ctx.mod, {
         path: '/ipfs/bafysecret',
         method: 'GET',
         headers: new Headers(),
@@ -2827,7 +2871,7 @@ describe('external gateway transport', () => {
         // And it really serves: before the fix this 503'd until the user
         // toggled the node by hand. (Same one-tick dance as the probe — the
         // fake `net` answers on an immediate.)
-        const responsePromise = ctx.mod.serveNativeGatewayRequest({
+        const responsePromise = serve(ctx.mod, {
           path: '/ipfs/bafy',
           method: 'GET',
           headers: new Headers(),
@@ -2884,7 +2928,7 @@ describe('external gateway transport', () => {
         mode: 'external',
         backend: 'external-gateway',
       });
-      const response = await ctx.mod.serveNativeGatewayRequest({
+      const response = await serve(ctx.mod, {
         path: '/ipfs/bafy',
         method: 'GET',
         headers: new Headers(),

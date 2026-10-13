@@ -1,10 +1,13 @@
 /**
  * The one way this app dials a configured content-node endpoint: the external
- * IPFS gateway (`ipfs-manager.js`) and the speculative gateway warm-up
+ * IPFS gateway (`ipfs-manager.js`), the speculative gateway warm-up
  * (`ens-prefetch.js`, for the Ant API too — it is configurable to a remote
- * host in exactly the same way). ENS CCIP-Read gateways (`ens/ccip-fetch.js`)
- * dial through `netGatewayFetch` too (#359): their URLs are named by the
- * contract being resolved and can sit on a `.onion` host just the same.
+ * host in exactly the same way), and the `bzz:` handler's dial of a
+ * non-loopback Ant, on the request's own session (`swarm/bzz-protocol.js`;
+ * freedom-core design 0006, deviation `transport`, #360). ENS CCIP-Read
+ * gateways (`ens/ccip-fetch.js`) dial through `netGatewayFetch` too (#359):
+ * their URLs are named by the contract being resolved and can sit on a
+ * `.onion` host just the same.
  *
  * WHY THIS EXISTS
  *
@@ -42,7 +45,7 @@
  * Same probe, other measurements this file depends on:
  *  - Chromium reports `content-encoding: gzip` plus the *compressed*
  *    `content-length` while handing back an already-decoded body — exactly
- *    like undici, so `DROPPED_UPSTREAM_RESPONSE_HEADERS` in `ipfs-manager.js`
+ *    like undici, so `strip_decoded_encoding` (`dweb/response-operations.js`)
  *    stays load-bearing after the transport change.
  *  - A PAC that proxies everything is bypassed for loopback hosts, so a
  *    loopback gateway is unaffected by any proxy policy either way.
@@ -123,11 +126,11 @@ function isOnionGatewayUrl(url) {
   }
 }
 
-async function defaultResolveProxy(url) {
+async function defaultResolveProxy(url, dialSession = null) {
   // `net.request` dials on `session.defaultSession` unless told otherwise, so
   // that is the session whose proxy policy decides this request's fate.
   const { session } = require('electron');
-  const targetSession = session?.defaultSession;
+  const targetSession = dialSession || session?.defaultSession;
   if (typeof targetSession?.resolveProxy !== 'function') {
     throw new Error('session.resolveProxy is unavailable');
   }
@@ -151,7 +154,9 @@ function isProxiedResolution(resolved) {
 async function assertOnionRoutable(url, deps) {
   let resolved;
   try {
-    resolved = await (deps.resolveProxy || defaultResolveProxy)(url);
+    resolved = deps.resolveProxy
+      ? await deps.resolveProxy(url)
+      : await defaultResolveProxy(url, deps.session || null);
   } catch (err) {
     // A session we cannot ask is a session we cannot trust to proxy: refuse
     // rather than dial and hope.
@@ -324,8 +329,10 @@ function defaultNetRequest(options) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Buffer}} init
- * @param {{requestImpl?: Function, resolveProxy?: Function}} deps - test seams for
- *   `net.request` and `session.resolveProxy`
+ * @param {{requestImpl?: Function, resolveProxy?: Function, session?: Electron.Session}} deps -
+ *   test seams for `net.request` and `session.resolveProxy`, and the session to
+ *   dial on (the default session when none is given): its proxy policy decides
+ *   the route, and the onion gate asks it
  * @returns {Promise<Response>}
  */
 async function netGatewayFetch(url, init = {}, deps = {}) {
@@ -397,6 +404,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
         // Straight to the network — never back into a registered `http(s)`
         // protocol handler (the test harness registers one).
         bypassCustomProtocolHandlers: true,
+        ...(deps.session ? { session: deps.session } : {}),
       });
     } catch (err) {
       releaseDial();

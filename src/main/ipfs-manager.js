@@ -22,9 +22,6 @@ const {
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
-const { stripPageStateHeaders } = require('./lib/gateway-response-headers');
-const { redactForLog } = require('./private/private-log-context');
-const { rewriteGatewayLocation } = require('./lib/gateway-location');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
 const STATUS = {
@@ -59,8 +56,8 @@ let externalGatewayUrl = null;
 // Deliberately NOT recorded in `currentMode`/`externalGatewayUrl`: those two
 // mean "this backend / this endpoint is serving `ipfs://` right now" — the same
 // split the registry draws between `gateway` and `externalGateway` (see
-// publishExternalIpfsMode) — and `serveExternalGatewayRequest` and
-// `getNativeDiagnostics` read them. A node that never came up must not describe
+// publishExternalIpfsMode) — and `ipfsBackend` and `getNativeDiagnostics`
+// read them. A node that never came up must not describe
 // itself through either.
 let externalStandby = null;
 
@@ -871,9 +868,6 @@ function syncProfileMode() {
   return enqueueOp(doSyncIpfsProfileMode);
 }
 
-// Proxy a gateway request to the configured external HTTP gateway. The protocol
-// handler already canonicalizes the path to the `/ipfs/<cid>...` / `/ipns/<name>...`
-// contract every gateway understands, so we just forward it verbatim.
 // Wrap an upstream body so bytes are tallied as they stream to the caller and
 // the in-flight counter is released exactly once when the stream ends, is
 // cancelled, or errors.
@@ -908,55 +902,28 @@ function countingGatewayStream(upstreamBody, release) {
   });
 }
 
-// Response headers that must not survive the proxy hop. Both transports
-// (undici for a loopback gateway, Chromium for a remote one — see
-// ipfs/gateway-transport.js) hand back an already-decoded body while still
-// reporting the upstream `content-encoding` and its compressed
-// `content-length`, so forwarding the upstream
-// `content-encoding` (and its compressed `content-length`) would have Chromium
-// decode the plaintext a second time — ERR_CONTENT_DECODING_FAILED or a
-// truncated page from any nginx/Caddy-fronted or public gateway. The rest are
-// hop-by-hop headers that describe the upstream connection, not this response.
-const DROPPED_UPSTREAM_RESPONSE_HEADERS = [
-  'content-encoding',
-  'content-length',
-  'transfer-encoding',
-  'connection',
-  'keep-alive',
-];
-
-function proxiedResponseHeaders(upstreamHeaders) {
-  const headers = new Headers(upstreamHeaders);
-  for (const name of DROPPED_UPSTREAM_RESPONSE_HEADERS) {
-    headers.delete(name);
-  }
-  // Nor may the external gateway set cookies or widen a service worker's
-  // scope on the `ipfs://` origin (security audit O-12, #439).
-  return stripPageStateHeaders(headers);
+// The page's signal, and a headers deadline when the plan names one: the
+// signal stays linked for the body, which only the page's abort (or a body
+// cancel) ends.
+function withHeadersDeadline(signal, ms) {
+  if (ms === null || ms === undefined) return { signal, headersIn: () => {} };
+  const controller = new AbortController();
+  const relay = () => controller.abort(signal.reason);
+  if (signal?.aborted) controller.abort(signal.reason);
+  else signal?.addEventListener('abort', relay, { once: true });
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, headersIn: () => clearTimeout(timer) };
 }
 
-// 3xx from the gateway: rewrite `Location` in place when it can be expressed in
-// the `ipfs://` URL space (see `lib/gateway-location.js`), leave it otherwise.
-function proxiedRedirectHeaders(upstreamHeaders, requestUrl) {
-  const headers = proxiedResponseHeaders(upstreamHeaders);
-  const location = headers.get('location');
-  if (!location) return headers;
-  const rewritten = rewriteGatewayLocation(location, requestUrl);
-  if (rewritten) headers.set('location', rewritten);
-  return headers;
-}
-
-async function serveExternalGatewayRequest({ path: gatewayPath, method, headers, signal }) {
-  if (currentState !== STATUS.RUNNING || !externalGatewayUrl) {
-    return new Response(
-      JSON.stringify({ code: 503, message: 'external IPFS gateway is not running' }),
-      {
-        status: 503,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      }
-    );
-  }
-
+// One request to the external HTTP gateway at `gatewayUrl`, for a plan's
+// node-relative path (`/ipfs/<cid>…`, `/ipns/<name>…`). The answer comes back
+// as the gateway gave it, its body counted for the diagnostics; the plan's
+// response operations (the decoded encoding, page state, the redirect's
+// `Location`) are main's executor's to run.
+async function requestExternalGateway(
+  gatewayUrl,
+  { path: gatewayPath, method, headers, signal, headersTimeoutMs }
+) {
   externalActiveRequests += 1;
   let handled = false;
   const releaseHandle = () => {
@@ -964,13 +931,12 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
     handled = true;
     externalActiveRequests = Math.max(0, externalActiveRequests - 1);
   };
-
-  const requestUrl = `${externalGatewayUrl}${gatewayPath}`;
+  const deadline = withHeadersDeadline(signal, headersTimeoutMs);
   try {
-    const upstream = await gatewayFetch(requestUrl, {
+    const upstream = await gatewayFetch(`${gatewayUrl}${gatewayPath}`, {
       method: method || 'GET',
       headers,
-      signal,
+      signal: deadline.signal,
       // Never follow the gateway's redirects: a hostile or MITM'd gateway
       // answering `302 Location: http://127.0.0.1:1633/…` would otherwise have
       // Freedom fetch the user's own loopback/LAN services and hand the body
@@ -979,58 +945,57 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
       // not follow redirects either.
       redirect: 'manual',
     });
-
-    const isRedirect = upstream.status >= 300 && upstream.status < 400;
-    const responseHeaders = isRedirect
-      ? proxiedRedirectHeaders(upstream.headers, requestUrl)
-      : proxiedResponseHeaders(upstream.headers);
-
-    // No body to stream (HEAD, 204/304, a 3xx): the request is already complete.
+    deadline.headersIn();
+    // No body to stream (HEAD, 204/304, a 3xx without one): the request is
+    // already complete.
     if (!upstream.body) {
       releaseHandle();
-      return new Response(null, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: responseHeaders,
-      });
+      return upstream;
     }
-
     return new Response(countingGatewayStream(upstream.body, releaseHandle), {
       status: upstream.status,
       statusText: upstream.statusText,
-      headers: responseHeaders,
+      headers: upstream.headers,
     });
   } catch (err) {
+    deadline.headersIn();
     releaseHandle();
-    if (err?.name === 'AbortError') throw err;
-    log.warn(
-      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
-    );
-    return new Response(
-      JSON.stringify({ code: 502, message: 'external IPFS gateway request failed' }),
-      {
-        status: 502,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      }
-    );
+    throw err;
   }
 }
 
-async function serveNativeGatewayRequest({ path: gatewayPath, method, headers, signal }) {
+/**
+ * The IPFS backend serving `ipfs:` and `ipns:` now (freedom-core design 0006,
+ * Binding): captured when a request is admitted and kept for it, so a
+ * settings change mid-request can't redirect the fetch. The core learns only
+ * its mode and whether it is up, never its URL; a backend that isn't up
+ * keeps its mode, so the core's 503 names what isn't running.
+ *
+ * The external gateway is the mode only while it serves: a gateway that never
+ * answered leaves the manager standing by, which answers as the native
+ * node's absence, as today.
+ *
+ * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean}, url: string|null,
+ *   request: Function}}
+ */
+function ipfsBackend() {
   if (currentMode === MODE.EXTERNAL) {
-    return serveExternalGatewayRequest({ path: gatewayPath, method, headers, signal });
+    const url = currentState === STATUS.RUNNING && externalGatewayUrl ? externalGatewayUrl : null;
+    return {
+      ref: { ipfs: 'gateway', up: Boolean(url) },
+      url,
+      request: (init) => requestExternalGateway(url, init),
+    };
   }
-
-  if (!activeNode || currentState !== STATUS.RUNNING || !checkHealth()) {
-    return new Response(
-      JSON.stringify({ code: 503, message: 'freedom-ipfs node is not running' }),
-      {
-        status: 503,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      }
-    );
-  }
-  return activeNode.request({ method, path: gatewayPath, headers, signal });
+  // The native node pulls with real backpressure, and runs the plan's
+  // headers deadline itself; its queue bound is the one it was started with.
+  const node = checkHealth() ? activeNode : null;
+  return {
+    ref: { ipfs: 'native', up: Boolean(node) },
+    url: null,
+    request: ({ path: gatewayPath, method, headers, signal, headersTimeoutMs }) =>
+      node.request({ method, path: gatewayPath, headers, signal, headersTimeoutMs }),
+  };
 }
 
 function getNativeDiagnostics() {
@@ -1123,7 +1088,7 @@ module.exports = {
   getIpfsDataPath,
   setUseInjectedIdentity,
   hasInjectedIdentity,
-  serveNativeGatewayRequest,
+  ipfsBackend,
   getNativeDiagnostics,
   checkHealth,
   isExternalIpfsConfig,

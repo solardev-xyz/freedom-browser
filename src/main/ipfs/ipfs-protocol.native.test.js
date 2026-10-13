@@ -7,8 +7,9 @@
  * Roadmap 4.7, design 0006 ("Tests first"). The native add-on is replaced by
  * `test/helpers/fake-freedom-ipfs-addon.js` and its event worker by an
  * in-process dispatcher; everything from the `ipfs:` handler down to the
- * add-on calls is the production code. External-gateway mode is in
- * `ipfs-protocol.http.test.js`.
+ * add-on calls is the production code, but the core's planner
+ * (`test/helpers/fake-dweb-core.js`, which plans as fc-dweb does).
+ * External-gateway mode is in `ipfs-protocol.http.test.js`.
  */
 
 const fs = require('fs');
@@ -17,6 +18,7 @@ const path = require('path');
 const timers = require('timers');
 const { loadMainModule } = require('../../../test/helpers/main-process-test-utils');
 const { createFakeFreedomIpfsAddon } = require('../../../test/helpers/fake-freedom-ipfs-addon');
+const { createFakeDwebDriver, BODY_IDLE_MS } = require('../../../test/helpers/fake-dweb-core');
 const {
   nextTurn,
   readAll,
@@ -41,6 +43,7 @@ let stack;
 // fake add-on, and the protocol module, all in one module registry.
 async function loadNativeStack() {
   fake = createFakeFreedomIpfsAddon();
+  const driver = createFakeDwebDriver();
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
   const { mod: manager } = loadMainModule(require.resolve('../ipfs-manager'), {
     extraMocks: {
@@ -81,8 +84,7 @@ async function loadNativeStack() {
       }),
       [require.resolve('../profile-resolver')]: () => ({ getActiveProfile: () => null }),
       [require.resolve('../profile-paths')]: () => ({ getIpfsDataDir: () => dataDir }),
-      [require.resolve('../ens-resolver')]: () => ({ resolveEnsContent: jest.fn() }),
-      [require.resolve('../tezos-domains-resolver')]: () => ({ resolveTezosDomain: jest.fn() }),
+      [require.resolve('../core/naming')]: () => ({ namingDriver: () => driver }),
     },
   });
   const { registerIpfsProtocol } = require('./ipfs-protocol');
@@ -161,6 +163,32 @@ describe('ipfs: native mode streaming', () => {
     expect(fake.addon.gatewayRequestFree).toHaveBeenCalledTimes(1);
     expect(fake.addon.gatewayRequestCancel).not.toHaveBeenCalled();
     expect(stack.stats().active_native_handles).toBe(0);
+  });
+
+  // Design 0006 deviation `native-page-state`: today the native node's
+  // answers pass unstripped; now they lose their page state like Ant's and
+  // the external gateway's (O-12).
+  test("strips Set-Cookie, Set-Cookie2 and Service-Worker-Allowed from the node's answer", async () => {
+    fake.onRequest((request) =>
+      fake.serve(request, {
+        headers: {
+          'content-type': 'text/html',
+          'set-cookie': 'track=1',
+          'set-cookie2': 'legacy=1',
+          'service-worker-allowed': '/',
+          'cache-control': 'public, max-age=29030400, immutable',
+        },
+        body: 'page',
+      })
+    );
+
+    const res = await ipfs('/');
+
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(res.headers.get('set-cookie2')).toBeNull();
+    expect(res.headers.get('service-worker-allowed')).toBeNull();
+    expect(res.headers.get('cache-control')).toBe('public, max-age=29030400, immutable');
+    expect((await readAll(res.body)).toString()).toBe('page');
   });
 
   test('HEAD gets the headers and no body', async () => {
@@ -293,8 +321,9 @@ describe('ipfs: native mode cancel', () => {
     expect(error?.message).toBe('freedom-ipfs native request cancelled');
   });
 
-  // A request aborted before it reaches the node (say, while its name
-  // resolved) starts no native request at all, and nothing stays registered.
+  // A request aborted before it reaches the node starts no native request at
+  // all, and nothing stays registered. Since design 0006 it isn't planned
+  // either: the abort cancels `dweb.open`, and the answer goes to nobody.
   test('a request aborted before it starts starts nothing and leaves nothing registered', async () => {
     const controller = new AbortController();
     controller.abort();
@@ -302,7 +331,7 @@ describe('ipfs: native mode cancel', () => {
     const res = await ipfs('/x', { signal: controller.signal });
 
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ code: 502, message: 'freedom-ipfs native request aborted' });
+    expect(await res.json()).toEqual({ code: 502, message: 'Cancelled' });
     expect(fake.addon.gatewayRequestStart).not.toHaveBeenCalled();
     expect(fake.requests).toHaveLength(0);
     expect(stack.stats().active_native_handles).toBe(0);
@@ -360,8 +389,9 @@ describe('ipfs: native mode 30 s header deadline', () => {
     expect(cancel).toBeLessThan(free);
   });
 
-  // Design 0006 deviation `body-idle`: no bound on a body that stalls.
-  test('stops applying once the headers arrive: a stalled body is never timed out', async () => {
+  // Design 0006 deviation `body-idle`: the body's own clock runs only while a
+  // read is pending, so a reader that has paused is never cut off.
+  test('stops applying once the headers arrive: a paused reader is never timed out', async () => {
     useFakeClock();
     fake.onRequest((request) => {
       fake.respond(request, { headers: { 'content-type': 'application/octet-stream' } });
@@ -381,6 +411,32 @@ describe('ipfs: native mode 30 s header deadline', () => {
     fake.push(request, 'second');
     fake.end(request);
     expect((await readAll(reader)).toString()).toBe('second');
+  });
+
+  // Design 0006 deviation `body-idle`: a read left pending for 60 s fails the
+  // body as truncated, and the native request is cancelled and freed.
+  test('a read left pending for 60 s fails the body and frees the native request', async () => {
+    useFakeClock();
+    fake.onRequest((request) => {
+      fake.respond(request, { headers: { 'content-type': 'application/octet-stream' } });
+      fake.push(request, 'first ');
+    });
+
+    const res = await ipfs('/x');
+    const reader = res.body.getReader();
+    await reader.read();
+    const stalled = readUntilError(reader);
+    await nextTurn(10);
+    await jest.advanceTimersByTimeAsync(BODY_IDLE_MS - 1);
+    expect(fake.addon.gatewayRequestCancel).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1);
+    const { error } = await stalled;
+    expect(error?.name).toBe('BodyIdleError');
+    const [request] = fake.requests;
+    await waitFor(() => request.freed, { what: 'the handle to be freed' });
+    expect(fake.addon.gatewayRequestCancel).toHaveBeenCalledWith('1', request.handle);
+    expect(stack.stats().active_native_handles).toBe(0);
   });
 });
 
@@ -412,7 +468,7 @@ describe('ipfs: native node not available', () => {
   });
 });
 
-// `renderSmallTextResponse`: a bare UnixFS file has no name to take a MIME
+// `small_text` (dweb/response-operations.js): a bare UnixFS file has no name to take a MIME
 // type from, so a small UTF-8 `application/octet-stream` document load is
 // relabelled `text/plain` + `nosniff` (rendered, never as HTML). Every other
 // response streams through untouched, and a response the rule buffered but

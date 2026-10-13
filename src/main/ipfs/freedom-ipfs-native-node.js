@@ -66,7 +66,7 @@ function errorFromMetadata(metadata, fallbackMessage = 'freedom-ipfs native requ
 }
 
 class NativeGatewayController {
-  constructor(owner, handle, method, signal) {
+  constructor(owner, handle, method, signal, headersTimeoutMs = ATTEMPT_TIMEOUT_MS) {
     this.owner = owner;
     this.handle = handle;
     this.handleKey = handle;
@@ -86,7 +86,7 @@ class NativeGatewayController {
     this.timeout = setTimeout(() => {
       this.cancel();
       this.fail(new Error('freedom-ipfs native request timeout'));
-    }, ATTEMPT_TIMEOUT_MS);
+    }, headersTimeoutMs);
 
     // An abort ends the request at once, before or after the headers, and
     // frees its handle: the add-on answers a cancel with EVENT_CANCELLED
@@ -569,7 +569,15 @@ class FreedomIpfsNativeNode {
     if (requestHandle) this.requests.delete(requestHandle);
   }
 
-  request({ method = 'GET', path: gatewayPath, headers, signal }) {
+  // `headersTimeoutMs` bounds the wait for the response headers: a dweb
+  // plan's `headers_ms` (freedom-core design 0006), today's 30 s by default.
+  request({
+    method = 'GET',
+    path: gatewayPath,
+    headers,
+    signal,
+    headersTimeoutMs = ATTEMPT_TIMEOUT_MS,
+  }) {
     const nodeHandle = normalizeNativeHandle(this.nodeHandle);
     if (!nodeHandle) {
       return Promise.reject(new Error('freedom-ipfs native node is not running'));
@@ -595,7 +603,7 @@ class FreedomIpfsNativeNode {
     if (!handle) {
       return Promise.reject(new Error('freedom-ipfs native request could not be started'));
     }
-    const controller = new NativeGatewayController(this, handle, method, signal);
+    const controller = new NativeGatewayController(this, handle, method, signal, headersTimeoutMs);
     // One that ended while it was built has freed its handle already.
     if (!controller.terminated) this.requests.set(controller.handleKey, controller);
     return controller.responsePromise;

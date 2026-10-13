@@ -18,12 +18,11 @@ const { withOriginLock } = require('./origin-mutation-lock');
 
 const STORE_FILE = 'swarm-manifest-grants.json';
 const MAX_BYTES = 8 * 1024;
-// The per-attempt fetch timeout in `bzz-protocol.js` is cleared the moment
-// response headers arrive, so nothing bounds the body after that: a gateway
-// that answers 200 and then stalls half-open would keep this read pending
-// until undici's ~5 min default body timeout, and every non-public swarm
-// method for the origin queues behind the cached check promise. Each read
-// gets its own inactivity deadline — a slow-but-steady body keeps going, a
+// The per-attempt fetch timeout in the `bzz:` handler is cleared the moment
+// response headers arrive, and its body idle bound (60 s, freedom-core design
+// 0006) is far longer than this check can wait: every non-public swarm method
+// for the origin queues behind the cached check promise. Each read gets its
+// own, tighter inactivity deadline — a slow-but-steady body keeps going, a
 // stalled one is aborted and classified transient, like any dropped socket.
 const BODY_IDLE_TIMEOUT_MS = 15_000;
 const TOKEN_TTL_MS = 5 * 60 * 1000;
@@ -221,7 +220,27 @@ function fingerprint(manifest) {
   })).digest('hex');
 }
 
-async function discover(committedUrl, fetchManifest = handleBzzRequest) {
+// The manifest goes through the bzz: handler in process, on the session of
+// the window that asked and with its private context (freedom-core design
+// 0006, "Other callers"): a private window's lookup is private to the core
+// and redacted in the log, its fetch stops with the window, and a remote Ant
+// is dialled on that session's network stack.
+function manifestFetchContext(sender) {
+  if (!sender) return {};
+  const { session } = require('electron');
+  const {
+    getPartitionForWebContents,
+    isPrivateWebContents,
+  } = require('../private/private-windows');
+  const partition = getPartitionForWebContents(sender);
+  return {
+    session: partition ? session.fromPartition(partition) : session.defaultSession,
+    partition,
+    isPrivate: Boolean(partition) || isPrivateWebContents(sender),
+  };
+}
+
+async function discover(committedUrl, fetchManifest = handleBzzRequest, fetchContext = {}) {
   let url;
   try {
     url = new URL(committedUrl);
@@ -233,7 +252,7 @@ async function discover(committedUrl, fetchManifest = handleBzzRequest) {
   const manifestUrl = `bzz://${url.host}/freedom-manifest.json`;
   let response;
   try {
-    response = await fetchManifest(new Request(manifestUrl));
+    response = await fetchManifest(new Request(manifestUrl), fetchContext);
   } catch (err) {
     return { status: 'unresolved', error: err.message };
   }
@@ -431,7 +450,7 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
       : { kind: 'legacy', reason: 'unresolved-backoff', retryAt: backoff.retryAt };
   }
 
-  const found = await discover(committedUrl, deps.fetchManifest);
+  const found = await discover(committedUrl, deps.fetchManifest, deps.fetchContext);
   if (found.status === 'unresolved') {
     const failures = (backoff?.failures || 0) + 1;
     const delay = UNRESOLVED_BACKOFF_MS[Math.min(failures - 1, UNRESOLVED_BACKOFF_MS.length - 1)];
@@ -626,8 +645,10 @@ function registerPermissionManifestIpc() {
   // that claims it — and can re-assert it on the next projection.
   permissions.onManifestMutation(detachManaged);
   feeds.onManifestMutation(detachManaged);
-  ipcMain.handle(IPC.SWARM_MANIFEST_CHECK, (_event, request) => (
-    withOriginLock(request.origin, () => checkManifest(request))
+  ipcMain.handle(IPC.SWARM_MANIFEST_CHECK, (event, request) => (
+    withOriginLock(request.origin, () => checkManifest(request, {
+      fetchContext: manifestFetchContext(event?.sender),
+    }))
   ));
   ipcMain.handle(IPC.SWARM_MANIFEST_DECIDE, (_event, { token, outcome }) => {
     const origin = tokens.get(token)?.origin || `consent-token:${token}`;

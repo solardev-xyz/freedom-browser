@@ -4,13 +4,14 @@
  * `ant-api-guard.js` would otherwise cancel them).
  *
  * Almost all of the main process's node traffic uses Node's `fetch`, which
- * never reaches `session.webRequest`. The exception is the ENS prefetch of a
- * *remote* external node (`ens-prefetch.js`), which goes through the shared
- * gateway transport so the session's proxy policy applies. In webRequest that
- * dial looks like a worker's request — no frame, no webContents — so the
- * guard cannot tell it apart by shape. Instead the caller announces the exact
- * URL here for the lifetime of the dial, and the guard lets a frameless
- * GET/HEAD of exactly that URL through.
+ * never reaches `session.webRequest`. The exceptions dial a *remote* external
+ * node through the shared gateway transport, so the session's proxy policy
+ * applies: the `bzz:` handler's content requests (`swarm/bzz-protocol.js`)
+ * and the ENS prefetch (`ens-prefetch.js`). In webRequest such a dial looks
+ * like a worker's request — no frame, no webContents — so the guard cannot
+ * tell it apart by shape. Instead the caller announces the exact URL here for
+ * the lifetime of the dial, and the guard lets a frameless GET/HEAD of
+ * exactly that URL through.
  *
  * Kept free of dependencies so both the guard and its callers can load it.
  */
