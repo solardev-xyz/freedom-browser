@@ -64,6 +64,16 @@ const OBSERVED = Object.freeze({
 // the nonce search may reach. Past it the intent stays held.
 const MAX_DEPTH = 8192n;
 
+// Headers are fetched in chunks of this many, each chunk verified before
+// the next is asked for: with replies compacted as each resolves, a
+// chunk's headers are all a walk holds besides the verified ones.
+const WALK_CHUNK = 256n;
+
+// A block read with its transactions (the one that used a nonce) is kept
+// only as each transaction's hash, sender and nonce; a block with more
+// transactions than this is malformed evidence.
+const MAX_BLOCK_TRANSACTIONS = 65536;
+
 const VERIFIED_SOURCES = new Set(['myotis', 'colibri', 'quorum']);
 
 // The options of every read: trust, no routing context (never
@@ -94,6 +104,29 @@ function quantity(value) {
 
 const hex = (n) => `0x${n.toString(16)}`;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * A read's reply with only what a label uses of its result, so the rest of
+ * a block can be collected as soon as the reply resolves: a header read
+ * keeps the block's number, hash and parent hash; a block read with its
+ * transactions keeps each one's hash, sender and nonce. Anything else is
+ * returned as it is.
+ */
+function compactReply(method, params, reply) {
+  if (method !== 'eth_getBlockByNumber' && method !== 'eth_getBlockByHash') return reply;
+  if (!isObject(reply) || !isObject(reply.result)) return reply;
+  const { number, hash, parentHash, transactions } = reply.result;
+  const result = { number, hash, parentHash };
+  if (params?.[1] === true) {
+    result.transactions =
+      Array.isArray(transactions) && transactions.length <= MAX_BLOCK_TRANSACTIONS
+        ? transactions.map((tx) =>
+            isObject(tx) ? { hash: tx.hash, from: tx.from, nonce: tx.nonce } : null
+          )
+        : null;
+  }
+  return { ...reply, result };
+}
 
 /** Why an intent stays held this pass. */
 class Held extends Error {
@@ -166,31 +199,37 @@ function resetSegment(segment, top) {
 
 /**
  * Verify the headers below `child` down to `height`, by hash link: each
- * one's hash is its child's parent hash. Headers are fetched by number,
- * all at once (the reads are bounded by the caller), and one whose hash
- * isn't the expected link is fetched again by that hash.
+ * one's hash is its child's parent hash. Headers are fetched by number, a
+ * chunk at a time in parallel (the reads are bounded by the caller), and
+ * one whose hash isn't the expected link is fetched again by that hash.
+ * What a chunk verified is kept even if a later one fails.
  */
 async function walkDown(segment, child, height, read) {
-  const heights = [];
-  for (let h = child.number - 1n; h >= height; h -= 1n) heights.push(h);
-  const byNumber = await Promise.all(
-    heights.map((h) => read('eth_getBlockByNumber', [hex(h), false]).catch(() => null))
-  );
   let below = child;
-  for (const [i, h] of heights.entries()) {
-    let found;
-    try {
-      found = header(byNumber[i], { number: h, hash: below.parentHash });
-    } catch {
-      found = header(await read('eth_getBlockByHash', [below.parentHash, false]), {
-        number: h,
-        hash: below.parentHash,
-      });
+  while (below.number - 1n >= height) {
+    const top = below.number - 1n;
+    const low = top - WALK_CHUNK + 1n > height ? top - WALK_CHUNK + 1n : height;
+    const heights = [];
+    for (let h = top; h >= low; h -= 1n) heights.push(h);
+    const byNumber = await Promise.all(
+      heights.map((h) => read('eth_getBlockByNumber', [hex(h), false]).catch(() => null))
+    );
+    for (const [i, h] of heights.entries()) {
+      let found;
+      try {
+        found = header(byNumber[i], { number: h, hash: below.parentHash });
+      } catch {
+        found = header(await read('eth_getBlockByHash', [below.parentHash, false]), {
+          number: h,
+          hash: below.parentHash,
+        });
+      }
+      byNumber[i] = null;
+      segment.headers.set(h, found);
+      below = found;
+      if (h < segment.bottom) segment.bottom = h;
     }
-    segment.headers.set(h, found);
-    below = found;
   }
-  segment.bottom = height < segment.bottom ? height : segment.bottom;
 }
 
 /**
@@ -214,12 +253,10 @@ async function anchor(segment, F, read) {
     await walkDown(above, F, segment.top + 1n, read);
     const lowest = above.headers.get(segment.top + 1n) ?? F;
     if (lowest.parentHash !== top.hash) {
-      // The finalized chain doesn't fork: what was verified before is
-      // dropped rather than trusted against it.
-      segment.headers = above.headers;
-      segment.top = F.number;
-      segment.bottom = above.bottom;
-      return;
+      // The finalized chain doesn't fork: an F that doesn't link to what
+      // was verified before conflicts with it. Neither is trusted against
+      // the other; the pass's intents stay held.
+      throw unknown('the finalized block conflicts with the chain verified before');
     }
     for (const [h, found] of above.headers) segment.headers.set(h, found);
     segment.top = F.number;
@@ -241,10 +278,13 @@ async function anchor(segment, F, read) {
   }
 }
 
-/** The verified hash at `height`, at most MAX_DEPTH below F. */
+/**
+ * The verified hash at `height`: at most MAX_DEPTH below F, and within the
+ * window kept below the segment's top.
+ */
 async function hashAt(segment, F, height, read) {
   if (height > F.number) throw new Held(OBSERVED.INCLUDED, 'above the finalized block');
-  if (F.number - height > MAX_DEPTH) {
+  if (F.number - height > MAX_DEPTH || segment.top - height > MAX_DEPTH) {
     throw new Held(
       OBSERVED.UNVERIFIABLE,
       'deeper than the verifiable depth below the finalized block'
@@ -275,7 +315,11 @@ async function readLabel(intent, { request, segment = createChainSegment() }) {
   const nonce = BigInt(intent.nonce);
   const hashes = intent.hashes.map((entry) => entry.hash.toLowerCase());
   const read = async (method, params) => {
-    const reply = await request(intent.chainId, method, params, READ_OPTIONS);
+    const reply = compactReply(
+      method,
+      params,
+      await request(intent.chainId, method, params, READ_OPTIONS)
+    );
     if (!isVerifiedEvidence(reply)) {
       throw unknown(`${method} had no verified evidence (${reply?.source ?? 'none'})`);
     }
@@ -382,6 +426,7 @@ module.exports = {
   OBSERVED,
   MAX_DEPTH,
   READ_OPTIONS,
+  compactReply,
   isVerifiedEvidence,
   createChainSegment,
   readLabel,

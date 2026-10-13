@@ -291,3 +291,36 @@ describe('what the reads saw', () => {
     expect(instance.observation('missing')).toBeNull();
   });
 });
+
+// freedom-core #71: a chain with no held intents releases its headers.
+test("a chain's verified headers are released with its last held intent", async () => {
+  const store = fakeStore([intent(1)]);
+  const chain = fakeFinalityChain({
+    sender: SENDER,
+    startNonce: 1,
+    txs: {
+      90: [
+        { hash: hashOf(1), nonce: 1, status: 1 },
+        { hash: hashOf(2), nonce: 2, status: 1 },
+      ],
+    },
+  });
+  const { instance } = tracker({ store, request: chain.request });
+  const headerReads = () =>
+    chain
+      .reads()
+      .filter(([method, params]) => method === 'eth_getBlockByNumber' && params[0] !== 'finalized')
+      .length;
+
+  await instance.pass();
+  expect(store.get('intent-0001').state).toBe('settled');
+  expect(headerReads()).toBe(10);
+
+  // Nothing was held on the chain after that pass: a new intent walks its
+  // headers afresh.
+  store.put(intent(2));
+  await instance.pass();
+  expect(store.get('intent-0002').state).toBe('settled');
+  expect(headerReads()).toBe(20);
+  instance.stop();
+});

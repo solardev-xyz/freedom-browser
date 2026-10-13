@@ -21,7 +21,11 @@
  *   label needs, never more than MAX_DEPTH (8192) below F; per intent, its
  *   nonce at F, up to 8 receipts, and, when another transaction may have
  *   used its nonce, at most 2 × 13 nonce reads to find that block and one
- *   block read.
+ *   block read. What it keeps is bounded too: replies are compacted as
+ *   each resolves (a header to its number, hash and parent hash); only the
+ *   finalized block and nonces are shared through a pass; headers are
+ *   walked a chunk at a time; and a chain's verified headers (at most
+ *   8193) are released with its last held intent.
  *
  * Settling is not only display: it forgets the intent's bytes and frees
  * its key, so a later send of the same operation takes a new nonce. That
@@ -30,7 +34,13 @@
  */
 
 const log = require('../logger');
-const { LABELS, OBSERVED, createChainSegment, readLabel } = require('./intent-labels');
+const {
+  LABELS,
+  OBSERVED,
+  compactReply,
+  createChainSegment,
+  readLabel,
+} = require('./intent-labels');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -244,12 +254,22 @@ function createIntentTracker({
           scheduleAt(now() + schedule.coreDownMs);
           return;
         }
-        // Identical reads (the finalized block, a sender's count) once per
-        // pass.
+        // The small reads a chain's intents share (its finalized block, a
+        // sender's nonce at a block) once per pass. Every other reply,
+        // headers and blocks among them, is compacted as it resolves and
+        // kept by no one but the read that asked for it (intent-labels.js).
         const memo = new Map();
         const read = (chainId, method, params, options) => {
+          const fetch = () =>
+            limitedRequest(chainId, method, params, options).then((reply) =>
+              compactReply(method, params, reply)
+            );
+          const shared =
+            method === 'eth_getTransactionCount' ||
+            (method === 'eth_getBlockByNumber' && params[0] === 'finalized');
+          if (!shared) return fetch();
           const key = JSON.stringify([chainId, method, params]);
-          if (!memo.has(key)) memo.set(key, limitedRequest(chainId, method, params, options));
+          if (!memo.has(key)) memo.set(key, fetch());
           return memo.get(key);
         };
         // Chains in parallel; a chain's intents one after another, since
@@ -273,6 +293,11 @@ function createIntentTracker({
           if (!held.some((intent) => intent.intentId === id)) observations.delete(id);
         }
         if (changed.some(Boolean)) emit();
+        // A chain with no held intents left releases its verified headers.
+        const stillHeld = new Set(heldNow().map((intent) => intent.chainId));
+        for (const chainId of segments.keys()) {
+          if (!stillHeld.has(chainId)) segments.delete(chainId);
+        }
       } finally {
         passing = null;
         scheduleNext();

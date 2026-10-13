@@ -3,6 +3,7 @@ const {
   OBSERVED,
   MAX_DEPTH,
   READ_OPTIONS,
+  compactReply,
   isVerifiedEvidence,
   createChainSegment,
   readLabel,
@@ -429,5 +430,121 @@ describe('the verified chain and its bounds', () => {
       observed: OBSERVED.UNKNOWN,
       reason: expect.stringContaining('Chain data is unavailable'),
     });
+  });
+});
+
+// #712 review, round 2, and the window rules of freedom-core #71.
+describe('what a walk keeps, and the retained window', () => {
+  test('replies are compacted to what a label uses', () => {
+    const block = {
+      number: '0x5a',
+      hash: `0x${'cd'.repeat(32)}`,
+      parentHash: `0x${'ce'.repeat(32)}`,
+      transactions: [{ hash: OTHER, from: SENDER, nonce: '0x7', input: '0x' + 'ab'.repeat(5000) }],
+      logsBloom: '0x' + '00'.repeat(256),
+    };
+    const wrap = (result) => quorum(result);
+    expect(compactReply('eth_getBlockByNumber', ['0x5a', false], wrap(block)).result).toEqual({
+      number: '0x5a',
+      hash: block.hash,
+      parentHash: block.parentHash,
+    });
+    expect(compactReply('eth_getBlockByHash', [block.hash, true], wrap(block)).result).toEqual({
+      number: '0x5a',
+      hash: block.hash,
+      parentHash: block.parentHash,
+      transactions: [{ hash: OTHER, from: SENDER, nonce: '0x7' }],
+    });
+    // Trust and source stay; other reads are untouched.
+    expect(compactReply('eth_getBlockByNumber', ['0x5a', false], wrap(block)).trust).toEqual(
+      wrap(block).trust
+    );
+    const receipt = wrap({ transactionHash: HASH });
+    expect(compactReply('eth_getTransactionReceipt', [HASH], receipt)).toBe(receipt);
+    expect(compactReply('eth_getBlockByNumber', ['0x5a', false], wrap(null)).result).toBeNull();
+  });
+
+  test('a block with more transactions than the bound is malformed evidence: held', async () => {
+    const chain = chainWith({ 90: [{ hash: OTHER, nonce: 7 }] });
+    chain.reshape('eth_getBlockByHash', (answer, params) =>
+      params[1] ? { ...answer, transactions: Array(65537).fill(answer.transactions[0]) } : answer
+    );
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+  });
+
+  test('an F within the window that does not link to the verified chain conflicts: held, the chain kept', async () => {
+    const chain = chainWith({ 90: [ours(1)] }, { head: 200 });
+    const segment = createChainSegment();
+    await readLabel(INTENT, { request: chain.request, segment });
+    // A later finalized block on another chain (it forks below the old F).
+    chain.defineView('other', { forkAt: 95, finalized: 130, head: 140, fork: 2 });
+    chain.route('eth_getBlockByNumber', 'other');
+    chain.route('eth_getBlockByNumber:number', 'other');
+    chain.route('eth_getTransactionCount', 'other');
+    await expect(readLabel(INTENT, { request: chain.request, segment })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNKNOWN,
+    });
+    expect(segment.top).toBe(100n);
+    expect(segment.headers.get(100n).hash).toBe(chain.canonicalHash(100));
+  });
+
+  test('an F older than the retained window, and evidence below the window: held, unverifiable', async () => {
+    const chain = chainWith({ 805: [ours(1)] }, { head: 9100, finalized: 9000 });
+    const segment = createChainSegment();
+    await readLabel(INTENT, { request: chain.request, segment }); // anchors at 9000
+    expect(segment.top).toBe(9000n);
+
+    // A lagging pair's F, 10 below the top: its receipt at 805 is within
+    // 8192 of that F, but below the window kept under the top.
+    chain.defineView('lagging', { head: 8995, finalized: 8990 });
+    chain.route('eth_getBlockByNumber', 'lagging');
+    await expect(readLabel(INTENT, { request: chain.request, segment })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNVERIFIABLE,
+    });
+
+    // An F older than the window altogether.
+    chain.defineView('stale', { head: 600, finalized: 500 });
+    chain.route('eth_getBlockByNumber', 'stale');
+    await expect(readLabel(INTENT, { request: chain.request, segment })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNVERIFIABLE,
+    });
+  });
+
+  test('a walk that fails partway keeps what it verified, and the next one goes on from there', async () => {
+    const chain = chainWith({ 300: [ours(1)] }, { head: 1100, finalized: 1000 });
+    let failBelow = 600;
+    const request = jest.fn(async (chainId, method, params, options) => {
+      const height = method.startsWith('eth_getBlockBy') && params[0] !== 'finalized';
+      if (height && method === 'eth_getBlockByNumber' && Number(BigInt(params[0])) < failBelow) {
+        throw new Error('timeout');
+      }
+      if (height && method === 'eth_getBlockByHash') {
+        const at = chain.views.canonical.blocks.get(params[0]);
+        if (at && Number(BigInt(at.number)) < failBelow) throw new Error('timeout');
+      }
+      return chain.request(chainId, method, params, options);
+    });
+    const segment = createChainSegment();
+    await expect(readLabel(INTENT, { request, segment })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+    expect(segment.bottom).toBe(600n);
+
+    failBelow = 0;
+    request.mockClear();
+    await expect(readLabel(INTENT, { request, segment })).resolves.toMatchObject({
+      label: LABELS.PAID,
+    });
+    const walked = request.mock.calls
+      .filter(
+        ([, method, params]) => method === 'eth_getBlockByNumber' && params[0] !== 'finalized'
+      )
+      .map(([, , params]) => Number(BigInt(params[0])));
+    expect(Math.max(...walked)).toBe(599);
   });
 });
