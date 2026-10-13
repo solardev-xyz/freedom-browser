@@ -887,14 +887,17 @@ describe('the only way to sign, and to read pending', () => {
     return { signing, pending: [...pending], parents, functionOf };
   }
 
-  // The signing site is in the callback of a `reserve(...)` call made by
-  // `commitNewIntent`.
-  function inReservation(site, { parents, functionOf }) {
+  // The signing site is in the callback of an account-lock call: a new
+  // intent's `reserve(...)` in `commitNewIntent`, or a replacement's
+  // `withAccountLock(...)` (no pending read) in `replaceIntent`.
+  const LOCKED_SIGNING = { reserve: 'commitNewIntent', withAccountLock: 'replaceIntent' };
+
+  function inAccountLock(site, { parents, functionOf }) {
     const callback = functionOf(site);
     const call = parents.get(callback);
-    if (call?.type !== 'CallExpression' || !isName(call.callee, 'reserve')) return false;
-    if (call.arguments[1] !== callback) return false;
-    return functionOf(call)?.id?.name === 'commitNewIntent';
+    if (call?.type !== 'CallExpression' || call.arguments[1] !== callback) return false;
+    const lock = Object.keys(LOCKED_SIGNING).find((name) => isName(call.callee, name));
+    return Boolean(lock) && functionOf(call)?.id?.name === LOCKED_SIGNING[lock];
   }
 
   // The pending read is `readPending`, read once: as the reservation's
@@ -936,8 +939,8 @@ describe('the only way to sign, and to read pending', () => {
     ]);
     expect(Object.keys(pending)).toEqual([SERVICE]);
 
-    expect(service.signing).toHaveLength(1);
-    expect(inReservation(service.signing[0], service)).toBe(true);
+    expect(service.signing).toHaveLength(2);
+    for (const site of service.signing) expect(inAccountLock(site, service)).toBe(true);
     expect(service.pending).toHaveLength(1);
     expect(readOnlyByReservation(service.pending[0], service)).toBe(true);
   });
@@ -966,7 +969,7 @@ describe('the only way to sign, and to read pending', () => {
           return reserve({ readPending: async () => before }, async (n) => signer.signTransaction(n));
         }`)
     );
-    expect(inReservation(early.signing[0], early)).toBe(true);
+    expect(inAccountLock(early.signing[0], early)).toBe(true);
     expect(readOnlyByReservation(early.pending[0], early)).toBe(false);
   });
 });
