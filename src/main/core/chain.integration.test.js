@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 const { spawn, spawnSync } = require('child_process');
 const { CoreClient, scrubbedEnv } = require('./core-client');
-const { KIND_BEGIN } = require('./frame');
+const { FrameDecoder, KIND_BEGIN } = require('./frame');
 const { makeHop } = require('./naming-shell');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
@@ -384,5 +384,100 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       generation: main.generation,
     });
     expect(adapters.myotisBroadcast).toHaveBeenCalledWith(RAW, 1);
+  });
+  /** Main's replies to the core's requests, as main writes them. */
+  function written(gen) {
+    const replies = [];
+    const decoder = new FrameDecoder();
+    const write = gen.child.stdin.write.bind(gen.child.stdin);
+    gen.child.stdin.write = (chunk, ...rest) => {
+      for (const { message } of decoder.push(chunk)) {
+        if (message?.type === 'response') replies.push(message);
+      }
+      return write(chunk, ...rest);
+    };
+    return replies;
+  }
+
+  /** Colibri alone, with a prover, for chain 1. */
+  const colibriOnly = () =>
+    snapshot({ read_order: ['colibri'], prover: { endpoint: 'p1', zk: true } });
+
+  // Review of #692 (parity, P2-1), with freedom-core #58: as today's router,
+  // the app's route is blocked, and the revert keeps its data.
+  test("a Colibri revert that is also a capacity failure keeps its data, and blocks the app's route", async () => {
+    const adapters = {
+      colibriRequest: jest.fn(async () => {
+        throw Object.assign(new Error('out of gas'), { code: 3, data: '0x' });
+      }),
+    };
+    const { gen, call, main } = await start(adapters);
+    const replies = written(gen);
+    await main.configure(colibriOnly());
+    // Two identical calls from one app.
+    const read = () =>
+      call('chain.request', {
+        chain_id: 1,
+        method: 'eth_call',
+        params: [{ to: ADDRESS, data: '0x1234' }, 'latest'],
+        include_trust: false,
+        origin: 'https://app.example',
+        background: false,
+        profile: 'default',
+        deadline_ms: 20_000,
+      }).catch((e) => e);
+    const first = await read();
+    expect(first.code).toBe('chain_error');
+    expect(first.data).toMatchObject({
+      message: 'execution reverted',
+      props: { code: 3, data: '0x' },
+    });
+    expect(replies.map((r) => r.result)).toContainEqual({ revert: { data: '0x' }, capacity: true });
+    const second = await read();
+    expect(second.code).toBe('chain_error');
+    expect(second.data.message).toBe(
+      'All chain sources failed for eth_call (colibri: temporarily bypassed for this app workload)'
+    );
+    expect(adapters.colibriRequest).toHaveBeenCalledTimes(1);
+    expect(client.serves(gen)).toBe(true);
+  });
+
+  // Review of #692 (parity, P2-2), with freedom-core #58: today's router
+  // returns an own `result: undefined`, verified.
+  test('a Colibri success of undefined is a verified result, its value undefined', async () => {
+    const adapters = { colibriRequest: jest.fn(async () => undefined) };
+    const { gen, call, main } = await start(adapters);
+    const replies = written(gen);
+    await main.configure(colibriOnly());
+    const read = (trust) =>
+      call('chain.request', {
+        chain_id: 1,
+        method: 'eth_blockNumber',
+        params: [],
+        include_trust: trust,
+        background: false,
+        profile: 'default',
+        deadline_ms: 20_000,
+      });
+    expect(await read(false)).toEqual({
+      source: 'colibri',
+      verified: true,
+      undefined_keys: ['result'],
+      generation: main.generation,
+    });
+    const trusted = await read(true);
+    expect(trusted).toMatchObject({
+      source: 'colibri',
+      verified: true,
+      undefined_keys: ['result'],
+      generation: main.generation,
+    });
+    expect(Object.hasOwn(trusted, 'result')).toBe(false);
+    expect(trusted.trust).toMatchObject({ level: 'verified', method: 'colibri' });
+    expect(replies.map((r) => r.result)).toEqual([
+      { undefined_keys: ['result'] },
+      { undefined_keys: ['result'] },
+    ]);
+    expect(adapters.colibriRequest).toHaveBeenCalledTimes(2);
   });
 });
