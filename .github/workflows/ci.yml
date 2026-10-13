@@ -363,6 +363,17 @@ jobs:
       - name: Load addon and verify exports
         run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.target }}/libradicle.node
 
+      # The Radicle backend contract (freedom-core design 0008, "Tests
+      # first"): the golden vectors and the exports' contract, against this
+      # runner's add-on and the fixture's snapshot, with no network
+      # connection. The freedom-radicled service must later pass the same
+      # suite. It needs the add-on downloaded above, so it runs here and not in
+      # `test`, where it is skipped.
+      - name: Radicle backend contract suite (add-on)
+        run: npx jest src/main/radicle-backend.contract.test.js
+        env:
+          FREEDOM_RADICLE_CONTRACT_BACKEND: addon
+
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
       - name: Verify the win-arm64 release asset
