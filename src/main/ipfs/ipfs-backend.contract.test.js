@@ -1048,7 +1048,9 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
     };
 
     // Exits that hand a body on: the lease is live while it is unfinished,
-    // and released once when it ends.
+    // and released once when it ends. Multi-block bodies check the lease
+    // again after their first chunk (`stillLive`), so a release during
+    // streaming fails, not only one at the head.
     const bodyExits = [
       [
         'a body read to its end',
@@ -1060,12 +1062,24 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
         },
       ],
       [
+        'a multi-block body read to its end',
+        '/big.bin',
+        {},
+        200,
+        async (reader, controller, stillLive) => {
+          await reader.read();
+          await stillLive();
+          await readAll(reader);
+        },
+      ],
+      [
         'a body cancelled by its consumer',
         '/big.bin',
         {},
         200,
-        async (reader) => {
+        async (reader, controller, stillLive) => {
           await reader.read();
+          await stillLive();
           await reader.cancel();
         },
       ],
@@ -1074,8 +1088,9 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
         '/big.bin',
         { abort: true },
         200,
-        async (reader, controller) => {
+        async (reader, controller, stillLive) => {
           await reader.read();
+          await stillLive();
           controller.abort();
           await readUntilError(reader);
         },
@@ -1106,7 +1121,14 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
         expect(lease.releases).toBe(0);
         expect(pins()).toBe(1);
 
-        await finish(res.body.getReader(), controller);
+        // After a chunk has been read, the body is still unfinished: the
+        // same lease is still held, and nothing has released it.
+        const stillLive = async () => {
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(lease.releases).toBe(0);
+          expect(pins()).toBe(1);
+        };
+        await finish(res.body.getReader(), controller, stillLive);
 
         await waitFor(() => lease.releases > 0, { what: 'the lease to be released' });
         expect(lease.releases).toBe(1);
