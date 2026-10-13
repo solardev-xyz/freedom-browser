@@ -23,6 +23,8 @@ import {
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { outcomeText, ACTIONS } from './intent-texts.js';
+import { resendHeldPayment } from './intent-resend.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
 // DOM references
@@ -393,6 +395,8 @@ async function handleDappTxPasswordUnlock() {
 
 async function approveDappTx() {
   if (!dappTxPending || dappTxPending.signing) return;
+  // Its payment is settled, voided or unknown to main: nothing to confirm.
+  if (dappTxPending.paymentClosed) return;
 
   const request = dappTxPending;
   const { permissionKey, walletIndex, txParams, resolve, gasLimit, gasPrice, chainId, selector } = request;
@@ -411,6 +415,11 @@ async function approveDappTx() {
       dappTxApproveBtn.textContent = signingButtonLabel(walletIndex);
     }
     setDappTxCancelEnabled(false);
+
+    if (request.failedIntent) {
+      await sendFailedIntentAgain(request);
+      return;
+    }
 
     if (safeAccount) {
       const hash = await sendViaSafeAccount(walletIndex, txParams, permissionKey, chainId);
@@ -452,7 +461,14 @@ async function approveDappTx() {
     );
 
     if (!result.success) {
-      throw new Error(result.error || 'Transaction failed');
+      throw Object.assign(new Error(result.error || 'Transaction failed'), {
+        failure: {
+          outcome: result.outcome,
+          reasonClass: result.reasonClass,
+          intentId: result.intentId,
+          intent: result.intent,
+        },
+      });
     }
     if (result.recorded === false) {
       console.warn('[WalletUI] dApp transaction broadcast but payment history did not record:', result.recordError);
@@ -476,10 +492,21 @@ async function approveDappTx() {
       return;
     }
     console.error('[WalletUI] dApp transaction failed:', err);
-    showDappTxError(err.message || 'Transaction failed');
+    const failure = err.failure ?? {};
+    // The payment is held: Confirm now sends those same signed bytes again
+    // instead of signing a second payment.
+    if (failure.intent?.state === 'held') {
+      request.failedIntent = failure.intent;
+    } else if (failure.intentId || failure.intent) {
+      // A payment main names but no longer holds: nothing to confirm again.
+      request.paymentClosed = true;
+    }
+    showDappTxError(
+      outcomeText(failure.outcome, failure.reasonClass) || err.message || 'Transaction failed'
+    );
     if (dappTxApproveBtn) {
-      dappTxApproveBtn.disabled = false;
-      dappTxApproveBtn.textContent = 'Confirm';
+      dappTxApproveBtn.disabled = Boolean(request.paymentClosed);
+      dappTxApproveBtn.textContent = request.failedIntent ? ACTIONS.sendAgain : 'Confirm';
     }
     setDappTxCancelEnabled(true);
     // The signing board may have replaced this screen — bring the
@@ -492,6 +519,34 @@ async function approveDappTx() {
     request.signing = false;
     endSignatureFlight(request);
   }
+}
+
+/**
+ * Confirm again after a send that left a held payment: send its signed
+ * bytes again, at its one nonce. Nothing is signed. The user's press on the
+ * approval that still shows this transaction is the confirmation, bound to
+ * the held intent as main records it ('intent-resend'). "Always allow" is
+ * not recorded from a resend. `request.failedIntent` is never cleared by a
+ * failure, so this approval can't fall back to signing the payment afresh;
+ * once main reports the payment no longer held, Confirm stays disabled.
+ */
+async function sendFailedIntentAgain(request) {
+  if (dappTxApproveBtn) dappTxApproveBtn.textContent = ACTIONS.sendingAgain;
+  const { result, intent, closed } = await resendHeldPayment(request.failedIntent);
+  if (!result.success) {
+    if (closed) request.paymentClosed = true;
+    throw Object.assign(new Error(result.error || 'Transaction failed'), {
+      failure: {
+        outcome: result.outcome,
+        reasonClass: result.reasonClass,
+        intent: intent ?? request.failedIntent,
+      },
+    });
+  }
+  console.log('[WalletUI] dApp transaction sent again:', result.hash);
+  request.failedIntent = null;
+  request.resolve(result.hash);
+  if (dappTxPending === request) closeDappTx();
 }
 
 /**

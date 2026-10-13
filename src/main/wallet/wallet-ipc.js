@@ -18,6 +18,7 @@ const {
   waitForTransaction,
 } = require('./transaction-service');
 const { signAndRecord, KINDS: PAYMENT_KINDS } = require('./tx-recorder');
+const { intentFailure } = require('./intent-ipc');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
 const chainData = require('../networks/chain-data');
@@ -162,7 +163,12 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
         ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx)
         : null
     );
-    const result = await signAndRecord(tx, getSigner(walletIndex), buildTxRecordContext(kind, context));
+    const result = await signAndRecord(
+      tx,
+      getSigner(walletIndex),
+      buildTxRecordContext(kind, context),
+      { walletIndex }
+    );
 
     // "Always allow" is recorded here, from the transaction the user just
     // confirmed — never from a free-standing renderer call — so a rule can
@@ -184,7 +190,9 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     };
   } catch (err) {
     console.error(`[WalletIPC] ${kind} transaction failed:`, err);
-    return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
+    // A send that got as far as an intent reports it (its id, outcome and a
+    // summary), so the screen can offer to send those same bytes again.
+    return { success: false, error: err.message, ...intentFailure(err) };
   }
 }
 

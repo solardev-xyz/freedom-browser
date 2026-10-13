@@ -6,7 +6,12 @@
  */
 
 const log = require('../logger');
-const { signAndSendTransaction, waitForTransaction } = require('./transaction-service');
+const {
+  signAndSendTransaction,
+  resendIntent,
+  waitForTransaction,
+} = require('./transaction-service');
+const { getIntentStore } = require('./intent-store');
 const paymentHistory = require('../payment-history');
 const { KINDS, STATUSES } = paymentHistory;
 
@@ -97,37 +102,54 @@ function metadataFor(metadata, response) {
  *                                      (signAndSendTransaction). Main's own
  *                                      callers only: never read from
  *                                      `context`, which a renderer may fill.
+ * @param {number} [options.walletIndex] the signing account's wallet index,
+ *                                      kept with the intent so a replacement
+ *                                      can find its signer. Main's own
+ *                                      callers only, like `intentKey`.
  */
-async function signAndRecord(params, signer, context, { intentKey = null } = {}) {
+async function signAndRecord(
+  params,
+  signer,
+  context,
+  { intentKey = null, walletIndex = null } = {}
+) {
   const response = await signAndSendTransaction(params, signer, {
     intentKey,
-    context: { kind: context.kind, origin: context.origin },
+    context: { kind: context.kind, origin: context.origin, walletIndex },
   });
+  return recordSend(response, {
+    kind: context.kind,
+    chainId: params.chainId,
+    fromAddress: context.fromAddress ?? response.from,
+    toAddress: context.toAddress ?? params.to,
+    asset: context.asset ?? null,
+    amount: toAtomicDecimal(context.amount ?? params.value),
+    origin: context.origin ?? null,
+    metadata: context.metadata,
+  });
+}
 
-  let row;
+// One payment-history row per intent: write it, or update the row an
+// earlier reply of the same intent wrote, then poll for the receipt.
+function recordSend(response, row) {
+  let written;
   let existing;
   try {
-    existing = response.intentId ? findIntentRow(response, context.kind) : null;
+    existing = response.intentId ? findIntentRow(response, row.kind) : null;
     if (existing) {
-      row =
+      written =
         paymentHistory.update(existing.id, {
           txHash: response.hash,
           metadata: metadataFor(existing.metadata, response),
         }) ?? existing;
     } else {
-      row = paymentHistory.append({
-        kind: context.kind,
-        chainId: params.chainId,
+      written = paymentHistory.append({
+        ...row,
         txHash: response.hash,
-        fromAddress: context.fromAddress ?? response.from,
-        toAddress: context.toAddress ?? params.to,
-        asset: context.asset ?? null,
-        amount: toAtomicDecimal(context.amount ?? params.value),
-        origin: context.origin ?? null,
-        metadata: metadataFor(context.metadata, response),
+        metadata: metadataFor(row.metadata, response),
       });
     }
-    if (response.intentId) rowsByIntent.set(response.intentId, row.id);
+    if (response.intentId) rowsByIntent.set(response.intentId, written.id);
   } catch (err) {
     log.error('[TxRecorder] failed to record pending row:', err.message);
     return { ...response, recorded: false, recordError: err.message };
@@ -135,9 +157,46 @@ async function signAndRecord(params, signer, context, { intentKey = null } = {})
 
   // A row already settled by its first send's poll needs no second one.
   if (!existing || existing.status === STATUSES.PENDING) {
-    pollReceipt(row.id, response.hash, params.chainId);
+    pollReceipt(written.id, response.hash, row.chainId);
   }
-  return { ...response, recorded: true, paymentId: row.id };
+  return { ...response, recorded: true, paymentId: written.id };
 }
 
-module.exports = { signAndRecord, KINDS };
+const ERC20_TRANSFER = '0xa9059cbb';
+
+// What a held intent pays, for a history row its first send never wrote:
+// an ERC-20 transfer's token, recipient and amount, or the native value.
+function paymentOf(fields) {
+  const data = String(fields?.data ?? '').toLowerCase();
+  if (data.startsWith(ERC20_TRANSFER) && /^0x[0-9a-f]{136}/.test(data)) {
+    return {
+      asset: fields.to,
+      toAddress: `0x${data.slice(34, 74)}`,
+      amount: BigInt(`0x${data.slice(74, 138)}`).toString(10),
+    };
+  }
+  return { asset: null, toAddress: fields?.to ?? null, amount: toAtomicDecimal(fields?.value) };
+}
+
+/**
+ * Send a held intent's bytes again (resendIntent) and keep its history row:
+ * update the one its earlier send wrote, or write it now if that send failed
+ * before it could. Throws as resendIntent does.
+ *
+ * @param {string} intentId
+ * @param {{ hash?: string }} [options] as resendIntent's
+ */
+async function resendAndRecord(intentId, options = {}) {
+  const response = await resendIntent(intentId, options);
+  const intent = getIntentStore().get(intentId);
+  return recordSend(response, {
+    kind: intent?.context?.kind ?? KINDS.WALLET_SEND,
+    chainId: response.chainId,
+    fromAddress: response.from,
+    ...paymentOf(intent?.fields),
+    origin: intent?.context?.origin ?? null,
+    metadata: undefined,
+  });
+}
+
+module.exports = { signAndRecord, resendAndRecord, KINDS };

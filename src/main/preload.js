@@ -526,6 +526,17 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload),
   sendTransaction: (params, context, authorization) =>
     ipcRenderer.invoke('wallet:send-transaction', params, context, authorization),
+  // Held payments (the wallet's intent records). A resend sends the same
+  // signed bytes again; `authorization` is an 'intent-resend' confirmation
+  // of that intent (see confirmSigning).
+  intentsList: () => ipcRenderer.invoke('wallet:intents-list'),
+  intentResend: (intentId, authorization) =>
+    ipcRenderer.invoke('wallet:intent-resend', intentId, authorization),
+  onIntentsChanged: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('wallet:intents-changed', handler);
+    return () => ipcRenderer.removeListener('wallet:intents-changed', handler);
+  },
   getTransactionStatus: (txHash, chainId) =>
     ipcRenderer.invoke('wallet:get-transaction-status', txHash, chainId),
   waitForTransaction: (txHash, chainId, confirmations) =>

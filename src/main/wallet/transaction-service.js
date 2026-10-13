@@ -345,9 +345,9 @@ function shortText(value, max) {
  *
  * Returns for `sent` and `uncertain`: `uncertain` may have been sent, so it
  * is never a failure, and the hash is always main's own keccak of the bytes.
- * Throws only for `rejected` and `not_sent` (today's texts, with `outcome`
- * and `intentId` on the error); nothing after a broadcast that may have gone
- * out throws.
+ * Throws only for `rejected` and `not_sent` (today's texts, with `outcome`,
+ * `intentId` and, for a refusal, its `reasonClass` on the error); nothing
+ * after a broadcast that may have gone out throws.
  *
  * @param {Object} intent - Intent store view: intentId, chainId, sender, nonce
  * @param {{ handoffId: string, hash: string, raw: string }} handoff
@@ -413,6 +413,7 @@ async function broadcastIntent(intent, handoff, extra = {}) {
     const error = toSendError(failure);
     error.outcome = outcome;
     error.intentId = intentId;
+    if (outcome === 'rejected') error.reasonClass = refusalClass(failure);
     throw error;
   }
   if (failure) {
@@ -540,9 +541,11 @@ function intentContext(context, key) {
  * after the lock is released, as a new intent's does.
  *
  * @param {string} intentId
+ * @param {{ hash?: string }} [options] which committed transaction to send
+ *   again (one whose bytes are still kept); the latest by default
  * @returns {Promise<Object>} as signAndSendTransaction, with `resent: true`
  */
-async function resendIntent(intentId) {
+async function resendIntent(intentId, { hash } = {}) {
   const store = getIntentStore();
   await store.ready;
   const intent = store.get(intentId);
@@ -556,7 +559,7 @@ async function resendIntent(intentId) {
   let handoff;
   try {
     handoff = await withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () =>
-      store.handoff(intentId)
+      store.handoff(intentId, hash)
     );
   } catch (err) {
     console.error('[TransactionService] Transaction not sent:', err);

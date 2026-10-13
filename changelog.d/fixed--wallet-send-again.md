@@ -1,0 +1,2 @@
+- Retrying a failed wallet send or dApp transaction sends the same signed payment again instead of signing a second one ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The error says whether the network refused it or nothing left the computer
