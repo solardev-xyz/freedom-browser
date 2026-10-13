@@ -198,8 +198,9 @@ class Ledger {
     this.queue = [];
     this.timer = null;
     this.seq = 0;
-    // Requests the reference never made, and replies the pinned core may
-    // not take yet (freedom-core's Colibri shapes).
+    // Requests the reference never made, and the replies that use
+    // Colibri's two newer shapes (freedom-core #58), which an older core
+    // refuses.
     this.extra = [];
     this.colibriShapes = [];
     this.fetch = (url, init = {}) =>
@@ -508,6 +509,13 @@ const uncertain = (source) => (call) => ({
 const failed = (message) => () => ({
   thrown: { class: 'Error', name: 'Error', message, props: {} },
 });
+/** The reference's error with only its message changed: its constructor,
+ * `name` and own properties in order are still the reference's. */
+const reworded = (message) => (_call, result) => {
+  const want = recorded(result);
+  want.thrown.message = message;
+  return want;
+};
 const DEVIATIONS = new Map([
   ['router-myotis-broadcast-in-band-failure', ['broadcast-outcome', uncertain('myotis')]],
   ['router-myotis-broadcast-uncertain', ['broadcast-outcome', uncertain('myotis')]],
@@ -545,7 +553,17 @@ const DEVIATIONS = new Map([
       ),
     ],
   ],
+  // Colibri's verified revert that is also a capacity failure: the core
+  // rebuilds the revert as `execution reverted` with its code and data,
+  // where the router rethrew the adapter's error with its own text (`out of
+  // gas`). The route is blocked alike: the second call never asks Colibri
+  // (EXACT_IO).
+  ['boundary-colibri-revert-capacity', ['adapter-error-text', reworded('execution reverted')]],
 ]);
+
+/** Scenarios whose I/O must be the reference's exactly: no request it
+ * never made, none of its left unmade. */
+const EXACT_IO = new Set(['boundary-colibri-revert-capacity', 'boundary-colibri-undefined-result']);
 
 /** The reference's result as `{ value }` or `{ thrown }`, in the shape
  * `outcomeOf` gives main's. */
@@ -696,7 +714,7 @@ async function replay(scenario) {
       settled.forEach((got, i) => {
         const result = step.results[i];
         const want =
-          index === 0 && i === 0 && deviation ? deviation[1](calls[i]) : recorded(result);
+          index === 0 && i === 0 && deviation ? deviation[1](calls[i], result) : recorded(result);
         if (calls[i].fn === 'broadcastRawTransaction' && want.thrown?.class === 'Error') {
           want.thrown.props.outcome = REJECTED.has(scenario.id) ? 'rejected' : 'not_sent';
         }
@@ -718,6 +736,14 @@ async function replay(scenario) {
         const took = result.settled - calls[i].started;
         outcome.drift = Math.max(outcome.drift, Math.abs(got.elapsed - took));
       });
+    }
+    if (EXACT_IO.has(scenario.id)) {
+      for (const what of ledger.extra) {
+        outcome.mismatches.push(`a request the reference never made: ${what}`);
+      }
+      for (const what of ledger.missing()) {
+        outcome.mismatches.push(`the reference's request never made: ${what}`);
+      }
     }
   } catch (err) {
     outcome.mismatches.push(`failed: ${err?.stack ?? err}`);
@@ -941,7 +967,7 @@ describeIfReplay("chain data's replay through main's drivers and the real freedo
             .join(', ') || 'none'),
         ...[...skipped].map(([reason, ids]) => `not replayed, ${reason}: ${ids.join(', ')}`),
         ...shapes.map(
-          (o) => `== ${o.id} uses Colibri shapes: ${o.ledger.colibriShapes.join(', ')}`
+          (o) => `-- ${o.id} uses Colibri's newer shapes: ${o.ledger.colibriShapes.join(', ')}`
         ),
         ...failures.map((o) => `== ${o.id}\n${o.mismatches.join('\n')}`),
         ...cut.map(
