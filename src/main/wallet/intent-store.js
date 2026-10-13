@@ -1184,8 +1184,22 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
         );
       }
       apply();
+      notify(record.intent_id);
       return intents.get(record.intent_id);
     });
+  }
+
+  // Who wants to know the records changed (a UI listing held intents).
+  const listeners = new Set();
+
+  function notify(intentId) {
+    for (const listener of listeners) {
+      try {
+        listener(intentId);
+      } catch (error) {
+        log.warn(`[IntentStore] A change listener failed: ${error.message}`);
+      }
+    }
   }
 
   function stamp(type, fields) {
@@ -1196,6 +1210,15 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     filePath,
 
     load,
+
+    /**
+     * Call `listener(intentId)` after every change written to the records.
+     * Returns a function that stops it.
+     */
+    onChange(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
 
     /** Settles once the records are loaded (and starts loading them). */
     get ready() {

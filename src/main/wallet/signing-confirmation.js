@@ -27,6 +27,11 @@
  *     the message / typed data (canonical JSON, key order ignored).
  *   - safe-send: the Safe, chainId, to, value, data of the SafeTx.
  *   - safe-message: the Safe and a digest of the dApp's {method, params}.
+ *   - intent-resend: one held wallet intent as the user saw it: its id,
+ *     chainId, sender, nonce and the hash of the signed bytes to be sent
+ *     again. Nothing is signed; the handler builds the binding from main's
+ *     own record of the intent, never from fields the caller submits
+ *     (`wallet:intent-resend`).
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
@@ -48,6 +53,7 @@ const KINDS = Object.freeze({
   SIGN_TYPED_DATA: 'sign-typed-data',
   SAFE_SEND: 'safe-send',
   SAFE_MESSAGE: 'safe-message',
+  INTENT_RESEND: 'intent-resend',
 });
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
@@ -100,6 +106,27 @@ function index(value, field) {
     throw new Error(`Invalid ${field}`);
   }
   return value;
+}
+
+function intentId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(value)) {
+    throw new Error('Invalid intent id');
+  }
+  return value;
+}
+
+function nonce(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Invalid nonce');
+  }
+  return value;
+}
+
+function txHash(value) {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error('Invalid transaction hash');
+  }
+  return value.toLowerCase();
 }
 
 function chain(value) {
@@ -181,6 +208,17 @@ function bindingFor(kind, accountIndex, payload) {
         to: address(tx.to, 'to'),
         value: quantity(tx.value, 'value') ?? '0',
         data: hexData(tx.data),
+      };
+    }
+    case KINDS.INTENT_RESEND: {
+      const sender = address(payload?.sender, 'sender');
+      if (!sender) throw new Error('Invalid sender');
+      return {
+        intentId: intentId(payload?.intentId),
+        chainId: chain(payload?.chainId),
+        sender,
+        nonce: nonce(payload?.nonce),
+        hash: txHash(payload?.hash),
       };
     }
     case KINDS.SAFE_MESSAGE:

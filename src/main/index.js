@@ -322,6 +322,7 @@ const { startCore, stopCore } = require('./core/core-process');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { getIntentStore } = require('./wallet/intent-store');
+const { registerIntentIpc } = require('./wallet/intent-ipc');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
@@ -445,6 +446,7 @@ async function bootstrap() {
   // the vault calls below (hasVault) wait for its handshake.
   startCore().catch((err) => log.error('[Core] failed to start:', err.message));
   registerWalletIpc();
+  registerIntentIpc();
   registerLedgerIpc();
   registerRemoteSignerIpc();
   // The wallet's durable intent records (freedom-core design 0005, "Retrying

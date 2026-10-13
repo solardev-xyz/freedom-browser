@@ -256,3 +256,335 @@ test('the wallet send handler drops a renderer key too', async () => {
   expect(reply.intentId).not.toBe(held.intentId);
   expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
 });
+
+describe('held payments over IPC (4b)', () => {
+  // The wallet and intent IPC as main registers them, plus a chrome window
+  // that collects what main sends it.
+  function startIntents() {
+    const running = start();
+    const sent = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (channel) => sent.push(channel) },
+    };
+    require('./intent-ipc').registerIntentIpc({ windows: () => [win] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    return {
+      ...running,
+      events: sent,
+      confirm: (kind, index, payload) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      resend: (...args) => handlers['wallet:intent-resend']({}, ...args),
+      list: () => handlers['wallet:intents-list']({}),
+    };
+  }
+
+  const PAYMENT = {
+    chainId: 100,
+    to: BOB.address,
+    value: '1000',
+    gasLimit: '21000',
+    gasPrice: '1000000000',
+  };
+  const asConfirmed = (tx) => ({
+    ...tx,
+    data: undefined,
+    maxFeePerGas: undefined,
+    maxPriorityFeePerGas: undefined,
+  });
+
+  async function refusedSend(running) {
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('insufficient funds for gas * price + value'), {
+        outcome: 'rejected',
+      });
+    });
+    const { token } = await running.confirm('wallet-send', null, asConfirmed(PAYMENT));
+    return running.walletSend({}, PAYMENT, {}, { confirmation: token });
+  }
+
+  const bindingOf = (intent) => ({
+    intentId: intent.intentId,
+    chainId: intent.chainId,
+    sender: intent.sender,
+    nonce: intent.nonce,
+    hash: intent.hash,
+  });
+
+  async function resendConfirmed(running, intent) {
+    const { token } = await running.confirm('intent-resend', null, bindingOf(intent));
+    return running.resend(intent.intentId, { confirmation: token });
+  }
+
+  test('refused for funds, topped up, sent again at its nonce, mined: the next send is not stuck', async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+
+    // The refusal names its held payment (no bytes), its outcome and reason.
+    expect(refused).toMatchObject({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      reasonClass: 'insufficient funds',
+      intentId: expect.any(String),
+      intent: {
+        state: 'held',
+        nonce: 7,
+        chainId: 100,
+        sender: ALICE.address.toLowerCase(),
+        attention: 'refused',
+        lastOutcome: { outcome: 'rejected', reasonClass: 'insufficient funds' },
+        fields: expect.objectContaining({ to: BOB.address.toLowerCase(), value: '1000' }),
+      },
+    });
+    expect(refused.intent.raw).toBeUndefined();
+    const [firstRaw] = mockBroadcast.mock.calls.map(([, raw]) => raw);
+
+    // Topped up: Send again sends the same signed bytes, at nonce 7.
+    const again = await resendConfirmed(running, refused.intent);
+    expect(again).toMatchObject({
+      success: true,
+      resent: true,
+      nonce: 7,
+      outcome: 'sent',
+      intentId: refused.intentId,
+      hash: refused.intent.hash,
+      recorded: true,
+    });
+    expect(mockBroadcast.mock.calls[1][1]).toBe(firstRaw);
+    expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    expect(mockRequest.mock.calls.filter(([, m]) => m === 'eth_getTransactionCount')).toHaveLength(
+      1
+    );
+
+    // Mined: the account's pending count moves to 8, and the next payment
+    // goes there, not behind a gap.
+    mockRequest.mockImplementation(async (_chainId, method) => {
+      if (method === 'eth_getTransactionCount') return { result: '0x8', source: 'direct' };
+      if (method === 'eth_getTransactionReceipt') {
+        return {
+          result: { status: '0x1', blockNumber: '0x2', gasUsed: '0x5208' },
+          source: 'direct',
+        };
+      }
+      throw new Error(`unexpected read ${method}`);
+    });
+    const { token } = await running.confirm('wallet-send', null, asConfirmed(PAYMENT));
+    const next = await running.walletSend({}, PAYMENT, {}, { confirmation: token });
+    expect(next).toMatchObject({ success: true, nonce: 8, outcome: 'sent' });
+    expect(next.intentId).not.toBe(refused.intentId);
+  });
+
+  test("a resend needs the intent's own confirmation, and nothing else will do", async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+    const intent = refused.intent;
+    const other = (await refusedSend(running)).intent;
+    const attempts = [
+      ['no authorization', null],
+      ['an auto-approve claim', { autoApprove: SITE }],
+      [
+        'a confirmation of the transaction',
+        async () => (await running.confirm('wallet-send', null, asConfirmed(PAYMENT))).token,
+      ],
+      [
+        'a confirmation of another intent',
+        async () => (await running.confirm('intent-resend', null, bindingOf(other))).token,
+      ],
+      [
+        'another chain',
+        async () =>
+          (await running.confirm('intent-resend', null, { ...bindingOf(intent), chainId: 1 }))
+            .token,
+      ],
+      [
+        'another sender',
+        async () =>
+          (
+            await running.confirm('intent-resend', null, {
+              ...bindingOf(intent),
+              sender: BOB.address,
+            })
+          ).token,
+      ],
+      [
+        'another nonce',
+        async () =>
+          (await running.confirm('intent-resend', null, { ...bindingOf(intent), nonce: 8 })).token,
+      ],
+      [
+        'another hash',
+        async () =>
+          (
+            await running.confirm('intent-resend', null, {
+              ...bindingOf(intent),
+              hash: '0x' + '11'.repeat(32),
+            })
+          ).token,
+      ],
+    ];
+    const broadcasts = mockBroadcast.mock.calls.length;
+    for (const [name, authorization] of attempts) {
+      const auth =
+        typeof authorization === 'function'
+          ? { confirmation: await authorization() }
+          : authorization;
+      const reply = await running.resend(intent.intentId, auth);
+      expect({ name, reply }).toMatchObject({
+        name,
+        reply: { success: false, code: 'SIGNING_NOT_CONFIRMED' },
+      });
+    }
+    expect(mockBroadcast.mock.calls.length).toBe(broadcasts);
+
+    // The right confirmation works once.
+    const { token } = await running.confirm('intent-resend', null, bindingOf(intent));
+    await expect(running.resend(intent.intentId, { confirmation: token })).resolves.toMatchObject({
+      success: true,
+    });
+    await expect(running.resend(intent.intentId, { confirmation: token })).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+  });
+
+  test('the resend handler takes no request fields: it sends the stored intent', async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+    const { token } = await running.confirm('intent-resend', null, bindingOf(refused.intent));
+    const reply = await running.resend(
+      refused.intentId,
+      { confirmation: token },
+      { chainId: 1, to: CONTRACT }
+    );
+    expect(reply).toMatchObject({ success: true, chainId: 100, to: BOB.address });
+    const sentAgain = broadcasts().at(-1);
+    expect({ chainId: sentAgain.chainId, to: sentAgain.to }).toEqual({
+      chainId: 100n,
+      to: BOB.address,
+    });
+  });
+
+  test("a dApp's held payment is sent again under the same rule", async () => {
+    const running = startIntents();
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+    });
+    const tx = call(100);
+    const failed = await running.dappSend(
+      {},
+      tx,
+      1,
+      { origin: SITE },
+      authorize(running, 'confirmed', 1, tx)
+    );
+    expect(failed).toMatchObject({
+      success: false,
+      outcome: 'not_sent',
+      intent: { kind: 'dapp-send', origin: SITE, attention: 'not-sent' },
+    });
+    await expect(resendConfirmed(running, failed.intent)).resolves.toMatchObject({
+      success: true,
+      from: BOB.address,
+    });
+  });
+
+  test('a resend sends the bytes the user confirmed, even if a replacement lands meanwhile', async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+    const reservations = require('./nonce-reservations');
+    const { token } = await running.confirm('intent-resend', null, bindingOf(refused.intent));
+
+    // A replacement holds the account while the resend waits for it.
+    let release;
+    const replacing = reservations.withAccountLock(
+      { chainId: 100, sender: ALICE.address },
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const resending = running.resend(refused.intentId, { confirmation: token });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const bumped = await ALICE.signTransaction({
+      type: 0,
+      chainId: 100,
+      nonce: 7,
+      to: BOB.address,
+      value: 1000n,
+      gasLimit: 21000n,
+      gasPrice: 2000000000n,
+    });
+    await running.store.commit({
+      intentId: refused.intentId,
+      chainId: 100,
+      sender: ALICE.address,
+      nonce: 7,
+      hash: keccak256(bumped),
+      raw: bumped,
+      via: 'replacement',
+    });
+    release();
+    await replacing;
+
+    await expect(resending).resolves.toMatchObject({ success: true, hash: refused.intent.hash });
+    expect(keccak256(mockBroadcast.mock.calls.at(-1)[1])).toBe(refused.intent.hash);
+  });
+
+  test('unknown, settled and voided intents are refused', async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+    await expect(
+      running.resend('00000000-0000-4000-8000-000000000000', null)
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_UNKNOWN',
+    });
+
+    await running.store.settle({
+      intentId: refused.intentId,
+      label: 'taken',
+      hash: null,
+      block: 9,
+    });
+    await expect(resendConfirmed(running, refused.intent)).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_NOT_HELD',
+    });
+  });
+
+  test('the list holds summaries of held payments, never their bytes', async () => {
+    const running = startIntents();
+    const refused = await refusedSend(running);
+    const { intents } = await running.list();
+    expect(intents).toEqual([
+      expect.objectContaining({ intentId: refused.intentId, nonce: 7, attention: 'refused' }),
+    ]);
+    expect(JSON.stringify(intents)).not.toContain(mockBroadcast.mock.calls[0][1].slice(2));
+  });
+
+  test('every change to the records reaches the chrome windows', async () => {
+    const running = startIntents();
+    await refusedSend(running);
+    // commit, handoff, outcome
+    expect(running.events).toEqual([
+      'wallet:intents-changed',
+      'wallet:intents-changed',
+      'wallet:intents-changed',
+    ]);
+  });
+
+  test('a successful send reports its intent and outcome, as before plus these', async () => {
+    const running = startIntents();
+    const { token } = await running.confirm('wallet-send', null, asConfirmed(PAYMENT));
+    await expect(
+      running.walletSend({}, PAYMENT, {}, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: true,
+      intentId: expect.any(String),
+      outcome: 'sent',
+      nonce: 7,
+      recorded: true,
+    });
+  });
+});
