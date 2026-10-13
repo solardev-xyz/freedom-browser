@@ -137,6 +137,10 @@ describe('a new intent', () => {
     const result = await tx.signAndSendTransaction(PARAMS, signer);
 
     expect(events).toEqual(['commit resolved', 'broadcast']);
+    // The store names the intent; its id is on disk before the bytes go out.
+    expect(store.commit).toHaveBeenCalledWith(
+      expect.not.objectContaining({ intentId: expect.anything() })
+    );
     const [raw] = broadcastRaws();
     expect(onDisk.map((record) => record.type)).toEqual(['commit', 'handoff']);
     expect(onDisk[0]).toMatchObject({ raw, nonce: 7, hash: keccak256(raw) });

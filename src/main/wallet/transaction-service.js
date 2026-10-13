@@ -6,7 +6,6 @@
  * never touches key material.
  */
 
-const crypto = require('crypto');
 const { parseUnits, formatUnits, Interface, Transaction, keccak256 } = require('ethers');
 const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
@@ -485,8 +484,9 @@ async function sendNewIntent(params, signer, { context = {}, key = null } = {}) 
       });
 
       const raw = await signer.signTransaction(tx);
+      // The store names the intent: its id comes back with the commit,
+      // before anything is handed off.
       return store.commit({
-        intentId: crypto.randomUUID(),
         chainId,
         sender: from,
         nonce,
