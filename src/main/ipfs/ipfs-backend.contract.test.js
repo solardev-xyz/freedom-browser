@@ -87,21 +87,129 @@ const stats = () => JSON.parse(backend.manager.getNativeDiagnostics().nativeGate
 const idle = (what = 'the backend to hold no request') =>
   waitFor(() => stats().active_native_handles === 0, { timeoutMs: 10_000, what });
 
-/** `ipfsBackend({ partition })`, as the handler captures it at admission. */
-const capture = (partition = null) => backend.manager.ipfsBackend({ partition });
+/**
+ * Every `ipfsBackend()` capture, the handler's and the suite's, in order:
+ * the partition it named, and how many times its `release()` was called.
+ * The backends route the handler's captures through the manager's exports
+ * at call time, so `recordCaptures` sees them.
+ */
+const captures = [];
 
-/** One request through a captured backend, as the plan executor makes it. */
-function request(
+function recordCaptures(manager) {
+  const ipfsBackend = manager.ipfsBackend;
+  manager.ipfsBackend = (options) => {
+    const captured = ipfsBackend.call(manager, options);
+    const entry = { partition: options?.partition ?? null, releases: 0 };
+    captures.push(entry);
+    if (typeof captured.release !== 'function') return captured;
+    return Object.assign(Object.create(captured), {
+      release() {
+        entry.releases += 1;
+        return captured.release();
+      },
+    });
+  };
+}
+
+/** The handler's one capture since `mark`: it named `partition`. */
+function handlerCapture(mark, partition) {
+  const made = captures.slice(mark);
+  expect(made.map((entry) => entry.partition)).toEqual([partition]);
+  return made[0];
+}
+
+/**
+ * The suite's own captures still held. Each is released on its terminal
+ * path (`drop`), and whatever a failed test left is released after it, so
+ * the suite never holds a lease past its test.
+ */
+const held = new Set();
+
+/** `ipfsBackend({ partition })`, as the handler captures it at admission,
+ * held by the suite until `drop`. */
+function capture(partition = null) {
+  const captured = backend.manager.ipfsBackend({ partition });
+  held.add(captured);
+  return captured;
+}
+
+/** Releases a capture of the suite's, once. */
+function drop(captured) {
+  if (held.delete(captured)) captured.release?.();
+}
+
+/** What `read` makes of a capture taken only to look at it. */
+function inspect(partition, read) {
+  const captured = capture(partition);
+  try {
+    return read(captured);
+  } finally {
+    drop(captured);
+  }
+}
+
+const isUp = (partition = null) => inspect(partition, (captured) => captured.ref.up);
+
+/** `body`, pulled only on demand as the executor's is, calling `onEnd` once
+ * it ends, errors or is cancelled. */
+function releasingBody(body, onEnd) {
+  const reader = body.getReader();
+  return new ReadableStream(
+    {
+      async pull(controller) {
+        let chunk;
+        try {
+          chunk = await reader.read();
+        } catch (err) {
+          onEnd();
+          controller.error(err);
+          return;
+        }
+        if (chunk.done) {
+          onEnd();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      },
+      cancel(reason) {
+        onEnd();
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
+/** One request through a captured backend, as the plan executor makes it.
+ * The capture is released when the request is over: its rejection, or its
+ * body's end, error or cancel. */
+async function request(
   path,
   { partition = null, method = 'GET', headers = {}, signal, headersTimeoutMs = HEADERS_MS } = {}
 ) {
-  return capture(partition).request({
-    path,
-    method,
-    headers: new Headers(headers),
-    signal,
-    headersTimeoutMs,
-  });
+  const captured = capture(partition);
+  let res;
+  try {
+    res = await captured.request({
+      path,
+      method,
+      headers: new Headers(headers),
+      signal,
+      headersTimeoutMs,
+    });
+  } catch (err) {
+    drop(captured);
+    throw err;
+  }
+  if (!res.body) {
+    drop(captured);
+    return res;
+  }
+  return new Response(
+    releasingBody(res.body, () => drop(captured)),
+    { status: res.status, statusText: res.statusText, headers: res.headers }
+  );
 }
 
 /** One `ipfs:` request through the handler, as Chromium makes it. */
@@ -127,10 +235,10 @@ async function timed(promise) {
 
 /** The backend running again, as a user's restart would leave it. */
 async function ensureRunning() {
-  if (capture().ref.up) return;
+  if (isUp()) return;
   await backend.settle();
   await backend.manager.startIpfs();
-  expect(capture().ref.up).toBe(true);
+  expect(isUp()).toBe(true);
 }
 
 describeContract(`IPFS backend contract (${BACKEND})`, () => {
@@ -159,6 +267,7 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
     site.bare = content.dir({ 'x.txt': content.file('x\n'), 'y.bin': content.file('yy') });
     fixture = await startIpfsFixture(content);
     backend = await BACKENDS[BACKEND].load({ router: fixture.router });
+    recordCaptures(backend.manager);
     await backend.manager.startIpfs();
   }, 60_000);
 
@@ -171,8 +280,9 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
   // may leave requests open: the node is restarted, so the next test starts
   // clean instead of failing behind it.
   afterEach(async () => {
+    for (const captured of [...held]) drop(captured);
     fixture.reset();
-    if (capture().ref.up) {
+    if (isUp()) {
       try {
         await idle();
       } catch {
@@ -189,10 +299,11 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
 
     test('the backend reference: native, up, no URL, for the profile and a private partition alike', () => {
       for (const partition of [null, PRIVATE]) {
-        const captured = capture(partition);
-        expect(captured.ref).toEqual({ ipfs: 'native', up: true });
-        expect(captured.url).toBeNull();
-        expect(typeof captured.request).toBe('function');
+        inspect(partition, (captured) => {
+          expect(captured.ref).toEqual({ ipfs: 'native', up: true });
+          expect(captured.url).toBeNull();
+          expect(typeof captured.request).toBe('function');
+        });
       }
     });
   });
@@ -707,8 +818,10 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
       await backend.manager.stopIpfs();
 
       for (const partition of [null, PRIVATE]) {
-        expect(capture(partition).ref).toEqual({ ipfs: 'native', up: false });
-        expect(capture(partition).url).toBeNull();
+        inspect(partition, (captured) => {
+          expect(captured.ref).toEqual({ ipfs: 'native', up: false });
+          expect(captured.url).toBeNull();
+        });
       }
     });
 
@@ -725,6 +838,7 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
           headersTimeoutMs: HEADERS_MS,
         })
       ).rejects.toThrow('freedom-ipfs native node is not running');
+      drop(captured);
       expect(fixture.requests).toHaveLength(before);
     });
 
@@ -742,6 +856,7 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
           headersTimeoutMs: HEADERS_MS,
         })
       ).rejects.toThrow('freedom-ipfs native node is not running');
+      drop(captured);
       expect(stats().total_started).toBe(started);
       // The new node serves its own requests.
       const res = await request(`/ipfs/${site.text.cid}`);
@@ -756,7 +871,7 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
 
       backend.crash();
       const { error } = await readUntilError(reader);
-      await waitFor(() => !capture().ref.up, { what: 'the backend to be down' });
+      await waitFor(() => !isUp(), { what: 'the backend to be down' });
       const next = await ipfs(`ipfs://${site.text.cid}/`);
 
       expect(error?.message).toBe(backend.exitText);
@@ -769,8 +884,8 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
       'a backend that ends is restarted with back-off, and serves again on its own',
       async () => {
         backend.crash();
-        await waitFor(() => !capture().ref.up, { what: 'the backend to be down' });
-        await waitFor(() => capture().ref.up, { timeoutMs: 15_000, what: 'the restart' });
+        await waitFor(() => !isUp(), { what: 'the backend to be down' });
+        await waitFor(() => isUp(), { timeoutMs: 15_000, what: 'the restart' });
 
         const res = await request(`/ipfs/${site.text.cid}`);
         expect(res.status).toBe(200);
@@ -838,170 +953,202 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
       30_000
     );
 
-    pendingTest('leases', 'the backend carries release(), and a second call is harmless', () => {
-      const captured = capture(PRIVATE);
+    pendingTest(
+      'leases',
+      'the backend carries release(): a lease pins its partition, and a second release is harmless',
+      () => {
+        expect(typeof backend.pins).toBe('function');
+        const first = capture(PRIVATE);
+        const second = capture(PRIVATE);
+        expect(typeof first.release).toBe('function');
+        expect(backend.pins(PRIVATE)).toBe(2);
 
-      expect(typeof captured.release).toBe('function');
-      captured.release();
-      expect(() => captured.release()).not.toThrow();
-    });
+        first.release();
+        first.release();
+
+        // The second call took nothing from the other lease.
+        expect(backend.pins(PRIVATE)).toBe(1);
+        drop(second);
+        expect(backend.pins(PRIVATE)).toBe(0);
+      }
+    );
 
     pendingTest(
       'backend-busy',
-      'eight pinned partitions: each serves again, a ninth is BackendBusy with ref.up true, and a release makes room',
+      'eight pinned partitions: each serves again, a ninth is BackendBusy (503 through the handler) with ref.up true, and a release makes room',
       async () => {
         const partitions = Array.from({ length: 8 }, (_, i) => `private-busy-${i}`);
-        const pinned = [];
-        for (const partition of partitions) {
-          const captured = capture(partition);
-          pinned.push(captured);
+        const ninthPartition = 'private-busy-ninth';
+        const viaCapture = async (captured) => {
           const res = await captured.request({
             path: `/ipfs/${site.text.cid}`,
             method: 'GET',
             headers: new Headers(),
             headersTimeoutMs: HEADERS_MS,
           });
-          await bodyOf(res);
-        }
-        // Another request from each pinned partition still succeeds.
-        for (const partition of partitions) {
-          const extra = capture(partition);
-          const res = await extra.request({
-            path: `/ipfs/${site.text.cid}`,
-            method: 'GET',
-            headers: new Headers(),
-            headersTimeoutMs: HEADERS_MS,
-          });
           expect(res.status).toBe(200);
           await bodyOf(res);
-          extra.release();
-        }
-
-        let refused = null;
+        };
+        // These leases are held on purpose, and released whatever happens.
+        const pinned = [];
         try {
-          capture('private-busy-ninth');
-        } catch (err) {
-          refused = err;
-        }
-        expect(refused?.name).toBe('BackendBusy');
-        // Capacity is not readiness: the node is still up.
-        const again = capture(partitions[0]);
-        expect(again.ref.up).toBe(true);
-        again.release();
+          for (const partition of partitions) {
+            const captured = capture(partition);
+            pinned.push(captured);
+            await viaCapture(captured);
+          }
+          // Another request from each pinned partition still succeeds.
+          for (const partition of partitions) {
+            const extra = capture(partition);
+            try {
+              await viaCapture(extra);
+            } finally {
+              drop(extra);
+            }
+          }
 
-        pinned[0].release();
-        const ninth = capture('private-busy-ninth');
-        const res = await ninth.request({
-          path: `/ipfs/${site.text.cid}`,
-          method: 'GET',
-          headers: new Headers(),
-          headersTimeoutMs: HEADERS_MS,
-        });
-        expect(res.status).toBe(200);
-        await bodyOf(res);
-        ninth.release();
-        for (const captured of pinned) captured.release();
+          let refused = null;
+          try {
+            drop(capture(ninthPartition));
+          } catch (err) {
+            refused = err;
+          }
+          expect(refused?.name).toBe('BackendBusy');
+          const answer = await ipfs(`ipfs://${site.text.cid}/`, {}, { partition: ninthPartition });
+          expect(answer.status).toBe(503);
+          expect((await answer.json()).message).toBe(
+            'Too many private windows are loading IPFS content'
+          );
+          // Capacity is not readiness: the node is still up.
+          expect(isUp(partitions[0])).toBe(true);
+
+          drop(pinned[0]);
+          const ninth = capture(ninthPartition);
+          try {
+            await viaCapture(ninth);
+          } finally {
+            drop(ninth);
+          }
+        } finally {
+          for (const captured of pinned) drop(captured);
+        }
       },
       60_000
     );
   });
 
-  // "Main's side", the lease: every exit of the handler releases the
-  // request's lease exactly once, so the partition's pins return to zero.
+  // "Main's side", the lease: the handler captures the request's partition
+  // once, at admission, holds that lease through an unfinished body, and
+  // releases it exactly once on every exit. Read from the captures the
+  // handler made (`recordCaptures`), not only from the pins.
   describe('leases', () => {
-    const pinsReturnToZero = async (partition) => {
+    const pins = (partition = PRIVATE) => {
       expect(typeof backend.pins).toBe('function');
-      await waitFor(() => backend.pins(partition) === 0, { what: 'the pins to return to zero' });
+      return backend.pins(partition);
     };
-    const exits = [
+
+    // Exits that hand a body on: the lease is live while it is unfinished,
+    // and released once when it ends.
+    const bodyExits = [
       [
         'a body read to its end',
-        async () => {
-          const res = await ipfs(`ipfs://${site.root.cid}/a.txt`, {}, { partition: PRIVATE });
-          expect(res.status).toBe(200);
-          await bodyOf(res);
-        },
-      ],
-      [
-        'a HEAD, which has no body',
-        async () => {
-          const res = await ipfs(
-            `ipfs://${site.root.cid}/a.txt`,
-            { method: 'HEAD' },
-            { partition: PRIVATE }
-          );
-          expect(res.status).toBe(200);
+        '/a.txt',
+        {},
+        200,
+        async (reader) => {
+          await readAll(reader);
         },
       ],
       [
         'a body cancelled by its consumer',
-        async () => {
-          const res = await ipfs(`ipfs://${site.root.cid}/big.bin`, {}, { partition: PRIVATE });
-          const reader = res.body.getReader();
+        '/big.bin',
+        {},
+        200,
+        async (reader) => {
           await reader.read();
           await reader.cancel();
         },
       ],
       [
         'a body aborted mid-way',
-        async () => {
-          const controller = new AbortController();
-          const res = await ipfs(
-            `ipfs://${site.root.cid}/big.bin`,
-            { signal: controller.signal },
-            { partition: PRIVATE }
-          );
-          const reader = res.body.getReader();
+        '/big.bin',
+        { abort: true },
+        200,
+        async (reader, controller) => {
           await reader.read();
           controller.abort();
           await readUntilError(reader);
         },
       ],
       [
-        'an HTTP failure head (404)',
-        async () => {
-          const res = await ipfs(`ipfs://${site.root.cid}/missing`, {}, { partition: PRIVATE });
-          expect(res.status).toBe(404);
-          await bodyOf(res);
+        "an HTTP failure head's body (404)",
+        '/missing',
+        {},
+        404,
+        async (reader) => {
+          await readAll(reader);
         },
+      ],
+    ];
+    for (const [exit, path, { abort = false }, status, finish] of bodyExits) {
+      pendingTest('leases', `held through ${exit}, then released once`, async () => {
+        const controller = new AbortController();
+        const mark = captures.length;
+
+        const res = await ipfs(
+          `ipfs://${site.root.cid}${path}`,
+          abort ? { signal: controller.signal } : {},
+          { partition: PRIVATE }
+        );
+        expect(res.status).toBe(status);
+        const lease = handlerCapture(mark, PRIVATE);
+        // The body is handed on and unfinished: its lease is live.
+        expect(lease.releases).toBe(0);
+        expect(pins()).toBe(1);
+
+        await finish(res.body.getReader(), controller);
+
+        await waitFor(() => lease.releases > 0, { what: 'the lease to be released' });
+        expect(lease.releases).toBe(1);
+        expect(pins()).toBe(0);
+        expect(captures.length).toBe(mark + 1);
+      });
+    }
+
+    // Exits with no body to hand on: released once by the time the answer
+    // is back.
+    const immediateExits = [
+      [
+        'a HEAD, which has no body',
+        200,
+        () => ipfs(`ipfs://${site.root.cid}/a.txt`, { method: 'HEAD' }, { partition: PRIVATE }),
       ],
       [
         'an error plan (405)',
-        async () => {
-          const res = await ipfs(
-            `ipfs://${site.text.cid}/`,
-            { method: 'POST' },
-            { partition: PRIVATE }
-          );
-          expect(res.status).toBe(405);
-        },
+        405,
+        () => ipfs(`ipfs://${site.text.cid}/`, { method: 'POST' }, { partition: PRIVATE }),
       ],
       [
         'a redirect plan (a gateway-form URL)',
-        async () => {
-          const res = await ipfs(
-            `ipfs://ipfs.io/ipfs/${site.text.cid}`,
-            {},
-            { partition: PRIVATE }
-          );
-          expect(res.status).toBe(307);
-        },
+        307,
+        () => ipfs(`ipfs://ipfs.io/ipfs/${site.text.cid}`, {}, { partition: PRIVATE }),
       ],
       [
         'an abort before the fetch',
-        async () => {
+        502,
+        () => {
           const controller = new AbortController();
           controller.abort();
-          const res = await ipfs(
+          return ipfs(
             `ipfs://${site.text.cid}/`,
             { signal: controller.signal },
             { partition: PRIVATE }
           );
-          expect(res.status).toBe(502);
         },
       ],
       [
         'a rejected request()',
+        502,
         async () => {
           const file = content.file(uniqueBytes(1500));
           (await fixture.isolate(file)).stall(file.cid);
@@ -1013,26 +1160,33 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
           );
           await waitFor(() => fixture.asked(file.cid), { what: 'the block request' });
           controller.abort();
-          expect((await pending).status).toBe(502);
+          return pending;
         },
       ],
     ];
-    for (const [exit, run] of exits) {
+    for (const [exit, status, run] of immediateExits) {
       pendingTest('leases', `released once on ${exit}`, async () => {
-        await run();
-        await pinsReturnToZero(PRIVATE);
+        const mark = captures.length;
+
+        const res = await run();
+
+        expect(res.status).toBe(status);
+        const lease = handlerCapture(mark, PRIVATE);
+        expect(lease.releases).toBe(1);
+        expect(pins()).toBe(0);
       });
     }
 
     pendingTest('leases', "closing the partition's session releases what is left", async () => {
       const partition = 'private-contract-closing';
-      const held = capture(partition);
-      expect(backend.pins(partition)).toBe(1);
+      const left = capture(partition);
+      expect(pins(partition)).toBe(1);
 
       backend.closeDwebSession(partition);
 
-      await pinsReturnToZero(partition);
-      expect(() => held.release()).not.toThrow();
+      await waitFor(() => pins(partition) === 0, { what: 'the pins to return to zero' });
+      expect(() => drop(left)).not.toThrow();
+      expect(pins(partition)).toBe(0);
     });
   });
 });

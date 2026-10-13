@@ -19,7 +19,9 @@
  *   `startIpfs()`, `stopIpfs()` and `getNativeDiagnostics()` the suite
  *   drives;
  * - `handleRequest`: `ipfs-protocol.js`'s, in the same module registry, with
- *   the core's planner stood in for by `fake-dweb-core.js`;
+ *   the core's planner stood in for by `fake-dweb-core.js`. It must reach
+ *   `ipfsBackend()` through `manager.ipfsBackend` as it is when called, so
+ *   the suite can record the handler's captures and releases;
  * - `startConfig()`: the configuration the running node was started with,
  *   in the parity table's terms;
  * - `crash()`: ends the running backend as a fault would, and `settle()`
@@ -113,7 +115,8 @@ async function loadAddonBackend({ router }) {
     return shim;
   };
 
-  const { mod: manager } = loadMainModule(path.join(SRC, 'ipfs-manager.js'), {
+  const managerPath = path.join(SRC, 'ipfs-manager.js');
+  const { mod: manager } = loadMainModule(managerPath, {
     extraMocks: {
       [bindingPath]: () => {
         const actual = jest.requireActual(bindingPath);
@@ -152,6 +155,14 @@ async function loadAddonBackend({ router }) {
       }),
     },
   });
+  // ipfs-protocol.js takes `ipfsBackend` from the manager when it loads.
+  // Handed one that calls the manager's export when called, the handler
+  // reaches whatever the suite puts there (its capture recorder), and still
+  // runs production's `ipfsBackend()` underneath.
+  jest.doMock(managerPath, () => ({
+    ...manager,
+    ipfsBackend: (options) => manager.ipfsBackend(options),
+  }));
   const { handleRequest } = require(path.join(SRC, 'ipfs', 'ipfs-protocol.js'));
   const { closeDwebSession } = require(path.join(SRC, 'dweb', 'fetch-admission.js'));
   const constants = () => require(bindingPath).loadNativeBinding().constants;
