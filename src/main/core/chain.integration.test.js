@@ -436,4 +436,52 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     ]);
     expect(adapters.colibriRequest).toHaveBeenCalledTimes(2);
   });
+
+  // The wallet's finality labels take a quorum read as evidence only with
+  // m ≥ 2 (intent-labels.js): the core's trust label must carry m.
+  test('a quorum read with trust carries its quorum, m among it: what a wallet label needs', async () => {
+    const { isVerifiedEvidence } = require('../wallet/intent-labels');
+    const { call, main } = await start();
+    main.refs.set('q1', `${rpc.base}/`);
+    main.refs.set('q2', `${rpc.base}/?second`);
+    const read = () =>
+      call('chain.request', {
+        chain_id: 1,
+        method: 'eth_getBlockByNumber',
+        params: ['finalized', false],
+        include_trust: true,
+        background: true,
+        profile: 'default',
+        deadline_ms: 20_000,
+      });
+    const rpcs = [
+      { endpoint: 'q1', user_configured: false },
+      { endpoint: 'q2', user_configured: false },
+    ];
+
+    await main.configure(
+      snapshot({ read_order: ['quorum'], quorum: { k: 2, m: 2, timeout_ms: 5000 }, rpc: rpcs })
+    );
+    const agreed = await read();
+    expect(agreed).toMatchObject({
+      source: 'quorum',
+      verified: true,
+      trust: { level: 'verified', method: 'quorum', quorum: { k: 2, m: 2, achieved: true } },
+    });
+    expect(isVerifiedEvidence(agreed)).toBe(true);
+
+    // A quorum of one is labeled a quorum too; its m says it is no evidence.
+    await main.configure(
+      snapshot({ read_order: ['quorum'], quorum: { k: 1, m: 1, timeout_ms: 5000 }, rpc: rpcs })
+    );
+    const single = await read();
+    expect(single.trust).toMatchObject({ method: 'quorum', quorum: { m: 1 } });
+    expect(isVerifiedEvidence(single)).toBe(false);
+
+    // Direct: no evidence.
+    await main.configure(snapshot({ read_order: ['direct'], rpc: rpcs }));
+    const direct = await read();
+    expect(direct).toMatchObject({ source: 'direct', verified: false });
+    expect(isVerifiedEvidence(direct)).toBe(false);
+  });
 });

@@ -324,6 +324,7 @@ const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { getIntentStore } = require('./wallet/intent-store');
 const { registerIntentIpc } = require('./wallet/intent-ipc');
+const { getIntentTracker } = require('./wallet/intent-tracker');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
@@ -450,9 +451,11 @@ async function bootstrap() {
   registerRemoteSignerIpc();
   // The wallet's durable intent records (freedom-core design 0005, "Retrying
   // an intent"): read, checked and compacted once at startup. A damaged file
-  // is set aside here. Sends don't use them yet.
+  // is set aside here. Then the finality tracker labels the held ones at
+  // the finalized block, settling those paid, failed or taken.
   getIntentStore()
     .load()
+    .then(() => getIntentTracker().start())
     .catch((err) => log.warn(`[App] wallet intent records unavailable: ${err.message}`));
 
   // Let identity (re)injection stop the Bee node before wiping its statestore

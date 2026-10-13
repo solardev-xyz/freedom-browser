@@ -222,4 +222,68 @@ async function replaceAndRecord(intentId, fees, signer) {
   });
 }
 
-module.exports = { signAndRecord, resendAndRecord, replaceAndRecord, KINDS };
+// A settled intent's history status, by its label at the finalized block.
+const SETTLED_STATUS = Object.freeze({
+  paid: STATUSES.CONFIRMED,
+  failed: STATUSES.FAILED,
+  taken: STATUSES.TAKEN,
+});
+
+// The history row of an intent, by its id: this run's, or an earlier one's.
+function rowOfIntent(intent) {
+  if (rowsByIntent.has(intent.intentId)) {
+    const row = paymentHistory.getById(rowsByIntent.get(intent.intentId));
+    if (row) return row;
+  }
+  return (
+    paymentHistory
+      .getRecent({ chainId: intent.chainId, limit: ROW_LOOKBACK })
+      .find((row) => row.metadata?.intentId === intent.intentId) ?? null
+  );
+}
+
+/**
+ * An intent's label at the finalized block, in its history row: paid as
+ * `confirmed`, failed as `failed`, taken as `taken`, naming the included
+ * transaction, with `metadata.finality`. An intent with no row (its send
+ * failed before one was written, though its bytes went out) gets one now,
+ * so a payment that happened is never missing from the history.
+ * Best-effort, like every history write: returns the row, or null.
+ *
+ * @param {object} intent - the intent's view, read before it settled
+ * @param {{label: 'paid'|'failed'|'taken', hash: string|null, block: number}} settlement
+ */
+function recordSettlement(intent, { label, hash, block }) {
+  const status = SETTLED_STATUS[label];
+  if (!status) return null;
+  const finality = { label, block };
+  try {
+    const row = rowOfIntent(intent);
+    if (row) {
+      return paymentHistory.update(row.id, {
+        status,
+        txHash: hash ?? undefined,
+        metadata: { ...row.metadata, intentId: intent.intentId, finality },
+      });
+    }
+    const written = paymentHistory.append({
+      kind: Object.values(KINDS).includes(intent.context?.kind)
+        ? intent.context.kind
+        : KINDS.WALLET_SEND,
+      chainId: intent.chainId,
+      txHash: hash ?? intent.hashes[intent.hashes.length - 1]?.hash ?? null,
+      fromAddress: intent.sender,
+      ...paymentOf(intent.fields),
+      origin: intent.context?.origin ?? null,
+      status,
+      metadata: { intentId: intent.intentId, finality },
+    });
+    rowsByIntent.set(intent.intentId, written.id);
+    return written;
+  } catch (err) {
+    log.warn(`[TxRecorder] could not record intent ${intent.intentId} as ${label}: ${err.message}`);
+    return null;
+  }
+}
+
+module.exports = { signAndRecord, resendAndRecord, replaceAndRecord, recordSettlement, KINDS };

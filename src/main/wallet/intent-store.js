@@ -1168,9 +1168,12 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
 
   // Check, admit, append, then apply: the state changes only once the line
   // is on disk. A prepare that returns null writes nothing.
-  async function write(record, lock, { admitted = false } = {}) {
+  async function write(record, lock, { admitted = false, expect = null } = {}) {
     await load();
     return serialize(async () => {
+      // A condition on the intent as it stands now, in line with every
+      // other write: what an earlier, still-queued write applied counts.
+      if (expect) expect(requireIntent(record.intent_id));
       const apply = prepare(record, LIVE, lock);
       if (!apply) return intents.get(record.intent_id);
       if (admitted) await admit(record);
@@ -1337,15 +1340,31 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
      * @param {string|null} settlement.hash the included transaction (paid,
      *   failed); null when taken
      * @param {number} settlement.block the finalized block it was read at
+     * @param {string[]} [settlement.hashes] the intent's hashes the label
+     *   was read for: if it has others by the time the settlement is
+     *   written (a replacement committed meanwhile), nothing is written and
+     *   this throws INTENT_CHANGED; read it again
      */
-    async settle({ intentId, label, hash, block }) {
+    async settle({ intentId, label, hash, block, hashes = null }) {
       const record = stamp('settle', {
         intent_id: intentId,
         label,
         hash: typeof hash === 'string' ? hash.toLowerCase() : (hash ?? null),
         block,
       });
-      return view(await write(record, null));
+      const expect = hashes
+        ? (intent) => {
+            const read = hashes.map((h) => String(h).toLowerCase());
+            const now = intent.hashes.map((entry) => entry.hash);
+            if (now.length !== read.length || now.some((h, i) => h !== read[i])) {
+              throw intentError(
+                'INTENT_CHANGED',
+                'The payment changed while it was being checked; it will be checked again.'
+              );
+            }
+          }
+        : null;
+      return view(await write(record, null, { expect }));
     },
 
     /**

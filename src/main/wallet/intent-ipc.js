@@ -25,7 +25,7 @@
  *   fees, and as "speed up" for a payment that may be stuck. Refusals
  *   carry the intent's current summary, as a resend's do.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
- *   change.
+ *   change, or what the finality tracker saw of a held intent does.
  */
 
 const { ipcMain } = require('electron');
@@ -35,6 +35,8 @@ const { replacementFees } = require('./transaction-service');
 const { getSigner } = require('./signers');
 const paymentHistory = require('../payment-history');
 const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('./signing-confirmation');
+const { getIntentTracker } = require('./intent-tracker');
+const { OBSERVED } = require('./intent-labels');
 
 const OUTCOME_ATTENTION = Object.freeze({
   rejected: 'refused',
@@ -46,14 +48,18 @@ const OUTCOME_ATTENTION = Object.freeze({
 /**
  * Where a held intent stands, for display: `sending` (a handoff is under
  * way), the last outcome of this run (`sent`, `uncertain`, `refused`,
- * `not-sent`), `not-sent` for one never handed off, or `pending` for one
- * recovered from disk, whose earlier outcomes are only summarized.
+ * `not-sent`), `not-sent` for one never handed off, or, for one recovered
+ * from disk, whose earlier outcomes are only summarized, what the finality
+ * tracker's reads saw: `absent` when verified evidence shows none of its
+ * transactions on chain, else `pending`. (One on chain is not waiting:
+ * see `receipt`.)
  */
-function attentionOf(view) {
+function attentionOf(view, observation = null) {
   const last = view.handoffs[view.handoffs.length - 1];
   if (last) return last.outcome ? OUTCOME_ATTENTION[last.outcome.outcome] : 'sending';
   if (view.handoffCount === 0) return 'not-sent';
-  return view.possiblySent ? 'pending' : 'not-sent';
+  if (!view.possiblySent) return 'not-sent';
+  return observation?.observed === OBSERVED.ABSENT ? 'absent' : 'pending';
 }
 
 // Refusals a higher fee answers (design 0005, "Refusals").
@@ -74,13 +80,16 @@ function replacementOffer(view, attention) {
     const reason = view.handoffs[view.handoffs.length - 1]?.outcome?.reasonClass;
     return FEE_REFUSALS.has(reason) ? 'replace' : null;
   }
-  return attention === 'uncertain' || attention === 'pending' ? 'speed-up' : null;
+  return ['uncertain', 'pending', 'absent'].includes(attention) ? 'speed-up' : null;
 }
 
-/** A held intent for the renderer: what it pays and where it stands. */
-function intentSummary(view) {
+/**
+ * A held intent for the renderer: what it pays and where it stands, with
+ * what the finality tracker last saw of it (`observation`), if anything.
+ */
+function intentSummary(view, observation = null) {
   const last = view.handoffs[view.handoffs.length - 1];
-  const attention = attentionOf(view);
+  const attention = attentionOf(view, observation);
   return {
     intentId: view.intentId,
     chainId: view.chainId,
@@ -169,9 +178,17 @@ async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
   const receipts = receiptsByIntent();
-  return store
-    .held()
-    .map((view) => ({ ...intentSummary(view), receipt: receipts.get(view.intentId) ?? null }));
+  const tracker = getIntentTracker();
+  return store.held().map((view) => {
+    const observation = tracker.observation(view.intentId);
+    const mined = observation?.observed === OBSERVED.INCLUDED ? 'mined' : null;
+    return {
+      ...intentSummary(view, observation),
+      observed: observation?.observed ?? null,
+      // On chain, though not final yet: it no longer waits on the user.
+      receipt: receipts.get(view.intentId) ?? mined,
+    };
+  });
 }
 
 // A held intent, or the error that says why there is none.
@@ -309,7 +326,7 @@ function registerIntentIpc({
     }
   });
 
-  getIntentStore().onChange(() => {
+  const changed = () => {
     for (const win of windows()) {
       if (win.isDestroyed()) continue;
       try {
@@ -318,7 +335,9 @@ function registerIntentIpc({
         // The window is closing.
       }
     }
-  });
+  };
+  getIntentStore().onChange(changed);
+  getIntentTracker().onChange(changed);
 }
 
 module.exports = {

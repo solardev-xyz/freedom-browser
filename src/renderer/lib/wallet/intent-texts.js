@@ -38,16 +38,25 @@ export const LABELS = Object.freeze({
   taken: 'Taken',
 });
 
-/** A held payment's line in the list, by where it stands. */
+/**
+ * A held payment's line in the list, by where it stands. `absent`: one
+ * recovered after a restart that verified reads show is not on chain.
+ */
 export const ATTENTION_TEXT = Object.freeze({
   sending: 'Sending…',
   sent: OUTCOME_TEXT.sent,
   uncertain: OUTCOME_TEXT.uncertain,
   'not-sent': OUTCOME_TEXT.not_sent,
+  absent: 'Not on chain yet',
   pending: LABELS.pending,
 });
 
+// What would settle the payment lies too deep below the finalized block to
+// verify (intent-labels.js): it stays waiting.
+export const UNVERIFIABLE_TEXT = 'Too old to check on chain';
+
 export function attentionText(summary) {
+  if (summary?.observed === 'unverifiable') return UNVERIFIABLE_TEXT;
   if (summary?.attention === 'refused') return refusedText(summary.lastOutcome?.reasonClass);
   return ATTENTION_TEXT[summary?.attention] ?? LABELS.pending;
 }

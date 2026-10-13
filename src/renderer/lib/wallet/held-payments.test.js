@@ -475,3 +475,41 @@ describe('payments waiting: opening the list', () => {
     expect(shown(second.elements)).toBe(false);
   });
 });
+
+// PR 7: what the finality tracker's reads saw of a payment recovered after
+// a restart.
+describe('payments waiting: after a restart', () => {
+  test('one the reads show is not on chain says so, offers a speed-up, and leaves a gap', async () => {
+    const recovered = held({
+      attention: 'absent',
+      observed: 'absent',
+      lastOutcome: null,
+      replacement: 'speed-up',
+    });
+    const { mod, elements } = await load([recovered]);
+    await mod.openHeldPayments();
+    expect(markup(elements)).toContain('Not on chain yet');
+    expect(markup(elements)).toContain('Speed up');
+    await expect(mod.waitingPaymentBehind(100, ALICE)).resolves.toMatchObject({
+      intentId: recovered.intentId,
+    });
+  });
+
+  test('one still unread says Pending', async () => {
+    const { mod, elements } = await load([
+      held({ attention: 'pending', observed: null, lastOutcome: null }),
+    ]);
+    await mod.openHeldPayments();
+    expect(markup(elements)).toContain('Pending');
+  });
+});
+
+// #712 review: a payment whose settling evidence lies deeper than the
+// verifiable depth stays waiting, and says why.
+test('a payment too old to verify on chain says so', async () => {
+  const { mod, elements } = await load([
+    held({ attention: 'pending', observed: 'unverifiable', lastOutcome: null }),
+  ]);
+  await mod.openHeldPayments();
+  expect(markup(elements)).toContain('Too old to check on chain');
+});

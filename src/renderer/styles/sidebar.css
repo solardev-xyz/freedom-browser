@@ -1457,6 +1457,7 @@
 .recent-payment-status.pending   { color: #d29922; }
 .recent-payment-status.failed    { color: #f85149; }
 .recent-payment-status.no-receipt { color: #8b949e; }
+.recent-payment-status.taken     { color: #d29922; }
 
 .recent-payments-empty {
   padding: 16px 10px;
@@ -1473,6 +1474,7 @@
 [data-theme="light"] .recent-payment-status.settled,
 [data-theme="light"] .recent-payment-status.confirmed { color: #1f7a34; }
 [data-theme="light"] .recent-payment-status.pending   { color: #8a5a07; }
+[data-theme="light"] .recent-payment-status.taken     { color: #8a5a07; }
 [data-theme="light"] .recent-payment-status.failed    { color: #b3261e; }
 
 /* ============================================

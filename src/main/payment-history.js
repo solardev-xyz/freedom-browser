@@ -38,9 +38,17 @@ const STATUSES = Object.freeze({
   FAILED: 'failed',
   SETTLED: 'settled',
   NO_RECEIPT: 'no-receipt',
+  // A wallet intent whose nonce another transaction used, read at the
+  // finalized block: this payment may or may not have happened (it may
+  // have been signed elsewhere too).
+  TAKEN: 'taken',
 });
 const FINAL_STATUSES = new Set([
-  STATUSES.CONFIRMED, STATUSES.FAILED, STATUSES.SETTLED, STATUSES.NO_RECEIPT,
+  STATUSES.CONFIRMED,
+  STATUSES.FAILED,
+  STATUSES.SETTLED,
+  STATUSES.NO_RECEIPT,
+  STATUSES.TAKEN,
 ]);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 

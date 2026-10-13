@@ -1615,3 +1615,207 @@ describe('review fixes (#702, round 2)', () => {
     });
   });
 });
+
+// #712 review: a settlement is read for one set of hashes; the store
+// writes it only if the intent still has exactly those, checked in line
+// with its other writes.
+describe('settling against the hashes that were read', () => {
+  test('a settlement for other hashes than the intent now has is refused, and nothing is written', async () => {
+    const { store } = await started();
+    const original = await sign({ nonce: 7 });
+    const view = await store.commit({
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      ...original,
+      via: 'original',
+      context: { kind: 'wallet-send' },
+    });
+    const replacement = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+    await store.commit({
+      intentId: view.intentId,
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      ...replacement,
+      via: 'replacement',
+    });
+    const before = (await records()).length;
+    await expect(
+      store.settle({
+        intentId: view.intentId,
+        label: 'taken',
+        hash: null,
+        block: 100,
+        hashes: [original.hash],
+      })
+    ).rejects.toMatchObject({ code: 'INTENT_CHANGED' });
+    expect((await records()).length).toBe(before);
+    expect(store.get(view.intentId).state).toBe('held');
+    await expect(
+      store.settle({
+        intentId: view.intentId,
+        label: 'taken',
+        hash: null,
+        block: 100,
+        hashes: [original.hash, replacement.hash],
+      })
+    ).resolves.toMatchObject({ state: 'settled' });
+  });
+
+  test('commit-during-queued-settle: a replacement still being written keeps the intent held', async () => {
+    const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
+    const { createIntentTracker } = require('./intent-tracker');
+    const journalModule = jest.requireActual('../lib/durable-journal');
+    let release;
+    let reached;
+    const paused = new Promise((resolve) => {
+      release = resolve;
+    });
+    const inAppend = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const { store } = await started({
+      extraMocks: {
+        [require.resolve('../lib/durable-journal')]: () => ({
+          ...journalModule,
+          createJournal: (...args) => {
+            const journal = journalModule.createJournal(...args);
+            const append = journal.append.bind(journal);
+            journal.append = async (record) => {
+              if (record.type === 'commit' && record.via === 'replacement') {
+                reached();
+                await paused;
+              }
+              return append(record);
+            };
+            return journal;
+          },
+        }),
+      },
+    });
+    const original = await sign({ nonce: 7 });
+    const view = await store.commit({
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      ...original,
+      via: 'original',
+      context: { kind: 'wallet-send' },
+    });
+    const replacement = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+    const committing = store.commit({
+      intentId: view.intentId,
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      ...replacement,
+      via: 'replacement',
+    });
+    await inAppend;
+
+    // The chain shows another transaction used nonce 7: the label for the
+    // original hash alone is taken.
+    const chain = fakeFinalityChain({
+      sender: ALICE.address.toLowerCase(),
+      startNonce: 7,
+      txs: { 90: [{ hash: `0x${'ee'.repeat(32)}`, nonce: 7 }] },
+    });
+    const settle = jest.spyOn(store, 'settle');
+    const recordSettlement = jest.fn();
+    const tracker = createIntentTracker({
+      store,
+      request: chain.request,
+      recordSettlement,
+      coreReady: () => true,
+    });
+    const pass = tracker.pass();
+    await new Promise((resolve) => {
+      const wait = () => (settle.mock.calls.length ? resolve() : setImmediate(wait));
+      wait();
+    });
+    release();
+    await committing;
+    await pass;
+
+    const after = store.get(view.intentId);
+    expect(after.hashes).toHaveLength(2);
+    expect(after.state).toBe('held');
+    expect(after.hashes.every((entry) => entry.raw !== null)).toBe(true);
+    expect(recordSettlement).not.toHaveBeenCalled();
+
+    // The next pass reads both hashes, and settles.
+    await tracker.pass();
+    expect(store.get(view.intentId)).toMatchObject({
+      state: 'settled',
+      settlement: { label: 'taken' },
+    });
+    tracker.stop();
+  });
+});
+
+// #712 review, round 3: voiding a chain's last held intent between passes
+// released nothing, and an empty pass returned before releasing.
+test("voiding a chain's last held intent releases its verified headers, at once and for good", async () => {
+  const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
+  const { createIntentTracker } = require('./intent-tracker');
+  const { store, reservations } = await started();
+  const commit = async (nonce) =>
+    store.commit({
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce,
+      ...(await sign({ nonce })),
+      via: 'original',
+      context: { kind: 'wallet-send' },
+    });
+  const first = await commit(7);
+  const last = await commit(8);
+  // Nonce 7 paid at block 100, under the finalized 200; nonce 8 nowhere.
+  const chain = fakeFinalityChain({
+    sender: ALICE.address.toLowerCase(),
+    startNonce: 7,
+    head: 220,
+    finalized: 200,
+    txs: { 100: [{ hash: first.hashes[0].hash, nonce: 7, status: 1 }] },
+  });
+  const timers = new Map();
+  let next = 0;
+  const tracker = createIntentTracker({
+    store,
+    request: chain.request,
+    recordSettlement: jest.fn(),
+    coreReady: () => true,
+    timers: {
+      setTimeout: (fn) => {
+        next += 1;
+        timers.set(next, fn);
+        return next;
+      },
+      clearTimeout: (id) => timers.delete(id),
+    },
+  });
+  tracker.start();
+  await tracker.pass();
+  expect(store.get(first.intentId).state).toBe('settled');
+  expect(store.get(last.intentId).state).toBe('held');
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(101); // 200 down to 100
+
+  // The user voids the last held intent between passes.
+  expect(store.voidRefusal(last.intentId)).toBeNull();
+  await reservations.withAccountLock({ chainId: CHAIN, sender: ALICE.address }, (lock) =>
+    store.void(last.intentId, lock)
+  );
+  expect(store.held()).toHaveLength(0);
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+
+  await tracker.pass();
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+  for (const [id, fire] of [...timers]) {
+    timers.delete(id);
+    fire();
+  }
+  await tracker.pass();
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+  tracker.stop();
+});

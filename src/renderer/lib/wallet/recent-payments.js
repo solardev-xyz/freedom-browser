@@ -16,7 +16,14 @@ const EMPTY_HTML = '<div class="recent-payments-empty">No payments yet</div>';
 // Status values we have CSS classes for (sidebar.css). Anything else
 // falls back to the muted 'no-receipt' style so a new backend status
 // doesn't render an unstyled pill.
-const STATUS_CLASSES = new Set(['settled', 'confirmed', 'pending', 'failed', 'no-receipt']);
+const STATUS_CLASSES = new Set([
+  'settled',
+  'confirmed',
+  'pending',
+  'failed',
+  'no-receipt',
+  'taken',
+]);
 
 let listEl;
 let viewAllLink;
