@@ -731,3 +731,53 @@ describe("the configuration barrier, with main's real configuration", () => {
     expect(serializations).toBe(1);
   });
 });
+
+// Review of #698 (parity): a dApp's call object crosses IPC with native
+// BigInt quantities, which the router turned into hex.
+describe('call-object quantities', () => {
+  test("a BigInt quantity crosses as the router's hex; the rest is the core's", async () => {
+    const { driver, sent } = setUp(() => read('0x1'));
+    const call = {
+      to: '0x1111111111111111111111111111111111111111',
+      value: 3n,
+      gas: 21000n,
+      data: '0x12',
+      maxFeePerGas: 0n,
+      nonce: -1n,
+      chainId: '0x1',
+    };
+    await driver.request(1, 'eth_call', [call, 'latest']);
+    await driver.request(1, 'eth_estimateGas', [{ value: 255n }]);
+    expect(sent().map(([, params]) => params.params)).toEqual([
+      [
+        {
+          to: '0x1111111111111111111111111111111111111111',
+          value: '0x3',
+          gas: '0x5208',
+          data: '0x12',
+          maxFeePerGas: '0x0',
+          // The router's `quantity`, sign and all: the node refuses it.
+          nonce: '0x-1',
+          chainId: '0x1',
+        },
+        'latest',
+      ],
+      [{ value: '0xff' }],
+    ]);
+    // In the caller's key order, the caller's object untouched.
+    expect(Object.keys(sent()[0][1].params[0])).toEqual(Object.keys(call));
+    expect(call.value).toBe(3n);
+  });
+
+  test('a BigInt anywhere else is not serializable, and nothing goes', async () => {
+    const { driver, sent } = setUp(() => read('0x1'));
+    await expect(driver.request(1, 'eth_getBalance', ['0xabc', 5n])).rejects.toThrow(
+      'Request is not serializable'
+    );
+    await expect(driver.broadcast(1, 5n)).rejects.toMatchObject({
+      message: 'Request is not serializable',
+      outcome: 'not_sent',
+    });
+    expect(sent()).toEqual([]);
+  });
+});

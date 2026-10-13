@@ -61,6 +61,20 @@ const TOO_LARGE = 'The chain request is too large';
 /** A request JSON can't carry (a function, a cycle), as the client says. */
 const NOT_SERIALIZABLE = 'Request is not serializable';
 
+/** The call-object quantities the router turned into hex
+ * (`normalizeCallObject`), in its order. */
+const CALL_OBJECT_METHODS = new Set(['eth_call', 'eth_estimateGas']);
+const CALL_QUANTITY_FIELDS = [
+  'value',
+  'gas',
+  'gasPrice',
+  'maxFeePerGas',
+  'maxPriorityFeePerGas',
+  'nonce',
+  'chainId',
+  'type',
+];
+
 /** The router's error classes, which main rebuilds the core's errors as:
  * their own properties (`name` among them) come from the reply. */
 class SourceUnavailableError extends Error {}
@@ -96,6 +110,30 @@ function wireChainId(chainId) {
   if (typeof chainId === 'symbol') return null;
   const id = Number(chainId);
   return Number.isSafeInteger(id) && id >= 0 && String(id) === String(chainId) ? id : null;
+}
+
+/**
+ * A call's params as the router took them, for JSON to carry: a BigInt
+ * quantity of an `eth_call` or `eth_estimateGas` call object (a dApp's
+ * `value: 3n` crosses IPC as one) becomes the router's hex quantity,
+ * `quantity()`'s `0x` and its digits, a negative's sign among them. The core
+ * normalizes everything else as the router did (design 0005,
+ * Normalization); the call object keeps its key order.
+ */
+function wireParams(method, params) {
+  if (!CALL_OBJECT_METHODS.has(method) || !Array.isArray(params) || params.length === 0) {
+    return params;
+  }
+  const call = params[0];
+  if (!isObject(call)) return params;
+  let wired = call;
+  for (const field of CALL_QUANTITY_FIELDS) {
+    const value = call[field];
+    if (typeof value !== 'bigint') continue;
+    if (wired === call) wired = { ...call };
+    wired[field] = `0x${value.toString(16)}`;
+  }
+  return wired === call ? params : [wired, ...params.slice(1)];
 }
 
 /** A request's params as JSON text, serialized once, before any fence: the
@@ -243,7 +281,7 @@ class ChainDriver {
       head = serialized({
         chain_id: id,
         method,
-        params,
+        params: wireParams(method, params),
         include_trust: Boolean(includeTrust),
         ...(typeof origin === 'string' ? { origin } : {}),
         background: Boolean(background),

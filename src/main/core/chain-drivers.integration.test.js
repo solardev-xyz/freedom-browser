@@ -41,6 +41,7 @@ const describeIfChain = servesChain(binary) ? describe : describe.skip;
 const RAW =
   '0xf85f8001825208941111111111111111111111111111111111111111018026a045df4733a45ed06c5628f22221a73e0b2faa3959f649cc47e6c2a15c9792ae07a00ea422e4923de6e5b4c52d7fbd39046e96acf73b2037a5f11918ec6c2a64b40a';
 const HASH = '0xdff97f6d2d938656e056527357e2ee12f38c03923ab1d11bc556fb5cc123e578';
+const TO = '0x1111111111111111111111111111111111111111';
 
 describeIfChain("chain data's drivers with the real freedom-cored", () => {
   let root;
@@ -244,6 +245,17 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
     expect(outcome).toEqual({ result: HASH, source: 'direct', outcome: 'uncertain' });
     expect(x.gen.pending.size).toBe(0);
     while (client.pool.held > 0) await new Promise(setImmediate);
+  });
+
+  test("a call object's BigInt quantities reach the node as the router's hex", async () => {
+    const x = await start();
+    expect(
+      await chainData.request(1, 'eth_call', [{ to: TO, value: 3n, gas: 21000n }, 'latest'])
+    ).toEqual({ result: '0xa', source: 'direct', verified: false });
+    // The router's exchange: the same body, its id aside.
+    expect(x.exchanges.map(({ body }) => [body.method, body.params])).toEqual([
+      ['eth_call', [{ to: TO, value: '0x3', gas: '0x5208' }, 'latest']],
+    ]);
   });
 
   test("results and node errors are the router's: key order, own properties, hosts", async () => {

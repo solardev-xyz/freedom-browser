@@ -56,3 +56,44 @@ describe("chain data for main's callers", () => {
     });
   });
 });
+
+// Review of #698 (parity): a dApp's call object reaches main over IPC with
+// native BigInt quantities (structured clone keeps them), and the router
+// sent them as hex.
+test("a call object's BigInt quantities go to the core as the router's hex", async () => {
+  const { ChainDriver } = require('../core/chain-driver');
+  const { BroadcastRecords } = require('../core/chain-broadcasts');
+  const { JsonParams } = require('../core/core-client');
+  const gen = { id: 'process' };
+  const sent = [];
+  const client = {
+    whenReady: async () => ({}),
+    serves: (of) => of === gen,
+    requestTo: async (_gen, method, params) => {
+      expect(params).toBeInstanceOf(JsonParams);
+      sent.push(JSON.parse(params.json));
+      return {
+        result: '0x10',
+        source: 'direct',
+        verified: false,
+        undefined_keys: [],
+        generation: 1,
+      };
+    },
+  };
+  const config = {
+    core: { gen },
+    whenServing: async () => gen,
+    idle: () => true,
+    overtaken: () => false,
+    endpointUrl: () => undefined,
+  };
+  chain.chainDriver.mockReturnValue(
+    new ChainDriver({ client, config, broadcasts: new BroadcastRecords() })
+  );
+  const to = '0x1111111111111111111111111111111111111111';
+  expect(
+    await chainData.request(1, 'eth_call', [{ to, value: 3n, gas: 21000n }, 'latest'])
+  ).toEqual({ result: '0x10', source: 'direct', verified: false });
+  expect(sent[0].params).toEqual([{ to, value: '0x3', gas: '0x5208' }, 'latest']);
+});
