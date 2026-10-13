@@ -2,6 +2,7 @@ const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
 const blockscoutLogs = require('./blockscout-logs');
+const { safeErrorMessage, isCapacityFailure } = require('./chain-errors');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -236,14 +237,6 @@ class SourceDeadlineError extends SourceUnavailableError {
   }
 }
 
-function safeErrorMessage(error) {
-  return (error?.message || String(error))
-    .replace(/0x[0-9a-fA-F]{128,}/g, (hex) =>
-      `${hex.slice(0, 10)}…(${Math.floor((hex.length - 2) / 2)} bytes)`)
-    .replace(/\s+/g, ' ')
-    .slice(0, 500);
-}
-
 function normalizeRoutingOrigin(routingContext) {
   const origin = routingContext?.origin;
   if (typeof origin !== 'string') return null;
@@ -282,13 +275,6 @@ function adaptiveRouteKey(source, chainId, method, params, routingContext) {
   const origin = normalizeRoutingOrigin(routingContext);
   if (!origin) return null;
   return JSON.stringify([source, Number(chainId), origin, method, requestTarget(method, params)]);
-}
-
-function isCapacityFailure(error) {
-  if (error?.failureKind === 'capacity') return true;
-  const message = safeErrorMessage(error);
-  return /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i
-    .test(message);
 }
 
 // How useful a failure is to a caller that adapts its request to the error
