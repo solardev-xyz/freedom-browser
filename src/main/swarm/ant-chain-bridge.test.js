@@ -275,6 +275,17 @@ test.each([
   );
 });
 
+test("a node's own error code never reads as an uncertain broadcast", () => {
+  // Broadcasts reach Ant's reconcile reply only through the driver's
+  // `outcome: 'uncertain'` result. A node may answer a read with any code,
+  // this string included, and that is a failed read.
+  const reply = antErrorReply(
+    'eth_getBalance',
+    Object.assign(new Error('node text'), { code: 'MYOTIS_BROADCAST_UNCERTAIN' })
+  );
+  expect(reply).toEqual({ code: -32002, message: 'Chain request failed: node text' });
+});
+
 test('a timeout reaches Ant worded so it halves its window', () => {
   const deadline = Object.assign(new Error('Myotis gave up after 5000ms'), {
     failureKind: 'timeout',
