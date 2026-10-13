@@ -280,6 +280,15 @@
       .status-no-receipt::before {
         background: #8b949e;
       }
+      /* Taken: another transaction used the payment's nonce, so it may or
+         may not have happened. A warning, settled: amber, no pulse. */
+      .status-taken {
+        background: rgba(245, 158, 11, 0.12);
+        color: var(--pay-status-pending);
+      }
+      .status-taken::before {
+        background: #d29922;
+      }
       @keyframes pulse {
         0%,
         100% {

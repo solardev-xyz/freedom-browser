@@ -39,7 +39,7 @@ import { attentionText, outcomeText, ACTIONS, HELD, REPLACE } from './intent-tex
 
 const ERC20_TRANSFER = '0xa9059cbb';
 // Where a held payment leaves a gap later sends wait behind (D11).
-const GAP_ATTENTION = new Set(['refused', 'not-sent', 'pending']);
+const GAP_ATTENTION = new Set(['refused', 'not-sent', 'absent', 'pending']);
 
 let row;
 let rowLabel;

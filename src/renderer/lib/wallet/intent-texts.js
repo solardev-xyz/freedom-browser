@@ -38,12 +38,16 @@ export const LABELS = Object.freeze({
   taken: 'Taken',
 });
 
-/** A held payment's line in the list, by where it stands. */
+/**
+ * A held payment's line in the list, by where it stands. `absent`: one
+ * recovered after a restart that verified reads show is not on chain.
+ */
 export const ATTENTION_TEXT = Object.freeze({
   sending: 'Sending…',
   sent: OUTCOME_TEXT.sent,
   uncertain: OUTCOME_TEXT.uncertain,
   'not-sent': OUTCOME_TEXT.not_sent,
+  absent: 'Not on chain yet',
   pending: LABELS.pending,
 });
 

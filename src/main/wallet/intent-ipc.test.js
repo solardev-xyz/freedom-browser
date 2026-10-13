@@ -34,6 +34,8 @@ jest.mock('../networks/chain-data', () => ({
   getFeeQuote: (...args) => mockFeeQuote(...args),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+// The finality tracker reads only while the core serves chain data.
+jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
 jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
@@ -1051,5 +1053,197 @@ describe('replacement fees (9)', () => {
       success: false,
       code: 'INTENT_NOT_HELD',
     });
+  });
+});
+
+describe('the finality tracker settles held payments (7)', () => {
+  const PAYMENT = {
+    chainId: 100,
+    to: BOB.address,
+    value: '1000',
+    gasLimit: '21000',
+    gasPrice: '1000000000',
+  };
+  const hex = (n) => `0x${n.toString(16)}`;
+  const BLOCK_90 = `0x${'90'.repeat(32)}`;
+
+  function startTracking() {
+    const running = start();
+    const sent = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (channel) => sent.push(channel) },
+    };
+    require('./intent-ipc').registerIntentIpc({ windows: () => [win] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    return {
+      ...running,
+      sent,
+      list: async () => (await handlers['wallet:intents-list']({})).intents,
+      tracker: require('./intent-tracker').getIntentTracker(),
+      history: require('../payment-history'),
+      send: async () => {
+        const { token } = await handlers['wallet:confirm-signing']({}, 'wallet-send', null, {
+          ...PAYMENT,
+          data: undefined,
+          maxFeePerGas: undefined,
+          maxPriorityFeePerGas: undefined,
+        });
+        return running.walletSend({}, PAYMENT, {}, { confirmation: token });
+      },
+    };
+  }
+
+  // The chain as verified reads (a quorum of 2) see it: finalized block
+  // 100, Alice's finalized count, and `mined` included at block 90.
+  function finality({ count, mined = {}, at = 90 }) {
+    const plain = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (chainId, method, params, options) => {
+      if (!options?.includeTrust) return plain(chainId, method, params, options);
+      const verified = (result) => ({
+        result,
+        source: 'quorum',
+        verified: true,
+        trust: { level: 'verified', method: 'quorum', quorum: { k: 3, m: 2, achieved: true } },
+      });
+      if (method === 'eth_getBlockByNumber' && params[0] === 'finalized') {
+        return verified({ number: hex(100), hash: `0x${'aa'.repeat(32)}` });
+      }
+      if (method === 'eth_getTransactionCount') return verified(hex(count));
+      if (method === 'eth_getTransactionReceipt') {
+        const status = mined[params[0]];
+        if (status === undefined) return verified(null);
+        return verified({
+          transactionHash: params[0],
+          from: ALICE.address.toLowerCase(),
+          blockNumber: hex(at),
+          blockHash: BLOCK_90,
+          status: hex(status),
+        });
+      }
+      if (method === 'eth_getBlockByNumber') return verified({ number: params[0], hash: BLOCK_90 });
+      throw new Error(`unexpected verified read ${method}`);
+    });
+  }
+
+  test('a mined payment settles paid at finality; its history row and the chrome hear of it', async () => {
+    const running = startTracking();
+    const sent = await running.send();
+    expect(sent).toMatchObject({ success: true, nonce: 7 });
+    finality({ count: 8, mined: { [sent.hash]: 1 } });
+    running.sent.length = 0;
+
+    await running.tracker.pass();
+
+    expect(running.store.get(sent.intentId)).toMatchObject({
+      state: 'settled',
+      settlement: { label: 'paid', hash: sent.hash, block: 100 },
+    });
+    // Its bytes are forgotten once settled.
+    expect(running.store.get(sent.intentId).hashes.every((entry) => entry.raw === null)).toBe(true);
+    expect(running.history.getRecent({})).toEqual([
+      expect.objectContaining({
+        txHash: sent.hash,
+        status: 'confirmed',
+        metadata: expect.objectContaining({
+          intentId: sent.intentId,
+          finality: { label: 'paid', block: 100 },
+        }),
+      }),
+    ]);
+    expect(running.sent).toContain('wallet:intents-changed');
+    await expect(running.list()).resolves.toEqual([]);
+    // Nothing held: the tracker has nothing scheduled.
+    expect(running.tracker.nextPassAt()).toBeNull();
+  });
+
+  test('a payment included with status 0 settles failed', async () => {
+    const running = startTracking();
+    const sent = await running.send();
+    finality({ count: 8, mined: { [sent.hash]: 0 } });
+    await running.tracker.pass();
+    expect(running.store.get(sent.intentId).settlement).toMatchObject({ label: 'failed' });
+    expect(running.history.getRecent({})[0]).toMatchObject({ status: 'failed' });
+  });
+
+  test('a refused payment whose nonce another transaction used is taken; the history gets its row', async () => {
+    const running = startTracking();
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('insufficient funds for gas'), { outcome: 'rejected' });
+    });
+    const refused = await running.send();
+    expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
+    expect(running.history.getRecent({})).toEqual([]);
+    finality({ count: 8 });
+
+    await running.tracker.pass();
+
+    expect(running.store.get(refused.intentId)).toMatchObject({
+      state: 'settled',
+      settlement: { label: 'taken', hash: null, block: 100 },
+    });
+    expect(running.history.getRecent({})).toEqual([
+      expect.objectContaining({
+        kind: 'wallet-send',
+        chainId: 100,
+        status: 'taken',
+        fromAddress: ALICE.address.toLowerCase(),
+        toAddress: BOB.address.toLowerCase(),
+        amount: '1000',
+        metadata: { intentId: refused.intentId, finality: { label: 'taken', block: 100 } },
+      }),
+    ]);
+  });
+
+  test('on chain but not final yet: no longer waiting, and still held', async () => {
+    const running = startTracking();
+    // Refused as far as the broadcast could tell, with no history row:
+    // only the tracker's reads know it is on chain.
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('nonce too low'), { outcome: 'rejected' });
+    });
+    const refused = await running.send();
+    expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
+    finality({ count: 7, mined: { [refused.intent.hash]: 1 }, at: 101 });
+    running.sent.length = 0;
+    await running.tracker.pass();
+    expect(running.store.get(refused.intentId).state).toBe('held');
+    expect(await running.list()).toEqual([
+      expect.objectContaining({
+        intentId: refused.intentId,
+        observed: 'included',
+        receipt: 'mined',
+      }),
+    ]);
+    expect(running.sent).toContain('wallet:intents-changed');
+  });
+
+  test('after a restart, a payment the reads show is not on chain says so, instead of "pending"', async () => {
+    const first = startTracking();
+    mockBroadcast.mockImplementationOnce(async (_chainId, raw) => ({
+      result: keccak256(raw),
+      source: 'direct',
+      outcome: 'uncertain',
+    }));
+    const sent = await first.send();
+    expect(sent).toMatchObject({ success: true, outcome: 'uncertain' });
+
+    // The app restarts: the records are read back, the outcomes summarized.
+    const running = startTracking();
+    await running.store.ready;
+    expect(await running.list()).toEqual([
+      expect.objectContaining({ intentId: sent.intentId, attention: 'pending', observed: null }),
+    ]);
+    finality({ count: 7 });
+    await running.tracker.pass();
+    expect(await running.list()).toEqual([
+      expect.objectContaining({
+        intentId: sent.intentId,
+        attention: 'absent',
+        observed: 'absent',
+        replacement: 'speed-up',
+        receipt: null,
+      }),
+    ]);
   });
 });
