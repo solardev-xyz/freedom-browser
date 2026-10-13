@@ -324,3 +324,27 @@ test("a chain's verified headers are released with its last held intent", async 
   expect(headerReads()).toBe(20);
   instance.stop();
 });
+
+// #712 review, round 3: an empty pass can't skip the release, even when
+// no store change announced that the chain's last intent closed.
+test('an empty pass releases the headers of a chain with nothing held', async () => {
+  const held = intent(1);
+  const store = fakeStore([held]);
+  const chain = fakeFinalityChain({
+    sender: SENDER,
+    startNonce: 1,
+    txs: { 90: [{ hash: hashOf(1), nonce: 1, status: 1 }] },
+  });
+  // Paid at 90, but the store refuses to settle: still held after the pass.
+  store.settle.mockImplementationOnce(async () => {
+    throw Object.assign(new Error('changed'), { code: 'INTENT_CHANGED' });
+  });
+  const { instance } = tracker({ store, request: chain.request });
+  await instance.pass();
+  expect(instance.verifiedHeaderCount(1)).toBe(11);
+
+  // Closed with no change announced (the tracker hears nothing).
+  held.state = 'voided';
+  await instance.pass();
+  expect(instance.verifiedHeaderCount(1)).toBe(0);
+});

@@ -1753,3 +1753,69 @@ describe('settling against the hashes that were read', () => {
     tracker.stop();
   });
 });
+
+// #712 review, round 3: voiding a chain's last held intent between passes
+// released nothing, and an empty pass returned before releasing.
+test("voiding a chain's last held intent releases its verified headers, at once and for good", async () => {
+  const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
+  const { createIntentTracker } = require('./intent-tracker');
+  const { store, reservations } = await started();
+  const commit = async (nonce) =>
+    store.commit({
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce,
+      ...(await sign({ nonce })),
+      via: 'original',
+      context: { kind: 'wallet-send' },
+    });
+  const first = await commit(7);
+  const last = await commit(8);
+  // Nonce 7 paid at block 100, under the finalized 200; nonce 8 nowhere.
+  const chain = fakeFinalityChain({
+    sender: ALICE.address.toLowerCase(),
+    startNonce: 7,
+    head: 220,
+    finalized: 200,
+    txs: { 100: [{ hash: first.hashes[0].hash, nonce: 7, status: 1 }] },
+  });
+  const timers = new Map();
+  let next = 0;
+  const tracker = createIntentTracker({
+    store,
+    request: chain.request,
+    recordSettlement: jest.fn(),
+    coreReady: () => true,
+    timers: {
+      setTimeout: (fn) => {
+        next += 1;
+        timers.set(next, fn);
+        return next;
+      },
+      clearTimeout: (id) => timers.delete(id),
+    },
+  });
+  tracker.start();
+  await tracker.pass();
+  expect(store.get(first.intentId).state).toBe('settled');
+  expect(store.get(last.intentId).state).toBe('held');
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(101); // 200 down to 100
+
+  // The user voids the last held intent between passes.
+  expect(store.voidRefusal(last.intentId)).toBeNull();
+  await reservations.withAccountLock({ chainId: CHAIN, sender: ALICE.address }, (lock) =>
+    store.void(last.intentId, lock)
+  );
+  expect(store.held()).toHaveLength(0);
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+
+  await tracker.pass();
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+  for (const [id, fire] of [...timers]) {
+    timers.delete(id);
+    fire();
+  }
+  await tracker.pass();
+  expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
+  tracker.stop();
+});

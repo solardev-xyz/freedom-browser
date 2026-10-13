@@ -164,6 +164,16 @@ function createIntentTracker({
     scheduleAt(now() + interval);
   }
 
+  // A chain with no held intents releases its verified headers (freedom-
+  // core design 0005, rule 2).
+  function releaseIdleSegments() {
+    if (segments.size === 0) return;
+    const stillHeld = new Set(heldNow().map((intent) => intent.chainId));
+    for (const chainId of segments.keys()) {
+      if (!stillHeld.has(chainId)) segments.delete(chainId);
+    }
+  }
+
   function lastHandoffAt(intent) {
     return intent.handoffs.reduce((latest, handoff) => Math.max(latest, handoff.at ?? 0), 0);
   }
@@ -179,6 +189,9 @@ function createIntentTracker({
     }
     if (!intent || intent.state !== 'held') {
       if (observations.delete(intentId)) emit();
+      // Settled or voided outside a pass: its chain may have nothing held
+      // left, and no pass may come to release its headers.
+      releaseIdleSegments();
       return;
     }
     const handedOff = lastHandoffAt(intent);
@@ -293,12 +306,10 @@ function createIntentTracker({
           if (!held.some((intent) => intent.intentId === id)) observations.delete(id);
         }
         if (changed.some(Boolean)) emit();
-        // A chain with no held intents left releases its verified headers.
-        const stillHeld = new Set(heldNow().map((intent) => intent.chainId));
-        for (const chainId of segments.keys()) {
-          if (!stillHeld.has(chainId)) segments.delete(chainId);
-        }
       } finally {
+        // Every pass, an empty one or one the core being down cut short
+        // among them.
+        releaseIdleSegments();
         passing = null;
         scheduleNext();
       }
@@ -330,6 +341,11 @@ function createIntentTracker({
     observation(intentId) {
       const seen = observations.get(intentId);
       return seen ? { ...seen } : null;
+    },
+
+    /** How many verified headers are kept for a chain (0 once released). */
+    verifiedHeaderCount(chainId) {
+      return segments.get(chainId)?.headers.size ?? 0;
     },
 
     /** When the next pass is due (ms since the epoch), or null. */
