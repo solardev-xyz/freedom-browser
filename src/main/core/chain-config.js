@@ -68,12 +68,18 @@ function wireQuorum(quorum) {
   return wire;
 }
 
+/** Text the wire carries: a lone surrogate, which no source name or chain
+ * name means, would make the whole snapshot unreadable to the core. */
+const wellFormed = (text) => text.toWellFormed();
+
 /** An order as the router takes it (`access.readOrder || default`), its
  * names only: the core drops unknown and repeated ones (deviation
  * `order-validation`). */
 function wireOrder(order, fallback) {
   const chosen = order || fallback;
-  return Array.isArray(chosen) ? chosen.filter((name) => typeof name === 'string') : [];
+  return Array.isArray(chosen)
+    ? chosen.filter((name) => typeof name === 'string').map(wellFormed)
+    : [];
 }
 
 const strings = (list) => (Array.isArray(list) ? list.filter((s) => typeof s === 'string') : []);
@@ -118,7 +124,7 @@ function buildChainSnapshot(refs, { registry, myotis, logIndexUrls = {} }) {
     chains.push({
       chain_id: chainId,
       // Myotis's own errors name the chain.
-      display_name: typeof name === 'string' ? name : key,
+      display_name: typeof name === 'string' ? wellFormed(name) : key,
       read_order: wireOrder(
         network?.access?.readOrder,
         served ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER

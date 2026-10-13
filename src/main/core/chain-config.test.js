@@ -10,6 +10,9 @@ const {
 } = require('./chain-config');
 
 const LOG_INDEX_URLS = { 100: 'https://gnosis.blockscout.com/api' };
+// Built at run time, so the text is the character itself.
+const LONE = String.fromCharCode(0xd800);
+const REPLACEMENT = String.fromCharCode(0xfffd);
 
 /** A registry with Ethereum, Gnosis and Base as chains.json has them, a
  * user's endpoint on Gnosis, and a custom chain without orders. */
@@ -163,13 +166,18 @@ describe('the snapshot', () => {
             5: {
               access: { readOrder: ['quorum', 7, null, 'direct', 'quorum'], broadcastOrder: [] },
             },
+            // A custom chain's own name, with a lone surrogate the core
+            // couldn't read.
+            6: { name: `Odd ${LONE}`, access: { readOrder: [`x${LONE}`] } },
           }),
           getEndpoints: (_chainId, role) => (role === 'rpc' ? [...many, 42] : [null]),
         }),
       })
     );
-    expect(snapshot.chains.map((c) => c.chain_id)).toEqual([5]);
-    const [chain] = snapshot.chains;
+    expect(snapshot.chains.map((c) => c.chain_id)).toEqual([5, 6]);
+    const [chain, odd] = snapshot.chains;
+    expect(odd.display_name).toBe(`Odd ${REPLACEMENT}`);
+    expect(odd.read_order).toEqual([`x${REPLACEMENT}`]);
     expect(chain.rpc).toHaveLength(MAX_RPC_ENDPOINTS);
     // Repeats and unknown names are the core's to drop (deviation
     // `order-validation`); an empty order stays empty, as the router's.
