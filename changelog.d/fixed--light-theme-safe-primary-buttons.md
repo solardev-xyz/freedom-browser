@@ -1,0 +1,1 @@
+- In the light theme, a Safe account's highlighted buttons (Activate, Try again, Sign with Ledger) are filled again instead of showing white text on white ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))

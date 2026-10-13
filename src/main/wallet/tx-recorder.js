@@ -9,6 +9,7 @@ const log = require('../logger');
 const {
   signAndSendTransaction,
   resendIntent,
+  replaceIntent,
   waitForTransaction,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
@@ -56,8 +57,8 @@ const ROW_LOOKBACK = 500;
 function findIntentRow(response, kind) {
   const { intentId } = response;
   if (rowsByIntent.has(intentId)) return paymentHistory.getById(rowsByIntent.get(intentId));
-  // Only a resend can follow a row written by an earlier run.
-  if (!response.resent) return null;
+  // Only a resend or a replacement can follow a row written by an earlier run.
+  if (!response.resent && !response.replaced) return null;
   return (
     paymentHistory
       .getRecent({ chainId: response.chainId, kind, limit: ROW_LOOKBACK })
@@ -199,4 +200,26 @@ async function resendAndRecord(intentId, options = {}) {
   });
 }
 
-module.exports = { signAndRecord, resendAndRecord, KINDS };
+/**
+ * Replace a held intent at its nonce with higher fees (replaceIntent) and
+ * keep its history row, which then names the replacement's hash. Throws as
+ * replaceIntent does.
+ *
+ * @param {string} intentId
+ * @param {Object} fees
+ * @param {import('./signers').Signer} signer
+ */
+async function replaceAndRecord(intentId, fees, signer) {
+  const response = await replaceIntent(intentId, fees, signer);
+  const intent = getIntentStore().get(intentId);
+  return recordSend(response, {
+    kind: intent?.context?.kind ?? KINDS.WALLET_SEND,
+    chainId: response.chainId,
+    fromAddress: response.from,
+    ...paymentOf(intent?.fields),
+    origin: intent?.context?.origin ?? null,
+    metadata: undefined,
+  });
+}
+
+module.exports = { signAndRecord, resendAndRecord, replaceAndRecord, KINDS };

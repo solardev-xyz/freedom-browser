@@ -532,6 +532,12 @@ contextBridge.exposeInMainWorld('wallet', {
   intentsList: () => ipcRenderer.invoke('wallet:intents-list'),
   intentResend: (intentId, authorization) =>
     ipcRenderer.invoke('wallet:intent-resend', intentId, authorization),
+  // Replace a held payment at its nonce with higher fees: `authorization`
+  // is an 'intent-replace' confirmation of the payment and those fees.
+  intentReplacementFees: (intentId) =>
+    ipcRenderer.invoke('wallet:intent-replacement-fees', intentId),
+  intentReplace: (intentId, fees, authorization) =>
+    ipcRenderer.invoke('wallet:intent-replace', intentId, fees, authorization),
   onIntentsChanged: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('wallet:intents-changed', handler);

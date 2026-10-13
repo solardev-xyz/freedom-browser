@@ -1,0 +1,3 @@
+- The wallet lists payments that are signed but not confirmed yet, under "Payments waiting", with Send again for each ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A payment the network refused for its fee, or one that seems stuck, can be replaced with a higher fee; only one of the two can go through
+  - The send review warns when a new payment would wait behind one that hasn't gone through

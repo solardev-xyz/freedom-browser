@@ -569,6 +569,201 @@ async function resendIntent(intentId, { hash } = {}) {
   return broadcastIntent(intent, handoff, { resent: true });
 }
 
+// A replacement must raise every fee it pays by at least 10%: what nodes
+// require of a transaction replacing another at the same nonce.
+const REPLACEMENT_BUMP_PERCENT = 110n;
+
+function bumped(value) {
+  return (BigInt(value) * REPLACEMENT_BUMP_PERCENT + 99n) / 100n;
+}
+
+function feeTooLow() {
+  const error = new Error('A replacement must raise the fee by at least 10%.');
+  error.code = 'INTENT_FEE_TOO_LOW';
+  return error;
+}
+
+/**
+ * The fees of a replacement of `fields` (a held intent's latest unsigned
+ * fields), checked: the same fee type, every fee at least 10% higher, and a
+ * priority fee no higher than the maximum. Returns them as decimal strings.
+ *
+ * The rule is the one nodes apply to a replacement, `new ≥ ceil(old × 1.1)`
+ * for each fee, so a priority fee of 0 may stay 0: its floor is 0 (and
+ * `replacementFees` offers exactly that when no quote is available). The
+ * maximum fee, or a legacy gas price, must be positive, so a replacement
+ * always differs from what it replaces.
+ */
+function replacementFeesFor(fields, fees) {
+  const quantity = (value, { positive }) => {
+    try {
+      const n = BigInt(value);
+      if (n < 0n || (positive && n === 0n)) throw new Error('out of range');
+      return n;
+    } catch {
+      throw feeTooLow();
+    }
+  };
+  if (fields.type === 2) {
+    const maxFeePerGas = quantity(fees?.maxFeePerGas, { positive: true });
+    const maxPriorityFeePerGas = quantity(fees?.maxPriorityFeePerGas, { positive: false });
+    if (fees.gasPrice !== undefined && fees.gasPrice !== null) throw feeTooLow();
+    if (
+      maxFeePerGas < bumped(fields.maxFeePerGas) ||
+      maxPriorityFeePerGas < bumped(fields.maxPriorityFeePerGas)
+    ) {
+      throw feeTooLow();
+    }
+    if (maxPriorityFeePerGas > maxFeePerGas) {
+      throw new Error('Invalid transaction fees: priority fee exceeds maximum fee');
+    }
+    return {
+      maxFeePerGas: maxFeePerGas.toString(),
+      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+    };
+  }
+  if (fees?.maxFeePerGas !== undefined || fees?.maxPriorityFeePerGas !== undefined) {
+    throw feeTooLow();
+  }
+  const gasPrice = quantity(fees?.gasPrice, { positive: true });
+  if (gasPrice < bumped(fields.gasPrice)) throw feeTooLow();
+  return { gasPrice: gasPrice.toString() };
+}
+
+function heldIntent(store, intentId) {
+  const intent = store.get(intentId);
+  if (!intent) {
+    const error = new Error("This payment is not in the wallet's records.");
+    error.code = 'INTENT_UNKNOWN';
+    throw error;
+  }
+  if (intent.state !== 'held') {
+    const error = new Error(
+      intent.state === 'voided' ? 'This payment was voided.' : 'This payment is already settled.'
+    );
+    error.code = 'INTENT_NOT_HELD';
+    throw error;
+  }
+  return intent;
+}
+
+/**
+ * The fees to offer for replacing a held intent: each at least 10% above
+ * what its latest transaction pays, and at least today's quote.
+ *
+ * @param {string} intentId
+ * @returns {Promise<{maxFeePerGas: string, maxPriorityFeePerGas: string}|{gasPrice: string}>}
+ */
+async function replacementFees(intentId) {
+  const store = getIntentStore();
+  await store.ready;
+  const { fields, chainId } = heldIntent(store, intentId);
+  let quote = null;
+  try {
+    quote = await getGasPrices(chainId);
+  } catch {
+    // The bump alone still makes a valid replacement.
+  }
+  const atLeast = (floor, candidate) => {
+    try {
+      const n = BigInt(candidate);
+      return n > floor ? n : floor;
+    } catch {
+      return floor;
+    }
+  };
+  // The maximum fee and a legacy gas price must be positive in a
+  // replacement (replacementFeesFor). An original sent at 0, with no quote
+  // to raise it, is offered 1 wei: the smallest replacement allowed.
+  const positive = (n) => (n > 0n ? n : 1n);
+  if (fields.type === 2) {
+    const eip1559 = quote?.type === 'eip1559';
+    const maxPriorityFeePerGas = atLeast(
+      bumped(fields.maxPriorityFeePerGas),
+      eip1559 ? quote.maxPriorityFeePerGas : null
+    );
+    let maxFeePerGas = positive(
+      atLeast(bumped(fields.maxFeePerGas), eip1559 ? quote.maxFeePerGas : quote?.gasPrice)
+    );
+    if (maxPriorityFeePerGas > maxFeePerGas) maxFeePerGas = maxPriorityFeePerGas;
+    return {
+      maxFeePerGas: maxFeePerGas.toString(),
+      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+    };
+  }
+  return {
+    gasPrice: positive(
+      atLeast(bumped(fields.gasPrice), quote?.gasPrice ?? quote?.maxFeePerGas)
+    ).toString(),
+  };
+}
+
+/**
+ * Replace a held intent at its nonce: the same payment (to, value, data,
+ * gas limit), signed again with fees at least 10% higher, so it can take
+ * the nonce's slot from the transaction it replaces. Under the account's
+ * lock, as a new intent's signature is, but `pending` is never read: the
+ * nonce is the intent's own. Only one transaction at that nonce can be
+ * mined, so a replacement can't pay twice.
+ *
+ * @param {string} intentId
+ * @param {Object} fees - {maxFeePerGas, maxPriorityFeePerGas} or {gasPrice}
+ * @param {import('./signers').Signer} signer - the intent's own account
+ * @returns {Promise<Object>} as signAndSendTransaction, with `replaced: true`
+ */
+async function replaceIntent(intentId, fees, signer) {
+  const store = getIntentStore();
+  await store.ready;
+  const intent = heldIntent(store, intentId);
+  replacementFeesFor(intent.fields, fees);
+
+  let committed = null;
+  let handoff;
+  try {
+    handoff = await withAccountLock(
+      { chainId: intent.chainId, sender: intent.sender },
+      async () => {
+        // As it stands under the lock: another replacement may have landed.
+        const current = heldIntent(store, intentId);
+        const checked = replacementFeesFor(current.fields, fees);
+        if (String(await signer.getAddress()).toLowerCase() !== current.sender) {
+          const error = new Error("This payment's account is not the one asked to sign it.");
+          error.code = 'INTENT_KEY_MISMATCH';
+          throw error;
+        }
+        const tx = buildTransaction({
+          to: current.fields.to,
+          value: current.fields.value,
+          data: current.fields.data,
+          gasLimit: current.fields.gasLimit,
+          ...checked,
+          nonce: current.nonce,
+          chainId: current.chainId,
+        });
+        const raw = await signer.signTransaction(tx);
+        committed = await store.commit({
+          intentId,
+          chainId: current.chainId,
+          sender: current.sender,
+          nonce: current.nonce,
+          hash: keccak256(raw),
+          raw,
+          via: 'replacement',
+        });
+        return store.handoff(intentId, committed.hash);
+      }
+    );
+  } catch (err) {
+    console.error('[TransactionService] Replacement failed:', err);
+    if (committed) throw notSent(err, intentId);
+    const error = toSendError(err);
+    error.intentId = intentId;
+    throw error;
+  }
+  console.log(`[TransactionService] Replacing intent ${intentId} at nonce ${committed.nonce}`);
+  return broadcastIntent(committed, handoff, { replaced: true });
+}
+
 /**
  * The held intent an intent key names (`safe-exec:<chain>:<safeTxHash>`,
  * `safe-deploy:<chain>:<safeAddress>`), or null.
@@ -744,6 +939,8 @@ module.exports = {
   buildTransaction,
   signAndSendTransaction,
   resendIntent,
+  replaceIntent,
+  replacementFees,
   heldIntentFor,
   getTransactionStatus,
   waitForTransaction,

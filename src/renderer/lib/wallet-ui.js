@@ -33,6 +33,7 @@ import { initConnectPhone, openConnectPhone, closeConnectPhone } from './wallet/
 import { initCreateSafe, openCreateSafe, closeCreateSafe } from './wallet/create-safe.js';
 import { initSafeSigning, closeSafeSigning } from './wallet/safe-signing.js';
 import { initSafePendingList, closeSafePendingList } from './wallet/safe-pending-list.js';
+import { initHeldPayments, closeHeldPayments } from './wallet/held-payments.js';
 import { initRemoteSession } from './wallet/remote-session.js';
 import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
@@ -109,6 +110,7 @@ export function initWalletUi() {
   initCreateSafe();
   initSafeSigning();
   initSafePendingList();
+  initHeldPayments();
   initRemoteSession();
   initRemoteSigningPanel(); // after initRemoteSession — subscribes to its broker
   initPublishSetup();
@@ -496,6 +498,7 @@ function closeAllSubscreens() {
   closeCreateSafe();
   closeSafeSigning();
   closeSafePendingList();
+  closeHeldPayments();
   closeReceive();
   closeWalletSettings();
   closeSend();

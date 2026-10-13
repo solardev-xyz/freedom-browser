@@ -32,6 +32,11 @@
  *     again. Nothing is signed; the handler builds the binding from main's
  *     own record of the intent, never from fields the caller submits
  *     (`wallet:intent-resend`).
+ *   - intent-replace: a held intent signed again at its nonce with new
+ *     fees: its id, chainId, sender, nonce, the payment it keeps (to,
+ *     value, data, gasLimit) and the new fees. The handler takes the
+ *     payment from main's record and only the fees from the caller
+ *     (`wallet:intent-replace`).
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
@@ -54,6 +59,7 @@ const KINDS = Object.freeze({
   SAFE_SEND: 'safe-send',
   SAFE_MESSAGE: 'safe-message',
   INTENT_RESEND: 'intent-resend',
+  INTENT_REPLACE: 'intent-replace',
 });
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
@@ -219,6 +225,16 @@ function bindingFor(kind, accountIndex, payload) {
         sender,
         nonce: nonce(payload?.nonce),
         hash: txHash(payload?.hash),
+      };
+    }
+    case KINDS.INTENT_REPLACE: {
+      const sender = address(payload?.sender, 'sender');
+      if (!sender) throw new Error('Invalid sender');
+      return {
+        intentId: intentId(payload?.intentId),
+        sender,
+        nonce: nonce(payload?.nonce),
+        ...txFields(payload),
       };
     }
     case KINDS.SAFE_MESSAGE:

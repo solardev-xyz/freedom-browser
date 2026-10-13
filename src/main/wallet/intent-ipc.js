@@ -16,13 +16,24 @@
  *   where the intent stands: its current summary, so the chrome keeps
  *   offering that payment, at that nonce, and never a new one. Only an
  *   intent main doesn't know (`INTENT_UNKNOWN`) comes without one.
+ * - `wallet:intent-replacement-fees(intentId)` and
+ *   `wallet:intent-replace(intentId, fees, authorization)`: sign a held
+ *   intent again at its nonce, paying the same thing with fees at least
+ *   10% higher. The authorization is an `intent-replace` confirmation of
+ *   the intent and those fees; the payment it binds comes from main's
+ *   record, and only the fees from the caller. Offered for a refusal over
+ *   fees, and as "speed up" for a payment that may be stuck. Refusals
+ *   carry the intent's current summary, as a resend's do.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
  *   change.
  */
 
 const { ipcMain } = require('electron');
 const { getIntentStore } = require('./intent-store');
-const { resendAndRecord } = require('./tx-recorder');
+const { resendAndRecord, replaceAndRecord } = require('./tx-recorder');
+const { replacementFees } = require('./transaction-service');
+const { getSigner } = require('./signers');
+const paymentHistory = require('../payment-history');
 const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('./signing-confirmation');
 
 const OUTCOME_ATTENTION = Object.freeze({
@@ -45,9 +56,31 @@ function attentionOf(view) {
   return view.possiblySent ? 'pending' : 'not-sent';
 }
 
+// Refusals a higher fee answers (design 0005, "Refusals").
+const FEE_REFUSALS = new Set([
+  'transaction underpriced',
+  'replacement transaction underpriced',
+  'max fee per gas less than block base fee',
+]);
+
+/**
+ * What replacement a held intent is offered: `replace` after a refusal over
+ * fees, `speed-up` for one that may be sitting unmined, else null. Only
+ * with its signing account known.
+ */
+function replacementOffer(view, attention) {
+  if (!Number.isSafeInteger(view.context?.walletIndex)) return null;
+  if (attention === 'refused') {
+    const reason = view.handoffs[view.handoffs.length - 1]?.outcome?.reasonClass;
+    return FEE_REFUSALS.has(reason) ? 'replace' : null;
+  }
+  return attention === 'uncertain' || attention === 'pending' ? 'speed-up' : null;
+}
+
 /** A held intent for the renderer: what it pays and where it stands. */
 function intentSummary(view) {
   const last = view.handoffs[view.handoffs.length - 1];
+  const attention = attentionOf(view);
   return {
     intentId: view.intentId,
     chainId: view.chainId,
@@ -66,7 +99,8 @@ function intentSummary(view) {
     lastOutcome: last?.outcome
       ? { outcome: last.outcome.outcome, reasonClass: last.outcome.reasonClass }
       : null,
-    attention: attentionOf(view),
+    attention,
+    replacement: replacementOffer(view, attention),
   };
 }
 
@@ -95,6 +129,26 @@ function intentFailure(err) {
   return fields;
 }
 
+// The receipts payment history has seen for intents, by intent id: a held
+// intent whose transaction is already mined needs no attention, though it
+// stays held until its label is read at the finalized block.
+const RECEIPT_LOOKBACK = 500;
+
+function receiptsByIntent() {
+  const receipts = new Map();
+  try {
+    for (const row of paymentHistory.getRecent({ limit: RECEIPT_LOOKBACK })) {
+      const intentId = row.metadata?.intentId;
+      if (intentId && (row.status === 'confirmed' || row.status === 'failed')) {
+        receipts.set(intentId, row.status);
+      }
+    }
+  } catch (err) {
+    console.warn('[WalletIPC] Payment history unavailable for held payments:', err.message);
+  }
+  return receipts;
+}
+
 /**
  * Main's current word on an intent a request named: its id and summary
  * (whose `state` says whether it is still held), or nothing for an intent
@@ -114,12 +168,14 @@ function currentIntent(intentId) {
 async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
-  return store.held().map(intentSummary);
+  const receipts = receiptsByIntent();
+  return store
+    .held()
+    .map((view) => ({ ...intentSummary(view), receipt: receipts.get(view.intentId) ?? null }));
 }
 
-async function resendHeldIntent(intentId, authorization) {
-  const store = getIntentStore();
-  await store.ready;
+// A held intent, or the error that says why there is none.
+function heldView(store, intentId) {
   const view = typeof intentId === 'string' ? store.get(intentId) : null;
   if (!view) {
     const error = new Error("This payment is not in the wallet's records.");
@@ -133,6 +189,13 @@ async function resendHeldIntent(intentId, authorization) {
     error.code = 'INTENT_NOT_HELD';
     throw error;
   }
+  return view;
+}
+
+async function resendHeldIntent(intentId, authorization) {
+  const store = getIntentStore();
+  await store.ready;
+  const view = heldView(store, intentId);
   // The user confirmed this intent as main records it; nothing the caller
   // submits takes part.
   consumeConfirmation(
@@ -142,6 +205,51 @@ async function resendHeldIntent(intentId, authorization) {
     resendBinding(view)
   );
   return resendAndRecord(view.intentId, { hash: view.hash });
+}
+
+// What an intent-replace confirmation binds: the payment from main's
+// record, the fees as submitted.
+function replaceBinding(view, fees) {
+  return {
+    intentId: view.intentId,
+    chainId: view.chainId,
+    sender: view.sender,
+    nonce: view.nonce,
+    to: view.fields.to,
+    value: view.fields.value,
+    data: view.fields.data,
+    gasLimit: view.fields.gasLimit,
+    maxFeePerGas: fees?.maxFeePerGas,
+    maxPriorityFeePerGas: fees?.maxPriorityFeePerGas,
+    gasPrice: fees?.gasPrice,
+  };
+}
+
+async function replaceHeldIntent(intentId, fees, authorization) {
+  const store = getIntentStore();
+  await store.ready;
+  const view = heldView(store, intentId);
+  const walletIndex = view.context?.walletIndex;
+  if (!Number.isSafeInteger(walletIndex)) {
+    const error = new Error("This payment's account isn't known, so it can't be replaced.");
+    error.code = 'INTENT_SIGNER_UNKNOWN';
+    throw error;
+  }
+  const submitted = {
+    maxFeePerGas: fees?.maxFeePerGas,
+    maxPriorityFeePerGas: fees?.maxPriorityFeePerGas,
+    gasPrice: fees?.gasPrice,
+  };
+  consumeConfirmation(
+    authorization?.confirmation,
+    CONFIRM_KINDS.INTENT_REPLACE,
+    null,
+    replaceBinding(view, submitted)
+  );
+  const confirmed = Object.fromEntries(
+    Object.entries(submitted).filter(([, value]) => value !== undefined && value !== null)
+  );
+  return replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex));
 }
 
 /**
@@ -174,6 +282,33 @@ function registerIntentIpc({
     }
   });
 
+  ipcMain.handle('wallet:intent-replacement-fees', async (_event, intentId) => {
+    try {
+      return { success: true, fees: await replacementFees(intentId) };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
+    }
+  });
+
+  ipcMain.handle('wallet:intent-replace', async (_event, intentId, fees, authorization) => {
+    try {
+      return { success: true, ...(await replaceHeldIntent(intentId, fees, authorization)) };
+    } catch (err) {
+      console.error('[WalletIPC] Replacing a payment failed:', err);
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
+    }
+  });
+
   getIntentStore().onChange(() => {
     for (const win of windows()) {
       if (win.isDestroyed()) continue;
@@ -192,5 +327,7 @@ module.exports = {
   intentFailure,
   intentSummary,
   registerIntentIpc,
+  replaceBinding,
+  replacementOffer,
   resendBinding,
 };

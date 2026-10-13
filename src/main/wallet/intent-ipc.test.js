@@ -14,6 +14,7 @@ let mockSigners;
 let mockPermission;
 const mockRequest = jest.fn();
 const mockBroadcast = jest.fn();
+const mockFeeQuote = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn() },
@@ -30,7 +31,7 @@ jest.mock('./chains', () => ({
 jest.mock('../networks/chain-data', () => ({
   request: (...args) => mockRequest(...args),
   broadcastRawTransaction: (...args) => mockBroadcast(...args),
-  getFeeQuote: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
+  getFeeQuote: (...args) => mockFeeQuote(...args),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
@@ -83,6 +84,7 @@ beforeEach(() => {
     if (method === 'eth_getTransactionCount') return { result: '0x7', source: 'direct' };
     throw new Error(`unexpected read ${method}`);
   });
+  mockFeeQuote.mockReset().mockResolvedValue({ type: 'legacy', gasPrice: '1000000000' });
   mockBroadcast.mockReset().mockImplementation(async (_chainId, raw) => ({
     result: keccak256(raw),
     source: 'direct',
@@ -757,6 +759,610 @@ describe('held payments over IPC (4b)', () => {
         expect(policy.isSenderAllowed(channel, event('window', chrome, true))).toBe(false);
         expect(policy.isSenderAllowed(channel, event('window', chrome))).toBe(true);
       }
+    });
+  });
+});
+
+describe('replacement at the same nonce (9)', () => {
+  function startReplacing() {
+    const running = start();
+    require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    return {
+      ...running,
+      confirm: (kind, index, payload) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      list: () => handlers['wallet:intents-list']({}),
+      fees: (intentId) => handlers['wallet:intent-replacement-fees']({}, intentId),
+      replace: (...args) => handlers['wallet:intent-replace']({}, ...args),
+    };
+  }
+
+  const PAYMENT = {
+    chainId: 100,
+    to: BOB.address,
+    value: '1000',
+    gasLimit: '21000',
+    gasPrice: '1000000000',
+  };
+
+  async function heldBy(running, refusal) {
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error(refusal.message), { outcome: refusal.outcome });
+    });
+    const { token } = await running.confirm('wallet-send', null, {
+      ...PAYMENT,
+      data: undefined,
+      maxFeePerGas: undefined,
+      maxPriorityFeePerGas: undefined,
+    });
+    const reply = await running.walletSend({}, PAYMENT, {}, { confirmation: token });
+    return reply.intent;
+  }
+
+  const UNDERPRICED = { message: 'transaction underpriced', outcome: 'rejected' };
+
+  const replacementOf = (intent, fees) => ({
+    intentId: intent.intentId,
+    chainId: intent.chainId,
+    sender: intent.sender,
+    nonce: intent.nonce,
+    to: intent.fields.to,
+    value: intent.fields.value,
+    data: intent.fields.data,
+    gasLimit: intent.fields.gasLimit,
+    ...fees,
+  });
+
+  async function replaceConfirmed(running, intent, fees) {
+    const { token } = await running.confirm('intent-replace', null, replacementOf(intent, fees));
+    return running.replace(intent.intentId, fees, { confirmation: token });
+  }
+
+  test('an underpriced refusal is offered a replacement: same payment, nonce and account, higher fee', async () => {
+    const running = startReplacing();
+    const intent = await heldBy(running, UNDERPRICED);
+    expect(intent).toMatchObject({ replacement: 'replace', nonce: 7, walletIndex: 0 });
+
+    const { fees } = await running.fees(intent.intentId);
+    // At least 10% over 1 gwei, and at least today's quote (1 gwei).
+    expect(fees).toEqual({ gasPrice: '1100000000' });
+
+    const reply = await replaceConfirmed(running, intent, fees);
+    expect(reply).toMatchObject({ success: true, replaced: true, nonce: 7, outcome: 'sent' });
+    expect(reply.hash).not.toBe(intent.hash);
+    const replacement = broadcasts().at(-1);
+    expect({
+      from: replacement.from,
+      nonce: replacement.nonce,
+      to: replacement.to,
+      value: replacement.value,
+      gasPrice: replacement.gasPrice,
+    }).toEqual({
+      from: ALICE.address,
+      nonce: 7,
+      to: BOB.address,
+      value: 1000n,
+      gasPrice: 1100000000n,
+    });
+    // The intent keeps both hashes at its one nonce; no pending read.
+    expect(running.store.get(intent.intentId).hashes.map((entry) => entry.hash)).toEqual([
+      intent.hash,
+      reply.hash,
+    ]);
+    expect(mockRequest.mock.calls.filter(([, m]) => m === 'eth_getTransactionCount')).toHaveLength(
+      1
+    );
+    // Its history row now names the replacement.
+    const history = require('../payment-history');
+    expect(history.getRecent({})).toEqual([
+      expect.objectContaining({
+        txHash: reply.hash,
+        metadata: expect.objectContaining({ intentId: intent.intentId }),
+      }),
+    ]);
+  });
+
+  test('a fee raised by less than 10% is refused, with nothing signed', async () => {
+    const running = startReplacing();
+    const intent = await heldBy(running, UNDERPRICED);
+    mockSigners[0].signTransaction.mockClear();
+    for (const fees of [
+      { gasPrice: '1050000000' },
+      { maxFeePerGas: '9000000000', maxPriorityFeePerGas: '2000000000' },
+    ]) {
+      await expect(replaceConfirmed(running, intent, fees)).resolves.toMatchObject({
+        success: false,
+        code: 'INTENT_FEE_TOO_LOW',
+      });
+    }
+    expect(mockSigners[0].signTransaction).not.toHaveBeenCalled();
+    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+  });
+
+  test('a replacement needs a confirmation of exactly that payment and those fees', async () => {
+    const running = startReplacing();
+    const intent = await heldBy(running, UNDERPRICED);
+    const fees = { gasPrice: '1100000000' };
+    mockSigners[0].signTransaction.mockClear();
+    const tokenFor = async (payload) =>
+      (await running.confirm('intent-replace', null, payload)).token;
+    const attempts = [
+      ['no authorization', null],
+      [
+        'other fees',
+        { confirmation: await tokenFor(replacementOf(intent, { gasPrice: '1200000000' })) },
+      ],
+      [
+        'another recipient',
+        { confirmation: await tokenFor({ ...replacementOf(intent, fees), to: CONTRACT }) },
+      ],
+      [
+        'another value',
+        { confirmation: await tokenFor({ ...replacementOf(intent, fees), value: '1' }) },
+      ],
+      [
+        'another nonce',
+        { confirmation: await tokenFor({ ...replacementOf(intent, fees), nonce: 8 }) },
+      ],
+      [
+        'a resend confirmation',
+        {
+          confirmation: (
+            await running.confirm('intent-resend', null, {
+              intentId: intent.intentId,
+              chainId: 100,
+              sender: intent.sender,
+              nonce: 7,
+              hash: intent.hash,
+            })
+          ).token,
+        },
+      ],
+    ];
+    for (const [name, authorization] of attempts) {
+      const reply = await running.replace(intent.intentId, fees, authorization);
+      expect({ name, reply }).toMatchObject({
+        name,
+        reply: { success: false, code: 'SIGNING_NOT_CONFIRMED' },
+      });
+    }
+    expect(mockSigners[0].signTransaction).not.toHaveBeenCalled();
+  });
+
+  test('a payment that may be stuck is offered a speed-up; other refusals are not', async () => {
+    const running = startReplacing();
+    mockBroadcast.mockImplementationOnce(async (_chainId, raw) => ({
+      result: keccak256(raw),
+      source: 'direct',
+      outcome: 'uncertain',
+    }));
+    const { token } = await running.confirm('wallet-send', null, {
+      ...PAYMENT,
+      data: undefined,
+      maxFeePerGas: undefined,
+      maxPriorityFeePerGas: undefined,
+    });
+    await running.walletSend({}, PAYMENT, {}, { confirmation: token });
+    const funds = await heldBy(running, {
+      message: 'insufficient funds for gas',
+      outcome: 'rejected',
+    });
+
+    const { intents } = await running.list();
+    expect(intents.map((intent) => [intent.attention, intent.replacement])).toEqual([
+      ['uncertain', 'speed-up'],
+      ['refused', null],
+    ]);
+    expect(funds.replacement).toBeNull();
+  });
+
+  test("an intent whose account isn't recorded can't be replaced", async () => {
+    const running = startReplacing();
+    // Committed by a caller that records no wallet index (as #706's sends did).
+    const raw = await ALICE.signTransaction({
+      type: 0,
+      chainId: 100,
+      nonce: 7,
+      to: BOB.address,
+      value: 1n,
+      gasLimit: 21000n,
+      gasPrice: 1000000000n,
+    });
+    const view = await running.store.commit({
+      chainId: 100,
+      sender: ALICE.address,
+      nonce: 7,
+      hash: keccak256(raw),
+      raw,
+      via: 'original',
+      context: { kind: 'wallet-send' },
+    });
+    const { intents } = await running.list();
+    expect(intents[0]).toMatchObject({ walletIndex: null, replacement: null });
+    const fees = { gasPrice: '1100000000' };
+    const { token } = await running.confirm(
+      'intent-replace',
+      null,
+      replacementOf(intents[0], fees)
+    );
+    await expect(
+      running.replace(view.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_SIGNER_UNKNOWN',
+    });
+  });
+});
+
+describe('the list knows which payments are mined (6)', () => {
+  test('a mined payment carries its receipt; a refused one has none', async () => {
+    const running = start();
+    require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    const PAYMENT = {
+      chainId: 100,
+      to: BOB.address,
+      value: '1000',
+      gasLimit: '21000',
+      gasPrice: '1000000000',
+    };
+    const send = async () => {
+      const { token } = await handlers['wallet:confirm-signing']({}, 'wallet-send', null, {
+        ...PAYMENT,
+        data: undefined,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+      });
+      return running.walletSend({}, PAYMENT, {}, { confirmation: token });
+    };
+    const mined = await send();
+    expect(mined).toMatchObject({ success: true });
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('insufficient funds for gas'), { outcome: 'rejected' });
+    });
+    const refused = await send();
+
+    const history = require('../payment-history');
+    let rows = [];
+    for (let i = 0; i < 50 && !rows.some((row) => row.status === 'confirmed'); i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      rows = history.getRecent({});
+    }
+    const { intents } = await handlers['wallet:intents-list']({});
+    expect(intents.map((intent) => [intent.intentId, intent.receipt])).toEqual([
+      [mined.intentId, 'confirmed'],
+      [refused.intentId, null],
+    ]);
+  });
+});
+
+describe('replacement fees (9)', () => {
+  function startReplacing() {
+    const running = start();
+    require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    return {
+      ...running,
+      confirm: (kind, index, payload) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      fees: (intentId) => handlers['wallet:intent-replacement-fees']({}, intentId),
+      replace: (...args) => handlers['wallet:intent-replace']({}, ...args),
+    };
+  }
+
+  const LEGACY = { gasPrice: '1000000000' };
+  const EIP1559 = { maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000' };
+
+  // A send refused as underpriced, paying `fees`.
+  async function underpriced(running, fees) {
+    const params = { chainId: 100, to: BOB.address, value: '1000', gasLimit: '21000', ...fees };
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('transaction underpriced'), { outcome: 'rejected' });
+    });
+    const { token } = await running.confirm('wallet-send', null, {
+      data: undefined,
+      gasPrice: undefined,
+      maxFeePerGas: undefined,
+      maxPriorityFeePerGas: undefined,
+      ...params,
+    });
+    const reply = await running.walletSend({}, params, {}, { confirmation: token });
+    expect(reply).toMatchObject({ success: false, outcome: 'rejected' });
+    return running.store.get(reply.intentId);
+  }
+
+  async function replaceConfirmed(running, intent, fees) {
+    const { token } = await running.confirm('intent-replace', null, {
+      intentId: intent.intentId,
+      chainId: intent.chainId,
+      sender: intent.sender,
+      nonce: intent.nonce,
+      to: intent.fields.to,
+      value: intent.fields.value,
+      data: intent.fields.data,
+      gasLimit: intent.fields.gasLimit,
+      ...fees,
+    });
+    return running.replace(intent.intentId, fees, { confirmation: token });
+  }
+
+  test("the offer is today's quote when that is higher than the 10% bump", async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    mockFeeQuote.mockResolvedValue({ type: 'legacy', gasPrice: '5000000000' });
+    await expect(running.fees(intent.intentId)).resolves.toEqual({
+      success: true,
+      fees: { gasPrice: '5000000000' },
+    });
+    // A quote that can't be read leaves the bump alone.
+    mockFeeQuote.mockRejectedValue(new Error('rpc down'));
+    await expect(running.fees(intent.intentId)).resolves.toEqual({
+      success: true,
+      fees: { gasPrice: '1100000000' },
+    });
+  });
+
+  test('an EIP-1559 payment is replaced with both fees raised, and keeps its type', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, EIP1559);
+    mockFeeQuote.mockResolvedValue({
+      type: 'eip1559',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '500000000',
+    });
+    const { fees } = await running.fees(intent.intentId);
+    expect(fees).toEqual({ maxFeePerGas: '2200000000', maxPriorityFeePerGas: '1100000000' });
+
+    // Another fee type, one fee left behind, or a tip above the cap: refused.
+    for (const [other, refusal] of [
+      [{ gasPrice: '9000000000' }, { code: 'INTENT_FEE_TOO_LOW' }],
+      [
+        { maxFeePerGas: '2200000000', maxPriorityFeePerGas: '1100000000', gasPrice: '9000000000' },
+        { code: 'INTENT_FEE_TOO_LOW' },
+      ],
+      [
+        { maxFeePerGas: '9000000000', maxPriorityFeePerGas: '1000000000' },
+        { code: 'INTENT_FEE_TOO_LOW' },
+      ],
+      [
+        { maxFeePerGas: '2200000000', maxPriorityFeePerGas: '3000000000' },
+        { error: expect.stringMatching(/priority fee/) },
+      ],
+    ]) {
+      await expect(replaceConfirmed(running, intent, other)).resolves.toMatchObject({
+        success: false,
+        ...refusal,
+      });
+    }
+    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+
+    await expect(replaceConfirmed(running, intent, fees)).resolves.toMatchObject({ success: true });
+    const replacement = broadcasts().at(-1);
+    expect([
+      replacement.type,
+      replacement.nonce,
+      replacement.maxFeePerGas,
+      replacement.maxPriorityFeePerGas,
+    ]).toEqual([2, 7, 2200000000n, 1100000000n]);
+  });
+
+  // #710 review probes: what the fee object carries beyond fees changes
+  // nothing; a confirmation is spent once; two at once sign once.
+  test('a fee object smuggling a payment changes nothing, and its confirmation is spent once', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    const fees = {
+      gasPrice: '0x4190ab00', // 1.1 gwei, in hex
+      nonce: 999,
+      chainId: 1,
+      to: CONTRACT,
+      value: '99999999999999999',
+      data: '0xcafe',
+      gasLimit: '1',
+      walletIndex: 1,
+      sender: BOB.address,
+    };
+    const { token } = await running.confirm('intent-replace', null, {
+      intentId: intent.intentId,
+      chainId: intent.chainId,
+      sender: intent.sender,
+      nonce: intent.nonce,
+      to: intent.fields.to,
+      value: intent.fields.value,
+      data: intent.fields.data,
+      gasLimit: intent.fields.gasLimit,
+      gasPrice: fees.gasPrice,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: true,
+    });
+    const tx = broadcasts().at(-1);
+    expect({
+      nonce: tx.nonce,
+      chainId: tx.chainId,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      gasLimit: tx.gasLimit,
+      gasPrice: tx.gasPrice,
+    }).toEqual({
+      nonce: 7,
+      chainId: 100n,
+      from: ALICE.address,
+      to: BOB.address,
+      value: 1000n,
+      data: '0x',
+      gasLimit: 21000n,
+      gasPrice: 1100000000n,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+  });
+
+  test('two replacements at once with the same fees sign once: the second meets the new floor', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    mockSigners[0].signTransaction.mockClear();
+    const fees = { gasPrice: '1100000000' };
+    const replies = await Promise.all([
+      replaceConfirmed(running, intent, fees),
+      replaceConfirmed(running, intent, fees),
+    ]);
+    expect(replies.filter((reply) => reply.success)).toHaveLength(1);
+    expect(replies.filter((reply) => reply.code === 'INTENT_FEE_TOO_LOW')).toHaveLength(1);
+    expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.filter(
+        ([, method, params]) => method === 'eth_getTransactionCount' && params?.[1] === 'pending'
+      )
+    ).toHaveLength(1);
+  });
+
+  // #710 review: an offer the replacement handler refused.
+  // #710 review (rounds 1 and 2): an offer the replacement handler
+  // refused. Each original is sent at a zero fee through the send path,
+  // with no quote to raise the offer: the offer is still one the handler
+  // takes, confirmed and signed as offered.
+  test.each([
+    [
+      'a zero tip',
+      { maxFeePerGas: '100', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '110', maxPriorityFeePerGas: '0' },
+      (tx) => [tx.type, tx.maxFeePerGas, tx.maxPriorityFeePerGas],
+      [2, 110n, 0n],
+    ],
+    [
+      'a zero cap and tip',
+      { maxFeePerGas: '0', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '1', maxPriorityFeePerGas: '0' },
+      (tx) => [tx.type, tx.maxFeePerGas, tx.maxPriorityFeePerGas],
+      [2, 1n, 0n],
+    ],
+    [
+      'a zero gas price',
+      { gasPrice: '0' },
+      { gasPrice: '1' },
+      (tx) => [tx.type, tx.gasPrice],
+      [0, 1n],
+    ],
+  ])(
+    '%s is offered a replacement the handler accepts, with no quote',
+    async (_name, original, offered, feesOf, signed) => {
+      const running = startReplacing();
+      const intent = await underpriced(running, original);
+      expect(intent.fields).toMatchObject(original);
+      mockFeeQuote.mockRejectedValue(new Error('quote unavailable'));
+      const offer = await running.fees(intent.intentId);
+      expect(offer).toEqual({ success: true, fees: offered });
+
+      await expect(replaceConfirmed(running, intent, offer.fees)).resolves.toMatchObject({
+        success: true,
+        nonce: 7,
+      });
+      const replacement = broadcasts().at(-1);
+      expect(replacement.nonce).toBe(7);
+      expect(feesOf(replacement)).toEqual(signed);
+    }
+  );
+
+  test('a zero or negative maximum fee, and a negative tip, are still refused', async () => {
+    const running = startReplacing();
+    const eip1559 = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
+    for (const fees of [
+      { maxFeePerGas: '0', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '-110', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '110', maxPriorityFeePerGas: '-1' },
+    ]) {
+      await expect(replaceConfirmed(running, eip1559, fees)).resolves.toMatchObject({
+        success: false,
+      });
+    }
+    expect(running.store.get(eip1559.intentId).hashes).toHaveLength(1);
+  });
+
+  test('a second replacement raises the fee over the first, not over the original', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    await expect(
+      replaceConfirmed(running, intent, { gasPrice: '1100000000' })
+    ).resolves.toMatchObject({
+      success: true,
+    });
+    const after = running.store.get(intent.intentId);
+    expect(after.fields.gasPrice).toBe('1100000000');
+    await expect(
+      replaceConfirmed(running, after, { gasPrice: '1150000000' })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_FEE_TOO_LOW',
+    });
+    await expect(
+      replaceConfirmed(running, after, { gasPrice: '1210000000' })
+    ).resolves.toMatchObject({
+      success: true,
+      nonce: 7,
+    });
+    expect(running.store.get(intent.intentId).hashes).toHaveLength(3);
+  });
+
+  test("the account at the payment's recorded index must be the one that signed it", async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    // The wallet at index 0 is now another account (a vault restored from
+    // another phrase, say).
+    mockSigners[0] = signerFor(BOB);
+    await expect(
+      replaceConfirmed(running, intent, { gasPrice: '1100000000' })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_KEY_MISMATCH',
+    });
+    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+    expect(broadcasts()).toHaveLength(1);
+  });
+
+  test('a settled payment is not replaced', async () => {
+    const running = startReplacing();
+    const { token } = await running.confirm('wallet-send', null, {
+      chainId: 100,
+      to: BOB.address,
+      value: '1000',
+      gasLimit: '21000',
+      gasPrice: '1000000000',
+      data: undefined,
+      maxFeePerGas: undefined,
+      maxPriorityFeePerGas: undefined,
+    });
+    const sent = await running.walletSend(
+      {},
+      { chainId: 100, to: BOB.address, value: '1000', gasLimit: '21000', gasPrice: '1000000000' },
+      {},
+      { confirmation: token }
+    );
+    const intent = running.store.get(sent.intentId);
+    await running.store.settle({
+      intentId: intent.intentId,
+      label: 'paid',
+      hash: intent.hash,
+      block: 9,
+    });
+    await expect(running.fees(intent.intentId)).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_NOT_HELD',
+    });
+    await expect(
+      replaceConfirmed(running, intent, { gasPrice: '2000000000' })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_NOT_HELD',
     });
   });
 });
