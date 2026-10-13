@@ -3,18 +3,22 @@
  * ipfs-manager and the real gateway transport against a fake gateway over
  * real loopback HTTP.
  *
- * Roadmap 4.7, design 0006 ("Tests first"). `ipfs-protocol.test.js` covers URL
- * canonicalisation with an injected request function, and
- * `ipfs-manager.test.js` the external proxy against a mocked `fetch`; here the
- * handlers registered on a session go through `serveNativeGatewayRequest`
- * → `serveExternalGatewayRequest` → `gatewayFetch` → Node's `fetch` → a fake
- * gateway, so Range/206, redirects, header stripping, cancels and
- * backpressure are what the wire actually does. Native mode is in
+ * Roadmap 4.7, design 0006 ("Tests first"). `ipfs-manager.test.js` covers the
+ * external backend against a mocked `fetch`; here the handlers registered on
+ * a session ask the core for a plan and execute it on the backend
+ * `ipfsBackend` captured → `gatewayFetch` → Node's `fetch` → a fake gateway,
+ * so Range/206, redirects, header stripping, cancels and backpressure are
+ * what the wire actually does. Native mode is in
  * `ipfs-protocol.native.test.js`.
+ *
+ * The core is played by `test/helpers/fake-dweb-core.js`, which plans as
+ * fc-dweb does (checked against the core's own vectors); only the name
+ * resolution it asks for is mocked, as before.
  */
 
 const zlib = require('zlib');
 const { loadMainModule } = require('../../../test/helpers/main-process-test-utils');
+const { createFakeDwebDriver } = require('../../../test/helpers/fake-dweb-core');
 const {
   closedLoopbackPort,
   nextTurn,
@@ -51,12 +55,15 @@ function answerProbe(req, res) {
 // Load ipfs-manager (external mode, pointed at `externalGateway`) and the
 // protocol module in one module registry, register both handlers on a fake
 // session and start the node. Everything below the handler is real except the
-// profile, the logger and name resolution. The transport refuses any URL but
+// profile, the logger and the core's planner. The transport refuses any URL but
 // the gateway's: the manager's background Kubo RPC version probe would
 // otherwise dial :5001 on this machine.
 async function loadExternalStack(externalGateway) {
   const refused = [];
   const mockResolveEnsContent = jest.fn();
+  const driver = createFakeDwebDriver({
+    resolveContent: (...args) => mockResolveEnsContent(...args),
+  });
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
   const { mod: manager } = loadMainModule(require.resolve('../ipfs-manager'), {
     extraMocks: {
@@ -87,10 +94,7 @@ async function loadExternalStack(externalGateway) {
           },
         };
       },
-      [require.resolve('../ens-resolver')]: () => ({
-        resolveEnsContent: (...args) => mockResolveEnsContent(...args),
-      }),
-      [require.resolve('../tezos-domains-resolver')]: () => ({ resolveTezosDomain: jest.fn() }),
+      [require.resolve('../core/naming')]: () => ({ namingDriver: () => driver }),
     },
   });
   const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs-protocol');

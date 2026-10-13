@@ -218,6 +218,7 @@ const { installX402Interception } = require('./x402/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
+const { closeDwebSession } = require('./dweb/fetch-admission');
 const { registerRadProtocol } = require('./radicle/rad-protocol');
 const {
   installOnchainProvenanceCapture,
@@ -568,11 +569,13 @@ async function bootstrap() {
   // finished file would leave no record anywhere), then drop the window's
   // in-memory download rows (they never touch SQLite — completed files stay
   // on disk, Chromium semantics) and its session-only permission decisions.
+  // Its dweb fetches, waiting or streaming, stop and free their slots.
   // The session's storage is cleared by the private-windows module itself.
   registerPrivateCleanup((partition) => cancelPrivateDownloads(partition));
   registerPrivateCleanup((partition) => dropPrivateDownloads(partition));
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
+  registerPrivateCleanup((partition) => closeDwebSession(partition));
 
   registerWebContentsHandlers();
   registerClientCertificateHandler();

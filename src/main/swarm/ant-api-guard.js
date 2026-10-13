@@ -25,14 +25,17 @@
  * includes non-GET top-level navigations (a cross-site `<form method=post>`)
  * and sub-frame navigations. dApps that need the node use `window.swarm`.
  *
- * The main process's own node traffic (bzz: handler, publishing, probes) goes
- * over Node's fetch and never reaches `session.webRequest`, so it is not
- * affected. The one exception is the ENS prefetch of a *remote* external
- * node, which dials through Electron's `net.request` (for the session's proxy
- * policy) — and `net.request` does pass through `session.webRequest`, with no
- * frame and no webContents, exactly like a worker's request. That dial
- * announces its exact URL in `ant-api-main-dials.js` for its lifetime, and
- * only a frameless GET/HEAD of that exact URL is let through.
+ * The main process's own node traffic (the bzz: handler's loopback Ant,
+ * publishing, probes) goes over Node's fetch and never reaches
+ * `session.webRequest`, so it is not affected. The exceptions are dials of a
+ * *remote* external node — the bzz: handler's content requests (freedom-core
+ * design 0006, deviation `transport`) and the ENS prefetch — which go through
+ * Electron's `net.request` (for the session's proxy policy). `net.request`
+ * does pass through `session.webRequest`, with no frame and no webContents,
+ * exactly like a worker's request. Each such dial announces its exact URL in
+ * `ant-api-main-dials.js` for its lifetime, and only a frameless GET/HEAD of
+ * that exact URL is let through; the node's origin isn't exempted, and
+ * neither is frameless traffic.
  *
  * Which requests count as "to the Ant API":
  *   - any loopback host — `localhost`, `*.localhost`, `127.0.0.0/8`,

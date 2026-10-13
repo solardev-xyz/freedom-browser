@@ -228,6 +228,28 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     expect(err).not.toBeInstanceOf(OnionGateRefusal);
   });
 
+  // The bzz: handler's dial of a remote Ant goes out on the request's own
+  // session (freedom-core design 0006, deviation `transport`): that session's
+  // proxy policy decides, and the onion gate asks it, not the default one.
+  test("a dial on a request's own session asks that session and goes out on it", async () => {
+    const session = { resolveProxy: jest.fn(async () => 'DIRECT') };
+    const requestImpl = jest.fn((options) => {
+      const request = new FakeClientRequest(options);
+      setImmediate(() => request.emit('response', new FakeIncomingMessage({ statusCode: 204 })));
+      return request;
+    });
+    await expect(
+      netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, session })
+    ).rejects.toBeInstanceOf(OnionGateRefusal);
+    expect(session.resolveProxy).toHaveBeenCalledWith(ONION);
+    expect(requestImpl).not.toHaveBeenCalled();
+
+    session.resolveProxy.mockResolvedValue(ONION_ROUTED);
+    const response = await netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, session });
+    expect(response.status).toBe(204);
+    expect(requestImpl.mock.calls[0][0]).toMatchObject({ session, redirect: 'manual' });
+  });
+
   test('with no session at all (no resolveProxy on it) the dial is refused', async () => {
     // The default seam reads `session.defaultSession.resolveProxy`, which the
     // Jest electron mock does not provide — the same shape as a main process
@@ -312,7 +334,7 @@ describe('netGatewayFetch', () => {
     expect(requestImpl.mock.calls[0][0]).toMatchObject({
       method: 'GET',
       url: REMOTE,
-      // Never followed — see the SSRF note in serveExternalGatewayRequest.
+      // Never followed — see the SSRF note in ipfs-manager.js's requestExternalGateway.
       redirect: 'manual',
       // Nothing of the session travels to a third-party gateway but its proxy
       // policy: no cookies, no stored credentials.
@@ -441,7 +463,7 @@ describe('netGatewayFetch', () => {
       headers: {
         // Chromium hands back a *decoded* body while still reporting the
         // upstream encoding and its compressed length — exactly like undici,
-        // which is why DROPPED_UPSTREAM_RESPONSE_HEADERS is still needed.
+        // which is why strip_decoded_encoding is still needed.
         'content-encoding': 'gzip',
         'content-length': '41',
         'content-type': 'text/plain',

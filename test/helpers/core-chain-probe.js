@@ -1,10 +1,14 @@
 /**
- * Whether a freedom-cored binary runs the chain thread (freedom-core
- * design 0005): one without it answers `chain.configure` unknown_method.
- * Asked once, before a suite, by a child that plays main (the handshake
- * first), so a suite is skipped whole when it doesn't (the pinned v0.3.0
- * has no chain thread). `servesChainHtml` asks the same of `chain.html`
- * (design 0006), which v0.4.0 doesn't serve.
+ * Whether a freedom-cored binary serves a method: one that doesn't answers
+ * it `unknown_method`, and any other answer (a result, or an error such as
+ * an unconfigured chain's) means it does. Asked once, before a suite, by a
+ * child that plays main (the handshake first), so a suite is skipped whole
+ * when it doesn't.
+ *
+ * - `servesChain`: the chain thread (freedom-core design 0005); the pinned
+ *   v0.3.0 has none.
+ * - `servesChainHtml`: `chain.html` (design 0006); v0.4.0 has none.
+ * - `servesDweb`: `dweb.open` (design 0006); v0.4.0 has none.
  */
 const fs = require('fs');
 const os = require('os');
@@ -12,27 +16,13 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { scrubbedEnv } = require('../../src/main/core/core-client');
 
-function servesChain(binary) {
-  return probe(binary, 'chain.configure', { chains: [] });
-}
-
-function servesChainHtml(binary) {
-  return probe(binary, 'chain.html', {
-    chain_id: 1,
-    contract: `0x${'11'.repeat(20)}`,
-    origin: 'web3://probe',
-    deadline_ms: 1000,
-  });
-}
-
-/** Whether `binary` answers `method` with anything but unknown_method. */
-function probe(binary, method, params) {
+function serves(binary, method, params) {
   if (!binary) return false;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-chain-probe-'));
-  const script = `
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-core-probe-'));
+  const probe = `
     const { spawn } = require('child_process');
     const { encodeFrame, FrameDecoder } = require(process.argv[1]);
-    const [binary, root] = process.argv.slice(2, 4);
+    const [binary, root, method, params] = process.argv.slice(2);
     const core = spawn(binary, ['serve', '--data-dir', root + '/identity', '--lock-dir', root + '/locks'], {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
@@ -46,7 +36,7 @@ function probe(binary, method, params) {
     };
     core.stdout.on('data', (chunk) => {
       for (const { message } of decoder.push(chunk)) {
-        if (message?.id === 1) request(2, process.argv[4], JSON.parse(process.argv[5]));
+        if (message?.id === 1) request(2, method, JSON.parse(params));
         if (message?.id === 2) done(message.error?.code === 'unknown_method' ? 'no' : 'yes');
       }
     });
@@ -58,7 +48,7 @@ function probe(binary, method, params) {
       process.execPath,
       [
         '-e',
-        script,
+        probe,
         require.resolve('../../src/main/core/frame'),
         binary,
         root,
@@ -75,4 +65,28 @@ function probe(binary, method, params) {
   }
 }
 
-module.exports = { servesChain, servesChainHtml };
+function servesChain(binary) {
+  return serves(binary, 'chain.configure', { chains: [] });
+}
+
+function servesChainHtml(binary) {
+  return serves(binary, 'chain.html', {
+    chain_id: 1,
+    contract: `0x${'11'.repeat(20)}`,
+    origin: 'web3://probe',
+    deadline_ms: 1000,
+  });
+}
+
+function servesDweb(binary) {
+  return serves(binary, 'dweb.open', {
+    url: `bzz://${'ab'.repeat(32)}/`,
+    method: 'GET',
+    headers: [],
+    backend: { ant: 'bundled', up: true },
+    private: false,
+    deadline_ms: 10_000,
+  });
+}
+
+module.exports = { servesChain, servesChainHtml, servesDweb };

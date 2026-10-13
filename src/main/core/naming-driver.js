@@ -12,9 +12,15 @@
  * A reply computed under a generation main has since moved past was
  * overtaken in the pipe: main discards it and sends the lookup again, with
  * the attempts and the time it has left (design 0004, Generations).
+ *
+ * `dweb.open` (design 0006) is fenced the same way: a plan is a lookup's
+ * result shaped as the request main will make, so an overtaken plan is
+ * planned again with `attempts_used`, within the remaining deadline.
  */
 
 const { isPrivateLogContext } = require('../private/private-log-context');
+const { isTezosDomainHost } = require('../../shared/origin-utils');
+const { unlessAborted } = require('../lib/unless-aborted');
 
 /** A caller's lifecycle attempts, in all (resolveAcrossStableLifecycle). */
 const MAX_ATTEMPTS = 3;
@@ -36,9 +42,26 @@ const UNAVAILABLE = 'Name resolution is unavailable';
 /** The core's own text for its `deadline` (`overall-deadline`). */
 const DEADLINE = "The resolution's deadline passed";
 
+/** A driver's own failure, with the code the dweb handlers map. */
+function failure(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isRef = (value) =>
   isObject(value) && typeof value.ref === 'string' && Object.keys(value).length === 1;
+
+/** A dweb URL's hostname, as the handlers read it; empty when it doesn't
+ * parse. */
+function dwebHost(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
 
 /** Today's `hostOf`: the input when it doesn't parse. */
 function hostOf(url) {
@@ -115,17 +138,18 @@ class NamingDriver {
     }
   }
 
-  /** The initialized process, waiting for one that is starting. */
-  async process(until) {
+  /** The initialized process, waiting for one that is starting; null
+   * without one, past `until`, or once `signal` aborts. */
+  async process(until, signal = null) {
     if (!this.config.core) {
       try {
-        await within(this.client.whenReady(), until - this.now());
+        await within(this.client.whenReady(), until - this.now(), signal);
       } catch {
         return null;
       }
     }
     try {
-      return await within(this.config.whenServing(), until - this.now());
+      return await within(this.config.whenServing(), until - this.now(), signal);
     } catch {
       return null;
     }
@@ -134,10 +158,12 @@ class NamingDriver {
   /** The process `pinned` (or, first, the current one) once no control is
    * in flight on it. A lookup belongs to the process it first went to: a
    * restart sends nothing again (design 0004, Generations). */
-  async quiet(pinned, until) {
+  async quiet(pinned, until, signal = null) {
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       if (pinned && this.config.core?.gen !== pinned) throw new Error(RESTARTED);
-      const gen = await this.process(until);
+      const gen = await this.process(until, signal);
+      if (signal?.aborted) throw signal.reason;
       // Its process gone, replaced or not.
       if (pinned && gen !== pinned && (gen || !this.client.serves(pinned))) {
         throw new Error(RESTARTED);
@@ -206,6 +232,152 @@ class NamingDriver {
     }
   }
 
+  /**
+   * `dweb.open` (design 0006): the request's plan, `{ plan, generations,
+   * attempts }`, fenced exactly as a lookup is (#672). It is sent and judged
+   * only with no naming control in flight; an overtaken plan is planned
+   * again with `attempts_used`, within the remaining deadline. A plan is
+   * bound to the core process that made it: a restart plans nothing again.
+   *
+   * The plan's lookup is the host's: a `.tez` name's generation is Tezos',
+   * any other host's ENS's and the lifecycle's. A plan made with no lookup
+   * (a hash host, a redirect, an error) depends on none, so a fence that
+   * finds it overtaken only plans it again.
+   *
+   * Every wait is in the request's lifetime: `signal` (the page's abort and
+   * its session's close) ends it at once as `cancelled`, and the deadline as
+   * `deadline`, whether it waits on the core, on a configuration barrier or
+   * on `ready`; a request the core holds gets 0001's `cancel`.
+   *
+   * `ready(reply, signal)`, when given, runs once a plan is judged current
+   * and before it is used: main's fetch admission, which may wait, given a
+   * signal that aborts with the request's lifetime. The plan is judged again
+   * after it.
+   *
+   * `use(reply)`, when given, is how the plan is consumed: called in the same
+   * synchronous turn as the final judgment (the request is neither aborted
+   * nor past its deadline, the process still serves, no control is in
+   * flight, the generations are current), so nothing can come
+   * between them; `open` returns what it returns. A plan that a control
+   * overtook by then is planned again; one whose process has ended is
+   * `core_unavailable`, and never used. Without `use`, the plan is returned.
+   *
+   * Failures carry a `code`: the core's (`busy`, `deadline`, `cancelled`,
+   * `invalid_argument`, `forbidden`, `internal`), `core_unavailable` with no
+   * core process (or a restart), and `repeated` when the generations moved
+   * under every attempt.
+   *
+   * @param {{url: string, method: string, headers: string[][], backend: object}} params
+   * @param {{signal?: AbortSignal|null,
+   *   ready?: ((reply: object, signal: AbortSignal) => Promise<void>)|null,
+   *   use?: ((reply: object) => any)|null}} [options]
+   */
+  async open(params, { signal = null, ready = null, use = null } = {}) {
+    const host = dwebHost(params.url);
+    const system = isTezosDomainHost(host) ? 'tezos' : 'ens';
+    const subjectOf = () =>
+      system === 'tezos' ? host.trim().toLowerCase() : this.ensSubject(host);
+    const until = this.now() + DEADLINE_MS;
+    let attempts = 0;
+    let pinned = null;
+    // The request's lifetime, read now: its abort and its monotonic
+    // deadline. A timer only says when the deadline passed; a wait that
+    // settles after it, before that timer runs, is caught here.
+    // Synchronous, and the first thing every check after a wait does.
+    const lifeLeft = () => {
+      if (signal?.aborted) throw failure('cancelled', 'Cancelled');
+      const left = until - this.now();
+      if (left <= 0) throw failure('deadline', DEADLINE);
+      return left;
+    };
+    // One wait in the request's lifetime: it settles at once as `cancelled`
+    // when `signal` aborts and as `deadline` when the deadline passes, and
+    // `run` gets a signal that aborts with it, for the work it starts. A
+    // wait that succeeds is judged against the lifetime once more.
+    const inLife = async (run) => {
+      const left = lifeLeft();
+      const life = new AbortController();
+      const onAbort = () => life.abort(failure('cancelled', 'Cancelled'));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const timer = setTimeout(() => life.abort(failure('deadline', DEADLINE)), left);
+      try {
+        const result = await unlessAborted((async () => run(life.signal))(), life.signal);
+        lifeLeft();
+        return result;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      }
+    };
+    // Whether the plan can be judged now: the request still lives, and no
+    // control is in flight on its process, which still serves. Synchronous,
+    // so a loop that ends on it goes straight on to the judgment and use.
+    const quietNow = (gen) => {
+      lifeLeft();
+      if (!this.client.serves(gen) || this.config.core?.gen !== gen) {
+        throw failure('core_unavailable', RESTARTED);
+      }
+      return this.config.idle(gen);
+    };
+    // The judgment, once quiet: true when the reply was overtaken, its
+    // attempts counted as a lookup's are. Synchronous.
+    const overtaken = (reply, gen) => {
+      if (!this.overtaken(reply?.generations, system, gen)) return false;
+      attempts =
+        Number.isSafeInteger(reply?.attempts) && reply.attempts >= attempts
+          ? reply.attempts
+          : attempts + 1;
+      if (attempts >= MAX_ATTEMPTS) throw failure('repeated', REPEATED[system](subjectOf()));
+      return true;
+    };
+    for (;;) {
+      const gen = await inLife((life) => this.quietFor(pinned, until, life));
+      pinned = gen;
+      if (!this.config.idle(gen)) continue;
+      const remaining = Math.floor(until - this.now());
+      if (remaining <= 0) throw failure('deadline', DEADLINE);
+      const request = { ...params, private: isPrivateLogContext(), deadline_ms: remaining };
+      if (attempts > 0) request.attempts_used = attempts;
+      let reply;
+      try {
+        reply = await inLife((life) =>
+          this.client.requestTo(
+            gen,
+            'dweb.open',
+            request,
+            { caller: 'shell' },
+            { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal: life }
+          )
+        );
+      } catch (err) {
+        if (err?.code === 'core_unavailable') throw failure('core_unavailable', RESTARTED);
+        throw err ?? failure('internal', 'Internal error');
+      }
+      while (!quietNow(gen)) await inLife((life) => this.quietFor(gen, until, life));
+      if (overtaken(reply, gen)) continue;
+      if (ready) {
+        await inLife((life) => ready(reply, life));
+        while (!quietNow(gen)) await inLife((life) => this.quietFor(gen, until, life));
+        if (overtaken(reply, gen)) continue;
+      }
+      // Nothing is awaited between the last check and here: the final
+      // judgment (the lifetime, the process, the controls, the generations)
+      // and the plan's use are one synchronous step.
+      return use ? use(reply) : reply;
+    }
+  }
+
+  /** `quiet`, its failures with the codes `open` gives them. */
+  async quietFor(pinned, until, signal = null) {
+    try {
+      return await this.quiet(pinned, until, signal);
+    } catch (err) {
+      // The request's own end (its abort or deadline) is already coded.
+      if (err?.code) throw err;
+      throw failure(err?.message === DEADLINE ? 'deadline' : 'core_unavailable', err?.message);
+    }
+  }
+
   /** Whether main has seen a newer generation, of one the result depends
    * on, than the reply was computed under. */
   overtaken(generations, system, gen) {
@@ -253,16 +425,24 @@ class NamingDriver {
   }
 }
 
-/** Settles as `promise` does, or rejects once `ms` have passed. */
-function within(promise, ms) {
+/** Settles as `promise` does, or rejects once `ms` have passed or `signal`
+ * aborts; either way its timer is gone once it settles. */
+function within(promise, ms, signal = null) {
   if (ms <= 0) return Promise.reject(new Error('deadline'));
+  if (signal?.aborted) return Promise.reject(signal.reason);
   let timer;
+  let onAbort;
   return Promise.race([
     promise,
     new Promise((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error('deadline')), ms);
+      onAbort = () => reject(signal.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
     }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  });
 }
 
 module.exports = {

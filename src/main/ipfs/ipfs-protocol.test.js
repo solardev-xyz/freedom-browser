@@ -1,9 +1,4 @@
 jest.mock('electron', () => ({
-  // Production uses `net.fetch` (Chromium network stack) so `*.localhost`
-  // resolves per RFC 6761 — the OS resolver on macOS doesn't, so the
-  // native gateway subdomain-redirect contract relies on this. Tests inject
-  // `fetchImpl` explicitly so the default is never exercised here, but
-  // we still need to satisfy the require.
   net: { fetch: jest.fn() },
 }));
 
@@ -14,19 +9,27 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 
+// The handlers ask the core for a plan (freedom-core design 0006,
+// `dweb.open`) and execute it. CID and IPNS-key canonicalization, the
+// gateway-form redirects, name resolution and the header strip-list are the
+// core's, pinned by fc-dweb's vectors; here the core is played by
+// `test/helpers/fake-dweb-core.js`, which plans as fc-dweb does, and these
+// cases cover what main does with the plans against an injected native
+// request function: the dial, the response operations and the log.
+//
 // Prefix required by Jest's mock-factory hoisting: the factory runs before
 // regular `const` initialisation, so any captured variable must start with
 // `mock` to survive the static analyser.
 const mockResolveEnsContent = jest.fn();
-jest.mock('../ens-resolver', () => ({
-  resolveEnsContent: (...args) => mockResolveEnsContent(...args),
-}));
 const mockResolveTezosDomain = jest.fn();
-jest.mock('../tezos-domains-resolver', () => ({
-  resolveTezosDomain: (...args) => mockResolveTezosDomain(...args),
-}));
+const { createFakeDwebDriver } = require('../../../test/helpers/fake-dweb-core');
+const mockDriver = createFakeDwebDriver({
+  resolveContent: (...args) => mockResolveEnsContent(...args),
+  resolveTezos: (...args) => mockResolveTezosDomain(...args),
+});
+jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
 
-const { buildGatewayUrl, sanitizeRequestHeaders, handleRequest } = require('./ipfs-protocol');
+const { handleRequest } = require('./ipfs-protocol');
 
 const CIDV0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
 // Canonical CIDv1 base32 (`bafy...`) form of `CIDV0`; used to assert that
@@ -40,637 +43,8 @@ const CIDV1_BASE58 = 'zb2rhe5P4gXftAwvA4eXQ5HJwsER2owDyS9sKaQRRVQPn93bA';
 // scheme hosts, so re-encoding to lowercase-canonical base32 is the only
 // way to round-trip cleanly).
 const CIDV1_BASE58_AS_BASE32 = 'bafkreidon73zkcrwdb5iafqtijxildoonbwnpv7dyd6ef3qdgads2jc4su';
-// CIDv1 base58btc with a multi-byte varint codec (dag-json = 0x0129,
-// encoded as varint `0xa9 0x02`). Confirms the handler canonicalises
-// codecs that don't fit in a single varint byte. Reference value
-// generated with `multiformats`: CID.createV1(0x0129, sha256.digest('hello world')).
-const CIDV1_BASE58_DAGJSON = 'z4EBG9jCb6wv7WCTz9NvmkQ5czYGEUZQgWFijgDTUqbD7aftapg';
-const CIDV1_BASE58_DAGJSON_AS_BASE32 =
-  'baguqeeraxfgspomtju7arjjokll5u7nl7lcij37dpjjyb3uqrd32zyxpzxuq';
 const IPNS_KEY_BASE36 = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
 const IPNS_KEY_BASE58_ED25519 = '12D3KooWGuQafLgPqRRRkRSUNqZNQwL2gMZcQ27GiNpoVxz3vMWj';
-
-describe('buildGatewayUrl(ipfs)', () => {
-  beforeEach(() => {
-    mockResolveEnsContent.mockReset();
-    mockResolveTezosDomain.mockReset();
-  });
-
-  test.each([
-    // CIDv1 base32 is already lowercase-canonical and passes through.
-    ['CIDv1 base32 (baf…)', CIDV1_BASE32, CIDV1_BASE32],
-    // CIDv1 base58btc (`z…`) is case-sensitive — the handler converts it
-    // to base32 so Chromium's host-lowercasing doesn't corrupt it on
-    // subsequent sub-resource fetches that bypass the renderer.
-    ['CIDv1 base58btc (z…) → base32', CIDV1_BASE58, CIDV1_BASE58_AS_BASE32],
-    // Multi-byte-varint codec (dag-json) — verifies that the handler
-    // doesn't false-reject CIDs with codec/multihash codes larger than
-    // 0x7f (ie. anything not fitting in a single varint byte).
-    [
-      'CIDv1 base58btc dag-json (multi-byte varint) → base32',
-      CIDV1_BASE58_DAGJSON,
-      CIDV1_BASE58_DAGJSON_AS_BASE32,
-    ],
-  ])('converts ipfs://<%s>/path to the native gateway-shaped URL', async (_label, host, expected) => {
-    await expect(buildGatewayUrl('ipfs', `ipfs://${host}/index.html`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipfs/${expected}/index.html`,
-    });
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  test('passes a CIDv1 base32 dag-json (bag…) host through unchanged', async () => {
-    // Regression for the `CID_RE` over-restriction: the regex used to
-    // hard-code `baf` as the CIDv1 base32 prefix and false-rejected
-    // every non-`baf` codec (dag-json `bagu…`, codecs producing
-    // `bah…`, etc.) — the renderer canonicalised correctly to the
-    // `bagu…` lowercase form, but `buildGatewayUrl` then 400'd it as
-    // an "invalid ipfs reference". CIDv1 base32 always starts with
-    // `b` + `a` (version 0x01 contributes the first 5-bit chunk = 0
-    // → `a`); the 3rd char varies with the codec varint.
-    await expect(
-      buildGatewayUrl('ipfs', `ipfs://${CIDV1_BASE58_DAGJSON_AS_BASE32}/index.html`)
-    ).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE58_DAGJSON_AS_BASE32}/index.html`,
-    });
-  });
-
-  test('rejects a lowercased CIDv1 base58btc (z…) host with a clear 400', async () => {
-    // Same Chromium-normalisation story as the CIDv0 case below — base58btc
-    // is case-sensitive, and once the host segment has been lowercased the
-    // original bytes are unrecoverable. Surface a 400 with an actionable
-    // message rather than forwarding garbage to native gateway.
-    const result = await buildGatewayUrl('ipfs', `ipfs://${CIDV1_BASE58.toLowerCase()}/page`);
-    expect(result.ok).toBe(false);
-    expect(result.status).toBe(400);
-    expect(result.message).toMatch(/lowercased CIDv1 base58btc/);
-    expect(result.message).toMatch(/CIDv1 base32/);
-  });
-
-  // Inputs that arrive *via the JS surface* (eg. unit tests, internal IPC)
-  // can carry mixed-case CIDv0; in practice Chromium has already lowercased
-  // the host before the handler runs (see the standard-scheme covered below).
-  // Either way, the handler converts the recoverable form to CIDv1 base32
-  // before forwarding to freedom-ipfs.
-  test('canonicalises a properly-cased CIDv0 host to CIDv1 base32', async () => {
-    await expect(buildGatewayUrl('ipfs', `ipfs://${CIDV0}/index.html`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipfs/${CIDV0_AS_BASE32}/index.html`,
-    });
-  });
-
-  test('rejects a lowercased CIDv0 host with a clear 400 (the original case is unrecoverable)', async () => {
-    // This is the request shape that actually arrives at the handler from
-    // sub-resource fetches like `<img src="ipfs://Qm.../">` or
-    // `fetch('ipfs://Qm.../')` — Chromium parses the URL with WHATWG rules
-    // for standard schemes and lowercases the host segment before
-    // protocol.handle is invoked. We can't recover the original CIDv0
-    // bytes, so we 400 ourselves rather than forwarding a guaranteed-bad
-    // reference to native gateway (whose 400 message is less actionable).
-    const result = await buildGatewayUrl('ipfs', `ipfs://${CIDV0.toLowerCase()}/page`);
-    expect(result.ok).toBe(false);
-    expect(result.status).toBe(400);
-    expect(result.message).toMatch(/lowercased CIDv0/);
-    expect(result.message).toMatch(/CIDv1 base32/);
-  });
-
-  test('preserves query string and drops fragment (Chromium never sends it)', async () => {
-    await expect(buildGatewayUrl('ipfs', `ipfs://${CIDV0}/page?v=1`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipfs/${CIDV0_AS_BASE32}/page?v=1`,
-    });
-  });
-
-  test('returns null for non-CID non-ENS hosts', async () => {
-    await expect(buildGatewayUrl('ipfs', 'ipfs://not-a-cid/file')).resolves.toBeNull();
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  test('resolves DNS names through ENS under explicit ipfs://', async () => {
-    mockResolveEnsContent.mockResolvedValue({ type: 'ok', protocol: 'ipfs', decoded: CIDV1_BASE32 });
-    await expect(buildGatewayUrl('ipfs', 'ipfs://docs.ipfs.tech/install')).resolves.toMatchObject({
-      ok: true, url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE32}/install`,
-    });
-    expect(mockResolveEnsContent).toHaveBeenCalledWith('docs.ipfs.tech');
-  });
-
-  describe('gateway-form rewrite', () => {
-    // Sub-resource fetches that bypass the renderer's address-bar pipeline
-    // can land here with the path-gateway shape `ipfs://<gateway-host>/ipfs/<cid>/...`
-    // (typical source: protocol-relative URLs like
-    // `<img src="//localhost:8080/ipfs/<cid>/img.png">` in native gateway's HTML
-    // resolved against the page's `ipfs:` scheme). The handler must
-    // recognise the embedded ref so the bytes load instead of 400-ing.
-
-    test.each([
-      ['localhost', 'localhost'],
-      ['127.0.0.1', '127.0.0.1'],
-      ['dweb.link (public gateway)', 'dweb.link'],
-      ['ipfs.io (public gateway)', 'ipfs.io'],
-      ['cf-ipfs.com (public gateway)', 'cf-ipfs.com'],
-    ])(
-      'rewrites ipfs://<%s>/ipfs/<cidv1>/<path> to use the embedded CID',
-      async (_label, gatewayHost) => {
-        await expect(
-          buildGatewayUrl('ipfs', `ipfs://${gatewayHost}/ipfs/${CIDV1_BASE32}/img.png`)
-        ).resolves.toEqual({
-          ok: true,
-          url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE32}/img.png`,
-        });
-      }
-    );
-
-    test('canonicalises an embedded CIDv0 to base32 for the upstream fetch', async () => {
-      const expected = 'bafybeie5nqv6kd3qnfjupgvz34woh3oksc3iau6abmyajn7qvtf6d2ho34';
-      await expect(buildGatewayUrl('ipfs', `ipfs://localhost/ipfs/${CIDV0}/sub`)).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${expected}/sub`,
-      });
-    });
-
-    test('cross-namespace rewrite: ipfs://<gw>/ipns/<key>/path → IPNS branch', async () => {
-      await expect(
-        buildGatewayUrl('ipfs', `ipfs://localhost/ipns/${IPNS_KEY_BASE36}/install`)
-      ).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE36}/install`,
-      });
-    });
-
-    test('does NOT rewrite when outer host is a DNSLink target (not a known gateway)', async () => {
-      // A DNSLink site that genuinely publishes a literal `/ipfs/coverage`
-      // path is more plausible than a cross-namespace gateway-form URL
-      // with `coverage` as the CID. The disambiguation is on the OUTER
-      // host: only known public gateways / loopback hosts trigger the
-      // rewrite. `docs.ipfs.tech` isn't in the gateway list so the path
-      // passes through unchanged for native gateway to resolve as a DNSLink path.
-      await expect(buildGatewayUrl('ipns', 'ipns://docs.ipfs.tech/ipfs/coverage')).resolves.toEqual(
-        {
-          ok: true,
-          url: 'http://freedom-ipfs.localhost/ipns/docs.ipfs.tech/ipfs/coverage',
-        }
-      );
-    });
-
-    test('rewrites ipfs://<gw>/ipns/<dnslink-name>/path → IPNS branch with DNSLink host', async () => {
-      // P3 from the round-3 review: with the outer host being a known
-      // public gateway, the `/ipns/<dnslink-name>` shape is unambiguously
-      // the gateway-form for a DNSLink target, not a literal `/ipns/`
-      // path on a content host.
-      await expect(
-        buildGatewayUrl('ipfs', 'ipfs://dweb.link/ipns/docs.ipfs.tech/install')
-      ).resolves.toEqual({
-        ok: true,
-        url: 'http://freedom-ipfs.localhost/ipns/docs.ipfs.tech/install',
-      });
-    });
-
-    test('canonicalises an embedded base58 IPNS peer ID to base36', async () => {
-      const expected = 'k51qzi5uqu5dit2ibca2nikouuslvo21d3trnsklq7f1c3zdelrq38i7nahsgk';
-      await expect(
-        buildGatewayUrl('ipfs', `ipfs://localhost/ipns/${IPNS_KEY_BASE58_ED25519}/foo`)
-      ).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${expected}/foo`,
-      });
-    });
-
-    test('canonicalises an embedded CIDv1 base58btc (z…) ref to base32', async () => {
-      // The renderer-side pipeline strips this case before we see it for
-      // top-level navigation, but sub-resource <img>/<fetch> can land
-      // here with the `z…` form intact (case-preserved by the path
-      // segment of the standard-scheme URL).
-      await expect(
-        buildGatewayUrl('ipfs', `ipfs://localhost/ipfs/${CIDV1_BASE58}/img.png`)
-      ).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE58_AS_BASE32}/img.png`,
-      });
-    });
-
-    test('preserves a CID host when path also begins with /ipfs/ (legitimate subdir)', async () => {
-      await expect(
-        buildGatewayUrl('ipfs', `ipfs://${CIDV1_BASE32}/ipfs/somefile`)
-      ).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE32}/ipfs/somefile`,
-      });
-    });
-
-    test('does NOT rewrite for unknown self-hosted gateways (conservative allowlist)', async () => {
-      // Self-hosted private gateways aren't in the allowlist — the
-      // alternative (rewriting any non-CID host) over-fires on DNSLink
-      // sites. Authors of self-hosted gateways can publish canonical
-      // `ipfs://<cid>/...` URLs directly.
-      await expect(
-        buildGatewayUrl('ipfs', `ipfs://my-gateway.example/ipfs/${CIDV1_BASE32}`)
-      ).resolves.toMatchObject({ ok: false });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('my-gateway.example');
-    });
-
-    test('still 400s when the gateway-form embeds garbage under /ipfs/', async () => {
-      await expect(
-        buildGatewayUrl('ipfs', 'ipfs://localhost/ipfs/not-a-cid/file')
-      ).resolves.toBeNull();
-    });
-  });
-
-  describe('ENS hosts', () => {
-    test('resolves .eth host via ENS resolver and proxies to the resolved CID', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        uri: `ipfs://${CIDV0}`,
-        name: 'vitalik.eth',
-      });
-
-      await expect(buildGatewayUrl('ipfs', 'ipfs://vitalik.eth/page.html?v=1')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV0}/page.html?v=1`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('vitalik.eth');
-    });
-
-    test('resolves .box host via ENS resolver', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        uri: `ipfs://${CIDV0}`,
-      });
-
-      await expect(buildGatewayUrl('ipfs', 'ipfs://myapp.box/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV0}/`,
-      });
-    });
-
-    test('resolves .tez host natively and preserves the published base path', async () => {
-      mockResolveTezosDomain.mockResolvedValue({
-        type: 'ok',
-        system: 'tezos',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        basePath: '/published/site',
-        uri: `ipfs://${CIDV0}/published/site`,
-      });
-
-      await expect(buildGatewayUrl('ipfs', 'ipfs://docs.example.tez/guide?v=1')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV0}/published/site/guide?v=1`,
-      });
-      expect(mockResolveTezosDomain).toHaveBeenCalledWith('docs.example.tez');
-      expect(mockResolveEnsContent).not.toHaveBeenCalled();
-    });
-
-    test('resolves .wei host via WNS resolver result', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'wns',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        uri: `ipfs://${CIDV0}`,
-      });
-
-      await expect(buildGatewayUrl('ipfs', 'ipfs://alice.wei/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV0}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('alice.wei');
-    });
-
-    test('resolves .gwei host via GNS resolver result', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'gns',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        uri: `ipfs://${CIDV0}`,
-      });
-
-      await expect(buildGatewayUrl('ipfs', 'ipfs://apoorv.gwei/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipfs/${CIDV0}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('apoorv.gwei');
-    });
-
-    test('returns 404 when ENS contenthash is Swarm, not IPFS', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'bzz',
-        decoded: 'a'.repeat(64),
-        uri: `bzz://${'a'.repeat(64)}`,
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://swarm.eth/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'ENS name swarm.eth resolves to bzz, not IPFS',
-      });
-    });
-
-    test('uses WNS label for .wei transport mismatch errors', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'wns',
-        protocol: 'bzz',
-        decoded: 'a'.repeat(64),
-        uri: `bzz://${'a'.repeat(64)}`,
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://alice.wei/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'WNS name alice.wei resolves to bzz, not IPFS',
-      });
-    });
-
-    test('uses GNS label for .gwei transport mismatch errors', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'gns',
-        protocol: 'bzz',
-        decoded: 'a'.repeat(64),
-        uri: `bzz://${'a'.repeat(64)}`,
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://apoorv.gwei/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'GNS name apoorv.gwei resolves to bzz, not IPFS',
-      });
-    });
-
-    test('returns 404 when ENS contenthash is IPNS, not IPFS', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipns',
-        decoded: IPNS_KEY_BASE36,
-        uri: `ipns://${IPNS_KEY_BASE36}`,
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://jalil.eth/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'ENS name jalil.eth resolves to ipns, not IPFS',
-      });
-    });
-
-    test('returns 404 when ENS name has no contenthash record', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'not_found',
-        reason: 'NO_RESOLVER',
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://nothing.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(404);
-      expect(result.message).toContain('nothing.eth');
-      expect(result.message).toContain('NO_RESOLVER');
-    });
-
-    test('returns 415 when contenthash format is unsupported', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'unsupported',
-        reason: 'UNSUPPORTED_CONTENTHASH_FORMAT',
-        contentHash: '0xdeadbeef',
-      });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://exotic.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(415);
-    });
-
-    test('returns 502 when providers disagree (conflict)', async () => {
-      mockResolveEnsContent.mockResolvedValue({ type: 'conflict', groups: [] });
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://contested.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(502);
-      expect(result.message).toContain('disagree');
-    });
-
-    test('returns 502 when the resolver throws (RPC unreachable)', async () => {
-      mockResolveEnsContent.mockRejectedValue(new Error('all RPC providers failed'));
-
-      const result = await buildGatewayUrl('ipfs', 'ipfs://offline.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(502);
-      expect(result.message).toContain('all RPC providers failed');
-    });
-
-    test('CID-shaped host short-circuits the ENS resolver', async () => {
-      await buildGatewayUrl('ipfs', `ipfs://${CIDV0}/x`);
-      expect(mockResolveEnsContent).not.toHaveBeenCalled();
-    });
-
-    test.each([['ipfs://.eth/'], ['ipfs://foo..eth/']])(
-      'returns null for hosts with empty labels (%s)',
-      async (url) => {
-        await expect(buildGatewayUrl('ipfs', url)).resolves.toBeNull();
-        expect(mockResolveEnsContent).not.toHaveBeenCalled();
-      }
-    );
-  });
-});
-
-describe('buildGatewayUrl(ipns)', () => {
-  beforeEach(() => {
-    mockResolveEnsContent.mockReset();
-    mockResolveTezosDomain.mockReset();
-  });
-
-  test.each([
-    ['libp2p key base36', IPNS_KEY_BASE36, IPNS_KEY_BASE36],
-    ['DNSLink hostname', 'docs.ipfs.tech', 'docs.ipfs.tech'],
-  ])('converts ipns://<%s>/path to the native gateway-shaped URL', async (_label, host, expected) => {
-    await expect(buildGatewayUrl('ipns', `ipns://${host}/install`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipns/${expected}/install`,
-    });
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  test('canonicalises a properly-cased base58btc IPNS peer ID host to libp2p-key base36', async () => {
-    const expected = 'k51qzi5uqu5dit2ibca2nikouuslvo21d3trnsklq7f1c3zdelrq38i7nahsgk';
-    await expect(
-      buildGatewayUrl('ipns', `ipns://${IPNS_KEY_BASE58_ED25519}/install`)
-    ).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipns/${expected}/install`,
-    });
-  });
-
-  test('rejects a lowercased base58btc IPNS host with a clear 400', async () => {
-    // Same Chromium-normalisation story as the CIDv0 case under ipfs://.
-    const result = await buildGatewayUrl(
-      'ipns',
-      `ipns://${IPNS_KEY_BASE58_ED25519.toLowerCase()}/install`
-    );
-    expect(result.ok).toBe(false);
-    expect(result.status).toBe(400);
-    expect(result.message).toMatch(/lowercased base58btc IPNS/);
-    expect(result.message).toMatch(/libp2p-key base36/);
-  });
-
-  test('canonicalises a properly-cased CIDv1 base58btc (z…) IPNS host to base32', async () => {
-    // IPNS keys can be published as CIDv1 base58btc with the libp2p-key
-    // codec. Same Chromium-lowercasing problem as the IPFS z… case.
-    await expect(buildGatewayUrl('ipns', `ipns://${CIDV1_BASE58}/install`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipns/${CIDV1_BASE58_AS_BASE32}/install`,
-    });
-  });
-
-  test('rejects a lowercased CIDv1 base58btc (z…) IPNS host with a clear 400', async () => {
-    const result = await buildGatewayUrl('ipns', `ipns://${CIDV1_BASE58.toLowerCase()}/install`);
-    expect(result.ok).toBe(false);
-    expect(result.status).toBe(400);
-    expect(result.message).toMatch(/lowercased CIDv1 base58btc IPNS/);
-    expect(result.message).toMatch(/libp2p-key base36/);
-  });
-
-  test('preserves query string', async () => {
-    await expect(buildGatewayUrl('ipns', `ipns://${IPNS_KEY_BASE36}/page?v=1`)).resolves.toEqual({
-      ok: true,
-      url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE36}/page?v=1`,
-    });
-  });
-
-  describe('ENS hosts', () => {
-    test('routes ENS hosts to the resolver, not the raw IPNS branch', async () => {
-      // jalil.eth is a valid IPNS hostname per the regex AND an ENS host —
-      // the order of checks must prefer ENS so the contenthash gets resolved
-      // rather than handed to native gateway as a literal DNSLink lookup.
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipns',
-        decoded: IPNS_KEY_BASE58_ED25519,
-        uri: `ipns://${IPNS_KEY_BASE58_ED25519}`,
-        name: 'jalil.eth',
-      });
-
-      await expect(buildGatewayUrl('ipns', 'ipns://jalil.eth/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE58_ED25519}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('jalil.eth');
-    });
-
-    test('routes .tez hosts to Tezos Domains instead of raw DNSLink', async () => {
-      mockResolveTezosDomain.mockResolvedValue({
-        type: 'ok',
-        system: 'tezos',
-        protocol: 'ipns',
-        decoded: IPNS_KEY_BASE58_ED25519,
-        basePath: '/published',
-        uri: `ipns://${IPNS_KEY_BASE58_ED25519}/published`,
-      });
-
-      await expect(buildGatewayUrl('ipns', 'ipns://docs.example.tez/guide')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE58_ED25519}/published/guide`,
-      });
-      expect(mockResolveTezosDomain).toHaveBeenCalledWith('docs.example.tez');
-    });
-
-    test('routes WNS hosts to the resolver, not the raw IPNS branch', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'wns',
-        protocol: 'ipns',
-        decoded: IPNS_KEY_BASE58_ED25519,
-        uri: `ipns://${IPNS_KEY_BASE58_ED25519}`,
-        name: 'alice.wei',
-      });
-
-      await expect(buildGatewayUrl('ipns', 'ipns://alice.wei/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE58_ED25519}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('alice.wei');
-    });
-
-    test('routes GNS hosts to the resolver, not the raw IPNS branch', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'gns',
-        protocol: 'ipns',
-        decoded: IPNS_KEY_BASE58_ED25519,
-        uri: `ipns://${IPNS_KEY_BASE58_ED25519}`,
-        name: 'apoorv.gwei',
-      });
-
-      await expect(buildGatewayUrl('ipns', 'ipns://apoorv.gwei/')).resolves.toEqual({
-        ok: true,
-        url: `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE58_ED25519}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('apoorv.gwei');
-    });
-
-    test('returns 404 when ENS contenthash is IPFS, not IPNS', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipfs',
-        decoded: CIDV0,
-        uri: `ipfs://${CIDV0}`,
-      });
-
-      const result = await buildGatewayUrl('ipns', 'ipns://vitalik.eth/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'ENS name vitalik.eth resolves to ipfs, not IPNS',
-      });
-    });
-
-    test('returns 404 when ENS contenthash is Swarm, not IPNS', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'bzz',
-        decoded: 'a'.repeat(64),
-      });
-
-      const result = await buildGatewayUrl('ipns', 'ipns://swarm.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(404);
-      expect(result.message).toContain('not IPNS');
-    });
-  });
-});
-
-describe('sanitizeRequestHeaders', () => {
-  test('strips hop-by-hop and origin headers, leaves Range and Accept intact', () => {
-    const input = new Headers({
-      'User-Agent': 'test',
-      Accept: 'text/html',
-      Range: 'bytes=0-1023',
-      Origin: 'ipfs://some-origin',
-      Referer: 'ipfs://some-origin/page',
-      Host: 'whatever',
-      Connection: 'keep-alive',
-      Cookie: 'session=secret',
-      Authorization: 'Bearer token',
-    });
-    const out = sanitizeRequestHeaders(input);
-    expect(out.get('User-Agent')).toBe('test');
-    expect(out.get('Accept')).toBe('text/html');
-    expect(out.get('Range')).toBe('bytes=0-1023');
-    expect(out.has('Origin')).toBe(false);
-    expect(out.has('Referer')).toBe(false);
-    expect(out.has('Host')).toBe(false);
-    expect(out.has('Connection')).toBe(false);
-    expect(out.has('Cookie')).toBe(false);
-    expect(out.has('Authorization')).toBe(false);
-  });
-});
 
 describe('handleRequest', () => {
   beforeEach(() => {
@@ -685,211 +59,87 @@ describe('handleRequest', () => {
     signal: new AbortController().signal,
   });
 
-  test('returns 400 for invalid ipfs refs without calling fetch', async () => {
-    const fetchImpl = jest.fn();
-    const res = await handleRequest('ipfs', makeRequest('ipfs://not-a-cid/'), { fetchImpl });
+  test.each([
+    ['ipfs', 'ipfs://not-a-cid/', 'invalid ipfs reference'],
+    ['ipns', 'ipns://!bad-host!/', 'invalid ipns reference'],
+  ])('answers an invalid %s reference with 400 without dialling', async (ns, url, message) => {
+    const requestImpl = jest.fn();
+    const res = await handleRequest(ns, makeRequest(url), { requestImpl });
     expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.message).toBe('invalid ipfs reference');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect((await res.json()).message).toBe(message);
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
-  test('returns 400 for invalid ipns refs without calling fetch', async () => {
-    const fetchImpl = jest.fn();
-    const res = await handleRequest('ipns', makeRequest('ipns://!bad-host!/'), { fetchImpl });
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.message).toBe('invalid ipns reference');
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  test('proxies a 200 through untouched (raw CIDv1 base32)', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('hello', { status: 200 }));
+  test('serves a CIDv1 base32 host through the native request API', async () => {
+    const requestImpl = jest.fn().mockResolvedValue(new Response('hello', { status: 200 }));
     const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV1_BASE32}/file.txt`), {
-      fetchImpl,
+      requestImpl,
     });
     expect(res.status).toBe(200);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [calledUrl, init] = fetchImpl.mock.calls[0];
-    expect(calledUrl).toBe(`http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE32}/file.txt`);
+    await expect(res.text()).resolves.toBe('hello');
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+    const [init] = requestImpl.mock.calls[0];
+    expect(init.path).toBe(`/ipfs/${CIDV1_BASE32}/file.txt`);
     expect(init.method).toBe('GET');
-    // The native gateway subdomain redirect must be followed inside this handler;
-    // surfacing it to Chromium would re-introduce the gateway-origin bug.
-    expect(init.redirect).toBe('follow');
+    // The plan's header deadline goes to the node, which runs it.
+    expect(init.headersTimeoutMs).toBe(30_000);
   });
 
-  test('resolves ENS-host ipfs URLs and proxies to the gateway', async () => {
-    mockResolveEnsContent.mockResolvedValue({
-      type: 'ok',
-      protocol: 'ipfs',
-      decoded: CIDV0,
-      uri: `ipfs://${CIDV0}`,
-    });
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('hi', { status: 200 }));
+  test.each([
+    ['ipfs', 'ipfs://vitalik.eth/index.html', 'ipfs', CIDV0, `/ipfs/${CIDV0}/index.html`],
+    [
+      'ipns',
+      'ipns://jalil.eth/',
+      'ipns',
+      IPNS_KEY_BASE58_ED25519,
+      `/ipns/${IPNS_KEY_BASE58_ED25519}/`,
+    ],
+  ])(
+    'serves a %s name host under its resolved reference',
+    async (ns, url, protocol, decoded, path) => {
+      mockResolveEnsContent.mockResolvedValue({ type: 'ok', protocol, decoded });
+      const requestImpl = jest.fn().mockResolvedValue(new Response('hi', { status: 200 }));
+      const res = await handleRequest(ns, makeRequest(url), { requestImpl });
+      expect(res.status).toBe(200);
+      expect(requestImpl.mock.calls[0][0].path).toBe(path);
+    }
+  );
 
-    const res = await handleRequest('ipfs', makeRequest('ipfs://vitalik.eth/index.html'), {
-      fetchImpl,
-    });
-    expect(res.status).toBe(200);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl.mock.calls[0][0]).toBe(`http://freedom-ipfs.localhost/ipfs/${CIDV0}/index.html`);
-  });
-
-  test('resolves ENS-host ipns URLs and proxies to the gateway', async () => {
-    mockResolveEnsContent.mockResolvedValue({
-      type: 'ok',
-      protocol: 'ipns',
-      decoded: IPNS_KEY_BASE58_ED25519,
-      uri: `ipns://${IPNS_KEY_BASE58_ED25519}`,
-    });
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('hi', { status: 200 }));
-
-    const res = await handleRequest('ipns', makeRequest('ipns://jalil.eth/'), { fetchImpl });
-    expect(res.status).toBe(200);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl.mock.calls[0][0]).toBe(
-      `http://freedom-ipfs.localhost/ipns/${IPNS_KEY_BASE58_ED25519}/`
-    );
-  });
-
-  test('returns 404 with explanatory body when ipfs:// ENS host has Swarm contenthash', async () => {
+  test('answers an ipfs:// name with a Swarm contenthash 404, explained, without dialling', async () => {
     mockResolveEnsContent.mockResolvedValue({
       type: 'ok',
       protocol: 'bzz',
       decoded: 'a'.repeat(64),
     });
-    const fetchImpl = jest.fn();
-
-    const res = await handleRequest('ipfs', makeRequest('ipfs://swarm.eth/'), { fetchImpl });
+    const requestImpl = jest.fn();
+    const res = await handleRequest('ipfs', makeRequest('ipfs://swarm.eth/'), { requestImpl });
     expect(res.status).toBe(404);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(requestImpl).not.toHaveBeenCalled();
     const body = await res.json();
     expect(body.code).toBe(404);
     expect(body.message).toMatch(/resolves to bzz/);
   });
 
-  test('returns 502 when the ENS resolver throws (no fetch issued)', async () => {
-    mockResolveEnsContent.mockRejectedValue(new Error('rpc down'));
-    const fetchImpl = jest.fn();
-
-    const res = await handleRequest('ipfs', makeRequest('ipfs://offline.eth/x'), { fetchImpl });
-    expect(res.status).toBe(502);
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
   test('passes 4xx and 5xx through to the page (no retry)', async () => {
-    // Unlike the bzz handler, we don't retry transient 5xx — native gateway doesn't
-    // have Bee's cold-content reliability characteristic, so 5xx surfaces
-    // immediately and SPAs can fall back without a multi-second hang.
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('', { status: 503 }));
-    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), { fetchImpl });
-    expect(res.status).toBe(503);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Unlike bzz:, IPFS doesn't retry transient 5xx — 5xx surfaces at once,
+    // so SPAs can fall back without a multi-second hang.
+    for (const status of [503, 404]) {
+      const requestImpl = jest.fn().mockResolvedValue(new Response('', { status }));
+      const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), { requestImpl });
+      expect(res.status).toBe(status);
+      expect(requestImpl).toHaveBeenCalledTimes(1);
+    }
   });
 
-  test('passes 404 through to the page', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('', { status: 404 }));
-    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/missing`), {
-      fetchImpl,
-    });
-    expect(res.status).toBe(404);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  test('returns 503 when the freedom-ipfs gateway is unreachable (ECONNREFUSED)', async () => {
-    const err = new Error('connect failed');
-    err.code = 'ECONNREFUSED';
-    const fetchImpl = jest.fn().mockRejectedValue(err);
-
-    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), { fetchImpl });
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.message).toBe('freedom-ipfs gateway unreachable');
-  });
-
-  test('returns 502 for other fetch errors', async () => {
-    const fetchImpl = jest.fn().mockRejectedValue(new Error('something else'));
-
-    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), { fetchImpl });
+  test("a native request that fails is a 502 with the node's message", async () => {
+    const requestImpl = jest.fn().mockRejectedValue(new Error('block not found'));
+    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), { requestImpl });
     expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(body.message).toBe('freedom-ipfs gateway error');
-  });
-
-  test('returns 504 when the freedom-ipfs gateway accepts the connection but never responds', async () => {
-    // P2 from the round-4 review: without a per-attempt timeout, a
-    // stalled gateway hangs the page load indefinitely. The fetch is
-    // resolved by the abort signal, so the test settles deterministically
-    // without burning the configured timeout.
-    const fetchImpl = jest.fn(
-      (_url, init) =>
-        new Promise((_resolve, reject) => {
-          const fail = () => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
-          };
-          if (init.signal.aborted) {
-            fail();
-            return;
-          }
-          init.signal.addEventListener('abort', fail, { once: true });
-        })
-    );
-
-    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV0}/x`), {
-      fetchImpl,
-      attemptTimeoutMs: 10,
-    });
-    expect(res.status).toBe(504);
-    const body = await res.json();
-    expect(body.message).toBe('freedom-ipfs gateway timeout');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  test('upstream abort does not produce a 504 (caller cancelled)', async () => {
-    // Distinguishes "we timed out" from "the webview cancelled". Caller
-    // cancellation should bubble out as a normal abort error rather than
-    // a manufactured 504. The fetch mock honours both already-aborted
-    // signals at entry and abort events fired after entry.
-    const upstream = new AbortController();
-    const fetchImpl = jest.fn(
-      (_url, init) =>
-        new Promise((_resolve, reject) => {
-          const fail = () => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
-          };
-          if (init.signal.aborted) {
-            fail();
-            return;
-          }
-          init.signal.addEventListener('abort', fail, { once: true });
-        })
-    );
-
-    upstream.abort();
-    const res = await handleRequest(
-      'ipfs',
-      {
-        url: `ipfs://${CIDV0}/x`,
-        method: 'GET',
-        headers: new Headers(),
-        body: null,
-        signal: upstream.signal,
-      },
-      { fetchImpl, attemptTimeoutMs: 10_000 }
-    );
-    // Upstream abort surfaces the AbortError through the catch-all 502
-    // path rather than the timeout path — webview cancellations don't
-    // need to look like server timeouts.
-    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ code: 502, message: 'block not found' });
   });
 
   // O-12: the native gateway is read-only; anything but GET/HEAD is a 405,
-  // whether or not the request carries a body. (It used to key on `body`,
-  // so a bodiless DELETE/OPTIONS/POST was forwarded to the gateway.)
+  // whether or not the request carries a body.
   test.each([
     ['POST with a body', 'POST', 'payload'],
     ['POST without a body', 'POST', null],
@@ -898,28 +148,24 @@ describe('handleRequest', () => {
     ['OPTIONS', 'OPTIONS', null],
     ['PATCH', 'PATCH', null],
     ['lower-case post', 'post', null],
-  ])('native path answers %s with 405 without touching the gateway', async (_l, method, body) => {
+  ])('answers %s with 405 without touching the node', async (_l, method, body) => {
     const requestImpl = jest.fn();
-    const fetchImpl = jest.fn();
-    for (const opts of [{ requestImpl }, { fetchImpl }]) {
-      const res = await handleRequest(
-        'ipfs',
-        {
-          url: `ipfs://${CIDV1_BASE32}/api`,
-          method,
-          headers: new Headers(),
-          body,
-          signal: new AbortController().signal,
-        },
-        opts
-      );
-      expect(res.status).toBe(405);
-    }
+    const res = await handleRequest(
+      'ipfs',
+      {
+        url: `ipfs://${CIDV1_BASE32}/api`,
+        method,
+        headers: new Headers(),
+        body,
+        signal: new AbortController().signal,
+      },
+      { requestImpl }
+    );
+    expect(res.status).toBe(405);
     expect(requestImpl).not.toHaveBeenCalled();
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  test.each(['GET', 'HEAD'])('native path still serves %s', async (method) => {
+  test.each(['GET', 'HEAD'])('serves %s', async (method) => {
     const requestImpl = jest.fn().mockResolvedValue(new Response(null, { status: 200 }));
     const res = await handleRequest(
       'ipfs',
@@ -1087,10 +333,6 @@ describe('gateway-form redirect (O-3)', () => {
 
 // PRIVATE MODE GUARD (request logging) — same contract as the bzz handler,
 // for both namespaces this module registers.
-
-
-// PRIVATE MODE GUARD (request logging) — same contract as the bzz handler,
-// for both namespaces this module registers.
 describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
   const log = require('../logger');
   const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs-protocol');
@@ -1128,8 +370,9 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
     const text = loggedText();
     expect(text).not.toContain('secret-site.eth');
     expect(text).not.toContain('page.html');
-    expect(text).toContain('resolver threw for <private>');
-    expect(text).toContain(`502 for ${ns}://<private>`);
+    expect(text).not.toContain('rpc down');
+    // The resolver runs in the core now, which logs no URL.
+    expect(text).toContain(`502 for ${ns}://<private>: <private>`);
   });
 
   // Every resolution failure whose page-facing message names the site. The
@@ -1197,9 +440,12 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
     const res = await session.handlers.get('ipfs')({ url: `ipfs://${host}/x`, headers: {} });
 
     expect(res.status).toBe(400);
+    // The page still gets the explanation; the log, whose message is the
+    // core's, gets none of it.
+    expect((await res.json()).message).toContain(`lowercased CIDv0 host "${host}"`);
     const text = loggedText();
     expect(text).not.toContain(host);
-    expect(text).toContain('400 for ipfs://<private>: lowercased CIDv0 host "<private>"');
+    expect(text).toContain('400 for ipfs://<private>: <private>');
   });
 
   test('a normal session keeps the full diagnostic URL', async () => {
@@ -1212,13 +458,12 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
   });
 });
 
-
 describe('extensionless IPFS text navigation', () => {
   const fixture = 'Hello from IPFS Gateway Checker\n';
   // Chromium's fixed navigation Accept header — the only signal a
   // `protocol.handle` request carries that distinguishes a document load
   // from a subresource (no Sec-Fetch-Dest on custom schemes; `destination`
-  // is always '' and `mode` always 'cors'). See `isDocumentRequest`.
+  // is always '' and `mode` always 'cors'). The core's navigation rule reads it.
   const NAVIGATION_ACCEPT =
     'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,' +
     'image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
@@ -1227,9 +472,14 @@ describe('extensionless IPFS text navigation', () => {
       'ipfs',
       new Request(`ipfs://${CIDV1_BASE32}/`, { method, headers: accept ? { accept } : {} }),
       {
-        requestImpl: async () => new Response(method === 'HEAD' ? null : body, {
-          headers: { 'content-type': 'application/octet-stream', 'content-length': String(Buffer.byteLength(body)), ...headers },
-        }),
+        requestImpl: async () =>
+          new Response(method === 'HEAD' ? null : body, {
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-length': String(Buffer.byteLength(body)),
+              ...headers,
+            },
+          }),
       }
     );
   }
@@ -1250,11 +500,14 @@ describe('extensionless IPFS text navigation', () => {
     expect(result.headers.get('content-type')).toBe('application/octet-stream');
     expect(await result.text()).toBe(fixture);
   });
-  test.each([Buffer.from([0, 1, 2]), Buffer.from([255, 254]), Buffer.alloc(4097, 65)])('preserves binary/large data', async (body) => {
-    const result = await response(body);
-    expect(result.headers.get('content-type')).toBe('application/octet-stream');
-    expect(Buffer.from(await result.arrayBuffer())).toEqual(body);
-  });
+  test.each([Buffer.from([0, 1, 2]), Buffer.from([255, 254]), Buffer.alloc(4097, 65)])(
+    'preserves binary/large data',
+    async (body) => {
+      const result = await response(body);
+      expect(result.headers.get('content-type')).toBe('application/octet-stream');
+      expect(Buffer.from(await result.arrayBuffer())).toEqual(body);
+    }
+  );
   test('does not trust an understated length or consume HEAD bodies', async () => {
     const body = 'a'.repeat(5000);
     const result = await response(body, { 'content-length': '32' });

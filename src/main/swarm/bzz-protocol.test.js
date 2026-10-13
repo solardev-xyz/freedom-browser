@@ -1,5 +1,13 @@
+// The handler asks the core for a plan (freedom-core design 0006,
+// `dweb.open`) and executes it. The URL, host and header decisions are the
+// core's, pinned by fc-dweb's vectors; here the core is played by
+// `test/helpers/fake-dweb-core.js`, which plans as fc-dweb does, and these
+// cases cover what main does with the plans: the dial, the retry loop, the
+// response operations and the log.
 jest.mock('../service-registry', () => ({
+  MODE: { BUNDLED: 'bundled', EXTERNAL: 'external' },
   getAntApiUrl: jest.fn(() => 'http://127.0.0.1:1633'),
+  getService: () => ({ mode: 'bundled' }),
 }));
 
 jest.mock('../logger', () => ({
@@ -13,324 +21,42 @@ jest.mock('../logger', () => ({
 // regular `const` initialisation, so any captured variable must start with
 // `mock` to survive the static analyser.
 const mockResolveEnsContent = jest.fn();
-jest.mock('../ens-resolver', () => ({
-  resolveEnsContent: (...args) => mockResolveEnsContent(...args),
+const {
+  createFakeDwebDriver,
+  BZZ_RETRY_DELAYS_MS: RETRY_DELAYS_MS,
+  BZZ_HEADERS_MS,
+} = require('../../../test/helpers/fake-dweb-core');
+const mockDriver = createFakeDwebDriver({
+  resolveContent: (...args) => mockResolveEnsContent(...args),
+});
+jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
+
+// A remote Ant is dialled on the session's stack (Chromium's `net.request`).
+const mockNetGatewayFetch = jest.fn();
+jest.mock('../ipfs/gateway-transport', () => ({
+  ...jest.requireActual('../ipfs/gateway-transport'),
+  netGatewayFetch: (...args) => mockNetGatewayFetch(...args),
 }));
 
+// Chromium's `net.request`, for the transport's own path: no test dials it.
+const mockNetRequest = jest.fn(() => {
+  throw new Error('no dial expected');
+});
+jest.mock('electron', () => ({ net: { request: (...args) => mockNetRequest(...args) } }));
+
 const {
-  buildGatewayUrl,
-  sanitizeRequestHeaders,
   handleBzzRequest,
-  RETRY_DELAYS_MS,
+  antBackend,
+  abandonedAntDials,
+  MAX_ABANDONED_DIALS,
 } = require('./bzz-protocol');
 const { getAntApiUrl } = require('../service-registry');
+const { isMainProcessAntDial } = require('./ant-api-main-dials');
+const { closeDwebSession } = require('../dweb/fetch-admission');
+const actualTransport = jest.requireActual('../ipfs/gateway-transport');
+const { OnionGateRefusal } = actualTransport;
 
 const HASH = 'a'.repeat(64);
-const ENCRYPTED_HASH = 'a'.repeat(128);
-
-describe('buildGatewayUrl', () => {
-  beforeEach(() => {
-    mockResolveEnsContent.mockReset();
-    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
-  });
-
-  test('returns 503 when the Swarm endpoint is not hydrated', async () => {
-    getAntApiUrl.mockReturnValue(null);
-
-    await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toMatchObject({
-      ok: false,
-      status: 503,
-      message: 'Swarm node is not ready',
-    });
-  });
-
-  test('converts bzz://<hash>/path to the Swarm gateway URL', async () => {
-    await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toEqual({
-      ok: true,
-      url: `http://127.0.0.1:1633/bzz/${HASH}/index.html`,
-    });
-  });
-
-  test('preserves query string and drops fragment (Chromium never sends it)', async () => {
-    await expect(buildGatewayUrl(`bzz://${HASH}/page?v=1`)).resolves.toEqual({
-      ok: true,
-      url: `http://127.0.0.1:1633/bzz/${HASH}/page?v=1`,
-    });
-  });
-
-  test('supports 128-char encrypted refs', async () => {
-    await expect(buildGatewayUrl(`bzz://${ENCRYPTED_HASH}/`)).resolves.toEqual({
-      ok: true,
-      url: `http://127.0.0.1:1633/bzz/${ENCRYPTED_HASH}/`,
-    });
-  });
-
-  test('returns null for non-hex non-ENS hosts', async () => {
-    await expect(buildGatewayUrl('bzz://not-a-hash/file')).resolves.toBeNull();
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  test('returns null for too-short hashes that are not ENS', async () => {
-    await expect(buildGatewayUrl('bzz://abcdef/file')).resolves.toBeNull();
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  test('hex host short-circuits the ENS resolver', async () => {
-    await buildGatewayUrl(`bzz://${HASH}/x`);
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
-  });
-
-  describe('ENS hosts', () => {
-    test('resolves .eth host via ENS resolver and proxies to the resolved hash', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'bzz',
-        decoded: HASH,
-        uri: `bzz://${HASH}`,
-        name: 'meinhard.eth',
-      });
-
-      await expect(buildGatewayUrl('bzz://meinhard.eth/page.html?v=1')).resolves.toEqual({
-        ok: true,
-        url: `http://127.0.0.1:1633/bzz/${HASH}/page.html?v=1`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('meinhard.eth');
-    });
-
-    test('resolves .box host via ENS resolver', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'bzz',
-        decoded: HASH,
-        uri: `bzz://${HASH}`,
-      });
-
-      await expect(buildGatewayUrl('bzz://myapp.box/')).resolves.toEqual({
-        ok: true,
-        url: `http://127.0.0.1:1633/bzz/${HASH}/`,
-      });
-    });
-
-    test('resolves .wei host via WNS resolver result', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'wns',
-        protocol: 'bzz',
-        decoded: HASH,
-        uri: `bzz://${HASH}`,
-      });
-
-      await expect(buildGatewayUrl('bzz://alice.wei/')).resolves.toEqual({
-        ok: true,
-        url: `http://127.0.0.1:1633/bzz/${HASH}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('alice.wei');
-    });
-
-    test('resolves .gwei host via GNS resolver result', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'gns',
-        protocol: 'bzz',
-        decoded: HASH,
-        uri: `bzz://${HASH}`,
-      });
-
-      await expect(buildGatewayUrl('bzz://apoorv.gwei/')).resolves.toEqual({
-        ok: true,
-        url: `http://127.0.0.1:1633/bzz/${HASH}/`,
-      });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith('apoorv.gwei');
-    });
-
-    test('returns 404 when ENS contenthash is IPFS, not Swarm', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipfs',
-        decoded: 'QmFakeCid',
-        uri: 'ipfs://QmFakeCid',
-      });
-
-      const result = await buildGatewayUrl('bzz://vitalik.eth/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'ENS name vitalik.eth resolves to ipfs, not Swarm',
-      });
-    });
-
-    test('uses WNS label for .wei transport mismatch errors', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'wns',
-        protocol: 'ipfs',
-        decoded: 'QmFakeCid',
-        uri: 'ipfs://QmFakeCid',
-      });
-
-      const result = await buildGatewayUrl('bzz://alice.wei/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'WNS name alice.wei resolves to ipfs, not Swarm',
-      });
-    });
-
-    test('uses GNS label for .gwei transport mismatch errors', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        system: 'gns',
-        protocol: 'ipfs',
-        decoded: 'QmFakeCid',
-        uri: 'ipfs://QmFakeCid',
-      });
-
-      const result = await buildGatewayUrl('bzz://apoorv.gwei/');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'GNS name apoorv.gwei resolves to ipfs, not Swarm',
-      });
-    });
-
-    test('returns 404 when ENS contenthash is IPNS, not Swarm', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'ipns',
-        decoded: 'docs.example.com',
-        uri: 'ipns://docs.example.com',
-      });
-
-      const result = await buildGatewayUrl('bzz://docs.eth/install');
-      expect(result).toMatchObject({
-        ok: false,
-        status: 404,
-        message: 'ENS name docs.eth resolves to ipns, not Swarm',
-      });
-    });
-
-    test('returns 404 when ENS name has no contenthash record', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'not_found',
-        reason: 'NO_RESOLVER',
-      });
-
-      const result = await buildGatewayUrl('bzz://nothing.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(404);
-      expect(result.message).toContain('nothing.eth');
-      expect(result.message).toContain('NO_RESOLVER');
-    });
-
-    test('returns 415 when contenthash format is unsupported', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'unsupported',
-        reason: 'UNSUPPORTED_CONTENTHASH_FORMAT',
-        contentHash: '0xdeadbeef',
-      });
-
-      const result = await buildGatewayUrl('bzz://exotic.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(415);
-    });
-
-    test('returns 502 when providers disagree (conflict)', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'conflict',
-        groups: [],
-      });
-
-      const result = await buildGatewayUrl('bzz://contested.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(502);
-      expect(result.message).toContain('disagree');
-    });
-
-    test('returns 502 when the resolver throws (RPC unreachable)', async () => {
-      mockResolveEnsContent.mockRejectedValue(new Error('all RPC providers failed'));
-
-      const result = await buildGatewayUrl('bzz://offline.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(502);
-      expect(result.message).toContain('all RPC providers failed');
-    });
-
-    test('returns 502 when the resolver returns an error result', async () => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'error',
-        reason: 'RESOLUTION_ERROR',
-        error: 'something broke',
-      });
-
-      const result = await buildGatewayUrl('bzz://broken.eth/');
-      expect(result.ok).toBe(false);
-      expect(result.status).toBe(502);
-    });
-
-    // ENS subdomains are set by the parent domain's owner with no length
-    // constraint — 1–2 char leftmost labels are valid and common (e.g.
-    // `a.foo.eth`, `me.brantly.eth`, `1.poap.eth`). Legacy two-char direct
-    // `.eth` registrations (`me.eth`, `aa.eth`) from the 2017 auction era
-    // are also still valid. The pre-filter must only reject truly empty
-    // labels, not short ones.
-    test.each([
-      ['gregskril.com', 'bzz://gregskril.com/'],
-      ['a.foo.eth', 'bzz://a.foo.eth/'],
-      ['x.app.eth', 'bzz://x.app.eth/'],
-      ['me.brantly.eth', 'bzz://me.brantly.eth/'],
-      ['1.poap.eth', 'bzz://1.poap.eth/'],
-      ['me.eth', 'bzz://me.eth/'],
-      ['aa.eth', 'bzz://aa.eth/'],
-    ])('short-label ENS host %s reaches the resolver', async (name, url) => {
-      mockResolveEnsContent.mockResolvedValue({
-        type: 'ok',
-        protocol: 'bzz',
-        decoded: HASH,
-        uri: `bzz://${HASH}`,
-        name,
-      });
-
-      const result = await buildGatewayUrl(url);
-      expect(result).toEqual({ ok: true, url: `http://127.0.0.1:1633/bzz/${HASH}/` });
-      expect(mockResolveEnsContent).toHaveBeenCalledWith(name);
-    });
-
-    test.each([['bzz://.eth/'], ['bzz://foo..eth/']])(
-      'returns null for hosts with empty labels (%s)',
-      async (url) => {
-        await expect(buildGatewayUrl(url)).resolves.toBeNull();
-        expect(mockResolveEnsContent).not.toHaveBeenCalled();
-      }
-    );
-  });
-});
-
-describe('sanitizeRequestHeaders', () => {
-  test('strips hop-by-hop and origin headers, injects swarm retrieval hints', () => {
-    const input = new Headers({
-      'User-Agent': 'test',
-      Accept: 'text/html',
-      Origin: 'bzz://some-origin',
-      Referer: 'bzz://some-origin/page',
-      Host: 'whatever',
-      Connection: 'keep-alive',
-      Cookie: 'session=secret',
-      Authorization: 'Bearer token',
-    });
-    const out = sanitizeRequestHeaders(input);
-    expect(out.get('User-Agent')).toBe('test');
-    expect(out.get('Accept')).toBe('text/html');
-    expect(out.has('Origin')).toBe(false);
-    expect(out.has('Referer')).toBe(false);
-    expect(out.has('Host')).toBe(false);
-    expect(out.has('Connection')).toBe(false);
-    expect(out.has('Cookie')).toBe(false);
-    expect(out.has('Authorization')).toBe(false);
-    expect(out.get('Swarm-Chunk-Retrieval-Timeout')).toBe('30s');
-    expect(out.get('Swarm-Redundancy-Strategy')).toBe('3');
-    expect(out.get('Swarm-Redundancy-Fallback-Mode')).toBe('true');
-  });
-});
 
 describe('handleBzzRequest', () => {
   beforeEach(() => {
@@ -636,14 +362,11 @@ describe('handleBzzRequest', () => {
         )
         .mockResolvedValueOnce(new Response('ok', { status: 200 }));
 
-      const p = handleBzzRequest(makeRequest(`bzz://${HASH}/x`), {
-        fetchImpl,
-        attemptTimeoutMs: 1000,
-      });
+      const p = handleBzzRequest(makeRequest(`bzz://${HASH}/x`), { fetchImpl });
 
-      // Drain microtasks, then trip the per-attempt timeout.
+      // Drain microtasks, then trip the plan's per-attempt timeout.
       await Promise.resolve();
-      await jest.advanceTimersByTimeAsync(1100);
+      await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS + 100);
       // The error from the aborted fetch should now be flowing through the
       // retry loop. Advance past the first retry delay.
       await Promise.resolve();
@@ -672,6 +395,7 @@ describe('handleBzzRequest', () => {
       };
       const p = handleBzzRequest(req, { fetchImpl });
       // First attempt runs, schedules a retry, then we abort before it fires.
+      while (fetchImpl.mock.calls.length === 0) await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       controller.abort();
@@ -734,9 +458,10 @@ describe('registerBzzProtocol private sessions', () => {
     const text = loggedText();
     expect(text).not.toContain('secret-site.eth');
     expect(text).not.toContain('page.html');
-    // Still says a bzz request failed to resolve — just not which one.
-    expect(text).toContain('resolver threw for <private>');
-    expect(text).toContain('502 for bzz://<private>');
+    expect(text).not.toContain('rpc down');
+    // Still says a bzz request failed — just not which one. (The resolver
+    // runs in the core now, which logs no URL.)
+    expect(text).toContain('502 for bzz://<private>: <private>');
   });
 
   // Every resolution failure whose page-facing message names the site. The
@@ -1122,5 +847,234 @@ describe('handleBzzRequest redirect canonicalisation', () => {
     );
     expect(res.status).toBe(304);
     expect(res.headers.get('location')).toBeNull();
+  });
+});
+
+// Design 0006, deviation `transport` (#360): a non-loopback Ant is dialled on
+// the request's session, with manual redirects and the onion refusal, and the
+// exact dial is announced to the Ant API guard for its lifetime.
+describe('a non-loopback Ant', () => {
+  const REMOTE = 'https://ant.example:1633';
+  const session = { id: 'the request session' };
+  const request = (url) => ({
+    url,
+    method: 'GET',
+    headers: new Headers({ accept: '*/*' }),
+    body: null,
+    signal: new AbortController().signal,
+  });
+
+  beforeEach(() => {
+    mockNetGatewayFetch.mockReset();
+    getAntApiUrl.mockReturnValue(REMOTE);
+  });
+  afterEach(() => {
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    jest.useRealTimers();
+  });
+
+  test("goes out on the request's session, announced to the guard only while it dials", async () => {
+    const dialled = `${REMOTE}/bzz/${HASH}/index.html`;
+    let announced = null;
+    mockNetGatewayFetch.mockImplementation(async (url) => {
+      announced = isMainProcessAntDial(url);
+      return new Response('remote content');
+    });
+    const fetchImpl = jest.fn();
+
+    const res = await handleBzzRequest(request(`bzz://${HASH}/index.html`), {
+      session,
+      fetchImpl,
+    });
+
+    await expect(res.text()).resolves.toBe('remote content');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const [url, init, deps] = mockNetGatewayFetch.mock.calls[0];
+    expect(url).toBe(dialled);
+    expect(init).toMatchObject({ method: 'GET', redirect: 'manual' });
+    expect(deps).toEqual({ session });
+    expect(announced).toBe(true);
+    // Released once the dial settled: nothing frameless is let through after.
+    expect(isMainProcessAntDial(dialled)).toBe(false);
+  });
+
+  test("a refused connection is Chromium's, read as undici's: 503 after the schedule", async () => {
+    jest.useFakeTimers();
+    mockNetGatewayFetch.mockImplementation(async (url) => {
+      expect(isMainProcessAntDial(url)).toBe(true);
+      throw new Error('net::ERR_CONNECTION_REFUSED');
+    });
+    const pending = handleBzzRequest(request(`bzz://${HASH}/x`), { session });
+    await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS.reduce((a, b) => a + b));
+    const res = await pending;
+    expect(mockNetGatewayFetch).toHaveBeenCalledTimes(10);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ code: 503, message: 'bee gateway unreachable' });
+    expect(isMainProcessAntDial(`${REMOTE}/bzz/${HASH}/x`)).toBe(false);
+  });
+
+  test('an onion Ant the session would resolve DIRECT is never dialled, and is retried', async () => {
+    jest.useFakeTimers();
+    getAntApiUrl.mockReturnValue('http://antnode.onion:1633');
+    mockNetGatewayFetch
+      .mockRejectedValueOnce(new OnionGateRefusal('not routed'))
+      .mockResolvedValueOnce(new Response('over tor'));
+    const pending = handleBzzRequest(request(`bzz://${HASH}/x`), { session });
+    await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+    await expect((await pending).text()).resolves.toBe('over tor');
+  });
+
+  test("a loopback Ant keeps Node's fetch, outside the session", async () => {
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    const fetchImpl = jest.fn(async () => new Response('local'));
+    const res = await handleBzzRequest(request(`bzz://${HASH}/x`), { session, fetchImpl });
+    await expect(res.text()).resolves.toBe('local');
+    expect(mockNetGatewayFetch).not.toHaveBeenCalled();
+  });
+
+  test('the backend is captured with its mode, and the core learns no URL', () => {
+    expect(antBackend().ref).toEqual({ ant: 'bundled', up: true });
+    getAntApiUrl.mockReturnValue(null);
+    expect(antBackend().ref).toEqual({ ant: 'bundled', up: false });
+  });
+});
+
+// The remote Ant's dial is waited on only while its attempt lives: the
+// header deadline, the page's abort and the session's close each end the
+// wait at once, even while the session's proxy lookup ignores them. That
+// work is abandoned: what it brings is discarded, and it is bounded.
+describe("a remote Ant's dial is bounded by its attempt", () => {
+  const ONION = 'http://antnode.onion:1633';
+  const session = { id: 'the request session' };
+  const held = () => {
+    let settle;
+    const promise = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    return { promise, ...settle };
+  };
+  const request = (signal) => ({
+    url: `bzz://${HASH}/x`,
+    method: 'GET',
+    headers: new Headers({ accept: '*/*' }),
+    body: null,
+    signal: signal ?? new AbortController().signal,
+  });
+
+  beforeEach(() => {
+    mockNetGatewayFetch.mockReset();
+    mockNetRequest.mockClear();
+    getAntApiUrl.mockReturnValue(ONION);
+  });
+  afterEach(() => {
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    jest.useRealTimers();
+  });
+
+  test('a proxy wait spanning the header deadline ends the attempt; a late answer is discarded', async () => {
+    jest.useFakeTimers();
+    const stalled = held();
+    mockNetGatewayFetch
+      .mockImplementationOnce(() => stalled.promise)
+      .mockResolvedValueOnce(new Response('second attempt'));
+    const dialled = `${ONION}/bzz/${HASH}/x`;
+
+    const pending = handleBzzRequest(request(), { session });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    expect(isMainProcessAntDial(dialled)).toBe(true);
+    await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS);
+    // The attempt is over though its transport isn't: abandoned, unannounced.
+    expect(abandonedAntDials()).toBe(1);
+    expect(isMainProcessAntDial(dialled)).toBe(false);
+    await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+    await expect((await pending).text()).resolves.toBe('second attempt');
+
+    let lateCancelled = false;
+    stalled.resolve(new Response(new ReadableStream({ cancel: () => (lateCancelled = true) })));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(lateCancelled).toBe(true);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("the page's abort settles a pending proxy wait at once", async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const page = new AbortController();
+    const pending = handleBzzRequest(request(page.signal), { session });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    page.abort();
+    const res = await pending;
+    expect(res.status).toBe(502);
+    expect(isMainProcessAntDial(`${ONION}/bzz/${HASH}/x`)).toBe(false);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("the session's close settles a pending proxy wait at once", async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const pending = handleBzzRequest(request(), {
+      session,
+      partition: 'private-proxy',
+      isPrivate: true,
+    });
+    while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
+    closeDwebSession('private-proxy');
+    expect((await pending).status).toBe(502);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test("through the real transport: a session's held proxy lookup never dials once abandoned", async () => {
+    jest.useFakeTimers();
+    const lookups = [];
+    const lookingUp = {
+      resolveProxy: () => new Promise((resolve) => lookups.push(resolve)),
+    };
+    mockNetGatewayFetch.mockImplementation((...args) => actualTransport.netGatewayFetch(...args));
+    const page = new AbortController();
+    const pending = handleBzzRequest(request(page.signal), { session: lookingUp });
+    while (lookups.length === 0) await Promise.resolve();
+    // The header deadline passes with the lookup still held: the next
+    // attempt starts, and the page then leaves.
+    await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS + RETRY_DELAYS_MS[0]);
+    expect(lookups).toHaveLength(2);
+    page.abort();
+    expect((await pending).status).toBe(502);
+
+    // The lookups come back routed: an aborted attempt is never dialled.
+    for (const resolve of lookups) resolve('SOCKS5 127.0.0.1:9150');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mockNetRequest).not.toHaveBeenCalled();
+    expect(abandonedAntDials()).toBe(0);
+  });
+
+  test('abandoned dials are bounded: past the bound a new one fails at once', async () => {
+    const stalled = held();
+    mockNetGatewayFetch.mockImplementation(() => stalled.promise);
+    const aborted = new AbortController();
+    aborted.abort();
+    const backend = antBackend({ session });
+    const attempt = () =>
+      backend
+        .request({
+          path: `/bzz/${HASH}/x`,
+          method: 'GET',
+          headers: new Headers(),
+          signal: aborted.signal,
+          headersTimeoutMs: BZZ_HEADERS_MS,
+        })
+        .catch((err) => err);
+    for (let n = 0; n < MAX_ABANDONED_DIALS; n++) await attempt();
+    expect(abandonedAntDials()).toBe(MAX_ABANDONED_DIALS);
+    const calls = mockNetGatewayFetch.mock.calls.length;
+
+    expect((await attempt()).message).toBe('too many abandoned Ant dials');
+    expect(mockNetGatewayFetch.mock.calls).toHaveLength(calls);
+    stalled.reject(new Error('aborted'));
+    await new Promise(setImmediate);
+    expect(abandonedAntDials()).toBe(0);
   });
 });

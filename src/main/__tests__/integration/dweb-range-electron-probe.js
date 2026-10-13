@@ -11,7 +11,9 @@
  *
  * A fake Ant on 127.0.0.1 serves a byte-range file, a directory redirect in
  * gateway space, and a body that never ends (to watch cancel and
- * backpressure from the node's side).
+ * backpressure from the node's side). The handler's plans (freedom-core
+ * design 0006, `dweb.open`) come from `test/helpers/fake-dweb-core.js`, which
+ * plans as the core does: no core process runs here.
  *
  * Results are printed as one JSON line prefixed with `PROBE-RESULT `.
  */
@@ -39,6 +41,12 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
+
+// The handler asks `namingDriver()` for its planner at request time.
+const naming = require('../../core/naming');
+const { createFakeDwebDriver } = require('../../../../test/helpers/fake-dweb-core');
+const planner = createFakeDwebDriver();
+naming.namingDriver = () => planner;
 
 const { registerBzzProtocol } = require('../../swarm/bzz-protocol');
 const { updateService } = require('../../service-registry');

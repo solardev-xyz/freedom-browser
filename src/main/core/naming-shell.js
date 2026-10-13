@@ -22,6 +22,7 @@ const {
   resolvesToLocalAddress,
 } = require('../networks/blockscout-logs');
 const { prefetchGatewayUrl } = require('../ens-prefetch');
+const { unlessAborted } = require('../lib/unless-aborted');
 
 // ethers' FetchRequest (6.17.0): at most 12 attempts, a 250 ms back-off
 // slot, and 300 s for the exchange and for each attempt's inactivity.
@@ -86,31 +87,6 @@ function sleep(ms, signal) {
 /** Hops abandoned while their fetch hadn't returned (a proxy lookup
  * that ignores the abort): past this many, new hops fail at once. */
 const MAX_ABANDONED = 64;
-
-/** Settles as `promise` does, or rejects with the abort as `signal`
- * aborts first. */
-function unlessAborted(promise, signal) {
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    // Observed whichever wins, so a rejection that comes after the abort is
-    // never left unhandled.
-    promise.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (err) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(err);
-      }
-    );
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 /**
  * One HTTP exchange through the session's network stack (`netGatewayFetch`:

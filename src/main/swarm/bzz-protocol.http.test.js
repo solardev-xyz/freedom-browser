@@ -8,7 +8,13 @@
  * session (`registerBzzProtocol`) is driven with real `Request` objects and
  * talks to a fake Ant with Node's real `fetch`, so Range/206, HEAD, cancel,
  * mid-body errors and backpressure are the transport's real behaviour rather
- * than whatever a mock returns. Only name resolution is mocked.
+ * than whatever a mock returns.
+ *
+ * Since design 0006 step 4 the handler asks the core for a plan
+ * (`dweb.open`) and executes it. The core is played by
+ * `test/helpers/fake-dweb-core.js`, which plans as fc-dweb does (checked
+ * against the core's own vectors); only the name resolution it asks for is
+ * mocked, as before. `dweb.integration.test.js` drives the real core.
  *
  * Timing cases (the retry schedule, the 30 s attempt deadline) run under
  * Jest's fake timers: the handler's own timers are fake, the sockets are not.
@@ -16,7 +22,9 @@
 
 const mockGetAntApiUrl = jest.fn();
 jest.mock('../service-registry', () => ({
+  MODE: { BUNDLED: 'bundled', EXTERNAL: 'external' },
   getAntApiUrl: (...args) => mockGetAntApiUrl(...args),
+  getService: () => ({ mode: 'bundled' }),
 }));
 
 jest.mock('../logger', () => ({
@@ -27,11 +35,19 @@ jest.mock('../logger', () => ({
 }));
 
 const mockResolveEnsContent = jest.fn();
-jest.mock('../ens-resolver', () => ({
-  resolveEnsContent: (...args) => mockResolveEnsContent(...args),
-}));
+const {
+  createFakeDwebDriver,
+  BZZ_RETRY_DELAYS_MS: RETRY_DELAYS_MS,
+  BZZ_HEADERS_MS: ATTEMPT_TIMEOUT_MS,
+  BODY_IDLE_MS,
+} = require('../../../test/helpers/fake-dweb-core');
+// The core's planner, resolving names through the mock.
+const mockDriver = createFakeDwebDriver({
+  resolveContent: (...args) => mockResolveEnsContent(...args),
+});
+jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
 
-const { registerBzzProtocol, RETRY_DELAYS_MS, ATTEMPT_TIMEOUT_MS } = require('./bzz-protocol');
+const { registerBzzProtocol } = require('./bzz-protocol');
 const {
   closedLoopbackPort,
   nextTurn,
@@ -531,11 +547,12 @@ describe('bzz: the retry loop over HTTP', () => {
     expect(jest.getTimerCount()).toBe(0);
     expect(attempts.calls).toHaveLength(1);
     expect(ant.requests).toHaveLength(1);
-    // TODAY: what comes back is the last 503, whose body the loop already
-    // cancelled before it went to sleep, so it is unreadable. Nobody reads it:
-    // the request it answers is gone.
+    // What comes back is the last 503's head, its body cancelled before the
+    // loop went to sleep, so it carries none (every answer goes through the
+    // response operations, and a cancelled body can't be re-streamed). Nobody
+    // reads it: the request it answers is gone.
     expect(res.status).toBe(503);
-    expect(res.bodyUsed).toBe(true);
+    expect(res.body).toBeNull();
   });
 
   test("a retried attempt's body is cancelled before the backoff, freeing its connection", async () => {
@@ -608,9 +625,10 @@ describe('bzz: the 30 s attempt deadline over HTTP', () => {
     await expect(res.text()).resolves.toBe('second try');
   });
 
-  // Design 0006 deviation `body-idle`: today nothing bounds a body that stops
-  // mid-way. When the 60 s body-idle timeout lands, this case changes.
-  test('stops applying once headers arrive: a stalled body is never timed out', async () => {
+  // Design 0006 deviation `body-idle`: the body's own clock runs only while a
+  // read is pending, so a reader that has paused (a paused video) is never
+  // cut off; see the next case for a read left pending.
+  test('stops applying once headers arrive: a paused reader is never timed out', async () => {
     ant.handle((_req, res) => {
       res.writeHead(200, { 'Content-Length': '200000' });
       res.write(Buffer.alloc(1000, 0x61));
@@ -629,6 +647,31 @@ describe('bzz: the 30 s attempt deadline over HTTP', () => {
     ant.requests[0].res.end(Buffer.alloc(199_000, 0x62));
     const rest = await readAll(reader);
     expect(first.value.byteLength + rest.length).toBe(200_000);
+  });
+
+  // Design 0006 deviation `body-idle`: today a body that stops mid-way, with a
+  // read pending, hangs; now it fails as truncated after 60 s and the
+  // upstream is aborted.
+  test('a read left pending for 60 s fails the body as truncated and aborts the upstream', async () => {
+    ant.handle((_req, res) => {
+      res.writeHead(200, { 'Content-Length': '200000' });
+      res.write(Buffer.alloc(1000, 0x61));
+    });
+    useFakeClock();
+
+    const res = await handle(bzz('/x'));
+    const reader = res.body.getReader();
+    await reader.read();
+    const stalled = readUntilError(reader);
+    await nextTurn(20);
+    await jest.advanceTimersByTimeAsync(BODY_IDLE_MS - 1);
+    expect(ant.requests[0].closed).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(1);
+    const { error } = await stalled;
+    expect(error.name).toBe('BodyIdleError');
+    await waitFor(() => ant.requests[0].closed, { what: 'the upstream to be aborted' });
+    expect(ant.requests[0].aborted).toBe(true);
   });
 });
 
