@@ -6448,7 +6448,11 @@
   color: #fff;
 }
 
+/* Keeps its fill: the generic hover above, and the light theme's below,
+   would otherwise put white text on a translucent fill. */
 .safe-status-btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
   opacity: 0.9;
 }
 

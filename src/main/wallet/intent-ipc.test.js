@@ -591,6 +591,178 @@ describe('held payments over IPC (4b)', () => {
       recorded: true,
     });
   });
+
+  // 709-B1: a refused resend must still say where its payment stands, so
+  // the chrome keeps offering that payment at its nonce and never composes
+  // a new one (which would sign nonce 8 while 7 stays held).
+  describe('a refused resend still names its held payment (709-B1)', () => {
+    test('a lapsed confirmation: refused with the payment as main holds it; a fresh one sends it, nothing signed', async () => {
+      const running = startIntents();
+      const failed = await refusedSend(running);
+      let clock = 1_000_000;
+      running.confirmations._setNow(() => clock);
+      const { token } = await running.confirm('intent-resend', null, bindingOf(failed.intent));
+      clock += running.confirmations.CONFIRMATION_TTL_MS;
+
+      const expired = await running.resend(failed.intentId, { confirmation: token });
+      expect(expired).toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        intentId: failed.intentId,
+        intent: { intentId: failed.intentId, state: 'held', nonce: 7, hash: failed.intent.hash },
+      });
+      expect(mockBroadcast).toHaveBeenCalledTimes(1);
+
+      // Confirmed again as main reported it: the same bytes, at nonce 7.
+      const again = await resendConfirmed(running, expired.intent);
+      expect(again).toMatchObject({ success: true, nonce: 7, hash: failed.intent.hash });
+      expect(mockBroadcast).toHaveBeenCalledTimes(2);
+      expect(mockBroadcast.mock.calls[1][1]).toBe(mockBroadcast.mock.calls[0][1]);
+      expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+      expect(broadcasts().map((tx) => tx.nonce)).toEqual([7, 7]);
+    });
+
+    test("a replacement changed the payment's latest transaction: refused with its new hash, which a fresh confirmation sends", async () => {
+      const running = startIntents();
+      const failed = await refusedSend(running);
+      const { token } = await running.confirm('intent-resend', null, bindingOf(failed.intent));
+      const raw = await ALICE.signTransaction({
+        type: 0,
+        chainId: 100,
+        nonce: 7,
+        to: BOB.address,
+        value: 1000n,
+        gasLimit: 21000n,
+        gasPrice: 2000000000n,
+      });
+      await running.store.commit({
+        intentId: failed.intentId,
+        chainId: 100,
+        sender: ALICE.address,
+        nonce: 7,
+        hash: keccak256(raw),
+        raw,
+        via: 'replacement',
+      });
+
+      const stale = await running.resend(failed.intentId, { confirmation: token });
+      expect(stale).toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        intent: { intentId: failed.intentId, state: 'held', nonce: 7, hash: keccak256(raw) },
+      });
+      expect(mockBroadcast).toHaveBeenCalledTimes(1);
+
+      const again = await resendConfirmed(running, stale.intent);
+      expect(again).toMatchObject({ success: true, nonce: 7, hash: keccak256(raw) });
+      expect(mockBroadcast.mock.calls[1][1]).toBe(raw);
+      expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    test('every other refusal names the payment too: a refused broadcast, a failed write, no authorization', async () => {
+      const running = startIntents();
+      const failed = await refusedSend(running);
+      const held = {
+        intentId: failed.intentId,
+        intent: { intentId: failed.intentId, state: 'held', nonce: 7 },
+      };
+
+      mockBroadcast.mockImplementationOnce(async () => {
+        throw Object.assign(new Error('insufficient funds for gas * price + value'), {
+          outcome: 'rejected',
+        });
+      });
+      await expect(resendConfirmed(running, failed.intent)).resolves.toMatchObject({
+        success: false,
+        outcome: 'rejected',
+        ...held,
+      });
+
+      // A failure with no intent on the error at all.
+      const handoff = running.store.handoff;
+      running.store.handoff = async () => {
+        throw new Error('disk full');
+      };
+      await expect(resendConfirmed(running, failed.intent)).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining('disk full'),
+        ...held,
+      });
+      running.store.handoff = handoff;
+
+      await expect(running.resend(failed.intentId, null)).resolves.toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        ...held,
+      });
+      expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    test('only an intent main no longer holds, or never knew, comes back closed', async () => {
+      const running = startIntents();
+      const failed = await refusedSend(running);
+      await running.store.settle({
+        intentId: failed.intentId,
+        label: 'taken',
+        hash: null,
+        block: 9,
+      });
+      await expect(resendConfirmed(running, failed.intent)).resolves.toMatchObject({
+        success: false,
+        code: 'INTENT_NOT_HELD',
+        intent: { intentId: failed.intentId, state: 'settled' },
+      });
+      const unknown = await running.resend('7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1aff', null);
+      expect(unknown).toMatchObject({ success: false, code: 'INTENT_UNKNOWN' });
+      expect(unknown.intent).toBeUndefined();
+    });
+
+    test('a token is spent once: misuse and two presentations at once broadcast once', async () => {
+      const running = startIntents();
+      const first = await refusedSend(running);
+      const second = await refusedSend(running);
+      const { token } = await running.confirm('intent-resend', null, bindingOf(first.intent));
+      expect((await running.resend(second.intentId, { confirmation: token })).code).toBe(
+        'SIGNING_NOT_CONFIRMED'
+      );
+      expect((await running.resend(first.intentId, { confirmation: token })).code).toBe(
+        'SIGNING_NOT_CONFIRMED'
+      );
+      const fresh = await running.confirm('intent-resend', null, bindingOf(first.intent));
+      const replies = await Promise.all([
+        running.resend(first.intentId, { confirmation: fresh.token }),
+        running.resend(first.intentId, { confirmation: fresh.token }),
+      ]);
+      expect(replies.filter((reply) => reply.success)).toHaveLength(1);
+      expect(replies.filter((reply) => reply.code === 'SIGNING_NOT_CONFIRMED')).toHaveLength(1);
+      expect(mockBroadcast).toHaveBeenCalledTimes(3);
+      expect(mockBroadcast.mock.calls[2][1]).toBe(mockBroadcast.mock.calls[0][1]);
+      expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    test('pages, internal pages and chrome sub-frames can neither mint, list nor resend', () => {
+      const policy = require('../ipc-sender-policy');
+      const event = (type, url, subframe = false) => {
+        const mainFrame = { url };
+        return {
+          sender: { getType: () => type, mainFrame },
+          senderFrame: subframe ? { url } : mainFrame,
+        };
+      };
+      const chrome = new URL(`file://${policy.CHROME_INDEX}`).href;
+      const settings = new URL(`file://${policy.PAGES_DIR}/settings.html`).href;
+      for (const channel of [
+        'wallet:confirm-signing',
+        'wallet:intents-list',
+        'wallet:intent-resend',
+      ]) {
+        expect(policy.isSenderAllowed(channel, event('webview', 'https://dapp.test/'))).toBe(false);
+        expect(policy.isSenderAllowed(channel, event('webview', settings))).toBe(false);
+        expect(policy.isSenderAllowed(channel, event('window', chrome, true))).toBe(false);
+        expect(policy.isSenderAllowed(channel, event('window', chrome))).toBe(true);
+      }
+    });
+  });
 });
 
 describe('replacement at the same nonce (9)', () => {
@@ -975,6 +1147,125 @@ describe('replacement fees (9)', () => {
       replacement.maxFeePerGas,
       replacement.maxPriorityFeePerGas,
     ]).toEqual([2, 7, 2200000000n, 1100000000n]);
+  });
+
+  // #710 review probes: what the fee object carries beyond fees changes
+  // nothing; a confirmation is spent once; two at once sign once.
+  test('a fee object smuggling a payment changes nothing, and its confirmation is spent once', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    const fees = {
+      gasPrice: '0x4190ab00', // 1.1 gwei, in hex
+      nonce: 999,
+      chainId: 1,
+      to: CONTRACT,
+      value: '99999999999999999',
+      data: '0xcafe',
+      gasLimit: '1',
+      walletIndex: 1,
+      sender: BOB.address,
+    };
+    const { token } = await running.confirm('intent-replace', null, {
+      intentId: intent.intentId,
+      chainId: intent.chainId,
+      sender: intent.sender,
+      nonce: intent.nonce,
+      to: intent.fields.to,
+      value: intent.fields.value,
+      data: intent.fields.data,
+      gasLimit: intent.fields.gasLimit,
+      gasPrice: fees.gasPrice,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: true,
+    });
+    const tx = broadcasts().at(-1);
+    expect({
+      nonce: tx.nonce,
+      chainId: tx.chainId,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      gasLimit: tx.gasLimit,
+      gasPrice: tx.gasPrice,
+    }).toEqual({
+      nonce: 7,
+      chainId: 100n,
+      from: ALICE.address,
+      to: BOB.address,
+      value: 1000n,
+      data: '0x',
+      gasLimit: 21000n,
+      gasPrice: 1100000000n,
+    });
+    await expect(
+      running.replace(intent.intentId, fees, { confirmation: token })
+    ).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+  });
+
+  test('two replacements at once with the same fees sign once: the second meets the new floor', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, LEGACY);
+    mockSigners[0].signTransaction.mockClear();
+    const fees = { gasPrice: '1100000000' };
+    const replies = await Promise.all([
+      replaceConfirmed(running, intent, fees),
+      replaceConfirmed(running, intent, fees),
+    ]);
+    expect(replies.filter((reply) => reply.success)).toHaveLength(1);
+    expect(replies.filter((reply) => reply.code === 'INTENT_FEE_TOO_LOW')).toHaveLength(1);
+    expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.filter(
+        ([, method, params]) => method === 'eth_getTransactionCount' && params?.[1] === 'pending'
+      )
+    ).toHaveLength(1);
+  });
+
+  // #710 review: an offer the replacement handler refused.
+  test('a zero tip is offered at its zero floor with no quote, and that offer goes through', async () => {
+    const running = startReplacing();
+    const intent = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
+    expect(intent.fields).toMatchObject({ type: 2, maxPriorityFeePerGas: '0' });
+    mockFeeQuote.mockRejectedValue(new Error('quote unavailable'));
+    const offer = await running.fees(intent.intentId);
+    expect(offer).toEqual({
+      success: true,
+      fees: { maxFeePerGas: '110', maxPriorityFeePerGas: '0' },
+    });
+
+    await expect(replaceConfirmed(running, intent, offer.fees)).resolves.toMatchObject({
+      success: true,
+      nonce: 7,
+    });
+    const replacement = broadcasts().at(-1);
+    expect([
+      replacement.type,
+      replacement.nonce,
+      replacement.maxFeePerGas,
+      replacement.maxPriorityFeePerGas,
+    ]).toEqual([2, 7, 110n, 0n]);
+  });
+
+  test('a zero or negative maximum fee, and a negative tip, are still refused', async () => {
+    const running = startReplacing();
+    const eip1559 = await underpriced(running, { maxFeePerGas: '100', maxPriorityFeePerGas: '0' });
+    for (const fees of [
+      { maxFeePerGas: '0', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '-110', maxPriorityFeePerGas: '0' },
+      { maxFeePerGas: '110', maxPriorityFeePerGas: '-1' },
+    ]) {
+      await expect(replaceConfirmed(running, eip1559, fees)).resolves.toMatchObject({
+        success: false,
+      });
+    }
+    expect(running.store.get(eip1559.intentId).hashes).toHaveLength(1);
   });
 
   test('a second replacement raises the fee over the first, not over the original', async () => {

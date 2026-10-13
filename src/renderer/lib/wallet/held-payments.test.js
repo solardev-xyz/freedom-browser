@@ -261,6 +261,28 @@ describe('payments waiting: Send again', () => {
     expect(markup(elements)).toContain('The network refused it: insufficient funds');
   });
 
+  test("a stale confirmation (a replacement changed the hash) is minted again against main's hash", async () => {
+    const payment = held();
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    const replaced = { ...payment, hash: `0x${'cd'.repeat(32)}` };
+    window.wallet.intentResend
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        error: 'Signing was not confirmed',
+        intentId: payment.intentId,
+        intent: replaced,
+      })
+      .mockResolvedValueOnce({ success: true, outcome: 'sent', hash: replaced.hash });
+    await mod.handleAction('resend', payment);
+    const hashes = window.wallet.confirmSigning.mock.calls
+      .filter(([kind]) => kind === 'intent-resend')
+      .map(([, , binding]) => binding.hash);
+    expect(hashes).toEqual([payment.hash, replaced.hash]);
+    expect(markup(elements)).toContain('Sent, waiting for confirmation');
+  });
+
   test('a confirmation main refuses to mint sends nothing', async () => {
     const payment = held();
     const { mod, elements } = await load([payment]);
@@ -385,5 +407,71 @@ describe('payments waiting: amounts', () => {
     });
     await mod.handleAction('replace', payment);
     expect(markup(elements)).toContain('New network fee: up to 0.000023101 xDAI');
+  });
+});
+
+// #710 review: the list is fetched before it opens; meanwhile another
+// screen, or a device prompt, may have taken the sidebar.
+describe('payments waiting: opening the list', () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  };
+  const shown = (elements) => !elements['sidebar-held-payments'].classList.contains('hidden');
+
+  async function delayedOpening(intents) {
+    const loaded = await load(intents);
+    const reply = deferred();
+    window.wallet.intentsList.mockReturnValueOnce(reply.promise);
+    const opening = loaded.mod.openHeldPayments();
+    await flush();
+    return { ...loaded, opening, release: () => reply.resolve({ success: true, intents }) };
+  }
+
+  test('not while a device signature owns the sidebar', async () => {
+    const { mod, elements, flight } = await load([held()]);
+    const token = {};
+    flight.beginSignatureFlight(token);
+    await mod.openHeldPayments();
+    expect(shown(elements)).toBe(false);
+    flight.endSignatureFlight(token);
+    await mod.openHeldPayments();
+    expect(shown(elements)).toBe(true);
+  });
+
+  test('a late list after a device signature began opens nothing', async () => {
+    const { elements, flight, opening, release } = await delayedOpening([held()]);
+    flight.beginSignatureFlight({});
+    release();
+    await opening;
+    expect(shown(elements)).toBe(false);
+  });
+
+  test('a late list after another screen took the sidebar opens nothing', async () => {
+    const { elements, opening, release } = await delayedOpening([held()]);
+    const state = await import('./wallet-state.js');
+    // The Send screen opens: it hides the identity view.
+    state.walletState.identityView.classList.add('hidden');
+    release();
+    await opening;
+    expect(shown(elements)).toBe(false);
+  });
+
+  test('a late list for an opening called off (Back, or a screen hider) opens nothing', async () => {
+    const first = await delayedOpening([held()]);
+    first.mod.closeHeldPayments();
+    first.release();
+    await first.opening;
+    expect(shown(first.elements)).toBe(false);
+
+    const second = await delayedOpening([held()]);
+    const state = await import('./wallet-state.js');
+    state.hideAllSubscreens();
+    second.release();
+    await second.opening;
+    expect(shown(second.elements)).toBe(false);
   });
 });

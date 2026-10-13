@@ -485,4 +485,98 @@ describe('Confirm again after a failed dApp send (5)', () => {
     expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(2);
     expect(window.wallet.intentResend).not.toHaveBeenCalled();
   });
+
+  // 709-B1: an approval that left a held payment only ever sends that
+  // payment again; it never signs a new one, whatever a resend's reply.
+  async function refusedApproval() {
+    const loaded = await loadDappTx();
+    const opened = await loaded.openApproval();
+    loaded.elements['dapp-tx-approve'].dispatch('click');
+    loaded.send.resolve({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      outcome: 'rejected',
+      intentId: HELD.intentId,
+      intent: HELD,
+    });
+    await flush();
+    await flush();
+    return { ...loaded, ...opened };
+  }
+
+  const press = async (elements) => {
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    await flush();
+  };
+
+  test('an authorization refusal that names nothing keeps Send again for the same payment', async () => {
+    const { elements, settled } = await refusedApproval();
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: 'Signing was not confirmed: confirmation expired',
+    });
+    await press(elements);
+    await press(elements);
+    expect(elements['dapp-tx-approve'].textContent).toBe('Send again');
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(2);
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(settled.state).toBe('pending');
+  });
+
+  test("a stale confirmation is minted again against main's current hash, and the dApp gets that hash", async () => {
+    const { elements, confirmSigning, settled } = await refusedApproval();
+    const replaced = { ...HELD, hash: '0x' + 'ef'.repeat(32) };
+    window.wallet.intentResend
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        error: 'Signing was not confirmed',
+        intentId: HELD.intentId,
+        intent: replaced,
+      })
+      .mockResolvedValueOnce({ success: true, hash: replaced.hash, resent: true });
+    await press(elements);
+    const hashes = confirmSigning.mock.calls
+      .filter(([kind]) => kind === 'intent-resend')
+      .map(([, , payload]) => payload.hash);
+    expect(hashes).toEqual([HELD.hash, replaced.hash]);
+    expect(settled).toMatchObject({ state: 'resolved', value: replaced.hash });
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a payment main reports settled leaves Confirm disabled: nothing to send, nothing new to sign', async () => {
+    const { elements, settled } = await refusedApproval();
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      code: 'INTENT_NOT_HELD',
+      error: 'This payment is already settled.',
+      intentId: HELD.intentId,
+      intent: { ...HELD, state: 'settled' },
+    });
+    await press(elements);
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(elements['dapp-tx-error'].textContent).toBe('This payment is already settled.');
+    await press(elements);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(1);
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(elements['dapp-tx-reject'].disabled).toBe(false);
+    expect(settled.state).toBe('pending');
+  });
+
+  test('a first failure naming a payment main no longer holds disables Confirm too', async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({
+      success: false,
+      error: 'voided',
+      intentId: HELD.intentId,
+      intent: { ...HELD, state: 'voided' },
+    });
+    await flush();
+    await flush();
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+  });
 });

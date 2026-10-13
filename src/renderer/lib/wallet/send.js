@@ -24,6 +24,7 @@ import { createTab } from '../tabs.js';
 import { bindExplorerLink } from './explorer-link.js';
 import { outcomeText, heldWarning, ACTIONS, RESULT_TITLES } from './intent-texts.js';
 import { waitingPaymentBehind, describePayment } from './held-payments.js';
+import { resendHeldPayment } from './intent-resend.js';
 
 // DOM references
 let sendScreen;
@@ -77,6 +78,13 @@ let sendRetryBtn;
 // The held payment a failed send left (main's summary of its intent): Retry
 // sends those same signed bytes again rather than signing a new payment.
 let sendFailedIntent = null;
+// A failed send's payment that main reports is no longer held (settled,
+// voided, or unknown to it): Retry only closes the screen. A payment that
+// has an intent is never composed afresh from here.
+let sendPaymentClosed = false;
+// Which opening of the screen this is: a retry's late result for an
+// earlier one is main's record now, never this screen's.
+let sendEpoch = 0;
 
 // Local state
 let sendTxState = {
@@ -385,6 +393,8 @@ export function closeSend({ handedOff = false } = {}) {
 
 function resetSendState() {
   sendFailedIntent = null;
+  sendPaymentClosed = false;
+  sendEpoch += 1;
   sendTxState = {
     selectedToken: null,
     recipient: '',
@@ -486,9 +496,11 @@ function showSendSuccessView(explorerUrl, outcome) {
 
 /**
  * @param {string} message - the error's text
- * @param {{ outcome?: string, reasonClass?: string, intent?: object }} [failure]
- *   what main reported of the payment: when a held intent is named, Retry
- *   sends it again
+ * @param {{ outcome?: string, reasonClass?: string, intentId?: string,
+ *   intent?: object|null, closed?: boolean }} [failure] what main reported
+ *   of the payment. A held intent: Retry sends it again. An intent named
+ *   but no longer held, or unknown to main (`closed`): Retry closes the
+ *   screen. Only a failure with no payment at all goes back to the form.
  */
 function showSendErrorView(message, failure = {}) {
   sendInputView?.classList.add('hidden');
@@ -510,56 +522,75 @@ function showSendErrorView(message, failure = {}) {
     sendErrorText.textContent =
       outcomeText(failure.outcome, failure.reasonClass) || message || 'An error occurred';
   }
+  const named = Boolean(failure.intent?.intentId ?? failure.intentId);
   sendFailedIntent = failure.intent?.state === 'held' ? failure.intent : null;
+  sendPaymentClosed = !sendFailedIntent && (named || Boolean(failure.closed));
   if (sendRetryBtn) {
-    sendRetryBtn.textContent = sendFailedIntent ? ACTIONS.sendAgain : 'Try Again';
+    sendRetryBtn.textContent = sendFailedIntent
+      ? ACTIONS.sendAgain
+      : sendPaymentClosed
+        ? ACTIONS.close
+        : 'Try Again';
     sendRetryBtn.disabled = false;
   }
 }
 
 /** The fields of a failed IPC reply that describe its payment. */
 function failureOf(result) {
-  return { outcome: result.outcome, reasonClass: result.reasonClass, intent: result.intent };
+  return {
+    outcome: result.outcome,
+    reasonClass: result.reasonClass,
+    intentId: result.intentId,
+    intent: result.intent,
+  };
 }
 
 /**
  * Retry after a failed send. A send that left a held payment sends those
  * same signed bytes again, at the same nonce: nothing is signed, so no
- * device or vault is asked, and the user's press is the confirmation. Any
- * other failure goes back to the form.
+ * device or vault is asked, and the user's press is the confirmation.
+ * Whatever that resend's reply, the payment stays the one offered, until
+ * main reports it is no longer held; then Retry closes the screen. Only a
+ * failure that left no payment goes back to the form.
  */
 async function handleSendRetry() {
+  if (sendPaymentClosed) {
+    closeSend();
+    return;
+  }
   const intent = sendFailedIntent;
   if (!intent) {
     showSendInputView();
     return;
   }
+  const epoch = sendEpoch;
   if (sendRetryBtn) {
     sendRetryBtn.disabled = true;
     sendRetryBtn.textContent = ACTIONS.sendingAgain;
   }
+  let resent;
   try {
-    const result = await window.wallet.intentResend(
-      intent.intentId,
-      await confirmSigning('intent-resend', null, {
-        intentId: intent.intentId,
-        chainId: intent.chainId,
-        sender: intent.sender,
-        nonce: intent.nonce,
-        hash: intent.hash,
-      })
-    );
-    if (!result.success) {
-      showSendErrorView(result.error, failureOf(result));
-      return;
-    }
-    sendFailedIntent = null;
-    showSendSuccessView(result.explorerUrl, result.outcome);
-    setTimeout(() => refreshBalances(), 3000);
+    resent = await resendHeldPayment(intent);
   } catch (err) {
     console.error('[WalletUI] Sending the payment again failed:', err);
-    showSendErrorView(err.message, { intent });
+    if (epoch === sendEpoch) showSendErrorView(err.message, { intent });
+    return;
   }
+  // The screen was closed or opened for another payment meanwhile: the
+  // result is in main's record, and not this screen's to show.
+  if (epoch !== sendEpoch) return;
+  const { result } = resent;
+  if (!result.success) {
+    showSendErrorView(result.error, {
+      ...failureOf(result),
+      intent: resent.intent,
+      closed: resent.closed,
+    });
+    return;
+  }
+  sendFailedIntent = null;
+  showSendSuccessView(result.explorerUrl, result.outcome);
+  setTimeout(() => refreshBalances(), 3000);
 }
 
 // ============================================
