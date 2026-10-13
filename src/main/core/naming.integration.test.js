@@ -13,6 +13,7 @@ const { NamingConfig } = require('./naming-config');
 const { registerNamingShell } = require('./naming-shell');
 const { registerNamingVerified } = require('./naming-verified');
 const { NamingDriver } = require('./naming-driver');
+const { KIND_BEGIN, MAX_PAYLOAD } = require('./frame');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 jest.mock('../ipfs/gateway-transport', () => ({ netGatewayFetch: jest.fn() }));
@@ -192,5 +193,36 @@ describeIfBinary('naming with the real freedom-cored', () => {
     const { driver } = await start(failing);
     expect(await driver.invalidateContent('vitalik.eth')).toBe(false);
     await expect(driver.invalidateTezos('alice.tez')).resolves.toBeUndefined();
+  });
+
+  test("replies over one frame reach the core in fragments, and each one's credit comes back", async () => {
+    const { driver } = await start(failing);
+    const gen = client.current;
+    const dialled = failing.mock.calls.length;
+    // Every shell.rpc reply padded past one frame: the core reads only its
+    // status and body.
+    const rpc = client.handlers.get('shell.rpc');
+    client.handle('shell.rpc', async (params, context) => ({
+      ...(await rpc(params, context)),
+      pad: 'p'.repeat(MAX_PAYLOAD),
+    }));
+    let begins = 0;
+    const write = gen.child.stdin.write.bind(gen.child.stdin);
+    gen.child.stdin.write = (chunk, ...rest) => {
+      if (Buffer.isBuffer(chunk) && chunk[4] === KIND_BEGIN && chunk.length < 64) begins += 1;
+      return write(chunk, ...rest);
+    };
+    const credits = jest.spyOn(client, 'onCredit');
+    const err = await driver.resolveContent('vitalik.eth').catch((e) => e);
+    // Each answer reached the core whole: today's failure, as for small ones.
+    expect(err.message).toBe('Single-provider anchor fetch failed: could not read the head');
+    expect(begins).toBeGreaterThan(0);
+    expect(begins).toBe(failing.mock.calls.length - dialled);
+    // The core consumed each and returned the credit; nothing waits.
+    while (credits.mock.calls.length < begins) await new Promise(setImmediate);
+    expect(gen.credit).toBe(true);
+    expect(gen.bulk).toEqual([]);
+    expect(gen.bulkBytes).toBe(0);
+    expect(client.serves(gen)).toBe(true);
   });
 });

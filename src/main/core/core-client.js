@@ -23,13 +23,37 @@
  * exit can make the client ready or restart it, until `start()` is called
  * again after the stop completed.
  *
+ * **Fragmented responses** (design 0005, Frames): main's hello offers
+ * them, so a response of the core's over one frame, up to 32 MiB, comes as a
+ * begin, fragments and a last fragment. Its bytes are reserved at the begin,
+ * which must name a pending request while the core holds main's bulk credit.
+ * Main returns the credit (`0x13`) once the request's caller has the
+ * response. Every malformed sequence is a protocol fault. The other way, a
+ * reply to one of the core's requests over one frame goes fragmented, if the
+ * core offered `fragments`: begun only while main holds the core's credit,
+ * then written to its end, with whole frames going first and between its
+ * fragments.
+ *
  * **Logs** carry fixed categories and validated public fields only: never
  * request or response bodies, peer-supplied IDs, types or error text.
  */
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
-const { encodeFrame, encodeJsonFrame, FrameDecoder, FrameError, MAX_PAYLOAD } = require('./frame');
+const {
+  encodeBegin,
+  encodeCredit,
+  encodeFrame,
+  encodeJsonFrame,
+  frameHeader,
+  FrameDecoder,
+  FrameError,
+  KIND_FRAGMENT,
+  KIND_LAST,
+  MAX_MESSAGE,
+  MAX_PAYLOAD,
+  Reassembler,
+} = require('./frame');
 
 const PROTOCOL_VERSION = 1;
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
@@ -61,6 +85,12 @@ const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 // are outstanding, as the core bounds them.
 const METHOD_NAME = EVENT_NAME;
 const MAX_INCOMING = 256;
+// Fragmented replies held for the core, waiting for its credit or being
+// written: one message cap in all, a single buffer's worth for this
+// direction, until main's chain I/O pool (design 0005, Main's pool) bounds
+// what its executors hold. Each is charged whole for as long as its buffer
+// is referenced, which a fragment being written does.
+const MAX_BULK_BYTES = MAX_MESSAGE;
 const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 // fc-protocol's ErrorCode (crates/fc-protocol/src/error.rs). Only these are
 // ever logged; callers still get any well-formed code.
@@ -123,6 +153,8 @@ const SHELL_ERRORS = Object.freeze({
   too_large: 'Too large',
   cancelled: 'Cancelled',
   stale_generation: 'Stale generation',
+  // Main has no room to hold the reply (design 0005, Main's pool).
+  busy: 'Busy',
   unknown_method: 'Unknown method',
   internal: 'Internal error',
 });
@@ -237,6 +269,17 @@ class Generation {
     this.nextId = 1;
     this.writeBytes = 0;
     this.decoder = new FrameDecoder();
+    // The core's fragmented responses: one at a time, while it holds main's
+    // bulk credit.
+    this.reassembler = new Reassembler();
+    // Main's fragmented replies: only if the core offered them, one at a
+    // time while main holds the core's credit. Those waiting to begin, the
+    // one being written, and the bytes of the buffers they keep.
+    this.fragments = false;
+    this.credit = false;
+    this.bulk = [];
+    this.sending = null; // { id, controller, payload, offset, writing }
+    this.bulkBytes = 0;
     this.stderrText = new StringDecoder('utf8');
     this.stderrLine = '';
     this.stderrDropping = false;
@@ -483,6 +526,9 @@ class CoreClient extends EventEmitter {
         protocol: PROTOCOL_VERSION,
         shell_version: this.shellVersion,
         auto_lock_ms: this.autoLockMs,
+        // Main takes fragmented responses: the handshake grants the core
+        // main's bulk credit.
+        frames: ['fragment'],
       },
       { caller: 'shell' },
       { control: true, onReply: (outcome) => this.onHelloReply(gen, outcome) }
@@ -516,6 +562,10 @@ class CoreClient extends EventEmitter {
       return;
     }
     this.cancelTimer(gen, gen.helloTimer);
+    // A core that offers fragments takes main's fragmented replies, and the
+    // handshake grants main its credit.
+    gen.fragments = hello.capabilities.includes('fragments');
+    gen.credit = gen.fragments;
     if (this.stopRequested || gen !== this.current) return;
     gen.ready = true;
     this.hello = hello;
@@ -575,6 +625,8 @@ class CoreClient extends EventEmitter {
     for (const timer of gen.timers) this.clearTimer(timer);
     gen.timers.clear();
     this.teardown(gen);
+    // A response cut short by EOF is discarded with its reservation.
+    gen.reassembler.discard();
     // The core's requests die with it: their handlers stop, and their
     // replies have nowhere to go.
     this.fence(gen);
@@ -805,17 +857,32 @@ class CoreClient extends EventEmitter {
   onStdout(gen, chunk) {
     // After a protocol fault nothing more from this child is trusted.
     if (gen.retired || gen.distrusted) return;
-    let messages;
+    let frames;
     try {
-      messages = gen.decoder.push(chunk);
+      frames = gen.decoder.push(chunk);
     } catch (err) {
       this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
       return;
     }
-    for (const message of messages) {
+    for (const frame of frames) {
       if (gen.retired || gen.distrusted) return;
+      let delivery;
       try {
-        this.onMessage(gen, message);
+        // A begin must name a request still waiting for its response.
+        delivery = gen.reassembler.push(frame, (id) => gen.pending.has(id));
+      } catch (err) {
+        this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
+        return;
+      }
+      if (!delivery) continue;
+      try {
+        if (delivery.type === 'message') {
+          this.onMessage(gen, delivery.message);
+        } else if (delivery.type === 'response') {
+          this.onFragmentedResponse(gen, delivery.id, delivery.message);
+        } else {
+          this.onCredit(gen);
+        }
       } catch {
         this.protocolFault(gen, 'handler');
       }
@@ -825,6 +892,9 @@ class CoreClient extends EventEmitter {
   onStdoutEnd(gen) {
     if (gen.retired) return;
     if (!gen.decoder.isAtBoundary()) this.log.warn('[Core] stdout closed in the middle of a frame');
+    if (gen.reassembler.inProgress()) {
+      this.log.warn('[Core] stdout closed in the middle of a fragmented response');
+    }
     // A live child that closes stdout can't answer any more.
     if (!gen.exited) this.connectionFailed(gen, 'stdout_closed');
   }
@@ -893,10 +963,11 @@ class CoreClient extends EventEmitter {
   }
 
   /** The generation stops serving the core's requests: their handlers
-   * abort, and no reply goes for them. */
+   * abort, and no reply goes for them, nor more of one being written. */
   fence(gen) {
     const incoming = [...gen.incoming.values()];
     gen.incoming.clear();
+    this.dropBulk(gen);
     for (const controller of incoming) controller.abort();
   }
 
@@ -909,13 +980,6 @@ class CoreClient extends EventEmitter {
     return undefined;
   }
 
-  /**
-   * Writes the reply to one of the core's requests, unless its generation
-   * fenced it. Its entry is held until the write completes, so the core's
-   * MAX_INCOMING bounds pending replies too; their bytes are their own
-   * account, so they never take the room requests (vault.lock, shutdown)
-   * need.
-   */
   /** Whether a reply is still owed and can be written: its entry is the
    * current one and its generation's stdin is open. One that can't is
    * dropped. */
@@ -928,26 +992,52 @@ class CoreClient extends EventEmitter {
     return true;
   }
 
+  /**
+   * Writes the reply to one of the core's requests, unless its generation
+   * fenced it. Its entry is held until the write completes, so the core's
+   * MAX_INCOMING bounds pending replies too; their bytes are their own
+   * account, so they never take the room requests (vault.lock, shutdown)
+   * need.
+   *
+   * A reply over one frame goes fragmented, to a core that offered
+   * fragments and within the message cap; otherwise it is `too_large`.
+   * Fragmented replies held take at most MAX_BULK_BYTES: past that, `busy`.
+   */
   respond(gen, id, controller, outcome) {
     if (!this.owes(gen, id, controller)) return;
-    let frame;
+    // Serialized once, so a result's toJSON runs once and what is checked
+    // is what is sent: a result JSON can't represent (a function, a symbol,
+    // a toJSON returning nothing) leaves the bare envelope, and is internal
+    // instead. The text is compared, so a large reply isn't parsed back.
+    let json;
     try {
-      // Serialized once, so a result's toJSON runs once and what is checked
-      // is what is sent: a result JSON can't represent (a function, a
-      // symbol, a toJSON returning nothing) leaves no outcome, and is
-      // internal instead.
-      const json = JSON.stringify({ type: 'response', id, ...outcome });
-      const sent = JSON.parse(json);
-      if (!Object.hasOwn(sent, 'result') && !Object.hasOwn(sent, 'error')) {
-        throw new TypeError('unrepresentable result');
-      }
-      frame = encodeJsonFrame(json);
-    } catch (err) {
-      const error = shellError(err instanceof FrameError ? 'too_large' : 'internal');
-      frame = encodeFrame({ type: 'response', id, error });
+      json = JSON.stringify({ type: 'response', id, ...outcome });
+      if (json === JSON.stringify({ type: 'response', id })) json = null;
+    } catch {
+      json = null;
     }
     // Serializing ran the result's own code, which may have fenced it.
     if (!this.owes(gen, id, controller)) return;
+    let code = 'internal';
+    if (json !== null) {
+      const size = Buffer.byteLength(json, 'utf8');
+      if (size <= MAX_PAYLOAD) {
+        this.writeReply(gen, id, controller, encodeJsonFrame(json));
+        return;
+      }
+      const fits = gen.fragments && size <= MAX_MESSAGE;
+      if (fits && gen.bulkBytes + size <= MAX_BULK_BYTES) {
+        this.queueBulk(gen, { id, controller, payload: Buffer.from(json, 'utf8') });
+        return;
+      }
+      code = fits ? 'busy' : 'too_large';
+    }
+    const error = shellError(code);
+    this.writeReply(gen, id, controller, encodeFrame({ type: 'response', id, error }));
+  }
+
+  /** Writes a reply in one frame. */
+  writeReply(gen, id, controller, frame) {
     gen.replyBytes += frame.length;
     const written = (err) => {
       gen.replyBytes -= frame.length;
@@ -959,6 +1049,91 @@ class CoreClient extends EventEmitter {
     } catch {
       written(true);
     }
+  }
+
+  /** A reply over one frame waits for the core's credit, in order. */
+  queueBulk(gen, reply) {
+    gen.bulk.push(reply);
+    gen.bulkBytes += reply.payload.length;
+    this.pumpBulk(gen);
+  }
+
+  /**
+   * Begins the next waiting reply while main holds the core's credit and
+   * none is being written. Beginning spends the credit, before the begin is
+   * written, so the core's `0x13` can't come first.
+   */
+  pumpBulk(gen) {
+    while (!gen.sending && gen.credit && gen.bulk.length) {
+      const reply = gen.bulk.shift();
+      if (!this.owes(gen, reply.id, reply.controller)) {
+        gen.bulkBytes -= reply.payload.length;
+        continue;
+      }
+      gen.credit = false;
+      gen.sending = { ...reply, offset: 0, writing: false };
+      try {
+        gen.child.stdin.write(encodeBegin(reply.id, reply.payload.length));
+      } catch {
+        this.connectionFailed(gen, 'stdin_error');
+        return;
+      }
+      this.writeFragment(gen);
+    }
+  }
+
+  /**
+   * Writes the next fragment of the reply being sent. The one after goes
+   * once this one is written, so the whole frames written meanwhile go
+   * between them. Once begun, a reply is written to its end; its entry goes
+   * with its last fragment.
+   *
+   * Each fragment is a view of the reply's buffer, so the buffer stays
+   * charged whole until the last write that holds it completes: its last
+   * fragment's, or the one in flight when the rest was dropped.
+   */
+  writeFragment(gen) {
+    const sending = gen.sending;
+    const { payload, offset } = sending;
+    const end = Math.min(payload.length, offset + MAX_PAYLOAD);
+    const last = end === payload.length;
+    sending.offset = end;
+    sending.writing = true;
+    const written = (err) => {
+      sending.writing = false;
+      // Its generation ended meanwhile, and the rest was dropped; or the
+      // write failed; or this was the last fragment.
+      const done = err || gen.sending !== sending || last;
+      if (!done) {
+        this.writeFragment(gen);
+        return;
+      }
+      gen.bulkBytes -= payload.length;
+      if (gen.sending !== sending) return;
+      gen.sending = null;
+      if (err) {
+        this.connectionFailed(gen, 'stdin_error');
+        return;
+      }
+      if (gen.incoming.get(sending.id) === sending.controller) gen.incoming.delete(sending.id);
+      this.pumpBulk(gen);
+    };
+    try {
+      gen.child.stdin.write(frameHeader(last ? KIND_LAST : KIND_FRAGMENT, end - offset));
+      gen.child.stdin.write(payload.subarray(offset, end), written);
+    } catch {
+      written(true);
+    }
+  }
+
+  /** Drops the replies waiting to begin, and the rest of the one being
+   * written: the core reads no more of this generation's. A fragment still
+   * being written holds its reply's buffer: its write releases the charge. */
+  dropBulk(gen) {
+    if (gen.sending && !gen.sending.writing) gen.bulkBytes -= gen.sending.payload.length;
+    gen.sending = null;
+    for (const reply of gen.bulk) gen.bulkBytes -= reply.payload.length;
+    gen.bulk = [];
   }
 
   onResponse(gen, message) {
@@ -986,6 +1161,47 @@ class CoreClient extends EventEmitter {
     }
     gen.pending.delete(id);
     entry.settle(outcome);
+    return undefined;
+  }
+
+  /**
+   * A fragmented response, reassembled: it must be the response its begin
+   * named. Once its caller has it, the core's credit goes back, so it may
+   * begin another.
+   */
+  onFragmentedResponse(gen, id, message) {
+    if (!isObject(message) || message.type !== 'response' || message.id !== id) {
+      return this.protocolFault(gen, 'fragmented_not_its_response');
+    }
+    this.onResponse(gen, message);
+    if (!gen.distrusted) this.returnCredit(gen);
+    return undefined;
+  }
+
+  /**
+   * Returns the core's bulk credit (`0x13`), a control frame written at
+   * once. A generation that can no longer take it is going away, and the
+   * credit with it.
+   */
+  returnCredit(gen) {
+    if (gen.retired || gen.exited || gen.ending || gen.stdinEnded || !gen.child) return;
+    gen.reassembler.grant();
+    try {
+      gen.child.stdin.write(encodeCredit(), (err) => {
+        if (err) this.connectionFailed(gen, 'stdin_error');
+      });
+    } catch {
+      this.connectionFailed(gen, 'stdin_error');
+    }
+  }
+
+  /** The core returned main's credit: a waiting reply may begin. One main
+   * wasn't owed (the core didn't offer fragments, or main holds its credit)
+   * is a protocol fault. */
+  onCredit(gen) {
+    if (!gen.fragments || gen.credit) return this.protocolFault(gen, 'unsolicited_credit');
+    gen.credit = true;
+    this.pumpBulk(gen);
     return undefined;
   }
 

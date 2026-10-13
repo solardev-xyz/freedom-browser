@@ -13,14 +13,54 @@ const {
   MAX_PENDING,
   MAX_INCOMING,
 } = require('./core-client');
-const { encodeFrame, FrameDecoder } = require('./frame');
+const {
+  encodeBegin,
+  encodeCredit,
+  encodeFrame,
+  frameHeader,
+  FrameDecoder,
+  Reassembler,
+  KIND_BEGIN,
+  KIND_CREDIT,
+  KIND_FRAGMENT,
+  KIND_JSON,
+  KIND_LAST,
+  MAX_MESSAGE,
+  MAX_PAYLOAD,
+} = require('./frame');
 
 const tick = () => new Promise(setImmediate);
+const MIB = 1024 * 1024;
+
+function rawFrame(kind, payload) {
+  const bytes = Buffer.from(payload);
+  return Buffer.concat([frameHeader(kind, bytes.length), bytes]);
+}
+
+/** `message` as a fragmented response: its begin, then `pieces` fragments,
+ * the last of kind 0x11. */
+function fragmentFrames(message, pieces = 2) {
+  const payload = Buffer.from(JSON.stringify(message));
+  const size = Math.ceil(payload.length / pieces);
+  const frames = [encodeBegin(message.id, payload.length)];
+  for (let offset = 0; offset < payload.length; offset += size) {
+    const end = Math.min(payload.length, offset + size);
+    frames.push(
+      rawFrame(end === payload.length ? KIND_LAST : KIND_FRAGMENT, payload.subarray(offset, end))
+    );
+  }
+  return frames;
+}
 
 /**
  * A fake freedom-cored child that answers through a handler. Like Node's
  * ChildProcess it emits 'exit' and then 'close'; `exit(…, { close: false })`
  * holds 'close' back (stdout still open after the process is gone).
+ *
+ * It reads main's frames as the core does: `requests` holds every message,
+ * a fragmented reply once reassembled, `wire` the kind of every frame, and
+ * `credits` the 0x13 frames main returned. It gives main's credit back after
+ * each fragmented reply, unless `holdCredit` is set.
  */
 class FakeCore extends EventEmitter {
   constructor(handler, options = {}) {
@@ -33,15 +73,34 @@ class FakeCore extends EventEmitter {
     this.failKill = options.failKill ?? false; // kill emits 'error' synchronously
     this.killCalls = 0;
     this.stuck = false; // stdin accepts bytes but never completes writes
+    this.held = []; // the write callbacks `stuck` holds back
+    this.stallOn = null; // a frame kind whose write turns `stuck` on
     this.requests = [];
+    this.wire = [];
+    this.credits = 0;
+    this.holdCredit = false;
+    this.outstanding = new Set(); // the fake's own requests to main
+    this.reassembler = new Reassembler();
     const decoder = new FrameDecoder();
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
-        for (const message of decoder.push(chunk)) {
+        for (const frame of decoder.push(chunk)) {
+          this.wire.push(frame.kind);
+          if (frame.kind === this.stallOn) {
+            this.stallOn = null;
+            this.stuck = true;
+          }
+          const delivery = this.reassembler.push(frame, (id) => this.outstanding.has(id));
+          if (delivery?.type === 'credit') this.credits += 1;
+          if (delivery?.type !== 'message' && delivery?.type !== 'response') continue;
+          const { message } = delivery;
+          if (message?.type === 'response') this.outstanding.delete(message.id);
           this.requests.push(message);
+          if (delivery.type === 'response' && !this.holdCredit) this.returnCredit();
           handler(message, this);
         }
-        if (!this.stuck) callback();
+        if (this.stuck) this.held.push(callback);
+        else callback();
       },
       final: (callback) => {
         this.emit('stdin-closed');
@@ -51,7 +110,25 @@ class FakeCore extends EventEmitter {
   }
 
   reply(message) {
+    if (message?.type === 'request') this.outstanding.add(message.id);
     this.stdout.write(encodeFrame(message));
+  }
+
+  /** Sends `message`, a response, fragmented. */
+  replyFragmented(message, pieces) {
+    for (const frame of fragmentFrames(message, pieces)) this.stdout.write(frame);
+  }
+
+  /** Completes the writes `stuck` held back, and those after. */
+  release() {
+    this.stuck = false;
+    for (const callback of this.held.splice(0)) callback();
+  }
+
+  /** Returns main's credit, as the core does once it has a reply. */
+  returnCredit() {
+    this.reassembler.grant();
+    this.stdout.write(encodeCredit());
   }
 
   exit(code, signal = null, { close = true } = {}) {
@@ -930,8 +1007,8 @@ describe('CoreClient', () => {
         const { FrameDecoder, encodeFrame } = require(${JSON.stringify(require.resolve('./frame'))});
         const decoder = new FrameDecoder();
         process.stdin.on('data', (chunk) => {
-          for (const m of decoder.push(chunk)) {
-            if (m.method !== 'core.hello') continue;
+          for (const { message: m } of decoder.push(chunk)) {
+            if (m?.method !== 'core.hello') continue;
             const reply = { type: 'response', id: m.id,
               result: { protocol: 1, core_version: '0.0.0', capabilities: [] } };
             process.stdout.write(encodeFrame(reply), () => {
@@ -1281,6 +1358,391 @@ describe('CoreClient', () => {
         { type: 'response', id: 2, result: { status: 200 } },
       ]);
       expect(calls).toBe(1);
+    });
+  });
+
+  describe("the core's fragmented responses", () => {
+    /** A ready client with two requests held: `a` and `b`. */
+    async function twoHeld() {
+      const made = makeClient([helloHandler()]);
+      await made.client.start();
+      const core = made.children[0];
+      const first = made.client.request('vault.status').catch((e) => e);
+      const second = made.client.request('vault.list').catch((e) => e);
+      await tick();
+      const [a, b] = core.requests.filter((r) => r.method?.startsWith('vault.')).map((r) => r.id);
+      return { ...made, core, first, second, a, b };
+    }
+
+    test('main offers them, takes one whole, and returns the credit once its caller has it', async () => {
+      const { client, core, first, a } = await twoHeld();
+      expect(core.requests[0].params.frames).toEqual(['fragment']);
+      const result = { big: 'x'.repeat(3 * MIB) };
+      core.replyFragmented({ type: 'response', id: a, result }, 4);
+      await tick();
+      expect(await first).toEqual(result);
+      expect(core.wire.filter((kind) => kind === KIND_CREDIT)).toHaveLength(1);
+      expect(core.credits).toBe(1);
+      expect(client.current.reassembler.inProgress()).toBe(false);
+    });
+
+    test('whole messages between fragments are handled at once', async () => {
+      const handler = jest.fn(async () => ({}));
+      const { client, core, first, second, a, b } = await twoHeld();
+      client.handle('shell.rpc', handler);
+      const events = [];
+      client.on('event', (name) => events.push(name));
+      const settled = [];
+      first.then(() => settled.push('a'));
+      second.then(() => settled.push('b'));
+      const [begin, ...fragments] = fragmentFrames({ type: 'response', id: a, result: 'y' }, 2);
+      core.stdout.write(Buffer.concat([begin, fragments[0]]));
+      core.reply({ type: 'event', event: 'vault.locked', data: {} });
+      core.reply({ type: 'response', id: b, result: {} });
+      core.reply({ type: 'request', id: 1, method: 'shell.rpc', params: {}, context: {} });
+      for (let i = 0; i < 3; i++) await tick();
+      expect(events).toEqual(['vault.locked']);
+      expect(settled).toEqual(['b']);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(core.credits).toBe(0);
+      core.stdout.write(fragments[1]);
+      await tick();
+      expect(settled).toEqual(['b', 'a']);
+      expect(core.credits).toBe(1);
+    });
+
+    test('with its credit back, the core may begin the next', async () => {
+      const { core, first, second, a, b } = await twoHeld();
+      core.replyFragmented({ type: 'response', id: a, result: 1 }, 1);
+      await tick();
+      core.replyFragmented({ type: 'response', id: b, result: 2 }, 3);
+      expect([await first, await second]).toEqual([1, 2]);
+      expect(core.credits).toBe(2);
+      expect(core.killed).toBeNull();
+    });
+
+    // Each malformed sequence closes the connection, and only its fixed
+    // category is logged: `a` and `b` are pending, and SENTINEL never shows.
+    const SENTINEL = 'SECRET_SENTINEL';
+    const response = (id, extra = { result: SENTINEL }) =>
+      Buffer.from(JSON.stringify({ type: 'response', id, ...extra }));
+    const begin = encodeBegin;
+    const raw = rawFrame;
+    test.each([
+      ['begin_unknown_id', () => [begin(999, 10)]],
+      ['begin_size', ({ a }) => [begin(a, MAX_MESSAGE + 1)]],
+      ['begin_size', ({ a }) => [begin(a, 0)]],
+      ['begin_header', ({ a }) => [raw(KIND_BEGIN, `{"id":${a},"bytes":5,"x":"${SENTINEL}"}`)]],
+      ['begin_without_credit', ({ a, b }) => [begin(a, 10), begin(b, 10)]],
+      ['empty_fragment', ({ a }) => [begin(a, 10), raw(KIND_FRAGMENT, '')]],
+      ['empty_fragment', ({ a }) => [begin(a, 10), raw(KIND_LAST, '')]],
+      ['fragment_without_begin', () => [raw(KIND_FRAGMENT, SENTINEL)]],
+      ['fragment_without_begin', () => [raw(KIND_LAST, SENTINEL)]],
+      ['fragment_length', ({ a }) => [begin(a, 3), raw(KIND_FRAGMENT, SENTINEL)]],
+      ['fragment_length', ({ a }) => [begin(a, 30), raw(KIND_LAST, SENTINEL)]],
+      ['credit_payload', () => [raw(KIND_CREDIT, SENTINEL)]],
+      // This core didn't offer fragments: main holds none of its credit,
+      // so none can come back.
+      ['unsolicited_credit', () => [encodeCredit()]],
+      // One response per request, in both orders.
+      [
+        'duplicate_response',
+        ({ a }) => [
+          begin(a, 100),
+          raw(KIND_FRAGMENT, 'x'),
+          encodeFrame({ type: 'response', id: a, result: SENTINEL }),
+        ],
+      ],
+      [
+        'begin_unknown_id',
+        ({ a }) => [
+          encodeFrame({ type: 'response', id: a, result: {} }),
+          ...fragmentFrames({ type: 'response', id: a, result: SENTINEL }),
+        ],
+      ],
+      // The reassembled message must be the response its begin named.
+      [
+        'fragmented_not_its_response',
+        ({ a, b }) => [begin(a, response(b).length), raw(KIND_LAST, response(b))],
+      ],
+      [
+        'fragmented_not_its_response',
+        ({ a }) => {
+          const request = Buffer.from(JSON.stringify({ type: 'request', id: a, method: SENTINEL }));
+          return [begin(a, request.length), raw(KIND_LAST, request)];
+        },
+      ],
+      ['invalid_json', ({ a }) => [begin(a, SENTINEL.length), raw(KIND_LAST, SENTINEL)]],
+      ['invalid_utf8', ({ a }) => [begin(a, 1), raw(KIND_LAST, Buffer.from([0xff]))]],
+      [
+        'bad_error',
+        ({ a }) => {
+          const bad = response(a, { error: { code: SENTINEL, message: SENTINEL } });
+          return [begin(a, bad.length), raw(KIND_LAST, bad)];
+        },
+      ],
+      ['unknown_kind', () => [raw(0x02, SENTINEL)]],
+    ])('%s closes the connection', async (category, frames) => {
+      const held = await twoHeld();
+      const { core, log } = held;
+      core.stdout.write(Buffer.concat(frames(held)));
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+      expect(log.error).toHaveBeenCalledWith('[Core] protocol error', { category });
+      // No sequence answers `b`: it fails with the connection.
+      expect((await held.second).code).toBe('core_unavailable');
+      expect(core.credits).toBe(0);
+      expect(JSON.stringify(log.error.mock.calls)).not.toContain(SENTINEL);
+    });
+
+    test('EOF in the middle of one discards it', async () => {
+      const { client, core, first, a, log } = await twoHeld();
+      const gen = client.current;
+      const [begin, fragment] = fragmentFrames(
+        { type: 'response', id: a, result: 'z'.repeat(MIB) },
+        3
+      );
+      core.stdout.write(Buffer.concat([begin, fragment]));
+      await tick();
+      expect(gen.reassembler.inProgress()).toBe(true);
+      core.stdout.end();
+      await tick();
+      expect(log.warn).toHaveBeenCalledWith(
+        '[Core] stdout closed in the middle of a fragmented response'
+      );
+      expect(core.killed).toBe('SIGKILL');
+      expect((await first).code).toBe('core_unavailable');
+      expect(gen.reassembler.inProgress()).toBe(false);
+    });
+
+    test('one that drains after the process exited is delivered; no credit goes', async () => {
+      const { core, first, a } = await twoHeld();
+      core.exit(1, null, { close: false });
+      core.replyFragmented({ type: 'response', id: a, result: { late: true } }, 2);
+      expect(await first).toEqual({ late: true });
+      expect(core.credits).toBe(0);
+    });
+  });
+
+  describe("main's fragmented replies", () => {
+    /** A ready client whose core offers fragments, or not, and sends it
+     * requests. */
+    async function served(register, { offer = true } = {}) {
+      const capabilities = offer ? ['vault.status', 'fragments'] : ['vault.status'];
+      const made = makeClient([
+        (message, core) => {
+          if (message.method !== 'core.hello') return;
+          core.reply({ type: 'response', id: message.id, result: helloResult({ capabilities }) });
+        },
+      ]);
+      register(made.client);
+      await made.client.start();
+      const core = made.children[0];
+      const send = (message) =>
+        core.reply({ type: 'request', context: { caller: 'shell' }, ...message });
+      const replies = () => core.requests.filter((m) => m?.type === 'response');
+      return { ...made, core, gen: made.client.current, send, replies };
+    }
+    const settle = async () => {
+      for (let i = 0; i < 12; i++) await tick();
+    };
+    /** A handler answering a body of `bytes` letters. */
+    const sized = (bytes) => async () => ({ body: 'x'.repeat(bytes) });
+    /** The frames main wrote since the hello, by kind. */
+    const wire = (core) => core.wire.slice(1);
+    const W = KIND_JSON;
+    const B = KIND_BEGIN;
+    const F = KIND_FRAGMENT;
+    const L = KIND_LAST;
+
+    test('a reply over one frame goes as a begin and fragments, and the credit comes back', async () => {
+      const { core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(3 * MIB))
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, result: { body: 'x'.repeat(3 * MIB) } },
+      ]);
+      // 3 MiB and its envelope: three full fragments and the rest.
+      expect(wire(core)).toEqual([B, F, F, F, L]);
+      expect(core.killed).toBeNull();
+      expect(gen.credit).toBe(true);
+      expect(gen.bulkBytes).toBe(0);
+      expect(gen.incoming.size).toBe(0);
+    });
+
+    test('one that fits a frame, to a core that did not offer, or over the cap, goes whole', async () => {
+      const handlers = (c) => {
+        c.handle('shell.rpc', sized(MAX_PAYLOAD - 100));
+        c.handle('shell.tezos', sized(MAX_MESSAGE));
+      };
+      const offered = await served(handlers);
+      offered.send({ id: 1, method: 'shell.rpc', params: {} });
+      offered.send({ id: 2, method: 'shell.tezos', params: {} });
+      await settle();
+      expect(offered.replies()).toEqual([
+        { type: 'response', id: 1, result: { body: 'x'.repeat(MAX_PAYLOAD - 100) } },
+        { type: 'response', id: 2, error: { code: 'too_large', message: 'Too large' } },
+      ]);
+      expect(wire(offered.core)).toEqual([W, W]);
+
+      const refused = await served((c) => c.handle('shell.rpc', sized(2 * MIB)), { offer: false });
+      refused.send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(refused.replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'too_large', message: 'Too large' } },
+      ]);
+      expect(wire(refused.core)).toEqual([W]);
+    });
+
+    test('the next waits for the credit, while whole frames go', async () => {
+      const { client, core, gen, send, replies } = await served((c) => {
+        c.handle('shell.rpc', sized(2 * MIB));
+        c.handle('shell.tezos', async () => ({ small: true }));
+      });
+      core.holdCredit = true;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      // 2 waits for the credit 1 spent; a reply and a request go meanwhile.
+      send({ id: 3, method: 'shell.tezos', params: {} });
+      await settle();
+      client.request('vault.status').catch(() => {});
+      await settle();
+      // The core's reader refuses a begin without its credit: none came.
+      expect(core.killed).toBeNull();
+      expect(replies().map((r) => r.id)).toEqual([1, 3]);
+      expect(wire(core)).toEqual([B, F, F, L, W, W]);
+      expect(gen.bulk).toHaveLength(1);
+      core.holdCredit = false;
+      core.returnCredit();
+      await settle();
+      expect(replies().map((r) => r.id)).toEqual([1, 3, 2]);
+      expect(wire(core).slice(6)).toEqual([B, F, F, L]);
+      expect(core.credits).toBe(0);
+      expect(gen.credit).toBe(true);
+    });
+
+    test('whole frames written meanwhile go between fragments', async () => {
+      const { client, core, send, replies } = await served((c) => {
+        c.handle('shell.rpc', sized(3 * MIB));
+        c.handle('shell.tezos', async () => ({ small: true }));
+      });
+      // The pipe stalls once the begin is written...
+      core.stuck = true;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(wire(core)).toEqual([B]);
+      // ...and a reply and a request are written meanwhile.
+      send({ id: 2, method: 'shell.tezos', params: {} });
+      await settle();
+      client.request('vault.status').catch(() => {});
+      core.release();
+      await settle();
+      expect(wire(core)).toEqual([B, F, W, W, F, F, L]);
+      expect(replies().map((r) => r.id)).toEqual([2, 1]);
+    });
+
+    test('a cancel after begin, or while it waits for credit, changes nothing', async () => {
+      const { core, send, replies } = await served((c) => c.handle('shell.rpc', sized(2 * MIB)));
+      core.holdCredit = true;
+      core.stuck = true;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      // 1 has begun, 2 waits for the credit: the core cancels both.
+      core.reply({ type: 'cancel', id: 1 });
+      core.reply({ type: 'cancel', id: 2 });
+      core.release();
+      await settle();
+      core.holdCredit = false;
+      core.returnCredit();
+      await settle();
+      const body = { body: 'x'.repeat(2 * MIB) };
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, result: body },
+        { type: 'response', id: 2, result: body },
+      ]);
+    });
+
+    test('past the room for fragmented replies, a reply is busy', async () => {
+      const { core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(17 * MIB))
+      );
+      core.stuck = true;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(gen.bulkBytes).toBeGreaterThan(17 * MIB);
+      core.release();
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
+        { type: 'response', id: 1, result: { body: 'x'.repeat(17 * MIB) } },
+      ]);
+      expect(gen.bulkBytes).toBe(0);
+    });
+
+    test("a reply's buffer stays charged whole until its last fragment is written", async () => {
+      const { core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(17 * MIB))
+      );
+      const body = 'x'.repeat(17 * MIB);
+      const size = Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }));
+      // The pipe stalls on the first reply's last fragment: every fragment
+      // before it is written, and each is a view of the one buffer.
+      core.stallOn = KIND_LAST;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(wire(core)).toEqual([B, ...Array(17).fill(F), L]);
+      expect(gen.bulkBytes).toBe(size);
+      // So a second near-cap reply finds no room.
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      expect(gen.bulk).toEqual([]);
+      core.release();
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, result: { body } },
+        { type: 'response', id: 2, error: { code: 'busy', message: 'Busy' } },
+      ]);
+      expect(gen.sending).toBeNull();
+      expect(gen.bulkBytes).toBe(0);
+    });
+
+    test('a generation that ends writes no more of a begun reply, and drops the waiting ones', async () => {
+      const { core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(2 * MIB))
+      );
+      core.holdCredit = true;
+      core.stuck = true;
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      await settle();
+      core.exit(1, null, { close: false });
+      expect(gen.sending).toBeNull();
+      expect(gen.bulk).toEqual([]);
+      // The fragment in flight still holds the first reply's buffer.
+      const body = 'x'.repeat(2 * MIB);
+      expect(gen.bulkBytes).toBe(
+        Buffer.byteLength(JSON.stringify({ type: 'response', id: 1, result: { body } }))
+      );
+      core.release();
+      await settle();
+      expect(wire(core)).toEqual([B, F]);
+      expect(replies()).toEqual([]);
+      expect(gen.bulkBytes).toBe(0);
+    });
+
+    test('a credit main already holds is a protocol fault', async () => {
+      const { core, log } = await served(() => {});
+      core.stdout.write(encodeCredit());
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+      expect(log.error).toHaveBeenCalledWith('[Core] protocol error', {
+        category: 'unsolicited_credit',
+      });
     });
   });
 });
