@@ -74,6 +74,8 @@
  * the PAC lands).
  */
 
+const { OnionGateRefusal } = require('./onion-gate');
+
 const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 // `localhost` counts as loopback here: it resolves there, and Kubo binds its
@@ -151,12 +153,13 @@ async function assertOnionRoutable(url, deps) {
   } catch (err) {
     // A session we cannot ask is a session we cannot trust to proxy: refuse
     // rather than dial and hope.
-    throw new Error(`.onion gateway proxy route could not be resolved: ${err?.message || err}`, {
-      cause: err,
-    });
+    throw new OnionGateRefusal(
+      `.onion gateway proxy route could not be resolved: ${err?.message || err}`,
+      { cause: err }
+    );
   }
   if (!isProxiedResolution(resolved)) {
-    throw new Error(
+    throw new OnionGateRefusal(
       `.onion gateway is not routed through a proxy (resolveProxy: ${resolved || '(empty)'}) — not dialled, so the onion hostname is never sent to the system resolver`
     );
   }
@@ -583,6 +586,7 @@ async function gatewayFetch(url, init = {}, deps = {}) {
 module.exports = {
   gatewayFetch,
   netGatewayFetch,
+  OnionGateRefusal,
   isLoopbackHostname,
   isLoopbackGatewayUrl,
   isOnionHostname,

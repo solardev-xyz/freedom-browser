@@ -1,5 +1,6 @@
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
+const { OnionGateRefusal } = require('../ipfs/onion-gate');
 const {
   registerNamingShell,
   unlessAborted,
@@ -424,15 +425,50 @@ describe('a hop', () => {
     expect(unhandled).toEqual([]);
   });
 
+  // Review of #692 (security, M1): a body that fails, even with a refusal
+  // in hand, never proves the request unsent.
+  test("a body's failure is the network, whatever it says", async () => {
+    for (const thrown of [
+      new Error('.onion gateway read failed'),
+      new OnionGateRefusal('.onion gateway is not routed through a proxy'),
+    ]) {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1]));
+        },
+        pull(controller) {
+          controller.error(thrown);
+        },
+      });
+      const err = await makeHop({ fetch: jest.fn(async () => new Response(stream)) })(
+        'https://a.example',
+        {}
+      ).catch((e) => e);
+      expect(err).toMatchObject({ code: 'network' });
+      expect(err.unsent).toBeUndefined();
+    }
+  });
+
   test('a network failure, an onion refusal and inactivity', async () => {
     await expect(
       makeHop({ fetch: fakeFetch({ fail: new Error('ECONNRESET') }) })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'network' });
     // The onion gate refuses before the request exists: nothing was sent.
-    const onion = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
+    const onion = new OnionGateRefusal(
+      '.onion gateway is not routed through a proxy (resolveProxy: DIRECT)'
+    );
     await expect(
       makeHop({ fetch: fakeFetch({ fail: onion }) })('https://a.onion', {})
     ).rejects.toMatchObject({ code: 'refused', unsent: true });
+    // Only the gate's own refusal: the same text from anything else may
+    // follow a send.
+    const said = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
+    const lookalike = await makeHop({ fetch: fakeFetch({ fail: said }) })(
+      'https://a.onion',
+      {}
+    ).catch((e) => e);
+    expect(lookalike).toMatchObject({ code: 'network' });
+    expect(lookalike.unsent).toBeUndefined();
     await expect(
       makeHop({ fetch: fakeFetch({ hang: true }), inactivityMs: 5 })('https://a.example', {})
     ).rejects.toMatchObject({ code: 'timeout' });

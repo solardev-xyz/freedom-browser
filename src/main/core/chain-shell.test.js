@@ -1,5 +1,7 @@
 const { ShellError } = require('./core-client');
 const { makeHop } = require('./naming-shell');
+const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const {
   registerChainShell,
   isChainRequest,
@@ -199,18 +201,28 @@ describe('shell.rpc', () => {
     expect(hop).toHaveBeenCalledWith('http://127.0.0.1:8545', expect.anything());
   });
 
+  /** The session's own transport, its proxy lookup answering `proxy`, and
+   * `requestImpl` for the requests it makes. */
+  const session = ({ proxy = 'DIRECT', requestImpl = jest.fn() } = {}) =>
+    makeHop({
+      fetch: (url, init) =>
+        netGatewayFetch(url, init, { resolveProxy: async () => proxy, requestImpl }),
+    });
+
   test("the onion gate's refusal of the first hop is not_sent; of a later hop, refused", async () => {
-    const gate = new Error('.onion gateway is not routed through a proxy (resolveProxy: DIRECT)');
-    const gated = jest.fn(async () => Promise.reject(gate));
-    const first = setUp({ hop: makeHop({ fetch: gated }) });
+    const requestImpl = jest.fn();
+    const first = setUp({ hop: session({ requestImpl }) });
     expect(await first.call('shell.rpc', rpc({ endpoint: 'e4' }))).toEqual(NOT_SENT);
-    expect(gated).toHaveBeenCalledWith('https://hidden.onion', expect.anything());
+    expect(requestImpl).not.toHaveBeenCalled();
+    // After a hop that was sent, the gate's refusal proves nothing more.
     const fetch = jest
       .fn()
       .mockResolvedValueOnce(
         new Response(null, { status: 307, headers: { location: 'https://next.onion/' } })
       )
-      .mockRejectedValueOnce(gate);
+      .mockImplementationOnce((url, init) =>
+        netGatewayFetch(url, init, { resolveProxy: async () => 'DIRECT', requestImpl })
+      );
     const later = setUp({ hop: makeHop({ fetch }) });
     expect(await failure(later.call('shell.rpc', rpc()))).toBe('refused');
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -219,6 +231,37 @@ describe('shell.rpc', () => {
       hop: makeHop({ fetch: jest.fn(async () => Promise.reject(new Error('ECONNRESET'))) }),
     });
     expect(await failure(reset.call('shell.rpc', rpc()))).toBe('network');
+  });
+
+  // Review of #692 (security, M1): only the gate's own refusal is evidence;
+  // text naming it is not.
+  test('a request that fails once written is the network, whatever its error says', async () => {
+    const written = [];
+    const requestImpl = jest.fn((options) => {
+      const request = new FakeClientRequest(options);
+      request.write = (chunk) => written.push(Buffer.from(chunk));
+      request.end = () =>
+        setImmediate(() =>
+          request.emit('error', new Error('.onion gateway connection lost after the write'))
+        );
+      return request;
+    });
+    const { call } = setUp({ hop: session({ requestImpl }) });
+    expect(await failure(call('shell.rpc', rpc()))).toBe('network');
+    expect(Buffer.concat(written).toString()).toBe(BODY);
+  });
+
+  test('a body that fails after the answer began is the network, whatever its error says', async () => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(Buffer.from('{"res')));
+      },
+      pull(controller) {
+        controller.error(new Error('.onion gateway read failed'));
+      },
+    });
+    const { call } = setUp({ hop: makeHop({ fetch: jest.fn(async () => new Response(body)) }) });
+    expect(await failure(call('shell.rpc', rpc()))).toBe('network');
   });
 
   test('the answer cap is the smaller of max_bytes and 18 MiB, enforced while reading', async () => {

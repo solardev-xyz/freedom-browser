@@ -154,9 +154,10 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
   /**
    * A ready core, its executors on main's references (`refs`, chain 1's)
    * and the generation main last learned (`generation`, or the one
-   * `ahead` overrides it with).
+   * `ahead` overrides it with). `transport` stands in for the session's
+   * stack: Node's own fetch unless a test says otherwise.
    */
-  async function start(adapters = {}) {
+  async function start(adapters = {}, { transport = fetch } = {}) {
     client = new CoreClient({
       spawn,
       command: binary,
@@ -177,8 +178,7 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       endpoint: (ref) => (main.refs.has(ref) ? { url: main.refs.get(ref), chainId: 1 } : null),
       generation: () => main.ahead ?? main.generation,
     };
-    // Node's own fetch stands in for the session's stack.
-    registerChainShell(client, config, { hop: makeHop({ fetch }) });
+    registerChainShell(client, config, { hop: makeHop({ fetch: transport }) });
     registerChainVerified(client, config, { adapters });
     await client.start();
     const gen = client.current;
@@ -259,6 +259,33 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     while (!gen.credit) await new Promise(setImmediate);
     expect(client.pool.held).toBe(0);
     expect(client.serves(gen)).toBe(true);
+  });
+
+  // Review of #692 (security, M1): an answer that fails once the request was
+  // sent, its error naming the onion gate, is no proof the bytes stayed home.
+  test('a broadcast whose answer fails after it was sent stays uncertain, and is reconciled', async () => {
+    const failing = async (url, init) => {
+      const response = await fetch(url, init);
+      if (JSON.parse(init.body).method !== 'eth_sendRawTransaction') return response;
+      await response.arrayBuffer();
+      const body = new ReadableStream({
+        start(controller) {
+          controller.error(new Error('.onion gateway body failed after sending'));
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { call, main } = await start({}, { transport: failing });
+    main.refs.set('e1', `${rpc.base}/`);
+    await main.configure(snapshot({ rpc: [{ endpoint: 'e1', user_configured: true }] }));
+    const outcome = await call('chain.broadcast', { chain_id: 1, raw: RAW, deadline_ms: 30_000 });
+    expect(outcome).toMatchObject({ hash: HASH, outcome: 'uncertain' });
+    // The node had the transaction, and the core asked after it.
+    expect(rpc.seen.map((s) => JSON.parse(s.body).method)).toEqual([
+      'eth_sendRawTransaction',
+      'eth_getTransactionByHash',
+    ]);
+    expect(JSON.parse(rpc.seen[0].body).params).toEqual([RAW]);
   });
 
   test('the core takes not_sent and transport failures, and serves on', async () => {

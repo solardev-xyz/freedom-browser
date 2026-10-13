@@ -12,6 +12,7 @@
 const { isIP } = require('net');
 const { ShellError } = require('./core-client');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { OnionGateRefusal } = require('../ipfs/onion-gate');
 const { validateRpcUrl } = require('../networks/network-registry');
 const { prefetchGatewayUrl } = require('../ens-prefetch');
 
@@ -34,21 +35,25 @@ function isAbort(err) {
   return err?.name === 'AbortError';
 }
 
-/** A transport error raised before the hop's request existed: `unsent`
- * says no byte of it left main (design 0005, `not_sent`). */
+/** A transport error main raised before the hop's request existed:
+ * `unsent` says no byte of it left main (design 0005, `not_sent`). Only the
+ * hop's own pre-request refusals make one. */
 function unsent(code) {
   const err = new ShellError(code);
   err.unsent = true;
   return err;
 }
 
-/** A failed hop as a transport error: an onion name the session isn't
- * proxying is refused, before its request exists (never dialled); anything
- * else is the network. */
-function hopError(err) {
+/**
+ * A failed hop as a transport error. While its request is being made
+ * (`dialling`), the onion gate's own refusal, an OnionGateRefusal raised
+ * before the request exists, is `refused` and proves nothing was sent. No
+ * other failure does, whatever its text says: a request's or a body's
+ * failure may follow a send, so it is the network.
+ */
+function hopError(err, { dialling = false } = {}) {
   if (err instanceof ShellError) return err;
-  const message = String(err?.message || '');
-  if (message.includes('.onion gateway')) return unsent('refused');
+  if (dialling && err instanceof OnionGateRefusal) return unsent('refused');
   return new ShellError('network');
 }
 
@@ -138,10 +143,10 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
       timer = setTimeout(() => idle.abort(), inactivityMs);
     };
     const combined = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
-    const failed = (err) => {
+    const failed = (err, phase) => {
       if (idle.signal.aborted) return new ShellError('timeout');
       if (signal?.aborted || isAbort(err)) return err;
-      return hopError(err);
+      return hopError(err, phase);
     };
     touch();
     try {
@@ -166,7 +171,7 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
               abandoned -= 1;
             });
         }
-        throw failed(err);
+        throw failed(err, { dialling: true });
       }
       touch();
       const responseHeaders = {};
