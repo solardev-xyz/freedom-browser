@@ -1695,7 +1695,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // ERC-8244 contract-hosted applications. The standard `web3:` origin is
   // scoped by both contract and chain (`web3://<address>.eip155-<chainId>/`), while
   // the main-process handler reads the document through Freedom's verified
-  // chain-data router. No gateway URL or page-owned RPC endpoint is involved.
+  // chain data. No gateway URL or page-owned RPC endpoint is involved.
   const onchainAppUrl = formatOnchainAppUrl(value);
   if (onchainAppUrl) {
     const displayValue = displayOverride || formatOnchainAppDisplayUrl(value) || onchainAppUrl;

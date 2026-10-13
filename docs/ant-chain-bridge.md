@@ -9,9 +9,10 @@ upgrade, renderer capability, or public IPC channel is needed.
 Chain data runs in the core (freedom-core design 0005): the bridge's reads and
 broadcasts are `chain.*` requests through main's drivers
 (`src/main/networks/chain-data.js`), and the core routes them by the rules
-below, which it ported from `chain-data-router.js` (its replay vectors pin the
-two equal). Ant's log scans go as the core's `ant_scan` profile, which carries
-the bridge's ranking, range caps, exclusions and Blockscout pairing. A
+below, which it ported from the JS chain-data router it replaced (its replay
+vectors pin the two equal, against the router at freedom-browser fb540328).
+Ant's log scans go as the core's `ant_scan` profile, which carries the
+bridge's ranking, range caps, exclusions and Blockscout pairing. A
 broadcast whose outcome is uncertain (it may have been sent) gets the bridge's
 reconcile reply; a refused one, the node's error.
 
@@ -32,8 +33,7 @@ answers the ninth, `eth_chainId`, itself (`0x64`): Ant v0.5.58+ keys its saved
 wallet scan by the chain id and asks for it before every scan. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
-Ant or any other caller (Colibri's entry in the router's
-`SOURCE_CAPABILITIES`, below). Colibri proves that each log it returns is real,
+Ant or any other caller (Colibri's capabilities, below). Colibri proves that each log it returns is real,
 not that none is missing, and the public Gnosis RPCs behind it cut a large log
 answer short without an error, so a partial answer would come back marked
 verified ([#496](https://github.com/solardev-xyz/freedom-browser/issues/496)).
@@ -51,9 +51,10 @@ wallet/app reads into queue-full fallback.
 
 ### What each source can serve
 
-The router (`chain-data-router.js`) keeps one capability descriptor per read
-source, `SOURCE_CAPABILITIES`, and consults it before trying a source
-([#497](https://github.com/solardev-xyz/freedom-browser/issues/497)):
+The core keeps one capability descriptor per read source (design 0005,
+Methods and sources; the JS router's `SOURCE_CAPABILITIES`,
+[#497](https://github.com/solardev-xyz/freedom-browser/issues/497)) and
+consults it before trying a source:
 
 |                             | Myotis            | Colibri                          | RPC quorum           | direct RPC  | Blockscout (opt-in)                                           |
 | --------------------------- | ----------------- | -------------------------------- | -------------------- | ----------- | ------------------------------------------------------------- |
@@ -63,9 +64,9 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
 | cost                        | serialized        | proof                            | fan-out              | single      | paired: Blockscout + one RPC + a quorum for the newest blocks |
 
 - **Methods.** A source that never serves a method is left out of that
-  request before routing starts, together with the caller's own
-  `excludeSources`; an error names both as `excluded for this request`.
-  `excludeSources` is caller policy (Ant's log scans ask the quorum only), the
+  request before routing starts, together with the request's own exclusions
+  (the Ant profile's); an error names both as `excluded for this request`.
+  The exclusions are caller policy (Ant's log scans ask the quorum only), the
   descriptor is the source's capability. Filters (`eth_newFilter` and its
   siblings) live on one node and `web3_*` answers describe one node, so only
   direct RPC serves them. What depends on the request rather than the method
@@ -76,8 +77,8 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   refusal (`-32602`), an infeasible call or estimate (`-32000`) and a rejected
   send end the request like a revert does rather than moving to the next
   source.
-- **Opt-in.** Blockscout is in no read order: only a caller that names it in
-  `includeSources` (the bridge, for Ant's `eth_getLogs`) is routed to it,
+- **Opt-in.** Blockscout is in no read order: only the Ant profile (the
+  bridge's `eth_getLogs`) opts into it, and is routed to it
   right before the quorum, and only while the read order keeps `quorum`. It
   joins only a range-capped xBZZ `Transfer` scan by sender or recipient, the
   filter Ant's wallet scan sends; any other request never sees it.
@@ -88,7 +89,7 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   background callers such as Ant take it only when idle and never queue.
   Colibri verifies proofs in a worker thread with a bounded number in flight.
 - **Cut-short log answers.** For a source marked as possibly cutting a log
-  answer short, the router checks each `eth_getLogs` answer over a numeric
+  answer short, the core checks each `eth_getLogs` answer over a numeric
   block range at least 2,000 blocks wide whose logs all fall in the last
   1,000 blocks of the range: the shape #496 measured on 2026-10-04, where
   `rpc.gnosischain.com` and `gateway.fm` both answered a query matching more
@@ -118,9 +119,9 @@ logs (`eth_getLogs`), and re-reads everything it finds (owner, balance,
 factory, issuer) with ordinary verified reads. A log it never receives is the
 one failure it cannot detect: a missing chequebook transfer would make it
 deploy a second chequebook. So only the RPC quorum answers these scans (the
-bridge passes `excludeSources: ['myotis', 'colibri', 'direct']`), or, for a
-span wider than it can verify, Blockscout checked against one RPC (the bridge
-passes `includeSources: ['blockscout']`; see the next section): no single
+`ant_scan` profile excludes Myotis, Colibri and Direct), or, for a span wider
+than it can verify, Blockscout checked against one RPC (the profile opts into
+Blockscout; see the next section): no single
 endpoint's answer settles a range. Myotis serves no logs, and Colibri proves
 the logs it returns but not that none are missing (its completeness proofs did
 not answer on the Gnosis prover, #484). The quorum budget is widened to 30 s
@@ -129,9 +130,10 @@ for them, since a full-history answer can take seconds.
 Public RPCs cap the block span of one `eth_getLogs` differently (measured for
 #484: `rpc.gnosischain.com`, Tenderly, serves the full history; the
 `gateway.fm` and `swiftnodes` hostnames are the same backend; publicnode and
-dRPC's free plan serve 10,000 blocks). The router learns each endpoint's cap
-from the number its refusal names (`logScanRangeCap` in the bridge; a range
-limit without one bounds the span it was asked), in memory only, for 30
+dRPC's free plan serve 10,000 blocks). The core learns each endpoint's cap
+from the number its refusal names (the profile's cap reading, the bridge's
+former `logScanRangeCap`; a range limit without one bounds the span it was
+asked), in memory only, for 30
 minutes, after which the endpoint is asked again. Two refusals are not read as
 block-range caps:
 
@@ -182,8 +184,9 @@ Blockscout: 2.4 seconds and 3 requests.
 
 Blockscout indexes the chain from its own archive node, so it and a Tenderly
 RPC agreeing are two independent providers agreeing, the rule the quorum
-applies to two RPCs. The router's `blockscout` source (`requestLogIndex` in
-`chain-data-router.js`, the API in `blockscout-logs.js`) answers such a scan
+applies to two RPCs. The core's `blockscout` source (design 0005, Logs; main's
+`shell.blockscout` executor reads each page for it, its redirects checked by
+`blockscout-logs.js`) answers such a scan
 when, and only when, the span is wider than the quorum can verify right now:
 
 1. The span `[from, to]` is split. Its newest blocks (1,000, or what the
@@ -279,11 +282,11 @@ one two independent providers agreed on.
 
 Ant's `scan_logs` halves its `eth_getLogs` window when the error text matches
 one of its `is_range_limit_error` needles (a range limit or `query timeout`)
-and abandons batch/chequebook recovery on anything else. Behind a multi-source
-router, several endpoints fail in different ways for one request, so the
-router applies a single rule to log scans (`rankError`, supplied by the bridge
-as `rankLogScanError`; the router side is `createErrorKeeper` in
-`chain-data-router.js`):
+and abandons batch/chequebook recovery on anything else. Behind multi-source
+routing, several endpoints fail in different ways for one request, so the
+core applies a single rule to the Ant profile's log scans (ported from the
+bridge's `rankLogScanError`, which the bridge still uses to word the error
+that reaches Ant):
 
 1. **Rank each failure by how useful it is to Ant.**
    - _Range limit_ (highest): an endpoint answered with a JSON-RPC error whose
@@ -326,15 +329,15 @@ unavailable`, so Ant does not halve its window on a throttle.
    earlier, since it is the attempt that actually ended the request.
    When every source fails Ant gets the kept error object itself, with its
    original code and text (URLs redacted, see below). If nothing better than
-   endpoint-dependent was seen, the router's usual error is reported and Ant
+   endpoint-dependent was seen, the usual aggregate error is reported and Ant
    gives up, as it would against a single failing RPC.
 3. **Only a range limit ends the request early.** As soon as one is seen and
-   the quorum can no longer agree on a result, the router stops and Ant gets
+   the quorum can no longer agree on a result, the core stops and Ant gets
    it within the time of that answer. Any other failure leaves the quorum
    waiting for its remaining members, up to its budget.
 
 Only `eth_getLogs` is ranked. Ant's other reads and all wallet/app reads and
-broadcasts pass no `rankError`, so for them nothing is kept or ends early: a
+broadcasts go without the Ant profile, so for them nothing is kept or ends early: a
 quorum member's own error never replaces the aggregate "all chain sources
 failed" error, and a broadcast reports the last endpoint's error (an uncertain
 client timeout included). One change does reach every direct/quorum caller:
@@ -353,7 +356,7 @@ not implemented here. A working bridge does not make every response
 cryptographically verified: source-only log entries distinguish `myotis`,
 `colibri`, `quorum` and `direct`, and the bridge adds no new UI trust badge.
 
-An unavailable source is handled by the existing router. Exhausted sources
+An unavailable source is handled by the core's routing. Exhausted sources
 return an error, never fabricated empty logs, zero balance or absent receipts.
 Genuine error codes and hex revert data are preserved. The upstream error text
 is forwarded to Ant (never logged by the bridge) with URLs replaced by `[url]`,
@@ -400,30 +403,26 @@ authorization/Origin/Host checks, request limits, exact forwarding, source
 reporting, error/revert propagation, broadcast restrictions, cancellation,
 capacity and split-log redaction. Manager tests cover starting the daemon with
 its write-capable chain transport, close, bind/spawn failure and stop during
-startup. Router tests ensure cancellation
-prevents later fallback or a second direct broadcaster.
-`ant-log-scan-routing.test.js` pins the log-scan routing over the real router
-with the bridge's own options and error mapping, under fake timers: that only
-the quorum is asked (Myotis and Colibri never, whatever they would answer), the ranking rule as a matrix of quorum members (all,
-two or one of three) × error class (range limit, timeout reply,
-endpoint-dependent, hang, success) plus arrival-order cases, the PR #419
-review findings that still apply, and the range caps, replaying the endpoint
-behaviour measured for #484 through Ant's halving. Each case asserts what Ant
-receives, whether Ant's needles match it, the elapsed time and which RPCs were
-asked. Its `silent truncation (#496)` cases replay the measured cut-short answer
-through Ant's halving down to a complete one, and a recent-only sparse
-answer being accepted. `ant-log-index-routing.test.js` replays Ant's own window loop
-(`scan_logs_with`) over the router with Blockscout and the measured endpoints:
-a first scan in three requests, the newest blocks going to the quorum, the
-quorum path after Blockscout fails, is rate limited, hangs, lags or disagrees,
-a silently cut RPC answer and a silently capped Blockscout page both failing
-the pair, and the cases that never reach Blockscout. `blockscout-logs.test.js`
-covers the filter Blockscout accepts, the mapping against answers captured
-from both providers on 2026-10-05, paging and its failures.
-`ant-chain-bridge.router.test.js` runs the real router behind the real
-bridge over loopback sockets with real timers for the same paths end to end
-(range limit, slow members inside the scan budget, a lone answer not
-settling a scan, a fourth endpoint joining, an endpoint-dependent error).
+startup. The routing behind the bridge is the core's, tested there:
+freedom-core's replay vectors (`vectors/chain-replay.json`) hold it to the JS
+router's, recorded from that router at freedom-browser fb540328. Their
+`cancel-*` cases cover cancellation preventing later fallback or a second
+direct broadcaster, and about a hundred are Ant's: the
+`ant-scan-*` cases pin the log-scan routing with the bridge's own options and
+error ranking (only the quorum asked, the ranking rule as a matrix of quorum
+members, all, two or one of three, × error class, arrival-order cases, the
+PR #419 review findings, the range caps replayed through Ant's halving, and
+the `silent truncation (#496)` cases); the `ant-index-*` cases replay Ant's
+own window loop (`scan_logs_with`) with Blockscout and the measured endpoints
+(a first scan in three requests, the quorum path after Blockscout fails, is
+rate limited, hangs, lags or disagrees, a silently cut RPC answer and a
+silently capped Blockscout page both failing the pair); and the
+`blockscout-*` cases cover paging, mapping, cooldowns and redirects. The core
+replays them all on a virtual clock, and this repo's
+`src/main/core/chain-replay.integration.test.js` runs them through main's
+drivers and executors against a real core. `blockscout-logs.test.js` covers
+the redirect policy main's `shell.blockscout` executor checks each hop
+against.
 
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No
@@ -445,7 +444,7 @@ including verified native retirement, finished in **7.406 s**.
 Myotis v0.1.11 / ABI 29 was still recovering from a stale anchor with
 `quorum-unavailable`. Thus this run qualifies fallback while Myotis is
 unavailable; it is **not** a live Myotis-served Ant-read claim. That path is
-covered by the router and bridge tests. No light-mode purchase/deposit or live
+covered by the routing and bridge tests. No light-mode purchase/deposit or live
 broadcast was performed. Broadcast validation and failure handling use
 locally generated test transactions and a mocked broadcaster.
 

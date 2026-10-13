@@ -113,7 +113,7 @@ test.describe('startup responsiveness (real nodes)', () => {
 
     // Not vacuous: the app's own Ant must have been the one running. A node
     // already on the default port gets adopted ('reused') and the bundled one
-    // — and its chain reads through the router — never start.
+    // — and its chain reads through the bridge — never start.
     const window = await electronApp.firstWindow();
     const ant = await window.evaluate(async () => (await window.serviceRegistry.getRegistry()).ant);
 

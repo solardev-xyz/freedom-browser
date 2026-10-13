@@ -7,15 +7,15 @@ function setup(opts) {
 }
 
 describe('chain-data activity', () => {
-  test('wrapping router.request records chain, method, duration and answering source', async () => {
+  test('wrapping chainData.request records chain, method, duration and answering source', async () => {
     const { activity, at } = setup();
     let resolve;
-    const router = {
+    const chainData = {
       request: jest.fn(() => new Promise((r) => (resolve = r))),
     };
-    expect(activity.instrumentChainDataRouter(router)).toBe(true);
+    expect(activity.instrumentChainData(chainData)).toBe(true);
     at(100);
-    const pending = router.request(100, 'eth_getLogs', [{}], { background: true });
+    const pending = chainData.request(100, 'eth_getLogs', [{}], { background: true });
     at(1300);
     expect(activity.describe({ since: 0 })).toBe('chain-data: 100 eth_getLogs in flight, 1200 ms');
     at(21_134);
@@ -33,10 +33,10 @@ describe('chain-data activity', () => {
     const original = jest.fn(async function () {
       return { result: this.tag, source: 'quorum' };
     });
-    const router = { tag: 'me', request: original };
-    activity.instrumentChainDataRouter(router);
-    expect(activity.instrumentChainDataRouter(router)).toBe(false);
-    await expect(router.request(1, 'eth_call', ['x'], { a: 1 })).resolves.toEqual({
+    const chainData = { tag: 'me', request: original };
+    activity.instrumentChainData(chainData);
+    expect(activity.instrumentChainData(chainData)).toBe(false);
+    await expect(chainData.request(1, 'eth_call', ['x'], { a: 1 })).resolves.toEqual({
       result: 'me',
       source: 'quorum',
     });
@@ -46,15 +46,15 @@ describe('chain-data activity', () => {
   test('a rejected or throwing request is recorded as failed and the error propagates', async () => {
     const { activity } = setup();
     const err = new Error('nope');
-    const router = { request: jest.fn(async () => Promise.reject(err)) };
-    activity.instrumentChainDataRouter(router);
-    await expect(router.request(100, 'eth_call')).rejects.toBe(err);
+    const chainData = { request: jest.fn(async () => Promise.reject(err)) };
+    activity.instrumentChainData(chainData);
+    await expect(chainData.request(100, 'eth_call')).rejects.toBe(err);
     const sync = {
       request: jest.fn(() => {
         throw err;
       }),
     };
-    createChainDataActivity().instrumentChainDataRouter(sync);
+    createChainDataActivity().instrumentChainData(sync);
     expect(() => sync.request(1, 'eth_call')).toThrow(err);
     expect(activity.describe()).toBe('chain-data: 100 eth_call failed, 0 ms');
   });
@@ -89,11 +89,11 @@ describe('chain-data activity', () => {
     let resolveTx;
     const getFeeQuote = jest.fn(() => new Promise((r) => (resolveFee = r)));
     const broadcastRawTransaction = jest.fn(() => new Promise((r) => (resolveTx = r)));
-    const router = { request: jest.fn(), getFeeQuote, broadcastRawTransaction };
-    activity.instrumentChainDataRouter(router);
+    const chainData = { request: jest.fn(), getFeeQuote, broadcastRawTransaction };
+    activity.instrumentChainData(chainData);
     at(0);
-    const fee = router.getFeeQuote(1);
-    const tx = router.broadcastRawTransaction(100, '0xraw', { signal: null });
+    const fee = chainData.getFeeQuote(1);
+    const tx = chainData.broadcastRawTransaction(100, '0xraw', { signal: null });
     at(1500);
     expect(activity.describe()).toBe(
       'chain-data: 1 fee quote in flight, 1500 ms; 100 eth_sendRawTransaction in flight, 1500 ms'
@@ -109,22 +109,22 @@ describe('chain-data activity', () => {
       'chain-data: 100 eth_sendRawTransaction via direct, 5000 ms; 1 fee quote via myotis, 4000 ms'
     );
     // Wrapping again is a no-op for every export.
-    const wrappedFee = router.getFeeQuote;
-    expect(activity.instrumentChainDataRouter(router)).toBe(false);
-    expect(router.getFeeQuote).toBe(wrappedFee);
+    const wrappedFee = chainData.getFeeQuote;
+    expect(activity.instrumentChainData(chainData)).toBe(false);
+    expect(chainData.getFeeQuote).toBe(wrappedFee);
   });
 
-  test('the real router exports are all wrapped', () => {
+  test('the real chain-data exports are all wrapped', () => {
     const activity = createChainDataActivity();
-    const router = {
+    const chainData = {
       request: jest.fn(),
       getFeeQuote: jest.fn(),
       broadcastRawTransaction: jest.fn(),
     };
-    activity.instrumentChainDataRouter(router);
+    activity.instrumentChainData(chainData);
     for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
-      expect(router[name].name).toBe(name);
-      expect(jest.isMockFunction(router[name])).toBe(false);
+      expect(chainData[name].name).toBe(name);
+      expect(jest.isMockFunction(chainData[name])).toBe(false);
     }
     // The real module exports the functions being wrapped.
     const real = jest.requireActual('./chain-data');

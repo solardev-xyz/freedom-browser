@@ -21,11 +21,6 @@ const MAX_ERROR_MESSAGE = 500;
 // transaction itself, and nothing is sent again here.
 const BROADCAST_UNCERTAIN = 'Broadcast outcome uncertain; reconcile the signed transaction';
 
-// A wide log scan gets a longer quorum budget than an interactive read would:
-// a full-history answer can take seconds. It fits the bridge's 120 s deadline
-// with room for the router's own handling.
-const LOG_SCAN_QUORUM_TIMEOUT_MS = 30000;
-
 // Ant v0.5.64 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
@@ -51,9 +46,9 @@ function antShrinksLogScanOn(message) {
   return ANT_LOG_SCAN_SHRINK_NEEDLES.some((needle) => lower.includes(needle));
 }
 
-// Mirrors chain-data-router's ERROR_RANK (pinned equal by
-// ant-chain-bridge.router.test.js); kept local so the bridge does not load the
-// router just for four numbers.
+// The ranks of the core's Ant profile (`ant_scan`, freedom-core design 0005,
+// Logs), which ranks a log scan's errors this way to keep the most useful;
+// the bridge reads the rank of the one that reaches Ant (antErrorReply).
 const RANK = Object.freeze({ ENDPOINT: 0, HINT: 1, TIMEOUT: 2, REQUEST: 3 });
 const TIMEOUT_TEXT = /time(?:d)?[\s-]?out/i;
 // Ant's needles are broad ("limit", "exceed", "more than", "10000"), so a
@@ -83,8 +78,8 @@ const ENDPOINT_LIMIT_TEXT =
 const ENDPOINT_STATE_TEXT =
   /beyond (?:the )?(?:current |latest )?(?:executed )?(?:head|latest|chain)|(?:still |is )syncing|not (?:yet )?synced|head block|latest executed block/i;
 
-// How useful a failed eth_getLogs attempt is to Ant, for the router's
-// single keep-the-most-useful-error rule:
+// How useful a failed eth_getLogs attempt is to Ant, as the core's Ant
+// profile ranks it (its keep-the-most-useful-error rule):
 // - REQUEST: an endpoint answered with a JSON-RPC error naming the query's
 //   size (-32005 "query exceeds max block range 50000", "query returned more
 //   than 10000 results", "response size exceeded"). It depends on the query,
@@ -100,7 +95,7 @@ const ENDPOINT_STATE_TEXT =
 //   later endpoints are still asked.
 // - ENDPOINT: everything else (method not found, internal error, rate limits
 //   and other throttles, HTTP errors, transport failures, a source that is not
-//   ready, an endpoint behind the chain head). The router keeps going and
+//   ready, an endpoint behind the chain head). The core keeps going and
 //   never lets it displace a better error. When a throttle is what finally
 //   reaches Ant, the bridge strips Ant's needles from it (antErrorReply) so
 //   Ant does not halve on it.
@@ -139,76 +134,21 @@ function sanitizeErrorMessage(message) {
     .slice(0, MAX_ERROR_MESSAGE);
 }
 
-// The widest block span an endpoint serves, read from its refusal of a log
-// query over `span` blocks: the cap it names, or span - 1 for a range limit
-// that names none. Null for anything that is no block-range limit: a throttle
-// or a lagging endpoint (whose numbers say nothing about the range it
-// serves), a timeout, and a cap on results, logs or response size, which
-// depends on the filter (a sparse filter over the same range may answer), not
-// on the endpoint. The router learns each endpoint's cap from it. Measured wordings (2026-10-03):
-// Nethermind ("Block range 50000 exceeds the maximum of 10000 blocks per logs
-// request", Colibri's RPC and publicnode below 50k), publicnode's gateway
-// ("exceed maximum block range: 50000"), dRPC's free plan ("ranges over 10000
-// blocks are not supported"), Alchemy-style ("up to a 10000 block range",
-// "up to a 2K block range"). A cap on the number of results or logs is not a
-// block range and is not read as one.
-const BLOCK_RANGE_CAP_TEXT = [
-  /maximum of ([\d,]+)(k?) blocks?\b/i,
-  /max(?:imum)? (?:allowed )?block range(?: is)?:? ?([\d,]+)(k?)\b/i,
-  /(?:up to|limited to) an? ([\d,]+)(k?)[ -]?(?:blocks? )?range/i,
-  /ranges? (?:over|above|greater than|larger than|wider than) ([\d,]+)(k?) blocks?\b/i,
-];
-
-// Wordings about the size of the answer rather than of the block range.
-const RESULT_SIZE_TEXT = /\bresults?\b|\blogs?\b|response size/i;
-
-function logScanRangeCap(error, span = null) {
-  const message = typeof error?.message === 'string' ? error.message : '';
-  if (
-    !Number.isSafeInteger(error?.code) ||
-    ENDPOINT_LIMIT_TEXT.test(message) ||
-    ENDPOINT_STATE_TEXT.test(message)
-  ) {
-    return null;
-  }
-  for (const pattern of BLOCK_RANGE_CAP_TEXT) {
-    const match = pattern.exec(message);
-    if (!match) continue;
-    const cap = Number(match[1].replace(/,/g, '')) * (match[2] ? 1000 : 1);
-    return Number.isSafeInteger(cap) && cap > 0 ? cap : null;
-  }
-  if (
-    Number.isSafeInteger(span) &&
-    span > 1 &&
-    rankLogScanError(error) === RANK.REQUEST &&
-    !RESULT_SIZE_TEXT.test(message)
-  ) {
-    return span - 1;
-  }
-  return null;
-}
-
-// Ant's eth_getLogs (window-halving) scans: the core's `ant_scan` profile,
-// which ports these router options (freedom-core design 0005, Logs). Only two
-// independent providers that agree answer them: the RPC quorum, or, for a
-// span wider than the quorum can verify, Blockscout's log index paired with
-// one RPC endpoint (#529, the router's blockscout source). A log Ant does not
+// Ant's eth_getLogs (window-halving) scans go as the core's `ant_scan`
+// profile (freedom-core design 0005, Logs). Only two independent providers
+// that agree answer them: the RPC quorum, or, for a span wider than the
+// quorum can verify, Blockscout's log index paired with one RPC endpoint
+// (#529, the core's blockscout source). The profile also widens the quorum's
+// budget to 30 s, and learns each endpoint's block-range cap from its
+// refusals. A log Ant does not
 // receive is the one failure Ant cannot detect (it re-reads every batch and
 // chequebook it finds), so a scan takes no single endpoint's word for a
 // range, and there is no Direct tier. Myotis serves no logs. Colibri proves
 // only the logs it returns, not that none are missing, and answers a range
 // its RPC refuses ("Block range 32059916 exceeds the maximum of 10000
 // blocks") with only the most recent blocks' logs, so Ant would read a
-// whole-history scan as empty (#496). The JS router took them spelled out;
-// it is no longer asked (step 5.5 deletes it, and these with it).
+// whole-history scan as empty (#496).
 const LOG_SCAN_PROFILE = 'ant_scan';
-const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
-  excludeSources: Object.freeze(['myotis', 'colibri', 'direct']),
-  includeSources: Object.freeze(['blockscout']),
-  quorumTimeoutMs: LOG_SCAN_QUORUM_TIMEOUT_MS,
-  rankError: rankLogScanError,
-  rangeCapOf: logScanRangeCap,
-});
 
 // Whether a failed log scan failed because the configuration leaves no RPC
 // quorum at all (fewer endpoints than the quorum size, or no quorum in the
@@ -256,11 +196,7 @@ function antErrorReply(method, error) {
     detail = 'endpoint unavailable';
   }
   const message =
-    error?.code === 'MYOTIS_BROADCAST_UNCERTAIN'
-      ? BROADCAST_UNCERTAIN
-      : code === 3
-        ? 'Execution reverted'
-        : `Chain request failed${detail ? `: ${detail}` : ''}`;
+    code === 3 ? 'Execution reverted' : `Chain request failed${detail ? `: ${detail}` : ''}`;
   return { code, message, data };
 }
 
@@ -618,10 +554,8 @@ module.exports = {
   startAntChainBridge,
   antShrinksLogScanOn,
   rankLogScanError,
-  logScanRangeCap,
   antErrorReply,
   LOG_SCAN_PROFILE,
-  LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,
 };

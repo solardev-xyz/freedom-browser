@@ -376,9 +376,7 @@ const {
 } = require('./test-harness');
 // Every chain-data caller above holds the chain-data module object and reads
 // `.request` at call time, so wrapping the export here covers all of them.
-require('./networks/chain-data-activity').instrumentChainDataRouter(
-  require('./networks/chain-data')
-);
+require('./networks/chain-data-activity').instrumentChainData(require('./networks/chain-data'));
 
 log.info('[profile] Active profile:', {
   id: activeProfile.id,

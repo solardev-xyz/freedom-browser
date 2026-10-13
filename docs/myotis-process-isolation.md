@@ -12,7 +12,7 @@ sandbox** or an aggregate CPU/memory limit.
 
 - Per chain: one native read/broadcast operation, sixteen queued requests,
   and one independent status request. Requests have a ten-second total budget,
-  including queue time. Router reads retain their configured/interactive budget;
+  including queue time. Routed reads retain their configured/interactive budget;
   expiration permits configured fallback without stopping the chain. The route
   slot remains held until the underlying manager request settles.
 - The process manager's own deadlines govern native health. Expiring an unsent
@@ -53,9 +53,10 @@ sandbox** or an aggregate CPU/memory limit.
   both chain stop results alongside other nodes. Read fallbacks still obey the
   configured chain order. No fallback is added when policy does not allow it.
 - A dispatched signed transaction whose reply is lost is **outcome uncertain**.
-  The router propagates `MYOTIS_BROADCAST_UNCERTAIN` without trying another
-  broadcaster. The user must reconcile the original signed transaction hash;
-  this error is not permission to create a replacement or retry a payment.
+  Chain data reports `MYOTIS_BROADCAST_UNCERTAIN` as an uncertain outcome
+  without trying another broadcaster. The user must reconcile the original
+  signed transaction hash; this error is not permission to create a
+  replacement or retry a payment.
 - Automatic wallet polling checks actual element visibility (including hidden
   ancestors) and document visibility. Startup cache IPC does not initiate fresh
   reads. A visible wallet with a startup cache miss refreshes immediately;
@@ -340,13 +341,13 @@ advisory to `null`. `publicStatus` carries it to the Nodes menu, which shows an
 "update Freedom" notice, and to Settings' source status. It is **display-only**:
 upstream derives it from what peers announce (discv5 ENRs, libp2p Status
 digests), unverified and never read by verification, so neither readiness nor
-the chain-data router reads it. An `ACTIVE` advisory does not demote Myotis in
-routing on purpose — that would let a majority of peer networks push Freedom
+the core's chain-data routing reads it. An `ACTIVE` advisory does not demote
+Myotis in routing on purpose — that would let a majority of peer networks push Freedom
 off its own verified node. The node's own state already covers the real
 failure: a post-fork call the engine's fork table cannot run is refused as a
 capability limit and falls through to the next source (#557), and a light
 client that cannot follow the fork stops being `SYNCED`, which fails readiness
-so the router skips Myotis. The notice says "this node can't verify" only in
+so routing skips Myotis. The notice says "this node can't verify" only in
 that not-ready case, and "verified reads may stop" while it is still ready.
 A serving count reflects announced/proven head coverage and read-bench state;
 it is not a guarantee that the next peer request succeeds. ENS continues to
