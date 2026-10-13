@@ -1199,7 +1199,25 @@ class CoreClient extends EventEmitter {
     const { id } = message;
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     gen.incoming.get(id)?.abort();
+    this.replaceCancelledBulk(gen, id);
     return undefined;
+  }
+
+  /**
+   * A reply over one frame still waiting to begin, for a request the core
+   * has cancelled: the core drops whatever answers a cancelled request (its
+   * one terminal reply is still due), so `cancelled` goes in its place at
+   * once, one small frame, and the waiting reply's buffer and its pool
+   * charge go. A reply already begun is written to its end.
+   */
+  replaceCancelledBulk(gen, id) {
+    const at = gen.bulk.findIndex((reply) => reply.id === id);
+    if (at < 0) return;
+    const [reply] = gen.bulk.splice(at, 1);
+    reply.release();
+    if (!this.owes(gen, id, reply.controller)) return;
+    const error = shellError('cancelled');
+    this.writeReply(gen, id, reply.controller, encodeFrame({ type: 'response', id, error }));
   }
 
   /** Whether a reply is still owed and can be written: its entry is the
@@ -1288,7 +1306,12 @@ class CoreClient extends EventEmitter {
     lease?.close();
     let code = 'too_large';
     const whole = size <= MAX_PAYLOAD;
-    if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
+    // The core cancelled it before it was ready: as for one waiting to
+    // begin (`replaceCancelledBulk`), `cancelled` goes in its place, and no
+    // buffer is made.
+    if (!whole && controller.signal.aborted) {
+      code = 'cancelled';
+    } else if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
       const release = this.hold(gen, size >= POOL_EXEMPT_BYTES ? size : 0);
       if (release) {
         const payload = Buffer.allocUnsafe(size);

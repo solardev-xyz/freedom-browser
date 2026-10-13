@@ -1898,26 +1898,64 @@ describe('CoreClient', () => {
       expect(replies().map((r) => r.id)).toEqual([2, 1]);
     });
 
-    test('a cancel after begin, or while it waits for credit, changes nothing', async () => {
-      const { core, send, replies } = await served((c) => c.handle('shell.rpc', sized(2 * MIB)));
+    test('a cancel after begin changes nothing; one while it waits for credit answers cancelled in its place', async () => {
+      const { client, core, gen, send, replies } = await served((c) =>
+        c.handle('shell.rpc', sized(2 * MIB))
+      );
       core.holdCredit = true;
       core.stuck = true;
       send({ id: 1, method: 'shell.rpc', params: {} });
       send({ id: 2, method: 'shell.rpc', params: {} });
       await settle();
-      // 1 has begun, 2 waits for the credit: the core cancels both.
+      const one = Buffer.byteLength(
+        JSON.stringify({ type: 'response', id: 1, result: { body: 'x'.repeat(2 * MIB) } })
+      );
+      expect(client.pool.held).toBe(2 * one);
+      // 1 has begun, 2 waits for the credit: the core cancels both. The
+      // core drops whatever answers a cancelled request, so 2's 2 MiB never
+      // goes: `cancelled` goes at once, and its charge with its buffer.
       core.reply({ type: 'cancel', id: 1 });
       core.reply({ type: 'cancel', id: 2 });
+      await settle();
+      expect(gen.bulk).toEqual([]);
+      expect(client.pool.held).toBe(one);
       core.release();
       await settle();
       core.holdCredit = false;
       core.returnCredit();
       await settle();
-      const body = { body: 'x'.repeat(2 * MIB) };
       expect(replies()).toEqual([
-        { type: 'response', id: 1, result: body },
-        { type: 'response', id: 2, result: body },
+        { type: 'response', id: 2, error: { code: 'cancelled', message: 'Cancelled' } },
+        { type: 'response', id: 1, result: { body: 'x'.repeat(2 * MIB) } },
       ]);
+      expect(wire(core).filter((kind) => kind === B)).toHaveLength(1);
+      expect(client.pool.held).toBe(0);
+      expect(gen.incoming.size).toBe(0);
+    });
+
+    test('a JSON text result the core cancelled before it was ready answers cancelled, with no buffer made', async () => {
+      const { bodyReply } = require('./chain-shell');
+      let finish;
+      const { client, core, send, replies } = await served((c) =>
+        c.handle(
+          'shell.rpc',
+          () =>
+            new Promise((resolve) => {
+              finish = () => resolve(bodyReply(200, Buffer.alloc(2 * MIB)));
+            })
+        )
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await settle();
+      core.reply({ type: 'cancel', id: 1 });
+      await settle();
+      finish();
+      await settle();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+      expect(wire(core).filter((kind) => kind === B)).toHaveLength(0);
+      expect(client.pool.held).toBe(0);
     });
 
     test("past main's pool, a reply is busy", async () => {
