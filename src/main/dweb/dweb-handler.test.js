@@ -13,7 +13,11 @@ jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
 let mockAdmission = null;
 jest.mock('./fetch-admission', () => {
   const actual = jest.requireActual('./fetch-admission');
-  return { ...actual, acquireDwebFetch: (request) => mockAdmission.acquire(request) };
+  return {
+    ...actual,
+    acquireDwebFetch: (request) => mockAdmission.acquire(request),
+    fenceDwebSession: (partition) => mockAdmission.fence(partition),
+  };
 });
 
 const { handleDwebRequest, MAX_URL_UNITS, MAX_HEADER_UNITS } = require('./dweb-handler');
@@ -38,14 +42,15 @@ const FETCH = {
   },
 };
 
-/** A driver that answers `plan` (or throws `error`), honouring `ready`. */
+/** A driver that answers `plan` (or throws `error`), handing it over as
+ * the real one does: `ready`, then `use` in the same turn. */
 function scriptedDriver({ plan = FETCH, error = null } = {}) {
   return {
-    open: jest.fn(async (_params, { ready } = {}) => {
+    open: jest.fn(async (_params, { signal, ready, use } = {}) => {
       if (error) throw error;
       const reply = { plan, generations: { ens: 0, tezos: 0, lifecycle: 0 }, attempts: 0 };
-      if (ready) await ready(reply);
-      return reply;
+      if (ready) await ready(reply, signal);
+      return use ? use(reply) : reply;
     }),
   };
 }

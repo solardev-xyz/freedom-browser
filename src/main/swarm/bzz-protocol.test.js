@@ -382,6 +382,7 @@ describe('handleBzzRequest', () => {
       };
       const p = handleBzzRequest(req, { fetchImpl });
       // First attempt runs, schedules a retry, then we abort before it fires.
+      while (fetchImpl.mock.calls.length === 0) await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       controller.abort();

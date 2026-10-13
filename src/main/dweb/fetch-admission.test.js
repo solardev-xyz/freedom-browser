@@ -76,3 +76,31 @@ test("a session's close refuses its waiters and stops its active fetches", async
   await turn();
   expect(admission.stats()).toEqual({ active: 2, waiting: 0 });
 });
+
+// A request is fenced to its session from its handler's entry, before
+// anything is planned: the fence is what a closing session reaches while
+// the request still plans, and a closed session starts nothing.
+test("a session's fence aborts on close, and a closed session fences and admits nothing more", async () => {
+  const admission = createFetchAdmission();
+  const planning = admission.fence('private-1');
+  const other = admission.fence('private-2');
+  const ordinary = admission.fence();
+
+  admission.closeSession('private-1');
+  expect(planning.signal.aborted).toBe(true);
+  expect(planning.signal.reason.message).toBe('The session closed');
+  expect(other.signal.aborted).toBe(false);
+  expect(ordinary.signal.aborted).toBe(false);
+
+  // However late it asks, a closed session's request gets neither.
+  expect(() => admission.fence('private-1')).toThrow('The session closed');
+  await expect(admission.acquire({ partition: 'private-1' })).rejects.toThrow('The session closed');
+  expect(admission.stats()).toEqual({ active: 0, waiting: 0 });
+
+  // A disposed fence is no longer reached; disposing twice is harmless.
+  other.dispose();
+  other.dispose();
+  admission.closeSession('private-2');
+  expect(other.signal.aborted).toBe(false);
+  ordinary.dispose();
+});

@@ -367,27 +367,27 @@ async function planDweb(request, resolvers = {}) {
 
 /**
  * A naming driver whose `open` plans with `planDweb` at once, at generation
- * zero, honouring `ready` as the real driver does. `calls` records each
- * request it was given.
+ * zero, as the real driver hands plans over: `ready(reply, signal)` first
+ * (its signal aborts with the request), then `use(reply)` in the same turn.
+ * `calls` records each request it was given.
  */
 function createFakeDwebDriver(resolvers = {}) {
   const calls = [];
+  const cancelled = () => Object.assign(new Error('Cancelled'), { code: 'cancelled' });
   return {
     calls,
-    async open(params, { signal = null, ready = null } = {}) {
+    async open(params, { signal = null, ready = null, use = null } = {}) {
       calls.push(params);
-      if (signal?.aborted) {
-        const err = new Error('Cancelled');
-        err.code = 'cancelled';
-        throw err;
-      }
+      if (signal?.aborted) throw cancelled();
       const reply = {
         plan: await planDweb(params, resolvers),
         generations: { ens: 0, tezos: 0, lifecycle: 0 },
         attempts: 0,
       };
-      if (ready) await ready(reply);
-      return reply;
+      if (signal?.aborted) throw cancelled();
+      if (ready) await ready(reply, signal ?? new AbortController().signal);
+      if (signal?.aborted) throw cancelled();
+      return use ? use(reply) : reply;
     },
   };
 }

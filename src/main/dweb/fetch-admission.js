@@ -11,6 +11,13 @@
  *
  * Only plans bound for a node take a slot; a redirect or an error plan is
  * answered without one.
+ *
+ * A request's session is fenced from its handler's entry, before anything is
+ * planned (`fence`): a closing session aborts every fence it holds, so a
+ * request still planning, waiting or streaming stops, and a closed session
+ * fences and admits nothing more. Private partitions are never reused, so
+ * the closed ones are remembered for the process's lifetime: one name per
+ * private window closed.
  */
 
 const MAX_ACTIVE = 256;
@@ -40,6 +47,34 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
   // A session's active fetches, by partition (null: the default session),
   // each with the controller that stops it when the session closes.
   const sessions = new Map();
+  // Each session's fenced requests, by partition, and the partitions closed.
+  const fences = new Map();
+  const closed = new Set();
+  const isClosed = (partition) => partition !== null && closed.has(partition);
+
+  /**
+   * Fences one request to its session, from its handler's entry: `signal`
+   * aborts when the session closes; `dispose` (idempotent) ends the fence
+   * once the request is over. Throws an AbortError for a session already
+   * closed.
+   */
+  function fence(partition = null) {
+    if (isClosed(partition)) throw abortError('The session closed');
+    const controller = new AbortController();
+    let held = fences.get(partition);
+    if (!held) {
+      held = new Set();
+      fences.set(partition, held);
+    }
+    held.add(controller);
+    return {
+      signal: controller.signal,
+      dispose() {
+        held.delete(controller);
+        if (held.size === 0 && fences.get(partition) === held) fences.delete(partition);
+      },
+    };
+  }
 
   function grant(partition, waited) {
     active += 1;
@@ -87,6 +122,8 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
    */
   function acquire({ partition = null, signal = null } = {}) {
     if (signal?.aborted) return Promise.reject(abortError());
+    // A closed session admits nothing more, however late its request asks.
+    if (isClosed(partition)) return Promise.reject(abortError('The session closed'));
     if (active < maxActive && waiting.length === 0) {
       return Promise.resolve(grant(partition, false));
     }
@@ -107,9 +144,15 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
     });
   }
 
-  /** A session has closed: its waiting fetches are refused and its active
-   * ones stopped. Each active one frees its slot as it ends. */
+  /** A session has closed: its fenced requests are stopped wherever they
+   * are, its waiting fetches refused and its active ones stopped, and it
+   * fences and admits nothing more. Each active fetch frees its slot as it
+   * ends. */
   function closeSession(partition) {
+    if (partition !== null) closed.add(partition);
+    for (const controller of [...(fences.get(partition) || [])]) {
+      controller.abort(abortError('The session closed'));
+    }
     for (const entry of waiting.filter((waiter) => waiter.partition === partition)) {
       dequeue(entry);
       entry.reject(abortError('The session closed'));
@@ -120,6 +163,7 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
   }
 
   return {
+    fence,
     acquire,
     closeSession,
     stats: () => ({ active, waiting: waiting.length }),
@@ -129,6 +173,7 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
 const admission = createFetchAdmission();
 
 module.exports = {
+  fenceDwebSession: (partition) => admission.fence(partition),
   acquireDwebFetch: (request) => admission.acquire(request),
   closeDwebSession: (partition) => admission.closeSession(partition),
   dwebFetchStats: () => admission.stats(),
