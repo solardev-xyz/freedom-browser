@@ -43,13 +43,15 @@
  *   handoffs (`count`, and `possibly_sent`, which sticks once a handoff
  *   ended other than `not_sent` or was open when its run ended). This run's
  *   open handoffs follow it as lines, so their outcomes still find them.
- *   Loading folds every handoff into the summary: an earlier run's handoff
- *   only ever counts as possibly sent.
+ *   Memory folds the finished ones the same way once the file has them, so
+ *   neither grows with a long run of sends. Loading folds every handoff into
+ *   the summary: an earlier run's handoff only ever counts as possibly sent.
  * - **tombstone**: a settled or voided intent, without its bytes: its id,
  *   account, nonce and how it closed. Closed is final: a commit or a handoff
  *   of a closed id is refused, and a late outcome for it is ignored, across
  *   reloads and compactions. The newest LIMITS.tombstones are kept; an
- *   older id is unknown, so nothing can be sent for it either.
+ *   older id is unknown, so nothing can be sent for it either, and it can't
+ *   come back: the store names every new intent itself.
  *
  * **Replay** (loading) checks every line against the same rules as a live
  * write: the bytes decode to the intent's chain, nonce and hash and are
@@ -699,21 +701,25 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     };
   }
 
-  // Returns null for a live outcome of a closed intent: ignored, nothing
-  // written.
+  // Live, an outcome the store no longer owes returns null: ignored, nothing
+  // written. That is one for an unknown (evicted) or closed intent, for a
+  // handoff already folded into the summary (an earlier run's, or a
+  // finished one after compaction), or a second one for the same handoff.
   function prepareOutcome(record, mode) {
-    const intent = requireIntent(requireId(record.intent_id, 'intent id'));
+    const id = requireId(record.intent_id, 'intent id');
     const run = requireRun(record);
-    if (intent.state !== 'held') {
+    const intent = intents.get(id);
+    const handoff = intent?.handoffs.get(requireId(record.handoff_id, 'handoff id'));
+    if (!intent || intent.state !== 'held' || !handoff || handoff.outcome) {
       if (mode.live) return null;
-      throw invalid(`an outcome for ${intent.state} intent ${intent.id}`);
+      if (!intent) throw invalid(`an outcome for unknown intent ${id}`);
+      if (intent.state !== 'held') throw invalid(`an outcome for ${intent.state} intent ${id}`);
+      if (!handoff) throw invalid(`unknown handoff ${record.handoff_id}`);
+      throw invalid(`handoff ${handoff.id} already has its outcome`);
     }
-    const handoff = intent.handoffs.get(requireId(record.handoff_id, 'handoff id'));
-    if (!handoff) throw invalid(`unknown handoff ${record.handoff_id}`);
     if (handoff.hash !== requireHex(record.hash, HASH_PATTERN, 'hash')) {
       throw invalid(`handoff ${handoff.id} was of another hash`);
     }
-    if (handoff.outcome) throw invalid(`handoff ${handoff.id} already has its outcome`);
     if (handoff.run !== run) {
       // Its reply was lost with the run that made it: possibly sent, for good.
       throw invalid(`handoff ${handoff.id} was made by an earlier run of main`);
@@ -892,9 +898,26 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     return [...tombstones, ...held];
   }
 
+  // Finished handoffs, folded into the sticky summary, as the file now has
+  // them. For an intent of this run the summary still says whether every
+  // folded handoff ended not_sent (`possiblySent` false), which is all a
+  // void needs of them; open ones stay, as they do in the file.
+  function foldFinished(intent) {
+    const finished = [...intent.handoffs.values()].filter((handoff) => !isOpen(handoff));
+    if (finished.length === 0) return;
+    intent.summary = {
+      count: intent.summary.count + finished.length,
+      possiblySent:
+        intent.summary.possiblySent ||
+        finished.some((handoff) => handoff.outcome.outcome !== 'not_sent'),
+    };
+    for (const handoff of finished) intent.handoffs.delete(handoff.id);
+  }
+
   async function compactNow() {
     await journal.compact(compactedRecords());
     for (const intent of closedIntents().slice(0, -limits.tombstones)) intents.delete(intent.id);
+    for (const intent of heldIntents()) foldFinished(intent);
   }
 
   async function compactQuietly(why) {
@@ -917,6 +940,10 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
   //       plus one handoff and its outcome of headroom for each held intent.
   //       So once a new intent is in, every held intent can still be sent
   //       again;
+  //   (1') for a handoff: the same, when it grows the budget. The first
+  //       open handoff of an intent spends the pair its intent reserved and
+  //       doesn't; a further one is refused unless there is slack beyond
+  //       every other held intent's pair;
   //   (2) for a commit or a handoff: the file plus the line plus what is
   //       owed fits, after compacting if needed. Compacting brings the file
   //       to within (1), so a handoff of an intent with nothing open always
@@ -941,10 +968,12 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     return intent.tombstoneBytes;
   }
 
-  function intentBudget(intent, extraHash = null) {
-    const openBytes = [...intent.handoffs.values()]
-      .filter(isOpen)
-      .reduce((sum, handoff) => sum + handoff.bytes + OUTCOME_LINE_MAX, 0);
+  function intentBudget(intent, extraHash = null, extraOpenBytes = 0) {
+    const openBytes =
+      [...intent.handoffs.values()]
+        .filter(isOpen)
+        .reduce((sum, handoff) => sum + handoff.bytes + OUTCOME_LINE_MAX, 0) +
+      (extraOpenBytes ? extraOpenBytes + OUTCOME_LINE_MAX : 0);
     return (
       snapshotBytes(intent, extraHash) +
       TERMINAL_LINE_MAX +
@@ -970,12 +999,18 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     );
   }
 
-  // The budget (null: not checked) and the owed bytes once `record` is
-  // applied, for (1) and (2).
+  // The budget before and after `record` is applied, and the owed bytes
+  // after, for (1) and (2).
   function admission(record) {
     const intent = intents.get(record.intent_id);
+    const budgetBefore = budget();
     if (record.type === 'handoff') {
-      return { budgetAfter: null, owedAfter: owed() + OUTCOME_LINE_MAX };
+      return {
+        budgetBefore,
+        budgetAfter:
+          budgetBefore - intentBudget(intent) + intentBudget(intent, null, lineBytes(record)),
+        owedAfter: owed() + OUTCOME_LINE_MAX,
+      };
     }
     const entry = {
       hash: record.hash,
@@ -987,7 +1022,8 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     };
     if (record.via === 'replacement') {
       return {
-        budgetAfter: budget() - intentBudget(intent) + intentBudget(intent, entry),
+        budgetBefore,
+        budgetAfter: budgetBefore - intentBudget(intent) + intentBudget(intent, entry),
         owedAfter: owed(),
       };
     }
@@ -1004,14 +1040,19 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       summary: { count: 0, possiblySent: false },
     };
     return {
-      budgetAfter: budget() + intentBudget(fresh),
+      budgetBefore,
+      budgetAfter: budgetBefore + intentBudget(fresh),
       owedAfter: owed() + TERMINAL_LINE_MAX,
     };
   }
 
   async function admit(record) {
-    const { budgetAfter, owedAfter } = admission(record);
-    if (budgetAfter !== null && budgetAfter > limits.journalBytes) throw storeFull();
+    const { budgetBefore, budgetAfter, owedAfter } = admission(record);
+    // A line that grows the budget past the limit is refused: a new intent,
+    // a replacement, or an extra open handoff that would spend another
+    // held intent's reserved pair. A first handoff spends its own intent's
+    // pair and doesn't grow the budget.
+    if (budgetAfter > limits.journalBytes && budgetAfter > budgetBefore) throw storeFull();
     const fits = () => journal.size + lineBytes(record) + owedAfter <= limits.journalBytes;
     if (fits()) return;
     try {
@@ -1169,11 +1210,15 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     /**
      * Commit a signed transaction of an intent: its first (`via:
      * 'original'`, with its `context`) or a replacement at its nonce.
-     * Resolves once the record is on disk; only then may the bytes go to a
-     * broadcaster (after a handoff).
+     * Resolves once the record is on disk, with the intent; only then may
+     * the bytes go to a broadcaster (after a handoff).
+     *
+     * The store names a new intent itself (a random UUID, in the result's
+     * `intentId`), so no caller can bring back an id that was closed, even
+     * after its tombstone is gone. A replacement names a held intent.
      *
      * @param {object} commit
-     * @param {string} commit.intentId
+     * @param {string} [commit.intentId] a replacement's intent; none for an original
      * @param {number} commit.chainId
      * @param {string} commit.sender
      * @param {number} commit.nonce
@@ -1183,8 +1228,11 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
      * @param {{ kind: string, origin?: string, key?: string, walletIndex?: number }} [commit.context]
      */
     async commit({ intentId, chainId, sender, nonce, hash, raw, via, context }) {
+      if (via === 'original' && intentId !== undefined) {
+        throw invalid('the store names a new intent: commit an original without an intentId');
+      }
       const record = stamp('commit', {
-        intent_id: intentId,
+        intent_id: via === 'original' ? crypto.randomUUID() : intentId,
         chain_id: chainId,
         sender: typeof sender === 'string' ? sender.toLowerCase() : sender,
         nonce,
@@ -1228,8 +1276,10 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     },
 
     /**
-     * Record how a handoff ended. Never refused for space, and for a settled
-     * or voided intent ignored: nothing is written.
+     * Record how a handoff ended. Never refused for space. An outcome the
+     * store no longer owes is ignored, nothing written: for a settled,
+     * voided or forgotten intent (null then), or for a handoff already
+     * finished or folded into the summary.
      *
      * @param {object} result
      * @param {string} result.intentId
@@ -1240,18 +1290,18 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
      */
     async outcome({ intentId, handoffId, outcome, source, reasonClass }) {
       await load();
-      const intent = requireIntent(intentId);
-      const handoff = intent.handoffs.get(handoffId);
-      if (intent.state === 'held' && !handoff) throw invalid(`unknown handoff ${handoffId}`);
+      const intent = intents.get(intentId);
+      const handoff = intent?.handoffs.get(handoffId);
       const record = stamp('outcome', {
         intent_id: intentId,
-        hash: handoff?.hash ?? intent.hashes[intent.hashes.length - 1]?.hash ?? null,
+        hash: handoff?.hash ?? null,
         handoff_id: handoffId,
         outcome,
         source: isOutcomeText(source, 'source') ? source : null,
         reason_class: isOutcomeText(reasonClass, 'reason_class') ? reasonClass : null,
       });
-      return view(await write(record, null));
+      const written = await write(record, null);
+      return written ? view(written) : null;
     },
 
     /**
