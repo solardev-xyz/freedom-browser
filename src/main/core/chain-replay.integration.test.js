@@ -28,8 +28,9 @@
  * (fc-chain's replay runs them on a virtual clock), and neither are those
  * calling with router options `chain.request` doesn't carry. Both are
  * counted. Real time also costs what the reference's instant didn't: a
- * scenario whose quorum runs out of its interactive budget moving 16 MiB
- * answers (THROUGHPUT_BOUND) is reported, not failed. Settle times,
+ * scenario whose budgets run out moving 16 MiB answers (THROUGHPUT_BOUND)
+ * is reported, not failed, when its result is exactly the router's for
+ * that (`throughputCut`). Settle times,
  * request ledgers and state tables are the machine replay's: here they are
  * reported, not asserted.
  *
@@ -427,12 +428,71 @@ class Ledger {
  * executors and the core takes real time against an interactive read's 2 s
  * budget: three 16 MiB `html()` answers, each read, sent in fragments and
  * decoded, where the reference's arrived in one virtual instant. On a slow
- * build or a busy machine the quorum is cut and Direct answers; that is
- * reported, not failed (a release core on an idle machine agrees in about
- * 1.4 s).
+ * build or a busy machine the quorum is cut and Direct answers, or, slower
+ * still, every member's own 5 s runs out; those two outcomes, exactly
+ * (`throughputCut`), are reported, not failed. They run first, alone (a
+ * release core on an idle machine agrees in about 1.4 s).
  */
 const THROUGHPUT_BOUND = new Set(['boundary-html-8mib-through-quorum']);
 const INTERACTIVE_BUDGET_MS = 2000;
+
+/** Each quorum member's own budget in that scenario: its chain's
+ * configured timeout, as Direct comes next. */
+const MEMBER_BUDGET_MS = 5000;
+/** The router's error when every member ran out of it before answering:
+ * the quorum asked every endpoint, so Direct has none left. */
+const EVERY_MEMBER_TIMED_OUT =
+  'All chain sources failed for eth_call (quorum: RPC quorum did not reach 2 matching ' +
+  'responses; direct: All RPC endpoints failed)';
+
+/** Which of the router's budget outcomes a read cut by its I/O's real time
+ * gave, exactly, or null: Direct's fallback past the interactive budget,
+ * or every member's own timeout past theirs. */
+function throughputCut(got, want) {
+  if (directFallback(got, want)) return 'Direct answered';
+  if (everyMemberTimedOut(got)) return 'every member timed out';
+  return null;
+}
+
+/** Whether a read that ran past its members' own budget failed exactly as
+ * the router does when none of them answered in time. */
+function everyMemberTimedOut(got) {
+  if (got.ok || !(got.elapsed > MEMBER_BUDGET_MS)) return false;
+  const failure = { class: 'Error', name: 'Error', message: EVERY_MEMBER_TIMED_OUT, props: {} };
+  return canon(outcomeOf(got)) === canon({ thrown: failure });
+}
+
+/**
+ * Whether a read that ran past its interactive budget gave exactly what the
+ * router gives when that budget cuts its quorum: Direct reusing the answer
+ * that crossed first (its `directFallback`), unverified, with the round's
+ * evidence. Nothing else may differ from the reference's quorum result:
+ * the result's bytes, the keys and their order, the members asked, k and
+ * m. Only the one answer that crossed agreed, so none dissented.
+ */
+function directFallback(got, want) {
+  const value = got.value;
+  const wanted = want.value;
+  if (!value || !wanted?.trust || !(got.elapsed > INTERACTIVE_BUDGET_MS)) return false;
+  const { queried, quorum } = wanted.trust;
+  const crossed = Array.isArray(value.trust?.agreed) ? value.trust.agreed[0] : undefined;
+  if (!queried.includes(crossed)) return false;
+  const fallback = {
+    result: wanted.result,
+    source: 'direct',
+    verified: false,
+    trust: {
+      level: 'unverified',
+      method: 'direct',
+      block: null,
+      agreed: [crossed],
+      dissented: [],
+      queried,
+      quorum: { k: quorum.k, m: quorum.m, achieved: false },
+    },
+  };
+  return canon(value) === canon(fallback);
+}
 
 /** A broadcast that fails throws today's error tagged with its outcome
  * (deviation `broadcast-outcome`): `rejected` where every node it reached
@@ -645,15 +705,13 @@ async function replay(scenario) {
           return;
         }
         const problem = difference(outcomeOf(got), want);
-        // Its I/O took real time the reference's instant didn't have: past
-        // the interactive budget, the quorum is cut and Direct answers.
-        if (
-          problem &&
-          THROUGHPUT_BOUND.has(scenario.id) &&
-          got.elapsed > INTERACTIVE_BUDGET_MS &&
-          got.value?.source === 'direct'
-        ) {
-          outcome.throughput.push(`step ${index} call ${i} (${Math.round(got.elapsed)} ms)`);
+        // Its I/O took real time the reference's instant didn't have, and
+        // the router's own budgets ran out: one of their outcomes exactly.
+        const cut = problem && THROUGHPUT_BOUND.has(scenario.id) ? throughputCut(got, want) : null;
+        if (cut) {
+          outcome.throughput.push(
+            `step ${index} call ${i} (${Math.round(got.elapsed)} ms, ${cut})`
+          );
         } else if (problem) {
           outcome.mismatches.push(`step ${index} call ${i}: ${problem}`);
         }
@@ -732,7 +790,114 @@ async function pool(items, limit, task) {
   return results;
 }
 
+// Review of #698 (parity): the throughput exception admits exactly what the
+// router's own budgets give (Direct's fallback, or every member's timeout),
+// and nothing else. Values only: no core needed.
+describe('a read cut by its interactive budget', () => {
+  const html = `0x${'61'.repeat(64)}`;
+  const want = {
+    value: {
+      result: html,
+      source: 'quorum',
+      verified: true,
+      trust: {
+        level: 'verified',
+        method: 'quorum',
+        block: null,
+        agreed: ['a.example', 'b.example'],
+        dissented: [],
+        queried: ['a.example', 'b.example', 'c.example'],
+        quorum: { k: 3, m: 2, achieved: true },
+      },
+    },
+  };
+  const cut = (overrides = {}, trust = {}) => ({
+    ok: true,
+    elapsed: 3400,
+    value: {
+      result: html,
+      source: 'direct',
+      verified: false,
+      trust: {
+        level: 'unverified',
+        method: 'direct',
+        block: null,
+        agreed: ['a.example'],
+        dissented: [],
+        queried: ['a.example', 'b.example', 'c.example'],
+        quorum: { k: 3, m: 2, achieved: false },
+        ...trust,
+      },
+      ...overrides,
+    },
+  });
+
+  test("is admitted only as the router's Direct fallback, unchanged", () => {
+    expect(directFallback(cut(), want)).toBe(true);
+    // Another member's answer crossed first: the same fallback.
+    expect(directFallback(cut({}, { agreed: ['c.example'] }), want)).toBe(true);
+  });
+
+  test.each([
+    ['a corrupted result', cut({ result: '0xdead' })],
+    ['one byte off', cut({ result: `${html.slice(0, -1)}2` })],
+    ['verified', cut({ verified: true })],
+    ['another source', cut({ source: 'quorum' })],
+    ['a trust of another shape', cut({ trust: { wrong: true } })],
+    ['a member that dissented', cut({}, { dissented: ['b.example'] })],
+    ['an endpoint never asked', cut({}, { agreed: ['x.example'] })],
+    ['an achieved quorum', cut({}, { quorum: { k: 3, m: 2, achieved: true } })],
+    ['keys in another order', { ...cut(), value: { source: 'direct', ...cut().value } }],
+    ['within the budget', { ...cut(), elapsed: 1500 }],
+    ['a failure', { ok: false, elapsed: 3400, error: new Error('x') }],
+  ])('is refused with %s', (_name, got) => {
+    expect(directFallback(got, want)).toBe(false);
+    expect(throughputCut(got, want)).toBeNull();
+  });
+
+  // Slower still: every member's own budget ran out before it answered.
+  const timedOut = (error, elapsed = 8500) => ({ ok: false, elapsed, error });
+  test("every member's timeout is admitted only as the router's own error", () => {
+    expect(throughputCut(timedOut(new Error(EVERY_MEMBER_TIMED_OUT)), want)).toBe(
+      'every member timed out'
+    );
+    expect(throughputCut(cut(), want)).toBe('Direct answered');
+    for (const got of [
+      timedOut(new Error(EVERY_MEMBER_TIMED_OUT), 4000),
+      timedOut(new Error(`${EVERY_MEMBER_TIMED_OUT}.`)),
+      timedOut(new TypeError(EVERY_MEMBER_TIMED_OUT)),
+      timedOut(Object.assign(new Error(EVERY_MEMBER_TIMED_OUT), { code: -32000 })),
+      timedOut(
+        new Error('All chain sources failed for eth_call (quorum: RPC quorum needs 2 endpoints)')
+      ),
+    ]) {
+      expect(throughputCut(got, want)).toBeNull();
+    }
+  });
+});
+
 describeIfReplay("chain data's replay through main's drivers and the real freedom-cored", () => {
+  // The reviewer's probe: a corrupted result that settles past the budget,
+  // from Direct, fails the scenario.
+  test('a corrupted result past the interactive budget is a mismatch, not a cut', async () => {
+    const { scenarios } = JSON.parse(fs.readFileSync(vectors, 'utf8'));
+    const scenario = scenarios.find((s) => s.id === 'boundary-html-8mib-through-quorum');
+    const published = jest
+      .spyOn(ChainDriver.prototype, 'published')
+      .mockImplementation(async () => {
+        await sleep(INTERACTIVE_BUDGET_MS + 100);
+        return { result: '0xdead', source: 'direct', verified: true, trust: { wrong: true } };
+      });
+    let outcome;
+    try {
+      outcome = await replay(scenario);
+    } finally {
+      published.mockRestore();
+    }
+    expect(outcome.throughput).toEqual([]);
+    expect(outcome.mismatches).toHaveLength(scenario.steps.length);
+  }, 60_000);
+
   test(
     "every replayable scenario gives the router's result, or its deviation's",
     async () => {
@@ -748,7 +913,16 @@ describeIfReplay("chain data's replay through main's drivers and the real freedo
         else runnable.push(scenario);
       }
       runnable.sort((a, b) => duration(b) - duration(a));
-      const outcomes = await pool(runnable, CONCURRENCY, replay);
+      // The scenarios bound by throughput go first, alone, then the rest.
+      const alone = runnable.filter((s) => THROUGHPUT_BOUND.has(s.id));
+      const outcomes = [
+        ...(await pool(alone, 1, replay)),
+        ...(await pool(
+          runnable.filter((s) => !THROUGHPUT_BOUND.has(s.id)),
+          CONCURRENCY,
+          replay
+        )),
+      ];
       const failures = outcomes.filter((o) => o.mismatches.length > 0);
       const cut = outcomes.filter((o) => o.mismatches.length === 0 && o.throughput.length > 0);
       const shapes = outcomes.filter((o) => o.ledger.colibriShapes.length > 0);
@@ -771,7 +945,7 @@ describeIfReplay("chain data's replay through main's drivers and the real freedo
         ),
         ...failures.map((o) => `== ${o.id}\n${o.mismatches.join('\n')}`),
         ...cut.map(
-          (o) => `-- ${o.id}: its quorum's budget ran out moving the answers: ${o.throughput}`
+          (o) => `-- ${o.id}: its budgets ran out moving the answers: ${o.throughput.join(', ')}`
         ),
         ...extra.map(
           (o) => `-- ${o.id} requests the reference never made: ${o.ledger.extra.join('; ')}`
