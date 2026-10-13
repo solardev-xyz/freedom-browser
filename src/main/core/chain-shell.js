@@ -20,7 +20,7 @@
 
 const dns = require('node:dns');
 const { ShellError } = require('./core-client');
-const { fetchLoop, makeHop, withDeadline, isOk } = require('./naming-shell');
+const { fetchLoop, makeHop, withDeadline, isOk, redirectAllowed } = require('./naming-shell');
 const { validateRpcUrl } = require('../networks/network-registry');
 const {
   BlockscoutError,
@@ -166,8 +166,8 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
  */
 function registerChainShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
-  // A redirect's DNS check: the lookups a cancel or a deadline left running
-  // keep their slots until they settle.
+  // A redirect's DNS check (RPC and Blockscout): the lookups a cancel or a
+  // deadline left running keep their slots until they settle.
   const lookup = boundLookups(deps.lookup || dns.promises.lookup);
   // The URL behind a request's reference while the request runs under its
   // chain's current generation (one main hasn't seen yet is newer, never
@@ -183,7 +183,8 @@ function registerChainShell(client, config, deps = {}) {
   };
 
   // One exchange, as today's router makes it: no 429 back-off and no
-  // repeated attempts; redirects as naming's (deviation `rpc-redirects`).
+  // repeated attempts; redirects as naming's (deviation `rpc-redirects`),
+  // off the endpoint's origin never to this machine or its networks.
   client.handle(
     'shell.rpc',
     chainHandler(async (params, { signal, charge }) => {
@@ -193,6 +194,7 @@ function registerChainShell(client, config, deps = {}) {
       if (params.policy !== 'plain' || typeof params.body !== 'string' || max === null) {
         throw new ShellError('refused');
       }
+      const origin = new URL(url).origin;
       let hops = 0;
       try {
         const response = await withDeadline(params, signal, (within) =>
@@ -201,7 +203,7 @@ function registerChainShell(client, config, deps = {}) {
               hops += 1;
               return hop(target, options);
             },
-            allowed: (location) => validateRpcUrl(location) === null,
+            allowed: (location) => redirectAllowed(location, origin, { lookup, signal: within }),
             signal: within,
             plain: true,
             // A non-2xx answer is `HTTP <status>`, its body unread.

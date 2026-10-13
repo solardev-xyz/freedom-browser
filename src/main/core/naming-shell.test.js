@@ -1,12 +1,14 @@
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const { OnionGateRefusal } = require('../ipfs/onion-gate');
+const { LookupsExhausted } = require('../networks/blockscout-logs');
 const {
   registerNamingShell,
   unlessAborted,
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  redirectAllowed,
   isOk,
   MAX_ATTEMPTS,
   MAX_ABANDONED,
@@ -224,6 +226,88 @@ describe("main's FetchRequest loop matches ethers'", () => {
     const main = await viaLoop(answers, [], (url) => !url.includes('10.0.0.1'));
     expect(main.calls).toHaveLength(1);
     expect(main.outcome).toEqual({ error: 'refused' });
+  });
+});
+
+// Review of #692 (security, M2): an endpoint the user configured doesn't
+// make a redirect target one.
+describe("an RPC redirect's target", () => {
+  const PUBLIC = [{ address: '104.18.12.34', family: 4 }];
+  const check = (location, origin, lookup = jest.fn(async () => PUBLIC), signal) =>
+    redirectAllowed(location, origin, { lookup, signal });
+
+  test("on the configured endpoint's origin, as a node the user runs redirects within itself", async () => {
+    const lookup = jest.fn();
+    expect(await check('http://127.0.0.1:8545/rpc', 'http://127.0.0.1:8545', lookup)).toBe(true);
+    expect(await check('http://localhost:8545/v2', 'http://localhost:8545', lookup)).toBe(true);
+    expect(await check('https://a.rpc.example/v2', 'https://a.rpc.example', lookup)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['another loopback port', 'http://127.0.0.1:9443/admin', 'http://127.0.0.1:8545'],
+    ['loopback, from a public host', 'https://127.0.0.1:9443/admin', 'https://public.example'],
+    ['a shorthand loopback', 'https://127.1/', 'https://public.example'],
+    ['IPv6 loopback', 'https://[::1]/', 'https://public.example'],
+    ['mapped loopback', 'https://[::ffff:127.0.0.1]/', 'https://public.example'],
+    ['localhost', 'https://localhost/', 'https://public.example'],
+    ['a .localhost name', 'https://wallet.localhost/', 'https://public.example'],
+    ['a private address', 'https://192.168.1.1/', 'https://public.example'],
+    ['a link-local address', 'https://169.254.169.254/', 'https://public.example'],
+    ['plain http', 'http://b.rpc.example/', 'https://a.rpc.example'],
+  ])('off its origin, %s is refused unresolved', async (_name, location, origin) => {
+    const lookup = jest.fn(async () => PUBLIC);
+    expect(await check(location, origin, lookup)).toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('a clearnet name off its origin is followed only once it resolves to no local address', async () => {
+    const local = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    expect(await check('https://rebind.example/', 'https://a.rpc.example', local)).toBe(false);
+    expect(local).toHaveBeenCalledWith('rebind.example', { all: true, verbatim: true });
+    const mixed = jest.fn(async () => [...PUBLIC, { address: '10.1.2.3', family: 4 }]);
+    expect(await check('https://mixed.example/', 'https://a.rpc.example', mixed)).toBe(false);
+    const failing = jest.fn(async () => {
+      throw new Error('ENOTFOUND');
+    });
+    expect(await check('https://nowhere.example/', 'https://a.rpc.example', failing)).toBe(false);
+    expect(await check('https://b.rpc.example/', 'https://a.rpc.example')).toBe(true);
+    // A public address literal needs no lookup.
+    const lookup = jest.fn();
+    expect(await check('https://8.8.8.8/', 'https://a.rpc.example', lookup)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('an .onion name goes to the onion gate, never to the system resolver', async () => {
+    const lookup = jest.fn(async () => PUBLIC);
+    for (const location of [
+      'https://next.onion/',
+      'https://NEXT.ONION../',
+      'https://next%2eonion/',
+    ]) {
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+    }
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('its lookup ends with the exchange, and past the lookup bound it is busy', async () => {
+    const cancel = new AbortController();
+    const pending = check(
+      'https://slow.example/',
+      'https://a.rpc.example',
+      jest.fn(() => new Promise(() => {})),
+      cancel.signal
+    ).catch((e) => e);
+    cancel.abort();
+    expect(await pending).toBeInstanceOf(Error);
+    const exhausted = jest.fn(async () => {
+      throw new LookupsExhausted();
+    });
+    await expect(
+      check('https://b.rpc.example/', 'https://a.rpc.example', exhausted)
+    ).rejects.toMatchObject({
+      code: 'busy',
+    });
   });
 });
 
@@ -525,6 +609,38 @@ describe('the executors', () => {
     expect(hop).not.toHaveBeenCalled();
     await call('shell.rpc', { endpoint: 'e1', body: BODY, generations: { ens: 3 } });
     expect(hop).toHaveBeenCalledTimes(1);
+  });
+
+  test("a redirect off the endpoint's origin to a local one is refused, before it is dialled", async () => {
+    const lookup = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    for (const location of ['http://127.0.0.1:9443/admin', 'https://rebind.example/']) {
+      const hop = jest.fn(async () => ({
+        status: 307,
+        headers: { location },
+        body: Buffer.alloc(0),
+      }));
+      const { call } = setUp({ hop, lookup });
+      await expect(
+        call('shell.rpc', { endpoint: 'e3', body: BODY, generations: { ens: 2 } })
+      ).rejects.toMatchObject({ code: 'refused' });
+      expect(hop).toHaveBeenCalledTimes(1);
+    }
+    // Within the node's own origin, it is followed.
+    const hop = jest
+      .fn()
+      .mockResolvedValueOnce({
+        status: 307,
+        headers: { location: 'http://127.0.0.1:8545/rpc' },
+        body: Buffer.alloc(0),
+      })
+      .mockResolvedValueOnce({ status: 200, headers: {}, body: Buffer.from('{}') });
+    const { call } = setUp({ hop, lookup });
+    await call('shell.rpc', { endpoint: 'e3', body: BODY, generations: { ens: 2 } });
+    expect(hop.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:8545',
+      'http://127.0.0.1:8545/rpc',
+    ]);
+    expect(lookup).toHaveBeenCalledTimes(1);
   });
 
   test('the first RPC hop meets the endpoint policy too', async () => {

@@ -9,11 +9,19 @@
  * cancelled, stale_generation): none carries a URL or a server's text.
  */
 
+const dns = require('node:dns');
 const { isIP } = require('net');
 const { ShellError } = require('./core-client');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { OnionGateRefusal } = require('../ipfs/onion-gate');
 const { validateRpcUrl } = require('../networks/network-registry');
+const {
+  LookupsExhausted,
+  boundLookups,
+  isLocalHostname,
+  isOnionName,
+  resolvesToLocalAddress,
+} = require('../networks/blockscout-logs');
 const { prefetchGatewayUrl } = require('../ens-prefetch');
 
 // ethers' FetchRequest (6.17.0): at most 12 attempts, a 250 ms back-off
@@ -235,8 +243,8 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
  * `250 × trunc(r × 2^attempt)` ms, or a positive integer Retry-After read as
  * milliseconds; the exchange's 300 s checked before each attempt's wait.
  *
- * Main adds one rule (deviation `rpc-redirects`): a hop the endpoint policy
- * refuses ends the exchange as `refused`.
+ * Main adds one rule (deviation `rpc-redirects`): a hop `allowed` refuses
+ * (`redirectAllowed`) ends the exchange as `refused`.
  *
  * `plain` is chain data's policy (design 0005, Transport): no back-off, so
  * a 429 is the answer, as today's router has it; redirects are followed as
@@ -272,7 +280,7 @@ async function fetchLoop(url, body, deps) {
       const current = url.split(':')[0].toLowerCase();
       const target = location.split(':')[0].toLowerCase();
       if ((current === 'https' && target === 'http') || !/^https?:/.test(location)) return response;
-      if (!allowed(location)) throw new ShellError('refused');
+      if (!(await allowed(location))) throw new ShellError('refused');
       url = location;
       delay = 0;
       last = response;
@@ -288,6 +296,36 @@ async function fetchLoop(url, body, deps) {
       continue;
     }
     return response;
+  }
+}
+
+/**
+ * Whether an RPC exchange may follow a redirect to `location` (deviation
+ * `rpc-redirects`). That the endpoint policy would take the URL as an
+ * endpoint isn't enough: it admits loopback, for a node the user runs, and
+ * the user configured the endpoint, not the target.
+ * - On the configured endpoint's `origin`, the policy suffices: a node the
+ *   user runs may redirect within itself.
+ * - Off it, never to this machine or its networks: no local name or
+ *   address literal, and a clearnet name only once it resolves to no local
+ *   address (blockscout-logs.js's checks; not pinned against rebinding). An
+ *   `.onion` name isn't resolved: the onion gate decides, before any lookup.
+ *
+ * A lookup cut short by `signal` throws its abort; past the lookup bound,
+ * the hop is `busy`.
+ */
+async function redirectAllowed(location, origin, { lookup, signal }) {
+  if (validateRpcUrl(location) !== null) return false;
+  const target = new URL(location);
+  if (target.origin === origin) return true;
+  if (isLocalHostname(target.hostname)) return false;
+  if (isOnionName(target.hostname)) return true;
+  try {
+    return !(await resolvesToLocalAddress(target.hostname, { lookup, signal }));
+  } catch (err) {
+    if (err instanceof LookupsExhausted) throw new ShellError('busy');
+    if (signal?.aborted) throw err;
+    return false;
   }
 }
 
@@ -346,10 +384,12 @@ function answer({ status, body }) {
  * @param {import('./core-client').CoreClient} client
  * @param {import('./naming-config').NamingConfig} config - references and
  *   the current generations
- * @param {object} [deps] - test seams: hop, prefetch, now, random, wait
+ * @param {object} [deps] - test seams: hop, lookup, prefetch, now, random, wait
  */
 function registerNamingShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
+  // A redirect's DNS check, its lookups bounded while they run.
+  const lookup = boundLookups(deps.lookup || dns.promises.lookup);
   const prefetch = deps.prefetch || prefetchGatewayUrl;
   // Prefetches replied to while their own work (a proxy lookup) hadn't
   // ended: past MAX_ABANDONED, a new one is skipped, as it's only a warm-up.
@@ -374,11 +414,12 @@ function registerNamingShell(client, config, deps = {}) {
     // Every hop meets the endpoint policy, the first one too.
     if (validateRpcUrl(url) !== null) throw new ShellError('refused');
     if (typeof params.body !== 'string') throw new ShellError('refused');
+    const origin = new URL(url).origin;
     return withDeadline(params, signal, (within) =>
       fetchLoop(url, params.body, {
         hop,
         signal: within,
-        allowed: (location) => validateRpcUrl(location) === null,
+        allowed: (location) => redirectAllowed(location, origin, { lookup, signal: within }),
         now: deps.now,
         random: deps.random,
         wait: deps.wait,
@@ -480,6 +521,7 @@ module.exports = {
   fetchLoop,
   makeHop,
   gatewayAllowed,
+  redirectAllowed,
   isOk,
   MAX_ATTEMPTS,
   SLOT_INTERVAL_MS,

@@ -84,8 +84,9 @@ const LARGE = `0x${'ab'.repeat(1.5 * MIB)}`;
 
 /**
  * A local JSON-RPC node. `/` answers by method; `/redirect` is a 307 to
- * `/` (an absolute location, which naming's rule follows); `/limited` a
- * 429; `/reset` drops the connection. Every request is recorded.
+ * `/` (an absolute location, which naming's rule follows); `/away?to=…` a
+ * 307 to `to`; `/limited` a 429; `/reset` drops the connection. Every
+ * request is recorded.
  */
 async function node() {
   const seen = [];
@@ -98,6 +99,11 @@ async function node() {
       seen.push({ method: req.method, url: req.url, type: req.headers['content-type'], body });
       if (req.url === '/redirect') {
         res.writeHead(307, { location: `http://${req.headers.host}/` }).end();
+        return;
+      }
+      if (req.url.startsWith('/away?')) {
+        const to = new URL(req.url, 'http://node').searchParams.get('to');
+        res.writeHead(307, { location: to }).end();
         return;
       }
       if (req.url === '/limited') {
@@ -286,6 +292,26 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       'eth_getTransactionByHash',
     ]);
     expect(JSON.parse(rpc.seen[0].body).params).toEqual([RAW]);
+  });
+
+  // Review of #692 (security, M2): the node behind another loopback port is
+  // no endpoint the user configured.
+  test('a redirect to another loopback port is refused: that node never sees the transaction', async () => {
+    const other = await node();
+    try {
+      const { call, main } = await start();
+      const away = `${rpc.base}/away?to=${encodeURIComponent(`${other.base}/admin`)}`;
+      main.refs.set('e1', away);
+      await main.configure(snapshot({ rpc: [{ endpoint: 'e1', user_configured: true }] }));
+      const outcome = await call('chain.broadcast', { chain_id: 1, raw: RAW, deadline_ms: 30_000 });
+      // The configured node had the bytes; the redirect was refused, so it
+      // stays uncertain.
+      expect(outcome).toMatchObject({ hash: HASH, outcome: 'uncertain' });
+      expect(other.seen).toEqual([]);
+      expect(JSON.parse(rpc.seen[0].body)).toMatchObject({ method: 'eth_sendRawTransaction' });
+    } finally {
+      await other.close();
+    }
   });
 
   test('the core takes not_sent and transport failures, and serves on', async () => {

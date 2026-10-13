@@ -173,6 +173,42 @@ describe('shell.rpc', () => {
     }
   });
 
+  // Review of #692 (security, M2): what the endpoint policy takes as an
+  // endpoint isn't a redirect target main may dial.
+  test.each([
+    ['another loopback port', 'e3', 'http://127.0.0.1:9443/admin', null],
+    ['loopback, from a public host', 'e1', 'https://127.0.0.1:9443/admin', null],
+    ['a name resolving to loopback', 'e1', 'https://rebind.example/', '127.0.0.1'],
+    ['a name resolving to a LAN', 'e1', 'https://intranet.example/', '192.168.1.10'],
+  ])(
+    "a redirect off the endpoint's origin to %s is refused before it is dialled",
+    async (_name, endpoint, location, resolved) => {
+      const hop = jest.fn(async () => answer(307, '', { location }));
+      const lookup = jest.fn(async () => [{ address: resolved ?? '104.18.12.34', family: 4 }]);
+      const { call } = setUp({ hop, lookup });
+      expect(await failure(call('shell.rpc', rpc({ endpoint })))).toBe('refused');
+      expect(hop).toHaveBeenCalledTimes(1);
+      expect(lookup).toHaveBeenCalledTimes(resolved ? 1 : 0);
+    }
+  );
+
+  test('a node the user runs may redirect within its own origin', async () => {
+    const hop = jest
+      .fn()
+      .mockResolvedValueOnce(answer(308, '', { location: 'http://127.0.0.1:8545/rpc' }))
+      .mockResolvedValueOnce(answer(200, 'ok'));
+    const { call, lookup } = setUp({ hop });
+    expect(await call('shell.rpc', rpc({ endpoint: 'e3' }))).toEqual({
+      status: 200,
+      body: base64('ok'),
+    });
+    expect(hop.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:8545',
+      'http://127.0.0.1:8545/rpc',
+    ]);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   test('main performs nothing for a stale generation or an unknown reference: not_sent', async () => {
     const { call, hop } = setUp();
     for (const params of [
