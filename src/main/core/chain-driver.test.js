@@ -15,6 +15,7 @@ const {
   TOO_LARGE,
 } = require('./chain-driver');
 const { BroadcastRecords } = require('./chain-broadcasts');
+const { JsonParams } = require('./core-client');
 const { MAX_PAYLOAD } = require('./frame');
 
 const RAW =
@@ -78,14 +79,21 @@ function setUp(answer, { now = () => 0 } = {}) {
   const client = {
     whenReady: jest.fn(async () => ({})),
     serves: jest.fn((of) => of === gen && config.core !== null),
-    requestTo: jest.fn(async (to, method, params, context, options) => {
+    written: [], // [method, params] as they went
+    // As the real client: the fence is checked last, once the params are
+    // encoded, before anything is written.
+    requestTo: jest.fn(async (to, method, raw, context, options) => {
       expect(to).toBe(gen);
-      return answer(method, params, client.requestTo.mock.calls.length, options);
+      const json = raw instanceof JsonParams ? raw.json : JSON.stringify(raw);
+      if (options?.fence && !options.fence()) throw coreError('fenced', 'Fenced');
+      const params = JSON.parse(json);
+      client.written.push([method, params]);
+      return answer(method, params, client.written.length, options);
     }),
   };
   const broadcasts = new BroadcastRecords();
   const driver = new ChainDriver({ client, config, broadcasts, now });
-  const sent = () => client.requestTo.mock.calls.map(([, method, params]) => [method, params]);
+  const sent = () => client.written;
   return { driver, client, config, gen, broadcasts, sent };
 }
 
@@ -159,7 +167,11 @@ describe('reads', () => {
     // The core's deadline and the watchdog's agree; chrome's context.
     const [, , , context, options] = client.requestTo.mock.calls[0];
     expect(context).toBeUndefined();
-    expect(options).toEqual({ watchdogMs: DEADLINE_MS + WATCHDOG_MARGIN_MS, signal: undefined });
+    expect(options).toEqual({
+      watchdogMs: DEADLINE_MS + WATCHDOG_MARGIN_MS,
+      fence: expect.any(Function),
+      signal: undefined,
+    });
   });
 
   test('the result as the router returned it: an undefined `result` comes back first', async () => {
@@ -598,5 +610,124 @@ describe('broadcasts', () => {
       outcome: 'not_sent',
     });
     expect(sent()).toEqual([]);
+  });
+});
+
+// Review of #698 (drivers): a control main asked for before a request is
+// written goes first, whatever runs in between: the microtask after the
+// last wait, or the caller's own code while its params are serialized.
+describe("the configuration barrier, with main's real configuration", () => {
+  const { EventEmitter } = require('events');
+  const { ChainConfig } = require('./chain-config');
+
+  /** A client playing the real one's order: the params are encoded (the
+   * caller's code runs), then the fence is checked, then the request is
+   * written. A configure is held until `release()`. */
+  async function barrier() {
+    const client = new EventEmitter();
+    client.current = { id: 'process' };
+    client.hello = {};
+    client.written = []; // [method, controls pending as it went]
+    client.serves = (gen) => gen === client.current;
+    client.whenReady = async () => client.hello;
+    let generation = 0;
+    let hold = false;
+    let release = null;
+    client.requestTo = (gen, method, raw, context, options = {}) => {
+      const json = raw instanceof JsonParams ? raw.json : JSON.stringify(raw);
+      if (options.fence && !options.fence()) return Promise.reject(coreError('fenced', 'Fenced'));
+      client.written.push([method, config.core.pending]);
+      if (method === 'chain.configure') {
+        generation += 1;
+        const reply = { generations: { 1: generation } };
+        if (!hold) return Promise.resolve(reply);
+        return new Promise((resolve) => {
+          release = () => resolve(reply);
+        });
+      }
+      if (method === 'chain.broadcast') {
+        return Promise.resolve({ hash: HASH, source: 'direct', outcome: 'sent', generation });
+      }
+      return Promise.resolve({ ...read('0x1'), params: JSON.parse(json).params, generation });
+    };
+    const sources = {
+      registry: {
+        getAllNetworks: () => ({ 1: { name: 'Ethereum' } }),
+        getEndpoints: () => [],
+        getEndpointSources: () => [],
+        getEndpointSourceList: () => [],
+      },
+      myotis: { NETWORKS: new Map() },
+    };
+    const config = new ChainConfig({ client, sources, log: { warn() {} } });
+    await config.whenServing();
+    client.written.length = 0;
+    const driver = new ChainDriver({ client, config, broadcasts: new BroadcastRecords() });
+    // A settings change, held in flight.
+    const change = () => {
+      hold = true;
+      return config.configure();
+    };
+    return { client, config, driver, change, release: () => release() };
+  }
+
+  test.each([
+    ['a read', (driver) => driver.request(1, 'eth_blockNumber')],
+    ['a fee quote', (driver) => driver.feeQuote(1)],
+    ['a broadcast', (driver) => driver.broadcast(1, RAW)],
+  ])('%s waits for a control queued just after its last wait', async (_name, call) => {
+    const { client, config, driver, change, release } = await barrier();
+    // The reviewer's trigger: the control is queued in the microtask after
+    // the idle check that ended the request's wait.
+    const idle = config.idle.bind(config);
+    let armed = true;
+    let control;
+    config.idle = (gen) => {
+      const quiet = idle(gen);
+      if (quiet && armed) {
+        armed = false;
+        queueMicrotask(() => {
+          control = change();
+        });
+      }
+      return quiet;
+    };
+    const pending = call(driver);
+    await new Promise(setImmediate);
+    expect(client.written).toEqual([['chain.configure', 1]]);
+    release();
+    await control;
+    await pending;
+    // Then the request, once, with nothing in flight.
+    expect(client.written).toEqual([
+      ['chain.configure', 1],
+      [expect.stringMatching(/^chain\.(request|fee_quote|broadcast)$/), 0],
+    ]);
+  });
+
+  test("a control the caller's own code queues while its params are serialized goes first", async () => {
+    const { client, driver, change, release } = await barrier();
+    let serializations = 0;
+    let control;
+    const params = {
+      toJSON() {
+        serializations += 1;
+        control = change();
+        return [];
+      },
+    };
+    const pending = driver.request(1, 'eth_blockNumber', params);
+    await new Promise(setImmediate);
+    expect(client.written).toEqual([['chain.configure', 1]]);
+    release();
+    await control;
+    expect((await pending).result).toBe('0x1');
+    expect(client.written).toEqual([
+      ['chain.configure', 1],
+      ['chain.request', 0],
+    ]);
+    // Serialized once, before any fence: the size check and every attempt
+    // share it.
+    expect(serializations).toBe(1);
   });
 });

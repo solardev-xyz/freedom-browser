@@ -16,8 +16,11 @@
  * - a caller's abort cancels the request and throws the signal's reason,
  *   as the router's `throwIfAborted` did.
  *
- * **Fencing** (Generations): reads and fee quotes are sent and judged only
- * with no chain control in flight. One that a configuration change ended
+ * **Fencing** (Generations): every request is sent only with no chain
+ * control in flight, checked last, with nothing between the check and the
+ * write (the client's `fence`); its params are serialized once, before
+ * that, so no caller code runs in between. Reads and fee quotes are also
+ * judged only then. One that a configuration change ended
  * (`reconfigured`), or whose reply such a change overtook in the pipe, is
  * sent again once, within the caller's deadline.
  *
@@ -31,6 +34,7 @@
  */
 
 const { keccak256 } = require('ethers');
+const { JsonParams } = require('./core-client');
 const { MAX_PAYLOAD } = require('./frame');
 
 /** A call's overall deadline (design 0005, Deadlines): the core's bound. */
@@ -54,6 +58,8 @@ const DEADLINE = "The chain request's deadline passed";
 const RECONFIGURED = "The chain's configuration changed";
 /** A request over one frame (deviation `request-size`). */
 const TOO_LARGE = 'The chain request is too large';
+/** A request JSON can't carry (a function, a cycle), as the client says. */
+const NOT_SERIALIZABLE = 'Request is not serializable';
 
 /** The router's error classes, which main rebuilds the core's errors as:
  * their own properties (`name` among them) come from the reply. */
@@ -92,23 +98,30 @@ function wireChainId(chainId) {
   return Number.isSafeInteger(id) && id >= 0 && String(id) === String(chainId) ? id : null;
 }
 
+/** A request's params as JSON text, serialized once, before any fence: the
+ * caller's own code (a getter, a `toJSON`) runs here, never between the
+ * last fence and the write. `deadline_ms` goes last, per attempt. */
+function serialized(payload) {
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    throw new Error(NOT_SERIALIZABLE);
+  }
+}
+
+/** One attempt's params: the serialized payload with what is left of the
+ * deadline. */
+const attemptParams = (head, deadlineMs) =>
+  new JsonParams(`${head.slice(0, -1)},"deadline_ms":${deadlineMs}}`);
+
 /** Whether a request would take more than one frame (deviation
  * `request-size`), measured as the client frames it, with the widest ID
- * and deadline. One that can't be serialized is the client's to refuse. */
-function oversized(method, params) {
-  let json;
-  try {
-    json = JSON.stringify({
-      type: 'request',
-      id: MAX_ID,
-      method,
-      params: { ...params, deadline_ms: DEADLINE_MS },
-      context: CONTEXT,
-    });
-  } catch {
-    return false;
-  }
-  return Buffer.byteLength(json, 'utf8') > MAX_PAYLOAD;
+ * and deadline. */
+function oversized(method, head) {
+  const envelope =
+    `{"type":"request","id":${MAX_ID},"method":${JSON.stringify(method)},"params":` +
+    `,"deadline_ms":${DEADLINE_MS}},"context":${JSON.stringify(CONTEXT)}}`;
+  return Buffer.byteLength(head, 'utf8') - 1 + Buffer.byteLength(envelope, 'utf8') > MAX_PAYLOAD;
 }
 
 /** Today's thrown error, rebuilt from a `chain_error`'s data: its
@@ -141,6 +154,12 @@ function thrown(err) {
  * the generation they were made under. */
 function answered(err) {
   return isObject(err?.data) && Number.isSafeInteger(err.data.generation);
+}
+
+/** The client sent nothing: a control came in flight after the last idle
+ * check. */
+function fencedOff(err) {
+  return err?.code === 'fenced' && !answered(err);
 }
 
 /** A failure the core never answered: its process ended, or the client
@@ -219,16 +238,21 @@ class ChainDriver {
     const id = wireChainId(chainId);
     if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
     const origin = routingContext?.origin;
-    const payload = {
-      chain_id: id,
-      method,
-      params,
-      include_trust: Boolean(includeTrust),
-      ...(typeof origin === 'string' ? { origin } : {}),
-      background: Boolean(background),
-      profile: profile === 'ant_scan' ? 'ant_scan' : 'default',
-    };
-    return this.fenced('chain.request', id, payload, { signal, until }, (reply, gen) =>
+    let head;
+    try {
+      head = serialized({
+        chain_id: id,
+        method,
+        params,
+        include_trust: Boolean(includeTrust),
+        ...(typeof origin === 'string' ? { origin } : {}),
+        background: Boolean(background),
+        profile: profile === 'ant_scan' ? 'ant_scan' : 'default',
+      });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return this.fenced('chain.request', id, head, { signal, until }, (reply, gen) =>
       this.published(reply, gen)
     );
   }
@@ -238,7 +262,8 @@ class ChainDriver {
     const until = this.now() + DEADLINE_MS;
     const id = wireChainId(chainId);
     if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
-    return this.fenced('chain.fee_quote', id, { chain_id: id }, { until }, (reply) => {
+    const head = serialized({ chain_id: id });
+    return this.fenced('chain.fee_quote', id, head, { until }, (reply) => {
       const { generation: _generation, ...quote } = reply ?? {};
       return quote;
     });
@@ -263,43 +288,65 @@ class ChainDriver {
   }
 
   async sendBroadcast(id, raw, record, { signal, until }) {
-    const payload = { chain_id: id, raw };
-    if (oversized('chain.broadcast', payload)) throw tagged(new Error(TOO_LARGE), 'not_sent');
-    let gen;
+    let head;
     try {
-      // After every control asked for before it, as a read goes.
-      gen = await this.quiet(null, until, signal);
+      head = serialized({ chain_id: id, raw });
     } catch (err) {
-      if (signal?.aborted) throw signal.reason;
       throw tagged(err, 'not_sent');
     }
-    const remaining = Math.floor(until - this.now());
-    if (remaining <= 0) throw tagged(new Error(DEADLINE), 'not_sent');
-    let reply;
-    try {
-      reply = await this.client.requestTo(
-        gen,
-        'chain.broadcast',
-        { ...payload, deadline_ms: remaining },
-        undefined,
-        { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal, untilResponse: true }
-      );
-    } catch (err) {
-      const outcome = err?.data?.outcome;
-      if (answered(err) && (outcome === 'rejected' || outcome === 'not_sent')) {
-        if (outcome === 'not_sent' && signal?.aborted) throw signal.reason;
-        throw tagged(thrown(err), outcome);
+    if (oversized('chain.broadcast', head)) throw tagged(new Error(TOO_LARGE), 'not_sent');
+    for (;;) {
+      let gen;
+      try {
+        // After every control asked for before it, as a read goes.
+        gen = await this.quiet(null, until, signal);
+      } catch (err) {
+        if (signal?.aborted) throw signal.reason;
+        throw tagged(err, 'not_sent');
       }
-      // No outcome from the core: main's record gives one.
-      if (record.sent) {
-        return { result: transactionHash(raw), source: record.source, outcome: 'uncertain' };
+      const remaining = Math.floor(until - this.now());
+      if (remaining <= 0) throw tagged(new Error(DEADLINE), 'not_sent');
+      let reply;
+      try {
+        reply = await this.send(gen, 'chain.broadcast', head, remaining, {
+          signal,
+          untilResponse: true,
+        });
+      } catch (err) {
+        // A control came in flight since the wait: nothing was sent, and
+        // it goes first.
+        if (fencedOff(err)) continue;
+        const outcome = err?.data?.outcome;
+        if (answered(err) && (outcome === 'rejected' || outcome === 'not_sent')) {
+          if (outcome === 'not_sent' && signal?.aborted) throw signal.reason;
+          throw tagged(thrown(err), outcome);
+        }
+        // No outcome from the core: main's record gives one.
+        if (record.sent) {
+          return { result: transactionHash(raw), source: record.source, outcome: 'uncertain' };
+        }
+        if (signal?.aborted) throw signal.reason;
+        throw tagged(answered(err) ? thrown(err) : lost(err), 'not_sent');
       }
-      if (signal?.aborted) throw signal.reason;
-      throw tagged(answered(err) ? thrown(err) : lost(err), 'not_sent');
+      // Only `sent` is sent: anything else may have been.
+      if (reply?.outcome === 'sent') return { result: reply.hash, source: reply.source };
+      return { result: reply?.hash ?? null, source: reply?.source, outcome: 'uncertain' };
     }
-    // Only `sent` is sent: anything else may have been.
-    if (reply?.outcome === 'sent') return { result: reply.hash, source: reply.source };
-    return { result: reply?.hash ?? null, source: reply?.source, outcome: 'uncertain' };
+  }
+
+  /**
+   * One attempt of a request to `gen`'s process, its serialized params
+   * (`head`) with what is left of the deadline. It goes only if no chain
+   * control is in flight, checked by the client last, after the request is
+   * encoded, with nothing between the check and the write; otherwise it
+   * fails `fenced` and sends nothing.
+   */
+  send(gen, method, head, remaining, options) {
+    return this.client.requestTo(gen, method, attemptParams(head, remaining), undefined, {
+      watchdogMs: remaining + WATCHDOG_MARGIN_MS,
+      fence: () => this.config.idle(gen),
+      ...options,
+    });
   }
 
   /** The initialized process, waiting for one that is starting. */
@@ -338,12 +385,12 @@ class ChainDriver {
 
   /**
    * A read or a fee quote, fenced: sent with nothing between the last idle
-   * check and the send, judged once every control it may have crossed has
+   * check and the write, judged once every control it may have crossed has
    * settled, and sent again once when a configuration change ended or
    * overtook it.
    */
-  async fenced(method, chainId, payload, { signal, until }, publish) {
-    if (oversized(method, payload)) throw new Error(TOO_LARGE);
+  async fenced(method, chainId, head, { signal, until }, publish) {
+    if (oversized(method, head)) throw new Error(TOO_LARGE);
     let pinned = null;
     let resent = false;
     for (;;) {
@@ -351,9 +398,6 @@ class ChainDriver {
       if (this.now() >= until) throw new Error(DEADLINE);
       const gen = await this.quiet(pinned, until, signal);
       pinned = gen;
-      // Checked again with nothing between it and the send: a control
-      // queued since goes first.
-      if (!this.config.idle(gen)) continue;
       // What is left after waiting for the core: the core's deadline for
       // the request, and its watchdog's, agree.
       const remaining = Math.floor(until - this.now());
@@ -361,18 +405,15 @@ class ChainDriver {
       let reply = null;
       let failed = null;
       try {
-        reply = await this.client.requestTo(
-          gen,
-          method,
-          { ...payload, deadline_ms: remaining },
-          undefined,
-          { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal }
-        );
+        reply = await this.send(gen, method, head, remaining, { signal });
       } catch (err) {
         failed = err ?? new Error('Internal error');
       }
       // A cancel is the caller's own: today's AbortError.
       if (signal?.aborted) throw signal.reason;
+      // A control came in flight since the wait: nothing was sent, and it
+      // goes first.
+      if (fencedOff(failed)) continue;
       if (failed && !answered(failed)) throw lost(failed);
       // A control asked for while the request ran may have overtaken it,
       // though the core hadn't seen it yet: the reply is judged once every
