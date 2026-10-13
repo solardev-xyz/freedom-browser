@@ -112,6 +112,15 @@ npm test
 
 Most source modules have a neighboring `.test.js` file. At minimum, run the corresponding test whenever you modify a tested module. Run `npm run lint` after every code change.
 
+The Radicle backend contract suite (`src/main/radicle-backend.contract.test.js`, freedom-core design 0008) reads a fixture repository through the real libradicle add-on and checks every read against golden vectors (`test/fixtures/radicle-contract/`). It is skipped unless a backend is named:
+
+```bash
+npm run radicle:download
+FREEDOM_RADICLE_CONTRACT_BACKEND=addon npx jest src/main/radicle-backend.contract.test.js
+```
+
+Its `[pending: …]` tests cover what the Radicle service adds. They run against a backend that honours them, or with `FREEDOM_RADICLE_CONTRACT_PENDING=all` (or a comma-separated list of features). `FREEDOM_RADICLE_CONTRACT_RECORD=1` remakes the fixture through the add-on and records the vectors again.
+
 ### End-to-end tests
 
 Playwright has four projects:

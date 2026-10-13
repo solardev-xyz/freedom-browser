@@ -1,0 +1,1243 @@
+{
+  "version": 1,
+  "recorded_with": {
+    "libradicle": "0.8.0"
+  },
+  "fixture": {
+    "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+    "did": "did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4",
+    "commits": {
+      "first": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da",
+      "second": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8"
+    },
+    "issues": {
+      "open": "e947431cb187b0fc6d5b0066ae37e85f8fe0cfca",
+      "closed": "47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d",
+      "another": "d919abff6416f517f27c9f9da69baa0d1b8e7081"
+    }
+  },
+  "reads": {
+    "repo_info": {
+      "op": "repo_info",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "pass-through",
+      "body": "{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\",\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"issuesOpen\":2,\"patchesOpen\":0}"
+    },
+    "tree (root)": {
+      "op": "tree",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "path": ""
+      },
+      "class": "pass-through",
+      "body": "{\"entries\":[{\"name\":\"README.md\",\"path\":\"README.md\",\"kind\":\"blob\"},{\"name\":\"big.bin\",\"path\":\"big.bin\",\"kind\":\"blob\"},{\"name\":\"empty.txt\",\"path\":\"empty.txt\",\"kind\":\"blob\"},{\"name\":\"image.png\",\"path\":\"image.png\",\"kind\":\"blob\"},{\"name\":\"link\",\"path\":\"link\",\"kind\":\"blob\"},{\"name\":\"notes.txt\",\"path\":\"notes.txt\",\"kind\":\"blob\"},{\"name\":\"src\",\"path\":\"src\",\"kind\":\"tree\"}]}"
+    },
+    "tree src": {
+      "op": "tree",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "path": "src"
+      },
+      "class": "pass-through",
+      "body": "{\"entries\":[{\"name\":\"main.js\",\"path\":\"src/main.js\",\"kind\":\"blob\"}]}"
+    },
+    "tree_at second (root)": {
+      "op": "tree_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": ""
+      },
+      "class": "pass-through",
+      "body": "{\"entries\":[{\"name\":\"README.md\",\"path\":\"README.md\",\"kind\":\"blob\"},{\"name\":\"big.bin\",\"path\":\"big.bin\",\"kind\":\"blob\"},{\"name\":\"empty.txt\",\"path\":\"empty.txt\",\"kind\":\"blob\"},{\"name\":\"image.png\",\"path\":\"image.png\",\"kind\":\"blob\"},{\"name\":\"link\",\"path\":\"link\",\"kind\":\"blob\"},{\"name\":\"notes.txt\",\"path\":\"notes.txt\",\"kind\":\"blob\"},{\"name\":\"src\",\"path\":\"src\",\"kind\":\"tree\"}],\"lastCommit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"summary\":\"Second commit\",\"description\":\"\\nWith a body.\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100}}}"
+    },
+    "tree_at second src": {
+      "op": "tree_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "src"
+      },
+      "class": "pass-through",
+      "body": "{\"entries\":[{\"name\":\"main.js\",\"path\":\"src/main.js\",\"kind\":\"blob\"}],\"lastCommit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"summary\":\"Second commit\",\"description\":\"\\nWith a body.\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100}}}"
+    },
+    "tree_at first (root)": {
+      "op": "tree_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da",
+        "path": ""
+      },
+      "class": "pass-through",
+      "body": "{\"entries\":[{\"name\":\"README.md\",\"path\":\"README.md\",\"kind\":\"blob\"},{\"name\":\"src\",\"path\":\"src\",\"kind\":\"tree\"}],\"lastCommit\":{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"summary\":\"First commit\",\"description\":\"\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000}}}"
+    },
+    "tree_at second missing": {
+      "op": "tree_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "missing"
+      },
+      "class": "pass-through",
+      "error": "the path 'missing' does not exist in the given tree; class=Tree (14); code=NotFound (-3)"
+    },
+    "blob README.md": {
+      "op": "blob",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "path": "README.md"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\"}"
+    },
+    "blob src/main.js": {
+      "op": "blob",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "path": "src/main.js"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"main.js\",\"content\":\"export function hello() {\\n  return \\\"hello\\\";\\n}\\n\"}"
+    },
+    "blob_at second README.md": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "README.md"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\"}"
+    },
+    "blob_at second src/main.js": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "src/main.js"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"main.js\",\"content\":\"export function hello() {\\n  return \\\"hello\\\";\\n}\\n\"}"
+    },
+    "blob_at second image.png": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "image.png"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":true,\"name\":\"image.png\"}"
+    },
+    "blob_at second empty.txt": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "empty.txt"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"empty.txt\",\"content\":\"\"}"
+    },
+    "blob_at second link": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "link"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"link\",\"content\":\"README.md\"}"
+    },
+    "blob_at second notes.txt": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "notes.txt"
+      },
+      "class": "pass-through",
+      "body": "{\"binary\":false,\"name\":\"notes.txt\",\"content\":\"Second commit notes.\\nLine two.\\n\"}"
+    },
+    "blob_at second missing.txt": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "missing.txt"
+      },
+      "class": "pass-through",
+      "error": "the path 'missing.txt' does not exist in the given tree; class=Tree (14); code=NotFound (-3)"
+    },
+    "blob_at second src": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "path": "src"
+      },
+      "class": "pass-through",
+      "error": "not a file: src"
+    },
+    "blob_at first notes.txt": {
+      "op": "blob_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da",
+        "path": "notes.txt"
+      },
+      "class": "pass-through",
+      "error": "the path 'notes.txt' does not exist in the given tree; class=Tree (14); code=NotFound (-3)"
+    },
+    "commits second 0 30": {
+      "op": "commits",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "parent": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "page": 0,
+        "per_page": 30
+      },
+      "class": "pass-through",
+      "body": "[{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]},{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "commits second 0 1": {
+      "op": "commits",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "parent": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "page": 0,
+        "per_page": 1
+      },
+      "class": "pass-through",
+      "body": "[{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]}]"
+    },
+    "commits second 1 1": {
+      "op": "commits",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "parent": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "page": 1,
+        "per_page": 1
+      },
+      "class": "pass-through",
+      "body": "[{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "commits second 5 1": {
+      "op": "commits",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "parent": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8",
+        "page": 5,
+        "per_page": 1
+      },
+      "class": "pass-through",
+      "body": "[]"
+    },
+    "commits first 0 30": {
+      "op": "commits",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "parent": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da",
+        "page": 0,
+        "per_page": 30
+      },
+      "class": "pass-through",
+      "body": "[{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "commit second": {
+      "op": "commit",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8"
+      },
+      "class": "pass-through",
+      "body": "{\"commit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]},\"diff\":{\"files\":[{\"status\":\"added\",\"path\":\"big.bin\",\"diff\":{\"type\":\"binary\"},\"new\":{\"oid\":\"a123f18f88949fd4b24ca30a458ed24113d7d6eb\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"empty.txt\",\"diff\":{\"type\":\"plain\",\"hunks\":[],\"stats\":{\"additions\":0,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"image.png\",\"diff\":{\"type\":\"binary\"},\"new\":{\"oid\":\"d1ed0c8713020f5bda68b22792b0512681d2c0f9\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"link\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1 @@\\n\",\"lines\":[{\"line\":\"README.md\",\"lineNo\":1,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":2}}],\"stats\":{\"additions\":1,\"deletions\":1},\"eof\":\"newMissing\"},\"new\":{\"oid\":\"42061c01a1c70097d1e4579f29a5adf40abdec95\",\"mode\":\"link\"}},{\"status\":\"added\",\"path\":\"notes.txt\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1,2 @@\\n\",\"lines\":[{\"line\":\"Second commit notes.\\n\",\"lineNo\":1,\"type\":\"addition\"},{\"line\":\"Line two.\\n\",\"lineNo\":2,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":3}}],\"stats\":{\"additions\":2,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"9f581139ac075b7ddaf9d3ffe799b6e441f0a49a\",\"mode\":\"blob\"}}],\"stats\":{\"filesChanged\":5,\"insertions\":3,\"deletions\":0}}}"
+    },
+    "commit first": {
+      "op": "commit",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da"
+      },
+      "class": "pass-through",
+      "body": "{\"commit\":{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]},\"diff\":{\"files\":[{\"status\":\"added\",\"path\":\"README.md\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1,3 @@\\n\",\"lines\":[{\"line\":\"# Contract fixture\\n\",\"lineNo\":1,\"type\":\"addition\"},{\"line\":\"\\n\",\"lineNo\":2,\"type\":\"addition\"},{\"line\":\"A repository for the Radicle backend contract.\\n\",\"lineNo\":3,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":4}}],\"stats\":{\"additions\":3,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"4bf643e36031c7acee884496cc6be2b458d5ef8e\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"src/main.js\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1,3 @@\\n\",\"lines\":[{\"line\":\"export function hello() {\\n\",\"lineNo\":1,\"type\":\"addition\"},{\"line\":\"  return \\\"hello\\\";\\n\",\"lineNo\":2,\"type\":\"addition\"},{\"line\":\"}\\n\",\"lineNo\":3,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":4}}],\"stats\":{\"additions\":3,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"5d6f61b0db8c558a5f64f669f0c36464e24812bf\",\"mode\":\"blob\"}}],\"stats\":{\"filesChanged\":2,\"insertions\":6,\"deletions\":0}}}"
+    },
+    "commit unknown": {
+      "op": "commit",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "0000000000000000000000000000000000000000"
+      },
+      "class": "pass-through",
+      "error": "odb: cannot read object: null OID cannot exist; class=Odb (9); code=NotFound (-3)"
+    },
+    "issues": {
+      "op": "issues",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "pass-through",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issue open": {
+      "op": "issue",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "id": "e947431cb187b0fc6d5b0066ae37e85f8fe0cfca"
+      },
+      "class": "serialized",
+      "body": "{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}"
+    },
+    "issue closed": {
+      "op": "issue",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "id": "47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d"
+      },
+      "class": "serialized",
+      "body": "{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]}"
+    },
+    "issue another": {
+      "op": "issue",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "id": "d919abff6416f517f27c9f9da69baa0d1b8e7081"
+      },
+      "class": "serialized",
+      "body": "{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]}"
+    },
+    "issue unknown": {
+      "op": "issue",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "id": "0000000000000000000000000000000000000000"
+      },
+      "class": "serialized",
+      "error": "revspec '0000000000000000000000000000000000000000' not found; class=Reference (4); code=NotFound (-3)"
+    },
+    "patches": {
+      "op": "patches",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "pass-through",
+      "body": "[]"
+    },
+    "patch unknown": {
+      "op": "patch",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "id": "0000000000000000000000000000000000000000"
+      },
+      "class": "serialized",
+      "error": "revspec '0000000000000000000000000000000000000000' not found; class=Reference (4); code=NotFound (-3)"
+    },
+    "list_repos": {
+      "op": "list_repos",
+      "args": {},
+      "class": "pass-through",
+      "body": "[{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\"}]"
+    },
+    "list_seeded_repos": {
+      "op": "list_seeded_repos",
+      "args": {},
+      "class": "pass-through",
+      "body": "[{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\"}]"
+    },
+    "seeders": {
+      "op": "seeders",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "pass-through",
+      "body": "{\"seeding\":1}"
+    },
+    "identity": {
+      "op": "identity",
+      "args": {},
+      "class": "pass-through",
+      "body": "{\"did\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"nid\":\"z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"alias\":\"FreedomContract\"}"
+    },
+    "status": {
+      "op": "status",
+      "args": {},
+      "class": "pass-through",
+      "body": "{\"connectedPeers\":0}"
+    },
+    "remotes": {
+      "op": "remotes",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "serialized",
+      "body": "[{\"id\":\"z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"did\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"delegate\":true,\"heads\":{\"main\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\"}}]"
+    },
+    "repo_stats second": {
+      "op": "repo_stats",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8"
+      },
+      "class": "serialized",
+      "body": "{\"commits\":2,\"branches\":1,\"contributors\":1}"
+    },
+    "repo_stats first": {
+      "op": "repo_stats",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da"
+      },
+      "class": "serialized",
+      "body": "{\"commits\":1,\"branches\":1,\"contributors\":1}"
+    },
+    "readme_at second": {
+      "op": "readme_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "6a34708a404f7cbd3a622807f6d5ce08af2ba6d8"
+      },
+      "class": "composed",
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\",\"path\":\"README.md\"}"
+    },
+    "readme_at first": {
+      "op": "readme_at",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "revision": "e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da"
+      },
+      "class": "composed",
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\",\"path\":\"README.md\"}"
+    },
+    "repo_meta": {
+      "op": "repo_meta",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE"
+      },
+      "class": "composed",
+      "body": "{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"payloads\":{\"xyz.radicle.project\":{\"data\":{\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\"},\"meta\":{\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"issues\":{\"open\":2},\"patches\":{\"open\":0}}}},\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"seeding\":1}"
+    },
+    "repos_meta": {
+      "op": "repos_meta",
+      "args": {},
+      "class": "composed",
+      "body": "[{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"payloads\":{\"xyz.radicle.project\":{\"data\":{\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\"},\"meta\":{\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"issues\":{\"open\":2},\"patches\":{\"open\":0}}}},\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"seeding\":1}]"
+    },
+    "issues_page (defaults)": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?status=open": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "open",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?status=closed": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "closed",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "issues_page ?status=merged": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "merged",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "issues_page ?status=": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?page=1": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "issues_page ?page=-1": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "-1",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?page=abc": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "abc",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?page=1.9": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1.9",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "issues_page ?page=999": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "999",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "issues_page ?perPage=1": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "issues_page ?perPage=1&page=1": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "issues_page ?perPage=1&page=2": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "2",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?perPage=0": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "0"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?perPage=101": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "101"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "issues_page ?perPage=-5": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "-5"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "issues_page ?perPage=2x": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "2x"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "issues_page ?status=open&perPage=1&page=1": {
+      "op": "issues_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "open",
+        "page": "1",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "patches_page (defaults)": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?status=open": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "open",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?status=closed": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "closed",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?status=merged": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "merged",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?status=": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "",
+        "page": null,
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?page=1": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?page=-1": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "-1",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?page=abc": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "abc",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?page=1.9": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1.9",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?page=999": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "999",
+        "per_page": null
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=1": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=1&page=1": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "1",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=1&page=2": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": "2",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=0": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "0"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=101": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "101"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=-5": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "-5"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?perPage=2x": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": null,
+        "page": null,
+        "per_page": "2x"
+      },
+      "class": "composed",
+      "body": "[]"
+    },
+    "patches_page ?status=open&perPage=1&page=1": {
+      "op": "patches_page",
+      "args": {
+        "rid": "rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE",
+        "status": "open",
+        "page": "1",
+        "per_page": "1"
+      },
+      "class": "composed",
+      "body": "[]"
+    }
+  },
+  "handlers": {
+    "rad GET (root)": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"payloads\":{\"xyz.radicle.project\":{\"data\":{\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\"},\"meta\":{\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"issues\":{\"open\":2},\"patches\":{\"open\":0}}}},\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"seeding\":1}"
+    },
+    "rad HEAD (root)": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": null
+    },
+    "rad GET /tree/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"entries\":[{\"name\":\"README.md\",\"path\":\"README.md\",\"kind\":\"blob\"},{\"name\":\"big.bin\",\"path\":\"big.bin\",\"kind\":\"blob\"},{\"name\":\"empty.txt\",\"path\":\"empty.txt\",\"kind\":\"blob\"},{\"name\":\"image.png\",\"path\":\"image.png\",\"kind\":\"blob\"},{\"name\":\"link\",\"path\":\"link\",\"kind\":\"blob\"},{\"name\":\"notes.txt\",\"path\":\"notes.txt\",\"kind\":\"blob\"},{\"name\":\"src\",\"path\":\"src\",\"kind\":\"tree\"}],\"lastCommit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"summary\":\"Second commit\",\"description\":\"\\nWith a body.\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100}}}"
+    },
+    "rad GET /tree/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/src": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"entries\":[{\"name\":\"main.js\",\"path\":\"src/main.js\",\"kind\":\"blob\"}],\"lastCommit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"summary\":\"Second commit\",\"description\":\"\\nWith a body.\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100}}}"
+    },
+    "rad HEAD /tree/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": null
+    },
+    "rad GET /blob/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/README.md": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\"}"
+    },
+    "rad GET /blob/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/image.png": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"binary\":true,\"name\":\"image.png\"}"
+    },
+    "rad GET /blob/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/missing.txt": {
+      "status": 404,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"the path 'missing.txt' does not exist in the given tree; class=Tree (14); code=NotFound (-3)\"}"
+    },
+    "rad HEAD /blob/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/README.md": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": null
+    },
+    "rad GET /readme/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"binary\":false,\"name\":\"README.md\",\"content\":\"# Contract fixture\\n\\nA repository for the Radicle backend contract.\\n\",\"path\":\"README.md\"}"
+    },
+    "rad GET /commits?parent=6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]},{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "rad GET /commits?parent=6a34708a404f7cbd3a622807f6d5ce08af2ba6d8&page=1&perPage=1": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "rad GET /commits?parent=6a34708a404f7cbd3a622807f6d5ce08af2ba6d8&perPage=1000": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]},{\"id\":\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000000},\"summary\":\"First commit\",\"message\":\"First commit\\n\",\"description\":\"\",\"parents\":[]}]"
+    },
+    "rad GET /commits/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"commit\":{\"id\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"author\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"committer\":{\"name\":\"Contract Fixture\",\"email\":\"fixture@example.invalid\",\"time\":1700000100},\"summary\":\"Second commit\",\"message\":\"Second commit\\n\\nWith a body.\\n\",\"description\":\"With a body.\",\"parents\":[\"e3551fe68b2ee77bbe8cb9e69cfb25a12485e1da\"]},\"diff\":{\"files\":[{\"status\":\"added\",\"path\":\"big.bin\",\"diff\":{\"type\":\"binary\"},\"new\":{\"oid\":\"a123f18f88949fd4b24ca30a458ed24113d7d6eb\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"empty.txt\",\"diff\":{\"type\":\"plain\",\"hunks\":[],\"stats\":{\"additions\":0,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"image.png\",\"diff\":{\"type\":\"binary\"},\"new\":{\"oid\":\"d1ed0c8713020f5bda68b22792b0512681d2c0f9\",\"mode\":\"blob\"}},{\"status\":\"added\",\"path\":\"link\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1 @@\\n\",\"lines\":[{\"line\":\"README.md\",\"lineNo\":1,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":2}}],\"stats\":{\"additions\":1,\"deletions\":1},\"eof\":\"newMissing\"},\"new\":{\"oid\":\"42061c01a1c70097d1e4579f29a5adf40abdec95\",\"mode\":\"link\"}},{\"status\":\"added\",\"path\":\"notes.txt\",\"diff\":{\"type\":\"plain\",\"hunks\":[{\"header\":\"@@ -0,0 +1,2 @@\\n\",\"lines\":[{\"line\":\"Second commit notes.\\n\",\"lineNo\":1,\"type\":\"addition\"},{\"line\":\"Line two.\\n\",\"lineNo\":2,\"type\":\"addition\"}],\"old\":{\"start\":0,\"end\":0},\"new\":{\"start\":1,\"end\":3}}],\"stats\":{\"additions\":2,\"deletions\":0},\"eof\":\"noneMissing\"},\"new\":{\"oid\":\"9f581139ac075b7ddaf9d3ffe799b6e441f0a49a\",\"mode\":\"blob\"}}],\"stats\":{\"filesChanged\":5,\"insertions\":3,\"deletions\":0}}}"
+    },
+    "rad GET /commits/0000000000000000000000000000000000000000": {
+      "status": 404,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"odb: cannot read object: null OID cannot exist; class=Odb (9); code=NotFound (-3)\"}"
+    },
+    "rad GET /stats/tree/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"commits\":2,\"branches\":1,\"contributors\":1}"
+    },
+    "rad GET /remotes": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"did\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\",\"delegate\":true,\"heads\":{\"main\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\"}}]"
+    },
+    "rad GET /issues": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "rad GET /issues?status=closed&perPage=1": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]}]"
+    },
+    "rad GET /issues/e947431cb187b0fc6d5b0066ae37e85f8fe0cfca": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}"
+    },
+    "rad GET /issues/0000000000000000000000000000000000000000": {
+      "status": 404,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"revspec '0000000000000000000000000000000000000000' not found; class=Reference (4); code=NotFound (-3)\"}"
+    },
+    "rad GET /patches": {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[]"
+    },
+    "radapi GET /": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"version\":\"embedded\",\"mode\":\"embedded\"}"
+    },
+    "radapi GET /api/v1/stats": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"repos\":{\"total\":1},\"peers\":{\"connected\":0}}"
+    },
+    "radapi GET /api/v1/repos": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"payloads\":{\"xyz.radicle.project\":{\"data\":{\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\"},\"meta\":{\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"issues\":{\"open\":2},\"patches\":{\"open\":0}}}},\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"seeding\":1}]"
+    },
+    "radapi HEAD /api/v1/repos": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": null
+    },
+    "radapi GET /api/v1/repos/rad%3Az4X9D2DK7ALpWF63qrnd1Nzh59WQE": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"rid\":\"rad:z4X9D2DK7ALpWF63qrnd1Nzh59WQE\",\"payloads\":{\"xyz.radicle.project\":{\"data\":{\"name\":\"contract-fixture\",\"description\":\"A repository for the Radicle backend contract\",\"defaultBranch\":\"main\"},\"meta\":{\"head\":\"6a34708a404f7cbd3a622807f6d5ce08af2ba6d8\",\"issues\":{\"open\":2},\"patches\":{\"open\":0}}}},\"delegates\":[\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"],\"threshold\":1,\"visibility\":{\"type\":\"public\"},\"seeding\":1}"
+    },
+    "radapi GET /api/v1/repos/rad%3Az4X9D2DK7ALpWF63qrnd1Nzh59WQE/issues": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"A closed issue\",\"state\":{\"status\":\"closed\",\"reason\":\"other\"},\"labels\":[],\"assignees\":[],\"discussion\":[{\"id\":\"47d83d8c9a2d3eb532b2bfb1b38d4634dbd4443d\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"Closed by its author.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"Another open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"d919abff6416f517f27c9f9da69baa0d1b8e7081\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"For the pages.\",\"timestamp\":1791926149000,\"replyTo\":null}]},{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"title\":\"An open issue\",\"state\":{\"status\":\"open\"},\"labels\":[\"bug\",\"contract\"],\"assignees\":[],\"discussion\":[{\"id\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"It stays open.\\n\\nWith a second paragraph.\",\"timestamp\":1791926149000,\"replyTo\":null},{\"id\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"e947431cb187b0fc6d5b0066ae37e85f8fe0cfca\"},{\"id\":\"76fe2705172a8a5b53296fb32d937486c06bbf38\",\"author\":{\"id\":\"did:key:z6Mkw68imLJgqHHhP5YTd6Qi8KDqDMvvDnea9fkYxSn8GNG4\"},\"body\":\"A reply to the first comment.\",\"timestamp\":1791926149000,\"replyTo\":\"4c7c5e2d40b01d2ec76b3a22d416d7f164df81e6\"}]}]"
+    },
+    "radapi GET / (enumeration fails)": {
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"version\":\"embedded\",\"mode\":\"embedded\"}"
+    },
+    "radapi GET /api/v1/stats (enumeration fails)": {
+      "status": 503,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"injected: repository enumeration failed\"}"
+    },
+    "radapi GET / (status fails)": {
+      "status": 503,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"injected: node status failed\"}"
+    },
+    "radapi GET /api/v1/stats (status fails)": {
+      "status": 503,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": "{\"error\":\"injected: node status failed\"}"
+    },
+    "manager getConnections": {
+      "body": "{\"success\":true,\"count\":0,\"reposCount\":1,\"version\":\"0.8.0\"}"
+    },
+    "manager getConnections (enumeration fails)": {
+      "body": "{\"success\":true,\"count\":0,\"reposCount\":null,\"version\":\"0.8.0\"}"
+    },
+    "manager getConnections (status fails)": {
+      "body": "{\"success\":false,\"error\":{\"code\":\"GET_CONNECTIONS_FAILED\",\"message\":\"injected: node status failed\"},\"count\":0,\"reposCount\":null,\"version\":\"0.8.0\"}"
+    }
+  }
+}
