@@ -24,6 +24,7 @@ import {
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
 import { outcomeText, ACTIONS } from './intent-texts.js';
+import { resendHeldPayment } from './intent-resend.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
 // DOM references
@@ -394,6 +395,8 @@ async function handleDappTxPasswordUnlock() {
 
 async function approveDappTx() {
   if (!dappTxPending || dappTxPending.signing) return;
+  // Its payment is settled, voided or unknown to main: nothing to confirm.
+  if (dappTxPending.paymentClosed) return;
 
   const request = dappTxPending;
   const { permissionKey, walletIndex, txParams, resolve, gasLimit, gasPrice, chainId, selector } = request;
@@ -462,6 +465,7 @@ async function approveDappTx() {
         failure: {
           outcome: result.outcome,
           reasonClass: result.reasonClass,
+          intentId: result.intentId,
           intent: result.intent,
         },
       });
@@ -491,12 +495,17 @@ async function approveDappTx() {
     const failure = err.failure ?? {};
     // The payment is held: Confirm now sends those same signed bytes again
     // instead of signing a second payment.
-    if (failure.intent?.state === 'held') request.failedIntent = failure.intent;
+    if (failure.intent?.state === 'held') {
+      request.failedIntent = failure.intent;
+    } else if (failure.intentId || failure.intent) {
+      // A payment main names but no longer holds: nothing to confirm again.
+      request.paymentClosed = true;
+    }
     showDappTxError(
       outcomeText(failure.outcome, failure.reasonClass) || err.message || 'Transaction failed'
     );
     if (dappTxApproveBtn) {
-      dappTxApproveBtn.disabled = false;
+      dappTxApproveBtn.disabled = Boolean(request.paymentClosed);
       dappTxApproveBtn.textContent = request.failedIntent ? ACTIONS.sendAgain : 'Confirm';
     }
     setDappTxCancelEnabled(true);
@@ -517,27 +526,20 @@ async function approveDappTx() {
  * bytes again, at its one nonce. Nothing is signed. The user's press on the
  * approval that still shows this transaction is the confirmation, bound to
  * the held intent as main records it ('intent-resend'). "Always allow" is
- * not recorded from a resend.
+ * not recorded from a resend. `request.failedIntent` is never cleared by a
+ * failure, so this approval can't fall back to signing the payment afresh;
+ * once main reports the payment no longer held, Confirm stays disabled.
  */
 async function sendFailedIntentAgain(request) {
-  const intent = request.failedIntent;
   if (dappTxApproveBtn) dappTxApproveBtn.textContent = ACTIONS.sendingAgain;
-  const result = await window.wallet.intentResend(
-    intent.intentId,
-    await confirmSigning('intent-resend', null, {
-      intentId: intent.intentId,
-      chainId: intent.chainId,
-      sender: intent.sender,
-      nonce: intent.nonce,
-      hash: intent.hash,
-    })
-  );
+  const { result, intent, closed } = await resendHeldPayment(request.failedIntent);
   if (!result.success) {
+    if (closed) request.paymentClosed = true;
     throw Object.assign(new Error(result.error || 'Transaction failed'), {
       failure: {
         outcome: result.outcome,
         reasonClass: result.reasonClass,
-        intent: result.intent ?? intent,
+        intent: intent ?? request.failedIntent,
       },
     });
   }

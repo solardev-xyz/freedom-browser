@@ -662,6 +662,218 @@ describe('send again after a failed send (5)', () => {
     expect(window.wallet.intentResend).not.toHaveBeenCalled();
     expect(elements['send-input-view'].classList.contains('hidden')).toBe(false);
   });
+
+  // 709-B1: once a send has an intent, Retry only ever sends that payment
+  // again, or closes: it never goes back to the form, whose Confirm would
+  // sign the payment again at the next nonce.
+  const refused = { success: false, outcome: 'rejected', intentId: HELD.intentId, intent: HELD };
+  const isShown = (elements, view) => !elements[view].classList.contains('hidden');
+  const formReachable = (elements) =>
+    isShown(elements, 'send-input-view') || isShown(elements, 'send-review-view');
+  const resendBindings = () =>
+    window.wallet.confirmSigning.mock.calls
+      .filter(([kind]) => kind === 'intent-resend')
+      .map(([, , payload]) => payload);
+
+  test('an authorization refusal with no word on the payment keeps Send again, never the form', async () => {
+    const { elements } = await failedSend(refused);
+    // The reviewer's reply shape: the refusal names nothing.
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: 'Signing was not confirmed: confirmation expired',
+    });
+    for (let press = 0; press < 3; press += 1) {
+      elements['send-retry-btn'].dispatch('click');
+      await flush();
+      expect(elements['send-retry-btn'].textContent).toBe('Send again');
+      expect(formReachable(elements)).toBe(false);
+    }
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(3);
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test("a lapsed or stale confirmation is minted again against main's current hash, once", async () => {
+    const { elements } = await failedSend(refused);
+    const replaced = { ...HELD, hash: '0x' + 'cd'.repeat(32) };
+    window.wallet.intentResend
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        error: 'Signing was not confirmed',
+        intentId: HELD.intentId,
+        intent: replaced,
+      })
+      .mockResolvedValueOnce({ success: true, hash: replaced.hash, outcome: 'sent', resent: true });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(resendBindings().map((binding) => binding.hash)).toEqual([HELD.hash, replaced.hash]);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(2);
+    expect(isShown(elements, 'send-success-view')).toBe(true);
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a second refusal of the fresh confirmation stops there, still offering Send again', async () => {
+    const { elements } = await failedSend(refused);
+    window.wallet.intentResend.mockResolvedValue({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: 'Signing was not confirmed',
+      intentId: HELD.intentId,
+      intent: HELD,
+    });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(2);
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+    expect(formReachable(elements)).toBe(false);
+  });
+
+  test('no reply at all (a confirmation main refused to mint, a failed IPC) keeps the payment', async () => {
+    const { elements } = await failedSend(refused);
+    window.wallet.confirmSigning.mockResolvedValueOnce({
+      success: false,
+      error: 'Invalid transaction hash',
+    });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(window.wallet.intentResend).not.toHaveBeenCalled();
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+    window.wallet.intentResend.mockRejectedValueOnce(new Error('IPC channel closed'));
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+    expect(formReachable(elements)).toBe(false);
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a payment main reports settled or unknown closes: Retry closes the screen, never the form', async () => {
+    for (const reply of [
+      {
+        success: false,
+        code: 'INTENT_NOT_HELD',
+        error: 'This payment is already settled.',
+        intentId: HELD.intentId,
+        intent: { ...HELD, state: 'settled' },
+      },
+      {
+        success: false,
+        code: 'INTENT_UNKNOWN',
+        error: "This payment is not in the wallet's records.",
+      },
+    ]) {
+      const { elements } = await failedSend(refused);
+      window.wallet.intentResend.mockResolvedValue(reply);
+      elements['send-retry-btn'].dispatch('click');
+      await flush();
+      expect(elements['send-error-text'].textContent).toBe(reply.error);
+      expect(elements['send-retry-btn'].textContent).toBe('Close');
+      elements['send-retry-btn'].dispatch('click');
+      await flush();
+      expect(isShown(elements, 'sidebar-send')).toBe(false);
+      expect(formReachable(elements)).toBe(false);
+      expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test('a first send naming a payment main no longer holds closes too', async () => {
+    const { elements } = await failedSend({ ...refused, intent: { ...HELD, state: 'voided' } });
+    expect(elements['send-retry-btn'].textContent).toBe('Close');
+  });
+
+  // 709-M1: a resend's late result belongs to the screen it started on.
+  async function screenBWithItsOwnHeldPayment(loaded) {
+    const { mod, elements } = loaded;
+    mod.closeSend();
+    await mod.openSend({ recipient: '0x' + '22'.repeat(20), chainId: 100, amount: '0.99' });
+    const heldB = {
+      ...HELD,
+      intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1b02',
+      nonce: 8,
+      hash: '0x' + 'bc'.repeat(32),
+    };
+    window.wallet.sendTransaction.mockResolvedValueOnce({
+      success: false,
+      error: 'Refused B',
+      outcome: 'rejected',
+      intentId: heldB.intentId,
+      intent: heldB,
+    });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+    return heldB;
+  }
+
+  test("a delayed refusal of A's resend leaves B's screen and its Send again alone", async () => {
+    const loaded = await failedSend(refused);
+    const { elements } = loaded;
+    const later = deferred();
+    window.wallet.intentResend.mockReturnValueOnce(later.promise);
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+
+    const heldB = await screenBWithItsOwnHeldPayment(loaded);
+    const textB = elements['send-error-text'].textContent;
+    later.resolve({
+      success: false,
+      error: 'Refused A',
+      outcome: 'rejected',
+      intentId: HELD.intentId,
+      intent: HELD,
+    });
+    await flush();
+    expect(elements['send-error-text'].textContent).toBe(textB);
+    expect(elements['send-retry-btn'].textContent).toBe('Send again');
+
+    // B's Send again sends B.
+    window.wallet.intentResend.mockResolvedValue({
+      success: true,
+      hash: heldB.hash,
+      outcome: 'sent',
+    });
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(window.wallet.intentResend).toHaveBeenLastCalledWith(heldB.intentId, expect.any(Object));
+    expect(resendBindings().at(-1)).toMatchObject({
+      intentId: heldB.intentId,
+      nonce: 8,
+      hash: heldB.hash,
+    });
+  });
+
+  test("a delayed success of A's resend doesn't paint into B's screen", async () => {
+    const loaded = await failedSend(refused);
+    const { elements } = loaded;
+    const later = deferred();
+    window.wallet.intentResend.mockReturnValueOnce(later.promise);
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    await screenBWithItsOwnHeldPayment(loaded);
+    later.resolve({ success: true, hash: HELD.hash, outcome: 'sent', resent: true });
+    await flush();
+    expect(isShown(elements, 'send-success-view')).toBe(false);
+    expect(isShown(elements, 'send-error-view')).toBe(true);
+  });
+
+  test('a delayed result after the screen closed paints nothing', async () => {
+    const loaded = await failedSend(refused);
+    const { mod, elements } = loaded;
+    const later = deferred();
+    window.wallet.intentResend.mockReturnValueOnce(later.promise);
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    mod.closeSend();
+    // No outcome: a repaint would show this text.
+    later.resolve({ success: false, error: 'Refused A', intentId: HELD.intentId, intent: HELD });
+    await flush();
+    expect(isShown(elements, 'sidebar-send')).toBe(false);
+    expect(isShown(elements, 'send-error-view')).toBe(true); // as it was left: the screen itself is hidden
+    expect(elements['send-error-text'].textContent).not.toBe('Refused A');
+  });
 });
 
 describe('send review: a payment that would wait behind a held one (D11)', () => {

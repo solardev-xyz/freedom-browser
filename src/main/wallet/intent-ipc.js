@@ -11,14 +11,19 @@
  *   itself: its id, chain, sender, nonce and the hash of the bytes. The
  *   handler builds what the confirmation must match from main's own record
  *   of the intent, never from fields the caller submits. Unlike a send, no
- *   request fields are taken at all.
+ *   request fields are taken at all. A refusal of any kind (a lapsed or
+ *   stale confirmation, a refused broadcast, a failed write) still says
+ *   where the intent stands: its current summary, so the chrome keeps
+ *   offering that payment, at that nonce, and never a new one. Only an
+ *   intent main doesn't know (`INTENT_UNKNOWN`) comes without one.
  * - `wallet:intent-replacement-fees(intentId)` and
  *   `wallet:intent-replace(intentId, fees, authorization)`: sign a held
  *   intent again at its nonce, paying the same thing with fees at least
  *   10% higher. The authorization is an `intent-replace` confirmation of
  *   the intent and those fees; the payment it binds comes from main's
  *   record, and only the fees from the caller. Offered for a refusal over
- *   fees, and as "speed up" for a payment that may be stuck.
+ *   fees, and as "speed up" for a payment that may be stuck. Refusals
+ *   carry the intent's current summary, as a resend's do.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
  *   change.
  */
@@ -144,6 +149,22 @@ function receiptsByIntent() {
   return receipts;
 }
 
+/**
+ * Main's current word on an intent a request named: its id and summary
+ * (whose `state` says whether it is still held), or nothing for an intent
+ * main doesn't know.
+ */
+function currentIntent(intentId) {
+  if (typeof intentId !== 'string') return {};
+  try {
+    const view = getIntentStore().get(intentId);
+    return view ? { intentId: view.intentId, intent: intentSummary(view) } : {};
+  } catch {
+    // The records aren't loaded: no word either way.
+    return {};
+  }
+}
+
 async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
@@ -252,7 +273,12 @@ function registerIntentIpc({
       return { success: true, ...(await resendHeldIntent(intentId, authorization)) };
     } catch (err) {
       console.error('[WalletIPC] Sending a payment again failed:', err);
-      return { success: false, error: err.message, ...intentFailure(err) };
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
     }
   });
 
@@ -260,7 +286,12 @@ function registerIntentIpc({
     try {
       return { success: true, fees: await replacementFees(intentId) };
     } catch (err) {
-      return { success: false, error: err.message, ...intentFailure(err) };
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
     }
   });
 
@@ -269,7 +300,12 @@ function registerIntentIpc({
       return { success: true, ...(await replaceHeldIntent(intentId, fees, authorization)) };
     } catch (err) {
       console.error('[WalletIPC] Replacing a payment failed:', err);
-      return { success: false, error: err.message, ...intentFailure(err) };
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
     }
   });
 
@@ -287,6 +323,7 @@ function registerIntentIpc({
 
 module.exports = {
   attentionOf,
+  currentIntent,
   intentFailure,
   intentSummary,
   registerIntentIpc,

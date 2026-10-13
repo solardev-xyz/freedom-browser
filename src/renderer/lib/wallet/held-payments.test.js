@@ -261,6 +261,28 @@ describe('payments waiting: Send again', () => {
     expect(markup(elements)).toContain('The network refused it: insufficient funds');
   });
 
+  test("a stale confirmation (a replacement changed the hash) is minted again against main's hash", async () => {
+    const payment = held();
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    const replaced = { ...payment, hash: `0x${'cd'.repeat(32)}` };
+    window.wallet.intentResend
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        error: 'Signing was not confirmed',
+        intentId: payment.intentId,
+        intent: replaced,
+      })
+      .mockResolvedValueOnce({ success: true, outcome: 'sent', hash: replaced.hash });
+    await mod.handleAction('resend', payment);
+    const hashes = window.wallet.confirmSigning.mock.calls
+      .filter(([kind]) => kind === 'intent-resend')
+      .map(([, , binding]) => binding.hash);
+    expect(hashes).toEqual([payment.hash, replaced.hash]);
+    expect(markup(elements)).toContain('Sent, waiting for confirmation');
+  });
+
   test('a confirmation main refuses to mint sends nothing', async () => {
     const payment = held();
     const { mod, elements } = await load([payment]);

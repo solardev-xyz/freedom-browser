@@ -30,6 +30,7 @@ import {
   walletRecord,
 } from './wallet-utils.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { resendHeldPayment } from './intent-resend.js';
 import {
   beginSignatureFlight,
   endSignatureFlight,
@@ -297,16 +298,10 @@ async function sendAgain(payment) {
   render();
   let note;
   try {
-    const result = await window.wallet.intentResend(
-      payment.intentId,
-      await confirmSigning('intent-resend', null, {
-        intentId: payment.intentId,
-        chainId: payment.chainId,
-        sender: payment.sender,
-        nonce: payment.nonce,
-        hash: payment.hash,
-      })
-    );
+    // The one resend path (intent-resend.js): a stale confirmation is
+    // minted again against main's current hash; nothing here can sign
+    // the payment afresh.
+    const { result } = await resendHeldPayment(payment);
     note = result.success
       ? { kind: 'info', text: outcomeText(result.outcome) ?? attentionText({ attention: 'sent' }) }
       : {
