@@ -65,7 +65,12 @@ export function initHeldPayments() {
   if (rowLabel) rowLabel.textContent = HELD.rowLabel;
   if (messageEl) messageEl.textContent = HELD.message;
 
-  registerScreenHider(() => screen?.classList.add('hidden'));
+  registerScreenHider(() => {
+    // Another screen takes the sidebar: an opening still waiting for its
+    // list is called off too.
+    openRequest += 1;
+    screen?.classList.add('hidden');
+  });
   row?.addEventListener('click', openHeldPayments);
   document.getElementById('held-payments-back')?.addEventListener('click', closeHeldPayments);
   listEl?.addEventListener('click', onListClick);
@@ -120,14 +125,31 @@ export async function refreshHeldPayments() {
   if (screen && !screen.classList.contains('hidden')) render();
 }
 
+// Which request to open the list is current: a late list reply for an
+// earlier one, or for one another screen overtook, opens nothing.
+let openRequest = 0;
+
+/**
+ * Open the list from the identity view. Not while a device prompt owns
+ * the sidebar (signature-flight.js), and, since the list is fetched first,
+ * only if nothing else took the sidebar meanwhile: the request is still
+ * the current one, no signature began, and the identity view is still the
+ * screen showing.
+ */
 export async function openHeldPayments() {
+  if (isSignatureInFlight()) return;
+  openRequest += 1;
+  const request = openRequest;
   await refreshHeldPayments();
+  if (request !== openRequest || isSignatureInFlight()) return;
+  if (walletState.identityView?.classList.contains('hidden')) return;
   walletState.identityView?.classList.add('hidden');
   screen?.classList.remove('hidden');
   render();
 }
 
 export function closeHeldPayments() {
+  openRequest += 1;
   if (!screen || screen.classList.contains('hidden')) return;
   // A device prompt we can't recall owns the sidebar (signature-flight.js);
   // a resend under way just finishes in main, and the list refreshes.
