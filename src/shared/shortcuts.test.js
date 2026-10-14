@@ -1128,8 +1128,15 @@ describe('conflicts are judged per keypress, like the matcher (#205)', () => {
         }
       }
       // The Nordic Ctrl++ press (key '+', code 'Minus'); see the zoom
-      // reachability tests above.
-      expect(collisions).toEqual(['page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-']);
+      // reachability tests above. On macOS, also the German-layout Cmd++
+      // press (key '+', code 'BracketRight') against Forward's Cmd+] (#584).
+      // Forward is menu-only, so no renderer keydown matcher compares the
+      // two; macOS menus match key equivalents on the typed character ('+'
+      // here), so that press should reach Zoom In alone. Not probed on a real
+      // Mac (2026-10); Chrome binds the same two chords on macOS.
+      const expected = ['page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-'];
+      if (platform === 'darwin') expected.push('page.zoomIn CmdOrCtrl+Plus ~ nav.forward Cmd+]');
+      expect(collisions).toEqual(expected);
     }
   });
 });

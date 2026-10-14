@@ -2150,7 +2150,7 @@ describe('navigation', () => {
       errorPage.searchParams.set('retry', retry);
       ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
 
-      // The error page's own auto-retry / Try Again: a `location.href` the
+      // The error page's own auto-retry / Try again: a `location.href` the
       // main process replays through `navigate-to-url` as page-initiated.
       ctx.mod.loadTarget(retry, null, null, { pageInitiated: true });
       await flushMicrotasks();

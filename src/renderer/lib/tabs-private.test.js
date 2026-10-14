@@ -140,4 +140,20 @@ describe('tabs in a private window', () => {
     reopenLastClosedTab();
     expect(getTabs().length).toBe(countBefore);
   });
+
+  // #584: the app menu's History > Recently Closed never lists a private
+  // window's tabs, even though Reopen Closed Tab works inside the window.
+  test("a private window's closed tabs never reach the app menu", async () => {
+    const { createTab, closeTab } = await import('./tabs.js');
+    createTab('https://keep-me-open.example/');
+    const tab = createTab('https://closed-in-private.example/');
+    closeTab(tab.id);
+
+    const state = mockElectronAPI.updateTabMenuState.mock.calls.at(-1)[0];
+    expect(state.hasClosedTabs).toBe(true);
+    expect(state.closedTabs).toEqual([]);
+    expect(JSON.stringify(mockElectronAPI.updateTabMenuState.mock.calls)).not.toContain(
+      'closed-in-private'
+    );
+  });
 });

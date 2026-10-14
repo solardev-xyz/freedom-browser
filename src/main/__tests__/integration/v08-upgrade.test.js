@@ -15,7 +15,9 @@
  *                                  rename; the retired beeNodeMode is dropped
  *   4. network-registry load()   — legacy ENS settings → network-config.json
  *   5. IPFS (Kubo → freedom-ipfs) — no Kubo repo carryover; native node uses
- *                                  an isolated freedom-ipfs/ subdir
+ *                                  an isolated freedom-ipfs/ subdir, and the
+ *                                  orphaned Kubo repo is set aside and purged
+ *                                  (setAsideLegacyKuboRepo(), #101)
  *
  * The contract under test: an upgrading user keeps their bookmarks, history,
  * identity vault, Swarm keystore + postage stamps (stamperstore), and
@@ -124,8 +126,9 @@ function runUpgrade(userDataDir) {
 
   const beeAnt = loadModule('../../migrate-user-data', userDataDir);
   const beeMigrated = beeAnt.mod.migrateBeeDataToAntData();
+  const kuboSetAside = beeAnt.mod.setAsideLegacyKuboRepo();
 
-  return { profile, beeMigrated };
+  return { profile, beeMigrated, kuboSetAside, migrations: beeAnt.mod };
 }
 
 describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
@@ -300,12 +303,12 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     expect(fs.existsSync(path.join(userDataDir, 'ant-data', 'keys', 'swarm.key'))).toBe(true);
   });
 
-  test('starts cleanly on a Kubo-era ipfs-data tree without carrying over its repo', () => {
+  test('starts cleanly on a Kubo-era ipfs-data tree and removes its orphaned repo', async () => {
     writeLegacyInstall(userDataDir);
     // A v0.7.x install also had a Kubo IPFS repo. By design freedom-ipfs
     // carries over NO Kubo repo/blocks/pins (see docs/freedom-ipfs-native-
     // desktop.md): native IPFS identity is ephemeral and content reloads from
-    // the network. The Kubo data is left orphaned (cleanup tracked in #101).
+    // the network. The orphaned Kubo repo is deleted instead (#101).
     const kuboData = path.join(userDataDir, 'ipfs-data');
     fs.mkdirSync(path.join(kuboData, 'blocks'), { recursive: true });
     fs.writeFileSync(
@@ -315,7 +318,8 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     fs.writeFileSync(path.join(kuboData, 'blocks', 'CIQ.data'), 'kubo-block');
     fs.mkdirSync(path.join(kuboData, 'datastore'), { recursive: true });
 
-    runUpgrade(userDataDir);
+    const { kuboSetAside, migrations } = runUpgrade(userDataDir);
+    expect(kuboSetAside).toBe(true);
 
     const ipfs = loadModule('../../ipfs-manager', userDataDir, { isPackaged: false });
     const nativeDataPath = ipfs.mod.getIpfsDataPath();
@@ -326,9 +330,12 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     expect(fs.existsSync(nativeDataPath)).toBe(true);
     expect(fs.readdirSync(nativeDataPath)).toEqual([]);
 
-    // The orphaned Kubo repo is left in place (not migrated, not deleted).
-    expect(fs.existsSync(path.join(userDataDir, 'ipfs-data', 'config'))).toBe(true);
-    expect(fs.existsSync(path.join(userDataDir, 'ipfs-data', 'blocks', 'CIQ.data'))).toBe(true);
+    // The orphaned Kubo repo is out of ipfs-data/ before IPFS starts, and
+    // deleted for real once the (post-first-paint) purge runs.
+    expect(fs.readdirSync(kuboData)).toEqual(['freedom-ipfs']);
+    await expect(migrations.purgeSetAsideLegacyKuboData()).resolves.toBe(true);
+    expect(fs.existsSync(path.join(userDataDir, '.legacy-kubo-data-pending-delete'))).toBe(false);
+    expect(fs.existsSync(nativeDataPath)).toBe(true);
   });
 
   // A crash mid bee→ant migration must be recoverable on the next launch —

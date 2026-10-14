@@ -1,0 +1,2 @@
+- Websites see a plain Chrome User-Agent instead of one naming Freedom and Electron and their exact versions, which made every Freedom user close to uniquely identifiable ([#471](https://github.com/solardev-xyz/freedom-browser/issues/471))
+  - `navigator.userAgent`, the `User-Agent` request header and workers now read like stock Chrome of the same version on the same OS, in normal and private windows

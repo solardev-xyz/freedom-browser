@@ -157,6 +157,33 @@ describe('approval primaries (#239)', () => {
     expect(background(dappReject.body)).toBe('var(--toolbar)');
   });
 
+  // #606 item 6: the dark-theme rules above matched, but `[data-theme="light"]`
+  // overrides gave the dApp Reject buttons and Send's Edit a grey fill at rest
+  // while the Swarm Reject stayed outlined. A light-theme hover tint is fine;
+  // a resting fill is the drift.
+  test('no light-theme override fills a sidebar secondary at rest', () => {
+    const SECONDARIES = [
+      '.swarm-connect-reject-btn',
+      '.dapp-connect-reject-btn',
+      '.dapp-tx-reject-btn',
+      '.dapp-sign-reject-btn',
+      '.send-edit-btn',
+    ];
+    const offenders = [];
+    for (const sheet of sheets) {
+      for (const rule of rulesOf(read(sheet))) {
+        if (!background(rule.body)) continue;
+        for (const selector of rule.selector.split(',').map((part) => part.trim())) {
+          if (!/data-theme=["']?light/.test(selector) || STATEFUL.test(selector)) continue;
+          if (SECONDARIES.some((name) => selector.endsWith(` ${name}`))) {
+            offenders.push(`${sheet}: ${selector} { background: ${background(rule.body)} }`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test('the two callout kinds match their dApp originals', () => {
     const sidebar = rulesOf(read('sidebar.css'));
     const ruleFor = (selector) => sidebar.find((entry) => entry.selector === selector);

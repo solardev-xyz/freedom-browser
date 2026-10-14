@@ -1,0 +1,4 @@
+- Recently closed and recently visited pages in the History menu ([#584](https://github.com/solardev-xyz/freedom-browser/issues/584))
+  - Back and Forward there too: `Cmd+[` / `Cmd+]` on macOS, `Alt+Left` / `Alt+Right` on Windows and Linux
+  - Pages open the way the address bar opens them, `bzz://`, `ipfs://` and ENS names included
+  - Removed or cleared history leaves the menu at once, and private windows never show up in it

@@ -50,6 +50,9 @@ const PERMISSION_LABELS = {
   // Never prompted for: set by the pop-up-blocked icon's "Always allow"
   // (popup-blocker-ui.js, #442), listed and removed here like any grant.
   popups: 'Pop-ups',
+  // File System Access (#671): what the user picked in a site's file or
+  // folder dialog. Run-scoped, never stored.
+  fileSystem: 'Files and folders you picked',
 };
 
 // Storage-key → prompt verb phrase ("example.com wants to <phrase>").

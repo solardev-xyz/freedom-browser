@@ -80,6 +80,15 @@ function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
 }
 
+// Counts from the node or a public seed (seeders, delegates, commits, …) are
+// interpolated into innerHTML as bare numbers. The JSON is remote data, so a
+// hostile seed can send a string where a number belongs; coerce instead of
+// trusting the type, so only digits ever reach the markup.
+function toCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 const FULL_REVISION_RE = /^[0-9a-f]{40}$/;
 
 function parseViewerPath(rawPath) {
@@ -424,8 +433,8 @@ function renderRepoHeader(meta) {
   const name = project.name || `rad:${rid}`;
   const desc = project.description || '';
   const visibility = meta.visibility?.type || 'public';
-  const delegates = meta.delegates?.length || 0;
-  const seeding = meta.seeding || 0;
+  const delegates = toCount(meta.delegates?.length);
+  const seeding = toCount(meta.seeding);
 
   projectName = name;
 
@@ -457,7 +466,7 @@ function renderRepoHeader(meta) {
             <circle cx="12" cy="12" r="10"/>
             <path d="M12 6v6l4 2"/>
           </svg>
-          <span class="value">${visibility}</span>
+          <span class="value">${escapeHtml(visibility)}</span>
         </div>
       </div>
     `;
@@ -477,7 +486,7 @@ function renderStats(stats) {
           <line x1="1.05" y1="12" x2="7" y2="12"/>
           <line x1="17.01" y1="12" x2="22.96" y2="12"/>
         </svg>
-        <strong>${formatNumber(stats.commits || 0)}</strong> commits
+        <strong>${formatNumber(toCount(stats.commits))}</strong> commits
       </div>
       <div class="stat-item">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -486,7 +495,7 @@ function renderStats(stats) {
           <circle cx="6" cy="18" r="3"/>
           <path d="M18 9a9 9 0 0 1-9 9"/>
         </svg>
-        <strong>${formatNumber(stats.branches || 0)}</strong> branch${(stats.branches || 0) !== 1 ? 'es' : ''}
+        <strong>${formatNumber(toCount(stats.branches))}</strong> branch${toCount(stats.branches) !== 1 ? 'es' : ''}
       </div>
       <div class="stat-item">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -495,7 +504,7 @@ function renderStats(stats) {
           <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
           <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
         </svg>
-        <strong>${formatNumber(stats.contributors || 0)}</strong> contributors
+        <strong>${formatNumber(toCount(stats.contributors))}</strong> contributors
       </div>
     `;
 }
@@ -548,14 +557,14 @@ function renderLastCommit(commit) {
 
   const author = commit.author?.name || commit.committer?.name || 'Unknown';
   const summary = commit.summary || '';
-  const sha = (commit.id || '').slice(0, 7);
+  const sha = String(commit.id || '').slice(0, 7);
   const time = commit.committer?.time ? timeAgo(commit.committer.time) : '';
 
   lastCommitEl.innerHTML = `
       <span class="commit-author">${escapeHtml(author)}</span>
       <span class="commit-message">${escapeHtml(summary)}</span>
-      ${sha ? `<span class="commit-sha">${sha}</span>` : ''}
-      ${time ? `<span class="commit-time">${time}</span>` : ''}
+      ${sha ? `<span class="commit-sha">${escapeHtml(sha)}</span>` : ''}
+      ${time ? `<span class="commit-time">${escapeHtml(time)}</span>` : ''}
     `;
 }
 
@@ -905,7 +914,7 @@ function renderRepoList(repos) {
       const repoData = repo.payloads?.['xyz.radicle.project']?.data || {};
       const name = repoData.name || repo.name || 'Unnamed';
       const desc = repoData.description || repo.description || 'No description';
-      const seeders = repo.seeding || 0;
+      const seeders = toCount(repo.seeding);
       return `
         <div class="repo-item" data-rid="${escapeHtml(repoRid)}">
           <div class="repo-item-header">
@@ -944,7 +953,7 @@ async function fetchNetworkRepos() {
     });
     if (!res.ok) return [];
     const repos = await res.json();
-    return repos.sort((a, b) => (b.seeding || 0) - (a.seeding || 0));
+    return repos.sort((a, b) => toCount(b.seeding) - toCount(a.seeding));
   } catch (e) {
     console.error('Failed to fetch network repos:', e);
     return [];
@@ -969,7 +978,7 @@ function renderNetworkRepoList(repos) {
       const desc = repoData.description || 'No description';
       const repoRid = (repo.rid || '').replace('rad:', '');
       const shortRid = repoRid.slice(0, 12) + '…';
-      const seeders = repo.seeding || 0;
+      const seeders = toCount(repo.seeding);
 
       return `
         <div class="repo-item network" data-rid="${escapeHtml(repoRid)}">
@@ -1204,7 +1213,7 @@ async function init() {
       renderRepoHeader(meta);
       repoHeaderEl.insertAdjacentHTML(
         'beforeend',
-        '<div class="empty-state" style="margin-top:24px"><p>No commit history found for this repository</p></div>'
+        '<div class="empty-state no-history"><p>No commit history found for this repository</p></div>'
       );
       return;
     }

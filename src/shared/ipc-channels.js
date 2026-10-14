@@ -108,6 +108,9 @@ module.exports = {
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_TOGGLE_FULLSCREEN: 'window:toggle-fullscreen',
+  // main → chrome: the window entered (true) or left (false) full screen;
+  // the chrome hides itself while it is (browser-fullscreen.js, #78).
+  WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
   WINDOW_NEW: 'window:new',
   // Private windows (ephemeral, non-persisted partition per window)
   WINDOW_NEW_PRIVATE: 'window:new-private',

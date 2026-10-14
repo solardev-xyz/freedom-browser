@@ -1,0 +1,2 @@
+- Switching to a profile that is already open on GNOME (Wayland) brings its window to the front instead of showing "Freedom is ready" ([#142](https://github.com/solardev-xyz/freedom-browser/issues/142))
+  - From the profile menu and from a pinned profile launcher in the dock

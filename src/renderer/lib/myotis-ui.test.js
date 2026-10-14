@@ -158,7 +158,21 @@ describe('myotis-ui', () => {
     expect(ctx.elements.state.textContent).toBe('Ready');
     expect(ctx.elements.peers.textContent).toBe('7');
     expect(ctx.elements.block.textContent).toBe('2345');
-    expect(ctx.elements.version.textContent).toBe('Myotis v0.1.7');
+    expect(ctx.elements.version.textContent).toBe('Myotis 0.1.7');
+
+    // The Gnosis row renders its own version label: pin it too, so the
+    // v-less format can't drift back on one row only.
+    ctx.getStatusHandler()({
+      supported: true,
+      available: true,
+      running: true,
+      state: 'ready',
+      chainId: 100,
+      peerCount: 3,
+      version: '0.1.7',
+    });
+    expect(ctx.elements.gnosisVersion.textContent).toBe('Myotis 0.1.7');
+    expect(ctx.elements.version.textContent).toBe('Myotis 0.1.7');
 
     ctx.elements.button.dispatch('click');
     await flushMicrotasks();

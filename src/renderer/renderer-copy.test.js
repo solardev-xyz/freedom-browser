@@ -290,7 +290,7 @@ describe('error page heading case (#260)', () => {
 
   test('the static <title> and <h1> share one sentence-case default', () => {
     const title = errorHtml.match(/<title>([^<]*)<\/title>/)[1];
-    const heading = errorHtml.match(/<h1 id="title">([^<]*)<\/h1>/)[1];
+    const heading = errorHtml.match(/<span id="title">([^<]*)<\/span>/)[1];
     expect(title).toBe('Content unavailable');
     expect(heading).toBe(title);
   });
@@ -315,6 +315,26 @@ describe('error page heading case (#260)', () => {
           .filter((w) => /^[A-Z]/.test(w) && !PROPER_NOUNS.has(w))
       ).toEqual([]);
     }
+  });
+});
+
+// #606 item 4: the error page is the content-failure sibling of the name
+// interstitials, so it shares their frame — the stylesheet, an icon in the
+// heading, and one filled primary action labelled in sentence case.
+describe('error page matches the interstitials (#606)', () => {
+  const errorHtml = read(path.join(RENDERER, 'pages/error.html'));
+
+  test('it links the shared interstitial stylesheet', () => {
+    expect(errorHtml).toMatch(/<link rel="stylesheet" href="styles\/interstitial\.css" \/>/);
+  });
+
+  test('its heading carries an icon', () => {
+    expect(errorHtml).toMatch(/<h1>\s*<svg\b[^>]*class="shield"/);
+  });
+
+  test('"Try again" is the filled primary, in sentence case', () => {
+    expect(errorHtml).toMatch(/<button id="retry-btn" class="button-primary">Try again<\/button>/);
+    expect(errorHtml).not.toMatch(/Try Again/);
   });
 });
 

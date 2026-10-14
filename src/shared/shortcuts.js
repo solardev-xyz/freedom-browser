@@ -203,6 +203,27 @@ const SHORTCUTS = [
     category: 'Navigation',
     editable: true,
   },
+  // Back/Forward follow Chrome's per-platform chords: Cmd+[ / Cmd+] on macOS,
+  // Alt+Left / Alt+Right elsewhere. Menu-owned (History menu), like Show All
+  // History below.
+  {
+    id: 'nav.back',
+    description: 'Back',
+    settingsLabel: 'Back',
+    defaultAccelerator: { darwin: 'Cmd+[', other: 'Alt+Left' },
+    context: 'menu',
+    category: 'Navigation',
+    editable: true,
+  },
+  {
+    id: 'nav.forward',
+    description: 'Forward',
+    settingsLabel: 'Forward',
+    defaultAccelerator: { darwin: 'Cmd+]', other: 'Alt+Right' },
+    context: 'menu',
+    category: 'Navigation',
+    editable: true,
+  },
   {
     id: 'history.showAll',
     description: 'Show All History',

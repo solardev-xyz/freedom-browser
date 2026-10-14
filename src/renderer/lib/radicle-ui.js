@@ -46,7 +46,7 @@ const applyRadicleInfo = (info) => {
     );
   }
   if (typeof info.version === 'string' && info.version) {
-    state.radicleVersionValue = `libradicle v${info.version}`;
+    state.radicleVersionValue = `libradicle ${info.version}`;
     state.radicleVersionFetched = true;
   }
   if (radicleVersionText) {

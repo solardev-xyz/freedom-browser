@@ -36,8 +36,11 @@ This means Freedom works seamlessly whether you:
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
 
-On macOS, the packaged app explicitly allows multiple bundle instances so profile
-launching can use `open -n -a Freedom --args --profile=<id>`.
+Profiles can also be chosen at launch with `--profile <id>`, `FREEDOM_PROFILE` or
+`--profile-dir <path>`, and links passed on the command line open as tabs; see
+[Command-Line Flags](configuration.md#command-line-flags). On macOS, the packaged app
+explicitly allows multiple bundle instances so profile launching can use
+`open -n -a Freedom --args --profile=<id>`.
 
 ## Profiles and Sidebar
 
@@ -169,12 +172,14 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+-` / `Ctrl+-`: Zoom out (steps the active page 10% down to 25%)
   - `Cmd+0` / `Ctrl+0`: Actual size (resets the active page to 100%)
   - `Cmd+L` / `Ctrl+L`: Focus address bar
+  - `Cmd+[` / `Alt+Left`: Back
+  - `Cmd+]` / `Alt+Right`: Forward
   - `Cmd+Y` / `Ctrl+H`: Show all history
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
   - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
-  - `F11`: Toggle fullscreen
+  - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
@@ -214,6 +219,7 @@ the conversation the full window.
 
 - **Automatic Recording**: Pages are recorded as you browse.
 - **History Page**: View and search your browsing history at `freedom://history`.
+- **History Menu**: The application menu's History menu (the macOS menu bar, the window menu bar on Linux and Windows) offers Back and Forward for the active tab, a **Recently Closed** list (the tabs Reopen Closed Tab would bring back, across your open windows, newest first; clicking one reopens it in the window it was closed in), a **Recently Visited** list of your 15 latest history entries (title, or the address when a page has none, with its cached favicon; clicking one loads it in the active tab exactly as if typed into the address bar), and Show All History at the bottom. The lists follow history as it changes: removing entries or clearing history takes them out of the menu at once. Private windows never contribute to either list, internal `freedom://` pages are left out, and each profile lists only its own history.
 
 ## Private Windows
 
@@ -245,7 +251,7 @@ the conversation the full window.
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
-- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD).
+- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD). See the [provider reference](swarm-provider-api.md).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
 

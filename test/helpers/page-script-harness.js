@@ -248,6 +248,27 @@ class FakeDocument {
   getElementById(id) {
     return this.byId.get(id) || null;
   }
+
+  // Document-wide listeners (a page's Escape handler) are recorded, not run.
+  addEventListener(type, handler) {
+    if (!this.listeners) this.listeners = new Map();
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(handler);
+  }
+
+  // The fake document has no root: search the id'd elements and below.
+  querySelectorAll(selector) {
+    const out = [];
+    for (const el of this.byId.values()) {
+      if (el.matches(selector)) out.push(el);
+      out.push(...el.querySelectorAll(selector));
+    }
+    return out;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
 }
 
 async function flush() {
@@ -259,13 +280,21 @@ async function flush() {
  * (`{ id: tagName }`) and the given `freedomAPI`. Returns the document, the
  * elements by id, the queued timers and the context.
  */
-async function runPageScript(page, { ids, freedomAPI, confirm = () => true, storage = {} }) {
+async function runPageScript(
+  page,
+  { ids, freedomAPI, confirm = () => true, storage = {}, windowExtras = {} }
+) {
   const document = new FakeDocument(ids);
   const timers = [];
   const context = {
     document,
     freedomAPI,
-    window: { freedomAPI, location: { href: `file:///pages/${page}.html`, search: '' } },
+    window: {
+      freedomAPI,
+      location: { href: `file:///pages/${page}.html`, search: '' },
+      // Globals another classic script on the page defines (hover-tooltip.js).
+      ...windowExtras,
+    },
     localStorage: {
       getItem: (key) => (key in storage ? storage[key] : null),
       setItem: (key, value) => (storage[key] = String(value)),

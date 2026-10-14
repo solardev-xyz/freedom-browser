@@ -562,6 +562,16 @@ async function handlePublishData(params, origin) {
   }
 }
 
+// Windows device names: a path segment named one of these (any case, with or
+// without an extension, trailing dots/spaces ignored) opens the device instead
+// of a file in the temp directory publishFilesFromContent writes to.
+const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
+
+function isWindowsReservedName(segment) {
+  const stem = segment.split('.')[0].replace(/[ .]+$/, '');
+  return WINDOWS_RESERVED_NAMES.test(stem);
+}
+
 /**
  * Validate a virtual path for manifest inclusion.
  * @returns {{ valid: boolean, message?: string }}
@@ -580,6 +590,10 @@ function validateVirtualPath(p) {
   if (p.startsWith('/')) {
     return { valid: false, message: 'Leading slash is not allowed' };
   }
+  // A colon names a drive or an NTFS alternate data stream on Windows.
+  if (p.includes(':')) {
+    return { valid: false, message: 'Colons are not allowed' };
+  }
   // Check for control characters and null bytes
   for (let i = 0; i < p.length; i++) {
     if (p.charCodeAt(i) < 32) {
@@ -593,6 +607,15 @@ function validateVirtualPath(p) {
     }
     if (seg === '.' || seg === '..') {
       return { valid: false, message: '"." and ".." segments are not allowed' };
+    }
+    // Win32 path normalization trims a trailing dot or space from every
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
+    // temp directory) and '.. ' would trim toward '..'.
+    if (/[. ]$/.test(seg)) {
+      return { valid: false, message: 'Path segments may not end in a dot or space' };
+    }
+    if (isWindowsReservedName(seg)) {
+      return { valid: false, message: `"${seg}" is a reserved device name on Windows` };
     }
   }
   return { valid: true };

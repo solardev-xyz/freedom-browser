@@ -36,6 +36,39 @@
 - Check the Nodes panel for Arti bootstrap status and the active profile's SOCKS5 endpoint.
 - Freedom fails closed for `.onion` traffic if Arti exits, so restart Tor rather than expecting a direct-network fallback.
 
+## Switching profiles on Linux shows "Freedom is ready"
+
+GNOME on Wayland only brings a window to the front when the request carries an
+activation token from your own click or key press; without one it posts
+"Freedom is ready" instead. Freedom passes the token along when you switch to a
+profile that is already open from the profile menu or from a dock launcher for
+that profile, on the installed `.deb` or pacman package. The switch from the
+profile menu goes through `xdg-open`, so it needs the package's
+`freedom.desktop` to handle the profile-switch scheme:
+`xdg-mime query default x-scheme-handler/x-freedom-profile` should print
+`freedom.desktop`. X11 sessions never needed this.
+
+Two ways in still end with the notification on Wayland (observed on GNOME 46,
+October 2026), because the launch that reaches the open profile has no token
+to pass on:
+
+- Running `freedom --profile=<id>` from a terminal while that profile is open.
+- Picking a profile launcher from the Activities overview search while that
+  profile is open.
+
+Click the notification, or switch from the profile menu or the dock instead.
+The profile menu uses `xdg-open` only when the installed `freedom.desktop`
+starts the very Freedom you are running. An AppImage without desktop
+integration, a source build, or an AppImage running beside an installed
+`.deb` (whose `freedom.desktop` starts the `.deb`'s binary) falls back to the
+older focus request and shows the notification.
+
+The profile-switch scheme only ever brings an already-open profile to the
+front. Any program can run `xdg-open x-freedom-profile:<id>`, including a page
+in another browser once you confirm its prompt, so it opens no links, never
+starts a profile that is closed, and leaves the profile a plain `freedom`
+launch opens unchanged.
+
 ## Using an external node
 
 - If you have a system-wide Swarm node or Tor SOCKS5 proxy running, configure external mode in **Settings → Nodes**. Radicle has no external mode; it always runs as the profile's embedded node

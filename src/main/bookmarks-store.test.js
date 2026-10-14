@@ -37,6 +37,22 @@ describe('bookmarks-store', () => {
     await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual(defaultBookmarks);
   });
 
+  // The bundled list is product content, not test data: pin it so an entry
+  // can't be dropped, renamed or re-pointed without this test changing too
+  // (#120 removed the stale IPFS/OSM entries and added the Swarm apps).
+  test('ships the curated default bookmarks', () => {
+    expect(defaultBookmarks).toEqual([
+      { label: 'freemap.eth', target: 'ens://freemap.eth' },
+      { label: 'swarm.eth', target: 'ens://swarm.eth' },
+      { label: 'app.swarmit.eth', target: 'ens://app.swarmit.eth' },
+      { label: 'volumemanager.eth', target: 'ens://volumemanager.eth' },
+      { label: 'Waggle', target: 'https://vibing.at/waggle/' },
+      { label: 'vitalik.eth', target: 'ens://vitalik.eth' },
+      { label: 'meinhard.eth', target: 'ens://meinhard.eth' },
+      { label: 'Radicle Heartwood', target: 'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5' },
+    ]);
+  });
+
   test('loads user bookmarks before bundled defaults', async () => {
     const ipcMain = createIpcMainMock();
     const customBookmarks = [{ label: 'Local', target: 'https://example.com' }];

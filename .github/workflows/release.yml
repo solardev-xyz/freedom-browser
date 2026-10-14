@@ -23,7 +23,9 @@ run-name: >-
 #     maintainer publishes after the §6 smoke test in
 #     docs/agent-playbooks/release-process.md.
 #   - workflow_dispatch: same builds from any branch; macOS is signed by
-#     default, set `signed: false` for a pipeline test without secrets.
+#     default, set `signed: false` for a pipeline test without secrets. A
+#     signed dispatch only starts from `main` or `release/*`: the signing
+#     secrets sit behind the `release-signing` environment (below).
 #     Dispatch runs only upload workflow artifacts, never a release —
 #     unless `nightly` + `publish_nightly` are ticked (see below).
 #   - schedule (22:07 UTC daily): a nightly build of `main` for internal
@@ -35,8 +37,13 @@ run-name: >-
 #     scheduled run whose head commit is already published as the current
 #     nightly skips every job. See release-process.md "Nightly builds".
 #
-# Required repository secrets for a signed macOS build (Settings → Secrets
-# and variables → Actions); Linux and Windows need none:
+# Required secrets for a signed macOS build, held in the `release-signing`
+# environment (Settings → Environments → release-signing), whose deployment
+# policy admits only `main`, `release/*` and `v*` tags (#657). That policy
+# matches the ref's name only and the run uses that ref's copy of this file,
+# so it is as tight as the rulesets on who may create or push those refs;
+# see release-process.md Appendix B for what they cover and what is still
+# open. Linux and Windows need none:
 #   CSC_LINK                    Developer ID Application cert, .p12 exported
 #                               from Keychain, base64-encoded
 #   CSC_KEY_PASSWORD            password set on that .p12 export
@@ -84,6 +91,8 @@ on:
         description: >-
           macOS only: sign and notarize with the Developer ID secrets.
           Uncheck for an unsigned pipeline test that needs no secrets.
+          Signed runs only start from main or release/* (the
+          release-signing environment's branch policy).
         type: boolean
         default: true
       bundle_tor:
@@ -203,6 +212,24 @@ jobs:
     if: needs.plan.outputs.skip != 'true'
     runs-on: macos-15
     timeout-minutes: 120
+    # The signing and notarization secrets live in the `release-signing`
+    # environment, whose deployment policy admits only `main`, `release/*` and
+    # `v*` tags (#657), so a run on any other ref is refused them. That policy
+    # checks the ref's name only, and the run uses that ref's copy of this
+    # file, so it is only as tight as the rulesets on who may create or push
+    # those refs: do not loosen the `v*` / `release/**` rulesets or widen the
+    # policy without tightening the other side. release-process.md Appendix B
+    # lists what the rulesets cover and what is still open (pushes to an
+    # existing `release/*` branch, self-merged PRs to `main`, and the
+    # repository-level copies of these secrets until an admin deletes them).
+    # Only a signed run asks for the environment, with the same condition as
+    # SIGNED below: an unsigned run gets an empty name, which GitHub treats as
+    # no environment at all, so unsigned pipeline tests keep working from any
+    # branch. A signed dispatch from another branch is rejected before the job
+    # starts. Keep this the only job that references those secrets (pinned by
+    # scripts/ci/release-signing-env.test.js).
+    environment:
+      name: ${{ (github.event_name != 'workflow_dispatch' || inputs.signed) && 'release-signing' || '' }}
     env:
       # Tag pushes and scheduled nightlies are always signed and always bundle
       # Tor — testers on macOS need a notarized build as much as users do;
@@ -243,8 +270,8 @@ jobs:
             if [ -z "${!name}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "Signed build requested but these repository secrets are empty:$missing" >&2
-            echo "Add them under Settings → Secrets and variables → Actions, or re-run with signed=false for an unsigned pipeline test." >&2
+            echo "Signed build requested but these release-signing environment secrets are empty:$missing" >&2
+            echo "Add them under Settings → Environments → release-signing, or re-run with signed=false for an unsigned pipeline test." >&2
             exit 1
           fi
 

@@ -58,6 +58,7 @@ import {
   isActiveTab,
   isTabAgentOwned,
   subscribeAgentTabCustody,
+  pushTabMenuState,
 } from './tabs.js';
 import {
   homeUrl,
@@ -413,7 +414,7 @@ const EXPLICIT_DWEB_ADDRESS_RE =
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
 //   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
-//   - retry: URL the in-page "Try Again" button should navigate to. Should
+//   - retry: URL the in-page "Try again" button should navigate to. Should
 //     always be a scheme Chromium can load (bzz://<hash>, http(s)://, …).
 //     If the display URL is an ENS-backed form (legacy ens:// or transport
 //     ENS like bzz://name.eth) the retry must point at the resolved
@@ -972,6 +973,9 @@ export const setPageSecure = (secure) => {
 };
 
 const updateNavigationState = () => {
+  // The app menu's History > Back/Forward rows (#584) follow the toolbar
+  // buttons: same moment, same canGoBack/canGoForward read.
+  pushTabMenuState?.();
   const webview = getActiveWebview();
   const agentOwned = isTabAgentOwned(getActiveTab()?.id);
   if (!webview) {
@@ -1178,7 +1182,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, opti
   // formatBzzUrl), so extracting it here covers both.
   const probePath = extractBzzPath(gatewayUrl);
   const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
-  // What "Try Again" (and the error page's auto-retry) loads: the same URL a
+  // What "Try again" (and the error page's auto-retry) loads: the same URL a
   // successful probe would hand to Chromium, in-manifest path included. A
   // bare `bzz://<hash>` would retry the site root instead of the page that
   // failed and silently move the address bar to the homepage.
@@ -1190,12 +1194,12 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, opti
   // that *succeeds* lands on a bzz:// page that can't reach that file://
   // storage to clear it. So the chrome says whether this load continues a
   // streak: it does only when the error page itself started it (its
-  // auto-retry, or Try Again, which zeroes the count first; both are a
+  // auto-retry, or Try again, which zeroes the count first; both are a
   // `location.href` the main process replays as `pageInitiated`) from an
   // error page for this same retry URL. Anything else starts the count over:
   // the content loaded in between, a fresh visit, or the user retrying from
   // the chrome (toolbar Reload, re-typing the URL), which is as explicit a
-  // retry as Try Again and must not inherit an exhausted streak.
+  // retry as Try again and must not inherit an exhausted streak.
   const continuesRetryStreak = (() => {
     if (!options.pageInitiated) return false;
     try {
@@ -1271,7 +1275,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, opti
       }
       navState.pendingSwarmProbeId = null;
 
-      // Retry URL prefers the ENS-named load URL (so the user's "Try Again"
+      // Retry URL prefers the ENS-named load URL (so the user's "Try again"
       // button preserves the ENS host and DevTools/origin stay stable). If
       // none was supplied, fall back to the hash form (with its path), which
       // Chromium can load directly via the bzz protocol handler.
@@ -1284,7 +1288,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, opti
       // If the probe target was an ENS-named bzz URL (`bzz://name.eth/`)
       // and the probe failed (404 / await failure / other content
       // unavailability), invalidate the cached contenthash. Otherwise a
-      // "Try Again" click immediately re-resolves to the same stale
+      // "Try again" click immediately re-resolves to the same stale
       // hash and probes the same dead content. `bee_unreachable` and
       // `aborted` aren't content failures — leave the cache alone.
       const ensNameForInvalidation = (() => {
@@ -2164,7 +2168,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     const bzzForm = /^bzz:/i.test(trimmed) ? trimmed : `bzz://${trimmed}`;
     // Preserve the ENS host on the retry URL when the resolver supplied one
     // (`bzz://name.eth`), mirroring the probe path (startBzzNavigationWithProbe):
-    // the bzz: handler re-resolves the host per request, so "Try Again" keeps the
+    // the bzz: handler re-resolves the host per request, so "Try again" keeps the
     // ENS name and origin rather than the resolved hash. Non-ENS input keeps the
     // bare bzz form.
     const retry = options.bzzLoadUrl || bzzForm;
@@ -3743,6 +3747,15 @@ export const initNavigation = () => {
   // IPC handler for toggle bookmark bar
   electronAPI?.onToggleBookmarkBar?.(() => {
     toggleBookmarkBar();
+  });
+
+  // App menu History > Back / Forward (#584): the same traversal the toolbar
+  // buttons run, so an ENS-backed entry is re-verified the same way (#86).
+  electronAPI?.onHistoryBack?.(() => {
+    goBackInHistory(getActiveWebview());
+  });
+  electronAPI?.onHistoryForward?.(() => {
+    goForwardInHistory(getActiveWebview());
   });
 
   // Keyboard shortcuts — resolved through the shared shortcut registry so

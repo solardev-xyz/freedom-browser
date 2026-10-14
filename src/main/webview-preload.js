@@ -1338,16 +1338,18 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Clipboard
   copyText: guardInternal('copyText', (text) => ipcRenderer.invoke('clipboard:copy-text', text)),
 
-  // Swarm publishing (internal-only, path-based methods)
+  // Swarm publishing (internal-only; files and folders go by pick token)
   swarm: {
     publishData: guardInternal('swarm.publishData', (data) =>
       ipcRenderer.invoke('swarm:publish-data', data)
     ),
-    publishFilePath: guardInternal('swarm.publishFilePath', (filePath) =>
-      ipcRenderer.invoke('swarm:publish-file', filePath)
+    // Takes the token pickFileForPublish returned, not a filesystem path.
+    publishFilePath: guardInternal('swarm.publishFilePath', (pickToken) =>
+      ipcRenderer.invoke('swarm:publish-file', pickToken)
     ),
-    publishDirectoryPath: guardInternal('swarm.publishDirectoryPath', (dirPath) =>
-      ipcRenderer.invoke('swarm:publish-directory', dirPath)
+    // Takes the token pickDirectoryForPublish returned, not a filesystem path.
+    publishDirectoryPath: guardInternal('swarm.publishDirectoryPath', (pickToken) =>
+      ipcRenderer.invoke('swarm:publish-directory', pickToken)
     ),
     getUploadStatus: guardInternal('swarm.getUploadStatus', (tagUid) =>
       ipcRenderer.invoke('swarm:get-upload-status', tagUid)
@@ -1592,35 +1594,33 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 });
 
 // ============================================
-// Ethereum Provider (EIP-1193)
+// Page-world providers: early injection
 // ============================================
 
-// Injected into the page realm so dapps see window.ethereum as an own-property
-// of their own window, which many wallet-detection libraries require.
-// The preload realm only bridges messages to/from the host renderer (below).
-//
-// PRIVATE MODE GUARD (providers): skipped entirely in private windows —
-// no injection, no bridges. Nothing announces via EIP-6963.
-if (PROVIDERS_ENABLED) {
+// Runs a provider's packaged source (window.ethereum / window.swarm /
+// window.radicle) synchronously in the page's main world. Preloads finish
+// before Chromium executes the document's inline scripts, so the provider is
+// already there when an eager app captures it while parsing. A
+// DOMContentLoaded <script> was too late: apps that saved the initial
+// undefined value could never recover even though the provider appeared
+// later — and, being an inline script, it was refused outright by a page CSP
+// without 'unsafe-inline' (#683). executeInMainWorld is not subject to the
+// page's CSP. `new Function` runs only Freedom's own source (packaged, or a
+// constant in this file); page content never contributes code to this
+// compilation step.
+function injectPageProvider(name, source) {
   try {
-    // Preloads finish before Chromium executes the document's inline scripts.
-    // Execute Freedom's trusted provider source synchronously in the page's
-    // main world so an eager dapp may capture `window.ethereum` while parsing.
-    // A DOMContentLoaded <script> was too late: apps that saved the initial
-    // undefined value could never recover even though the provider appeared
-    // later. `new Function` runs only our packaged source fetched over sync
-    // IPC; contract HTML never contributes code to this compilation step.
-    const installProvider = new Function(ETHEREUM_INJECT_SOURCE);
-    contextBridge.executeInMainWorld({ func: installProvider });
+    contextBridge.executeInMainWorld({ func: new Function(source) });
   } catch (err) {
-    console.error('[webview-preload] Failed early ethereum provider injection:', err);
+    console.error(`[webview-preload] Failed early ${name} provider injection:`, err);
 
     // Defensive compatibility fallback for an Electron/runtime regression.
-    // The provider source is idempotent, so a partially completed early
-    // install will not be replaced or receive duplicate listeners.
+    // The ethereum source is idempotent; the swarm/radicle ones replace the
+    // global with a fresh instance whose request ids only its own listener
+    // tracks, so a partial early install can't double-answer a request.
     try {
       const script = document.createElement('script');
-      script.textContent = ETHEREUM_INJECT_SOURCE;
+      script.textContent = source;
       const inject = () => {
         const head = document.head || document.documentElement;
         head.insertBefore(script, head.firstChild);
@@ -1632,9 +1632,23 @@ if (PROVIDERS_ENABLED) {
         inject();
       }
     } catch (fallbackErr) {
-      console.error('[webview-preload] Failed fallback ethereum provider injection:', fallbackErr);
+      console.error(`[webview-preload] Failed fallback ${name} provider injection:`, fallbackErr);
     }
   }
+}
+
+// ============================================
+// Ethereum Provider (EIP-1193)
+// ============================================
+
+// Injected into the page realm so dapps see window.ethereum as an own-property
+// of their own window, which many wallet-detection libraries require.
+// The preload realm only bridges messages to/from the host renderer (below).
+//
+// PRIVATE MODE GUARD (providers): skipped entirely in private windows —
+// no injection, no bridges. Nothing announces via EIP-6963.
+if (PROVIDERS_ENABLED) {
+  injectPageProvider('ethereum', ETHEREUM_INJECT_SOURCE);
 
   // Bridge postMessage from page to IPC
   window.addEventListener('message', (event) => {
@@ -1682,129 +1696,115 @@ if (PROVIDERS_ENABLED) {
 // Swarm Provider (window.swarm)
 // ============================================
 
-try {
-  const swarmScript = document.createElement('script');
-  swarmScript.textContent = `
-    (function() {
-      const pendingRequests = new Map();
-      let requestId = 0;
-      const eventListeners = { connect: [], disconnect: [], message: [] };
+// Main-world source, run by injectPageProvider. Self-contained: it closes over
+// nothing in this preload.
+const SWARM_INJECT_SOURCE = `
+  (function() {
+    const pendingRequests = new Map();
+    let requestId = 0;
+    const eventListeners = { connect: [], disconnect: [], message: [] };
 
-      function emitEvent(event, data) {
-        if (eventListeners[event]) {
-          eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
-        }
+    function emitEvent(event, data) {
+      if (eventListeners[event]) {
+        eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
       }
-
-      window.swarm = {
-        isFreedomBrowser: true,
-
-        async request({ method, params }) {
-          if (!method) throw new Error('method is required');
-          const id = ++requestId;
-          return new Promise((resolve, reject) => {
-            pendingRequests.set(id, { resolve, reject });
-            window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
-            const longRunning = method.startsWith('swarm_publish') ||
-              method.startsWith('swarm_send') ||
-              method === 'swarm_createFeed' ||
-              method === 'swarm_updateFeed' ||
-              method === 'swarm_writeFeedEntry' ||
-              method === 'swarm_writeSingleOwnerChunk' ||
-              method === 'swarm_getSigningIdentity' ||
-              method === 'swarm_getMessagingIdentity' ||
-              method === 'swarm_subscribe';
-            const timeout = longRunning ? 300000 : 60000;
-            setTimeout(() => {
-              if (pendingRequests.has(id)) {
-                pendingRequests.delete(id);
-                const err = new Error('Request timed out');
-                err.code = -32603;
-                reject(err);
-              }
-            }, timeout);
-          });
-        },
-
-        requestAccess() { return this.request({ method: 'swarm_requestAccess' }); },
-        getCapabilities() { return this.request({ method: 'swarm_getCapabilities' }); },
-        publishData(params) { return this.request({ method: 'swarm_publishData', params: params }); },
-        publishFiles(params) { return this.request({ method: 'swarm_publishFiles', params: params }); },
-        getUploadStatus(params) { return this.request({ method: 'swarm_getUploadStatus', params: params }); },
-        createFeed(params) { return this.request({ method: 'swarm_createFeed', params: params }); },
-        updateFeed(params) { return this.request({ method: 'swarm_updateFeed', params: params }); },
-        writeFeedEntry(params) { return this.request({ method: 'swarm_writeFeedEntry', params: params }); },
-        readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
-        listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
-        publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
-        readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
-        writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
-        readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
-        getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
-        getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
-        subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
-        unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
-        sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
-        sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
-
-        on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
-        removeListener(event, handler) {
-          if (eventListeners[event]) {
-            const i = eventListeners[event].indexOf(handler);
-            if (i > -1) eventListeners[event].splice(i, 1);
-          }
-          return this;
-        },
-        addListener(event, handler) { return this.on(event, handler); },
-        removeAllListeners(event) {
-          if (event && eventListeners[event]) eventListeners[event] = [];
-          if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
-          return this;
-        },
-      };
-
-      window.addEventListener('message', function(event) {
-        if (event.source !== window) return;
-        if (event.data.type === 'FREEDOM_SWARM_RESPONSE') {
-          const pending = pendingRequests.get(event.data.id);
-          if (pending) {
-            pendingRequests.delete(event.data.id);
-            if (event.data.error) {
-              const err = new Error(event.data.error.message);
-              err.code = event.data.error.code;
-              err.data = event.data.error.data;
-              pending.reject(err);
-            } else {
-              pending.resolve(event.data.result);
-            }
-          }
-        } else if (event.data.type === 'FREEDOM_SWARM_EVENT') {
-          emitEvent(event.data.event, event.data.data);
-        }
-      });
-    })();
-  `;
-
-  const injectSwarm = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(swarmScript, head.firstChild);
-    swarmScript.remove();
-  };
-
-  // PRIVATE MODE GUARD (providers): window.swarm is not injected in
-  // private windows — same policy as window.ethereum above.
-  // Internal pages don't get it either: they talk to main through freedomAPI,
-  // and their CSP (`script-src 'self'`, #432) refuses this inline <script>, so
-  // injecting it there would only log a violation.
-  if (PROVIDERS_ENABLED && !isInternalPage()) {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
-    } else {
-      injectSwarm();
     }
-  }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject swarm provider:', err);
+
+    window.swarm = {
+      isFreedomBrowser: true,
+
+      async request({ method, params }) {
+        if (!method) throw new Error('method is required');
+        const id = ++requestId;
+        return new Promise((resolve, reject) => {
+          pendingRequests.set(id, { resolve, reject });
+          window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
+          const longRunning = method.startsWith('swarm_publish') ||
+            method.startsWith('swarm_send') ||
+            method === 'swarm_createFeed' ||
+            method === 'swarm_updateFeed' ||
+            method === 'swarm_writeFeedEntry' ||
+            method === 'swarm_writeSingleOwnerChunk' ||
+            method === 'swarm_getSigningIdentity' ||
+            method === 'swarm_getMessagingIdentity' ||
+            method === 'swarm_subscribe';
+          const timeout = longRunning ? 300000 : 60000;
+          setTimeout(() => {
+            if (pendingRequests.has(id)) {
+              pendingRequests.delete(id);
+              const err = new Error('Request timed out');
+              err.code = -32603;
+              reject(err);
+            }
+          }, timeout);
+        });
+      },
+
+      requestAccess() { return this.request({ method: 'swarm_requestAccess' }); },
+      getCapabilities() { return this.request({ method: 'swarm_getCapabilities' }); },
+      publishData(params) { return this.request({ method: 'swarm_publishData', params: params }); },
+      publishFiles(params) { return this.request({ method: 'swarm_publishFiles', params: params }); },
+      getUploadStatus(params) { return this.request({ method: 'swarm_getUploadStatus', params: params }); },
+      createFeed(params) { return this.request({ method: 'swarm_createFeed', params: params }); },
+      updateFeed(params) { return this.request({ method: 'swarm_updateFeed', params: params }); },
+      writeFeedEntry(params) { return this.request({ method: 'swarm_writeFeedEntry', params: params }); },
+      readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
+      listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
+      publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
+      writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
+      readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
+      getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+      getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
+      subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
+      unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
+      sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
+      sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+
+      on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
+      removeListener(event, handler) {
+        if (eventListeners[event]) {
+          const i = eventListeners[event].indexOf(handler);
+          if (i > -1) eventListeners[event].splice(i, 1);
+        }
+        return this;
+      },
+      addListener(event, handler) { return this.on(event, handler); },
+      removeAllListeners(event) {
+        if (event && eventListeners[event]) eventListeners[event] = [];
+        if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
+        return this;
+      },
+    };
+
+    window.addEventListener('message', function(event) {
+      if (event.source !== window) return;
+      if (event.data.type === 'FREEDOM_SWARM_RESPONSE') {
+        const pending = pendingRequests.get(event.data.id);
+        if (pending) {
+          pendingRequests.delete(event.data.id);
+          if (event.data.error) {
+            const err = new Error(event.data.error.message);
+            err.code = event.data.error.code;
+            err.data = event.data.error.data;
+            pending.reject(err);
+          } else {
+            pending.resolve(event.data.result);
+          }
+        }
+      } else if (event.data.type === 'FREEDOM_SWARM_EVENT') {
+        emitEvent(event.data.event, event.data.data);
+      }
+    });
+  })();
+`;
+
+// PRIVATE MODE GUARD (providers): window.swarm is not injected in
+// private windows — same policy as window.ethereum above.
+// Internal pages don't get it either: they talk to main through freedomAPI
+// and have no use for it (#432).
+if (PROVIDERS_ENABLED && !isInternalPage()) {
+  injectPageProvider('swarm', SWARM_INJECT_SOURCE);
 }
 
 if (PROVIDERS_ENABLED) {
@@ -1849,127 +1849,113 @@ if (PROVIDERS_ENABLED) {
 // fetch('rad:<rid>/…') calls resolved by the main-process rad: protocol
 // handler — no provider involvement. See docs/radicle-provider-api.md.
 
-try {
-  const radicleScript = document.createElement('script');
-  radicleScript.textContent = `
-    (function() {
-      const pendingRequests = new Map();
-      let requestId = 0;
-      const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
+// Main-world source, run by injectPageProvider (see SWARM_INJECT_SOURCE).
+const RADICLE_INJECT_SOURCE = `
+  (function() {
+    const pendingRequests = new Map();
+    let requestId = 0;
+    const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
 
-      function emitEvent(event, data) {
-        if (eventListeners[event]) {
-          eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
-        }
+    function emitEvent(event, data) {
+      if (eventListeners[event]) {
+        eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
       }
-
-      window.radicle = {
-        isFreedomBrowser: true,
-
-        async request({ method, params }) {
-          if (!method) throw new Error('method is required');
-          const id = ++requestId;
-          return new Promise((resolve, reject) => {
-            pendingRequests.set(id, { resolve, reject });
-            window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
-            // Execution itself is prompt — seed/sync hand the network fetch
-            // to a background tracker (seedStatus events report progress;
-            // radicle_getSeedStatus restores a snapshot after reload). But the
-            // methods below can first block on a consent prompt while the
-            // user deliberates; timing those out at 60s rejects the page
-            // promise while the grant and the write still land in main, so
-            // the dApp retries and duplicates the COB. Match the swarm
-            // sibling's 300s budget for anything that can prompt.
-            const canPrompt = method === 'radicle_requestAccess' ||
-              method === 'radicle_seed' ||
-              method === 'radicle_getIdentity' ||
-              method === 'radicle_createIssue' ||
-              method === 'radicle_commentIssue' ||
-              method === 'radicle_editIssueState' ||
-              method === 'radicle_commentPatch';
-            const timeout = canPrompt ? 300000 : 60000;
-            setTimeout(() => {
-              if (pendingRequests.has(id)) {
-                pendingRequests.delete(id);
-                const err = new Error('Request timed out');
-                err.code = -32603;
-                reject(err);
-              }
-            }, timeout);
-          });
-        },
-
-        requestAccess() { return this.request({ method: 'radicle_requestAccess' }); },
-        disconnect() { return this.request({ method: 'radicle_disconnect' }); },
-        getCapabilities() { return this.request({ method: 'radicle_getCapabilities' }); },
-        getNodeStatus() { return this.request({ method: 'radicle_getNodeStatus' }); },
-        listSeededRepos() { return this.request({ method: 'radicle_listSeededRepos' }); },
-        seed(params) { return this.request({ method: 'radicle_seed', params: params }); },
-        unseed(params) { return this.request({ method: 'radicle_unseed', params: params }); },
-        sync(params) { return this.request({ method: 'radicle_sync', params: params }); },
-        getSeedStatus(params) { return this.request({ method: 'radicle_getSeedStatus', params: params }); },
-        getIdentity() { return this.request({ method: 'radicle_getIdentity' }); },
-        createIssue(params) { return this.request({ method: 'radicle_createIssue', params: params }); },
-        commentIssue(params) { return this.request({ method: 'radicle_commentIssue', params: params }); },
-        editIssueState(params) { return this.request({ method: 'radicle_editIssueState', params: params }); },
-        commentPatch(params) { return this.request({ method: 'radicle_commentPatch', params: params }); },
-
-        on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
-        removeListener(event, handler) {
-          if (eventListeners[event]) {
-            const i = eventListeners[event].indexOf(handler);
-            if (i > -1) eventListeners[event].splice(i, 1);
-          }
-          return this;
-        },
-        addListener(event, handler) { return this.on(event, handler); },
-        removeAllListeners(event) {
-          if (event && eventListeners[event]) eventListeners[event] = [];
-          if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
-          return this;
-        },
-      };
-
-      window.addEventListener('message', function(event) {
-        if (event.source !== window) return;
-        if (event.data.type === 'FREEDOM_RADICLE_RESPONSE') {
-          const pending = pendingRequests.get(event.data.id);
-          if (pending) {
-            pendingRequests.delete(event.data.id);
-            if (event.data.error) {
-              const err = new Error(event.data.error.message);
-              err.code = event.data.error.code;
-              err.data = event.data.error.data;
-              pending.reject(err);
-            } else {
-              pending.resolve(event.data.result);
-            }
-          }
-        } else if (event.data.type === 'FREEDOM_RADICLE_EVENT') {
-          emitEvent(event.data.event, event.data.data);
-        }
-      });
-    })();
-  `;
-
-  const injectRadicle = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(radicleScript, head.firstChild);
-    radicleScript.remove();
-  };
-
-  // PRIVATE MODE GUARD (providers): window.radicle is not injected in
-  // private windows — same policy as window.ethereum / window.swarm above.
-  // Skipped on internal pages for the same reason as window.swarm (#432).
-  if (PROVIDERS_ENABLED && !isInternalPage()) {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
-    } else {
-      injectRadicle();
     }
-  }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject radicle provider:', err);
+
+    window.radicle = {
+      isFreedomBrowser: true,
+
+      async request({ method, params }) {
+        if (!method) throw new Error('method is required');
+        const id = ++requestId;
+        return new Promise((resolve, reject) => {
+          pendingRequests.set(id, { resolve, reject });
+          window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
+          // Execution itself is prompt — seed/sync hand the network fetch
+          // to a background tracker (seedStatus events report progress;
+          // radicle_getSeedStatus restores a snapshot after reload). But the
+          // methods below can first block on a consent prompt while the
+          // user deliberates; timing those out at 60s rejects the page
+          // promise while the grant and the write still land in main, so
+          // the dApp retries and duplicates the COB. Match the swarm
+          // sibling's 300s budget for anything that can prompt.
+          const canPrompt = method === 'radicle_requestAccess' ||
+            method === 'radicle_seed' ||
+            method === 'radicle_getIdentity' ||
+            method === 'radicle_createIssue' ||
+            method === 'radicle_commentIssue' ||
+            method === 'radicle_editIssueState' ||
+            method === 'radicle_commentPatch';
+          const timeout = canPrompt ? 300000 : 60000;
+          setTimeout(() => {
+            if (pendingRequests.has(id)) {
+              pendingRequests.delete(id);
+              const err = new Error('Request timed out');
+              err.code = -32603;
+              reject(err);
+            }
+          }, timeout);
+        });
+      },
+
+      requestAccess() { return this.request({ method: 'radicle_requestAccess' }); },
+      disconnect() { return this.request({ method: 'radicle_disconnect' }); },
+      getCapabilities() { return this.request({ method: 'radicle_getCapabilities' }); },
+      getNodeStatus() { return this.request({ method: 'radicle_getNodeStatus' }); },
+      listSeededRepos() { return this.request({ method: 'radicle_listSeededRepos' }); },
+      seed(params) { return this.request({ method: 'radicle_seed', params: params }); },
+      unseed(params) { return this.request({ method: 'radicle_unseed', params: params }); },
+      sync(params) { return this.request({ method: 'radicle_sync', params: params }); },
+      getSeedStatus(params) { return this.request({ method: 'radicle_getSeedStatus', params: params }); },
+      getIdentity() { return this.request({ method: 'radicle_getIdentity' }); },
+      createIssue(params) { return this.request({ method: 'radicle_createIssue', params: params }); },
+      commentIssue(params) { return this.request({ method: 'radicle_commentIssue', params: params }); },
+      editIssueState(params) { return this.request({ method: 'radicle_editIssueState', params: params }); },
+      commentPatch(params) { return this.request({ method: 'radicle_commentPatch', params: params }); },
+
+      on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
+      removeListener(event, handler) {
+        if (eventListeners[event]) {
+          const i = eventListeners[event].indexOf(handler);
+          if (i > -1) eventListeners[event].splice(i, 1);
+        }
+        return this;
+      },
+      addListener(event, handler) { return this.on(event, handler); },
+      removeAllListeners(event) {
+        if (event && eventListeners[event]) eventListeners[event] = [];
+        if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
+        return this;
+      },
+    };
+
+    window.addEventListener('message', function(event) {
+      if (event.source !== window) return;
+      if (event.data.type === 'FREEDOM_RADICLE_RESPONSE') {
+        const pending = pendingRequests.get(event.data.id);
+        if (pending) {
+          pendingRequests.delete(event.data.id);
+          if (event.data.error) {
+            const err = new Error(event.data.error.message);
+            err.code = event.data.error.code;
+            err.data = event.data.error.data;
+            pending.reject(err);
+          } else {
+            pending.resolve(event.data.result);
+          }
+        }
+      } else if (event.data.type === 'FREEDOM_RADICLE_EVENT') {
+        emitEvent(event.data.event, event.data.data);
+      }
+    });
+  })();
+`;
+
+// PRIVATE MODE GUARD (providers): window.radicle is not injected in
+// private windows — same policy as window.ethereum / window.swarm above.
+// Skipped on internal pages for the same reason as window.swarm (#432).
+if (PROVIDERS_ENABLED && !isInternalPage()) {
+  injectPageProvider('radicle', RADICLE_INJECT_SOURCE);
 }
 
 if (PROVIDERS_ENABLED) {

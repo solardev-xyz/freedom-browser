@@ -894,6 +894,8 @@ jobs:
   # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
   # guard that keeps web content off the local Ant API keys on the requesting
   # frame and webContents type, which only a real tab `<webview>` produces.
+  # `user-agent.spec.js` (#471) reads the User-Agent a real tab guest, its
+  # worker and a private window's partition send, which a unit test can't see.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -921,7 +923,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -935,7 +937,9 @@ jobs:
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
             test-e2e/popup-close.spec.js \
-            test-e2e/ant-api-guard.spec.js
+            test-e2e/ant-api-guard.spec.js \
+            test-e2e/user-agent.spec.js \
+            test-e2e/browser-fullscreen.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1184,15 +1188,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Browser chrome around the page that only a real window can exercise, and
-  # that `e2e-tabs` (already the longest e2e job) has no room for: the find
-  # bar against a real guest's find-in-page results (`find-in-page`), the tab
-  # audio indicator and its mute toggle (`tab-mute`), private windows on their
-  # own session and palette (`private-windows`, `private-tab-color`), the one
-  # focus ring every chrome text field draws (`chrome-input-focus`, #246),
-  # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
-  # and the download shelf, whose dismissed card must stay dismissed for the
-  # rest of the transfer (`downloads`, #309).
   # Native Agent qualification uses macOS's real workspace sandbox.
   e2e-agent:
     needs: code-changed
@@ -1282,6 +1277,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Browser chrome around the page that only a real window can exercise, and
+  # that `e2e-tabs` (already the longest e2e job) has no room for: the find
+  # bar against a real guest's find-in-page results (`find-in-page`), the tab
+  # audio indicator and its mute toggle (`tab-mute`), private windows on their
+  # own session and palette (`private-windows`, `private-tab-color`), the one
+  # focus ring every chrome text field draws (`chrome-input-focus`, #246),
+  # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
+  # and the download shelf, whose dismissed card must stay dismissed for the
+  # rest of the transfer (`downloads`, #309), and the application menu's
+  # History menu, which reads private-window state (`history-menu`, #584).
   e2e-chrome:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1309,16 +1314,18 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads E2E
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/find-in-page.spec.js \
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
+            test-e2e/page-providers-early.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
-            test-e2e/downloads.spec.js
+            test-e2e/downloads.spec.js \
+            test-e2e/history-menu.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

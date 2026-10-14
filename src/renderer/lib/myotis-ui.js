@@ -163,7 +163,7 @@ const updateControls = (status) => {
   if (peersCount) peersCount.textContent = String(status?.peerCount ?? 0);
   if (finalizedBlock) finalizedBlock.textContent = countText(status?.finalizedBlockNumber);
   if (versionText) {
-    versionText.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
+    versionText.textContent = versionLabel(status?.version && `Myotis ${status.version}`);
   }
 };
 
@@ -204,7 +204,7 @@ const updateGnosisControls = (status) => {
   if (gnosis.peers) gnosis.peers.textContent = String(status?.peerCount ?? 0);
   if (gnosis.block) gnosis.block.textContent = countText(status?.finalizedBlockNumber);
   if (gnosis.version) {
-    gnosis.version.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
+    gnosis.version.textContent = versionLabel(status?.version && `Myotis ${status.version}`);
   }
 };
 

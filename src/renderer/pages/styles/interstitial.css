@@ -1,5 +1,6 @@
 /* Shared base styles for the name interstitial pages (conflict, unverified),
-   used by the ENS, Tezos Domains and onchain-app name flows. */
+   used by the ENS, Tezos Domains and onchain-app name flows, and for the
+   content error page (`error.html`, #606), so all of them share one frame. */
 html,
 body {
   height: 100%;
@@ -35,6 +36,9 @@ h1 {
   gap: 12px;
 }
 body.conflict h1 {
+  color: var(--shell-danger);
+}
+body.error h1 {
   color: var(--shell-danger);
 }
 body.unverified h1 {

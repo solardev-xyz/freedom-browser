@@ -9,6 +9,10 @@
  * 2. `bee-data/` → `ant-data/` (Bee → Ant node swap). Carries over the
  *    injected node identity so upgrading users keep their Swarm wallet
  *    (overlay address, postage stamps, chequebook funds).
+ *
+ * 3. Legacy Kubo repo in `ipfs-data/` (Kubo → freedom-ipfs swap, #93/#101).
+ *    Deleted, keeping only `ipfs-data/freedom-ipfs/`; see
+ *    setAsideLegacyKuboRepo() for why deleting is the right call.
  */
 
 const { app } = require('electron');
@@ -398,8 +402,174 @@ function migrateBeeDataToAntData(options = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Legacy Kubo repo cleanup (#101)
+//
+// Before 0.8.0 the bundled Kubo daemon used `<userData>/ipfs-data/` itself as
+// its repo (IPFS_PATH). Since #93 the in-process freedom-ipfs node keeps its
+// state in the child dir `ipfs-data/freedom-ipfs/`, and nothing reads the
+// rest of `ipfs-data/` any more — but on an upgraded install the old repo is
+// still there: Kubo's `config` (with the old node identity), `keystore/`, and
+// a blockstore that can run to several GB.
+//
+// POLICY: delete it. Nothing in it is worth keeping:
+// - The blockstore is a content-addressed cache. Every block is retrievable
+//   from the network again by its CID, which is how freedom-ipfs fetches
+//   content anyway; it has no importer for a Kubo flatfs/leveldb repo.
+// - The Kubo identity in `config` is either the one injected from the vault
+//   (derived from the seed phrase, so it is re-derivable and not lost) or
+//   Kubo's own `ipfs init` key, which nothing was ever published under.
+//   freedom-ipfs runs ephemeral identities and has no use for either.
+// - Freedom never created or used IPNS keys in Kubo's `keystore/` (no
+//   `key/gen` or `name/publish` call in any released version).
+// - Freedom itself never added or pinned content (no `add`/`pin`/`files`
+//   call in any released version). The one accepted loss: someone who pinned
+//   content into Freedom's node by hand, through Kubo's local API port 5001.
+//   That node has not run or served anything since 0.8.0, and such a pin was
+//   never something Freedom offered or showed.
+// Leaving it would cost the user that disk space forever with no way to
+// reclaim it short of finding the directory by hand.
+//
+// HOW: like the Bee-only state (#526), the delete never runs before the first
+// window. At startup every legacy entry is only *renamed* into a sibling
+// set-aside dir (instant, same filesystem); purgeSetAsideLegacyKuboData()
+// deletes that dir off the main thread once the window is up, and a later
+// launch picks up a purge that didn't finish.
+//
+// NEVER TOUCHED: `ipfs-data/freedom-ipfs/` (the live node's state) and the
+// directory itself. A launch with FREEDOM_IPFS_DATA set (a test, or a
+// developer pointing the node at a dir of their choice) skips the cleanup
+// entirely: that dir is not ours to judge.
+
+// Top-level entries that only a Kubo repo has. Their presence is what marks
+// `ipfs-data/` as an orphaned Kubo repo rather than a fresh install's dir
+// holding just `freedom-ipfs/`.
+const KUBO_REPO_MARKERS = [
+  'blocks',
+  'datastore',
+  'keystore',
+  'datastore_spec',
+  'version',
+  'config',
+];
+
+// The live freedom-ipfs node's data dir inside ipfs-data/ (ipfs-manager's
+// getIpfsDataPath). Never moved, never deleted.
+const FREEDOM_IPFS_DIR = 'freedom-ipfs';
+
+const KUBO_SET_ASIDE_DIR = '.legacy-kubo-data-pending-delete';
+
+function getLegacyIpfsDataDir() {
+  return path.join(getNodeDataBaseDir(), 'ipfs-data');
+}
+
+function getKuboSetAsideDir() {
+  return path.join(getNodeDataBaseDir(), KUBO_SET_ASIDE_DIR);
+}
+
+/**
+ * Whether `ipfs-data/` still holds (part of) the legacy Kubo repo.
+ * @returns {boolean}
+ */
+function isLegacyKuboRepoPresent() {
+  if (process.env.FREEDOM_IPFS_DATA) {
+    return false;
+  }
+  const ipfsData = getLegacyIpfsDataDir();
+  return KUBO_REPO_MARKERS.some((name) => fs.existsSync(path.join(ipfsData, name)));
+}
+
+// Order the entries so the Kubo markers move last and `config` last of all.
+// The retry precondition is "a marker is still in ipfs-data/": the loop stops
+// at the first failed rename (e.g. Windows EPERM on a handle an indexer or
+// antivirus holds), so a marker is always left behind for the next launch to
+// retry from. Moving markers first could strand unmarked leftovers (Kubo's
+// `api`, `gateway`, `repo.lock`, `config-v*-backup`) with no retry.
+function orderLegacyKuboEntries(names) {
+  // Non-markers rank -1, so they sort first.
+  const rank = (name) => KUBO_REPO_MARKERS.indexOf(name);
+  return [...names].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+/**
+ * Move the orphaned legacy Kubo repo out of `ipfs-data/` into a set-aside dir
+ * for purgeSetAsideLegacyKuboData() to delete off the main thread. Keeps
+ * `ipfs-data/freedom-ipfs/`. Idempotent and retry-safe without a marker file:
+ * it only acts while isLegacyKuboRepoPresent() holds, and a run that stops
+ * part-way leaves a marker behind (see orderLegacyKuboEntries).
+ *
+ * Runs at startup, after the profile is resolved and before IPFS starts.
+ *
+ * @returns {boolean} true if anything was set aside
+ */
+function setAsideLegacyKuboRepo(options = {}) {
+  const log = getLogger(options.logger);
+
+  if (!isLegacyKuboRepoPresent()) {
+    return false;
+  }
+
+  const ipfsData = getLegacyIpfsDataDir();
+  let moved = 0;
+  try {
+    const entries = orderLegacyKuboEntries(
+      fs.readdirSync(ipfsData).filter((name) => name !== FREEDOM_IPFS_DIR)
+    );
+    // One batch dir per run: an earlier set-aside may still be waiting for
+    // its purge, and its entries carry the same names. mkdtemp adds a random
+    // suffix, so two runs in the same millisecond (and pid) never share one.
+    const setAside = getKuboSetAsideDir();
+    fs.mkdirSync(setAside, { recursive: true });
+    const batch = fs.mkdtempSync(path.join(setAside, `${Date.now()}-${process.pid}-`));
+    log.info(`[Migration] Setting aside legacy Kubo repo in ${ipfsData} for removal`);
+    for (const name of entries) {
+      fs.renameSync(path.join(ipfsData, name), path.join(batch, name));
+      moved += 1;
+    }
+    log.info(`[Migration] Set aside ${moved} legacy Kubo repo entries`);
+    return true;
+  } catch (err) {
+    // Stop here: a Kubo marker is still in place, so the next launch retries.
+    // No in-place rmSync fallback — a multi-GB blockstore deleted on the main
+    // thread would stall startup, and the same lock would likely fail it too.
+    log.warn(
+      `[Migration] Could not set aside the legacy Kubo repo (${moved} entries moved, will retry):`,
+      err.message
+    );
+    return moved > 0;
+  }
+}
+
+/**
+ * Delete what setAsideLegacyKuboRepo() set aside, in a worker thread
+ * (fs-offload) so the main thread never blocks on it. Call once the first
+ * window is up. Does nothing (one existsSync) when there is nothing to purge.
+ *
+ * @returns {Promise<boolean>} true if a set-aside dir was removed
+ */
+async function purgeSetAsideLegacyKuboData(options = {}) {
+  const log = getLogger(options.logger);
+  const setAside = getKuboSetAsideDir();
+  if (!fs.existsSync(setAside)) {
+    return false;
+  }
+  const startedAt = Date.now();
+  try {
+    await fsOffload.removePath(setAside, { recursive: true, force: true });
+    log.info(`[Migration] Removed legacy Kubo repo in ${Date.now() - startedAt} ms`);
+    return true;
+  } catch (err) {
+    // Retried on the next launch: the set-aside dir is still there.
+    log.warn('[Migration] Could not remove the legacy Kubo repo (will retry):', err.message);
+    return false;
+  }
+}
+
 module.exports = {
   migrateUserData,
+  setAsideLegacyKuboRepo,
+  purgeSetAsideLegacyKuboData,
+  isLegacyKuboRepoPresent,
   migrateBeeDataToAntData,
   purgeSetAsideBeeData,
   isBeeDataMigrationPending,

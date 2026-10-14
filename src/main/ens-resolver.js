@@ -2801,7 +2801,7 @@ function registerEnsIpc() {
   });
 
   // Drop the cached contenthash for `name`. Used by the renderer's
-  // swarm-probe failure handler so a "Try Again" click does a fresh
+  // swarm-probe failure handler so a "Try again" click does a fresh
   // resolution rather than re-probing a stale contenthash.
   ipcMain.handle(IPC.ENS_INVALIDATE_CONTENT, async (event, payload = {}) => {
     const { name } = payload;

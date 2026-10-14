@@ -194,7 +194,7 @@ test.describe('Ant API guard (O-1)', () => {
     await window.click('#bee-menu-button');
     await expect(window.locator('#bee-peers-count')).toHaveText('3');
     await expect(window.locator('#bee-network-peers')).toHaveText('9');
-    await expect(window.locator('#bee-version-text')).toHaveText('Ant v0.5.45');
+    await expect(window.locator('#bee-version-text')).toHaveText('Ant 0.5.45');
     // The chrome renderer's own fetch() would have hit the harness http stub,
     // never this server: every hit here came over IPC from the main process.
     expect(nodeRequests).toEqual(expect.arrayContaining(['GET /peers', 'GET /health']));

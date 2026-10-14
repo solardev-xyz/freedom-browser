@@ -1055,6 +1055,57 @@ describe('tabs ui behavior', () => {
     expect(lastWindowLoad.mod.getActiveTab()).toBeNull();
   });
 
+  // #584: the app menu's History > Recently Closed rows come from this push
+  // and name the entry to reopen.
+  test('pushes closed tabs to the menu and reopens the one a menu row names', async () => {
+    const { mod, electronAPI, electronHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const first = mod.createTab('https://first.example');
+    const second = mod.createTab('https://second.example');
+    mod.closeTab(first.id);
+    mod.closeTab(second.id);
+
+    const state = electronAPI.updateTabMenuState.mock.calls.at(-1)[0];
+    expect(state.hasClosedTabs).toBe(true);
+    expect(state.closedTabs.map((entry) => entry.url)).toEqual([
+      'https://first.example',
+      'https://second.example',
+    ]);
+    const [firstEntry, secondEntry] = state.closedTabs;
+    expect(firstEntry.id).not.toBe(secondEntry.id);
+    expect(secondEntry.closedAt).toBeGreaterThanOrEqual(firstEntry.closedAt);
+
+    // The menu row for the older entry reopens that one, not the newest.
+    electronHandlers.reopenClosedTab(firstEntry.id);
+    expect(mod.getActiveTab().url).toBe('https://first.example');
+    const after = electronAPI.updateTabMenuState.mock.calls.at(-1)[0];
+    expect(after.closedTabs.map((entry) => entry.url)).toEqual(['https://second.example']);
+
+    // A stale row (already reopened) does nothing.
+    const count = mod.getTabs().length;
+    electronHandlers.reopenClosedTab(firstEntry.id);
+    expect(mod.getTabs()).toHaveLength(count);
+
+    // Reopen Closed Tab (no id) still takes the most recent.
+    electronHandlers.reopenClosedTab(undefined);
+    expect(mod.getActiveTab().url).toBe('https://second.example');
+  });
+
+  test("the menu push carries the active tab's Back/Forward availability", async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const tab = mod.createTab('https://nav.example');
+    tab.webview.canGoBack = jest.fn(() => true);
+    tab.webview.canGoForward = jest.fn(() => {
+      throw new Error('not attached');
+    });
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: true, canGoForward: false })
+    );
+  });
+
   // #580: a page's `window.close()` makes the <webview> fire `close`, and
   // Electron destroys the guest right after while leaving the element up.
   test('a page that closes itself closes its tab, and the window with its last tab', async () => {

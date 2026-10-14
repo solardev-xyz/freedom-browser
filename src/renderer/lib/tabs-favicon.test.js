@@ -253,4 +253,42 @@ describe('tabs page-favicon-updated handling (#75)', () => {
 
     expect(faviconForwards(ctx.onWebviewEvent)).toHaveLength(0);
   });
+
+  // #606 item 8: Chromium does not report an icon list again when it is the
+  // one it just reported, so a cross-document commit that reloads the same
+  // internal page (Settings at `#appearance` loading `freedom://settings`, a
+  // reload) gets no `page-favicon-updated` to repaint a cleared slot. The
+  // Settings gear used to drop to the globe for the rest of the visit.
+  describe('an internal page committing over itself (#606)', () => {
+    const SETTINGS = 'file:///app/pages/settings.html';
+    const commit = (ctx, url) => {
+      ctx.webview.src = url;
+      ctx.webview.dispatch('did-navigate', { url });
+    };
+
+    test('keeps the icon it already painted', async () => {
+      const ctx = await loadTabs();
+      commit(ctx, `${SETTINGS}#appearance`);
+      ctx.webview.dispatch('page-favicon-updated', {
+        favicons: ['data:image/svg+xml;base64,GEAR'],
+      });
+      expect(ctx.tabs.getActiveTab().favicon).toBe('data:image/svg+xml;base64,GEAR');
+
+      commit(ctx, SETTINGS);
+
+      expect(ctx.tabs.getActiveTab().favicon).toBe('data:image/svg+xml;base64,GEAR');
+    });
+
+    test('a different internal page still starts from a blank slot', async () => {
+      const ctx = await loadTabs();
+      commit(ctx, SETTINGS);
+      ctx.webview.dispatch('page-favicon-updated', {
+        favicons: ['data:image/svg+xml;base64,GEAR'],
+      });
+
+      commit(ctx, INTERNAL_PAGE);
+
+      expect(ctx.tabs.getActiveTab().favicon).toBeNull();
+    });
+  });
 });

@@ -153,14 +153,14 @@ async function handlePublishFile() {
   try {
     const picked = await swarm.pickFileForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading file\u2026', 0);
 
-    const result = await swarm.publishFilePath(picked.path);
+    const result = await swarm.publishFilePath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
@@ -181,14 +181,14 @@ async function handlePublishFolder() {
   try {
     const picked = await swarm.pickDirectoryForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading folder\u2026', 0);
 
-    const result = await swarm.publishDirectoryPath(picked.path);
+    const result = await swarm.publishDirectoryPath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });

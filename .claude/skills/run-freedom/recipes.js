@@ -5,7 +5,15 @@
 // Mirrors the mechanisms used by test-e2e/*.spec.js so the recipes stay in
 // step with what the harness supports.
 
-const { go, pageFor, evalInWebview, harness, menuItem, dismissOnboarding } = require('./lib');
+const {
+  launch,
+  go,
+  pageFor,
+  evalInWebview,
+  harness,
+  menuItem,
+  dismissOnboarding,
+} = require('./lib');
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -434,7 +442,24 @@ async function errorPage({ app, win }) {
   await go(win, `bzz://${HASH_MISSING}`, 2_500);
 }
 
+// freedom://profiles with a real catalog: its own catalog-mode app (see
+// lib.js `launch`), two profiles created beside the default one. Returns the
+// context; the caller shoots and closes it.
+async function profilesPage(theme, names = ['Work', 'Research']) {
+  const ctx = await launch({ theme }, { catalog: true });
+  for (const displayName of names) {
+    const result = await ctx.win.evaluate((input) => window.electronAPI.createProfile(input), {
+      displayName,
+    });
+    if (!result?.success)
+      throw new Error(`createProfile ${displayName}: ${JSON.stringify(result)}`);
+  }
+  await go(ctx.win, 'freedom://profiles', 1_800);
+  return ctx;
+}
+
 module.exports = {
+  profilesPage,
   HASH_A,
   HASH_B,
   LEDGER,

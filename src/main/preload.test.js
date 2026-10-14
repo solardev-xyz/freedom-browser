@@ -640,7 +640,10 @@ describe('preload', () => {
       [exposures.electronAPI, 'onPrevTab', 'tab:prev', [], []],
       [exposures.electronAPI, 'onMoveTabLeft', 'tab:move-left', [], []],
       [exposures.electronAPI, 'onMoveTabRight', 'tab:move-right', [], []],
-      [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [], []],
+      [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [], [undefined]],
+      [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [7], [7]],
+      [exposures.electronAPI, 'onHistoryBack', 'history:back', [], []],
+      [exposures.electronAPI, 'onHistoryForward', 'history:forward', [], []],
       [exposures.electronAPI, 'onOpenFindBar', IPC.FIND_IN_PAGE_OPEN, [], []],
       [exposures.electronAPI, 'onToggleBookmarkBar', IPC.BOOKMARKS_TOGGLE_BAR, [], []],
       [

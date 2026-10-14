@@ -19,6 +19,7 @@ const { createProfileTempDir } = require('../profile-paths');
 const fsOffload = require('../fs-offload');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
+const { createPickTokenStore } = require('./publish-pick-tokens');
 
 // What the user reads when a publish fails. A batch bought moments ago that
 // storer peers have not synced yet gets a "try again shortly" sentence
@@ -29,10 +30,24 @@ function describePublishError(err) {
 
 // The failed-publish IPC result. `needsStorage` tells freedom://publish to
 // offer the publish setup: no batch had room for the upload.
-function publishFailure(err) {
-  const failure = { success: false, error: describePublishError(err) };
+function publishFailure(err, message = describePublishError(err)) {
+  const failure = { success: false, error: message };
   if (isNoUsableBatchError(err)) failure.needsStorage = true;
   return failure;
+}
+
+// A picked path's absolute location never reaches the renderer (S-7): only
+// its basename, which swarm:pick-* already handed back. Node's fs errors
+// (ENOENT/EACCES from stat or the read stream, e.g. the file was deleted or
+// its permissions changed between pick and publish) carry the full path in
+// err.message, so those are reported by basename and error code instead.
+function describePickedPathError(err, pickedPath) {
+  if (err && typeof err.code === 'string' && typeof err.syscall === 'string') {
+    const name = path.basename(err.path || pickedPath);
+    return `Could not read "${name}" (${err.code})`;
+  }
+  const message = describePublishError(err);
+  return typeof message === 'string' ? message.split(pickedPath).join(path.basename(pickedPath)) : message;
 }
 
 // Sentinel for user-initiated publishes (text/file/directory triggered from
@@ -267,8 +282,14 @@ async function getUploadStatus(tagUid) {
  * ==========================================
  * These handlers (swarm:publish-data/file/directory, swarm:pick-file/directory,
  * swarm:get-upload-status, swarm:get-stamps, swarm:get-publish-history,
- * swarm:clear-publish-history) accept raw filesystem paths and bypass the
+ * swarm:clear-publish-history) publish the user's own files and bypass the
  * per-origin permission model that guards window.swarm.* for arbitrary pages.
+ *
+ * swarm:publish-file / swarm:publish-directory never take a filesystem path:
+ * they take only a pick token minted by swarm:pick-file / swarm:pick-directory
+ * for the same sender (see publish-pick-tokens.js), so even a script injected
+ * into an internal page can publish nothing the user did not just choose in a
+ * native dialog.
  *
  * They MUST only be reachable from trusted internal contexts:
  *
@@ -300,6 +321,24 @@ function registerPublishIpc() {
   };
   const isPrivateSender = (event) => isPrivateWebContents(event?.sender);
 
+  // One-time, short-lived, sender-bound pick tokens (S-7, #660).
+  const pickTokens = createPickTokenStore();
+  const trackedSenders = new WeakSet();
+  const revokeOnDestroy = (sender) => {
+    if (trackedSenders.has(sender) || typeof sender?.once !== 'function') return;
+    trackedSenders.add(sender);
+    const senderId = sender.id;
+    sender.once('destroyed', () => pickTokens.revokeSender(senderId));
+  };
+  const PICK_EXPIRED_ERROR = 'That selection is no longer valid. Choose the file or folder again.';
+  const redeemPick = (event, token, kind) => {
+    if (!token || typeof token !== 'string') {
+      return { error: kind === 'file' ? 'Choose a file to publish' : 'Choose a folder to publish' };
+    }
+    const result = pickTokens.redeem(token, { kind, senderId: event?.sender?.id });
+    return result.error ? { error: PICK_EXPIRED_ERROR } : result;
+  };
+
   ipcMain.handle('swarm:publish-data', async (event, data) => {
     if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
     if (!data && data !== '') {
@@ -327,13 +366,13 @@ function registerPublishIpc() {
     }
   });
 
-  ipcMain.handle('swarm:publish-file', async (event, filePath) => {
+  ipcMain.handle('swarm:publish-file', async (event, token) => {
     if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
-    if (!filePath || typeof filePath !== 'string') {
-      return { success: false, error: 'File path is required' };
-    }
+    const redeemed = redeemPick(event, token, 'file');
+    if (redeemed.error) return { success: false, error: redeemed.error };
+    const filePath = redeemed.path;
     if (!fs.existsSync(filePath)) {
-      return { success: false, error: `File not found: ${filePath}` };
+      return { success: false, error: `File not found: ${path.basename(filePath)}` };
     }
     const name = path.basename(filePath);
     const historyEntry = addEntry({
@@ -353,18 +392,27 @@ function registerPublishIpc() {
       };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
-      return publishFailure(err);
+      const message = describePickedPathError(err, filePath);
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: message });
+      return publishFailure(err, message);
     }
   });
 
-  ipcMain.handle('swarm:publish-directory', async (event, dirPath) => {
+  ipcMain.handle('swarm:publish-directory', async (event, token) => {
     if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
-    if (!dirPath || typeof dirPath !== 'string') {
-      return { success: false, error: 'Directory path is required' };
+    const redeemed = redeemPick(event, token, 'directory');
+    if (redeemed.error) return { success: false, error: redeemed.error };
+    const dirPath = redeemed.path;
+    // statSync can still throw if the folder vanishes after existsSync; a
+    // thrown error would reject the invoke with the absolute path in it.
+    let isDir;
+    try {
+      isDir = fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory();
+    } catch {
+      isDir = false;
     }
-    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-      return { success: false, error: `Directory not found: ${dirPath}` };
+    if (!isDir) {
+      return { success: false, error: `Directory not found: ${path.basename(dirPath)}` };
     }
     const name = path.basename(dirPath);
     const historyEntry = addEntry({
@@ -384,8 +432,9 @@ function registerPublishIpc() {
       };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
-      return publishFailure(err);
+      const message = describePickedPathError(err, dirPath);
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: message });
+      return publishFailure(err, message);
     }
   });
 
@@ -402,39 +451,34 @@ function registerPublishIpc() {
     }
   });
 
-  ipcMain.handle('swarm:pick-file', async () => {
+  // The pickers answer with a token, never the chosen path: the path stays
+  // here until the same sender spends the token on a publish.
+  const pickHandler = (kind) => async (event) => {
     try {
+      const senderId = event?.sender?.id;
+      if (!Number.isInteger(senderId)) {
+        return { success: false, error: 'Unknown sender' };
+      }
       const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
       const result = await dialog.showOpenDialog(win, {
-        properties: ['openFile'],
-        title: 'Select a file to publish',
+        properties: [kind === 'file' ? 'openFile' : 'openDirectory'],
+        title: kind === 'file' ? 'Select a file to publish' : 'Select a folder to publish',
       });
       if (result.canceled || !result.filePaths?.length) {
-        return { success: true, path: null };
+        return { success: true, token: null };
       }
-      return { success: true, path: result.filePaths[0] };
+      const pickedPath = result.filePaths[0];
+      revokeOnDestroy(event.sender);
+      const token = pickTokens.mint({ path: pickedPath, kind, senderId });
+      return { success: true, token, name: path.basename(pickedPath) };
     } catch (err) {
-      log.error('[PublishService] File picker failed:', err.message);
+      log.error(`[PublishService] ${kind === 'file' ? 'File' : 'Directory'} picker failed:`, err.message);
       return { success: false, error: err.message };
     }
-  });
+  };
 
-  ipcMain.handle('swarm:pick-directory', async () => {
-    try {
-      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-      const result = await dialog.showOpenDialog(win, {
-        properties: ['openDirectory'],
-        title: 'Select a folder to publish',
-      });
-      if (result.canceled || !result.filePaths?.length) {
-        return { success: true, path: null };
-      }
-      return { success: true, path: result.filePaths[0] };
-    } catch (err) {
-      log.error('[PublishService] Directory picker failed:', err.message);
-      return { success: false, error: err.message };
-    }
-  });
+  ipcMain.handle('swarm:pick-file', pickHandler('file'));
+  ipcMain.handle('swarm:pick-directory', pickHandler('directory'));
 
   log.info('[PublishService] IPC handlers registered');
 }
