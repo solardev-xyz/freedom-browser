@@ -828,6 +828,44 @@ describe('navigation', () => {
     expect(webview.reloadIgnoringCache).toHaveBeenCalledTimes(1);
   });
 
+  // R2-F1: Escape is the chrome's other Stop. Neither the window-level
+  // Escape (focus in the Agent composer, no menu open) nor the address-bar
+  // Escape may stop the Agent's in-flight load; the toolbar Stop already
+  // refuses on an Agent-owned tab.
+  test('Escape does not stop the load of an Agent-owned tab', async () => {
+    const ctx = await loadNavigationModule({ agentOwnedTabIds: [1] });
+    await ctx.mod.initNavigation();
+    const tab = ctx.activeRef.tab;
+    tab.navigationState.isWebviewLoading = true;
+    tab.navigationState.currentPageUrl = 'https://agent.example';
+    ctx.elements.reloadBtn.dataset.state = 'stop';
+
+    const composer = createElement('textarea');
+    composer.blur = jest.fn();
+    global.document.activeElement = composer;
+    const windowEscape = { key: 'Escape', defaultPrevented: false, preventDefault: jest.fn() };
+    ctx.windowHandlers.keydown(windowEscape);
+    ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+    ctx.elements.reloadBtn.dispatch('click');
+
+    expect(tab.webview.stop).not.toHaveBeenCalled();
+    expect(tab.navigationState.isWebviewLoading).toBe(true);
+    expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
+    // The press was not consumed and the composer keeps the keyboard.
+    expect(windowEscape.preventDefault).not.toHaveBeenCalled();
+    expect(composer.blur).not.toHaveBeenCalled();
+
+    // Once the user claims the tab, Escape is the chrome's Stop again.
+    ctx.tabsMocks.isTabAgentOwned.mockReturnValue(false);
+    ctx.windowHandlers.keydown({
+      key: 'Escape',
+      defaultPrevented: false,
+      preventDefault: jest.fn(),
+    });
+    expect(tab.webview.stop).toHaveBeenCalledTimes(1);
+    expect(tab.navigationState.isWebviewLoading).toBe(false);
+  });
+
   test('Agent custody discards an uncommitted manual address edit', async () => {
     const ctx = await loadNavigationModule();
     await ctx.mod.initNavigation();

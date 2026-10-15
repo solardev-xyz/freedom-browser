@@ -2337,7 +2337,15 @@ export const stopPageLoading = (targetWebview = null) => {
   return true;
 };
 
-const stopLoadingAndRestore = () => stopPageLoading();
+// The chrome's own Stop: the toolbar button and both Escape paths (address
+// bar, window). A user action, so it respects Agent custody exactly like
+// Back/Forward/Reload — an Agent-owned tab's load is the Agent's to stop
+// (automation calls `stopPageLoading` directly). Returns false, as for "no
+// load to stop", so the Escape handlers fall through to their idle branches.
+const stopLoadingAndRestore = () => {
+  if (isTabAgentOwned(getActiveTab()?.id)) return false;
+  return stopPageLoading();
+};
 
 export const loadHomePage = () => {
   const webview = getActiveWebview();
