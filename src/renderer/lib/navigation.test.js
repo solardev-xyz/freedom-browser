@@ -791,6 +791,43 @@ describe('navigation', () => {
     expect(ctx.elements.homeBtn.disabled).toBe(false);
   });
 
+  // R1-F1: the app menu's History > Back/Forward and View > Reload (and their
+  // accelerators) reach navigation.js over IPC, not through the toolbar
+  // buttons; they must respect Agent custody the same way.
+  test('app menu Back/Forward/Reload leave an Agent-owned tab alone', async () => {
+    const ctx = await loadNavigationModule({ agentOwnedTabIds: [1] });
+    const menuHandlers = {};
+    ctx.electronAPI.onHistoryBack = jest.fn((handler) => (menuHandlers.back = handler));
+    ctx.electronAPI.onHistoryForward = jest.fn((handler) => (menuHandlers.forward = handler));
+    await ctx.mod.initNavigation();
+    const webview = ctx.activeRef.tab.webview;
+    webview.goBack = jest.fn();
+    webview.goForward = jest.fn();
+    webview.reload = jest.fn();
+    webview.reloadIgnoringCache = jest.fn();
+    webview.canGoBack = jest.fn(() => true);
+    webview.canGoForward = jest.fn(() => true);
+
+    menuHandlers.back();
+    menuHandlers.forward();
+    ctx.mod.reloadPage();
+    ctx.mod.hardReloadPage();
+    expect(webview.goBack).not.toHaveBeenCalled();
+    expect(webview.goForward).not.toHaveBeenCalled();
+    expect(webview.reload).not.toHaveBeenCalled();
+    expect(webview.reloadIgnoringCache).not.toHaveBeenCalled();
+
+    ctx.tabsMocks.isTabAgentOwned.mockReturnValue(false);
+    menuHandlers.back();
+    menuHandlers.forward();
+    ctx.mod.reloadPage();
+    ctx.mod.hardReloadPage();
+    expect(webview.goBack).toHaveBeenCalledTimes(1);
+    expect(webview.goForward).toHaveBeenCalledTimes(1);
+    expect(webview.reload).toHaveBeenCalledTimes(1);
+    expect(webview.reloadIgnoringCache).toHaveBeenCalledTimes(1);
+  });
+
   test('Agent custody discards an uncommitted manual address edit', async () => {
     const ctx = await loadNavigationModule();
     await ctx.mod.initNavigation();

@@ -297,6 +297,42 @@ test('individual Stop preserves partial editing receipts and releases the writer
   f.owner.subagentAbortController.abort();
 });
 
+// R1-M1: the per-generation cleanup listener runs before a running job's own
+// abort handler. It must not evict that job, or settle() resolves on nothing
+// and the run's interruption pass replaces the real cancelled receipt (with
+// its attempted files and pending writes) with a stale 'running' snapshot.
+test('settle() waits for the cancelled receipt of a helper running when its generation ends', async () => {
+  const f = backgroundFixture();
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ changedFiles: ['README.md'], attemptedFiles: ['README.md', 'notes.md'], writesPending: true }) };
+  f.options.createWriter = async () => scope;
+  f.options.saveReport = jest.fn((_owner, receipt) => receipt);
+  await f.run({ title: 'Edit', task: 'Update docs', mode: 'edit', files: ['README.md', 'notes.md'], background: true });
+  await flush();
+  f.owner.subagentAbortController.abort();
+  await f.tool.settle(f.owner);
+  expect(f.options.saveReport).toHaveBeenCalledWith(f.owner, expect.objectContaining({ state: 'cancelled',
+    attemptedFiles: ['README.md', 'notes.md'], writesPending: true }));
+  expect(f.options.onResult.mock.calls.at(-1)[1].subagent).toMatchObject({ state: 'cancelled', writesPending: true });
+});
+
+// R1-M2: steering aborts the helper generation; a helper that had already
+// completed but was not collected yet must still reach the parent.
+test('a report completed before steering ended its generation is still collected once', async () => {
+  const f = backgroundFixture({ concurrency: 2 });
+  await f.run({ background: true, tasks: [{ title: 'Done', task: 'Inspect A' }, { title: 'Busy', task: 'Inspect B' }] });
+  await flush();
+  f.children[0].finish('Finished findings'); await flush();
+  f.owner.subagentAbortController.abort();
+  f.owner.subagentAbortController = new AbortController();
+  await f.tool.settle(f.owner);
+  expect(f.tool.hasPending(f.owner)).toBe(false);
+  const reports = await f.tool.collect(f.owner);
+  // The completed report is delivered; the helper the steering cancelled is not.
+  expect(reports).toEqual([expect.objectContaining({ title: 'Done', state: 'completed', report: 'Finished findings' })]);
+  expect(await f.tool.collect(f.owner)).toEqual([]);
+  expect(f.children[0].session.dispose).toHaveBeenCalled();
+});
+
 test('a writer scope returned after cancellation is released without starting a helper', async () => {
   const pending = deferred();
   const scope = { controller: {}, release: jest.fn(), evidence: () => ({}) };

@@ -1201,7 +1201,7 @@ function applyTabState(state) {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
 
-  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward } = state;
+  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward, canReload } = state;
   const hasMultipleTabs = tabCount > 1;
   const hasTabs = tabCount > 0;
 
@@ -1210,7 +1210,9 @@ function applyTabState(state) {
     if (item) item.enabled = enabled;
   };
 
-  setEnabled('reload', hasTabs);
+  // `canReload` is false while the active tab is in Agent custody; an older
+  // renderer that never sends it keeps the old tab-count rule.
+  setEnabled('reload', hasTabs && canReload !== false);
   setEnabled('next-tab', hasMultipleTabs);
   setEnabled('prev-tab', hasMultipleTabs);
   setEnabled('move-tab-right', hasMultipleTabs && activeIndex < tabCount - 1);

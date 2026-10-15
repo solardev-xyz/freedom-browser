@@ -2762,7 +2762,13 @@ const retryErrorPageOrReload = (webview, hard) => {
   }
 };
 
+// Every chrome-driven navigation of the active tab (toolbar, keyboard, app
+// menu, page context menu) must respect Agent custody: an Agent-owned tab is
+// only navigated by the Agent until the user claims it.
+const isActiveTabAgentOwned = () => isTabAgentOwned(getActiveTab()?.id);
+
 export const reloadPage = () => {
+  if (isActiveTabAgentOwned()) return;
   const webview = getActiveWebview();
   if (!webview) return;
   retryErrorPageOrReload(webview, false);
@@ -2771,7 +2777,7 @@ export const reloadPage = () => {
 // The page context menu passes the guest it was raised on (always the active
 // one; a stale menu drops the action before it gets here).
 export const hardReloadPage = (webview = getActiveWebview()) => {
-  if (!webview) return;
+  if (!webview || isActiveTabAgentOwned()) return;
   retryErrorPageOrReload(webview, true);
 };
 
@@ -3751,10 +3757,13 @@ export const initNavigation = () => {
 
   // App menu History > Back / Forward (#584): the same traversal the toolbar
   // buttons run, so an ENS-backed entry is re-verified the same way (#86).
+  // Agent custody gates them exactly like the toolbar buttons.
   electronAPI?.onHistoryBack?.(() => {
+    if (isActiveTabAgentOwned()) return;
     goBackInHistory(getActiveWebview());
   });
   electronAPI?.onHistoryForward?.(() => {
+    if (isActiveTabAgentOwned()) return;
     goForwardInHistory(getActiveWebview());
   });
 
@@ -3765,12 +3774,12 @@ export const initNavigation = () => {
     // Hard reload (check first, before soft reload)
     if (matchesShortcut(event, 'page.hardReload')) {
       event.preventDefault();
-      if (!isTabAgentOwned(getActiveTab()?.id)) hardReloadPage();
+      hardReloadPage();
     }
     // Reload (soft, uses cache)
     else if (matchesShortcut(event, 'page.reload')) {
       event.preventDefault();
-      if (!isTabAgentOwned(getActiveTab()?.id)) reloadPage();
+      reloadPage();
     } else if (event.key === 'Escape') {
       // Stop-loading is Escape's *last* meaning, the way it is in Chrome: one
       // press closes only the innermost open surface. Every dismissible

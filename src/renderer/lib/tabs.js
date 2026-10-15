@@ -182,12 +182,17 @@ const activeWebviewCan = (method) => {
 // changes on a commit.
 export const pushTabMenuState = () => {
   const activeIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
+  // An Agent-owned tab disables History > Back/Forward and View > Reload the
+  // same way it disables the toolbar buttons; the renderer handlers refuse
+  // them too, this just keeps the menu rows honest.
+  const agentOwned = isTabAgentOwned(tabState.activeTabId);
   electronAPI?.updateTabMenuState?.({
     tabCount: tabState.tabs.length,
     activeIndex,
     hasClosedTabs: closedTabsStack.length > 0,
-    canGoBack: activeWebviewCan('canGoBack'),
-    canGoForward: activeWebviewCan('canGoForward'),
+    canGoBack: !agentOwned && activeWebviewCan('canGoBack'),
+    canGoForward: !agentOwned && activeWebviewCan('canGoForward'),
+    canReload: !agentOwned,
     // PRIVATE MODE GUARD (history menu): a private window's closed tabs
     // never reach the app menu's Recently Closed list. The main process
     // drops a private sender's list too (src/main/menu.js).

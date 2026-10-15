@@ -67,12 +67,27 @@ function createSubagentTool(options) {
     if (state.generation !== generation) {
       state.generation = generation;
       // Completed helpers retain sessions for follow-ups. One listener per
-      // generation cleans them all up, regardless of how many tasks ran.
+      // generation releases them all, regardless of how many tasks ran. It
+      // runs before each running job's own abort handler, so it must not evict
+      // those: settle() still has to wait for their cancelled receipt (with the
+      // attempted files / pending browser evidence), and a background report
+      // that completed but was not collected yet is still owed to the parent.
+      // That one leaves the map once collect() delivers it; the rest as soon
+      // as they have settled.
       generation?.addEventListener('abort', () => {
         for (const [id, job] of state.jobs) {
           if (job.generation !== generation) continue;
-          state.jobs.delete(id);
-          if (job.result) { dispose(job.session); job.session = null; }
+          const evict = () => {
+            if (state.jobs.get(id) !== job) return;
+            if (!job.background || job.delivered || job.result?.state !== 'completed') state.jobs.delete(id);
+          };
+          if (job.result) {
+            dispose(job.session);
+            job.session = null;
+            evict();
+          } else {
+            Promise.resolve(job.promise).then(evict, evict);
+          }
         }
       }, { once: true });
     }
@@ -247,13 +262,29 @@ function createSubagentTool(options) {
     await Promise.allSettled([...(owners.get(owner)?.jobs.values() || [])].map(job => job.promise));
   };
   tool.hasPending = owner => [...(owners.get(owner)?.jobs.values() || [])].some(job => job.background && available(owner, job.generation) && !job.result);
+  // A helper that completed before steering or Pause ended its generation
+  // still owes the parent its report, so completed reports are delivered
+  // across generations. Helpers that the new generation cancelled are not:
+  // the parent is told to apply the new guidance instead of replaying them.
+  // Only the helpers still running in the current generation are waited for.
   tool.collect = async owner => {
-    const jobs = [...(owners.get(owner)?.jobs.values() || [])].filter(job => job.background && available(owner, job.generation));
-    if (!jobs.some(job => job.result && !job.delivered) && jobs.some(job => !job.result)) {
+    const state = owners.get(owner);
+    const live = () => owner && options.getOwner() === owner && !owner.finished && !owner.stopRequested;
+    const background = () => [...(state?.jobs.values() || [])].filter(job => job.background);
+    const ready = () => background().filter(job => job.result && !job.delivered &&
+      (available(owner, job.generation) || job.result.state === 'completed'));
+    if (!live()) return [];
+    const running = background().filter(job => available(owner, job.generation) && !job.result);
+    if (!ready().length && running.length) {
       options.onWaiting?.(owner);
-      await Promise.race(jobs.filter(job => !job.result).map(job => job.promise));
+      await Promise.race(running.map(job => job.promise));
     }
-    return jobs.filter(job => available(owner, job.generation) && job.result && !job.delivered).map(consume);
+    if (!live()) return [];
+    const reports = ready().map(consume);
+    for (const job of background()) {
+      if (job.delivered && job.generation?.aborted) state.jobs.delete(job.taskId);
+    }
+    return reports;
   };
   return tool;
 

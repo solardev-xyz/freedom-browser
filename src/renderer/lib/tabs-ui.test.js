@@ -1106,6 +1106,26 @@ describe('tabs ui behavior', () => {
     );
   });
 
+  // R1-F1: History > Back/Forward and View > Reload go disabled with the
+  // toolbar buttons while the active tab is in Agent custody.
+  test('the menu push disables Back/Forward/Reload for an Agent-owned tab', async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const tab = mod.createTab('https://nav.example');
+    tab.webview.canGoBack = jest.fn(() => true);
+    tab.webview.canGoForward = jest.fn(() => true);
+    mod.setAgentTabCustody([{ rendererTabId: tab.id, provenance: 'agent', custody: 'agent' }]);
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: false, canGoForward: false, canReload: false })
+    );
+    mod.setAgentTabCustody([]);
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: true, canGoForward: true, canReload: true })
+    );
+  });
+
   // #580: a page's `window.close()` makes the <webview> fire `close`, and
   // Electron destroys the guest right after while leaving the element up.
   test('a page that closes itself closes its tab, and the window with its last tab', async () => {
