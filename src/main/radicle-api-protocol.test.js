@@ -28,6 +28,10 @@ jest.mock('./webrequest-dispatcher', () => ({
   registerWebRequestHandler: jest.fn(),
 }));
 
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { PAGES_DIR } = require('./ipc-sender-policy');
 const embedded = require('./radicle-embedded');
 const { isDisabledForProfile } = require('./radicle-manager');
 const {
@@ -40,7 +44,10 @@ const {
   REPO_LIST_CONCURRENCY,
 } = require('./radicle-api-protocol');
 
-const INTERNAL_PAGE = 'file:///app/src/renderer/pages/rad-browser.html';
+// The real viewer of this checkout — the dev layout. The match is exact
+// (ipc-sender-policy's `internalPageFileForUrl`), so a made-up path such
+// as file:///app/src/renderer/pages/rad-browser.html is not the viewer.
+const INTERNAL_PAGE = pathToFileURL(path.join(PAGES_DIR, 'rad-browser.html')).href;
 
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 const REVISION = '0123456789abcdef0123456789abcdef01234567';
@@ -135,10 +142,115 @@ describe('radapi protocol', () => {
       ['a dweb page', 'bzz://somehash/index.html'],
       ['another internal page', 'file:///app/src/renderer/pages/settings.html'],
       ['a file path merely ending in the viewer name', 'file:///tmp/rad-browser.html'],
+      // #662: the old suffix test accepted any file:// path ending in
+      // /src/renderer/pages/rad-browser.html.
+      [
+        'a look-alike viewer path outside the app',
+        'file:///home/user/Downloads/src/renderer/pages/rad-browser.html',
+      ],
+      [
+        'a look-alike viewer path in another app.asar',
+        'file:///opt/Other/resources/app.asar/src/renderer/pages/rad-browser.html',
+      ],
+      [
+        'a look-alike viewer path with an encoded separator',
+        'file:///tmp/x%2Fsrc%2Frenderer%2Fpages%2Frad-browser.html',
+      ],
+      [
+        'the viewer path one directory deeper',
+        pathToFileURL(path.join(PAGES_DIR, 'x', 'rad-browser.html')).href,
+      ],
+      [
+        'a different file in the pages directory',
+        pathToFileURL(path.join(PAGES_DIR, 'evil.html')).href,
+      ],
+      ['the viewer path over http', 'http://localhost/src/renderer/pages/rad-browser.html'],
+      ['the viewer path over https', 'https://hostile.example/src/renderer/pages/rad-browser.html'],
+      ['the viewer path over bzz', 'bzz://somehash/src/renderer/pages/rad-browser.html'],
+      [
+        'the viewer path over a custom scheme',
+        'radapi://local/src/renderer/pages/rad-browser.html',
+      ],
       ['no frame at all', null],
       ['a frame with no URL', undefined],
     ])('cancels a radapi request from %s', (_label, frameUrl) => {
       expect(guardRadicleApiRequest(request(frameUrl))).toEqual({ cancel: true });
+    });
+
+    // #662: refused here as well as in the frame guard — the referrer
+    // check runs the same exact match.
+    test.each([
+      'file:///home/user/Downloads/src/renderer/pages/rad-browser.html',
+      'https://hostile.example/src/renderer/pages/rad-browser.html',
+    ])('the handler refuses a look-alike referrer %s', async (referrer) => {
+      const denied = await handleRadicleApiRequest(new Request('radapi://local/', { referrer }));
+      expect(denied.status).toBe(403);
+    });
+
+    // The packaged layout: the app's sources live in
+    // <resources>/app.asar/src/…, so the viewer is a file:// URL inside the
+    // asar. Load the real ipc-sender-policy as if it ran from there (only
+    // its __dirname differs) and check the guard follows it.
+    describe('packaged (app.asar) layout', () => {
+      const ASAR_MAIN = path.join(
+        path.sep,
+        'opt',
+        'Freedom',
+        'resources',
+        'app.asar',
+        'src',
+        'main'
+      );
+      const ASAR_PAGE = pathToFileURL(
+        path.join(ASAR_MAIN, '..', 'renderer', 'pages', 'rad-browser.html')
+      ).href;
+
+      function packagedGuard() {
+        let guard;
+        jest.isolateModules(() => {
+          const file = require.resolve('./ipc-sender-policy');
+          const source = fs.readFileSync(file, 'utf8');
+          const policy = { exports: {} };
+          new Function('require', 'module', 'exports', '__dirname', '__filename', source)(
+            require,
+            policy,
+            policy.exports,
+            ASAR_MAIN,
+            path.join(ASAR_MAIN, 'ipc-sender-policy.js')
+          );
+          jest.doMock('./ipc-sender-policy', () => policy.exports);
+          guard = require('./radicle-api-protocol').guardRadicleApiRequest;
+        });
+        return guard;
+      }
+
+      test('passes the viewer inside app.asar', () => {
+        const guard = packagedGuard();
+        expect(guard(request(ASAR_PAGE))).toBeNull();
+        expect(guard(request(`${ASAR_PAGE}?rid=z3gq&base=radapi%3A%2F%2Flocal`))).toBeNull();
+      });
+
+      test.each([
+        ['the dev checkout viewer', INTERNAL_PAGE],
+        [
+          'a look-alike asar path of another app',
+          'file:///opt/Other/resources/app.asar/src/renderer/pages/rad-browser.html',
+        ],
+        [
+          'a look-alike path under the user home',
+          'file:///home/user/src/renderer/pages/rad-browser.html',
+        ],
+        [
+          'another internal page in the asar',
+          ASAR_PAGE.replace('rad-browser.html', 'settings.html'),
+        ],
+        [
+          'the asar viewer path over https',
+          'https://hostile.example/opt/Freedom/resources/app.asar/src/renderer/pages/rad-browser.html',
+        ],
+      ])('cancels %s', (_label, frameUrl) => {
+        expect(packagedGuard()(request(frameUrl))).toEqual({ cancel: true });
+      });
     });
 
     test('cancels a top-level navigation to a node-level endpoint', () => {

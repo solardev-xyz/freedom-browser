@@ -22,14 +22,18 @@ export function renderPublisherIdentitySelector(container, state, handlers = {})
   const active = getActivePublisherIdentity(state);
   const identities = orderIdentities(state);
   const activeLabel = active ? identityLabel(active) : 'Choose publisher identity';
-  const activeOwner = active?.owner ? truncateAddress(active.owner) : 'Unlock to reveal owner';
+  // An address is code; the locked-state hint is a sentence, so it gets the
+  // sans font of the label above it rather than a <code> element (#606).
+  const activeOwner = active?.owner
+    ? `<code class="wallet-selector-address">${escapeHtml(truncateAddress(active.owner))}</code>`
+    : '<span class="wallet-selector-address wallet-selector-address-hint">Unlock to reveal owner</span>';
 
   container.innerHTML = `
     <div class="wallet-selector publisher-identity-selector">
       <button type="button" class="wallet-selector-btn publisher-identity-selector-btn">
         <div class="wallet-selector-info">
           <span class="wallet-selector-name">${escapeHtml(activeLabel)}</span>
-          <code class="wallet-selector-address">${escapeHtml(activeOwner)}</code>
+          ${activeOwner}
         </div>
         <svg class="wallet-selector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="m6 9 6 6 6-6"/>

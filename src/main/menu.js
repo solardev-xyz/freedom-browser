@@ -1,12 +1,13 @@
 const log = require('./logger');
-const { BrowserWindow, Menu, app, dialog, ipcMain } = require('electron');
+const electron = require('electron');
+const { BrowserWindow, Menu, app, dialog, ipcMain } = electron;
 const {
   isMainBrowserWindow,
   getMainWindows,
   getLastFocusedMainWindow,
   createMainWindow,
 } = require('./windows/mainWindow');
-const { createPrivateWindow } = require('./private/private-windows');
+const { createPrivateWindow, isPrivateWebContents } = require('./private/private-windows');
 const {
   checkForUpdates,
   getInstallRelaunchMode,
@@ -18,6 +19,8 @@ const { openOrFocusProfile } = require('./profile-launcher');
 const IPC = require('../shared/ipc-channels');
 const { getEffectiveAccelerator, getAliasAccelerators } = require('../shared/shortcuts');
 const { loadSettings, onSettingsChanged } = require('./settings-store');
+const { getRecentHistory, onHistoryChanged } = require('./history');
+const { getCachedFavicon } = require('./favicons');
 
 // Every menu accelerator comes from the shared shortcut registry
 // (src/shared/shortcuts.js) — menu.test.js rejects accelerator literals in
@@ -91,6 +94,13 @@ async function switchToProfile(profileId) {
   const activeProfile = getActiveProfile();
   if (!activeProfile || activeProfile.source !== 'catalog') return;
   if (!profileId || profileId === activeProfile.id) return;
+  // A switch can take a few seconds before it lands or fails (on GNOME
+  // Wayland it waits for the other profile to confirm an xdg-open switch, and
+  // one that does not land then tries the focus-request file), and the native
+  // menu is closed by then. Show the wait as a progress bar on the window's
+  // taskbar/dock entry, where the desktop draws one (setSwitchBusy).
+  const busyWindow = switchFeedbackWindow();
+  const stopBusy = setSwitchBusy(busyWindow);
   try {
     // openOrFocusProfile resolves with { error } (it does NOT throw) when the
     // profile is running but never acknowledged the focus request. The native
@@ -108,7 +118,61 @@ async function switchToProfile(profileId) {
       'Could not switch profile',
       err?.message || 'The profile could not be opened.'
     );
+  } finally {
+    stopBusy();
   }
+}
+
+function switchFeedbackWindow() {
+  try {
+    return getTargetWindow();
+  } catch {
+    return null;
+  }
+}
+
+// How long the Linux bar takes to fill to SWITCH_BUSY_LINUX_CAP: about the
+// longest a switch waits (profile-switch-scheme.js's 6 s ack budget, then up to
+// 1.8 s of focus-request file hand-off).
+const SWITCH_BUSY_LINUX_FILL_MS = 8000;
+const SWITCH_BUSY_LINUX_CAP = 0.9;
+const SWITCH_BUSY_LINUX_TICK_MS = 250;
+
+// Show a switch in progress on `win`; returns the function that clears it.
+// Windows and macOS draw a progress value above 1 as an indeterminate bar.
+// Linux does not: Electron sets it on the Unity LauncherEntry (Ubuntu Dock,
+// KDE's task manager), which has no indeterminate mode ("Indeterminate mode is
+// not supported", Electron 44's setProgressBar docs), so a 2 there would read
+// as a full, finished bar. On Linux the bar instead fills with the time spent
+// waiting and stops short of full, so it never reads as done.
+function setSwitchBusy(win, { platform = process.platform } = {}) {
+  const set = (value) => {
+    try {
+      if (!win || win.isDestroyed?.()) return false;
+      win.setProgressBar?.(value);
+      return true;
+    } catch {
+      // Feedback only.
+      return false;
+    }
+  };
+  if (platform !== 'linux') {
+    set(2);
+    return () => set(-1);
+  }
+  const startedAt = Date.now();
+  const fill = () =>
+    Math.min(SWITCH_BUSY_LINUX_CAP, (Date.now() - startedAt) / SWITCH_BUSY_LINUX_FILL_MS);
+  // Start visibly above zero: a 0 bar is drawn as nothing on some docks.
+  set(Math.max(0.05, fill()));
+  const timer = setInterval(() => {
+    if (!set(Math.max(0.05, fill()))) clearInterval(timer);
+  }, SWITCH_BUSY_LINUX_TICK_MS);
+  timer.unref?.();
+  return () => {
+    clearInterval(timer);
+    set(-1);
+  };
 }
 
 // Build the Profiles menu dynamically from the catalog, mirroring the
@@ -525,8 +589,237 @@ function buildDownloadsMenuItem() {
   };
 }
 
-function buildHistorySubmenu(isMac) {
+// ── History menu (#584) ─────────────────────────────────────────────────
+//
+// Chrome's History menu: Back / Forward, Recently Closed, Recently Visited,
+// then Show All History. The two lists are rebuilt (debounced) whenever what
+// they show changes — see scheduleHistoryMenuRefresh below.
+
+const RECENTLY_VISITED_LIMIT = 15;
+const RECENTLY_CLOSED_LIMIT = 10;
+// Native menus have no text-overflow; a long title would stretch the whole
+// menu across the screen. Chrome cuts its History rows at about this width.
+const HISTORY_LABEL_MAX = 60;
+
+// Addresses that never make a menu row: the browser's own pages (Chrome
+// leaves out chrome://), and schemes that only ever name chrome-internal or
+// one-off documents (error and interstitial pages are file: URLs). History
+// recording already skips these (isHistoryRecordable); this is the read-side
+// twin, so nothing that slipped into an older database surfaces here.
+const UNLISTED_URL_PREFIXES = [
+  'freedom:',
+  'view-source:',
+  'about:',
+  'file:',
+  'chrome:',
+  'devtools:',
+  'data:',
+  'blob:',
+  'javascript:',
+];
+
+function isHistoryMenuUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) return false;
+  const lower = url.trim().toLowerCase();
+  return !UNLISTED_URL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+// Title, or the address when the page has none; one line, cut to a sane
+// width. `&` is doubled because Electron reads a single one as a mnemonic
+// marker (Windows/Linux) or drops it (macOS) — a page titled "Q&A" would
+// otherwise show as "QA" with an underlined A.
+function historyMenuLabel(title, url) {
+  const text =
+    String(title || '')
+      .replace(/\s+/g, ' ')
+      .trim() || String(url || '').trim();
+  const chars = Array.from(text);
+  const cut =
+    chars.length > HISTORY_LABEL_MAX ? `${chars.slice(0, HISTORY_LABEL_MAX - 1).join('')}…` : text;
+  return cut.replace(/&/g, '&&');
+}
+
+// Cached favicon for a page, as a 16px menu icon, or undefined. Never fetches:
+// a menu rebuild must not wait on the network.
+const faviconImageCache = new Map();
+function historyMenuIcon(url) {
+  const nativeImage = electron.nativeImage;
+  if (!nativeImage?.createFromDataURL) return undefined;
+  let data;
+  try {
+    data = getCachedFavicon(url);
+  } catch {
+    return undefined;
+  }
+  if (typeof data !== 'string' || !data.startsWith('data:')) return undefined;
+  if (faviconImageCache.has(data)) return faviconImageCache.get(data) || undefined;
+  let image = null;
+  try {
+    const decoded = nativeImage.createFromDataURL(data);
+    if (decoded && !decoded.isEmpty()) {
+      image = decoded.resize({ width: 16, height: 16, quality: 'best' });
+    }
+  } catch {
+    image = null;
+  }
+  if (faviconImageCache.size > 200) faviconImageCache.clear();
+  faviconImageCache.set(data, image);
+  return image || undefined;
+}
+
+// The latest visits, newest first. Reads this process's history database —
+// one per profile (each profile runs in its own process with its own
+// userData), and private windows never write to it (history.js guard).
+function getRecentlyVisited() {
+  let rows;
+  try {
+    // Over-fetch so filtered rows don't leave the list short.
+    rows = getRecentHistory(RECENTLY_VISITED_LIMIT * 3) || [];
+  } catch (err) {
+    log.warn('[menu] Could not read recent history:', err?.message || err);
+    return [];
+  }
+  const seen = new Set();
+  const visited = [];
+  for (const row of rows) {
+    if (!isHistoryMenuUrl(row?.url) || seen.has(row.url)) continue;
+    seen.add(row.url);
+    visited.push({ url: row.url, title: row.title || '' });
+    if (visited.length >= RECENTLY_VISITED_LIMIT) break;
+  }
+  return visited;
+}
+
+// Closed-tab lists pushed by each normal window's renderer (tabs.js
+// closedTabsStack), keyed by BrowserWindow id. Private windows are never
+// stored (see the update-tab-state handler).
+const closedTabsByWindow = new Map();
+
+// Every normal window's closed tabs, newest first — what Reopen Closed Tab
+// would bring back in each window, merged the way Chrome's profile-wide list
+// reads.
+function getRecentlyClosed() {
+  const all = [];
+  for (const [windowId, entries] of closedTabsByWindow) {
+    for (const entry of entries) {
+      if (!isHistoryMenuUrl(entry?.url)) continue;
+      all.push({
+        windowId,
+        id: entry.id,
+        url: entry.url,
+        title: entry.title || '',
+        closedAt: Number(entry.closedAt) || 0,
+      });
+    }
+  }
+  all.sort((a, b) => b.closedAt - a.closedAt);
+  return all.slice(0, RECENTLY_CLOSED_LIMIT);
+}
+
+function reopenClosedEntry(entry) {
+  const win = BrowserWindow.fromId?.(entry.windowId);
+  if (!win || win.isDestroyed?.()) return;
+  if (win.isMinimized?.()) win.restore();
+  win.focus?.();
+  win.webContents.send('tab:reopen-closed', entry.id);
+}
+
+// A Recently Visited row loads its address in the active tab through the
+// renderer's loadTarget — the address bar's own path — so bzz://, ipfs://,
+// ENS names and the rest resolve exactly as if typed, not as a raw URL load.
+function openVisitedEntry(url) {
+  const win = getTargetWindow();
+  if (win) {
+    win.webContents.send('tab:load-url', url);
+    return;
+  }
+  createMainWindow(url);
+}
+
+function collectHistoryMenuData() {
+  // After stopHistoryMenuRefresh() (app wind-down) the history database is
+  // about to be, or already is, closed; reading it here would reopen it.
+  if (historyMenuStopped) return { closed: [], visited: [] };
+  return { closed: getRecentlyClosed(), visited: getRecentlyVisited() };
+}
+
+// What the two lists show, for skipping a rebuild that would change nothing
+// (a revisit of the page already on top only bumps its timestamp).
+function historyMenuSignature({ closed, visited }) {
+  return JSON.stringify([
+    closed.map((entry) => [entry.windowId, entry.id, entry.url, entry.title]),
+    visited.map((entry) => [entry.url, entry.title, !!getCachedFaviconSafe(entry.url)]),
+  ]);
+}
+
+function getCachedFaviconSafe(url) {
+  try {
+    return getCachedFavicon(url);
+  } catch {
+    return null;
+  }
+}
+
+function buildHistorySubmenu(isMac, data = collectHistoryMenuData()) {
+  const { closed, visited } = data;
   const submenu = [
+    {
+      id: 'history-back',
+      label: 'Back',
+      accelerator: acc('nav.back'),
+      // Enabled by applyTabState once the active tab reports it can go back.
+      enabled: false,
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('history:back');
+        }
+      },
+    },
+    {
+      id: 'history-forward',
+      label: 'Forward',
+      accelerator: acc('nav.forward'),
+      enabled: false,
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('history:forward');
+        }
+      },
+    },
+  ];
+
+  if (closed.length) {
+    submenu.push(
+      { type: 'separator' },
+      { id: 'history-recently-closed', label: 'Recently Closed', enabled: false }
+    );
+    for (const entry of closed) {
+      submenu.push({
+        label: historyMenuLabel(entry.title, entry.url),
+        icon: historyMenuIcon(entry.url),
+        click: () => reopenClosedEntry(entry),
+      });
+    }
+  }
+
+  if (visited.length) {
+    submenu.push(
+      { type: 'separator' },
+      { id: 'history-recently-visited', label: 'Recently Visited', enabled: false }
+    );
+    for (const entry of visited) {
+      submenu.push({
+        label: historyMenuLabel(entry.title, entry.url),
+        icon: historyMenuIcon(entry.url),
+        click: () => openVisitedEntry(entry.url),
+      });
+    }
+  }
+
+  submenu.push(
+    { type: 'separator' },
     {
       label: 'Show All History',
       accelerator: acc('history.showAll'),
@@ -536,8 +829,8 @@ function buildHistorySubmenu(isMac) {
           win.webContents.send('tab:new-with-url', 'freedom://history');
         }
       },
-    },
-  ];
+    }
+  );
 
   // On macOS the item belongs to the Window menu instead (Chrome:
   // Window > Downloads ⇧⌘J), so it is not repeated here.
@@ -631,7 +924,7 @@ function buildEditMenuEntry(isMac) {
 }
 
 function buildSharedMenuEntries(ctx) {
-  const { isMac, isFullScreen: fullScreen, isPackaged } = ctx;
+  const { isMac, isFullScreen: fullScreen, isPackaged, historyData } = ctx;
 
   return [
     { label: 'File', submenu: buildFileSubmenu(isMac) },
@@ -643,7 +936,7 @@ function buildSharedMenuEntries(ctx) {
         showAppDevtools: !isPackaged,
       }),
     },
-    { label: 'History', submenu: buildHistorySubmenu(isMac) },
+    { label: 'History', submenu: buildHistorySubmenu(isMac, historyData) },
     { label: 'Profiles', submenu: buildProfilesSubmenu() },
   ];
 }
@@ -665,6 +958,7 @@ function buildApplicationMenuTemplate({
   updateMenuItems,
   isFullScreen: fullScreen = false,
   isPackaged = app.isPackaged,
+  historyData = collectHistoryMenuData(),
 } = {}) {
   const ctx = {
     platform,
@@ -672,6 +966,7 @@ function buildApplicationMenuTemplate({
     isMac: platform === 'darwin',
     isFullScreen: fullScreen,
     isPackaged,
+    historyData,
   };
 
   return ctx.isMac ? buildDarwinMenuTemplate(ctx) : buildWinLinuxMenuTemplate(ctx);
@@ -702,13 +997,18 @@ function setupApplicationMenu() {
         },
       ];
 
+  const historyData = collectHistoryMenuData();
   const template = buildApplicationMenuTemplate({
     updateMenuItems,
     isFullScreen,
     isPackaged: app.isPackaged,
+    historyData,
   });
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
+  lastHistorySignature = historyMenuSignature(historyData);
+  historyRefreshPending = false;
+  trackHistorySubmenuOpen(menu);
 
   // Close renderer menus when system menu opens
   menu.on('menu-will-show', () => {
@@ -724,7 +1024,8 @@ function setupApplicationMenu() {
   toggleBookmarkBarMenuItem = menu.getMenuItemById('toggle-bookmark-bar');
   updateTabMenuItems();
   // Restore renderer-pushed state the rebuild just reset.
-  if (lastTabState) applyTabState(lastTabState);
+  const tabStateToApply = tabStateForTargetWindow() || lastTabState;
+  if (tabStateToApply) applyTabState(tabStateToApply);
   if (toggleBookmarkBarMenuItem && lastBookmarkBarEnabled !== null) {
     toggleBookmarkBarMenuItem.enabled = lastBookmarkBarEnabled;
   }
@@ -740,17 +1041,153 @@ let lastTabState = null;
 let lastBookmarkBarEnabled = null;
 let lastBookmarkBarChecked = null;
 
+// Each window's last pushed tab state, by BrowserWindow id. The menu is
+// app-wide but Back/Forward (and the tab rows) describe one window's active
+// tab, so focusing another window re-applies that window's state rather than
+// leaving whichever window pushed last in charge.
+const tabStateByWindow = new Map();
+
+function windowIdForSender(sender) {
+  try {
+    const win = BrowserWindow.fromWebContents?.(sender);
+    return win && !win.isDestroyed?.() ? win.id : null;
+  } catch {
+    return null;
+  }
+}
+
+function tabStateForTargetWindow() {
+  if (!tabStateByWindow.size) return null;
+  const target = getTargetWindow();
+  if (!target) return null;
+  return tabStateByWindow.get(target.id) || null;
+}
+
+function closedTabsSignature(entries) {
+  return JSON.stringify((entries || []).map((entry) => [entry.id, entry.url, entry.title]));
+}
+
+// Remember a window's closed tabs for History > Recently Closed. PRIVATE
+// MODE GUARD (history menu): a private window's list is never stored, even
+// if its renderer sent one (tabs.js sends an empty list from a private
+// window; this is the main-process twin).
+function noteClosedTabs(windowId, sender, closedTabs) {
+  if (windowId === null) return;
+  const before = closedTabsSignature(closedTabsByWindow.get(windowId));
+  if (isPrivateWebContents(sender) || !Array.isArray(closedTabs) || !closedTabs.length) {
+    closedTabsByWindow.delete(windowId);
+  } else {
+    closedTabsByWindow.set(
+      windowId,
+      closedTabs
+        .filter((entry) => entry && typeof entry.url === 'string')
+        .map(({ id, url, title, closedAt }) => ({
+          id,
+          url,
+          title: typeof title === 'string' ? title : '',
+          closedAt,
+        }))
+    );
+  }
+  if (closedTabsSignature(closedTabsByWindow.get(windowId)) !== before) {
+    scheduleHistoryMenuRefresh();
+  }
+}
+
 // Receive tab state updates from the renderer and apply to menu items immediately
-ipcMain.on('menu:update-tab-state', (_event, state) => {
+ipcMain.on('menu:update-tab-state', (event, state) => {
+  if (!state || typeof state !== 'object') return;
+  const windowId = windowIdForSender(event?.sender);
+  noteClosedTabs(windowId, event?.sender, state.closedTabs);
   lastTabState = state;
-  applyTabState(state);
+  if (windowId !== null) tabStateByWindow.set(windowId, state);
+  // Only the window the menu acts on drives the enabled state; a background
+  // window's push (a page finishing loading there) is kept for when it gets
+  // focus.
+  const target = getTargetWindow();
+  if (windowId === null || !target || target.id === windowId) {
+    applyTabState(state);
+  }
 });
+
+// ── History menu refresh ────────────────────────────────────────────────
+//
+// The Recently Visited / Recently Closed rows are part of the template, so
+// a change means a menu rebuild. Rebuilds are debounced (a page load can
+// record several visits in a burst), skipped when the rows would come out
+// the same, and held while the History menu is open so it never changes
+// under the pointer.
+const HISTORY_MENU_REFRESH_DELAY_MS = 250;
+let historyRefreshTimer = null;
+let historyRefreshPending = false;
+let historySubmenuOpen = false;
+let lastHistorySignature = null;
+let historyMenuStopped = false;
+
+function scheduleHistoryMenuRefresh() {
+  if (historyMenuStopped || historyRefreshTimer) return;
+  historyRefreshTimer = setTimeout(() => {
+    historyRefreshTimer = null;
+    refreshHistoryMenu();
+  }, HISTORY_MENU_REFRESH_DELAY_MS);
+  historyRefreshTimer.unref?.();
+}
+
+// Called by the quit path before it closes windows and the history
+// database: drops a pending refresh and ignores later triggers (a window's
+// 'closed' event, a late history write), so no timer can fire after
+// closeDb() and reopen history.sqlite, or rebuild the menu, mid-shutdown.
+function stopHistoryMenuRefresh() {
+  historyMenuStopped = true;
+  historyRefreshPending = false;
+  if (historyRefreshTimer) {
+    clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = null;
+  }
+}
+
+function refreshHistoryMenu() {
+  if (historyMenuStopped || !Menu.getApplicationMenu()) return;
+  if (historySubmenuOpen) {
+    historyRefreshPending = true;
+    return;
+  }
+  let signature;
+  try {
+    signature = historyMenuSignature(collectHistoryMenuData());
+  } catch (err) {
+    log.warn('[menu] Could not refresh the History menu:', err?.message || err);
+    return;
+  }
+  if (signature === lastHistorySignature) return;
+  setupApplicationMenu();
+}
+
+function trackHistorySubmenuOpen(menu) {
+  historySubmenuOpen = false;
+  const items = Array.isArray(menu?.items) ? menu.items : [];
+  const submenu = items.find((item) => item?.label === 'History')?.submenu;
+  if (!submenu?.on) return;
+  submenu.on('menu-will-show', () => {
+    historySubmenuOpen = true;
+  });
+  submenu.on('menu-will-close', () => {
+    historySubmenuOpen = false;
+    if (historyRefreshPending) {
+      historyRefreshPending = false;
+      scheduleHistoryMenuRefresh();
+    }
+  });
+}
+
+// A visit, a removed entry, a cleared history: re-read Recently Visited.
+onHistoryChanged(scheduleHistoryMenuRefresh);
 
 function applyTabState(state) {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
 
-  const { tabCount, activeIndex, hasClosedTabs } = state;
+  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward } = state;
   const hasMultipleTabs = tabCount > 1;
   const hasTabs = tabCount > 0;
 
@@ -766,12 +1203,27 @@ function applyTabState(state) {
   setEnabled('move-tab-left', hasMultipleTabs && activeIndex > 0);
   setEnabled('reopen-closed-tab', hasClosedTabs);
   setEnabled('toggle-devtools', hasTabs);
+  setEnabled('history-back', canGoBack === true);
+  setEnabled('history-forward', canGoForward === true);
 }
 
 // Track fullscreen state changes from any window to update menu label
 app.on('browser-window-created', (_event, win) => {
   win.on('enter-full-screen', () => updateFullscreenMenuItem(true));
   win.on('leave-full-screen', () => updateFullscreenMenuItem(false));
+  // A closed window's tabs can no longer be reopened (Freedom does not
+  // restore windows), so its Recently Closed rows go with it.
+  const windowId = win.id;
+  win.on('closed', () => {
+    tabStateByWindow.delete(windowId);
+    if (closedTabsByWindow.delete(windowId)) scheduleHistoryMenuRefresh();
+  });
+});
+
+// Back/Forward and the tab rows follow the window the user is in.
+app.on('browser-window-focus', (_event, win) => {
+  const state = win ? tabStateByWindow.get(win.id) : null;
+  if (state) applyTabState(state);
 });
 
 // Allow renderer to enable/disable the bookmark bar toggle menu item
@@ -799,7 +1251,14 @@ function updateFullscreenMenuItem(newIsFullScreen) {
 
 module.exports = {
   buildApplicationMenuTemplate,
+  historyMenuLabel,
+  isHistoryMenuUrl,
+  RECENTLY_VISITED_LIMIT,
+  RECENTLY_CLOSED_LIMIT,
+  HISTORY_LABEL_MAX,
+  HISTORY_MENU_REFRESH_DELAY_MS,
   setupApplicationMenu,
+  stopHistoryMenuRefresh,
   updateTabMenuItems,
   updateFullscreenMenuItem,
 };

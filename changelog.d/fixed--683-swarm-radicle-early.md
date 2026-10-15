@@ -1,0 +1,1 @@
+- Apps see `window.swarm` and `window.radicle` from their first script, including apps with a strict Content Security Policy ([#683](https://github.com/solardev-xyz/freedom-browser/issues/683))

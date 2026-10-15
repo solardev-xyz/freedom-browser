@@ -2311,14 +2311,16 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // (sentence case, #277) — the two sit inside one card.
   const renderConflict = (state) => {
     const { conflict } = state;
+    // Both combinations are key chips, and Swap — the answer the question
+    // asks for — is the primary; Cancel stays the plain secondary (#606).
     const message = conflict.fixed
-      ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
-      : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
+      ? `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+      : `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
     return `
       <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
         <div class="row-body"><p class="row-label">${message}</p></div>
         <span class="shortcut-conflict-actions">
-          ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+          ${conflict.fixed ? '' : '<button type="button" class="btn primary" data-action="swap">Swap</button>'}
           <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
         </span>
       </div>`;
@@ -4291,7 +4293,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 // permission decisions (permissions.json) grouped by origin, with
 // per-permission revoke, per-site revoke, and revoke-all. Session-only
 // (unremembered) decisions live in main-process memory and are not
-// listed here — they expire with the app anyway.
+// listed here — they expire with the app anyway. The one exception is
+// the files and folders a site was given in its picker (#671): they are
+// run-scoped too, but otherwise nothing lists them, so main adds a
+// `fileSystem` row for every site holding them.
 (() => {
   const view = $('permissions-view');
   const revokeAll = $('permissions-revoke-all');
@@ -4306,6 +4311,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     midi: 'MIDI devices',
     // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
     popups: 'Pop-ups',
+    // File System Access (#671): what the user picked in a site's file or
+    // folder dialog. Run-scoped, never stored.
+    fileSystem: 'Files and folders you picked',
   };
   // `external:<scheme>` — one decision per external-protocol scheme
   // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
@@ -4313,6 +4321,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     key.startsWith('external:')
       ? `Open ${key.slice('external:'.length)}: links`
       : PERMISSION_LABELS[key] || key;
+
+  // File System Access grants (#671) are listed for the run only: main
+  // drops them at quit and never stores them.
+  const status = (permission, decision) => {
+    if (decision !== 'allow') return 'Blocked';
+    return permission === 'fileSystem' ? 'Allowed until you quit' : 'Allowed';
+  };
 
   const render = (all) => {
     const origins = Object.keys(all || {}).sort();
@@ -4344,7 +4359,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                   <p class="row-label">${esc(label(permission))}</p>
                   <p class="row-help" ${
                     decision === 'deny' ? 'style="color: var(--danger)"' : ''
-                  }>${decision === 'allow' ? 'Allowed' : 'Blocked'}</p>
+                  }>${status(permission, decision)}</p>
                 </div>
                 <div class="row-control">
                   <button class="btn" data-action="revoke"

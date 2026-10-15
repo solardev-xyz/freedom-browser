@@ -153,8 +153,14 @@ const NETWORK_AND_SETTINGS_SCHEMES = [
   'itms-services', // Apple enterprise/ad-hoc app install manifests
 ];
 
+// Freedom's own Linux profile switch through xdg-open (profile-switch-scheme.js,
+// #142). External as far as Chromium is concerned — it is meant to reach the
+// OS — but only the app itself sends one, never a page in one profile.
+const APP_HANDOFF_SCHEMES = ['x-freedom-profile'];
+
 const BLOCKED_SCHEMES = new Set([
   ...INTERNAL_SCHEMES,
+  ...APP_HANDOFF_SCHEMES,
   ...DANGEROUS_OS_SCHEMES,
   ...NETWORK_AND_SETTINGS_SCHEMES,
 ]);

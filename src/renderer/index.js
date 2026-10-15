@@ -1,15 +1,9 @@
 // Renderer process entry point
-import {
-  updateRegistry,
-  applySettingsToState,
-} from './lib/state.js';
+import { updateRegistry, applySettingsToState } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import { initMyotisUi } from './lib/myotis-ui.js';
-import {
-  initRadicleUi,
-  updateRadicleStatusLine,
-} from './lib/radicle-ui.js';
+import { initRadicleUi, updateRadicleStatusLine } from './lib/radicle-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
 import {
   initMenus,
@@ -76,11 +70,12 @@ import {
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
-import { initSidebar } from './lib/sidebar.js';
+import { initSidebar, setFullscreenConcealed } from './lib/sidebar.js';
+import { initBrowserFullscreen, listenForFullscreenChanges } from './lib/browser-fullscreen.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
-import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
+import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
@@ -747,8 +742,13 @@ const closeAllOverlays = () => {
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open
 electronAPI.onCloseMenus?.(closeAllMenus);
 
+// The window's full-screen state (#78): listened for now, before start-up's
+// first await, so main's did-finish-load report can't land unheard. It is
+// held until initBrowserFullscreen below applies it.
+listenForFullscreenChanges();
+
 // Internal pages can deep-link into the sidebar publish-setup checklist.
-electronAPI.onOpenPublishSetup?.(openPublishSetupFlow);
+electronAPI.onOpenPublishSetup?.(openPublishSetupFromPage);
 
 // Initialize update notification toast
 function initUpdateNotifications() {
@@ -849,6 +849,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
+  initBrowserFullscreen({
+    setSidebarConcealed: setFullscreenConcealed,
+    closeMenus: closeAllOverlays,
+  }); // Full screen hides the chrome (#78)
   initNavigation(); // Sets up event handler with tabs module
   initSitePermissionsUi(); // Permission prompt + address-bar indicator
   initPopupBlockerUi(); // Pop-up-blocked address-bar icon (#442)

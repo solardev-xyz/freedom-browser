@@ -513,3 +513,278 @@ describe('migrateBeeDataToAntData (bee → ant upgrade)', () => {
     expect(moveOrder[moveOrder.length - 1]).toBe('keys');
   });
 });
+
+// #101: the pre-0.8.0 Kubo repo left in ipfs-data/ is deleted on upgrade;
+// ipfs-data/freedom-ipfs/ (the live native node) is never touched.
+describe('legacy Kubo repo cleanup (Kubo → freedom-ipfs upgrade)', () => {
+  const SET_ASIDE = '.legacy-kubo-data-pending-delete';
+  let userDataDir;
+
+  // A Kubo repo as `ipfs init` + a few launches leave it, plus Freedom's own
+  // `.identity-injected` marker from the vault-identity days.
+  function writeKuboRepo({ withFreedomIpfs = false } = {}) {
+    const ipfsData = path.join(userDataDir, 'ipfs-data');
+    fs.mkdirSync(path.join(ipfsData, 'blocks', 'CIQ'), { recursive: true });
+    fs.writeFileSync(path.join(ipfsData, 'blocks', 'CIQ', 'CIQA.data'), 'kubo-block');
+    fs.mkdirSync(path.join(ipfsData, 'datastore'), { recursive: true });
+    fs.writeFileSync(path.join(ipfsData, 'datastore', 'CURRENT'), 'MANIFEST-000001');
+    fs.mkdirSync(path.join(ipfsData, 'keystore'), { recursive: true });
+    fs.writeFileSync(path.join(ipfsData, 'config'), '{"Identity":{"PeerID":"Qm-kubo"}}');
+    fs.writeFileSync(path.join(ipfsData, 'datastore_spec'), '{}');
+    fs.writeFileSync(path.join(ipfsData, 'version'), '16');
+    fs.writeFileSync(path.join(ipfsData, 'repo.lock'), '');
+    fs.writeFileSync(path.join(ipfsData, 'api'), '/ip4/127.0.0.1/tcp/5001');
+    fs.writeFileSync(path.join(ipfsData, '.identity-injected'), 'x');
+    if (withFreedomIpfs) {
+      fs.mkdirSync(path.join(ipfsData, 'freedom-ipfs', 'blocks'), { recursive: true });
+      fs.writeFileSync(path.join(ipfsData, 'freedom-ipfs', 'blocks', 'native'), 'native-state');
+    }
+    return ipfsData;
+  }
+
+  function loadWithPurgeStub(removePath) {
+    return loadMainModule(require.resolve('./migrate-user-data'), {
+      app: createAppMock({ isPackaged: true, userDataDir }),
+      extraMocks: {
+        [require.resolve('./logger')]: () => ({
+          info: jest.fn(),
+          warn: jest.fn(),
+          error: jest.fn(),
+        }),
+        [require.resolve('./fs-offload')]: () => ({ removePath }),
+      },
+    }).mod;
+  }
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    delete process.env.FREEDOM_IPFS_DATA;
+  });
+
+  afterEach(() => {
+    jest.dontMock(require.resolve('./fs-offload'));
+    jest.restoreAllMocks();
+    removeTempUserDataDir(userDataDir);
+    delete process.env.FREEDOM_IPFS_DATA;
+  });
+
+  test('upgraded install: sets the Kubo repo aside, keeps freedom-ipfs/, never rmSyncs', () => {
+    const ipfsData = writeKuboRepo({ withFreedomIpfs: true });
+    const mod = loadMigrationModule(userDataDir);
+    const rmSpy = jest.spyOn(fs, 'rmSync');
+
+    expect(mod.isLegacyKuboRepoPresent()).toBe(true);
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    // The move is a rename; the delete itself is left to the off-thread purge.
+    expect(rmSpy).not.toHaveBeenCalled();
+
+    expect(fs.readdirSync(ipfsData)).toEqual(['freedom-ipfs']);
+    expect(fs.readFileSync(path.join(ipfsData, 'freedom-ipfs', 'blocks', 'native'), 'utf-8')).toBe(
+      'native-state'
+    );
+    expect(mod.isLegacyKuboRepoPresent()).toBe(false);
+
+    // Moved, not copied: everything landed in one batch dir.
+    const batches = fs.readdirSync(path.join(userDataDir, SET_ASIDE));
+    expect(batches).toHaveLength(1);
+    const batch = path.join(userDataDir, SET_ASIDE, batches[0]);
+    expect(fs.readdirSync(batch).sort()).toEqual(
+      [
+        '.identity-injected',
+        'api',
+        'blocks',
+        'config',
+        'datastore',
+        'datastore_spec',
+        'keystore',
+        'repo.lock',
+        'version',
+      ].sort()
+    );
+    expect(fs.readFileSync(path.join(batch, 'blocks', 'CIQ', 'CIQA.data'), 'utf-8')).toBe(
+      'kubo-block'
+    );
+  });
+
+  test('upgraded install without freedom-ipfs/ yet leaves an empty ipfs-data/', () => {
+    const ipfsData = writeKuboRepo();
+    const mod = loadMigrationModule(userDataDir);
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    expect(fs.readdirSync(ipfsData)).toEqual([]);
+  });
+
+  test('fresh install: no ipfs-data/ at all is a no-op', () => {
+    const mod = loadMigrationModule(userDataDir);
+
+    expect(mod.isLegacyKuboRepoPresent()).toBe(false);
+    expect(mod.setAsideLegacyKuboRepo()).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'ipfs-data'))).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+  });
+
+  test('fresh install: ipfs-data/ holding only freedom-ipfs/ is left alone', () => {
+    const native = path.join(userDataDir, 'ipfs-data', 'freedom-ipfs');
+    fs.mkdirSync(native, { recursive: true });
+    fs.writeFileSync(path.join(native, 'state'), 'native');
+    const mod = loadMigrationModule(userDataDir);
+    const renameSpy = jest.spyOn(fs, 'renameSync');
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(false);
+    expect(renameSpy).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(native, 'state'), 'utf-8')).toBe('native');
+    expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+  });
+
+  test('moves Kubo markers last, config last of all', () => {
+    writeKuboRepo({ withFreedomIpfs: true });
+    const mod = loadMigrationModule(userDataDir);
+    const moveOrder = [];
+    const realRename = fs.renameSync.bind(fs);
+    jest.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+      moveOrder.push(path.basename(String(src)));
+      return realRename(src, dest);
+    });
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+
+    // Non-markers first, then the markers in KUBO_REPO_MARKERS order. A
+    // marker must outlive every other entry so a run interrupted part-way
+    // still leaves isLegacyKuboRepoPresent() true for the next launch.
+    expect(moveOrder).toEqual([
+      '.identity-injected',
+      'api',
+      'repo.lock',
+      'blocks',
+      'datastore',
+      'keystore',
+      'datastore_spec',
+      'version',
+      'config',
+    ]);
+    expect(moveOrder).not.toContain('freedom-ipfs');
+  });
+
+  test('retry: a failed rename stops the run with a marker left, the next launch finishes', () => {
+    // Both runs in the same millisecond, same pid: batch names must still differ.
+    jest.spyOn(Date, 'now').mockReturnValue(1700000000000);
+    const ipfsData = writeKuboRepo({ withFreedomIpfs: true });
+    const mod = loadMigrationModule(userDataDir);
+    const realRename = fs.renameSync.bind(fs);
+    // Windows-style lock on the blockstore (an indexer/antivirus handle).
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+      if (path.basename(String(src)) === 'blocks') {
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      }
+      return realRename(src, dest);
+    });
+
+    // Something was moved, so the run reports progress, but it stopped at
+    // blocks/: every later marker, config included, is still in place.
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    expect(fs.readdirSync(ipfsData).sort()).toEqual(
+      [
+        'blocks',
+        'config',
+        'datastore',
+        'datastore_spec',
+        'freedom-ipfs',
+        'keystore',
+        'version',
+      ].sort()
+    );
+    expect(mod.isLegacyKuboRepoPresent()).toBe(true);
+
+    // Next launch, the lock is gone.
+    renameSpy.mockRestore();
+    const relaunched = loadMigrationModule(userDataDir);
+    expect(relaunched.setAsideLegacyKuboRepo()).toBe(true);
+    expect(fs.readdirSync(ipfsData)).toEqual(['freedom-ipfs']);
+    expect(relaunched.isLegacyKuboRepoPresent()).toBe(false);
+    // Two runs, two batches, nothing overwritten.
+    expect(fs.readdirSync(path.join(userDataDir, SET_ASIDE))).toHaveLength(2);
+    // And a third launch has nothing left to do.
+    expect(loadMigrationModule(userDataDir).setAsideLegacyKuboRepo()).toBe(false);
+  });
+
+  test('retry: a failure on config itself keeps the repo marked', () => {
+    const ipfsData = writeKuboRepo({ withFreedomIpfs: true });
+    const mod = loadMigrationModule(userDataDir);
+    const realRename = fs.renameSync.bind(fs);
+    jest.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+      if (path.basename(String(src)) === 'config') {
+        throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+      }
+      return realRename(src, dest);
+    });
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    expect(fs.readdirSync(ipfsData).sort()).toEqual(['config', 'freedom-ipfs']);
+    expect(mod.isLegacyKuboRepoPresent()).toBe(true);
+  });
+
+  test('a FREEDOM_IPFS_DATA override skips the cleanup', () => {
+    const ipfsData = writeKuboRepo();
+    process.env.FREEDOM_IPFS_DATA = ipfsData;
+    const mod = loadMigrationModule(userDataDir);
+
+    expect(mod.isLegacyKuboRepoPresent()).toBe(false);
+    expect(mod.setAsideLegacyKuboRepo()).toBe(false);
+    expect(fs.existsSync(path.join(ipfsData, 'config'))).toBe(true);
+    expect(fs.existsSync(path.join(ipfsData, 'blocks'))).toBe(true);
+  });
+
+  test('purgeSetAsideLegacyKuboData deletes the set-aside dir through fs-offload', async () => {
+    const ipfsData = writeKuboRepo({ withFreedomIpfs: true });
+    const removePath = jest.fn((target, options) => {
+      fs.rmSync(target, options);
+      return Promise.resolve();
+    });
+    const mod = loadWithPurgeStub(removePath);
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    expect(removePath).not.toHaveBeenCalled();
+    await expect(mod.purgeSetAsideLegacyKuboData()).resolves.toBe(true);
+
+    expect(removePath).toHaveBeenCalledTimes(1);
+    expect(removePath).toHaveBeenCalledWith(path.join(userDataDir, SET_ASIDE), {
+      recursive: true,
+      force: true,
+    });
+    expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+    expect(fs.readFileSync(path.join(ipfsData, 'freedom-ipfs', 'blocks', 'native'), 'utf-8')).toBe(
+      'native-state'
+    );
+  });
+
+  test('purgeSetAsideLegacyKuboData leaves the set-aside dir for a retry when the delete fails', async () => {
+    writeKuboRepo();
+    const removePath = jest.fn(() => Promise.reject(new Error('EBUSY: resource busy')));
+    const mod = loadWithPurgeStub(removePath);
+
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    await expect(mod.purgeSetAsideLegacyKuboData()).resolves.toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(true);
+  });
+
+  test('purgeSetAsideLegacyKuboData deletes for real in a worker (real fs-offload)', async () => {
+    writeKuboRepo({ withFreedomIpfs: true });
+    const mod = loadMigrationModule(userDataDir);
+    expect(mod.setAsideLegacyKuboRepo()).toBe(true);
+    const rmSpy = jest.spyOn(fs, 'rmSync');
+
+    await expect(mod.purgeSetAsideLegacyKuboData()).resolves.toBe(true);
+
+    expect(rmSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'ipfs-data', 'freedom-ipfs'))).toBe(true);
+  });
+
+  test('purgeSetAsideLegacyKuboData is a no-op without a set-aside dir', async () => {
+    const removePath = jest.fn();
+    const mod = loadWithPurgeStub(removePath);
+
+    await expect(mod.purgeSetAsideLegacyKuboData()).resolves.toBe(false);
+    expect(removePath).not.toHaveBeenCalled();
+  });
+});

@@ -19,6 +19,28 @@ async function loadSidebar() {
     sidebar: createElement('aside', { classes: ['sidebar', 'collapsed'] }),
     'wallet-toggle-btn': createElement('button'),
     'sidebar-close': createElement('button'),
+    // The panel opens on its home view; a test hides it to put a request's
+    // screen up (showHome(false)).
+    'sidebar-identity': createElement('div'),
+  };
+  // The fake DOM has no MutationObserver; capture the sidebar's and let a
+  // test deliver the home view's class change by hand.
+  const observers = [];
+  global.MutationObserver = class {
+    constructor(callback) {
+      this.callback = callback;
+      observers.push(this);
+    }
+    observe(target, options) {
+      this.target = target;
+      this.options = options;
+    }
+  };
+  const showHome = (shown) => {
+    elements['sidebar-identity'].classList.toggle('hidden', !shown);
+    observers
+      .filter((o) => o.target === elements['sidebar-identity'])
+      .forEach((o) => o.callback([{ type: 'attributes', attributeName: 'class' }]));
   };
   const document = createDocument({ elementsById: elements });
   document.dispatchEvent = jest.fn();
@@ -27,7 +49,12 @@ async function loadSidebar() {
     electronAPI: { getSettings: jest.fn().mockResolvedValue({ enableIdentityWallet: true }) },
     addEventListener: jest.fn(),
   };
-  global.CustomEvent = class { constructor(type, init) { this.type = type; Object.assign(this, init); } };
+  global.CustomEvent = class {
+    constructor(type, init) {
+      this.type = type;
+      Object.assign(this, init);
+    }
+  };
 
   // Imported after resetModules, so this is the same lock instance the
   // sidebar module subscribes to.
@@ -37,7 +64,7 @@ async function loadSidebar() {
   await flush(); // the feature flag resolves asynchronously
 
   sidebar.open();
-  return { sidebar, flight, elements, document };
+  return { sidebar, flight, elements, document, showHome };
 }
 
 const closedEvents = (document) =>
@@ -48,6 +75,7 @@ describe('sidebar ownership during a signature flight', () => {
     delete global.document;
     delete global.window;
     delete global.CustomEvent;
+    delete global.MutationObserver;
   });
 
   test('the close button and toolbar toggle go dead for the flight', async () => {
@@ -78,7 +106,12 @@ describe('sidebar ownership during a signature flight', () => {
     elements['wallet-toggle-btn'].dispatch('click');
     sidebar.close();
     sidebar.toggle();
-    document.handlers.keydown({ ctrlKey: true, shiftKey: true, key: 'W', preventDefault: jest.fn() });
+    document.handlers.keydown({
+      ctrlKey: true,
+      shiftKey: true,
+      key: 'W',
+      preventDefault: jest.fn(),
+    });
 
     expect(sidebar.isVisible()).toBe(true);
     expect(elements.sidebar.classList.contains('collapsed')).toBe(false);
@@ -116,5 +149,244 @@ describe('sidebar ownership during a signature flight', () => {
     sidebar.toggle();
     expect(sidebar.isVisible()).toBe(true);
     expect(elements['wallet-toggle-btn'].disabled).toBe(true);
+  });
+});
+
+// Browser full screen hides an open panel without closing it (#78): a close
+// would fire 'sidebar-closed' and its closeAllSubscreens() cascade, and
+// leaving full screen has to find the panel exactly as it was.
+describe('sidebar concealed by browser full screen', () => {
+  afterEach(() => {
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    delete global.MutationObserver;
+  });
+
+  test('an open panel is hidden, not closed, and shown again on leaving', async () => {
+    const { sidebar, elements, document } = await loadSidebar();
+    const before = closedEvents(document);
+
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('collapsed')).toBe(false);
+    expect(closedEvents(document)).toBe(before);
+
+    sidebar.setFullscreenConcealed(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a closed panel is left alone', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.close();
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a request to open the panel shows it again instead of doing nothing', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+    sidebar.open();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    sidebar.setFullscreenConcealed(true);
+    sidebar.openForConsent();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('the toggle shows a hidden panel rather than closing it unseen', async () => {
+    const { sidebar, elements, document } = await loadSidebar();
+    const before = closedEvents(document);
+    sidebar.setFullscreenConcealed(true);
+
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(closedEvents(document)).toBe(before);
+
+    // A second press is an ordinary close.
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(false);
+  });
+
+  test('a panel closed while hidden opens into view on the next toggle', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+
+    // e.g. Identity & Wallet switched off and on again in Settings.
+    sidebar.close();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a panel holding a device confirmation stays in view', async () => {
+    const { sidebar, flight, elements } = await loadSidebar();
+    flight.beginSignatureFlight({ id: 'ledger-send' });
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  // R2-M2: a panel shown over the page for a request steps aside again once
+  // the request is over, as the permission prompt's toolbar does.
+  test('a panel revealed for a request is hidden again once the request is answered', async () => {
+    const { sidebar, elements, document, showHome } = await loadSidebar();
+    showHome(true);
+    const before = closedEvents(document);
+    sidebar.setFullscreenConcealed(true);
+
+    // A consent prompt takes the panel: home view out, request screen in.
+    showHome(false);
+    sidebar.openForConsent();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    // Answered: the request puts the home view back.
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+    expect(sidebar.isVisible()).toBe(true);
+    expect(closedEvents(document)).toBe(before);
+
+    // Leaving full screen shows it open, as it was.
+    sidebar.setFullscreenConcealed(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a closed panel opened for a dApp request in full screen steps aside afterwards', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    sidebar.close();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+
+    showHome(false);
+    sidebar.open();
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+  });
+
+  test('a request that hands over to the next one keeps the panel in view', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+    showHome(false);
+    sidebar.open();
+
+    // Shown and hidden again before the observer runs: still in use.
+    elements['sidebar-identity'].classList.remove('hidden');
+    showHome(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a panel the user brought back with the shortcut stays in view', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+    sidebar.toggle();
+    showHome(false);
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  // R3-M1: a request answered over a panel the user already chose to show
+  // must not hide it on the way out.
+  test('a panel the user brought back stays in view after a request is answered', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    sidebar.toggle();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    showHome(false);
+    sidebar.openForConsent();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a panel the user opened in full screen stays in view after a request is answered', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    sidebar.close();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a request outside full screen leaves the panel alone', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  // R4-M1: entering full screen must not hide a request still waiting for
+  // an answer; the panel steps aside once it is answered.
+  test.each([
+    ['a dApp connect or approval', 'open'],
+    ['a Radicle consent', 'openForConsent'],
+  ])('entering full screen leaves %s that is still unanswered in view', async (_label, opener) => {
+    const { sidebar, elements, document, showHome } = await loadSidebar();
+    const before = closedEvents(document);
+    showHome(false);
+    sidebar[opener]();
+
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+
+    // Answered: the panel goes back to how full screen has it.
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+    expect(sidebar.isVisible()).toBe(true);
+    expect(closedEvents(document)).toBe(before);
+
+    sidebar.setFullscreenConcealed(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a request answered before full screen does not keep the panel in view', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+  });
+
+  test('a request dropped by closing the panel does not keep it in view later', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(false);
+    sidebar.open();
+    sidebar.close();
+    // Reopened by the user on a screen that is not a request.
+    sidebar.toggle();
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+  });
+
+  test('a panel still holding a device confirmation is not hidden when home returns', async () => {
+    const { sidebar, flight, elements, showHome } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+    showHome(false);
+    sidebar.open();
+    flight.beginSignatureFlight({ id: 'ledger-send' });
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
   });
 });

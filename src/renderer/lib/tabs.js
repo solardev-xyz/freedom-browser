@@ -24,7 +24,7 @@ import {
   notifyFindBarTabSwitched,
 } from './find-bar.js';
 import { consumeHistoryTraversal } from './history-traversal.js';
-import { matchesShortcut } from './shortcuts.js';
+import { SHORTCUTS, matchesShortcut, matchesOwnBinding } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
@@ -106,17 +106,41 @@ const namedTargets = new Map();
 // opener) means no gesture-less reuse at all — fail closed.
 const namedTargetOpeners = new Map();
 
-// Stack of recently closed tabs for Ctrl+Shift+T (reopen closed tab)
+// Stack of recently closed tabs for Ctrl+Shift+T (reopen closed tab).
+// Each entry carries an id (so the app menu's History > Recently Closed can
+// name the one to reopen, #584) and when it closed (so the menu can merge
+// the lists of several windows newest first).
 const closedTabsStack = [];
 const MAX_CLOSED_TABS = 20;
+let nextClosedTabId = 1;
 
-// Push current tab state to the main process for menu item enable/disable
-const pushTabMenuState = () => {
+const activeWebviewCan = (method) => {
+  const webview = tabState.tabs.find((t) => t.id === tabState.activeTabId)?.webview;
+  try {
+    return !!webview?.[method]?.();
+  } catch {
+    // Guest not attached yet (or already gone).
+    return false;
+  }
+};
+
+// Push current tab state to the main process for menu item enable/disable.
+// Exported so navigation.js can re-push when Back/Forward availability
+// changes on a commit.
+export const pushTabMenuState = () => {
   const activeIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
   electronAPI?.updateTabMenuState?.({
     tabCount: tabState.tabs.length,
     activeIndex,
     hasClosedTabs: closedTabsStack.length > 0,
+    canGoBack: activeWebviewCan('canGoBack'),
+    canGoForward: activeWebviewCan('canGoForward'),
+    // PRIVATE MODE GUARD (history menu): a private window's closed tabs
+    // never reach the app menu's Recently Closed list. The main process
+    // drops a private sender's list too (src/main/menu.js).
+    closedTabs: isPrivateWindow()
+      ? []
+      : closedTabsStack.map(({ id, url, title, closedAt }) => ({ id, url, title, closedAt })),
   });
 };
 
@@ -744,8 +768,12 @@ const createWebview = (tabId, initialUrl) => {
         void refreshOnchainProvenance(tab, webviewUrl);
         // Clear any stale favicon from the previous page when navigating to
         // an internal page — page-favicon-updated will paint one back in if
-        // the page declares a <link rel="icon">.
-        if (isInternalPageUrl(event.url)) {
+        // the page declares a <link rel="icon">. Not when the commit reloads
+        // the page already shown (Settings at `#appearance` loading
+        // `freedom://settings`, a reload): Chromium does not report an icon
+        // list again that is identical to the one it just reported, so the
+        // cleared slot stayed on the globe for the rest of the visit (#606).
+        if (isInternalPageUrl(event.url) && !isSameInternalDocument(previousUrl, webviewUrl)) {
           tab.favicon = null;
           renderTabs();
         }
@@ -1097,6 +1125,14 @@ const isInternalPageUrl = (url) => {
   if (url.startsWith('freedom://')) return true;
   const base = getInternalPagesBase();
   return Boolean(base) && url.startsWith(base);
+};
+
+// Same internal page file, whatever the query or fragment: its own
+// <link rel="icon"> is the icon the tab already carries.
+const isSameInternalDocument = (previousUrl, nextUrl) => {
+  if (!isInternalPageUrl(previousUrl) || !isInternalPageUrl(nextUrl)) return false;
+  const documentOf = (url) => url.split(/[?#]/)[0];
+  return documentOf(previousUrl) === documentOf(nextUrl);
 };
 
 // Loading spinner (same style as address bar)
@@ -1616,7 +1652,12 @@ export const closeTab = (tabId) => {
   // never be resurrected from a normal window's Cmd/Ctrl+Shift+T.
   const tabUrl = tab.url || tab.navigationState?.currentPageUrl;
   if (tabUrl && tabUrl !== 'about:blank' && tabUrl !== homeUrl && !isPrivateStartUrl(tabUrl)) {
-    closedTabsStack.push({ url: tabUrl, title: tab.title });
+    closedTabsStack.push({
+      id: nextClosedTabId++,
+      url: tabUrl,
+      title: tab.title,
+      closedAt: Date.now(),
+    });
     if (closedTabsStack.length > MAX_CLOSED_TABS) {
       closedTabsStack.shift();
     }
@@ -1726,9 +1767,17 @@ const closeTabsToRight = (tabId) => {
   pushDebug(`Closed ${tabsToClose.length} tabs to the right`);
 };
 
-// Reopen the last closed tab
-export const reopenLastClosedTab = () => {
-  const entry = closedTabsStack.pop();
+// Reopen the last closed tab — or, given an entry id (the app menu's
+// History > Recently Closed rows), that entry. An id no longer on the stack
+// (reopened meanwhile) does nothing rather than reopening something else.
+export const reopenLastClosedTab = (entryId) => {
+  let entry;
+  if (entryId === undefined || entryId === null) {
+    entry = closedTabsStack.pop();
+  } else {
+    const index = closedTabsStack.findIndex((candidate) => candidate.id === entryId);
+    entry = index === -1 ? undefined : closedTabsStack.splice(index, 1)[0];
+  }
   if (!entry) {
     pushDebug('No closed tabs to reopen');
     return;
@@ -1776,6 +1825,44 @@ export const switchToPrevTab = () => {
   const currentIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
   const prevIndex = (currentIndex - 1 + tabState.tabs.length) % tabState.tabs.length;
   switchTab(tabState.tabs[prevIndex].id);
+};
+
+// Select a tab by position (Cmd/Ctrl+1…8, #717): `position` is 1-based, and
+// 'last' is the last tab however many there are (Cmd/Ctrl+9). A position past
+// the last tab does nothing, as in Chrome. switchTab moves focus to the page
+// the same way every other keyboard switch does (#304).
+export const selectTabAtPosition = (position) => {
+  const { tabs } = tabState;
+  const tab =
+    position === 'last'
+      ? tabs[tabs.length - 1]
+      : Number.isInteger(position) && position >= 1
+        ? tabs[position - 1]
+        : undefined;
+  if (!tab) return;
+  switchTab(tab.id);
+};
+
+// Select-tab registry ids → the position each one selects.
+const SELECT_TAB_SHORTCUTS = [
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => [`tab.select${position}`, position]),
+  ['tab.selectLast', 'last'],
+];
+const SELECT_TAB_IDS = new Set(SELECT_TAB_SHORTCUTS.map(([id]) => id));
+
+// The position a keydown selects, or null. Mirrors tab-switch-keys.js: a
+// press that is also another shortcut's own binding belongs to that one (on
+// French AZERTY the `6` key types `-`, so Ctrl+6 is Zoom Out's press too; the
+// zoom keydown handler in menus.js answers it). A fixed alias does not take
+// the press: on Czech the `1` key types `+`, Zoom In's `CmdOrCtrl+Plus`
+// alias, but Zoom In keeps its own `=` key there and Select Tab 1 has none.
+const selectTabPositionForEvent = (event) => {
+  const hit = SELECT_TAB_SHORTCUTS.find(([id]) => matchesShortcut(event, id));
+  if (!hit) return null;
+  const claimedElsewhere = SHORTCUTS.some(
+    (entry) => !SELECT_TAB_IDS.has(entry.id) && matchesOwnBinding(event, entry.id)
+  );
+  return claimedElsewhere ? null : hit[1];
 };
 
 // Toggle pin state for a tab
@@ -2529,6 +2616,10 @@ export const initTabs = async () => {
     switchToPrevTab();
   });
 
+  electronAPI?.onSelectTab?.((position) => {
+    selectTabAtPosition(position);
+  });
+
   electronAPI?.onMoveTabLeft?.(() => {
     moveTab('left');
   });
@@ -2537,8 +2628,8 @@ export const initTabs = async () => {
     moveTab('right');
   });
 
-  electronAPI?.onReopenClosedTab?.(() => {
-    reopenLastClosedTab();
+  electronAPI?.onReopenClosedTab?.((entryId) => {
+    reopenLastClosedTab(entryId);
   });
 
   // Keyboard shortcuts (fallback for when menu doesn't handle it).
@@ -2592,6 +2683,14 @@ export const initTabs = async () => {
     if (matchesShortcut(event, 'tab.previous')) {
       event.preventDefault();
       switchToPrevTab();
+    }
+    // Select tab 1–8 / the last tab (Cmd/Ctrl+1…9; Alt+1…9 on Linux). Claimed
+    // in the main process like Next/Previous (tab-switch-keys.js, #717); this
+    // is the chrome's fallback.
+    const selectPosition = selectTabPositionForEvent(event);
+    if (selectPosition !== null) {
+      event.preventDefault();
+      selectTabAtPosition(selectPosition);
     }
     // Move tab right
     if (matchesShortcut(event, 'tab.moveRight')) {

@@ -230,6 +230,9 @@ body {
 .empty-state p {
   margin: 0;
 }
+.empty-state.no-history {
+  margin-top: 24px;
+}
 
 /* Network repos styling */
 .network-section {

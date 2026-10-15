@@ -169,7 +169,8 @@
       "mimeTypes": [
         "x-scheme-handler/ipfs",
         "x-scheme-handler/ipns",
-        "x-scheme-handler/bzz"
+        "x-scheme-handler/bzz",
+        "x-scheme-handler/x-freedom-profile"
       ],
       "files": [
         "src/**/*",

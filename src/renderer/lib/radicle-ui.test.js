@@ -162,7 +162,7 @@ describe('radicle-ui', () => {
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(true);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('5');
     expect(ctx.elements.radicleReposCount.textContent).toBe('7');
-    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.4.0');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.4.0');
     expect(ctx.state.radicleVersionFetched).toBe(true);
     expect(ctx.setIntervalMock).not.toHaveBeenCalled();
 
@@ -173,7 +173,7 @@ describe('radicle-ui', () => {
     });
     expect(ctx.elements.radiclePeersCount.textContent).toBe('8');
     expect(ctx.elements.radicleReposCount.textContent).toBe('9');
-    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.6.1');
 
     ctx.mod.stopRadicleInfoUpdates();
 
@@ -182,7 +182,7 @@ describe('radicle-ui', () => {
     expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
     // Counters share one empty state with the rest of the Nodes menu (#227).
     expect(ctx.elements.radicleReposCount.textContent).toBe('0');
-    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.6.1');
   });
 
   test('an unknown seeded-repository count renders 0, like the other counters', async () => {
@@ -275,7 +275,7 @@ describe('radicle-ui', () => {
       error: null,
       info: { success: true, count: 1, reposCount: 1, version: '0.7.1' },
     });
-    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.7.1');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.7.1');
   });
 
   test('updates Radicle status lines, toggle state, and running transitions', async () => {

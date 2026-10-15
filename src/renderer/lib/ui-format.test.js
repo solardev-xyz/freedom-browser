@@ -32,8 +32,8 @@ describe('countText', () => {
 
 describe('versionText', () => {
   test('renders a reported version', () => {
-    expect(versionText('Myotis v0.1.7')).toBe('Myotis v0.1.7');
-    expect(versionText('libradicle v0.7.1')).toBe('libradicle v0.7.1');
+    expect(versionText('Myotis 0.1.7')).toBe('Myotis 0.1.7');
+    expect(versionText('libradicle 0.7.1')).toBe('libradicle 0.7.1');
   });
 
   test('renders one placeholder for every "not known yet" shape (#253)', () => {
@@ -48,7 +48,7 @@ describe('versionText', () => {
   });
 
   test('trims, so a padded value never renders as blank', () => {
-    expect(versionText('  Ant v0.5.8  ')).toBe('Ant v0.5.8');
+    expect(versionText('  Ant 0.5.8  ')).toBe('Ant 0.5.8');
   });
 });
 

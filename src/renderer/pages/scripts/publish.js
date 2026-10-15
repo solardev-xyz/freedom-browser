@@ -153,14 +153,14 @@ async function handlePublishFile() {
   try {
     const picked = await swarm.pickFileForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading file\u2026', 0);
 
-    const result = await swarm.publishFilePath(picked.path);
+    const result = await swarm.publishFilePath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
@@ -181,14 +181,14 @@ async function handlePublishFolder() {
   try {
     const picked = await swarm.pickDirectoryForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading folder\u2026', 0);
 
-    const result = await swarm.publishDirectoryPath(picked.path);
+    const result = await swarm.publishDirectoryPath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
@@ -296,6 +296,23 @@ function showError(message, { offerSetup = false } = {}) {
   showView('error');
   if (errorText) errorText.textContent = message;
   errorSetupBtn?.classList.toggle('hidden', !offerSetup);
+  if (offerSetup) void explainSetupWithoutWallet(message);
+}
+
+// The publish setup lives in the wallet sidebar, which the Identity & Wallet
+// feature flag gates: with it off, the button would open nothing (#719), so
+// say where to turn it on instead, as the Settings row does.
+async function explainSetupWithoutWallet(message) {
+  let settings;
+  try {
+    settings = await window.freedomAPI?.getSettings?.();
+  } catch {
+    return;
+  }
+  if (!settings || settings.enableIdentityWallet === true) return;
+  if (errorText?.textContent !== message) return; // A newer error is up.
+  errorSetupBtn?.classList.add('hidden');
+  errorText.textContent = `${message} Enable Identity & Wallet under Advanced to publish on Swarm.`;
 }
 
 async function copyToClipboard(text) {

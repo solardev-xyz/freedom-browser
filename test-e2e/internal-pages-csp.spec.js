@@ -320,7 +320,7 @@ test('settings: changing a control saves it and the chrome follows', async ({
   expect(await cspViolations(electronApp)).toEqual([]);
 });
 
-test('error page: renders the failure and Try Again retries', async ({
+test('error page: renders the failure and Try again retries', async ({
   window,
   electronApp,
   harness,

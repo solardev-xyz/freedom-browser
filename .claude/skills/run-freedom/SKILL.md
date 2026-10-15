@@ -13,7 +13,7 @@ in seconds with no live services. Everything here lives in this directory:
 - `recipes.js` — functions that put the app into a state (find bar, permission
   prompt, download shelf, muted tab, private window, settings sections,
   shortcut conflict, wallet Send/dApp/Swarm screens, onchain app + trust
-  popover, Tezos interstitials, error page).
+  popover, Tezos interstitials, error page, a real Profiles list).
 - `tour.js` — screenshots every surface above in dark and light theme.
 
 ## Prerequisites
@@ -52,7 +52,10 @@ const r = require('./.claude/skills/run-freedom/recipes');
 })();
 ```
 
-`launch(seed)` accepts any settings key (`theme`, `showBookmarkBar`,
+`launch(seed, { catalog: true })` starts in profile-catalog mode instead of
+the pinned test profile, which is the only way `freedom://profiles` shows a
+list rather than its error state; `recipes.profilesPage(theme)` does that and
+adds two profiles. `launch(seed)` accepts any settings key (`theme`, `showBookmarkBar`,
 `shortcutOverrides`, `adblockEnabled`, ...). `theme: 'dark'` removes the
 `data-theme` attribute; `'light'` sets it.
 

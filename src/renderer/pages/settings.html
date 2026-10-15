@@ -691,6 +691,14 @@
         color: var(--text-subtle);
       }
 
+      /* Monospace is for URLs, hashes and keys; a name is prose (#606 item 5,
+         docs/agent-playbooks/ui-consistency.md "Inputs"). Same control, the
+         page font put back — like the two search boxes below. */
+      #profile-name-input,
+      #custom-search-provider-name {
+        font-family: inherit;
+      }
+
       .btn {
         padding: 8px 14px;
         background: var(--bg-elev);
@@ -713,6 +721,22 @@
       .btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+
+      /* Primary: filled --accent, the playbook's one filled button. The ink is
+         the page background, as on Profiles' primary, so it reads on the light
+         dark-theme accent and on the deep light-theme one alike. */
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--bg);
+        font-weight: 600;
+      }
+
+      .btn.primary:hover:not(:disabled) {
+        background: var(--accent);
+        border-color: var(--accent);
+        opacity: 0.9;
       }
 
       .rpc-hint {

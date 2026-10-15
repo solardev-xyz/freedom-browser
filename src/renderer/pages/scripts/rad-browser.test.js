@@ -35,6 +35,7 @@ const { parseViewerPath, serializeViewerPath } = loadHelpers([
 const { encodePathSegments } = loadHelpers(['encodePathSegments']);
 const { buildViewerHref } = loadHelpers(['buildViewerHref']);
 const { resolveRevision } = loadHelpers(['resolveRevision']);
+const { toCount } = loadHelpers(['toCount']);
 const REVISION = '0123456789abcdef0123456789abcdef01234567';
 
 describe('escapeHtml', () => {
@@ -69,6 +70,105 @@ describe('escapeHtml', () => {
   test('nullish input yields an empty string', () => {
     expect(escapeHtml(null)).toBe('');
     expect(escapeHtml(undefined)).toBe('');
+  });
+});
+
+// #661: seed listings and repo metadata are remote JSON, and their counts go
+// into innerHTML unescaped as numbers. A string where a number belongs must
+// never reach the markup.
+describe('toCount', () => {
+  test('passes real counts through', () => {
+    expect(toCount(0)).toBe(0);
+    expect(toCount(7)).toBe(7);
+    expect(toCount(12345)).toBe(12345);
+    expect(toCount('42')).toBe(42);
+    expect(toCount(3.9)).toBe(3);
+  });
+
+  test('turns hostile or missing values into 0', () => {
+    expect(toCount('<img src=x>')).toBe(0);
+    expect(toCount('1<style>body{display:none}</style>')).toBe(0);
+    expect(toCount({ toString: () => '<iframe>' })).toBe(0);
+    expect(toCount(['<b>'])).toBe(0);
+    expect(toCount(null)).toBe(0);
+    expect(toCount(undefined)).toBe(0);
+    expect(toCount(NaN)).toBe(0);
+    expect(toCount(Infinity)).toBe(0);
+    expect(toCount(-5)).toBe(0);
+  });
+});
+
+// Every remote count or id interpolated into innerHTML must pass through
+// toCount() or escapeHtml(); these are the sites #661 found bare.
+describe('remote fields reaching innerHTML', () => {
+  test('seeder counts are coerced in both repo lists and the header', () => {
+    expect(SOURCE).not.toMatch(/repo\.seeding \|\| 0/);
+    expect(SOURCE.match(/const seeders = toCount\(repo\.seeding\);/g)).toHaveLength(2);
+    expect(SOURCE).toContain('const seeding = toCount(meta.seeding);');
+  });
+
+  test('header, stats and last-commit fields are coerced or escaped', () => {
+    expect(SOURCE).toContain('${escapeHtml(visibility)}');
+    expect(SOURCE).toContain('${escapeHtml(sha)}');
+    expect(SOURCE).not.toMatch(/formatNumber\(stats\.\w+ \|\| 0\)/);
+  });
+});
+
+describe('rad-browser.html CSP (#661)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'rad-browser.html'), 'utf8');
+  const policy = html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)[1];
+  const directives = Object.fromEntries(
+    policy
+      .split(';')
+      .map((part) => part.trim().split(/\s+/))
+      .filter(([name]) => name)
+      .map(([name, ...sources]) => [name, sources])
+  );
+
+  test("falls back to 'self' for everything it does not name", () => {
+    expect(directives['default-src']).toEqual(["'self'"]);
+  });
+
+  test('loads styles only from its own files', () => {
+    expect(directives['style-src']).toEqual(["'self'"]);
+  });
+
+  test('README images still load from every source they did before', () => {
+    // The old policy left img-src open; tightening default-src must not
+    // silently break http:// badges or web3:-hosted README images.
+    expect(directives['img-src']).toEqual(
+      expect.arrayContaining(["'self'", 'data:', 'https:', 'http:', 'web3:'])
+    );
+  });
+
+  test('img-src lists exactly the schemes DOMPurify lets through', () => {
+    // README HTML goes through DOMPurify before it reaches the DOM, so an
+    // image URL only loads if both DOMPurify keeps it and img-src allows
+    // it. Read DOMPurify's own default URI filter out of the vendored
+    // build, so a DOMPurify bump that changes it fails here.
+    const purify = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'vendor', 'purify.min.js'),
+      'utf8'
+    );
+    const literal = purify.match(/\/(\^\(\?:\(\?:\(\?:f\|ht\)tps\?\|[^\n]*?\$\)\))\/i/);
+    expect(literal).not.toBeNull();
+    const allowedUri = new RegExp(literal[1], 'i');
+    const keeps = (scheme) => allowedUri.test(`${scheme}//host/logo.png`);
+    // data: is let through for <img> separately (DATA_URI_TAGS).
+    const listed = directives['img-src'].filter((s) => s.endsWith(':') && s !== 'data:');
+    for (const scheme of listed) expect([scheme, keeps(scheme)]).toEqual([scheme, true]);
+    // Every dweb scheme Freedom serves that DOMPurify keeps must be listed.
+    for (const scheme of ['web3:', 'ipfs:', 'ipns:', 'bzz:', 'rad:']) {
+      expect([scheme, listed.includes(scheme)]).toEqual([scheme, keeps(scheme)]);
+    }
+  });
+
+  test('reads only radapi: and the public seed', () => {
+    expect(directives['connect-src']).toEqual(["'self'", 'radapi:', 'https://seed.radicle.xyz']);
+  });
+
+  test('every fetch target in the page script is covered by connect-src', () => {
+    expect(SOURCE).toContain("const PUBLIC_SEED = 'https://seed.radicle.xyz';");
   });
 });
 
