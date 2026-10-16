@@ -7,9 +7,11 @@ const childProcess = require('child_process');
 const {
   CoreClient,
   CoreError,
+  ShellError,
   scrubbedEnv,
   RESTART_DELAYS_MS,
   MAX_PENDING,
+  MAX_INCOMING,
 } = require('./core-client');
 const { encodeFrame, FrameDecoder } = require('./frame');
 
@@ -945,5 +947,316 @@ describe('CoreClient', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     }, 15_000);
+  });
+
+  describe("the core's requests", () => {
+    /** A ready client whose core sends `requests` and records the replies. */
+    async function served(register) {
+      const made = makeClient([helloHandler()]);
+      register(made.client);
+      await made.client.start();
+      const core = made.children[0];
+      const send = (message) =>
+        core.reply({ type: 'request', context: { caller: 'shell' }, ...message });
+      const replies = () => core.requests.filter((m) => m.type === 'response');
+      return { ...made, core, send, replies };
+    }
+
+    test('a request reaches its handler and gets one reply', async () => {
+      const handler = jest.fn(async (params) => ({ status: 200, body: params.echo }));
+      const { send, replies } = await served((client) => client.handle('shell.rpc', handler));
+      send({ id: 1, method: 'shell.rpc', params: { echo: 'eA==' } });
+      await tick();
+      await tick();
+      expect(handler).toHaveBeenCalledWith(
+        { echo: 'eA==' },
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, result: { status: 200, body: 'eA==' } },
+      ]);
+    });
+
+    test("errors are fixed codes and messages, never a handler's text", async () => {
+      const { send, replies } = await served((client) => {
+        client.handle('shell.gateway', async () => {
+          throw new ShellError('refused');
+        });
+        client.handle('shell.tezos', async () => {
+          throw new Error('connect ECONNREFUSED https://key@rpc.example');
+        });
+      });
+      send({ id: 1, method: 'shell.gateway', params: {} });
+      send({ id: 2, method: 'shell.tezos', params: {} });
+      send({ id: 3, method: 'shell.unknown', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 3, error: { code: 'unknown_method', message: 'Unknown method' } },
+        { type: 'response', id: 1, error: { code: 'refused', message: 'Refused' } },
+        { type: 'response', id: 2, error: { code: 'internal', message: 'Internal error' } },
+      ]);
+    });
+
+    test('a cancel aborts the handler, which still replies once', async () => {
+      let signal;
+      const { send, replies } = await served((client) =>
+        client.handle('shell.rpc', (_params, context) => {
+          signal = context.signal;
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        })
+      );
+      send({ id: 7, method: 'shell.rpc', params: {} });
+      await tick();
+      // A cancel for nothing outstanding is ignored.
+      send({ type: 'cancel', id: 99 });
+      send({ type: 'cancel', id: 7 });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(signal.aborted).toBe(true);
+      expect(replies()).toEqual([
+        { type: 'response', id: 7, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+    });
+
+    test('a result too large for a frame is too_large', async () => {
+      const { send, replies } = await served((client) =>
+        client.handle('shell.rpc', async () => ({ body: 'x'.repeat(2 * 1024 * 1024) }))
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'too_large', message: 'Too large' } },
+      ]);
+    });
+
+    test('reused IDs and too many outstanding requests are protocol faults', async () => {
+      const hold = () => new Promise(() => {});
+      const reused = await served((client) => client.handle('shell.rpc', hold));
+      reused.send({ id: 5, method: 'shell.rpc', params: {} });
+      reused.send({ id: 5, method: 'shell.rpc', params: {} });
+      await tick();
+      expect(reused.core.killed).toBe('SIGKILL');
+
+      const many = await served((client) => client.handle('shell.rpc', hold));
+      for (let id = 1; id <= MAX_INCOMING + 1; id++)
+        many.send({ id, method: 'shell.rpc', params: {} });
+      await tick();
+      expect(many.core.killed).toBe('SIGKILL');
+    });
+
+    test('a generation that ends aborts its handlers, and no reply goes', async () => {
+      let signal;
+      let finish;
+      const { core, send, replies } = await served((client) =>
+        client.handle('shell.rpc', (_params, context) => {
+          signal = context.signal;
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        })
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      await tick();
+      core.exit(1);
+      await tick();
+      expect(signal.aborted).toBe(true);
+      finish({ status: 200 });
+      for (let i = 0; i < 3; i++) await tick();
+      expect(replies()).toEqual([]);
+    });
+
+    test('a request cancelled in the same read never reaches its handler', async () => {
+      const handler = jest.fn(() => new Promise(() => {}));
+      const { core, replies } = await served((client) => client.handle('shell.rpc', handler));
+      core.stdout.write(
+        Buffer.concat([
+          encodeFrame({ type: 'request', id: 1, method: 'shell.rpc', params: {} }),
+          encodeFrame({ type: 'cancel', id: 1 }),
+        ])
+      );
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).not.toHaveBeenCalled();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+    });
+
+    test('a generation is fenced as soon as it ends: exit without close, or a fault', async () => {
+      for (const end of [
+        (core) => core.exit(1, null, { close: false }),
+        (core) => core.reply({ type: 'bogus' }),
+      ]) {
+        let signal;
+        let finish;
+        const { core, send, replies } = await served((client) =>
+          client.handle('shell.rpc', (_params, context) => {
+            signal = context.signal;
+            return new Promise((resolve) => {
+              finish = resolve;
+            });
+          })
+        );
+        send({ id: 1, method: 'shell.rpc', params: {} });
+        await tick();
+        end(core);
+        await tick();
+        expect(signal.aborted).toBe(true);
+        finish({ status: 200 });
+        for (let i = 0; i < 3; i++) await tick();
+        expect(replies()).toEqual([]);
+      }
+    });
+
+    test('a request whose generation ended before dispatch never runs', async () => {
+      const handler = jest.fn(async () => ({}));
+      const { core, replies } = await served((client) => client.handle('shell.rpc', handler));
+      core.stdout.write(
+        Buffer.concat([
+          encodeFrame({ type: 'request', id: 1, method: 'shell.rpc', params: {} }),
+          encodeFrame({ type: 'bogus' }),
+        ])
+      );
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).not.toHaveBeenCalled();
+      expect(replies()).toEqual([]);
+    });
+
+    test("pending replies hold their place, and never take requests' room", async () => {
+      const { client, core, send } = await served((client) =>
+        client.handle('shell.rpc', async () => ({ body: 'x'.repeat(80 * 1024) }))
+      );
+      // stdin accepts the replies but never finishes writing them.
+      core.stuck = true;
+      for (let id = 1; id <= MAX_INCOMING; id++) send({ id, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      // 20 MiB of replies waiting: a vault request is still admitted.
+      // (The stalled pipe buffers it, so it simply stays pending.)
+      const lock = client.request('vault.lock').catch((e) => e);
+      expect(await Promise.race([lock, tick().then(() => 'pending')])).toBe('pending');
+      // Their entries are held until written: one more request is a fault.
+      send({ id: MAX_INCOMING + 1, method: 'shell.rpc', params: {} });
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+    });
+
+    test('codes outside the fixed set, supplied text and unrepresentable results are internal', async () => {
+      const { send, replies } = await served((client) => {
+        client.handle('shell.gateway', async () => {
+          const err = new ShellError('weird_code');
+          err.message = 'https://key@rpc.example said no';
+          throw err;
+        });
+        client.handle('shell.rpc', async () => () => {});
+        client.handle('shell.tezos', async () => ({ toJSON: () => undefined }));
+      });
+      send({ id: 1, method: 'shell.gateway', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      send({ id: 3, method: 'shell.tezos', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      const internal = { code: 'internal', message: 'Internal error' };
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: internal },
+        { type: 'response', id: 2, error: internal },
+        { type: 'response', id: 3, error: internal },
+      ]);
+    });
+
+    test('nothing comes between the dispatch check and the handler starting', async () => {
+      for (const between of [
+        (client, gen) => client.fence(gen),
+        (client, gen) => client.onMessage(gen, { type: 'cancel', id: 1 }),
+        (client) => client.stop(),
+      ]) {
+        const handler = jest.fn(() => new Promise(() => {}));
+        const { client, replies } = await served((c) => c.handle('shell.rpc', handler));
+        const gen = client.current;
+        client.onMessage(gen, { type: 'request', id: 1, method: 'shell.rpc', params: {} });
+        between(client, gen);
+        for (let i = 0; i < 4; i++) await tick();
+        expect(handler).not.toHaveBeenCalled();
+        expect(replies().filter((r) => r.result)).toEqual([]);
+      }
+    });
+
+    test('a cancel right after dispatch still reaches a started handler', async () => {
+      const handler = jest.fn(
+        (_params, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')));
+          })
+      );
+      const { client, replies } = await served((c) => c.handle('shell.rpc', handler));
+      const gen = client.current;
+      client.onMessage(gen, { type: 'request', id: 1, method: 'shell.rpc', params: {} });
+      // Queued behind the dispatch job: the handler has started, with a live
+      // signal, so it sees the abort.
+      queueMicrotask(() => client.onMessage(gen, { type: 'cancel', id: 1 }));
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+    });
+
+    test('a result that stops the client while serialized is never written', async () => {
+      let stopping;
+      const { client, core, send, replies } = await served((c) =>
+        c.handle('shell.rpc', async () => ({
+          toJSON: () => {
+            stopping = c.stop();
+            return { status: 200 };
+          },
+        }))
+      );
+      core.on('stdin-closed', () => core.exit(0));
+      const errors = [];
+      core.stdin.on('error', (err) => errors.push(err));
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      await stopping;
+      expect(replies()).toEqual([]);
+      expect(errors).toEqual([]);
+      expect(core.killCalls).toBe(0);
+      expect(client.current).toBeNull();
+    });
+
+    test('a code that is not a string is internal', async () => {
+      const { send, replies } = await served((client) =>
+        client.handle('shell.rpc', async () => {
+          throw new ShellError(['network']);
+        })
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'internal', message: 'Internal error' } },
+      ]);
+    });
+
+    test('a result is serialized once, as it is sent', async () => {
+      let calls = 0;
+      const { send, replies } = await served((client) => {
+        // Different by key: nothing for `result`.
+        client.handle('shell.rpc', async () => ({
+          toJSON: (key) => (key === '' ? { a: 1 } : undefined),
+        }));
+        // Different by call: its first answer is the one sent.
+        client.handle('shell.tezos', async () => ({
+          toJSON: () => {
+            calls += 1;
+            return calls === 1 ? { status: 200 } : undefined;
+          },
+        }));
+      });
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.tezos', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'internal', message: 'Internal error' } },
+        { type: 'response', id: 2, result: { status: 200 } },
+      ]);
+      expect(calls).toBe(1);
+    });
   });
 });
