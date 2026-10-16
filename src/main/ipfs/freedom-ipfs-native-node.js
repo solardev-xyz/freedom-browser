@@ -83,16 +83,29 @@ class NativeGatewayController {
       this.rejectResponse = reject;
     });
 
-    this.abortListener = () => this.cancel();
-    if (signal) {
-      if (signal.aborted) this.cancel();
-      else signal.addEventListener('abort', this.abortListener, { once: true });
-    }
-
     this.timeout = setTimeout(() => {
       this.cancel();
       this.fail(new Error('freedom-ipfs native request timeout'));
     }, ATTEMPT_TIMEOUT_MS);
+
+    // An abort ends the request at once, before or after the headers, and
+    // frees its handle: the add-on answers a cancel with EVENT_CANCELLED
+    // alone, which settles nothing on its own.
+    // A paused body would never read its READ_CANCELLED either.
+    this.abortListener = () => {
+      this.cancel();
+      this.fail(
+        new Error(
+          this.responseSettled
+            ? 'freedom-ipfs native request cancelled'
+            : 'freedom-ipfs native request aborted'
+        )
+      );
+    };
+    if (signal) {
+      if (signal.aborted) this.abortListener();
+      else signal.addEventListener('abort', this.abortListener, { once: true });
+    }
   }
 
   handleEvent(events) {
@@ -133,8 +146,11 @@ class NativeGatewayController {
           pull: () => {
             this.drain();
           },
+          // The consumer is gone: no read will ever see READ_CANCELLED, so
+          // free the handle here.
           cancel: () => {
             this.cancel();
+            this.finish();
           },
         })
       : null;
@@ -563,6 +579,10 @@ class FreedomIpfsNativeNode {
         new Error(this.failureError || 'freedom-ipfs native node is unavailable')
       );
     }
+    // Aborted already (say, while its name resolved): start nothing.
+    if (signal?.aborted) {
+      return Promise.reject(new Error('freedom-ipfs native request aborted'));
+    }
     const requestId = this.nextRequestId++;
     const requestJson = JSON.stringify({
       method,
@@ -576,7 +596,8 @@ class FreedomIpfsNativeNode {
       return Promise.reject(new Error('freedom-ipfs native request could not be started'));
     }
     const controller = new NativeGatewayController(this, handle, method, signal);
-    this.requests.set(controller.handleKey, controller);
+    // One that ended while it was built has freed its handle already.
+    if (!controller.terminated) this.requests.set(controller.handleKey, controller);
     return controller.responsePromise;
   }
 

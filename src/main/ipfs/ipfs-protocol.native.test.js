@@ -249,19 +249,11 @@ describe('ipfs: native mode cancel', () => {
     expect(stack.stats().active_native_handles).toBe(0);
   });
 
-  // BUG (documented, not fixed): a consumer cancel closes the stream, so its
-  // desiredSize is 0 from then on. The add-on answers the cancel with
-  // EVENT_CANCELLED only (freedom-ipfs raises EVENT_HANDLE_FREED from
-  // `gatewayRequestFree` alone), and `NativeGatewayController.drain()` reads
-  // only while desiredSize > 0 — so the READ_CANCELLED that would `finish()`
-  // the controller is never read, and nothing calls `gatewayRequestFree`. The
-  // controller stays in `node.requests` and the native request stays
-  // allocated until the node stops (freedom-ipfs-native-node.js: `drain`,
-  // `hasStreamDemand`, `cancel`). Every body its consumer cancels leaks one
-  // handle, and that is the usual way a request ends early: an abort on
-  // Chromium's side cancels the handler's body stream (the bzz: equivalent is
-  // shown in __tests__/integration/dweb-range-electron.test.js).
-  test('BUG: cancelling the body cancels the native request but never frees its handle', async () => {
+  // A consumer cancel closes the stream, so no read would ever see the
+  // add-on's READ_CANCELLED: the stream's cancel frees the handle itself.
+  // An abort on Chromium's side cancels the handler's body stream this way
+  // (the bzz: equivalent is shown in __tests__/integration/dweb-range-electron.test.js).
+  test('cancelling the body cancels the native request and frees its handle', async () => {
     fake.onRequest(endlessBody);
 
     const res = await ipfs('/big.bin');
@@ -269,52 +261,76 @@ describe('ipfs: native mode cancel', () => {
     const reader = res.body.getReader();
     await reader.read();
     await reader.cancel();
-    await waitFor(() => fake.addon.gatewayRequestCancel.mock.calls.length === 1, {
-      what: 'the native cancel',
-    });
-    await nextTurn(20); // EVENT_CANCELLED has reached the node by now
+    await waitFor(() => request.freed, { what: 'the handle to be freed' });
 
     expect(fake.addon.gatewayRequestCancel).toHaveBeenCalledWith('1', request.handle);
-    expect(request.reads).toBe(2); // nothing read after the cancel
-    // The leak, as it stands today:
-    expect(fake.addon.gatewayRequestFree).not.toHaveBeenCalled();
-    expect(stack.stats().active_native_handles).toBe(1);
-
-    // Only stopping the node lets go of it.
-    await stack.manager.stopIpfs();
     expect(fake.addon.gatewayRequestFree).toHaveBeenCalledWith('1', request.handle);
+    const cancel = fake.addon.gatewayRequestCancel.mock.invocationCallOrder[0];
+    const free = fake.addon.gatewayRequestFree.mock.invocationCallOrder[0];
+    expect(cancel).toBeLessThan(free);
+    expect(request.reads).toBe(2); // nothing read after the cancel
+    expect(stack.stats().active_native_handles).toBe(0);
   });
 
-  // TODAY: the cancel's only event is EVENT_CANCELLED, and before the headers
-  // the controller reads the (now `cancelled`) metadata only on
-  // RESPONSE_READY/BODY_READY/END/FAILED — so an abort before the headers is
-  // not noticed until the 30 s deadline settles the request (and frees it).
-  test('TODAY: aborting before the headers cancels at once but settles only at the 30 s deadline', async () => {
+  // An abort mid-body ends a paused body too: nothing would read its
+  // READ_CANCELLED while the consumer pulls nothing.
+  test('aborting a paused body cancels and frees it at once', async () => {
+    fake.onRequest(endlessBody);
+    const controller = new AbortController();
+
+    const res = await ipfs('/big.bin', { signal: controller.signal });
+    const [request] = fake.requests;
+    const reader = res.body.getReader();
+    await reader.read();
+    // The consumer stops pulling; the stream fills to its high-water mark.
+    await nextTurn(20);
+    controller.abort();
+    await waitFor(() => request.freed, { what: 'the handle to be freed' });
+
+    expect(fake.addon.gatewayRequestCancel).toHaveBeenCalledWith('1', request.handle);
+    expect(stack.stats().active_native_handles).toBe(0);
+    const { error } = await readUntilError(reader);
+    expect(error?.message).toBe('freedom-ipfs native request cancelled');
+  });
+
+  // A request aborted before it reaches the node (say, while its name
+  // resolved) starts no native request at all, and nothing stays registered.
+  test('a request aborted before it starts starts nothing and leaves nothing registered', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const res = await ipfs('/x', { signal: controller.signal });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ code: 502, message: 'freedom-ipfs native request aborted' });
+    expect(fake.addon.gatewayRequestStart).not.toHaveBeenCalled();
+    expect(fake.requests).toHaveLength(0);
+    expect(stack.stats().active_native_handles).toBe(0);
+  });
+
+  // An abort before the headers settles the request at once and frees its
+  // handle; it no longer waits for the 30 s deadline.
+  test('aborting before the headers cancels, settles and frees at once', async () => {
     useFakeClock();
     const controller = new AbortController();
-    let settled = false;
 
-    const pending = ipfs('/x', { signal: controller.signal }).then((res) => {
-      settled = true;
-      return res;
-    });
+    const pending = ipfs('/x', { signal: controller.signal });
     await waitFor(() => fake.requests.length === 1, { what: 'the native request' });
     const [request] = fake.requests;
     controller.abort();
-    await nextTurn(20);
+    const res = await pending;
 
     expect(fake.addon.gatewayRequestCancel).toHaveBeenCalledWith('1', request.handle);
-    expect(settled).toBe(false);
-    expect(request.freed).toBe(false);
-
-    await jest.advanceTimersByTimeAsync(stack.ATTEMPT_TIMEOUT_MS);
-    const res = await pending;
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({
       code: 502,
-      message: 'freedom-ipfs native request timeout',
+      message: 'freedom-ipfs native request aborted',
     });
     expect(request.freed).toBe(true);
+    expect(stack.stats().active_native_handles).toBe(0);
+    // The deadline has nothing left to do.
+    await jest.advanceTimersByTimeAsync(stack.ATTEMPT_TIMEOUT_MS);
+    expect(fake.addon.gatewayRequestFree).toHaveBeenCalledTimes(1);
   });
 });
 
