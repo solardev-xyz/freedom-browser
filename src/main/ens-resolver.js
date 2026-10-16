@@ -509,6 +509,42 @@ function invalidateCachedProvider() {
 }
 
 // Check if an error is a provider/network error that warrants retry
+// EIP-1474: resource not found, resource unavailable, limit exceeded; and
+// providers' rate limits in JSON-RPC bodies: QuickNode's per-second and
+// per-minute limits (-32007, -32008), Alchemy's 429 compute-units error.
+const NODE_FAILURE_CODES = new Set([-32001, -32002, -32005, -32007, -32008, 429]);
+const NODE_FAILURE_MESSAGE =
+  /header not found|missing trie node|unknown block|block not found|historical state|state (?:is )?not available|pruned|rate.?limit|limit exceeded|request limit reached|too many requests|request count exceeded|compute units/i;
+// Execution outcomes by code, whatever the message: Geth's revert (3) and
+// the OpenEthereum/Nethermind "VM execution error" (-32015).
+const EXECUTION_CODES = new Set([3, -32015]);
+
+// Revert evidence: return data as even-length hex, or a legacy
+// "Reverted 0x…" text. A diagnostic object attached to a node failure is
+// not. (One character class, no nested quantifier: linear on large data.)
+function isRevertData(data) {
+  if (typeof data !== 'string') return false;
+  const hex = data.startsWith('Reverted ') ? data.slice('Reverted '.length) : data;
+  return hex.length % 2 === 0 && /^0x[0-9a-f]*$/i.test(hex);
+}
+
+// A JSON-RPC error with no revert evidence in either place ethers keeps
+// data (err.data, or the envelope's own for legacy formats), no mention of a
+// revert, and a node-failure code or message.
+function isNodeFailure(err, rpcError) {
+  if (!rpcError || EXECUTION_CODES.has(rpcError.code)) return false;
+  if (isRevertData(err.data) || isRevertData(rpcError.data)) return false;
+  const message = String(rpcError.message || '');
+  if (/revert/i.test(message)) return false;
+  return NODE_FAILURE_CODES.has(rpcError.code) || NODE_FAILURE_MESSAGE.test(message);
+}
+
+const HTTP_FAILURE_MESSAGE = /(?<!\d)(?:502|503|504|429)(?!\d)|timeout|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
+
+function stripHexRuns(text) {
+  return String(text).replace(/0x[0-9a-f]*/gi, '0x');
+}
+
 function isProviderError(err) {
   const message = err.message || '';
   const code = err.code || '';
@@ -521,16 +557,30 @@ function isProviderError(err) {
   // CALL_EXCEPTION can mean contract reverted OR RPC provider failed.
   // Check for RPC internal errors (-32603) which indicate provider issues.
   if (code === 'CALL_EXCEPTION') {
-    const rpcErrorCode = err.info?.error?.code;
-    const rpcErrorMsg = err.info?.error?.message || '';
+    const rpcError = err.info?.error;
+    const rpcErrorCode = rpcError?.code;
+    const rpcErrorMsg = rpcError?.message || '';
     // -32603 = JSON-RPC internal error, "no response" = provider didn't respond
     if (rpcErrorCode === -32603 || /no response/i.test(rpcErrorMsg)) {
       return true;
     }
+    // The node failing, not the contract answering: it couldn't run the call
+    // against the pinned state, or refused it. Counting these as
+    // NO_CONTENTHASH let two such failures agree into a verified not-found
+    // for a name that has content. Only known node failures qualify: an
+    // execution outcome (a revert with or without data, out of gas, an
+    // invalid opcode, a legacy "VM execution error" envelope) stays a
+    // semantic answer, and never quarantines an honest endpoint.
+    if (isNodeFailure(err, rpcError)) {
+      return true;
+    }
   }
 
-  // Common HTTP error patterns
-  if (/502|503|504|429|timeout|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(message)) {
+  // Common HTTP error patterns, matched on the message with hex runs
+  // removed: ethers' CALL_EXCEPTION message embeds the request's calldata
+  // and address, and a name whose calldata happens to contain "429" or
+  // "503" must not turn an honest data-less revert into a provider error.
+  if (HTTP_FAILURE_MESSAGE.test(stripHexRuns(message))) {
     return true;
   }
 
