@@ -27,7 +27,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       parsed.protocol === 'ipfs:' ||
       parsed.protocol === 'ipns:' ||
       parsed.protocol === 'web3:' ||
-      parsed.protocol === 'freedom:'
+      parsed.protocol === 'freedom:' ||
+      parsed.protocol === 'freedom-preview:'
     ) {
       return `${parsed.protocol}//<redacted>`;
     }
@@ -38,7 +39,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       rawUrl.startsWith('ipfs://') ||
       rawUrl.startsWith('ipns://') ||
       rawUrl.startsWith('web3://') ||
-      rawUrl.startsWith('freedom://')
+      rawUrl.startsWith('freedom://') ||
+      rawUrl.startsWith('freedom-preview://')
     ) {
       return `${rawUrl.split('://')[0]}://<redacted>`;
     }
@@ -180,8 +182,18 @@ function attachWebviewBoot(embedder, webPreferences, params) {
 // load that content with `window.electronAPI` et al. attached. It never
 // navigates itself (tabs navigate inside their webviews) and never opens
 // windows of its own.
-function lockChromeWindow(contents, tag) {
+function lockChromeWindow(contents, tag, isManagedPage) {
   const block = (event, url) => {
+    // Hidden automation BrowserWindows are page hosts, not chrome. Only the
+    // main-owned manager can identify them, and they must carry no preload.
+    // Check at navigation time: adoption happens after web-contents-created.
+    try {
+      const preferences = contents.getLastWebPreferences?.();
+      if (isManagedPage?.(contents) === true && preferences?.sandbox === true &&
+          preferences.contextIsolation === true && preferences.nodeIntegration === false &&
+          !preferences.nodeIntegrationInSubFrames && !preferences.nodeIntegrationInWorker && !preferences.webviewTag &&
+          !preferences.preload && !preferences.preloadURL && preferences.webSecurity !== false) return;
+    } catch { /* Unknown ownership/preferences keep the chrome lock. */ }
     log.warn(`${tag} blocked chrome-window navigation: ${navUrlForLog(contents, url)}`);
     event.preventDefault();
   };
@@ -193,7 +205,7 @@ function lockChromeWindow(contents, tag) {
   });
 }
 
-function registerWebContentsHandlers() {
+function registerWebContentsHandlers({ isManagedPage } = {}) {
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
@@ -226,7 +238,7 @@ function registerWebContentsHandlers() {
     });
 
     if (type === 'window') {
-      lockChromeWindow(contents, tag);
+      lockChromeWindow(contents, tag, isManagedPage);
     }
 
     // Next/Previous Tab are claimed here, before the chrome or the page sees
@@ -260,6 +272,10 @@ function registerWebContentsHandlers() {
       });
 
       contents.setWindowOpenHandler(({ url, frameName, disposition, referrer }) => {
+        if (contents.getURL().startsWith('freedom-preview://')) {
+          log.info(`${tag} blocked an isolated preview window request`);
+          return { action: 'deny' };
+        }
         log.info(
           `${tag} intercepted new window request: ${navUrlForLog(contents, url)} ` +
             `(target: ${frameName || 'none'}, disposition: ${disposition || 'default'})`
@@ -339,6 +355,23 @@ function registerWebContentsHandlers() {
       // of failing as an unknown scheme — bookmarks created before the
       // transport-aware migration still carry the legacy prefix.
       contents.on('will-navigate', (event, url) => {
+        const currentUrl = contents.getURL();
+        if (currentUrl.startsWith('freedom-preview://')) {
+          let samePreviewOrigin;
+          try {
+            const current = new URL(currentUrl);
+            const destination = new URL(url);
+            samePreviewOrigin =
+              current.protocol === destination.protocol && current.host === destination.host;
+          } catch {
+            samePreviewOrigin = false;
+          }
+          if (!samePreviewOrigin) {
+            log.info(`${tag} blocked isolated preview navigation`);
+            event.preventDefault();
+          }
+          return;
+        }
         // A CSP sandbox is the primary boundary for contract-hosted HTML. This
         // main-process guard is defence in depth: scripted location changes
         // cannot replace the isolated app with a mutable web origin. Genuine

@@ -34,5 +34,5 @@ test('restricts only the Myotis supervisor and preserves all other signing optio
     expect(forwarded.optionsForFile(file)).toBe(original);
   }
   expect(original.entitlements).toBe('config/entitlements.mac.plist');
-  expect(require('../package.json').build.mac.sign).toBe('./scripts/sign-myotis-helper.js');
+  expect(require('../package.json').build.mac.sign).toBe('./scripts/sign-native-supervisors.js');
 });

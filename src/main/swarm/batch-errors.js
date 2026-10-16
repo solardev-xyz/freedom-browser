@@ -16,7 +16,7 @@ function noUsableBatchError() {
 }
 
 function isNoUsableBatchError(err) {
-  return err?.code === 'no-usable-stamps';
+  return ['no-usable-stamps', 'POSTAGE_UNAVAILABLE', 'POSTAGE_CAPACITY_INSUFFICIENT'].includes(err?.code);
 }
 
 module.exports = { NO_USABLE_BATCH_MESSAGE, noUsableBatchError, isNoUsableBatchError };

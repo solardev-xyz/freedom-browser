@@ -142,6 +142,40 @@ html[data-platform='darwin'] .title-bar-spacer {
     color 0.15s ease;
 }
 
+.tab-agent-badge {
+  display: none;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  color: var(--agent-on-accent);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 14px;
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tab.agent-owned .tab-agent-badge,
+.tab.agent-controlled .tab-agent-badge {
+  display: inline-flex;
+}
+
+.tab-agent-badge:disabled {
+  cursor: default;
+}
+
+@container (max-width: 110px) {
+  .tab-agent-badge {
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    overflow: hidden;
+    color: transparent;
+    border: 1px solid var(--agent-on-accent);
+  }
+}
+
 /* Tab drag-and-drop styles */
 .tab.dragging {
   opacity: 0.5;
@@ -197,6 +231,58 @@ html[data-platform='darwin'] .title-bar-spacer {
   color: var(--text);
   z-index: 2;
   overflow: visible;
+}
+
+/* Agent control is a tab state, not a focus ring. Tint the top of the tab and
+   let it settle into the normal chrome color where the tab joins the toolbar. */
+.tab.agent-owned.active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 22%, var(--toolbar)) 0%,
+    color-mix(in srgb, var(--accent) 9%, var(--toolbar)) 52%,
+    var(--toolbar) 100%
+  );
+}
+
+.tab.agent-controlled.active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 34%, var(--toolbar)) 0%,
+    color-mix(in srgb, var(--accent) 14%, var(--toolbar)) 52%,
+    var(--toolbar) 100%
+  );
+}
+
+.tab.agent-owned:not(.active) {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 10%, var(--bg)) 0%,
+    transparent 100%
+  );
+}
+
+.tab.agent-controlled:not(.active) {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 18%, var(--bg)) 0%,
+    transparent 100%
+  );
+}
+
+.tab.agent-owned:not(.active):hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 16%, var(--bg)) 0%,
+    color-mix(in srgb, var(--text) 5%, transparent) 100%
+  );
+}
+
+.tab.agent-controlled:not(.active):hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 24%, var(--bg)) 0%,
+    color-mix(in srgb, var(--text) 7%, transparent) 100%
+  );
 }
 
 /* Corner curves for active tab */

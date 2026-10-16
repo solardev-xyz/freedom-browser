@@ -34,29 +34,396 @@
 
 'use strict';
 
+const crypto = require('crypto');
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
+const path = require('path');
 const log = require('./logger');
 const {
   runWithPrivateLogContext,
   redactUrlForLog,
 } = require('./private/private-log-context');
-const { ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, webContents } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
+const {
+  automationController,
+  registerAutomationWebContents,
+  automationTabIdForRenderer,
+} = require('./automation/runtime');
 
 // Same rule as index.js's TEST_MODE: the env var, and in a packaged build an
 // honoured CDP debug port as well (docs/security-audit-electron.md, O-4/O-12).
 const TEST_MODE_ENABLED = require('./test-mode').isTestModeRequested();
+const APP_EXIT_FIXTURE_PREFIX = 'freedom-agent-app-exit-';
+const APP_EXIT_MODES = new Set(['idle', 'running', 'detached']);
+const APP_EXIT_TOKEN_PATTERN = /^freedom-agent-app-exit-[a-f0-9]{24}$/;
+const APP_EXIT_FAILURE_INJECTIONS = new Set([null, 'after_detached_process_created']);
 
 function isTestMode() {
   return TEST_MODE_ENABLED;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPath(candidate, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(candidate)) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for Agent exit fixture ${path.basename(candidate)}`);
+}
+
+async function pickAgentExitPort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return port;
+}
+
+function validatedAgentExitRoot() {
+  const root = fs.realpathSync(app.getPath('userData'));
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  if (
+    path.dirname(root) !== temporaryRoot ||
+    !path.basename(root).startsWith(APP_EXIT_FIXTURE_PREFIX)
+  ) {
+    throw new Error('Agent application-exit fixture requires an owned temporary user-data root');
+  }
+  return root;
+}
+
+function writeAgentExitEvidence(target, value) {
+  try {
+    const captured = { ...value };
+    if (value.receipt) {
+      captured.receipt = { ...value.receipt };
+      captured.outputCapture = {};
+      for (const field of ['stdout', 'stderr']) {
+        const bytes = Buffer.from(value.receipt[field] || '');
+        if (bytes.length > 4096) {
+          captured.receipt[field] = bytes.subarray(0, 4096).toString('utf8');
+          captured.outputCapture[`${field}BytesOmitted`] = bytes.length - 4096;
+        }
+      }
+    }
+    const bytes = Buffer.from(JSON.stringify({ recordedAt: Date.now(), ...captured }));
+    if (bytes.length > 256 * 1024) throw new Error('Agent exit evidence exceeded its byte limit');
+    fs.writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' });
+  } catch {
+    // An observation failure must not change native execution or its result.
+    // The external driver requires these files and reports missing evidence.
+    log.warn('[TestHarness] Could not persist Agent exit evidence');
+  }
+}
+
+function observeAgentExitExecution(executor, command, receiptPath, supervisorPath) {
+  const originalExecute = executor.execute;
+  const originalSpawn = executor.spawnProcess;
+  const restore = () => {
+    if (executor.execute === execute) executor.execute = originalExecute;
+    if (executor.spawnProcess === spawn) executor.spawnProcess = originalSpawn;
+  };
+  function spawn(executable, args, options) {
+    const child = originalSpawn.call(this, executable, args, options);
+    if (args.includes(command) && args[0] === '--supervise') {
+      if (executor.spawnProcess === spawn) executor.spawnProcess = originalSpawn;
+      writeAgentExitEvidence(supervisorPath, { pid: child.pid ?? null, executable });
+    }
+    return child;
+  }
+  async function execute(policy, request) {
+    const target = request.command === '/bin/sh' && request.args?.[2] === 'freedom-workspace' &&
+      request.args?.[4] === command;
+    if (!target) return originalExecute.call(this, policy, request);
+    try {
+      const receipt = await originalExecute.call(this, policy, request);
+      writeAgentExitEvidence(receiptPath, { receipt });
+      return receipt;
+    } finally {
+      restore();
+    }
+  }
+  executor.execute = execute;
+  if (typeof originalSpawn === 'function') executor.spawnProcess = spawn;
+  return restore;
+}
+
+async function prepareAgentExitScenario(agentRuntime, request) {
+  if (!isTestMode()) throw new Error('Agent exit fixture requires test mode');
+  const mode = request?.mode;
+  const token = request?.token;
+  const expirySeconds = request?.expirySeconds ?? 15;
+  if (!Number.isInteger(expirySeconds) || expirySeconds < 1 || expirySeconds > 15) {
+    throw new Error('Agent exit fixture expiry must be an integer from 1 to 15 seconds');
+  }
+  const failureInjection = request?.failureInjection ?? null;
+  if (!APP_EXIT_MODES.has(mode)) throw new Error('Unknown Agent application-exit mode');
+  if (!APP_EXIT_TOKEN_PATTERN.test(token || '')) {
+    throw new Error('Agent application-exit fixture requires a valid cleanup token');
+  }
+  if (!APP_EXIT_FAILURE_INJECTIONS.has(failureInjection)) {
+    throw new Error('Unknown Agent application-exit failure injection');
+  }
+  if (failureInjection && mode !== 'detached') {
+    throw new Error('Agent application-exit failure injection requires detached mode');
+  }
+  if (
+    !agentRuntime?.service ||
+    !agentRuntime?.workspaceController ||
+    !agentRuntime?.workspacePreviewController
+  ) {
+    throw new Error('Agent application-exit fixture requires the app-owned Agent runtime');
+  }
+  const root = validatedAgentExitRoot();
+  const controller = agentRuntime.workspaceController;
+  const base = {
+    mode,
+    token,
+    appOwnedService: agentRuntime.service.workspaceController === controller,
+    appOwnedWorkspaceController: agentRuntime.workspacePreviewController.workspaceController === controller,
+    appOwnedProcessManager: Boolean(controller.processManager) &&
+      agentRuntime.service.workspaceController?.processManager === controller.processManager,
+  };
+  if (mode === 'idle') return base;
+
+  const receiptPath = path.join(root, `${token}-executor.json`);
+  const terminalPath = path.join(root, `${token}-terminal.json`);
+  const supervisorPath = path.join(root, `${token}-supervisor.json`);
+  const intentPath = path.join(root, `${token}-intent.json`);
+  if ([intentPath, receiptPath, terminalPath, supervisorPath].some((file) => fs.existsSync(file))) {
+    throw new Error('Agent exit fixture token has already been used');
+  }
+  // Reserve the token before workspace preparation or any command launch.
+  fs.writeFileSync(intentPath, JSON.stringify({ mode, token, expirySeconds, recordedAt: Date.now() }),
+    { mode: 0o600, flag: 'wx' });
+  const conversationId = `app_exit_${crypto.randomBytes(10).toString('hex')}`;
+  await controller.enable(conversationId);
+  const workspace = controller.getWorkspace(conversationId);
+  const workspaceRoot = controller.leases.get(workspace.workspaceId).workspaceRoot;
+
+  if (mode === 'running') {
+    const port = await pickAgentExitPort();
+    const scriptName = 'app-exit-running.py';
+    const pidPath = path.join(workspaceRoot, 'running.pid');
+    const readyPath = path.join(workspaceRoot, 'running.ready');
+    const heartbeatPath = path.join(workspaceRoot, 'running-heartbeat');
+    const expiryPath = path.join(workspaceRoot, 'running-expiry.json');
+    const source = [
+      'import signal, time',
+      'signal.signal(signal.SIGALRM, signal.SIG_DFL)',
+      'alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+      'wall_before = time.time_ns()',
+      `signal.alarm(${expirySeconds})`,
+      'wall_after = time.time_ns()',
+      'alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+      'import http.server, json, os, pathlib, sys, threading, time',
+      `pathlib.Path('running-expiry.json').write_text(json.dumps({'pid': os.getpid(), 'parentPid': os.getppid(), 'clockDomain': 'clock_gettime:CLOCK_MONOTONIC', 'alarmArmedBeforeMonotonicNs': alarm_before, 'alarmArmedAfterMonotonicNs': alarm_after, 'alarmArmedBeforeWallNs': wall_before, 'alarmArmedAfterWallNs': wall_after, 'expirySeconds': ${expirySeconds}}))`,
+      'port = int(sys.argv[1])',
+      "pathlib.Path('running.pid').write_text(str(__import__('os').getpid()))",
+      "heartbeat = pathlib.Path('running-heartbeat')",
+      'def beat():',
+      '    while True:',
+      "        with heartbeat.open('a') as stream: stream.write('x')",
+      '        time.sleep(0.03)',
+      'class Handler(http.server.BaseHTTPRequestHandler):',
+      '    def do_GET(self):',
+      "        body = b'agent-exit-preview'",
+      '        self.send_response(200)',
+      "        self.send_header('Content-Type', 'text/plain')",
+      "        self.send_header('Content-Length', str(len(body)))",
+      '        self.end_headers()',
+      '        self.wfile.write(body)',
+      '    def log_message(self, *_args): pass',
+      'threading.Thread(target=beat, daemon=True).start()',
+      "server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler)",
+      "pathlib.Path('running.ready').write_text('ready')",
+      'server.serve_forever()',
+    ].join('\n');
+    await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
+    const command = `exec python3 ${scriptName} ${port} ${token}`;
+    const permission = await controller.prepareCommandPermissions(
+      conversationId,
+      { network: 'full' },
+      { command, workingDirectory: '.' }
+    );
+    controller.grantCommandPermissions(conversationId, permission.prepared, 'once');
+    const restoreObserver = observeAgentExitExecution(controller.executor, command, receiptPath, supervisorPath);
+    let started;
+    try {
+      started = await controller.startProcess(conversationId, {
+        command,
+        previewPort: port,
+        yieldMs: 500,
+        onTerminal: (terminal) => writeAgentExitEvidence(terminalPath, { terminal }),
+      });
+    } catch (error) {
+      restoreObserver();
+      throw error;
+    }
+    // Yielding is not terminal: preserve observation until the actual execution
+    // settles, including when readiness fails and the driver initiates cleanup.
+    await waitForPath(readyPath);
+    const preview = agentRuntime.workspacePreviewController.createProcessPreview(
+      conversationId,
+      started.processId
+    );
+    const response = await agentRuntime.workspacePreviewController.handleRequest(
+      new Request(preview.url)
+    );
+    return {
+      ...base,
+      conversationId,
+      workspaceRoot,
+      processId: started.processId,
+      runningProjection: started.workspace,
+      ownedProcesses: [{ role: 'managed-server', pid: Number(fs.readFileSync(pidPath, 'utf8')) }],
+      heartbeatPath,
+      expirySeconds,
+      expiryPath,
+      receiptPath,
+      // This mapped observer is suppressed after a controller shutdown deadline.
+      // Its absence must be judged alongside raw receipt and shutdown-log evidence.
+      terminalPath,
+      supervisorPath,
+      intentPath,
+      preview: {
+        port,
+        url: preview.url,
+        statusBeforeQuit: response.status,
+        bodyBeforeQuit: await response.text(),
+      },
+    };
+  }
+
+  const outsideCanary = path.join(root, 'detached-outside-canary');
+  await fs.promises.writeFile(outsideCanary, 'outside-canary');
+  const scriptName = 'app-exit-detached.py';
+  const managedPidPath = path.join(workspaceRoot, 'managed.pid');
+  const detachedPidPath = path.join(workspaceRoot, 'detached.pid');
+  const resultPath = path.join(workspaceRoot, 'detached-result.json');
+  const managedHeartbeatPath = path.join(workspaceRoot, 'managed-heartbeat');
+  const detachedHeartbeatPath = path.join(workspaceRoot, 'detached-heartbeat');
+  const managedExpiryPath = path.join(workspaceRoot, 'managed-expiry.json');
+  const detachedExpiryPath = path.join(workspaceRoot, 'detached-expiry.json');
+  const source = [
+    'import signal, time',
+    'signal.signal(signal.SIGALRM, signal.SIG_DFL)',
+    'alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    'wall_before = time.time_ns()',
+    `signal.alarm(${expirySeconds})`,
+    'wall_after = time.time_ns()',
+    'alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    'import json, os, pathlib, socket, sys, time',
+    'def record_expiry(name):',
+    `    pathlib.Path(name).write_text(json.dumps({'pid': os.getpid(), 'parentPid': os.getppid(), 'sessionId': os.getsid(0), 'processGroupId': os.getpgrp(), 'clockDomain': 'clock_gettime:CLOCK_MONOTONIC', 'alarmArmedBeforeMonotonicNs': alarm_before, 'alarmArmedAfterMonotonicNs': alarm_after, 'alarmArmedBeforeWallNs': wall_before, 'alarmArmedAfterWallNs': wall_after, 'expirySeconds': ${expirySeconds}}))`,
+    'token, outside = sys.argv[1:3]',
+    "record_expiry('managed-expiry.json')",
+    "pathlib.Path('managed.pid').write_text(str(os.getpid()))",
+    'if os.fork() == 0:',
+    // A forked child needs its own alarm; do this before any child setup or I/O.
+    '    alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    '    wall_before = time.time_ns()',
+    `    signal.alarm(${expirySeconds})`,
+    '    wall_after = time.time_ns()',
+    '    alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    '    os.setsid()',
+    "    record_expiry('detached-expiry.json')",
+    "    pathlib.Path('detached.pid').write_text(str(os.getpid()))",
+    '    result = {}',
+    '    try:',
+    '        pathlib.Path(outside).read_text()',
+    "        result['outsideRead'] = 'unexpected'",
+    "    except OSError as error: result['outsideRead'] = error.errno",
+    '    sock = socket.socket()',
+    '    try:',
+    "        result['loopback'] = sock.connect_ex(('127.0.0.1', 9))",
+    '    finally: sock.close()',
+    '    try:',
+    "        socket.getaddrinfo('example.com', 443)",
+    "        result['dns'] = 'unexpected'",
+    "    except OSError as error: result['dns'] = getattr(error, 'errno', None) or type(error).__name__",
+    "    pathlib.Path('detached-result.json').write_text(json.dumps(result))",
+    "    heartbeat = pathlib.Path('detached-heartbeat')",
+    '    while True:',
+    "        with heartbeat.open('a') as stream: stream.write('x')",
+    '        time.sleep(0.03)',
+    "heartbeat = pathlib.Path('managed-heartbeat')",
+    'while True:',
+    "    with heartbeat.open('a') as stream: stream.write('x')",
+    '    time.sleep(0.03)',
+  ].join('\n');
+  await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
+  const command = `exec python3 ${scriptName} ${token} ${outsideCanary}`;
+  const restoreObserver = observeAgentExitExecution(controller.executor, command, receiptPath, supervisorPath);
+  let started;
+  try {
+    started = await controller.startProcess(conversationId, {
+      command,
+      yieldMs: 500,
+      onTerminal: (terminal) => writeAgentExitEvidence(terminalPath, { terminal }),
+    });
+  } catch (error) {
+    restoreObserver();
+    throw error;
+  }
+  await Promise.all([waitForPath(managedPidPath), waitForPath(detachedPidPath)]);
+  if (failureInjection === 'after_detached_process_created') {
+    throw new Error('Injected Agent exit failure after detached process creation');
+  }
+  await waitForPath(resultPath);
+  return {
+    ...base,
+    conversationId,
+    workspaceRoot,
+    processId: started.processId,
+    runningProjection: started.workspace,
+    ownedProcesses: [
+      { role: 'managed-parent', pid: Number(fs.readFileSync(managedPidPath, 'utf8')) },
+      { role: 'detached-descendant', pid: Number(fs.readFileSync(detachedPidPath, 'utf8')) },
+    ],
+    heartbeatPath: managedHeartbeatPath,
+    detachedHeartbeatPath,
+    expirySeconds,
+    managedExpiryPath,
+    detachedExpiryPath,
+    receiptPath,
+    terminalPath,
+    supervisorPath,
+    intentPath,
+    outsideCanary,
+    confinement: JSON.parse(fs.readFileSync(resultPath, 'utf8')),
+  };
+}
+
 // In-memory fixtures. Maps are keyed lower-case for ENS / hashes; content
 // fixtures are keyed by exact URL or URL prefix (longest-match wins).
 const contentFixtures = new Map();
+const contentFixtureActivity = new Map();
 const ensFixtures = new Map();
 const probeFixtures = new Map();
+const automationWindows = new Map();
+let agentWalletTransaction = null;
+const DEFAULT_AGENT_NODE_LIFECYCLE_STATES = Object.freeze([
+  ['ant', 'running'],
+  ['ipfs', 'running'],
+  ['radicle', 'running'],
+  ['tor', 'running'],
+  ['myotis-ethereum', 'ready'],
+  ['myotis-gnosis', 'ready'],
+]);
+const agentNodeLifecycleStates = new Map(DEFAULT_AGENT_NODE_LIFECYCLE_STATES);
 
 // Records profile "open" launches instead of cold-starting a real second
 // Electron instance. See installProfileLaunchRecorder / profile-launcher.js.
@@ -123,8 +490,122 @@ function adblockEngineLandingGate() {
 
 function resetFixtures() {
   contentFixtures.clear();
+  contentFixtureActivity.clear();
   ensFixtures.clear();
   probeFixtures.clear();
+  agentWalletTransaction = null;
+  agentNodeLifecycleStates.clear();
+  for (const [service, state] of DEFAULT_AGENT_NODE_LIFECYCLE_STATES) {
+    agentNodeLifecycleStates.set(service, state);
+  }
+}
+
+function createAgentWalletTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  const gnoAddress = '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb';
+  return {
+    estimateGas: async () => ({ gasLimit: '21000' }),
+    getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
+    getTokens: () => ({
+      '100:native': {
+        chainId: 100,
+        address: null,
+        symbol: 'xDAI',
+        name: 'xDAI',
+        decimals: 18,
+      },
+      [`100:${gnoAddress.toLowerCase()}`]: {
+        chainId: 100,
+        address: gnoAddress,
+        symbol: 'GNO',
+        name: 'Gnosis',
+        decimals: 18,
+      },
+    }),
+    getAllBalances: async () => ({
+      '100:native': { raw: '10000000000000000000', formatted: '10.0', decimals: 18 },
+      [`100:${gnoAddress.toLowerCase()}`]: {
+        raw: '5000000000000000000',
+        formatted: '5.0',
+        decimals: 18,
+      },
+    }),
+    clearBalanceCache: () => {},
+    signAndRecord: async (transaction, _signer, context) => {
+      agentWalletTransaction = {
+        transaction: { ...transaction },
+        context: { ...context },
+      };
+      return {
+        hash: `0x${'ab'.repeat(32)}`,
+        paymentId: 'payment_agent_wallet_test',
+        recorded: true,
+      };
+    },
+  };
+}
+
+function createAgentNodeRequestTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  return {
+    interactiveTimeoutMs: 20,
+    mutationTimeoutMs: 2_000,
+    fetch: async (url, options = {}) => {
+      const target = url instanceof URL ? url : new URL(url);
+      if (target.origin !== 'http://127.0.0.1:11633') {
+        throw new Error('Test node requests must use the registry-selected Ant endpoint');
+      }
+      if (options.method === 'GET' && target.pathname === '/health') {
+        return new Response('{"status":"ok","version":"test-ant"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (options.method === 'POST' && target.pathname === '/stamps/100/20') {
+        return new Response('{"batchID":"test-postage-batch"}', {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (options.method === 'POST' && target.pathname === '/test/slow-write') {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return new Response('{"operation":"settled"}', {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{"message":"not found"}', {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  };
+}
+
+function createAgentNodeLifecycleTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  const start = (service, state = 'running') => agentNodeLifecycleStates.set(service, state);
+  const stop = (service) => agentNodeLifecycleStates.set(service, 'stopped');
+  return {
+    nodeStatusController: {
+      status: async () => ({
+        nodes: [...agentNodeLifecycleStates].map(([id, state]) => ({ id, state })),
+      }),
+    },
+    dependencies: {
+      startAnt: () => start('ant'),
+      stopAnt: () => stop('ant'),
+      startIpfs: () => start('ipfs'),
+      stopIpfs: () => stop('ipfs'),
+      startRadicle: () => start('radicle'),
+      stopRadicle: () => stop('radicle'),
+      startTor: () => start('tor'),
+      stopTor: () => stop('tor'),
+      startMyotis: (chainId) => start(chainId === 100 ? 'myotis-gnosis' : 'myotis-ethereum', 'ready'),
+      stopMyotis: (chainId) => stop(chainId === 100 ? 'myotis-gnosis' : 'myotis-ethereum'),
+    },
+    verifyTimeoutMs: 0,
+  };
 }
 
 // Longest-prefix match so a fixture for `bzz://<hash>/` answers for
@@ -143,12 +624,27 @@ function pickContentFixture(url) {
   return best;
 }
 
-function buildResponse(fixture) {
+function buildResponse(fixture, url) {
   const status = fixture.status ?? 200;
   const headers = {
     'Content-Type': fixture.contentType ?? 'text/html; charset=utf-8',
     ...(fixture.headers || {}),
   };
+  if (fixture.holdOpen === true) {
+    const activity = contentFixtureActivity.get(url) || { started: 0, cancelled: 0 };
+    activity.started += 1;
+    contentFixtureActivity.set(url, activity);
+    const body = new TextEncoder().encode(fixture.body ?? '');
+    const stream = new ReadableStream({
+      start(controller) {
+        if (body.byteLength) controller.enqueue(body);
+      },
+      cancel() {
+        activity.cancelled += 1;
+      },
+    });
+    return new Response(stream, { status, headers });
+  }
   return new Response(fixture.body ?? '', { status, headers });
 }
 
@@ -178,13 +674,15 @@ function makeProtocolHandler(scheme) {
       return notFoundResponse(request.url);
     }
     await holdOpen(fixture.delayMs);
-    return buildResponse(fixture);
+    return buildResponse(fixture, request.url);
   };
 }
 
 function makeHttpStubHandler(scheme) {
   return async (request) => {
     log.info(`[test-harness] stubbed ${scheme}: ${redactUrlForLog(request.url)}`);
+    const fixture = pickContentFixture(request.url);
+    if (fixture) return buildResponse(fixture, request.url);
     const body =
       `<!doctype html>` +
       `<title>test-harness ${scheme} stub</title>` +
@@ -493,6 +991,7 @@ function registerTestOps() {
     content: [...contentFixtures.keys()],
     ens: [...ensFixtures.keys()],
     probes: [...probeFixtures.keys()],
+    agentWalletTransaction,
   }));
 
   replaceHandler('test:app-facts', () => appFacts(require('electron')));
@@ -574,7 +1073,7 @@ function installUpdaterRecorder() {
 // runner can drive fixtures via `electronApp.evaluate(() => globalThis
 // .__FREEDOM_TEST_HARNESS__.setContentFixture(...))` without an IPC
 // round-trip.
-function exposeGlobalShim() {
+function exposeGlobalShim(agentRuntime) {
   globalThis.__FREEDOM_TEST_HARNESS__ = {
     setContentFixture: (url, fixture) => {
       contentFixtures.set(url, fixture || {});
@@ -615,6 +1114,36 @@ function exposeGlobalShim() {
       );
     },
     clearProfileDeleteSims: resetProfileDeleteSims,
+    automationExecute: (operation, input) => automationController.execute(operation, input),
+    automationTabForRenderer: (rendererTabId, guestWebContentsId) => {
+      const guestWebContents = webContents.fromId(guestWebContentsId);
+      const hostWebContents = guestWebContents?.hostWebContents;
+      if (!hostWebContents) return null;
+      return automationTabIdForRenderer(hostWebContents, rendererTabId);
+    },
+    createHiddenAutomationPage: async (url) => {
+      const window = new BrowserWindow({
+        show: false,
+        paintWhenInitiallyHidden: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      const tabId = registerAutomationWebContents(window.webContents, { kind: 'headless' });
+      automationWindows.set(tabId, window);
+      window.once('closed', () => automationWindows.delete(tabId));
+      await window.loadURL(url);
+      return tabId;
+    },
+    closeHiddenAutomationPage: (tabId) => {
+      const window = automationWindows.get(tabId);
+      if (!window || window.isDestroyed()) return false;
+      window.close();
+      return true;
+    },
+    prepareAgentExitScenario: (request) => prepareAgentExitScenario(agentRuntime, request),
     // External-protocol launches (see installExternalProtocolRecorder).
     externalOpens: () => [...externalOpens],
     setExternalHandler: (scheme, appName) => {
@@ -646,14 +1175,16 @@ function exposeGlobalShim() {
     },
     state: () => ({
       content: [...contentFixtures.keys()],
+      contentActivity: Object.fromEntries(contentFixtureActivity),
       ens: [...ensFixtures.keys()],
       probes: [...probeFixtures.keys()],
       profileLaunches: profileLaunches.map((entry) => ({ ...entry })),
+      agentWalletTransaction,
     }),
   };
 }
 
-function installTestHarness({ defaultSession }) {
+function installTestHarness({ defaultSession, agentRuntime }) {
   if (!TEST_MODE_ENABLED) return false;
   log.info('[test-harness] FREEDOM_TEST_MODE=1 — installing harness');
   resetFixtures();
@@ -671,13 +1202,17 @@ function installTestHarness({ defaultSession }) {
   installProfileDeleteSimulator();
   installExternalProtocolRecorder();
   installUpdaterRecorder();
-  exposeGlobalShim();
+  exposeGlobalShim(agentRuntime);
   return true;
 }
 
 module.exports = {
+  createAgentNodeLifecycleTestOptions,
+  createAgentNodeRequestTestOptions,
+  createAgentWalletTestOptions,
   isTestMode,
   installTestHarness,
+  prepareAgentExitScenario,
   adblockEngineLandingGate,
   // Exposed so private-window sessions (created after startup) get the same
   // fixture-driven protocol stubs as the default session in test mode. The

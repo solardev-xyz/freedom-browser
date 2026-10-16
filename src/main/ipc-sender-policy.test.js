@@ -30,6 +30,17 @@ const web = (url = 'https://evil.example/', extra = {}) =>
   makeEvent({ type: 'webview', url, ...extra });
 
 describe('isSenderAllowed', () => {
+  test('the PDF worker can return results without granting tabs or other windows access', () => {
+    const channel = 'agent:pdf-processor:result';
+    const url = fileUrl(path.join(PAGES_DIR, 'pdf-processor.html'));
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url }))).toBe(true);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url, subFrame: true }))).toBe(false);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'webview', url }))).toBe(false);
+    expect(isSenderAllowed(channel, web())).toBe(false);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: fileUrl('/tmp/pdf-processor.html') }))).toBe(false);
+    expect(isSenderAllowed('wallet:send-transaction', makeEvent({ type: 'window', url }))).toBe(false);
+  });
+
   test('the chrome renderer may call any channel, including chrome-only ones', () => {
     for (const channel of [
       'wallet:send-transaction',

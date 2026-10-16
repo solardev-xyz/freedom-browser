@@ -166,6 +166,11 @@ class FakeElement {
     return this.children[0] || null;
   }
 
+  insertAdjacentText(position, text) {
+    if (position !== 'beforeend') throw new Error('Unsupported text insertion position');
+    this.textContent += text;
+  }
+
   get nextSibling() {
     if (!this.parentNode) return null;
     const index = this.parentNode.children.indexOf(this);
@@ -218,6 +223,16 @@ class FakeElement {
     }
     child.parentNode = this;
     this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child, reference) {
+    if (!reference) return this.appendChild(child);
+    if (child === reference) return child;
+    if (reference.parentNode !== this) throw new Error('Reference is not a child');
+    child.remove();
+    child.parentNode = this;
+    this.children.splice(this.children.indexOf(reference), 0, child);
     return child;
   }
 

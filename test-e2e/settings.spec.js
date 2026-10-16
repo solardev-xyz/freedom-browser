@@ -604,7 +604,7 @@ test('Shortcuts rows are sentence case, and search reads the label it shows', as
     label
       .split(' ')
       .slice(1)
-      .some((word) => /^[A-Z]/.test(word))
+      .some((word) => word !== 'Agent' && /^[A-Z]/.test(word))
   );
   expect(titleCased).toEqual([]);
 

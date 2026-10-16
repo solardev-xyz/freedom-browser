@@ -1,0 +1,618 @@
+'use strict';
+
+const crypto = require('crypto');
+const { OPERATIONS, validateOperationInput } = require('./contract/operations');
+const { AutomationError, ERROR_CODES, toErrorPayload } = require('./contract/errors');
+const { PageRegistry } = require('./page-registry');
+
+function opaqueId(prefix) {
+  return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+}
+
+class AutomationController {
+  constructor(options = {}) {
+    if (!options.policyController || typeof options.policyController.authorize !== 'function') {
+      throw new TypeError('AutomationController requires a policyController');
+    }
+    this.policyController = options.policyController;
+    this.runtimeId = options.runtimeId || opaqueId('runtime');
+    this.contextId = options.contextId || opaqueId('context');
+    this.pages = options.pageRegistry || new PageRegistry(options);
+    this.pageLifecycle = null;
+    if (options.pageLifecycle) this.setPageLifecycle(options.pageLifecycle);
+    this.downloadController = null;
+    if (options.downloadController) this.setDownloadController(options.downloadController);
+    this.uploadController = null;
+    if (options.uploadController) this.setUploadController(options.uploadController);
+    this.walletTransferController = null;
+    if (options.walletTransferController) {
+      this.setWalletTransferController(options.walletTransferController);
+    }
+    this.nodeController = null;
+    if (options.nodeController) this.setNodeController(options.nodeController);
+    this.nodeRequestController = null;
+    if (options.nodeRequestController) this.setNodeRequestController(options.nodeRequestController);
+    this.nodeLifecycleController = null;
+    if (options.nodeLifecycleController) {
+      this.setNodeLifecycleController(options.nodeLifecycleController);
+    }
+    this.diagnosticsController = null;
+    if (options.diagnosticsController) this.setDiagnosticsController(options.diagnosticsController);
+    this.publicationController = null;
+    if (options.publicationController) this.setPublicationController(options.publicationController);
+  }
+
+  setPageLifecycle(pageLifecycle) {
+    if (pageLifecycle === null) {
+      this.pageLifecycle = null;
+      return;
+    }
+    if (
+      !pageLifecycle ||
+      typeof pageLifecycle.createPage !== 'function' ||
+      typeof pageLifecycle.closePage !== 'function'
+    ) {
+      throw new TypeError('Automation page lifecycle requires createPage() and closePage()');
+    }
+    this.pageLifecycle = pageLifecycle;
+  }
+
+  setDownloadController(downloadController) {
+    if (downloadController === null) {
+      this.downloadController = null;
+      return;
+    }
+    if (
+      !downloadController ||
+      typeof downloadController.download !== 'function' ||
+      typeof downloadController.list !== 'function'
+    ) {
+      throw new TypeError('Automation download controller requires download() and list()');
+    }
+    this.downloadController = downloadController;
+  }
+
+  setUploadController(uploadController) {
+    if (uploadController === null) {
+      this.uploadController = null;
+      return;
+    }
+    if (!uploadController || typeof uploadController.upload !== 'function') {
+      throw new TypeError('Automation upload controller requires upload()');
+    }
+    this.uploadController = uploadController;
+  }
+
+  setWalletTransferController(walletTransferController) {
+    if (walletTransferController === null) {
+      this.walletTransferController = null;
+      return;
+    }
+    if (!walletTransferController || typeof walletTransferController.transfer !== 'function') {
+      throw new TypeError('Automation wallet transfer controller requires transfer()');
+    }
+    this.walletTransferController = walletTransferController;
+  }
+
+  setNodeController(nodeController) {
+    if (nodeController === null) {
+      this.nodeController = null;
+      return;
+    }
+    if (!nodeController || typeof nodeController.status !== 'function') {
+      throw new TypeError('Automation node controller requires status()');
+    }
+    this.nodeController = nodeController;
+  }
+
+  setNodeRequestController(nodeRequestController) {
+    if (nodeRequestController === null) {
+      this.nodeRequestController = null;
+      return;
+    }
+    if (
+      !nodeRequestController ||
+      typeof nodeRequestController.request !== 'function' ||
+      typeof nodeRequestController.status !== 'function'
+    ) {
+      throw new TypeError('Automation node request controller requires request() and status()');
+    }
+    this.nodeRequestController = nodeRequestController;
+  }
+
+  setNodeLifecycleController(nodeLifecycleController) {
+    if (nodeLifecycleController === null) {
+      this.nodeLifecycleController = null;
+      return;
+    }
+    if (!nodeLifecycleController || typeof nodeLifecycleController.lifecycle !== 'function') {
+      throw new TypeError('Automation node lifecycle controller requires lifecycle()');
+    }
+    this.nodeLifecycleController = nodeLifecycleController;
+  }
+
+  setDiagnosticsController(diagnosticsController) {
+    if (diagnosticsController === null) {
+      this.diagnosticsController = null;
+      return;
+    }
+    if (
+      !diagnosticsController ||
+      typeof diagnosticsController.node !== 'function' ||
+      typeof diagnosticsController.app !== 'function'
+    ) {
+      throw new TypeError('Automation diagnostics controller requires node() and app()');
+    }
+    this.diagnosticsController = diagnosticsController;
+  }
+
+  setPublicationController(publicationController) {
+    if (publicationController === null) {
+      this.publicationController = null;
+      return;
+    }
+    if (
+      !publicationController ||
+      typeof publicationController.publish !== 'function' ||
+      typeof publicationController.status !== 'function'
+    ) {
+      throw new TypeError('Automation publication controller requires publish() and status()');
+    }
+    this.publicationController = publicationController;
+  }
+
+  registerPage(adapter, metadata) {
+    return this.pages.register(adapter, metadata);
+  }
+
+  markPageControlled(tabId) {
+    try { this.downloadController?.setControlledPage?.(this.pages.require(tabId).adapter.webContents, true); } catch { /* Closed page. */ }
+  }
+
+  releasePageControl(tabId) {
+    try { const adapter = this.pages.require(tabId).adapter;
+      this.downloadController?.setControlledPage?.(adapter.webContents, false);
+      adapter.nativeDialogs?.stop(); } catch { /* Closed tabs already released their connection. */ }
+  }
+
+  unregisterPage(tabId) {
+    return this.pages.unregister(tabId);
+  }
+
+  previewPageTools(tabId) {
+    return this.pages.require(tabId).adapter.pageTools?.preview() || { tools: [] };
+  }
+
+  getPageState(tabId) {
+    try {
+      const entry = this.pages.require(tabId);
+      return Object.freeze({
+        tabId: entry.tabId,
+        kind: entry.kind,
+        ...entry.adapter.getState(),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async preparePageDialogs(tabId) {
+    // Best effort: an external debugger must not prevent ordinary semantic
+    // browsing. Dialog tools report unavailable if monitoring cannot start.
+    const entry = this.pages.require(tabId);
+    if (typeof entry.adapter.getDialog !== 'function') return null;
+    return this.execute(OPERATIONS.GET_DIALOG, { tabId });
+  }
+
+  async execute(operation, rawInput = {}, execution = {}) {
+    let input;
+    let entry;
+    try {
+      input = validateOperationInput(operation, rawInput);
+      if (input.tabId) entry = this.pages.require(input.tabId);
+      const policyEntry =
+        entry || (input.openerTabId ? this.pages.require(input.openerTabId) : undefined);
+
+      const decision = await this.policyController.authorize({
+        operation,
+        input,
+        runtimeId: this.runtimeId,
+        contextId: this.contextId,
+        tab: policyEntry
+          ? {
+              tabId: policyEntry.tabId,
+              kind: policyEntry.kind,
+              ...policyEntry.adapter.getState(),
+            }
+          : null,
+      });
+      if (!decision?.allowed) {
+        const code = decision?.approvalRequired
+          ? ERROR_CODES.APPROVAL_REQUIRED
+          : ERROR_CODES.POLICY_DENIED;
+        throw new AutomationError(
+          code,
+          decision?.reason || 'Automation policy denied the operation'
+        );
+      }
+
+      const result = await this.#dispatch(operation, input, entry, execution);
+      const blockedDownload = this.downloadController?.takeBlockedDownload?.(entry?.adapter.webContents);
+      if (blockedDownload) throw blockedDownload;
+      return this.#successEnvelope(entry, result);
+    } catch (error) {
+      const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
+      return this.#errorEnvelope(input?.tabId || rawTabId || undefined, entry, error);
+    }
+  }
+
+  async inspectAction(operation, rawInput = {}, execution = {}) {
+    let input;
+    let entry;
+    try {
+      input = validateOperationInput(operation, rawInput);
+      if (
+        ![
+          OPERATIONS.CLICK,
+          OPERATIONS.TYPE,
+          OPERATIONS.SELECT,
+          OPERATIONS.HANDLE_DIALOG,
+          OPERATIONS.CALL_PAGE_TOOL,
+          OPERATIONS.PRESS,
+          OPERATIONS.SCROLL,
+          OPERATIONS.UPLOAD,
+          OPERATIONS.DOWNLOAD,
+          OPERATIONS.WALLET_ACTION,
+        ].includes(operation)
+      ) {
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          `Automation action inspection is not implemented: ${operation}`
+        );
+      }
+      entry = this.pages.require(input.tabId);
+      if (operation === OPERATIONS.CALL_PAGE_TOOL)
+        return this.#successEnvelope(entry, await entry.adapter.pageTools.inspect(input));
+      if (operation === OPERATIONS.HANDLE_DIALOG)
+        return this.#successEnvelope(entry, entry.adapter.inspectDialog(input));
+      if (typeof entry.adapter.inspectAction !== 'function') {
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Automation action inspection is unavailable for this page'
+        );
+      }
+      if (input.ref?.startsWith('visual_'))
+        return this.#successEnvelope(
+          entry,
+          await entry.adapter.inspectVisualAction(input.ref, operation)
+        );
+      if (entry.adapter.isFrameReference?.(input.ref)) {
+        const result = await entry.adapter.inspectFrameAction(
+          input.ref,
+          { ...input, operation },
+          execution.authorizeFrame
+        );
+        return this.#successEnvelope(entry, result);
+      }
+      const result = await entry.adapter.inspectAction(input.ref, {
+        operation,
+        ...(input.key && { key: input.key }),
+        ...(operation === OPERATIONS.SCROLL && { direction: input.direction, pages: input.pages }),
+      });
+      return this.#successEnvelope(entry, result);
+    } catch (error) {
+      const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
+      return this.#errorEnvelope(input?.tabId || rawTabId || undefined, entry, error);
+    }
+  }
+
+  async #dispatch(operation, input, entry, execution) {
+    if (input.ref?.startsWith('visual_')) {
+      if (operation !== OPERATIONS.CLICK)
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Visual references support one click only'
+        );
+      return entry.adapter.clickVisual(input.ref, execution.expectedVisualAction);
+    }
+    if (
+      entry?.adapter.isFrameReference?.(input.ref) &&
+      [
+        OPERATIONS.CLICK,
+        OPERATIONS.TYPE,
+        OPERATIONS.PRESS,
+        OPERATIONS.SCROLL,
+        OPERATIONS.SELECT,
+        OPERATIONS.UPLOAD,
+        OPERATIONS.DOWNLOAD,
+        OPERATIONS.WALLET_ACTION,
+      ].includes(operation)
+    ) {
+      return entry.adapter.frameAction(input.ref, { ...input, operation }, execution);
+    }
+
+    switch (operation) {
+      case OPERATIONS.LIST_TABS:
+        return { tabs: this.pages.list() };
+      case OPERATIONS.CREATE_TAB: {
+        const lifecycle = this.#requirePageLifecycle();
+        const tabId = await lifecycle.createPage(input.url, {
+          openerTabId: input.openerTabId || null,
+        });
+        const created = this.pages.require(tabId);
+        return {
+          tab: {
+            tabId: created.tabId,
+            kind: created.kind,
+            ...created.adapter.getState(),
+          },
+        };
+      }
+      case OPERATIONS.GET_TAB:
+        return { tab: { tabId: entry.tabId, kind: entry.kind, ...entry.adapter.getState() } };
+      case OPERATIONS.FOCUS_TAB: {
+        const lifecycle = this.#requirePageLifecycle();
+        if (typeof lifecycle.focusPage !== 'function') {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be focused by this runtime'
+          );
+        }
+        const focused = await lifecycle.focusPage(entry.tabId);
+        if (!focused) {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be focused by this runtime'
+          );
+        }
+        return { focused: true, tabId: entry.tabId };
+      }
+      case OPERATIONS.CLOSE_TAB: {
+        const closed = await this.#requirePageLifecycle().closePage(entry.tabId);
+        if (!closed) {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be closed by this runtime'
+          );
+        }
+        return { closed: true, tabId: entry.tabId };
+      }
+      case OPERATIONS.NAVIGATE:
+        return entry.adapter.navigate(input.url);
+      case OPERATIONS.TARGET_POINT:
+        return entry.adapter.targetPoint(input);
+      case OPERATIONS.LIST_FRAMES:
+        return entry.adapter.listFrames(execution.authorizeFrame);
+      case OPERATIONS.READ_FRAME:
+        return entry.adapter.readFrame(
+          input.frameRef,
+          {
+            query: input.query,
+            textQuery: input.textQuery,
+            elementOffset: input.elementOffset,
+            textOffset: input.textOffset,
+          },
+          execution.authorizeFrame
+        );
+      case OPERATIONS.SNAPSHOT:
+        return entry.adapter.snapshot({
+          query: input.query,
+          textQuery: input.textQuery,
+          elementOffset: input.elementOffset,
+          textOffset: input.textOffset,
+          navigationId: input.navigationId,
+          documentId: input.documentId,
+        });
+      case OPERATIONS.CLICK:
+        return entry.adapter.click(input.ref);
+      case OPERATIONS.TYPE:
+        return entry.adapter.type(input.ref, input.text, { replace: input.replace });
+      case OPERATIONS.SELECT:
+        return entry.adapter.select(input.ref, input.values ?? input.value);
+      case OPERATIONS.LIST_PAGE_TOOLS:
+        return entry.adapter.pageTools?.list() || { available: false, tools: [] };
+      case OPERATIONS.CALL_PAGE_TOOL:
+        if (!entry.adapter.pageTools) throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'This page has no website automation tools. Use a fresh page snapshot and ordinary browser interactions instead.');
+        return entry.adapter.pageTools.call(input, execution);
+      case OPERATIONS.GET_DIALOG:
+        return entry.adapter.getDialog();
+      case OPERATIONS.HANDLE_DIALOG:
+        return entry.adapter.handleDialog(input, execution);
+      case OPERATIONS.SCROLL:
+        return entry.adapter.scroll(input.ref, { direction: input.direction, pages: input.pages });
+      case OPERATIONS.PRESS:
+        return entry.adapter.press(input.ref, input.key);
+      case OPERATIONS.UPLOAD:
+        return this.#requireUploadController().upload({
+          pageAdapter: entry.adapter,
+          ref: input.ref,
+          signal: execution?.signal,
+        });
+      case OPERATIONS.DOWNLOAD:
+        return this.#requireDownloadController().download({
+          pageAdapter: entry.adapter,
+          ref: input.ref,
+          conversationId: execution?.conversationId,
+          signal: execution?.signal,
+          onProgress: execution?.onProgress,
+        });
+      case OPERATIONS.WALLET_ACTION:
+        return entry.adapter.click(input.ref);
+      case OPERATIONS.WALLET_TRANSFER:
+        return this.#requireWalletTransferController().transfer(input, {
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
+      case OPERATIONS.NODE_STATUS:
+        return this.#requireNodeController().status();
+      case OPERATIONS.NODE_REQUEST:
+        return this.#requireNodeRequestController().request(input, {
+          classifyEffect: execution?.classifyEffect,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+          conversationId: execution?.conversationId,
+        });
+      case OPERATIONS.NODE_OPERATION_STATUS:
+        return this.#requireNodeRequestController().status(input, {
+          conversationId: execution?.conversationId,
+        });
+      case OPERATIONS.NODE_LIFECYCLE:
+        return this.#requireNodeLifecycleController().lifecycle(input, {
+          classifyEffect: execution?.classifyEffect,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
+      case OPERATIONS.NODE_DIAGNOSTICS:
+        return this.#requireDiagnosticsController().node(input, {
+          requestApproval: execution?.requestApproval,
+        });
+      case OPERATIONS.APP_DIAGNOSTICS:
+        return this.#requireDiagnosticsController().app(input, {
+          requestApproval: execution?.requestApproval,
+        });
+      case OPERATIONS.SWARM_PUBLISH:
+        return this.#requirePublicationController().publish(input, {
+          conversationId: execution?.conversationId,
+          onProgress: execution?.onProgress,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
+      case OPERATIONS.SWARM_PUBLICATION_STATUS:
+        return this.#requirePublicationController().status(input, {
+          conversationId: execution?.conversationId,
+        });
+      case OPERATIONS.LIST_DOWNLOADS:
+        return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
+      case OPERATIONS.SCREENSHOT:
+        return entry.adapter.screenshot();
+      case OPERATIONS.WAIT:
+        return entry.adapter.wait(input);
+      case OPERATIONS.STOP_LOADING:
+        return entry.adapter.stopLoading();
+      default:
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          `Automation operation is not implemented: ${operation}`
+        );
+    }
+  }
+
+  #successEnvelope(entry, result) {
+    return {
+      ok: true,
+      runtimeId: this.runtimeId,
+      contextId: this.contextId,
+      ...(entry && {
+        tabId: entry.tabId,
+        navigationId: entry.adapter.getState().navigationId,
+      }),
+      result: result ?? {},
+    };
+  }
+
+  #requirePageLifecycle() {
+    if (!this.pageLifecycle) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Automation tab lifecycle is unavailable in this runtime'
+      );
+    }
+    return this.pageLifecycle;
+  }
+
+  #requireDownloadController() {
+    if (!this.downloadController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Controlled downloads are unavailable in this runtime'
+      );
+    }
+    return this.downloadController;
+  }
+
+  #requireUploadController() {
+    if (!this.uploadController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Controlled file uploads are unavailable in this runtime'
+      );
+    }
+    return this.uploadController;
+  }
+
+  #requireWalletTransferController() {
+    if (!this.walletTransferController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Direct wallet transfers are unavailable in this runtime'
+      );
+    }
+    return this.walletTransferController;
+  }
+
+  #requireNodeController() {
+    if (!this.nodeController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom node status is unavailable in this runtime'
+      );
+    }
+    return this.nodeController;
+  }
+
+  #requireNodeRequestController() {
+    if (!this.nodeRequestController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Direct Freedom node requests are unavailable in this runtime'
+      );
+    }
+    return this.nodeRequestController;
+  }
+
+  #requireNodeLifecycleController() {
+    if (!this.nodeLifecycleController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom node lifecycle controls are unavailable in this runtime'
+      );
+    }
+    return this.nodeLifecycleController;
+  }
+
+  #requireDiagnosticsController() {
+    if (!this.diagnosticsController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom diagnostics are unavailable in this runtime'
+      );
+    }
+    return this.diagnosticsController;
+  }
+
+  #requirePublicationController() {
+    if (!this.publicationController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Swarm publishing is unavailable in this runtime'
+      );
+    }
+    return this.publicationController;
+  }
+
+  #errorEnvelope(tabId, entry, error) {
+    return {
+      ok: false,
+      runtimeId: this.runtimeId,
+      contextId: this.contextId,
+      ...(tabId && { tabId }),
+      ...(entry && { navigationId: entry.adapter.getState().navigationId }),
+      error: toErrorPayload(error),
+    };
+  }
+}
+
+module.exports = {
+  AutomationController,
+};

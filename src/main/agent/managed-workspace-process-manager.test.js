@@ -1,0 +1,319 @@
+'use strict';
+
+const {
+  MAX_PROCESS_LOG_BYTES,
+  WORKSPACE_SHUTDOWN_TIMEOUT_MS,
+  ManagedWorkspaceProcessManager,
+} = require('./managed-workspace-process-manager');
+
+function receipt(overrides = {}) {
+  return {
+    workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+    commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+    command: 'node server.js',
+    workingDirectory: '.',
+    backend: 'linux-bubblewrap',
+    networkPosture: 'none',
+    state: 'completed',
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    terminationGuarantee: 'namespace_scoped',
+    terminationScope: 'pid_namespace',
+    sideEffects: 'unknown',
+    survivorsPossible: false,
+    completeDescendantTermination: true,
+    ...overrides,
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('ManagedWorkspaceProcessManager', () => {
+  test('returns ordinary commands directly when they finish before yielding', async () => {
+    const onTerminal = jest.fn();
+    const manager = new ManagedWorkspaceProcessManager({
+      execute: jest.fn(async (_conversationId, request) => {
+        request.onOutput('stdout', Buffer.from('hello\n'));
+        return receipt({ stdout: 'hello\n' });
+      }),
+      idFactory: () => 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    });
+
+    await expect(
+      manager.start('conversation_one', { command: 'node hello.js', onTerminal })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa',
+        state: 'completed',
+        output: 'hello\n',
+        receipt: expect.objectContaining({ state: 'completed' }),
+      })
+    );
+    expect(onTerminal).not.toHaveBeenCalled();
+  });
+
+  test('yields a running process, streams later output, accepts input, and reports completion', async () => {
+    const completion = deferred();
+    let request;
+    const write = jest.fn(() => true);
+    const onTerminal = jest.fn();
+    const manager = new ManagedWorkspaceProcessManager({
+      execute: jest.fn(async (_conversationId, value) => {
+        request = value;
+        value.onStarted({
+          workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+          commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+          command: 'node server.js',
+          workingDirectory: '.',
+          backend: 'linux-bubblewrap',
+          networkPosture: 'none',
+          state: 'running',
+        });
+        value.onStdin({ write });
+        value.onOutput('stdout', Buffer.from('ready\n'));
+        return completion.promise;
+      }),
+      idFactory: () => 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    });
+
+    const started = await manager.start('conversation_one', {
+      command: 'node server.js',
+      yieldMs: 1,
+      previewPort: 4_173,
+      onTerminal,
+    });
+    expect(started).toEqual(
+      expect.objectContaining({
+        processId: 'workspace_process_bbbbbbbbbbbbbbbbbbbbbbbb',
+        state: 'running',
+        output: 'ready\n',
+        previewPort: 4_173,
+        workspace: expect.objectContaining({
+          commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+          state: 'running',
+        }),
+      })
+    );
+    expect(manager.inspect('conversation_one', started.processId)).toEqual(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'running',
+        previewPort: 4_173,
+        workspace: expect.objectContaining({ state: 'running' }),
+      })
+    );
+    expect(manager.inspect('conversation_one', started.processId)).not.toHaveProperty('output');
+    expect(manager.list('conversation_one')).toEqual([
+      expect.objectContaining({
+        processId: started.processId,
+        command: 'node server.js',
+        previewPort: 4_173,
+      }),
+    ]);
+    expect(manager.list('conversation_two')).toEqual([]);
+
+    request.onOutput('stderr', Buffer.from('request\n'));
+    const interaction = manager.interact('conversation_one', started.processId, {
+      input: 'reload\n',
+      waitMs: 0,
+    });
+    await expect(interaction).resolves.toEqual(
+      expect.objectContaining({ state: 'running', output: 'request\n' })
+    );
+    expect(write).toHaveBeenCalledWith(Buffer.from('reload\n'));
+
+    completion.resolve(receipt({ stdout: 'ready\n', stderr: 'request\n' }));
+    await expect(
+      manager.interact('conversation_one', started.processId, { waitMs: 1_000 })
+    ).resolves.toEqual(expect.objectContaining({ state: 'completed' }));
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'completed',
+        receipt: expect.objectContaining({ terminationScope: 'pid_namespace' }),
+      })
+    );
+  });
+
+  test('rejects invalid preview ports before starting execution', async () => {
+    const execute = jest.fn();
+    const manager = new ManagedWorkspaceProcessManager({ execute });
+
+    await expect(
+      manager.start('conversation_one', { command: 'node server.js', previewPort: 80 })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    await expect(
+      manager.start('conversation_one', { command: 'node server.js', previewPort: 4_173.5 })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test('binds process access to its conversation and terminates through the retained signal', async () => {
+    let request;
+    const manager = new ManagedWorkspaceProcessManager({
+      execute: jest.fn(async (_conversationId, value) => {
+        request = value;
+        await new Promise((resolve) =>
+          value.signal.addEventListener(
+            'abort',
+            () => {
+              value.onOutput('stderr', Buffer.from('stopping\n'));
+              resolve();
+            },
+            { once: true }
+          )
+        );
+        return receipt({
+          state: 'cancelled',
+          exitCode: null,
+          signal: 'SIGKILL',
+          stderr: 'stopping\n',
+        });
+      }),
+      idFactory: () => 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    });
+    const started = await manager.start('conversation_one', {
+      command: 'node server.js',
+      yieldMs: 1,
+    });
+
+    await expect(
+      manager.interact('conversation_two', started.processId, { waitMs: 0 })
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_NOT_FOUND' });
+    const stopped = manager.terminate('conversation_one', started.processId, { waitMs: 1_000 });
+    await expect(stopped).resolves.toEqual(
+      expect.objectContaining({
+        state: 'cancelled',
+        receipt: expect.objectContaining({ signal: 'SIGKILL' }),
+      })
+    );
+    expect(request.signal.aborted).toBe(true);
+    expect(manager.list('conversation_one')).toEqual([]);
+    await expect(
+      manager.interact('conversation_one', started.processId, { waitMs: 0 })
+    ).resolves.toEqual(expect.objectContaining({ state: 'cancelled', output: 'stopping\n' }));
+  });
+
+  test('keeps only bounded undelivered output', async () => {
+    const completion = deferred();
+    let request;
+    const manager = new ManagedWorkspaceProcessManager({
+      execute: jest.fn(async (_conversationId, value) => {
+        request = value;
+        return completion.promise;
+      }),
+      idFactory: () => 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+    });
+    const started = await manager.start('conversation_one', {
+      command: 'yes',
+      yieldMs: 1,
+    });
+    request.onOutput('stdout', Buffer.alloc(MAX_PROCESS_LOG_BYTES + 10, 'x'));
+
+    const polled = await manager.interact('conversation_one', started.processId, { waitMs: 0 });
+    expect(Buffer.byteLength(polled.output)).toBe(MAX_PROCESS_LOG_BYTES);
+    expect(polled.outputTruncated).toBe(true);
+    manager.dispose();
+    completion.resolve(receipt({ state: 'cancelled' }));
+  });
+
+  test('drains consumed terminal observers and shares disposal without accepting new work', async () => {
+    const completion = deferred();
+    const observed = deferred();
+    const onTerminal = jest.fn(() => observed.promise);
+    const manager = new ManagedWorkspaceProcessManager({ execute: () => completion.promise });
+    const started = await manager.start('conversation_one', {
+      command: 'node server.js', yieldMs: 250, onTerminal,
+    });
+    completion.resolve(receipt());
+    await manager.interact('conversation_one', started.processId, { waitMs: 1_000 });
+    expect(manager.entries.size).toBe(0);
+    let finished = false;
+    const shutdown = manager.dispose();
+    void shutdown.then(() => { finished = true; });
+    expect(manager.dispose()).toBe(shutdown);
+    await expect(manager.start('conversation_one', { command: 'node server.js' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_MANAGER_DISPOSED' });
+    expect(finished).toBe(false);
+    observed.resolve();
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  test('bounds shutdown and suppresses callbacks from a backend that settles after the deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const completion = deferred();
+      const onTerminal = jest.fn();
+      let request;
+      const manager = new ManagedWorkspaceProcessManager({ execute: (_owner, value) => {
+        request = value;
+        return completion.promise;
+      } });
+      const start = manager.start('conversation_one', { command: 'node server.js', yieldMs: 250, onTerminal });
+      await jest.advanceTimersByTimeAsync(250);
+      await start;
+      const shutdown = manager.dispose();
+      expect(request.signal.aborted).toBe(true);
+      await jest.advanceTimersByTimeAsync(WORKSPACE_SHUTDOWN_TIMEOUT_MS);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      completion.resolve(receipt({ state: 'cancelled' }));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(onTerminal).not.toHaveBeenCalled();
+      expect(manager.entries.size).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('expires a process that fails after its initial result was yielded', async () => {
+    const completion = deferred();
+    const retention = [];
+    const onTerminal = jest.fn();
+    const manager = new ManagedWorkspaceProcessManager({
+      execute: jest.fn(async () => completion.promise),
+      idFactory: () => 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+      setTimer: (callback, delay) => {
+        if (delay === 250) queueMicrotask(callback);
+        else retention.push(callback);
+        return { unref: jest.fn() };
+      },
+      clearTimer: jest.fn(),
+    });
+    const started = await manager.start('conversation_one', {
+      command: 'node server.js',
+      yieldMs: 250,
+      onTerminal,
+    });
+    completion.reject(Object.assign(new Error('launch failed'), { code: 'LAUNCH_FAILED' }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'failed',
+        receipt: expect.objectContaining({
+          state: 'failed',
+          terminationScope: 'unknown',
+        }),
+      })
+    );
+    expect(retention).toHaveLength(1);
+    retention[0]();
+    await expect(
+      manager.interact('conversation_one', started.processId, { waitMs: 0 })
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_NOT_FOUND' });
+  });
+});

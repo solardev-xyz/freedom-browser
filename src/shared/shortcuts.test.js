@@ -80,9 +80,9 @@ describe('shortcut registry', () => {
         .join(' ');
 
     // Entries whose Settings label legitimately keeps an inner capital (a
-    // product or protocol name). Empty today — every label is plain prose —
-    // and an entry only belongs here with a proper noun to point at.
-    const PROPER_NOUNS = new Set();
+    // product or protocol name), and only with a proper noun to point at:
+    // Agent is the product name of Freedom Agent, not a generic noun.
+    const PROPER_NOUNS = new Set(['view.toggleAgent']);
 
     const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
 

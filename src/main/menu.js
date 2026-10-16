@@ -539,6 +539,20 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
         }
       },
     },
+    // Agent floats over the page, so its chord has to reach the chrome while
+    // the page holds the keyboard: the renderer's own keydown only sees it
+    // when focus is already in the chrome.
+    {
+      id: 'toggle-agent',
+      label: 'Show Agent',
+      accelerator: acc('view.toggleAgent'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('agent:toggle');
+        }
+      },
+    },
     { type: 'separator' },
     {
       id: 'toggle-devtools',
@@ -1187,7 +1201,7 @@ function applyTabState(state) {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
 
-  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward } = state;
+  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward, canReload } = state;
   const hasMultipleTabs = tabCount > 1;
   const hasTabs = tabCount > 0;
 
@@ -1196,7 +1210,9 @@ function applyTabState(state) {
     if (item) item.enabled = enabled;
   };
 
-  setEnabled('reload', hasTabs);
+  // `canReload` is false while the active tab is in Agent custody; an older
+  // renderer that never sends it keeps the old tab-count rule.
+  setEnabled('reload', hasTabs && canReload !== false);
   setEnabled('next-tab', hasMultipleTabs);
   setEnabled('prev-tab', hasMultipleTabs);
   setEnabled('move-tab-right', hasMultipleTabs && activeIndex < tabCount - 1);

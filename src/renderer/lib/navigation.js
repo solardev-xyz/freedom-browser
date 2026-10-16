@@ -42,6 +42,7 @@ import {
 } from './address-bar-edit.js';
 import {
   getActiveWebview,
+  createTab,
   getActiveTab,
   getActiveTabState,
   openInNewTabWithTarget,
@@ -55,6 +56,8 @@ import {
   getTabById,
   getTabIdForWebview,
   isActiveTab,
+  isTabAgentOwned,
+  subscribeAgentTabCustody,
   pushTabMenuState,
 } from './tabs.js';
 import {
@@ -487,6 +490,13 @@ let bookmarksBar = null;
 let protocolIcon = null;
 let trustShield = null;
 let trustPopover = null;
+let addressBarContainer = null;
+let addressBarHome = null;
+let agentBackBtn = null;
+let agentForwardBtn = null;
+let agentReloadBtn = null;
+let agentWorkspaceNavigationMounted = false;
+let agentWorkspaceNavigationEditable = false;
 
 // Bookmark bar toggle state: true = always show, false = hide on non-home pages (default)
 let bookmarkBarOverride = false;
@@ -967,19 +977,88 @@ const updateNavigationState = () => {
   // buttons: same moment, same canGoBack/canGoForward read.
   pushTabMenuState?.();
   const webview = getActiveWebview();
+  const agentOwned = isTabAgentOwned(getActiveTab()?.id);
   if (!webview) {
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
+    if (reloadBtn) reloadBtn.disabled = true;
+    if (homeBtn) homeBtn.disabled = true;
+    if (agentBackBtn) agentBackBtn.disabled = true;
+    if (agentForwardBtn) agentForwardBtn.disabled = true;
+    if (agentReloadBtn) agentReloadBtn.disabled = true;
     return;
   }
   try {
-    if (backBtn) backBtn.disabled = !webview.canGoBack();
-    if (forwardBtn) forwardBtn.disabled = !webview.canGoForward();
+    const canGoBack = webview.canGoBack();
+    const canGoForward = webview.canGoForward();
+    if (backBtn) backBtn.disabled = agentOwned || !canGoBack;
+    if (forwardBtn) forwardBtn.disabled = agentOwned || !canGoForward;
+    if (reloadBtn) reloadBtn.disabled = agentOwned;
+    if (homeBtn) homeBtn.disabled = agentOwned;
+    if (agentBackBtn) agentBackBtn.disabled = agentOwned || !canGoBack;
+    if (agentForwardBtn) agentForwardBtn.disabled = agentOwned || !canGoForward;
+    if (agentReloadBtn) agentReloadBtn.disabled = agentOwned;
   } catch (err) {
     pushDebug(`[Nav] Webview not ready for canGoBack/canGoForward: ${err.message}`);
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
+    if (agentBackBtn) agentBackBtn.disabled = true;
+    if (agentForwardBtn) agentForwardBtn.disabled = true;
+    if (reloadBtn) reloadBtn.disabled = agentOwned;
+    if (homeBtn) homeBtn.disabled = agentOwned;
+    if (agentReloadBtn) agentReloadBtn.disabled = agentOwned;
   }
+};
+
+const setReloadState = (nextState) => {
+  if (reloadBtn) reloadBtn.dataset.state = nextState;
+  if (agentReloadBtn) agentReloadBtn.dataset.state = nextState;
+};
+
+export const setAgentWorkspaceNavigationEditable = (editable) => {
+  agentWorkspaceNavigationEditable = editable === true;
+  if (!addressInput) return;
+  const agentOwned = isTabAgentOwned(getActiveTab()?.id);
+  const readOnly = getActiveTab()?.kind === 'workspace-viewer' || agentOwned || (agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable);
+  addressInput.readOnly = readOnly;
+  addressInput.setAttribute('aria-readonly', String(readOnly));
+  addressInput.title = agentOwned
+    ? 'Claim this Agent-owned tab before navigating it manually'
+    : readOnly
+      ? 'Pause or finish the agent to navigate manually'
+      : '';
+  if (readOnly) {
+    const tab = getActiveTab();
+    if (tab) {
+      // Custody ends manual editing; an old draft must not mask Agent navigation.
+      clearAddressBarEdit(tab.navigationState);
+      addressInput.value = deriveSwitchedTabDisplay({
+        url: tab.url || tab.navigationState?.currentPageUrl || '',
+        isLoading: tab.isLoading === true,
+        addressBarSnapshot: tab.navigationState?.addressBarSnapshot || '',
+        isViewingSource: tab.isViewingSource === true,
+        bzzRoutePrefix: state.bzzRoutePrefix,
+        homeUrlNormalized,
+        ipfsRoutePrefix: state.ipfsRoutePrefix,
+        ipnsRoutePrefix: state.ipnsRoutePrefix,
+        radicleApiPrefix: state.radicleApiPrefix,
+        knownEnsNames: state.knownEnsNames,
+      });
+    }
+    addressInput.blur();
+    updateProtocolIcon();
+  }
+};
+
+export const setAgentWorkspaceNavigationProjection = (container = null) => {
+  if (!addressBarContainer || !addressInput) return;
+  agentWorkspaceNavigationMounted = Boolean(container);
+  if (container) {
+    container.appendChild(addressBarContainer);
+  } else {
+    addressBarHome?.appendChild(addressBarContainer);
+  }
+  setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 };
 
 const ensureWebContentsId = () => {
@@ -1155,7 +1234,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, opti
   setLoading(true, probeTabId);
   navState.isWebviewLoading = true;
   if (isActiveTab(probeTabId)) {
-    reloadBtn.dataset.state = 'stop';
+    setReloadState('stop');
   }
   pushDebug(`[Swarm] Probing ${gatewayUrl} before navigating`);
 
@@ -1331,6 +1410,13 @@ const BROWSER_HANDLED_INPUT =
   /^(?:https?|bzz|ipfs|ipns|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
+  if (!targetWebview && !options.pageInitiated && !options.continuesNavigation &&
+      isTabAgentOwned(getActiveTab()?.id) && typeof value === 'string' && value.trim()) return createTab(value);
+  if (!targetWebview && getActiveTab()?.kind === 'workspace-viewer') {
+    if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit
+      && typeof value === 'string' && value.trim()) return createTab(value);
+    return;
+  }
   // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
   // for this single call. Set by the ens-unverified page's "Continue once"
   // handler. Scope is this single loadTarget invocation.
@@ -2164,6 +2250,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // Reload a trusted isolated workspace preview without turning its opaque
+  // origin into an address-bar or history entry.
+  if (/^freedom-preview:\/\/[a-f0-9]{20,128}\//i.test(value)) {
+    setAddressDisplayForTab('Workspace preview', targetTabId);
+    navState.pendingTitleForUrl = value;
+    navState.pendingNavigationUrl = value;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(value);
+    syncBzzBase(null);
+    return;
+  }
+
   // Try HTTP/HTTPS URLs
   if (value.startsWith('http://') || value.startsWith('https://')) {
     const httpDisplayValue = displayOverride || value;
@@ -2200,13 +2298,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   pushDebug('Ignoring empty input or invalid URL.');
 };
 
-const stopLoadingAndRestore = () => {
-  const navState = getNavState();
+export const stopPageLoading = (targetWebview = null) => {
+  const webview = targetWebview || getActiveWebview();
+  const targetTabId = getTabIdForWebview(webview);
+  const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!navState.isWebviewLoading) {
     return false;
   }
   cancelPendingSwarmProbe(navState);
-  const webview = getActiveWebview();
   if (webview) {
     webview.stop();
   }
@@ -2223,15 +2322,29 @@ const stopLoadingAndRestore = () => {
       state.ipnsRoutePrefix,
       state.radicleApiPrefix
     );
-    // Stopping a load repaints the address bar with the page it settled on —
-    // unless the user is mid-edit, in which case only the snapshot moves
-    // (#305). The Escape handler clears the edit before calling this, so the
-    // Escape path still repaints.
-    commitAddressDisplay(display, navState);
+    // Preserve the active tab's uncommitted edit and page snapshot, while an
+    // automation stop on a background tab updates only that tab's display.
+    if (isActiveTab(targetTabId) || targetTabId === null) {
+      commitAddressDisplay(display, navState);
+    } else {
+      setAddressDisplayForTab(display, targetTabId);
+    }
     pushDebug(`[AddressBar] Restored to: ${display} (raw: ${targetUrl})`);
   }
-  reloadBtn.dataset.state = 'reload';
+  if (isActiveTab(targetTabId) || targetTabId === null) {
+    setReloadState('reload');
+  }
   return true;
+};
+
+// The chrome's own Stop: the toolbar button and both Escape paths (address
+// bar, window). A user action, so it respects Agent custody exactly like
+// Back/Forward/Reload — an Agent-owned tab's load is the Agent's to stop
+// (automation calls `stopPageLoading` directly). Returns false, as for "no
+// load to stop", so the Escape handlers fall through to their idle branches.
+const stopLoadingAndRestore = () => {
+  if (isTabAgentOwned(getActiveTab()?.id)) return false;
+  return stopPageLoading();
 };
 
 export const loadHomePage = () => {
@@ -2657,7 +2770,13 @@ const retryErrorPageOrReload = (webview, hard) => {
   }
 };
 
+// Every chrome-driven navigation of the active tab (toolbar, keyboard, app
+// menu, page context menu) must respect Agent custody: an Agent-owned tab is
+// only navigated by the Agent until the user claims it.
+const isActiveTabAgentOwned = () => isTabAgentOwned(getActiveTab()?.id);
+
 export const reloadPage = () => {
+  if (isActiveTabAgentOwned()) return;
   const webview = getActiveWebview();
   if (!webview) return;
   retryErrorPageOrReload(webview, false);
@@ -2666,7 +2785,7 @@ export const reloadPage = () => {
 // The page context menu passes the guest it was raised on (always the active
 // one; a stale menu drops the action before it gets here).
 export const hardReloadPage = (webview = getActiveWebview()) => {
-  if (!webview) return;
+  if (!webview || isActiveTabAgentOwned()) return;
   retryErrorPageOrReload(webview, true);
 };
 
@@ -2951,6 +3070,12 @@ export const initNavigation = () => {
   protocolIcon = document.getElementById('protocol-icon');
   trustShield = document.getElementById('trust-shield');
   trustPopover = document.getElementById('trust-popover');
+  addressBarContainer = navForm?.querySelector('.address-bar-container') || null;
+  addressBarHome = addressBarContainer?.parentNode || null;
+  agentBackBtn = document.getElementById('agent-workspace-back');
+  agentForwardBtn = document.getElementById('agent-workspace-forward');
+  agentReloadBtn = document.getElementById('agent-workspace-reload');
+  setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 
   setOnchainProvenanceChangeHandler((tabId) => {
     if (isActiveTab(tabId)) updateProtocolIcon();
@@ -3089,6 +3214,7 @@ export const initNavigation = () => {
   // Form submission (navigate)
   navForm.addEventListener('submit', (event) => {
     event.preventDefault();
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     // loadTarget handles all protocol dispatch (ENS, freedom://, bzz://,
     // ipfs://, https://, rad://) and owns the ENS trust state mutation.
     // Earlier this handler duplicated the ENS path, which bypassed the
@@ -3099,36 +3225,54 @@ export const initNavigation = () => {
     addressInput.blur();
   });
 
+  document.getElementById('agent-workspace-nav')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!agentWorkspaceNavigationMounted || !agentWorkspaceNavigationEditable) return;
+    loadTarget(addressInput.value);
+    addressInput.blur();
+  });
+
   // Navigation buttons
-  // Both buttons traverse Chromium's own session history — the restored
-  // entry, never the address bar's current (possibly unsubmitted) text. The
-  // shared helpers additionally mark the commit that follows so an
-  // ENS-backed restored entry gets its trust metadata re-verified under
-  // today's settings (#86).
-  backBtn.addEventListener('click', () => {
+  const navigateBack = () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     goBackInHistory(getActiveWebview());
-  });
+  };
 
-  forwardBtn.addEventListener('click', () => {
+  const navigateForward = () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     goForwardInHistory(getActiveWebview());
-  });
+  };
 
-  reloadBtn.addEventListener('click', (e) => {
+  const reloadOrStop = (event = {}) => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     const navState = getNavState();
     if (navState.isWebviewLoading) {
       stopLoadingAndRestore();
-      reloadBtn.dataset.state = 'reload';
+      setReloadState('reload');
       return;
     }
 
     const webview = getActiveWebview();
     if (!webview) return;
 
-    retryErrorPageOrReload(webview, e.shiftKey);
-  });
+    retryErrorPageOrReload(webview, event.shiftKey === true);
+  };
+
+  backBtn.addEventListener('click', navigateBack);
+  agentBackBtn?.addEventListener('click', navigateBack);
+  forwardBtn.addEventListener('click', navigateForward);
+  agentForwardBtn?.addEventListener('click', navigateForward);
+  reloadBtn.addEventListener('click', reloadOrStop);
+  agentReloadBtn?.addEventListener('click', reloadOrStop);
 
   homeBtn?.addEventListener('click', () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     loadHomePage();
+  });
+
+  subscribeAgentTabCustody(() => {
+    setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
+    updateNavigationState();
   });
 
   // Register webview event handler with tabs module
@@ -3145,7 +3289,7 @@ export const initNavigation = () => {
           stopIpfsProgressStatus({ immediate: true });
         }
         navState.isWebviewLoading = true;
-        reloadBtn.dataset.state = 'stop';
+        setReloadState('stop');
         pushDebug('Webview started loading.');
         break;
 
@@ -3155,10 +3299,11 @@ export const initNavigation = () => {
         navState.isWebviewLoading = false;
         navState.hasNavigatedDuringCurrentLoad = false;
         navState.pendingNavigationUrl = '';
-        reloadBtn.dataset.state = 'reload';
+        setReloadState('reload');
         if (data.url) {
           updateBookmarkBarState(data.url);
         }
+        setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
         updateNavigationState();
 
         // Record history entry after successful page load
@@ -3275,7 +3420,7 @@ export const initNavigation = () => {
         stopIpfsProgressStatus({ immediate: true });
         navState.isWebviewLoading = false;
         navState.hasNavigatedDuringCurrentLoad = false;
-        reloadBtn.dataset.state = 'reload';
+        setReloadState('reload');
         updateNavigationState();
 
         if (data.event && data.event.errorCode !== -3 && webview) {
@@ -3452,7 +3597,7 @@ export const initNavigation = () => {
         break;
       }
 
-      case 'tab-switched':
+      case 'tab-switched': {
         // Save address bar state to previous tab before switching. The
         // per-tab view-source record (`prev.isViewingSource`) is owned by
         // tabs.js' did-navigate handler and is already up to date — we
@@ -3482,6 +3627,18 @@ export const initNavigation = () => {
           }
         }
         previousActiveTabId = data.tabId;
+        if (data.tab?.kind === 'workspace-viewer') {
+          addressInput.value = '';
+          setTrustPopoverOpen(false);
+          stopIpfsProgressStatus({ immediate: true });
+          setLoading(false);
+          setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
+          updateNavigationState();
+          isViewingSource = false;
+          document.dispatchEvent(new CustomEvent('active-tab-changed'));
+          break;
+        }
+        setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 
         // Update UI state when switching tabs - restore from tab's navigation state
         if (data.tab) {
@@ -3545,7 +3702,7 @@ export const initNavigation = () => {
             stopIpfsProgressStatus({ immediate: true });
           }
           tabNavState.isWebviewLoading = isLoading;
-          reloadBtn.dataset.state = isLoading ? 'stop' : 'reload';
+          setReloadState(isLoading ? 'stop' : 'reload');
           // Where focus lands on a NEW tab, and on a switch back to a tab that
           // is sitting on the new-tab page. tabs.js focuses the page itself for
           // every other kind of activation (#304) but defers these two here,
@@ -3573,7 +3730,7 @@ export const initNavigation = () => {
             !isViewingSource && !addressInput.value && (isNewTabPageUrl(url) || !url);
           const ownsFocusForThisSwitch =
             data.isNewTab || (!isAddressBarEditInProgress(tabNavState) && isNewTabPageUrl(url));
-          if (ownsFocusForThisSwitch) {
+          if (data.focus !== false && ownsFocusForThisSwitch) {
             if (isEmptyNewTab) {
               addressInput.focus();
               // Match the explicit focus-address-bar shortcut (tabs.js), which
@@ -3597,6 +3754,7 @@ export const initNavigation = () => {
         // prompt dismissal + address-bar permission indicator refresh).
         document.dispatchEvent(new CustomEvent('active-tab-changed'));
         break;
+      }
     }
   });
 
@@ -3607,10 +3765,13 @@ export const initNavigation = () => {
 
   // App menu History > Back / Forward (#584): the same traversal the toolbar
   // buttons run, so an ENS-backed entry is re-verified the same way (#86).
+  // Agent custody gates them exactly like the toolbar buttons.
   electronAPI?.onHistoryBack?.(() => {
+    if (isActiveTabAgentOwned()) return;
     goBackInHistory(getActiveWebview());
   });
   electronAPI?.onHistoryForward?.(() => {
+    if (isActiveTabAgentOwned()) return;
     goForwardInHistory(getActiveWebview());
   });
 
