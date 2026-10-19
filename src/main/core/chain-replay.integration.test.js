@@ -672,6 +672,7 @@ function directFallback(got, want) {
 const REJECTED = new Set([
   'router-myotis-broadcast-rejected',
   'boundary-broadcast-mined-bytes-nonce-too-low',
+  'boundary-broadcast-myotis-invalid-params',
 ]);
 
 const uncertain = (source) => (call) => ({

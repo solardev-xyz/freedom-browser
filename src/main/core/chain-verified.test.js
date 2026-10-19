@@ -28,12 +28,12 @@ function uncertain(message) {
   return Object.assign(new Error(message), { code: 'MYOTIS_BROADCAST_UNCERTAIN' });
 }
 
-/** The executor on a client that records its registration; chain 1 at
- * generation 4. `call` runs it as the client does, `charge` standing in
- * for main's pool. */
-function setUp(adapters = {}, { charge = () => true, running, broadcasts } = {}) {
+/** The executor on a client that records its registration and holds the
+ * core's `hello` (none by default); chain 1 at generation 4. `call` runs it
+ * as the client does, `charge` standing in for main's pool. */
+function setUp(adapters = {}, { charge = () => true, running, broadcasts, hello = null } = {}) {
   const routes = [];
-  const client = { handle: (method, fn, options) => routes.push({ method, fn, options }) };
+  const client = { hello, handle: (method, fn, options) => routes.push({ method, fn, options }) };
   const config = { generation: (chainId) => (chainId === 1 ? 4 : 0) };
   const all = {
     myotisStatus: jest.fn(() => ({ optimisticBlockNumber: 21_000_000 })),
@@ -302,6 +302,57 @@ describe('Myotis broadcasts', () => {
   ])('%s', async (_name, thrown, expected) => {
     const { call } = setUp({ myotisBroadcast: jest.fn(async () => Promise.reject(thrown)) });
     expect(await call({ myotis: 'broadcast', raw: RAW })).toEqual(expected);
+  });
+
+  // freedom-core design 0005, The rest: ABI 44's refusal names its -32602
+  // to a core that reads the code, which rebuilds the adapter's error with
+  // it. Any other core gets today's `{ rejected: { reason } }`, and ABI
+  // 36's refusal never names a code.
+  describe('a refusal and its code', () => {
+    const INVALID = 'invalid raw transaction: malformed type 0x2 transaction';
+    const NONCE = 'nonce too low: next nonce 5, tx nonce 4';
+    const refusal = (message, code, myotisRefusal) =>
+      Object.assign(new Error(message), { code, myotisRefusal });
+    const reads = {
+      protocol: 1,
+      capabilities: ['vault.status', 'fragments', 'myotis_refusal_codes'],
+    };
+    const older = { protocol: 1, capabilities: ['vault.status', 'fragments'] };
+    test.each([
+      [
+        '-32602, to a core that reads the code',
+        reads,
+        refusal(INVALID, -32602, 'invalid-params'),
+        { reason: INVALID, code: -32602 },
+      ],
+      [
+        '-32602, to a core that does not',
+        older,
+        refusal(INVALID, -32602, 'invalid-params'),
+        { reason: INVALID },
+      ],
+      [
+        '-32602, with no core ready',
+        null,
+        refusal(INVALID, -32602, 'invalid-params'),
+        { reason: INVALID },
+      ],
+      ['rejected on verified state', reads, refusal(NONCE, -32000, 'rejected'), { reason: NONCE }],
+      // The code names the adapter's error only when it is that error's.
+      [
+        'a marker without its code',
+        reads,
+        refusal(INVALID, -32000, 'invalid-params'),
+        { reason: INVALID },
+      ],
+    ])('%s', async (_name, hello, thrown, rejected) => {
+      const { call, adapters } = setUp(
+        { myotisBroadcast: jest.fn(async () => Promise.reject(thrown)) },
+        { hello }
+      );
+      expect(await call({ myotis: 'broadcast', raw: RAW })).toEqual({ rejected });
+      expect(adapters.myotisBroadcast).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

@@ -7,9 +7,10 @@
  * - a Myotis read: `{ payload, block_before, block_after }`, the adapter's
  *   JSON with its keys in snake_case and the optimistic block number around
  *   it, or `{ failure }`;
- * - a Myotis broadcast: `{ hash }`, `{ rejected: { reason } }` (either of
- *   the adapter's definite refusals),
- *   `{ uncertain: true }`, `{ not_sent: true }` or `{ failure }`;
+ * - a Myotis broadcast: `{ hash }`, `{ rejected: { reason } }` (the
+ *   adapter's `rejected`), `{ rejected: { reason, code: -32602 } }` (its
+ *   `invalid-params`, to a core that reads it; any other gets the first
+ *   form), `{ uncertain: true }`, `{ not_sent: true }` or `{ failure }`;
  * - Colibri: `{ result }`, `{ undefined_keys: ["result"] }` for a result of
  *   `undefined`, `{ revert: { data } }` (with `capacity: true` when it is
  *   also a capacity failure) or `{ failure }`. The `undefined_keys` and
@@ -74,6 +75,10 @@ function myotisClass(err) {
  * are no transaction Myotis relays (ABI 44's permanent -32602). */
 const REFUSALS = new Set(['rejected', 'invalid-params']);
 
+/** The `core.hello` feature of a core that reads a refusal's code
+ * (freedom-core design 0005, The rest). */
+const REFUSAL_CODES = 'myotis_refusal_codes';
+
 /** A Myotis broadcast's failure, as myotis-process classes it: a definite
  * refusal; uncertain once dispatched; not sent when it never was, keeping
  * today's text where the core rebuilds one. Anything else may have been
@@ -81,10 +86,18 @@ const REFUSALS = new Set(['rejected', 'invalid-params']);
  *
  * Both refusals are `rejected`, the one reply that ends the core's attempt
  * loop with nothing sent, so no second broadcaster is asked, as the router
- * did. The reply has no code: the core rebuilds either refusal with
- * -32000, where the router threw ABI 44's with -32602. */
-function broadcastFailure(err) {
-  if (REFUSALS.has(err?.myotisRefusal)) return { rejected: { reason: String(err.message) } };
+ * did. The core rebuilds the adapter's error from it: `invalid-params`
+ * names its -32602 for a core that reads the code (`codes`), which
+ * rebuilds it with that code and marker. To a core that doesn't, it goes
+ * as `rejected` does, and comes back as -32000, `myotisRefusal: 'rejected'`. */
+function broadcastFailure(err, codes) {
+  if (REFUSALS.has(err?.myotisRefusal)) {
+    const rejected = { reason: String(err.message) };
+    if (codes && err.myotisRefusal === 'invalid-params' && err.code === -32602) {
+      rejected.code = -32602;
+    }
+    return { rejected };
+  }
   if (err?.code === 'MYOTIS_BROADCAST_UNCERTAIN') return { uncertain: true };
   const failure = myotisClass(err);
   if (UNSENT_CLASSES.has(failure)) return { failure };
@@ -167,10 +180,11 @@ function defaultAdapters() {
 
 /**
  * The operation `params` names: its verifier, how to run it with the
- * adapters, and what its adapter's error answers. Anything malformed is
+ * adapters, and what its adapter's error answers (`refusalCodes()`: whether
+ * the core reads a broadcast refusal's code). Anything malformed is
  * refused.
  */
-function operation(params, adapters, broadcasts) {
+function operation(params, adapters, broadcasts, refusalCodes) {
   const read = typeof params.myotis === 'string' && MYOTIS_READS.get(params.myotis);
   if (read) {
     const call = params.myotis === 'call_tx' || params.myotis === 'estimate_tx';
@@ -203,7 +217,7 @@ function operation(params, adapters, broadcasts) {
         const hash = broadcastHash(await adapters.myotisBroadcast(params.raw, params.chain_id));
         return hash === undefined ? { uncertain: true } : { hash };
       },
-      failed: broadcastFailure,
+      failed: (err) => broadcastFailure(err, refusalCodes()),
     };
   }
   if (params.colibri === 'request') {
@@ -265,6 +279,8 @@ function registerChainVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
   const running = deps.running || { myotis: 0, colibri: 0 };
   const broadcasts = deps.broadcasts || null;
+  // Whether the core reads a refusal's code: its hello's, as the reply goes.
+  const refusalCodes = () => client.hello?.capabilities?.includes(REFUSAL_CODES) === true;
 
   client.handle(
     'shell.verified',
@@ -277,7 +293,7 @@ function registerChainVerified(client, config, deps = {}) {
         return NOT_SENT;
       }
       if (signal.aborted) return NOT_SENT;
-      const { verifier, run, failed } = operation(params, adapters, broadcasts);
+      const { verifier, run, failed } = operation(params, adapters, broadcasts, refusalCodes);
       if (running[verifier] >= MAX_PER_VERIFIER) return { failure: 'busy' };
       running[verifier] += 1;
       let reply;
