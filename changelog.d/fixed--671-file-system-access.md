@@ -1,0 +1,4 @@
+- A site can read a file you open and save back to one you pick in its save or folder dialog ([#671](https://github.com/solardev-xyz/freedom-browser/issues/671))
+  - System folders and your home folder itself stay refused
+  - A site must start writing within a minute of the save dialog closing; if it takes longer, pick the file in the save dialog again
+  - Site permissions in Settings and the address-bar permission icon list the files and folders a site was given until you quit; removing them there, or removing the site, takes them back

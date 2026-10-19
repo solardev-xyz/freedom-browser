@@ -1,0 +1,3 @@
+- Default bookmarks feature Swarm apps: freemap.eth, swarm.eth, app.swarmit.eth, volumemanager.eth and Waggle ([#120](https://github.com/solardev-xyz/freedom-browser/issues/120))
+  - IPFS Web UI, IPFS Docs, Vitalik CID and the outdated Swarm OSM map are gone
+  - A bookmarks bar you have already changed keeps its own list

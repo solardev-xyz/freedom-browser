@@ -420,6 +420,80 @@ test('withholds the item when nothing is selected', async ({ window, harness }) 
   await expect(searchItem(window)).toBeHidden();
 });
 
+// #731: the guest reports the click in its own CSS pixels, which a page zoom
+// scales relative to the chrome's. Driven with a real right-click sent to the
+// guest's own webContents (not a synthetic `contextmenu`), so the clientX/
+// clientY are the ones Chromium itself derives for the zoomed page, and with
+// the zoom set through the webview the way the zoom shortcuts and the
+// hamburger buttons set it. The input event's x/y are the guest widget's
+// unzoomed pixels, i.e. the same units as the chrome's webview rect.
+// (A Playwright `window.mouse` click over the guest is routed by browser-side
+// hit-testing and only sometimes reaches the guest — see `clickOverGuest`.)
+for (const zoom of [1.5, 0.75]) {
+  test(`opens the menu at the cursor with the page zoomed to ${zoom * 100}%`, async ({
+    window,
+    harness,
+    electronApp,
+  }) => {
+    await openFixture(window, harness);
+
+    await window.evaluate((factor) => {
+      document.querySelector('webview:not(.hidden)').setZoomFactor(factor);
+    }, zoom);
+    // Wait until the guest has laid out at the new zoom.
+    await expect
+      .poll(() =>
+        window.evaluate(async () => {
+          const wv = document.querySelector('webview:not(.hidden)');
+          try {
+            return await wv.executeJavaScript('window.innerWidth');
+          } catch {
+            return null;
+          }
+        })
+      )
+      .toBe(
+        await window.evaluate(
+          (factor) =>
+            Math.round(
+              document.querySelector('webview:not(.hidden)').getBoundingClientRect().width / factor
+            ),
+          zoom
+        )
+      );
+
+    const rect = await window.evaluate(() => {
+      const r = document.querySelector('webview:not(.hidden)').getBoundingClientRect();
+      return { left: r.left, top: r.top };
+    });
+    // Far enough from the page's top-left corner that an unscaled offset
+    // would land the menu tens of pixels away, near enough to the top that
+    // the menu opens below the point without flipping or clamping.
+    const x = Math.round(rect.left + 300);
+    const y = Math.round(rect.top + 120);
+    await electronApp.evaluate(
+      ({ webContents }, { x: gx, y: gy, prefix }) => {
+        const guest = webContents
+          .getAllWebContents()
+          .find((wc) => wc.getType() === 'webview' && wc.getURL().startsWith(prefix));
+        if (!guest) throw new Error('fixture guest not found');
+        guest.sendInputEvent({ type: 'mouseMove', x: gx, y: gy });
+        guest.sendInputEvent({ type: 'mouseDown', x: gx, y: gy, button: 'right', clickCount: 1 });
+        guest.sendInputEvent({ type: 'mouseUp', x: gx, y: gy, button: 'right', clickCount: 1 });
+      },
+      { x: x - Math.round(rect.left), y: y - Math.round(rect.top), prefix: PAGE }
+    );
+
+    await expect(menu(window)).toBeVisible();
+    const box = await menu(window).boundingBox();
+    await window.screenshot({
+      path: `test-results/page-context-menu-zoom-${zoom * 100}.png`,
+    });
+    expect(Math.abs(box.x - x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(box.y - y)).toBeLessThanOrEqual(2);
+  });
+}
+
 test.describe('with a custom search engine configured', () => {
   test.use({
     seedSettings: {

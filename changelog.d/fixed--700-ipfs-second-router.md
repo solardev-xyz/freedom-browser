@@ -1,0 +1,2 @@
+- IPFS sites no longer fail with "no HTTP-capable providers found" when the one routing service the IPFS node asked is unreachable ([#700](https://github.com/solardev-xyz/freedom-browser/issues/700))
+  - The node now also asks cid.contact, besides delegated-ipfs.dev, who serves a page

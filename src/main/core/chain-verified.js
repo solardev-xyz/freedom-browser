@@ -7,7 +7,8 @@
  * - a Myotis read: `{ payload, block_before, block_after }`, the adapter's
  *   JSON with its keys in snake_case and the optimistic block number around
  *   it, or `{ failure }`;
- * - a Myotis broadcast: `{ hash }`, `{ rejected: { reason } }`,
+ * - a Myotis broadcast: `{ hash }`, `{ rejected: { reason } }` (either of
+ *   the adapter's definite refusals),
  *   `{ uncertain: true }`, `{ not_sent: true }` or `{ failure }`;
  * - Colibri: `{ result }`, `{ undefined_keys: ["result"] }` for a result of
  *   `undefined`, `{ revert: { data } }` (with `capacity: true` when it is
@@ -68,12 +69,22 @@ function myotisClass(err) {
   return 'error';
 }
 
-/** A Myotis broadcast's failure, as myotis-process classes it: rejected
- * on verified state; uncertain once dispatched; not sent when it never
- * was, keeping today's text where the core rebuilds one. Anything else may
- * have been dispatched. */
+/** The adapter's definite refusals of a broadcast, which sent nothing:
+ * `rejected` on verified state (ABI 36), and `invalid-params` for bytes that
+ * are no transaction Myotis relays (ABI 44's permanent -32602). */
+const REFUSALS = new Set(['rejected', 'invalid-params']);
+
+/** A Myotis broadcast's failure, as myotis-process classes it: a definite
+ * refusal; uncertain once dispatched; not sent when it never was, keeping
+ * today's text where the core rebuilds one. Anything else may have been
+ * dispatched.
+ *
+ * Both refusals are `rejected`, the one reply that ends the core's attempt
+ * loop with nothing sent, so no second broadcaster is asked, as the router
+ * did. The reply has no code: the core rebuilds either refusal with
+ * -32000, where the router threw ABI 44's with -32602. */
 function broadcastFailure(err) {
-  if (err?.myotisRefusal === 'rejected') return { rejected: { reason: String(err.message) } };
+  if (REFUSALS.has(err?.myotisRefusal)) return { rejected: { reason: String(err.message) } };
   if (err?.code === 'MYOTIS_BROADCAST_UNCERTAIN') return { uncertain: true };
   const failure = myotisClass(err);
   if (UNSENT_CLASSES.has(failure)) return { failure };

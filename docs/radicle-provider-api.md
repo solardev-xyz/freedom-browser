@@ -35,8 +35,10 @@ The provider exists for everything that is **not** a public read:
 
 ## Provider object
 
-Injected into the page realm of every web page before `DOMContentLoaded`,
-alongside `window.swarm`:
+Installed in the page's main world of every web page's top frame before any
+of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
+A page's Content Security Policy does not affect it. It is not installed in
+private windows, in sub-frames, or on Freedom's internal pages.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>

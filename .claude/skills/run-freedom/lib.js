@@ -17,8 +17,15 @@ fs.mkdirSync(SHOTS, { recursive: true });
 
 // Launch one app instance against a scratch profile. `seed` is written to
 // settings.json before launch (e.g. { theme: 'light', showBookmarkBar: true }).
-async function launch(seed) {
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-drive-'));
+//
+// `{ catalog: true }` launches in profile-catalog mode instead (a scratch
+// FREEDOM_DEV_HOME, no FREEDOM_TEST_USER_DATA — the latter disables the
+// profile manager, so freedom://profiles can only show its error state). Use
+// it for the Profiles page; see test-e2e/profiles-fixtures.js.
+async function launch(seed, { catalog = false } = {}) {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-drive-'));
+  const userData = catalog ? path.join(scratch, 'Profiles', 'default') : scratch;
+  fs.mkdirSync(userData, { recursive: true });
   if (seed) fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify(seed, null, 2));
   const app = await electron.launch({
     args: ['.', '--no-sandbox'],
@@ -26,7 +33,7 @@ async function launch(seed) {
     env: {
       ...process.env,
       FREEDOM_TEST_MODE: '1',
-      FREEDOM_TEST_USER_DATA: userData,
+      ...(catalog ? { FREEDOM_DEV_HOME: scratch } : { FREEDOM_TEST_USER_DATA: userData }),
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
       LANG: 'en_US.UTF-8',
     },

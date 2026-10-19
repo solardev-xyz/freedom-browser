@@ -9,6 +9,10 @@
 
 > **What changed in this revision.** Re-derived for the 0.8.7-rc.1 cut against the installed tree. Every version recorded in `licenses-audit.json` was compared with the installed tree and the repo's pins, not only the two the test enforces, and matches. Shipped components that moved since 0.8.6, each license re-read at the version being shipped: npm `@corpus-core/colibri-stateless` 3.0.0 → 3.0.2 (MIT, identical `LICENSE`), `@ledgerhq/hw-app-eth` 7.8.19 → 7.10.0 (Apache-2.0), `@x402/core` and `@x402/evm` 2.27.0 → 2.28.0 (Apache-2.0), `electron` 44.4.5 → 44.7.0 (MIT); bundled Ant v0.5.45 → v0.5.61 (`MIT OR Apache-2.0`), freedom-ipfs v0.4.3 → v0.4.5 (`MIT OR Apache-2.0`), libradicle 0.7.1 → 0.8.0 (`MIT OR Apache-2.0` in `Cargo.toml`, still no committed license text), Myotis v0.1.11 → v0.1.14 (Apache-2.0; upstream's `NOTICE` byte-identical at every step, sha256 `ee84afd3…`, and `NOTICES` still reproduces it per section 4(d)) and Arti 2.6.0 → 2.7.0 (`MIT OR Apache-2.0`, license files byte-identical, no upstream `NOTICE`; its `Cargo.lock` adds ten crates, all under licenses already in the tree). Three components were added since 0.8.6: the uBlock Origin filters and scriptlets in `assets/adblock/` (GPL-3.0 data, shipped alongside; decided in #412, see _The GPL question_), the Microsoft Visual C++ runtime DLLs on Windows (#563), and — found by this re-derivation, not by the test — the static **AppImage runtime** every Linux `.AppImage` now starts with (#566), which links a patched libfuse 3.15.0 under LGPL-2.1. It is recorded below under _AppImage runtime_ and attributed in `NOTICES`; the maintainer decided that pointing to upstream's published source meets LGPL-2.1 for it.
 >
+> **2026-10-16 update (v0.1.16):** Myotis is now pinned to v0.1.16. `LICENSE` and `NOTICE` are byte-identical to v0.1.15 (`git diff v0.1.15 v0.1.16 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.15 to 0.1.16); no crate is added or removed.
+>
+> **2026-10-15 update (v0.1.15):** Myotis is now pinned to v0.1.15. `LICENSE` and `NOTICE` are byte-identical to v0.1.14 (`git diff v0.1.14 v0.1.15 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile adds two crates, upstream's own `myotis-wire` (`MIT OR Apache-2.0` in its `Cargo.toml`, as the addon's other crates) and `libp2p-mplex` 0.43.1 (MIT, like the libp2p crates already linked).
+>
 > The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
 ---
@@ -91,7 +95,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.64` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.71` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -100,7 +104,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-ipfs (Native IPFS Addon)
 
 - **Source:** https://github.com/solardev-xyz/freedom-ipfs
-- **Version:** `v0.4.5` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
+- **Version:** `v0.4.6` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
@@ -119,11 +123,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.14` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.16` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.14 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12 and v0.1.13): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.16 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12, v0.1.13, v0.1.14 and v0.1.15): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 

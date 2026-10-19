@@ -130,3 +130,42 @@ test('no internal page keeps the off-accent blue #2775ca (#256)', () => {
   const offenders = PAGES.map(({ file }) => file).filter((file) => /#2775ca/i.test(read(file)));
   expect(offenders).toEqual([]);
 });
+
+/**
+ * The tab icon is the header icon (#606 item 8).
+ *
+ * Settings and Profiles declared a `<link rel="icon">` and so got their own
+ * tab icon; Downloads, History and Payments declared none and showed the
+ * generic globe of an unknown site. Every page with a header icon now hands
+ * the same drawing to the tab strip, in the one muted grey Settings and
+ * Profiles already use.
+ */
+describe('internal page tab icons (#606)', () => {
+  const iconOf = (html) => {
+    const match = html.match(
+      /<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="data:image\/svg\+xml;base64,([^"]+)"/
+    );
+    return match ? Buffer.from(match[1], 'base64').toString('utf8') : null;
+  };
+  // The drawing inside an svg, attribute order and self-closing aside.
+  const shapesOf = (svg) =>
+    [...svg.matchAll(/<(circle|polyline|path|line|rect)\b([^>]*?)\/?>/g)]
+      .map(([, tag, attrs]) => `${tag} ${attrs.replace(/\s+/g, ' ').trim()}`)
+      .join('|');
+
+  test.each(PAGES.filter((page) => page.icon).map((page) => page.file))(
+    '%s declares a tab icon drawn like its header icon',
+    (file) => {
+      const html = read(file);
+      const icon = iconOf(html);
+      expect(icon).not.toBeNull();
+      expect(icon).toContain('stroke="#8b949e"');
+      const header = html.match(/<(h1)\b[^>]*>\s*<svg\b[\s\S]*?<\/svg>/)[0];
+      expect(shapesOf(icon)).toBe(shapesOf(header));
+    }
+  );
+
+  test('Settings declares one too', () => {
+    expect(iconOf(read('settings.html'))).toContain('stroke="#8b949e"');
+  });
+});

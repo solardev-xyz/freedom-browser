@@ -1,0 +1,2 @@
+- The Publish page can upload only a file or folder you just chose in the file picker, never any other path on disk ([#660](https://github.com/solardev-xyz/freedom-browser/issues/660)):
+  - `window.swarm.publishFiles` refuses paths with a `:` or a Windows device name such as `NUL` or `COM1`, and path segments ending in a dot or space (which Windows silently trims)

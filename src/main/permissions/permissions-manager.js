@@ -27,6 +27,11 @@
  * src/main/external-protocol.js. It never answers Electron's callback with
  * true: an allowed launch goes through `shell.openExternal` instead (#406).
  *
+ * `fileSystem` (File System Access, #671) is not a per-origin decision:
+ * Electron answers it from the check handler alone, per path, so the access
+ * the user chose in the native file/folder picker is tracked in
+ * src/main/permissions/file-system-access.js and answered from there.
+ *
  * `pointerLock` and `fullscreen` stay auto-allowed (status quo). `hid`
  * is deliberately NOT promptable: Ledger hardware-wallet support drives
  * HID through its own connect flow, so web-page HID requests keep the
@@ -69,6 +74,7 @@ const store = require('./permissions-store');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPartitionForWebContents } = require('../private/private-windows');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
+const fileSystemAccess = require('./file-system-access');
 const {
   permissionKeyForExternalUrl,
   externalUrlForLog,
@@ -264,6 +270,7 @@ function setPrivateDecision(partition, origin, key, decision) {
  */
 function clearPrivateDecisions(partition) {
   clearPrivateDismissCounts(partition);
+  fileSystemAccess.clearPrivateFileSystemGrants(partition);
   return privateDecisions.delete(partition);
 }
 
@@ -500,6 +507,29 @@ function originForLog(origin, privatePartition) {
 
 function broadcastChanged() {
   broadcastToAllWebContents(IPC.PERMISSIONS_CHANGED, {});
+}
+
+// The key File System Access grants (#671) are listed and removed under. It
+// is never a stored decision: the grants live in file-system-access.js.
+const FILE_SYSTEM_KEY = 'fileSystem';
+
+// A site gaining its first file/folder grant shows up in Settings' site
+// list and the address-bar indicator, so tell them to refresh. The payload
+// carries no origin (a private window's included).
+fileSystemAccess.setOriginGrantedListener(broadcastChanged);
+
+/**
+ * Settings' site list: the stored decisions, plus a `fileSystem: 'allow'`
+ * row for every origin holding File System Access grants in the normal
+ * profile — otherwise a site whose only grants are files/folders is listed
+ * nowhere and its Remove site / Revoke all are unreachable.
+ */
+function getAllSitePermissions() {
+  const all = store.getAllDecisions();
+  for (const origin of fileSystemAccess.getNormalProfileGrantOrigins()) {
+    all[origin] = { ...(all[origin] || {}), [FILE_SYSTEM_KEY]: 'allow' };
+  }
+  return all;
 }
 
 /**
@@ -1078,6 +1108,24 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return;
     }
 
+    if (permission === 'fileSystem') {
+      const origin = originForRequest(webContents, details);
+      const granted = fileSystemAccess.requestFileSystemAccess({
+        origin,
+        details,
+        privatePartition,
+      });
+      if (origin) {
+        log.info(
+          `[permissions] fileSystem ${details?.isDirectory ? 'folder' : 'file'} ` +
+            `${details?.fileAccessType || '?'} for ${originForLog(origin, privatePartition)}: ` +
+            (granted ? 'granted (picked by the user)' : 'refused')
+        );
+      }
+      callback(granted);
+      return;
+    }
+
     const keys = permissionKeysForRequest(permission, details);
     if (!keys) {
       callback(false);
@@ -1133,6 +1181,16 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
     // undecided hands the capability over silently, with no prompt and no
     // recorded decision — such a permission has to keep answering false
     // here.
+    //
+    // `fileSystem` is exactly such a permission: Electron reads this
+    // handler's answer as the File System Access grant itself, per path, so
+    // it is answered from the grants the user made in the native picker,
+    // never from the undecided-reports-allowed rule above.
+    if (permission === 'fileSystem') {
+      const origin = originForRequest(webContents, details, requestingOrigin);
+      return fileSystemAccess.checkFileSystemAccess({ origin, details, privatePartition });
+    }
+
     let keys;
     if (permission === 'media') {
       const key = MEDIA_TYPE_KEYS[details?.mediaType];
@@ -1150,6 +1208,20 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
 
     return keys.every((key) => getEffectiveDecision(origin, key, privatePartition) !== 'deny');
   });
+
+  // A picked path Electron treats as sensitive (system folders, the home
+  // folder itself, the profile). Without a listener Electron never answers
+  // and the page's picker promise hangs.
+  if (typeof targetSession.on === 'function') {
+    targetSession.on('file-system-access-restricted', (event, details, callback) => {
+      const origin = normalizeOrigin(details?.origin || '') || null;
+      log.info(
+        `[permissions] fileSystem sensitive ${details?.isDirectory ? 'folder' : 'file'} refused` +
+          (origin ? ` for ${originForLog(origin, privatePartition)}` : '')
+      );
+      fileSystemAccess.onRestrictedPath(event, details, callback);
+    });
+  }
 }
 
 /**
@@ -1175,6 +1247,11 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
   if (!key) return {};
 
   const result = {};
+  // File System Access grants (#671) in this window's scope, as one row so
+  // the indicator shows and its Remove can take them back.
+  if (fileSystemAccess.hasFileSystemGrants(key, privatePartition)) {
+    result[FILE_SYSTEM_KEY] = { decision: 'allow', remembered: false };
+  }
   const stored = store.getAllDecisions()[key] || {};
   for (const [permission, decision] of Object.entries(stored)) {
     result[permission] = { decision, remembered: true };
@@ -1267,6 +1344,14 @@ function revokeInScope(origin, permission, scope) {
     if (clearPrivateDecisionIn(privatePartition, key, permission)) changed = true;
   }
 
+  // File System Access grants (#671) aren't a stored decision; they go with
+  // the whole origin or with their own `fileSystem` row: from every scope
+  // profile-wide, from the asking window's own scope when window-scoped.
+  if (wholeOrigin || permission === FILE_SYSTEM_KEY) {
+    const fsScope = windowScoped ? { privatePartition } : undefined;
+    if (fileSystemAccess.clearOriginFileSystemGrants(key, fsScope)) changed = true;
+  }
+
   if (windowScoped) {
     clearDismissCountsIn(dismissScope(privatePartition), key, permission);
   } else {
@@ -1287,6 +1372,7 @@ function revokeOrigin(origin, scope) {
 
 function revokeAll() {
   store.clearAll();
+  fileSystemAccess.clearAllFileSystemGrants();
   sessionDecisions.clear();
   clearPrivateDecision();
   clearDismissCounts();
@@ -1333,7 +1419,7 @@ function registerPermissionsIpc() {
   });
 
   ipcMain.handle(IPC.PERMISSIONS_GET_ALL, () => {
-    return store.getAllDecisions();
+    return getAllSitePermissions();
   });
 
   // The indicator/popover query is answered for the asking window's own
@@ -1366,6 +1452,7 @@ function _resetState() {
   guestQueues.clear();
   hostGuests.clear();
   pendingById.clear();
+  fileSystemAccess.clearAllFileSystemGrants();
 }
 
 // Test-only: read the consecutive-dismissal count behind the embargo.
@@ -1386,6 +1473,7 @@ module.exports = {
   siteOriginForWebContents,
   allowSitePermission,
   getDecisionsForOrigin,
+  getAllSitePermissions,
   clearPrivateDecisions,
   revokeDecision,
   revokeOrigin,

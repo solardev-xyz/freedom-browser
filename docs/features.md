@@ -36,8 +36,11 @@ This means Freedom works seamlessly whether you:
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
 
-On macOS, the packaged app explicitly allows multiple bundle instances so profile
-launching can use `open -n -a Freedom --args --profile=<id>`.
+Profiles can also be chosen at launch with `--profile <id>`, `FREEDOM_PROFILE` or
+`--profile-dir <path>`, and links passed on the command line open as tabs; see
+[Command-Line Flags](configuration.md#command-line-flags). On macOS, the packaged app
+explicitly allows multiple bundle instances so profile launching can use
+`open -n -a Freedom --args --profile=<id>`.
 
 ## Profiles and Sidebar
 
@@ -59,6 +62,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
+- **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
 - **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
@@ -162,6 +166,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Ctrl+PageUp` / `Ctrl+Shift+Tab` / `Cmd+Shift+[`: Previous tab
   - `Ctrl+Shift+PageDown`: Move tab right
   - `Ctrl+Shift+PageUp`: Move tab left
+  - `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` / `Cmd+5` / `Cmd+6` / `Cmd+7` / `Cmd+8` (`Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` / `Ctrl+5` / `Ctrl+6` / `Ctrl+7` / `Ctrl+8` on Windows and Linux): Select tab 1–8 of the window (nothing happens if there are fewer tabs; Linux also accepts `Alt+1` to `Alt+8`, as Chrome does). Bound to the digit keys themselves, so on AZERTY and other layouts where the digits need Shift, the unshifted key in that position works. One exception on French AZERTY: there the `6` key types `-` unshifted, so that press zooms out instead, whether the page or the toolbar has focus (and still does if Select tab 6 is remapped to another chord). As with `Ctrl+-` on a US layout, a page that handles that key itself can keep it. On Czech the `1` key types `+`, and that press still selects tab 1 (Zoom in keeps its own `=` key there)
+  - `Cmd+9` / `Ctrl+9`: Select the last tab, however many there are (Linux also accepts `Alt+9`)
   - `Cmd+R` / `Ctrl+R`: Reload (from cache)
   - `Cmd+Shift+R` / `Ctrl+Shift+R`: Hard reload (bypass cache)
   - `Cmd+F` / `Ctrl+F`: Find in page
@@ -169,11 +175,13 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+-` / `Ctrl+-`: Zoom out (steps the active page 10% down to 25%)
   - `Cmd+0` / `Ctrl+0`: Actual size (resets the active page to 100%)
   - `Cmd+L` / `Ctrl+L`: Focus address bar
+  - `Cmd+[` / `Alt+Left`: Back
+  - `Cmd+]` / `Alt+Right`: Forward
   - `Cmd+Y` / `Ctrl+H`: Show all history
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
-  - `F11`: Toggle fullscreen
+  - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
@@ -192,6 +200,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 
 - **Automatic Recording**: Pages are recorded as you browse.
 - **History Page**: View and search your browsing history at `freedom://history`.
+- **History Menu**: The application menu's History menu (the macOS menu bar, the window menu bar on Linux and Windows) offers Back and Forward for the active tab, a **Recently Closed** list (the tabs Reopen Closed Tab would bring back, across your open windows, newest first; clicking one reopens it in the window it was closed in), a **Recently Visited** list of your 15 latest history entries (title, or the address when a page has none, with its cached favicon; clicking one loads it in the active tab exactly as if typed into the address bar), and Show All History at the bottom. The lists follow history as it changes: removing entries or clearing history takes them out of the menu at once. Private windows never contribute to either list, internal `freedom://` pages are left out, and each profile lists only its own history.
 
 ## Private Windows
 
@@ -223,7 +232,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
-- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD).
+- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD). See the [provider reference](swarm-provider-api.md).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
 

@@ -63,6 +63,7 @@ const webviewPreloadPath = path.join(__dirname, 'webview-preload.js');
 // below is what the chrome window's preload uses, and the webview preload's
 // fallback.
 const { internalPages, buildEthereumInjectSource } = require('./webview-boot');
+const { internalPageFileForUrl, isChromeIndexUrl } = require('./ipc-sender-policy');
 
 const isAllowedBaseUrl = (value) => {
   if (!value) return false;
@@ -86,25 +87,18 @@ function getIpcSenderUrl(event) {
   return event?.senderFrame?.url || event?.sender?.getURL?.() || '';
 }
 
-function normalizeFileUrlPath(url) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'file:') return null;
-    return decodeURIComponent(parsed.pathname).replace(/\\/g, '/');
-  } catch {
-    return null;
-  }
-}
-
+// The chrome window, settings.html or profiles.html. Same exact path match
+// as ipc-sender-policy (resolved file path against this checkout's / this
+// app.asar's renderer directory), never a suffix test: a look-alike file
+// saved as `…/src/renderer/pages/settings.html` elsewhere on disk and opened
+// as file:// is not the profile UI (#662). installIpcSenderPolicy's
+// PROFILE_MANAGER tier already refuses such a sender before these handlers
+// run; this keeps the handler-level check from being the weaker of the two.
 function isTrustedProfileMutationSender(event) {
-  const pathname = normalizeFileUrlPath(getIpcSenderUrl(event));
-  if (!pathname) return false;
-
-  return (
-    pathname.endsWith('/src/renderer/index.html') ||
-    pathname.endsWith('/src/renderer/pages/settings.html') ||
-    pathname.endsWith('/src/renderer/pages/profiles.html')
-  );
+  const url = getIpcSenderUrl(event);
+  if (isChromeIndexUrl(url)) return true;
+  const file = internalPageFileForUrl(url);
+  return file === internalPages.routable.settings || file === internalPages.routable.profiles;
 }
 
 function withTrustedProfileMutationSender(event, fn) {

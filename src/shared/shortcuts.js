@@ -108,6 +108,35 @@ const SHORTCUTS = [
     category: 'Tabs',
     editable: true,
   },
+  // Select a tab by position, as in Chrome: Cmd/Ctrl+1…8 pick tab 1–8 (a
+  // position past the last tab does nothing), Cmd/Ctrl+9 always picks the
+  // last tab. Chrome on Linux also accepts Alt+1…9. The accelerator key is
+  // the digit, and the matcher also accepts the physical Digit1…Digit9 key
+  // code, so layouts whose digits sit behind Shift (French AZERTY, where the
+  // unshifted keys type & é " ' …) still reach them without Shift, the same
+  // way Chrome does (#717). No menu item — like Chrome, they are claimed in
+  // the browser process before any page sees them (tab-switch-keys.js), with
+  // a keydown fallback in the chrome renderer (tabs.js).
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => ({
+    id: `tab.select${position}`,
+    description: `Select Tab ${position}`,
+    settingsLabel: `Select tab ${position}`,
+    defaultAccelerator: `CmdOrCtrl+${position}`,
+    aliases: [{ accelerator: `Alt+${position}`, platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  })),
+  {
+    id: 'tab.selectLast',
+    description: 'Select Last Tab',
+    settingsLabel: 'Select last tab',
+    defaultAccelerator: 'CmdOrCtrl+9',
+    aliases: [{ accelerator: 'Alt+9', platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  },
 
   // Page
   {
@@ -200,6 +229,27 @@ const SHORTCUTS = [
     settingsLabel: 'Focus address bar',
     defaultAccelerator: 'CmdOrCtrl+L',
     context: 'both',
+    category: 'Navigation',
+    editable: true,
+  },
+  // Back/Forward follow Chrome's per-platform chords: Cmd+[ / Cmd+] on macOS,
+  // Alt+Left / Alt+Right elsewhere. Menu-owned (History menu), like Show All
+  // History below.
+  {
+    id: 'nav.back',
+    description: 'Back',
+    settingsLabel: 'Back',
+    defaultAccelerator: { darwin: 'Cmd+[', other: 'Alt+Left' },
+    context: 'menu',
+    category: 'Navigation',
+    editable: true,
+  },
+  {
+    id: 'nav.forward',
+    description: 'Forward',
+    settingsLabel: 'Forward',
+    defaultAccelerator: { darwin: 'Cmd+]', other: 'Alt+Right' },
+    context: 'menu',
     category: 'Navigation',
     editable: true,
   },
@@ -691,6 +741,33 @@ const LAYOUT_DIFFS = {
     Backquote: ['|', '§'],
     Backslash: ["'", '*'],
     Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Czech (cz; Slovak's digit row is the same shape). The unshifted digit
+  // row types `+` and accented letters, so Ctrl+1 is also a `+` press (#717).
+  cz: {
+    Digit1: ['+', '1'],
+    Digit2: ['ě', '2'],
+    Digit3: ['š', '3'],
+    Digit4: ['č', '4'],
+    Digit5: ['ř', '5'],
+    Digit6: ['ž', '6'],
+    Digit7: ['ý', '7'],
+    Digit8: ['á', '8'],
+    Digit9: ['í', '9'],
+    Digit0: ['é', '0'],
+    Minus: ['=', '%'],
+    Equal: [null, null],
+    KeyY: ['z', 'Z'],
+    BracketLeft: ['ú', '/'],
+    BracketRight: [')', '('],
+    Semicolon: ['ů', '"'],
+    Quote: ['§', '!'],
+    Backquote: [';', null],
+    Backslash: [null, "'"],
+    KeyZ: ['y', 'Y'],
+    Comma: [',', '?'],
     Period: ['.', ':'],
     Slash: ['-', '_'],
   },

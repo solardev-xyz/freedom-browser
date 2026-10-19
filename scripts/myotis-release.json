@@ -1,38 +1,38 @@
 {
-  "releaseTag": "v0.1.14",
-  "abi": 38,
+  "releaseTag": "v0.1.16",
+  "abi": 47,
   "repository": "biafra23/myotis",
-  "checksumsSha256": "470405d0b06992af02400fc5252e5add19f3985338badea5b423fc49b1fee37a",
+  "checksumsSha256": "b60c2cf33c6afcf10aae5562a35c6fa85319b95b0627d62244e378857d1b2b2c",
   "targets": [
     {
       "runtime": "darwin-arm64",
       "dir": "mac-arm64",
       "asset": "myotis-node.darwin-arm64.node",
-      "sha256": "9e65a407a2badafeeca0ada9de73a0279a90571ad1c073910f88e6563a779dea"
+      "sha256": "02e2ac6f639052df5e099ab5f28596263e9305c7ecc57262c8f359527e1ca62f"
     },
     {
       "runtime": "darwin-x64",
       "dir": "mac-x64",
       "asset": "myotis-node.darwin-x64.node",
-      "sha256": "399f886c78646853d13c08882bc3fc4db154cf6aea6ab23139cbfee8afb19455"
+      "sha256": "7635734b4013866c3909b32dc363d376936cd97a2dbf3cdfa720a3b4d2be4021"
     },
     {
       "runtime": "linux-x64",
       "dir": "linux-x64",
       "asset": "myotis-node.linux-x64-gnu.node",
-      "sha256": "24f0111184b71b8228638feb6f6c143e2eab19a142d36ffb3cc14f36280474ae"
+      "sha256": "e573d9b87a0ff08f368430eaafdd6fa8e6b1477a5caed0142faa732f801e9dcf"
     },
     {
       "runtime": "linux-arm64",
       "dir": "linux-arm64",
       "asset": "myotis-node.linux-arm64-gnu.node",
-      "sha256": "0f87607ff63d979fd9df509ac3dfab44b0a945365805d21064f6d9af05d8c886"
+      "sha256": "4af24b66f007fa54d3aea2c5e1cd906ae9a29c25a0e2fd70b64576d24598c1f4"
     },
     {
       "runtime": "win32-x64",
       "dir": "win-x64",
       "asset": "myotis-node.win32-x64-msvc.node",
-      "sha256": "e5d490bf2aaf190530c34d910b8e7485922e5b21da5e3675ea7cc6dfb640b2f8"
+      "sha256": "3d7eeaf3e9ecdd1a5bd37bf4876ac167881e4c396a62f2023a3e1dc7f9deb23b"
     }
   ]
 }

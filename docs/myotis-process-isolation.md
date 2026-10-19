@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.14 / ABI 38 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.16 / ABI 47 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -294,11 +294,11 @@ wall-clock subtraction or renderer consent substitutes for exit evidence.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.14 Node addons for all
+`npm run myotis:download` downloads the official v0.1.16 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 38. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 47. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
@@ -307,12 +307,14 @@ resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallba
 to the embedded anchor. Freedom validates existing native markers against its
 own authenticated checkpoint record. `nativeCheckpointApi` is the persisted
 checkpoint contract, not the current engine ABI: records written by official
-ABI 26 and ABI 29 hosts remain compatible with ABI 38 (ABI 33-36 changed the
-call, estimate and send results, 37 the log-index config payload and 38 the
-status JSON, none of them `createWithCheckpoint` or the anchor marker;
-v0.1.14 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
+ABI 26 and ABI 29 hosts remain compatible with ABI 47 (ABI 33-36 changed the
+call, estimate and send results, 37 the log-index config payload, 38 the
+status JSON, 39-45 added calls and result keys and the ABI 44 send refusal,
+46-47 added `getProofJson` and `resolveBlockHashJson`,
+none of them `createWithCheckpoint` or the anchor marker;
+v0.1.16 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
 New records retain the value 29 written by v0.1.11. Unknown values fail closed;
-the native loader still requires exactly ABI 38. Patched ABI 25 generations lacking the marker are
+the native loader still requires exactly ABI 47. Patched ABI 25 generations lacking the marker are
 preserved and replaced after checking retired ownership.
 
 Every new generation inherits only its chain's `peers[-gnosis].cache` and
@@ -329,7 +331,22 @@ and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
 `snapPeers` remains available alongside `snapServingPeers` in renderer status.
 ABI 38's `snap2ServingPeers` (the part of `snapServingPeers` on snap/2) is not
 in the status allowlist: reads are the same on either snap version, so
-readiness keeps gating on the total.
+readiness keeps gating on the total. ABI 39-45 (v0.1.15) add no status key.
+ABI 41's `blockTimestamp` on account and ENS results is not read; chain data
+takes only the fields it names. Since ABI 44 a send of bytes that are no
+transaction Myotis relays (undecodable, no sender, a blob transaction) answers
+the permanent `{"error","code":-32602}` without gossiping anything;
+`sendRawTransaction` maps it to a definite `-32602` refusal, not the "outcome
+uncertain" an engine error still gets. Main answers the core's broadcast
+operation with `rejected` for it (`core/chain-verified.js`), so the core's
+chain-data routing asks no second broadcaster and reports the broadcast as
+rejected; the core rebuilds that refusal with code `-32000` until its reply
+can carry the code. ABI 46-47 (v0.1.16) add no status key either. They add
+`getProofJson` (`eth_getProof`, ABI 46) and `resolveBlockHashJson` (the
+canonical number a block hash names, ABI 47), neither of which Freedom calls:
+`eth_getProof` stays with the other sources, and the core's chain-data routing
+hands Myotis only `latest` reads, so a block-hash selector (EIP-1898) never
+reaches the addon.
 
 The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
 activationTime, forkId, observedPeers }`) is allowlisted only after strict

@@ -1,0 +1,56 @@
+/* Browser full screen (#78): while the window is full screen the chrome steps
+   aside and the active tab's webview fills it (lib/browser-fullscreen.js).
+   Hidden, not closed: the bookmarks bar keeps its own setting and the sidebar
+   stays open underneath, so leaving full screen restores both as they were. */
+body.browser-fullscreen .title-bar,
+body.browser-fullscreen .bookmarks,
+body.browser-fullscreen .sidebar.fullscreen-concealed {
+  display: none !important;
+}
+
+/* The toolbar is folded to nothing rather than display:none, so its controls
+   stay focusable: Ctrl+L, and the address bar Ctrl+T's new tab focuses, have
+   to reach a real input or the typed URL goes nowhere (a display:none input
+   refuses focus). It comes back while it holds focus, the way the address bar
+   drops down in Chrome's F11 mode, and while a site's permission prompt is
+   up: the prompt is anchored under the address bar inside it, and a hidden
+   toolbar would leave the request unanswerable (and the page waiting) until
+   full screen ends. The address bar also shows whose request it is. Clicking
+   the page takes focus back and the toolbar folds away again. */
+body.browser-fullscreen .toolbar:not(:focus-within):not(:has(.permission-prompt:not([hidden]))) {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* "Press F11 to exit full screen", shown for a few seconds on entry. */
+.fullscreen-exit-hint {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: calc(100% - 32px);
+  padding: 10px 18px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.fullscreen-exit-hint[hidden] {
+  display: none;
+}

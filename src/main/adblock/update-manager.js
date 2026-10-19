@@ -26,8 +26,55 @@ const {
 const { verifyManifest, desktopListsFor } = require('./update-manifest');
 const { refreshEngine, getEnabledFeedCategories } = require('./service');
 
+// The feed read and each list download go through the local Ant node, and
+// bee-js sets no deadline of its own: it waits as long as Ant does. A stuck
+// retrieval must end the cycle (as feed_unavailable / download_failed, which
+// the scheduler retries soon) rather than hold it. The feed read is a couple
+// of small chunks, so it gets this long in total (an abandoned read is left
+// to finish in the background). A list download is multi-MB and can be slow
+// but steady on a cold node, so it is an inactivity limit instead: it ends
+// only after this long with no response headers and no body bytes, and an
+// aborted download stops pulling bytes.
+const IO_TIMEOUT_MS = 2 * 60 * 1000;
+
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Run a transfer that reports its own progress, failing only after `ms` with
+// none. The timer starts with the call and restarts on every progress() call
+// (the transfer reports response headers and each body chunk); on expiry the
+// signal is aborted so the transfer can release its connection.
+function withInactivityTimeout(start, ms) {
+  const controller = new AbortController();
+  let timer;
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    const progress = () => {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const err = new Error(`no progress for ${ms / 1000} s`);
+        controller.abort(err);
+        reject(err);
+      }, ms);
+    };
+    progress();
+    Promise.resolve()
+      .then(() => start({ signal: controller.signal, progress }))
+      .then(resolve, reject);
+  }).finally(() => {
+    settled = true;
+    clearTimeout(timer);
+  });
 }
 
 // ── Default Swarm-backed IO (replaced in tests) ──────────────────────────
@@ -38,10 +85,26 @@ async function defaultReadFeed() {
   return JSON.parse(payload.toString('utf-8'));
 }
 
-async function defaultDownloadBlob(ref) {
-  const { getBee } = require('../swarm/swarm-service');
-  const data = await getBee().data.download(ref);
-  return Buffer.from(data.toUint8Array());
+// Streams the list so each chunk counts as progress for the inactivity
+// timeout above. `bee` is injectable for tests.
+//
+// bee-js (13.x) downloads over fetch and returns the response body as a
+// WHATWG ReadableStream. The abort signal handed to downloadReadable is what
+// stops the transfer: fetch aborts the request and errors the body, which
+// ends the for-await below with the abort reason. Don't drop it — the stream
+// is locked by the for-await, so it can't be cancelled from outside, and
+// without the signal a stalled download would keep its connection open.
+async function defaultDownloadBlob(ref, { signal, progress = () => {} } = {}, bee = null) {
+  const client = bee || require('../swarm/swarm-service').getBee();
+  const stream = await client.data.downloadReadable(ref, undefined, signal ? { signal } : {});
+  progress();
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+    progress();
+  }
+  if (signal?.aborted) throw signal.reason;
+  return Buffer.concat(chunks);
 }
 
 function getUpdateRoot() {
@@ -74,9 +137,12 @@ function readAppliedState(updatedDir) {
  *
  * @param {object} [io]
  * @param {() => Promise<object|null>} [io.readFeed]
- * @param {(ref: string) => Promise<Buffer>} [io.downloadBlob]
+ * @param {(ref: string, opts: {signal: AbortSignal, progress: () => void}) => Promise<Buffer>} [io.downloadBlob]
+ *   - call progress() on each sign of life; the download fails after
+ *     timeoutMs without one
  * @param {string} [io.root] - override userData/adblock (tests)
  * @param {() => Promise<void>} [io.activate] - override refreshEngine (tests)
+ * @param {number} [io.timeoutMs] - override IO_TIMEOUT_MS (tests)
  * @returns {Promise<{status: string, version?: number, reason?: string}>}
  */
 async function runUpdateOnce(io = {}) {
@@ -86,6 +152,7 @@ async function runUpdateOnce(io = {}) {
   const root = io.root || getUpdateRoot();
   const sigAddress = io.sigAddress || MANIFEST_SIG_ADDRESS;
   const trustConfigured = io.trustConfigured ?? isTrustAnchorConfigured();
+  const timeoutMs = io.timeoutMs ?? IO_TIMEOUT_MS;
 
   if (!trustConfigured) return { status: 'dormant' };
   if (loadSettings().adblockEnabled === false) return { status: 'disabled' };
@@ -102,7 +169,7 @@ async function runUpdateOnce(io = {}) {
 
   let manifest;
   try {
-    manifest = await readFeed();
+    manifest = await withTimeout(readFeed(), timeoutMs);
   } catch (err) {
     log.info(`[adblock-update] feed read failed: ${err.message}`);
     return { status: 'feed_unavailable' };
@@ -161,7 +228,7 @@ async function runUpdateOnce(io = {}) {
     }
     if (!blob) {
       try {
-        blob = await downloadBlob(entry.ref);
+        blob = await withInactivityTimeout((opts) => downloadBlob(entry.ref, opts), timeoutMs);
       } catch (err) {
         log.warn(`[adblock-update] download failed for ${entry.category}: ${err.message}`);
         return { status: 'download_failed', reason: entry.category };
@@ -252,4 +319,4 @@ async function runUpdateOnce(io = {}) {
   return { status: 'applied', version: manifest.version };
 }
 
-module.exports = { runUpdateOnce };
+module.exports = { runUpdateOnce, _defaultDownloadBlob: defaultDownloadBlob };

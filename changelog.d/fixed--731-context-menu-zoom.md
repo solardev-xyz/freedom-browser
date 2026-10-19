@@ -1,0 +1,1 @@
+- The page context menu opens at the cursor when the page is zoomed in or out, instead of further down and right (or up and left) of it ([#731](https://github.com/solardev-xyz/freedom-browser/issues/731))
