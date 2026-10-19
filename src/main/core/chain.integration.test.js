@@ -345,37 +345,66 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
   // Myotis relays are refused with -32602 and never gossiped. The router
   // threw that refusal and asked no second broadcaster; the core ends the
   // broadcast `rejected` the same way, and Direct never sees the bytes.
-  test("a Myotis -32602 send refusal is rejected, and Direct isn't asked", async () => {
-    const refusal = Object.assign(
-      new Error('invalid raw transaction: malformed type 0x2 transaction'),
-      { code: -32602, myotisRefusal: 'invalid-params' }
-    );
-    const adapters = { myotisBroadcast: jest.fn(async () => Promise.reject(refusal)) };
-    const { call, main } = await start(adapters);
-    main.refs.set('e1', `${rpc.base}/`);
-    await main.configure(
-      snapshot({
-        broadcast_order: ['myotis', 'direct'],
-        rpc: [{ endpoint: 'e1', user_configured: true }],
-        myotis: true,
-      })
-    );
-    await call('chain.availability', { chain_id: 1, ready: true });
-    const failure = await call('chain.broadcast', {
-      chain_id: 1,
-      raw: RAW,
-      deadline_ms: 30_000,
-    }).catch((err) => err);
-    expect(failure).toMatchObject({
-      code: 'chain_error',
-      data: {
-        outcome: 'rejected',
-        message: 'invalid raw transaction: malformed type 0x2 transaction',
-      },
-    });
-    expect(adapters.myotisBroadcast).toHaveBeenCalledTimes(1);
-    expect(rpc.seen).toEqual([]);
-  });
+  // A core that reads a refusal's code (freedom-core design 0005, The rest)
+  // gets it, and rebuilds the router's error exactly: -32602,
+  // `invalid-params`. An older core, such as a release before it, gets
+  // `{ rejected: { reason } }` and answers today's -32000, `rejected`; told
+  // its core is older, main sends any core that form.
+  test.each([
+    ['as its core offers', false],
+    ['to an older core', true],
+  ])(
+    "a Myotis -32602 send refusal is rejected, and Direct isn't asked, %s",
+    async (_name, older) => {
+      const reason = 'invalid raw transaction: malformed type 0x2 transaction';
+      const refusal = Object.assign(new Error(reason), {
+        code: -32602,
+        myotisRefusal: 'invalid-params',
+      });
+      const adapters = { myotisBroadcast: jest.fn(async () => Promise.reject(refusal)) };
+      const { gen, call, main } = await start(adapters);
+      if (older) {
+        const capabilities = client.hello.capabilities.filter((c) => c !== 'myotis_refusal_codes');
+        client.hello = { ...client.hello, capabilities };
+      }
+      const coded = client.hello.capabilities.includes('myotis_refusal_codes');
+      const replies = written(gen);
+      main.refs.set('e1', `${rpc.base}/`);
+      await main.configure(
+        snapshot({
+          broadcast_order: ['myotis', 'direct'],
+          rpc: [{ endpoint: 'e1', user_configured: true }],
+          myotis: true,
+        })
+      );
+      await call('chain.availability', { chain_id: 1, ready: true });
+      const failure = await call('chain.broadcast', {
+        chain_id: 1,
+        raw: RAW,
+        deadline_ms: 30_000,
+      }).catch((err) => err);
+      expect(failure).toMatchObject({
+        code: 'chain_error',
+        data: {
+          kind: 'core',
+          constructor: 'Error',
+          message: reason,
+          props: coded
+            ? { code: -32602, myotisRefusal: 'invalid-params' }
+            : { code: -32000, myotisRefusal: 'rejected' },
+          undefined_keys: [],
+          outcome: 'rejected',
+        },
+      });
+      // The props in the router's order: the code, then the marker.
+      expect(Object.keys(failure.data.props)).toEqual(['code', 'myotisRefusal']);
+      expect(replies.map((r) => r.result)).toContainEqual({
+        rejected: coded ? { reason, code: -32602 } : { reason },
+      });
+      expect(adapters.myotisBroadcast).toHaveBeenCalledTimes(1);
+      expect(rpc.seen).toEqual([]);
+    }
+  );
 
   /** Main's replies to the core's requests, as main writes them. */
   function written(gen) {
