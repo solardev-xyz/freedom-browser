@@ -67,9 +67,23 @@ function rules(css) {
 // them, so they are not chrome popovers and are deliberately below this line.
 const MENU_TIER_Z_INDEX = 9999;
 
+// The menu tier's z-indices are named in variables.css (#66), so a sheet says
+// `z-index: var(--z-popover)` rather than a number; resolve those here so the
+// sweep still sees which rules float at that tier.
+const Z_TOKENS = Object.fromEntries(
+  [...read(STYLES_DIR, 'variables.css').matchAll(/(--z-[\w-]+):\s*(-?\d+)\s*;/g)].map(
+    ([, name, value]) => [name, Number(value)]
+  )
+);
+
+const zIndexValues = (declarations) =>
+  [...declarations.matchAll(/z-index:\s*(?:(-?\d+)|var\(\s*(--z-[\w-]+)\s*\))/g)].map(
+    ([, number, token]) => (number !== undefined ? Number(number) : Z_TOKENS[token])
+  );
+
 const floatsOverTheChrome = (declarations) =>
   /position:\s*(fixed|absolute)/.test(declarations) &&
-  [...declarations.matchAll(/z-index:\s*(-?\d+)/g)].some(([, z]) => Number(z) >= MENU_TIER_Z_INDEX);
+  zIndexValues(declarations).some((z) => z >= MENU_TIER_Z_INDEX);
 
 const classesIn = (prelude) => [...prelude.matchAll(/\.([A-Za-z][\w-]*)/g)].map(([, name]) => name);
 
@@ -313,6 +327,14 @@ describe('what counts as a popover comes from the sheets, not a hand-kept list',
     );
     expect(missing).toHaveLength(1);
     expect(missing[0]).not.toContain('chrome-popover');
+  });
+
+  test('a menu-tier z-index written as a stacking token is still swept', () => {
+    const sheet = '.share-popover { position: fixed; z-index: var(--z-popover); }';
+    const derived = rules(sheet)
+      .filter(({ declarations }) => floatsOverTheChrome(declarations))
+      .flatMap(({ prelude }) => classesIn(prelude));
+    expect(derived).toEqual(['share-popover']);
   });
 
   test('an in-panel dropdown below the menu tier is not swept', () => {

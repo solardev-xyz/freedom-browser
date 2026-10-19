@@ -123,12 +123,12 @@
   /* Default arrow cursor, matching the toolbar's other .icon-btn buttons
      (back/forward/reload/home/bookmark) — no hand-pointer. */
   cursor: default;
-  /* Sit above the menu backdrop (z-index 9999) so a click on the shield
-     while the nodes / hamburger menu is open lands on the shield itself
-     rather than being swallowed by the backdrop. The document-click
-     handlers in menus.js then close the open menu, and the shield's
-     own handler opens the popover — single click, two effects. */
-  z-index: 10001;
+  /* Sit above the menu backdrop so a click on the shield while the
+     nodes / hamburger menu is open lands on the shield itself rather
+     than being swallowed by the backdrop. The document-click handlers
+     in menus.js then close the open menu, and the shield's own handler
+     opens the popover — single click, two effects. Order: variables.css. */
+  z-index: var(--z-over-backdrop);
   border-radius: 50%;
   transition:
     color 0.2s ease,
@@ -197,7 +197,7 @@
   border-radius: 8px;
   /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 10000;
+  z-index: var(--z-popover);
   padding: 14px 16px;
   font-size: 13px;
   color: var(--text);
@@ -339,7 +339,7 @@
   font-size: 11px;
   color: var(--text);
   white-space: nowrap;
-  z-index: 10001;
+  z-index: var(--z-over-popover);
 }
 
 .trust-popover-tooltip[hidden] {
@@ -358,7 +358,7 @@
   font-size: 11px;
   color: var(--text);
   white-space: nowrap;
-  z-index: 10001;
+  z-index: var(--z-over-popover);
 }
 
 .hover-tooltip[hidden] {

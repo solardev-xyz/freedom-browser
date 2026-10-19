@@ -33,7 +33,7 @@ html[data-platform='darwin'] .title-bar-spacer {
   overflow: visible;
   padding-bottom: 6px;
   position: relative;
-  z-index: 10002;
+  z-index: var(--z-title-bar);
 }
 
 /* The profile switcher flyout now reuses the shared .menu-dropdown / .menu-item

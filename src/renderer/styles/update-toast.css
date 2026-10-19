@@ -3,7 +3,7 @@
   position: fixed;
   bottom: 16px;
   left: 16px;
-  z-index: 10000;
+  z-index: var(--z-popover);
 }
 
 .update-toast[hidden] {
