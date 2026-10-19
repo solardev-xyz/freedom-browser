@@ -3445,7 +3445,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   position: fixed;
   display: flex;
   flex-direction: column;
-  z-index: 10001;
+  z-index: var(--z-over-popover);
   overflow: hidden;
   color: var(--text);
   background: var(--menu-bg);
@@ -3795,7 +3795,7 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-page-actions-note { margin-top: 8px; color: var(--muted); font-size: 12px; }
 .agent-page-actions-hint {
   position: fixed;
-  z-index: 10000;
+  z-index: var(--z-popover);
   width: 300px;
   box-sizing: border-box;
   padding: 14px;

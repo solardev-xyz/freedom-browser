@@ -75,8 +75,9 @@
        click toggles their menu shut;
      - hint tooltips paint above the popover they belong to, because they
        escape its overflow clip; a side flyout paints above its parent menu;
-       the GitHub-bridge panel (github-bridge.css) also uses this tier, one
-       above the other popovers, so moving it moves that panel too;
+       the GitHub-bridge panel (github-bridge.css) and the agent workspace
+       popover (agent.css) also use this tier, one above the other popovers,
+       so moving it moves those panels too;
      - the title-bar strip holds the profile menu, which has to cover the
        toolbar's own lifted menu buttons.
      Every other z-index stays a plain number below the tier, in its own

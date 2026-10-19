@@ -10,7 +10,9 @@
   font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
-  z-index: 10050;
+  /* Shown with showPopover(), so the top layer is what actually puts it over
+     the chrome; this only orders it if that call is unavailable. */
+  z-index: var(--z-title-bar);
 }
 
 .agent-privacy-panel h3 { margin: 0; font-size: 16px; }
