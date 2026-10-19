@@ -687,6 +687,22 @@ const reworded = (message) => (_call, result) => {
   want.thrown.message = message;
   return want;
 };
+/** The reference's quorum result with only its labels changed (deviation
+ * `singleton-quorum`): not `verified`, and a trust label, where it has one,
+ * at the `level` Direct gives the endpoint that answered. Its source,
+ * method, members and `quorum` are still the reference's. */
+const relabelled = (level) => (_call, result) => {
+  const want = recorded(result);
+  want.value.verified = false;
+  if (level) want.value.trust.level = level;
+  return want;
+};
+/**
+ * Where a deviation changes the result, by scenario: its name, and what
+ * main's callers get instead. That is a function of the call and the
+ * reference's result for step 0's call 0, or `[step, call, function]`
+ * entries for each call it changes; every other call keeps the reference's.
+ */
 const DEVIATIONS = new Map([
   ['router-myotis-broadcast-in-band-failure', ['broadcast-outcome', uncertain('myotis')]],
   ['router-myotis-broadcast-uncertain', ['broadcast-outcome', uncertain('myotis')]],
@@ -730,11 +746,66 @@ const DEVIATIONS = new Map([
   // gas`). The route is blocked alike: the second call never asks Colibri
   // (EXACT_IO).
   ['boundary-colibri-revert-capacity', ['adapter-error-text', reworded('execution reverted')]],
+  // freedom-core #108: endpoints a, a, b with k = 3 and m = 2. The router
+  // counted a twice, so it agreed with itself and was verified. The core
+  // asks a once (EXACT_IO), so a and b disagree, the quorum is missed, and
+  // Direct reuses a's answer, unverified.
+  [
+    'boundary-quorum-duplicate-endpoint',
+    [
+      'endpoint-dedup',
+      () => ({
+        value: {
+          result: '0xdead',
+          source: 'direct',
+          verified: false,
+          trust: {
+            level: 'unverified',
+            method: 'direct',
+            block: null,
+            agreed: ['a.example'],
+            dissented: ['b.example'],
+            queried: ['a.example', 'b.example'],
+            quorum: { k: 2, m: 2, achieved: false },
+          },
+        },
+      }),
+    ],
+  ],
+  // freedom-core #108: a quorum with m = 1 is one endpoint's answer, which
+  // the router called verified. The same requests and results, labelled as
+  // Direct would label a: unverified, then user-configured once a source
+  // the user added covers it; the fee quote unverified too.
+  [
+    'boundary-quorum-singleton-not-verified',
+    [
+      'singleton-quorum',
+      [
+        [0, 0, relabelled('unverified')],
+        [1, 0, relabelled('user-configured')],
+        [2, 0, relabelled(null)],
+      ],
+    ],
+  ],
 ]);
 
+/** What a deviation gives call `call` of step `step` instead of the
+ * reference's result, or null where the reference's stands. */
+function deviated(deviation, step, call) {
+  const changes = deviation?.[1];
+  if (typeof changes === 'function') return step === 0 && call === 0 ? changes : null;
+  return changes?.find(([s, c]) => s === step && c === call)?.[2] ?? null;
+}
+
 /** Scenarios whose I/O must be the reference's exactly: no request it
- * never made, none of its left unmade. */
-const EXACT_IO = new Set(['boundary-colibri-revert-capacity', 'boundary-colibri-undefined-result']);
+ * never made, and none of its left unmade but those listed, which their
+ * deviation drops. */
+const EXACT_IO = new Map([
+  ['boundary-colibri-revert-capacity', []],
+  ['boundary-colibri-undefined-result', []],
+  // endpoint-dedup: a, listed twice, is asked once.
+  ['boundary-quorum-duplicate-endpoint', ['rpc https://a.example eth_call (step 0)']],
+]);
 
 /** The reference's result as `{ value }` or `{ thrown }`, in the shape
  * `outcomeOf` gives main's. */
@@ -907,8 +978,8 @@ async function replay(scenario, { tap } = {}) {
       }
       settled.forEach((got, i) => {
         const result = step.results[i];
-        const want =
-          index === 0 && i === 0 && deviation ? deviation[1](calls[i], result) : recorded(result);
+        const change = deviated(deviation, index, i);
+        const want = change ? change(calls[i], result) : recorded(result);
         if (calls[i].fn === 'broadcastRawTransaction' && want.thrown?.class === 'Error') {
           want.thrown.props.outcome = REJECTED.has(scenario.id) ? 'rejected' : 'not_sent';
         }
@@ -936,8 +1007,14 @@ async function replay(scenario, { tap } = {}) {
       for (const what of ledger.extra) {
         outcome.mismatches.push(`a request the reference never made: ${what}`);
       }
+      const dropped = [...EXACT_IO.get(scenario.id)];
       for (const what of ledger.missing()) {
-        outcome.mismatches.push(`the reference's request never made: ${what}`);
+        const at = dropped.indexOf(what);
+        if (at >= 0) dropped.splice(at, 1);
+        else outcome.mismatches.push(`the reference's request never made: ${what}`);
+      }
+      for (const what of dropped) {
+        outcome.mismatches.push(`a request its deviation drops was made: ${what}`);
       }
     }
   } catch (err) {
@@ -1209,7 +1286,8 @@ describeIfReplay("chain data's replay through main's drivers and the real freedo
       const cut = outcomes.filter((o) => o.mismatches.length === 0 && o.throughput.length > 0);
       const shapes = outcomes.filter((o) => o.ledger.colibriShapes.length > 0);
       const extra = outcomes.filter((o) => o.ledger.extra.length > 0 && !DEVIATIONS.has(o.id));
-      const missing = outcomes.filter((o) => o.ledger.missing().length > 0);
+      // An exact scenario's unmade requests are asserted above.
+      const missing = outcomes.filter((o) => o.ledger.missing().length > 0 && !EXACT_IO.has(o.id));
       const report = [
         `chain replay: ${outcomes.length - failures.length - cut.length} of ${outcomes.length} ` +
           `replayed match (${outcomes.filter((o) => DEVIATIONS.has(o.id) && !o.mismatches.length).length} ` +
