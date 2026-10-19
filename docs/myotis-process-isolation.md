@@ -332,17 +332,21 @@ and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
 ABI 38's `snap2ServingPeers` (the part of `snapServingPeers` on snap/2) is not
 in the status allowlist: reads are the same on either snap version, so
 readiness keeps gating on the total. ABI 39-45 (v0.1.15) add no status key.
-ABI 41's `blockTimestamp` on account and ENS results is not read; the router
+ABI 41's `blockTimestamp` on account and ENS results is not read; chain data
 takes only the fields it names. Since ABI 44 a send of bytes that are no
 transaction Myotis relays (undecodable, no sender, a blob transaction) answers
 the permanent `{"error","code":-32602}` without gossiping anything;
 `sendRawTransaction` maps it to a definite `-32602` refusal, not the "outcome
-uncertain" an engine error still gets, and the router asks no second
-broadcaster. ABI 46-47 (v0.1.16) add no status key either. They add
+uncertain" an engine error still gets. Main answers the core's broadcast
+operation with `rejected` for it (`core/chain-verified.js`), so the core's
+chain-data routing asks no second broadcaster and reports the broadcast as
+rejected; the core rebuilds that refusal with code `-32000` until its reply
+can carry the code. ABI 46-47 (v0.1.16) add no status key either. They add
 `getProofJson` (`eth_getProof`, ABI 46) and `resolveBlockHashJson` (the
 canonical number a block hash names, ABI 47), neither of which Freedom calls:
-`eth_getProof` stays with the other sources, and the router hands Myotis only
-`latest` reads, so a block-hash selector (EIP-1898) never reaches the addon.
+`eth_getProof` stays with the other sources, and the core's chain-data routing
+hands Myotis only `latest` reads, so a block-hash selector (EIP-1898) never
+reaches the addon.
 
 The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
 activationTime, forkId, observedPeers }`) is allowlisted only after strict

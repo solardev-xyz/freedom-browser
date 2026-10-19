@@ -265,6 +265,14 @@ describe('Myotis broadcasts', () => {
       { rejected: { reason: 'nonce too low: next nonce 5, tx nonce 4' } },
     ],
     [
+      'refused as no transaction Myotis relays (ABI 44)',
+      Object.assign(new Error('invalid raw transaction: malformed type 0x2 transaction'), {
+        code: -32602,
+        myotisRefusal: 'invalid-params',
+      }),
+      { rejected: { reason: 'invalid raw transaction: malformed type 0x2 transaction' } },
+    ],
+    [
       'dispatched, then lost',
       uncertain(
         'Myotis broadcast outcome uncertain; check the signed transaction hash before retrying'
