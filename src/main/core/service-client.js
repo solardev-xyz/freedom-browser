@@ -502,8 +502,11 @@ class ServiceClient extends EventEmitter {
    * @param {string} method
    * @param {object} [params]
    * @param {object} [context] - { caller: 'chrome' | 'shell', page? }
+   * @param {object} [options]
+   * @param {number|null} [options.watchdogMs] - the request's hang watchdog
+   *   (see requestTo), from when it is sent; none if null
    */
-  async request(method, params = {}, context = { caller: 'chrome' }) {
+  async request(method, params = {}, context = { caller: 'chrome' }, { watchdogMs = null } = {}) {
     if (this.state !== STATE.READY) {
       // Requests waiting for readiness are bounded like those in flight:
       // by count, and by the size of the whole request as it will be framed
@@ -528,7 +531,7 @@ class ServiceClient extends EventEmitter {
         this.waitingBytes -= size;
       }
     }
-    return this.send(this.current, method, params, context, null);
+    return this.send(this.current, method, params, context, { watchdogMs });
   }
 
   /**

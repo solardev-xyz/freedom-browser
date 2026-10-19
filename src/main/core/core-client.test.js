@@ -349,6 +349,35 @@ describe('CoreClient', () => {
     expect(children).toHaveLength(2);
   });
 
+  test('request() arms the hang watchdog it is given, from when it is sent', async () => {
+    const WATCHDOG = 45_000;
+    let hello = null;
+    const { client, children, runTimers, timers } = makeClient([
+      (message) => {
+        if (message.method === 'core.hello') hello = message;
+      },
+      helloHandler(),
+    ]);
+    const started = client.start();
+    const hung = client
+      .request('vault.unlock', {}, { caller: 'shell' }, { watchdogMs: WATCHDOG })
+      .catch((e) => e);
+    await tick();
+    // Waiting for the handshake: nothing sent, and no watchdog yet.
+    expect(timers.filter((t) => t.ms === WATCHDOG)).toEqual([]);
+    children[0].reply({ type: 'response', id: hello.id, result: helloResult() });
+    await started;
+    await tick();
+    expect(children[0].requests.map((m) => m.method)).toEqual(['core.hello', 'vault.unlock']);
+    expect(timers.filter((t) => t.ms === WATCHDOG && !t.cleared)).toHaveLength(1);
+    runTimers(WATCHDOG);
+    expect(children[0].killed).toBe('SIGKILL');
+    expect((await hung).code).toBe('core_unavailable');
+    runTimers(RESTART_DELAYS_MS[0]);
+    await client.whenReady();
+    expect(children).toHaveLength(2);
+  });
+
   test('exit codes that mean "do not retry" fail without restarting', async () => {
     for (const code of [64, 74, 75]) {
       const { client, children } = makeClient([helloHandler()]);

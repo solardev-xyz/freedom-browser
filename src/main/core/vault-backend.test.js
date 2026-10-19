@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 
 /** A fake CoreClient: `handle(method, params)` returns a result or throws. */
@@ -9,8 +11,8 @@ class FakeCore extends EventEmitter {
     this.ready = Promise.resolve();
   }
 
-  async request(method, params, context) {
-    this.calls.push({ method, params, context });
+  async request(method, params, context, options) {
+    this.calls.push({ method, params, context, options });
     return this.handle(method, params, this);
   }
 
@@ -366,5 +368,78 @@ describe('vaultBackend', () => {
     const core = new FakeCore((method, params) => ({ did: `did:key:${params.public_key}` }));
     const { vaultBackend } = load(core);
     await expect(vaultBackend.radicleDid(Uint8Array.from([1, 255]))).resolves.toBe('did:key:01ff');
+  });
+
+  test("every request carries its method's hang watchdog (design 0001)", async () => {
+    // 45 s on the vault queue (its 30 s deadline + 15 s), 15 s otherwise.
+    const VAULT_QUEUE = new Set([
+      'vault.unlock',
+      'vault.verify_password',
+      'vault.change_password',
+      'vault.delete',
+      'vault.export_mnemonic',
+      'vault.export_private_key',
+      'vault.create',
+      'vault.import',
+      'vault.reconcile',
+      'nodes.write_identity',
+      'nodes.op_status',
+    ]);
+    let lose = true;
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      // One lost reply each, so reconciliation's requests go too.
+      if ((method === 'vault.import' || method === 'nodes.write_identity') && lose) {
+        throw coreError('core_unavailable', 'The core exited');
+      }
+      if (method === 'vault.reconcile') return { status: 'committed', addresses: {} };
+      if (method === 'nodes.op_status') return { status: 'installed' };
+      return {
+        mnemonic_b64: b64('abandon about'),
+        addresses: {},
+        valid: true,
+        did: 'did:key:z',
+        signature: '0x',
+        hash: '0x',
+      };
+    });
+    const { vaultBackend } = load(core);
+    const key = { kind: 'account', index: 0 };
+    await vaultBackend.status();
+    await vaultBackend.generateMnemonic(128);
+    await vaultBackend.validateMnemonic('abandon about');
+    await vaultBackend.createVault('password1', 128);
+    await vaultBackend.importVault('password1', 'abandon about');
+    await vaultBackend.writeNodeIdentity({ node: 'radicle', home: '/h' }, 'op-1');
+    lose = false;
+    await vaultBackend.unlock('password1');
+    await vaultBackend.lock();
+    vaultBackend.touch();
+    await vaultBackend.verifyPassword('password1');
+    await vaultBackend.changePassword('password1', 'password2');
+    await vaultBackend.exportMnemonic('password2');
+    await vaultBackend.exportPrivateKey('password2', 0);
+    await vaultBackend.addresses({ accounts: [0] });
+    await vaultBackend.radicleDid(Uint8Array.from([1]));
+    await vaultBackend.sign.transaction(key, {});
+    await vaultBackend.sign.message(key, Uint8Array.from([1]));
+    await vaultBackend.sign.typedData(key, {});
+    await vaultBackend.sign.soc(key, { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) });
+    await vaultBackend.typedDataHash({});
+    await vaultBackend.deleteVault('password2');
+
+    const sent = new Set(core.calls.map((c) => c.method));
+    // Every method vault-backend.js sends was sent above.
+    const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
+    const named = new Set(
+      [...source.matchAll(/(?:call|mutate)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+    );
+    expect([...named].sort()).toEqual([...sent].sort());
+    for (const { method, options } of core.calls) {
+      expect([method, options]).toEqual([
+        method,
+        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : 15_000 },
+      ]);
+    }
   });
 });

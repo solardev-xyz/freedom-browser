@@ -21,13 +21,13 @@
 const { isPrivateLogContext } = require('../private/private-log-context');
 const { isTezosDomainHost } = require('../../shared/origin-utils');
 const { unlessAborted } = require('../lib/unless-aborted');
+const { SESSION_DEADLINE_MS, WATCHDOG_MARGIN_MS } = require('./core-deadlines');
 
 /** A caller's lifecycle attempts, in all (resolveAcrossStableLifecycle). */
 const MAX_ATTEMPTS = 3;
-/** A caller's deadline, from its first request (design 0004, Admission). */
-const DEADLINE_MS = 120_000;
-/** The hang watchdog's margin past the core's deadline (design 0001). */
-const WATCHDOG_MARGIN_MS = 15_000;
+/** A caller's deadline, from its first request (design 0004, Admission):
+ * a session's. The hang watchdog's margin past it is design 0001's. */
+const DEADLINE_MS = SESSION_DEADLINE_MS;
 
 /** The generations a lookup's result depends on. */
 const SCOPES = { ens: ['ens', 'lifecycle'], tezos: ['tezos'] };
