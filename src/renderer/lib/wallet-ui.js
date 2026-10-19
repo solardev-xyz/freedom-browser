@@ -131,13 +131,21 @@ export function initWalletUi() {
   setupCoordinatorListeners();
 
   // Listen for identity changes
-  document.addEventListener('identity-ready', () => {
+  document.addEventListener('identity-ready', async () => {
     console.log('[WalletUI] Identity ready event received');
-    updateIdentityState();
+    await updateIdentityState();
+    resumePendingPublishSetup();
+  });
+
+  // Closing or skipping the onboarding dialog walks away from the identity
+  // step, so a publish setup asked for before it is dropped too (#719).
+  document.addEventListener('onboarding-dismissed', () => {
+    pendingPublishSetupTarget = null;
   });
 
   // Listen for sidebar close to clean up sub-screens
   document.addEventListener('sidebar-closed', () => {
+    pendingPublishSetupTarget = null;
     closeAllSubscreens();
   });
 
@@ -387,6 +395,38 @@ export function openPublishSetupFlow(target = 'setup', options = {}) {
   if (target === 'storage') openStampManager();
   else openPublishSetup(options);
   return true;
+}
+
+// The publish setup a user asked for (an internal page's "Set up publishing")
+// before this profile had an identity, opened once the identity is ready.
+// Dropped when the user walks away from it: the sidebar closes, or the
+// onboarding dialog is closed or skipped.
+let pendingPublishSetupTarget = null;
+
+/**
+ * An internal page's "Set up publishing" / "Manage storage" button
+ * (freedom://publish, freedom://settings). Unlike a site's request, the user
+ * clicked for this, so the click must always show something (#719): with no
+ * identity yet the publish setup cannot open, so the sidebar opens on its
+ * identity step and the publish setup follows once that is done; in a
+ * private window the sidebar says why it has no wallet.
+ */
+export function openPublishSetupFromPage(target = 'setup') {
+  pendingPublishSetupTarget = null;
+  if (openPublishSetupFlow(target)) return true;
+  if (!isSidebarFeatureEnabled()) return false;
+  if (walletState.viewMode === 'setup') {
+    pendingPublishSetupTarget = target === 'storage' ? 'storage' : 'setup';
+  }
+  openSidebarPanel();
+  return true;
+}
+
+function resumePendingPublishSetup() {
+  const target = pendingPublishSetupTarget;
+  if (!target || walletState.viewMode !== 'identity') return;
+  pendingPublishSetupTarget = null;
+  openPublishSetupFlow(target);
 }
 
 // Per site, when its publish request was last routed into the setup screen:

@@ -638,6 +638,8 @@ describe('preload', () => {
       [exposures.electronAPI, 'onHardReload', 'page:hard-reload', [], []],
       [exposures.electronAPI, 'onNextTab', 'tab:next', [], []],
       [exposures.electronAPI, 'onPrevTab', 'tab:prev', [], []],
+      [exposures.electronAPI, 'onSelectTab', 'tab:select', [3], [3]],
+      [exposures.electronAPI, 'onSelectTab', 'tab:select', ['last'], ['last']],
       [exposures.electronAPI, 'onMoveTabLeft', 'tab:move-left', [], []],
       [exposures.electronAPI, 'onMoveTabRight', 'tab:move-right', [], []],
       [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [], [undefined]],

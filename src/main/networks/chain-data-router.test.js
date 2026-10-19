@@ -176,6 +176,18 @@ describe('chain-data-router', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  // ABI 44: Myotis refused bytes that are no transaction it relays and sent
+  // nothing; another broadcaster is not asked to send them instead.
+  test('serves a -32602 Myotis send refusal as a definite error without another broadcaster', async () => {
+    const refused = Object.assign(new Error('invalid raw transaction: malformed type 0x2 transaction'), {
+      code: -32602, myotisRefusal: 'invalid-params',
+    });
+    mockMyotis.sendRawTransaction.mockRejectedValue(refused);
+    global.fetch = jest.fn();
+    await expect(broadcastRawTransaction(1, '0x02f86c')).rejects.toBe(refused);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('does not retry an in-band failed broadcast at another broadcaster', async () => {
     mockMyotis.sendRawTransaction.mockResolvedValue({ error: 'connection lost' });
     global.fetch = jest.fn();

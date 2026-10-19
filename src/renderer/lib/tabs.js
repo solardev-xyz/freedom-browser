@@ -24,7 +24,7 @@ import {
   notifyFindBarTabSwitched,
 } from './find-bar.js';
 import { consumeHistoryTraversal } from './history-traversal.js';
-import { matchesShortcut } from './shortcuts.js';
+import { SHORTCUTS, matchesShortcut, matchesOwnBinding } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
@@ -2008,6 +2008,44 @@ export const switchToPrevTab = () => {
   switchTab(tabState.tabs[prevIndex].id);
 };
 
+// Select a tab by position (Cmd/Ctrl+1…8, #717): `position` is 1-based, and
+// 'last' is the last tab however many there are (Cmd/Ctrl+9). A position past
+// the last tab does nothing, as in Chrome. switchTab moves focus to the page
+// the same way every other keyboard switch does (#304).
+export const selectTabAtPosition = (position) => {
+  const { tabs } = tabState;
+  const tab =
+    position === 'last'
+      ? tabs[tabs.length - 1]
+      : Number.isInteger(position) && position >= 1
+        ? tabs[position - 1]
+        : undefined;
+  if (!tab) return;
+  switchTab(tab.id);
+};
+
+// Select-tab registry ids → the position each one selects.
+const SELECT_TAB_SHORTCUTS = [
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => [`tab.select${position}`, position]),
+  ['tab.selectLast', 'last'],
+];
+const SELECT_TAB_IDS = new Set(SELECT_TAB_SHORTCUTS.map(([id]) => id));
+
+// The position a keydown selects, or null. Mirrors tab-switch-keys.js: a
+// press that is also another shortcut's own binding belongs to that one (on
+// French AZERTY the `6` key types `-`, so Ctrl+6 is Zoom Out's press too; the
+// zoom keydown handler in menus.js answers it). A fixed alias does not take
+// the press: on Czech the `1` key types `+`, Zoom In's `CmdOrCtrl+Plus`
+// alias, but Zoom In keeps its own `=` key there and Select Tab 1 has none.
+const selectTabPositionForEvent = (event) => {
+  const hit = SELECT_TAB_SHORTCUTS.find(([id]) => matchesShortcut(event, id));
+  if (!hit) return null;
+  const claimedElsewhere = SHORTCUTS.some(
+    (entry) => !SELECT_TAB_IDS.has(entry.id) && matchesOwnBinding(event, entry.id)
+  );
+  return claimedElsewhere ? null : hit[1];
+};
+
 // Toggle pin state for a tab
 const togglePinTab = (tabId) => {
   const tab = tabState.tabs.find((t) => t.id === tabId);
@@ -2769,6 +2807,10 @@ export const initTabs = async () => {
     switchToPrevTab();
   });
 
+  electronAPI?.onSelectTab?.((position) => {
+    selectTabAtPosition(position);
+  });
+
   electronAPI?.onMoveTabLeft?.(() => {
     moveTab('left');
   });
@@ -2833,6 +2875,14 @@ export const initTabs = async () => {
     if (matchesShortcut(event, 'tab.previous')) {
       event.preventDefault();
       switchToPrevTab();
+    }
+    // Select tab 1–8 / the last tab (Cmd/Ctrl+1…9; Alt+1…9 on Linux). Claimed
+    // in the main process like Next/Previous (tab-switch-keys.js, #717); this
+    // is the chrome's fallback.
+    const selectPosition = selectTabPositionForEvent(event);
+    if (selectPosition !== null) {
+      event.preventDefault();
+      selectTabAtPosition(selectPosition);
     }
     // Move tab right
     if (matchesShortcut(event, 'tab.moveRight')) {

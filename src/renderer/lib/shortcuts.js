@@ -94,6 +94,35 @@ export const SHORTCUTS = [
     category: 'Tabs',
     editable: true,
   },
+  // Select a tab by position, as in Chrome: Cmd/Ctrl+1…8 pick tab 1–8 (a
+  // position past the last tab does nothing), Cmd/Ctrl+9 always picks the
+  // last tab. Chrome on Linux also accepts Alt+1…9. The accelerator key is
+  // the digit, and the matcher also accepts the physical Digit1…Digit9 key
+  // code, so layouts whose digits sit behind Shift (French AZERTY, where the
+  // unshifted keys type & é " ' …) still reach them without Shift, the same
+  // way Chrome does (#717). No menu item — like Chrome, they are claimed in
+  // the browser process before any page sees them (tab-switch-keys.js), with
+  // a keydown fallback in the chrome renderer (tabs.js).
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => ({
+    id: `tab.select${position}`,
+    description: `Select Tab ${position}`,
+    settingsLabel: `Select tab ${position}`,
+    defaultAccelerator: `CmdOrCtrl+${position}`,
+    aliases: [{ accelerator: `Alt+${position}`, platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  })),
+  {
+    id: 'tab.selectLast',
+    description: 'Select Last Tab',
+    settingsLabel: 'Select last tab',
+    defaultAccelerator: 'CmdOrCtrl+9',
+    aliases: [{ accelerator: 'Alt+9', platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  },
 
   // Page
   {
@@ -644,7 +673,17 @@ const isEditableEventTarget = (target) => {
  * renderer (stale store, out-of-band settings edit), it is ignored while
  * the user is typing in an editable target.
  */
-export const matchesShortcut = (event, id) => {
+export const matchesShortcut = (event, id) => matchesBinding(event, id, true);
+
+/**
+ * True when a keydown event matches the shortcut's own binding — the user's
+ * remap, else the registry default — leaving its fixed aliases out. Used
+ * where a press two entries share goes to the one it is the binding of
+ * (Select Tab N vs. a zoom key on some layouts, tabs.js).
+ */
+export const matchesOwnBinding = (event, id) => matchesBinding(event, id, false);
+
+const matchesBinding = (event, id, withAliases) => {
   const platform = getPlatform();
   const editable = isEditableEventTarget(event?.target);
   const matches = (accelerator) =>
@@ -652,5 +691,5 @@ export const matchesShortcut = (event, id) => {
     eventMatchesAccelerator(event, accelerator, platform) &&
     !(editable && acceleratorNeedsModifier(accelerator, platform));
   if (matches(getEffectiveAccelerator(id))) return true;
-  return getAliasAccelerators(id, platform).some(matches);
+  return withAliases && getAliasAccelerators(id, platform).some(matches);
 };

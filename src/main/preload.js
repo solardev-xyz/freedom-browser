@@ -509,6 +509,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:prev', handler);
     return () => ipcRenderer.removeListener('tab:prev', handler);
   },
+  onSelectTab: (callback) => {
+    const handler = (_event, position) => callback(position);
+    ipcRenderer.on('tab:select', handler);
+    return () => ipcRenderer.removeListener('tab:select', handler);
+  },
   onMoveTabLeft: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('tab:move-left', handler);

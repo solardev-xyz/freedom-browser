@@ -62,6 +62,7 @@ explicitly allows multiple bundle instances so profile launching can use
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
+- **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
 - **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
@@ -165,6 +166,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Ctrl+PageUp` / `Ctrl+Shift+Tab` / `Cmd+Shift+[`: Previous tab
   - `Ctrl+Shift+PageDown`: Move tab right
   - `Ctrl+Shift+PageUp`: Move tab left
+  - `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` / `Cmd+5` / `Cmd+6` / `Cmd+7` / `Cmd+8` (`Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` / `Ctrl+5` / `Ctrl+6` / `Ctrl+7` / `Ctrl+8` on Windows and Linux): Select tab 1–8 of the window (nothing happens if there are fewer tabs; Linux also accepts `Alt+1` to `Alt+8`, as Chrome does). Bound to the digit keys themselves, so on AZERTY and other layouts where the digits need Shift, the unshifted key in that position works. One exception on French AZERTY: there the `6` key types `-` unshifted, so that press zooms out instead, whether the page or the toolbar has focus (and still does if Select tab 6 is remapped to another chord). As with `Ctrl+-` on a US layout, a page that handles that key itself can keep it. On Czech the `1` key types `+`, and that press still selects tab 1 (Zoom in keeps its own `=` key there)
+  - `Cmd+9` / `Ctrl+9`: Select the last tab, however many there are (Linux also accepts `Alt+9`)
   - `Cmd+R` / `Ctrl+R`: Reload (from cache)
   - `Cmd+Shift+R` / `Ctrl+Shift+R`: Hard reload (bypass cache)
   - `Cmd+F` / `Ctrl+F`: Find in page

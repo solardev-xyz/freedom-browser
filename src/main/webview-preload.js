@@ -532,11 +532,50 @@ function buildScriptletBundle(script) {
   }
 })();
 
+// A zoom shortcut on a digit-row key that types something else (AZERTY `6`
+// → `-`, German Shift+`0` → `=`) reaches the page first, like Ctrl+- on a
+// US layout, so a page can keep it for itself by cancelling the keydown. If
+// it does not, report the press: from a page, Chromium hands the menu the
+// digit's VKEY instead, so the zoom accelerator never fires and main has to
+// answer it (tab-switch-keys.js decides). Capture on window, the first node
+// of the path, and decide after dispatch, so any page listener — capture or
+// bubble — has had its chance to call preventDefault().
+//
+// Registered ahead of the sub-frame return below, so it runs in every frame:
+// a keydown is dispatched only in the focused frame's own window, so with
+// focus in an iframe (an embedded editor, say) the main frame's listener
+// never sees the press. Each frame reports only its own keydowns, so one
+// press is reported once. The channel is PUBLIC (any frame) in
+// ipc-sender-policy.js, and main zooms the sender's own window either way.
+const DIGIT_CODE = /^Digit(\d)$/;
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!event.isTrusted || event.isComposing) return;
+    if (!(event.ctrlKey || event.metaKey || event.altKey)) return;
+    const digit = DIGIT_CODE.exec(event.code || '');
+    if (!digit || event.key === digit[1]) return;
+    setTimeout(() => {
+      if (event.defaultPrevented) return;
+      ipcRenderer.send('page:unhandled-key', {
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+      });
+    }, 0);
+  },
+  true
+);
+
 // Sub-frames: the main process turns on nodeIntegrationInSubFrames for tab
 // webviews (webcontents-setup.js) only so that iframes — an embedded YouTube
-// player, say — get the scriptlets above. Nothing else in this file is meant
-// for them (wallet providers, freedomAPI, context menu, cosmetic filtering
-// all stay main-frame only, as before), so stop here. Sandboxed preloads run
+// player, say — get the scriptlets above, plus the digit-row zoom report.
+// Nothing else in this file is meant for them (wallet providers, freedomAPI,
+// context menu, cosmetic filtering all stay main-frame only, as before), so
+// stop here. Sandboxed preloads run
 // inside a function wrapper, which is what makes this top-level return legal.
 if (globalThis.window && globalThis.window.top !== globalThis.window) {
   return;
@@ -1258,9 +1297,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // `getUpdateState` hydrates a page opened after the last broadcast. Check
   // and install are settings-only, like every other action in Settings —
   // install quits the app.
-  getUpdateState: guardSettingsPage('getUpdateState', () =>
-    ipcRenderer.invoke('update:get-state')
-  ),
+  getUpdateState: guardSettingsPage('getUpdateState', () => ipcRenderer.invoke('update:get-state')),
   checkForUpdates: guardSettingsPage('checkForUpdates', () => {
     ipcRenderer.send('update:check');
   }),

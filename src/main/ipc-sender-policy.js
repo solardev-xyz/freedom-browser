@@ -71,6 +71,9 @@ const PUBLIC_CHANNELS = [
   // intercepted (#442). It only ever spends the asking guest's own gesture
   // and reports a blocked popup to that guest's own window.
   'popups:claim',
+  // A digit-row keydown the page did not cancel (tab-switch-keys.js). At
+  // most it zooms the sender's own window's active tab.
+  'page:unhandled-key',
 ];
 
 // freedomAPI methods wrapped in guardInternal (plus the internal-page theme

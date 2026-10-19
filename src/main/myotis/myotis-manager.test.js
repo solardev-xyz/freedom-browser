@@ -87,7 +87,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.14', abi: 38, snapPeers: 2, snapServingPeers: 1 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.16', abi: 47, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
@@ -257,6 +257,27 @@ describe('myotis-manager', () => {
     });
     // An engine error is still uncertain: the send may have reached a peer.
     clients[0].request.mockImplementation(async () => ({ error: 'no peer reachable' }));
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+  });
+
+  // ABI 44: bytes that are no transaction Myotis relays are refused with the
+  // permanent -32602 envelope and never gossiped. Nothing was sent, so this is
+  // a definite invalid-params refusal, not an outcome to reconcile.
+  test('maps a -32602 send refusal to a definite invalid-params error, not an uncertain broadcast', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis({ chainId: 100 });
+    clients[0].request.mockImplementation(async (op) => op === 'broadcast'
+      ? { error: 'invalid raw transaction: malformed type 0x2 transaction', code: -32602 } : { result: op });
+    await expect(mod.sendRawTransaction('0x02f86c', 100)).rejects.toMatchObject({
+      code: -32602, message: 'invalid raw transaction: malformed type 0x2 transaction', myotisRefusal: 'invalid-params',
+    });
+    clients[0].request.mockImplementation(async () => ({ error: `a${'\n'.repeat(2)}${'b'.repeat(900)}`, code: -32602 }));
+    const bounded = await mod.sendRawTransaction('0x02', 100).catch((error) => error);
+    expect(bounded).toMatchObject({ code: -32602, myotisRefusal: 'invalid-params' });
+    expect(bounded.message).toMatch(/^a b+$/);
+    expect(bounded.message.length).toBeLessThanOrEqual(300);
+    // Any other code (or none) on an error is still uncertain.
+    clients[0].request.mockImplementation(async () => ({ error: 'peer dropped', code: -32000 }));
     await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
   });
 

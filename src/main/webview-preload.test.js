@@ -2023,7 +2023,8 @@ describe('webview-preload adblock scriptlets', () => {
     expect(ipcRenderer.invoke).not.toHaveBeenCalled();
     expect(ipcRenderer.on).not.toHaveBeenCalled();
     expect(Object.keys(documentHandlers)).toHaveLength(0);
-    expect(Object.keys(windowCaptureHandlers)).toHaveLength(0);
+    // Bar the digit-row zoom report, which has to run wherever focus is.
+    expect(Object.keys(windowCaptureHandlers)).toEqual(['keydown']);
   });
 
   // Same-origin inheriting documents: a page can reach into these
@@ -2657,5 +2658,84 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
       // Private, per main: the provider source is not even fetched.
       expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_ETHEREUM_INJECT_SOURCE);
     });
+  });
+});
+
+// A digit-row zoom press (AZERTY Ctrl+`6` → `-`) the page did not cancel is
+// reported to main (tab-switch-keys.js). A keydown is dispatched only in the
+// focused frame's window, so the reporter has to run in a sub-frame too, or a
+// press made with focus in an iframe would never zoom.
+describe('webview-preload digit-row zoom report', () => {
+  const azerty6 = {
+    key: '-',
+    code: 'Digit6',
+    ctrlKey: true,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+  };
+  const keydown = (overrides = {}) => ({
+    isTrusted: true,
+    isComposing: false,
+    defaultPrevented: false,
+    ...azerty6,
+    ...overrides,
+  });
+  const reports = (ipcRenderer) =>
+    ipcRenderer.send.mock.calls.filter(([channel]) => channel === IPC.PAGE_UNHANDLED_KEY);
+
+  const webLocation = {
+    href: 'https://docs.example/edit',
+    protocol: 'https:',
+    pathname: '/edit',
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    delete global.origin;
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['the main frame', false],
+    ['a sub-frame', true],
+  ])('reports an uncancelled press made in %s', (_label, subframe) => {
+    const { ipcRenderer, windowCaptureHandlers } = loadWebviewPreloadModule({
+      location: webLocation,
+      subframe,
+    });
+    const onKeydown = windowCaptureHandlers.keydown;
+    expect(typeof onKeydown).toBe('function');
+
+    onKeydown(keydown());
+    // Decided after dispatch, so a page listener can still cancel it.
+    expect(reports(ipcRenderer)).toHaveLength(0);
+    jest.runAllTimers();
+    expect(reports(ipcRenderer)).toEqual([[IPC.PAGE_UNHANDLED_KEY, azerty6]]);
+
+    // A page that cancels it keeps it.
+    const cancelled = keydown();
+    onKeydown(cancelled);
+    cancelled.defaultPrevented = true;
+    jest.runAllTimers();
+    // Synthetic, composing, unmodified, the digit itself, off the digit row.
+    onKeydown(keydown({ isTrusted: false }));
+    onKeydown(keydown({ isComposing: true }));
+    onKeydown(keydown({ ctrlKey: false }));
+    onKeydown(keydown({ key: '6' }));
+    onKeydown(keydown({ code: 'Minus' }));
+    jest.runAllTimers();
+    expect(reports(ipcRenderer)).toHaveLength(1);
   });
 });

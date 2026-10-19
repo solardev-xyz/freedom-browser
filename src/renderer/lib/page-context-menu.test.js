@@ -1099,4 +1099,77 @@ describe('page-context-menu', () => {
     expect(pageContextMenu.style.left).toBe('35px');
     expect(pageContextMenu.style.top).toBe('50px');
   });
+
+  // #731: the guest reports clientX/clientY in its own (zoomed) CSS pixels,
+  // the webview rect is in the chrome's — the offset into the webview must be
+  // scaled by the page zoom factor or the menu drifts away from the cursor.
+  test.each([
+    ['zoomed in', 1.5, 25 + 100 * 1.5, 35 + 80 * 1.5],
+    ['zoomed out', 0.75, 25 + 100 * 0.75, 35 + 80 * 0.75],
+    ['at 100%', 1, 125, 115],
+  ])('places the menu at the cursor when the page is %s', async (_label, zoom, left, top) => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    const webviewHandlers = {};
+    const webview = {
+      addEventListener: jest.fn((event, handler) => {
+        webviewHandlers[event] = handler;
+      }),
+      getBoundingClientRect: jest.fn(() => ({ left: 25, top: 35 })),
+      getZoomFactor: jest.fn(() => zoom),
+    };
+    mod.setupWebviewContextMenu(webview);
+
+    pageContextMenu.getBoundingClientRect.mockReturnValueOnce({
+      left: 0,
+      top: 0,
+      right: 25,
+      bottom: 25,
+      width: 25,
+      height: 25,
+    });
+    webviewHandlers['ipc-message']({
+      channel: 'context-menu',
+      args: [{ x: 100, y: 80, pageUrl: 'https://example.com/zoomed' }],
+    });
+
+    expect(webview.getZoomFactor).toHaveBeenCalled();
+    expect(pageContextMenu.style.left).toBe(`${left}px`);
+    expect(pageContextMenu.style.top).toBe(`${top}px`);
+  });
+
+  test('falls back to an unscaled offset when the zoom factor cannot be read', async () => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    const webviewHandlers = {};
+    const webview = {
+      addEventListener: jest.fn((event, handler) => {
+        webviewHandlers[event] = handler;
+      }),
+      getBoundingClientRect: jest.fn(() => ({ left: 25, top: 35 })),
+      // Electron throws here on a webview that is not dom-ready yet.
+      getZoomFactor: jest.fn(() => {
+        throw new Error('not attached');
+      }),
+    };
+    mod.setupWebviewContextMenu(webview);
+
+    pageContextMenu.getBoundingClientRect.mockReturnValueOnce({
+      left: 0,
+      top: 0,
+      right: 25,
+      bottom: 25,
+      width: 25,
+      height: 25,
+    });
+    webviewHandlers['ipc-message']({
+      channel: 'context-menu',
+      args: [{ x: 100, y: 80, pageUrl: 'https://example.com/zoomed' }],
+    });
+
+    expect(pageContextMenu.style.left).toBe('125px');
+    expect(pageContextMenu.style.top).toBe('115px');
+  });
 });

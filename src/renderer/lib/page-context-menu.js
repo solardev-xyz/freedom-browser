@@ -523,6 +523,19 @@ export const initPageContextMenu = async (options = {}) => {
   pushDebug('[PageContextMenu] Initialized');
 };
 
+// The webview's page zoom factor, or 1 when it can't be read.
+// `getZoomFactor` throws on a webview that is not yet dom-ready (see
+// menus.js's `updateZoomDisplay`), and a non-positive or non-finite answer
+// would park the menu at the webview's corner.
+const getWebviewZoomFactor = (webview) => {
+  try {
+    const zoom = webview.getZoomFactor?.();
+    return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  } catch {
+    return 1;
+  }
+};
+
 // Setup context menu listener for a webview
 export const setupWebviewContextMenu = (webview) => {
   if (!webview) return;
@@ -532,10 +545,16 @@ export const setupWebviewContextMenu = (webview) => {
     if (event.channel === 'context-menu') {
       const context = event.args[0];
       if (context) {
-        // Convert webview coordinates to window coordinates
+        // Convert webview coordinates to window coordinates. The guest
+        // reports clientX/clientY in its own CSS pixels, which a page zoom
+        // scales relative to the chrome's: at 150% one guest pixel covers 1.5
+        // chrome pixels. Scale by the webview's zoom factor before adding the
+        // webview's offset, or the menu drifts away from the cursor the
+        // further the click is from the page's top-left corner (#731).
         const rect = webview.getBoundingClientRect();
-        const x = rect.left + context.x;
-        const y = rect.top + context.y;
+        const zoom = getWebviewZoomFactor(webview);
+        const x = rect.left + context.x * zoom;
+        const y = rect.top + context.y * zoom;
 
         showPageContextMenu(x, y, context);
       }

@@ -541,19 +541,35 @@ describe('refreshEngine', () => {
 
 describe('artifact layers', () => {
   let userData;
+  let floors;
 
   beforeEach(() => {
     userData = writeUpdateLayer();
     mockElectron.userData = userData;
     // Stand in for the bundled floor (the real one is gitignored).
     process.env.FREEDOM_ADBLOCK_DIR = artifactsDir;
+    floors = [];
   });
 
   afterEach(() => {
     mockElectron.userData = null;
     delete process.env.FREEDOM_ADBLOCK_DIR;
     fs.rmSync(userData, { recursive: true, force: true });
+    for (const floor of floors) fs.rmSync(floor, { recursive: true, force: true });
   });
+
+  // Make the fixture floor look like an app build's bundle, fetched at
+  // `fetchedAt` (the update layer was generated on 2026-08-01).
+  function useBundleFetchedAt(fetchedAt) {
+    const floor = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-floor-'));
+    fs.cpSync(artifactsDir, floor, { recursive: true });
+    fs.writeFileSync(
+      path.join(floor, 'manifest.json'),
+      JSON.stringify({ ...MANIFEST, version: fetchedAt.slice(0, 10), fetchedAt })
+    );
+    process.env.FREEDOM_ADBLOCK_DIR = floor;
+    floors.push(floor);
+  }
 
   async function buildWithLayers(settings) {
     _resetAdblockForTests();
@@ -592,6 +608,71 @@ describe('artifact layers', () => {
     expect(status.listsVersion).toBe('2026-08-01');
     expect(status.listsResolved).toBe(true);
     expect(Object.keys(status.categories).sort()).toEqual(['ads', 'cookies', 'privacy']);
+  });
+
+  test('lists bundled after the update was generated win over it', async () => {
+    // An app update shipped lists fetched after the Swarm update on disk: the
+    // older update must not shadow them until the next feed check lands.
+    useBundleFetchedAt('2026-09-30T19:41:30.785Z');
+    await buildWithLayers();
+    expect(adblockRequestForDispatch(makeDetails())).toEqual({ cancel: true });
+    expect(adblockRequestForDispatch(makeDetails({ url: 'https://updated-ads.test/x.js' }))).toBe(
+      null
+    );
+    expect(getAdblockStatus().listsVersion).toBe('2026-09-30');
+    // Kept for the next feed check, which compares against its feedVersion.
+    expect(fs.existsSync(path.join(userData, 'adblock', 'updated', 'manifest.json'))).toBe(true);
+  });
+
+  test('logs the outdated update once, not on every rebuild', async () => {
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      useBundleFetchedAt('2026-09-30T19:41:30.785Z');
+      await buildWithLayers();
+      await refreshEngine(); // e.g. a category toggle or allowlist refresh
+      await refreshEngine();
+      const notices = info.mock.calls.filter(([line]) =>
+        /are newer than the Swarm update/.test(line)
+      );
+      expect(notices).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test('an update generated after the bundled lists were fetched still wins', async () => {
+    useBundleFetchedAt('2026-07-20T00:00:00.000Z');
+    await buildWithLayers();
+    expect(
+      adblockRequestForDispatch(makeDetails({ url: 'https://updated-ads.test/x.js' }))
+    ).toEqual({ cancel: true });
+    expect(adblockRequestForDispatch(makeDetails())).toBe(null);
+  });
+
+  test('an engine cached from an update is not reused once newer lists are bundled', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    floors.push(cacheDir);
+    const build = async () => {
+      _resetAdblockForTests();
+      installAdblockInterception({ cacheDir });
+      await refreshEngine();
+      navigateTab(7, 'https://news.example/story');
+    };
+
+    // Before the app update: the update layer serves ads, and is cached.
+    useBundleFetchedAt('2026-07-20T00:00:00.000Z');
+    await build();
+    expect(
+      adblockRequestForDispatch(makeDetails({ url: 'https://updated-ads.test/x.js' }))
+    ).toEqual({ cancel: true });
+
+    // After it: the newer bundle serves ads, not the cached engine.
+    useBundleFetchedAt('2026-09-30T19:41:30.785Z');
+    await build();
+    expect(adblockRequestForDispatch(makeDetails())).toEqual({ cancel: true });
+    expect(adblockRequestForDispatch(makeDetails({ url: 'https://updated-ads.test/x.js' }))).toBe(
+      null
+    );
   });
 
   test('reports lists as not yet resolved before the first build', () => {

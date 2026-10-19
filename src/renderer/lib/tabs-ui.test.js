@@ -42,6 +42,7 @@ const createElectronApi = () => {
       onHardReload: register('hardReload'),
       onNextTab: register('nextTab'),
       onPrevTab: register('prevTab'),
+      onSelectTab: register('selectTab'),
       onMoveTabLeft: register('moveTabLeft'),
       onMoveTabRight: register('moveTabRight'),
       onReopenClosedTab: register('reopenClosedTab'),
@@ -1369,6 +1370,114 @@ describe('tabs ui behavior', () => {
     expect(firstTab.webview.closeDevTools.mock.calls.length).toBe(devtoolsCloseBefore + 1);
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('DevTools opened');
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('DevTools closed');
+  });
+
+  // #717: Cmd/Ctrl+1…8 select a tab by position, Cmd/Ctrl+9 the last one.
+  // Main claims the chord and sends `tab:select` (tab-switch-keys.js); the
+  // chrome's own keydown listener is the fallback. Both move focus to the
+  // page like every other keyboard switch (#304).
+  describe('select tab by position (#717)', () => {
+    const setup = async (count) => {
+      const loaded = await loadTabsModule();
+      await loaded.mod.initTabs();
+      const tabs = [loaded.mod.getActiveTab()];
+      // Real pages, not the new-tab page (which focuses the address bar).
+      tabs[0].url = 'https://tab1.example';
+      for (let i = 2; i <= count; i += 1)
+        tabs.push(loaded.mod.createTab(`https://tab${i}.example`));
+      loaded.mod.switchTab(tabs[0].id);
+      return { ...loaded, tabs };
+    };
+    const ctrlDigit = (digit, extra = {}) => ({
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      key: String(digit),
+      code: `Digit${digit}`,
+      preventDefault: jest.fn(),
+      ...extra,
+    });
+
+    test('the tab:select message selects by position, last, and ignores out of range', async () => {
+      const { mod, tabs, electronHandlers } = await setup(3);
+      const focus = tabs.map((tab) => jest.spyOn(tab.webview, 'focus'));
+
+      electronHandlers.selectTab(2);
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+      expect(focus[1]).toHaveBeenCalledTimes(1);
+
+      electronHandlers.selectTab('last');
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+      expect(focus[2]).toHaveBeenCalledTimes(1);
+
+      // Fewer tabs than the position: nothing happens.
+      electronHandlers.selectTab(5);
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+      for (const bad of [0, -1, 1.5, '1', undefined]) electronHandlers.selectTab(bad);
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      electronHandlers.selectTab(1);
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+    });
+
+    test('the chrome keydown fallback answers Ctrl+1…8 and Ctrl+9', async () => {
+      const { mod, tabs, windowHandlers } = await setup(3);
+
+      const two = ctrlDigit(2);
+      windowHandlers.keydown(two);
+      expect(two.preventDefault).toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+
+      windowHandlers.keydown(ctrlDigit(9));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      windowHandlers.keydown(ctrlDigit(5));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      windowHandlers.keydown(ctrlDigit(1));
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+
+      // Linux also takes Alt+1…9, as Chrome does (the renderer platform is
+      // linux under jest).
+      windowHandlers.keydown(ctrlDigit(3, { ctrlKey: false, altKey: true }));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      // Exact modifiers: Ctrl+Shift+2 is not Ctrl+2.
+      windowHandlers.keydown(ctrlDigit(2, { shiftKey: true, key: '@' }));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+    });
+
+    test('binds the physical digit key, so AZERTY reaches it unshifted', async () => {
+      const { mod, tabs, windowHandlers } = await setup(6);
+      // French AZERTY: the unshifted Digit2 key types 'é'.
+      windowHandlers.keydown(ctrlDigit(2, { key: 'é' }));
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+      windowHandlers.keydown(ctrlDigit(9, { key: 'ç' }));
+      expect(mod.getActiveTab().id).toBe(tabs[5].id);
+
+      // …except Digit6, which types '-' there: that press is Zoom Out's.
+      windowHandlers.keydown(ctrlDigit(1, { key: '&' }));
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+      const azerty6 = ctrlDigit(6, { key: '-' });
+      windowHandlers.keydown(azerty6);
+      expect(azerty6.preventDefault).not.toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+      // The US-layout Ctrl+6 still selects tab 6.
+      windowHandlers.keydown(ctrlDigit(6));
+      expect(mod.getActiveTab().id).toBe(tabs[5].id);
+    });
+
+    test("keeps the Czech Ctrl+1 press (key '+') for tab 1, not Zoom In's alias", async () => {
+      const { mod, tabs, windowHandlers } = await setup(3);
+      mod.switchTab(tabs[2].id);
+      // Czech's unshifted `1` key types `+`: only Zoom In's fixed `Plus`
+      // alias, which does not outrank Select Tab 1 (Zoom In keeps `=`).
+      const czech1 = ctrlDigit(1, { key: '+' });
+      windowHandlers.keydown(czech1);
+      expect(czech1.preventDefault).toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+    });
   });
 
   test('forwards update-target-url and link-status:zone for the active tab only', async () => {
