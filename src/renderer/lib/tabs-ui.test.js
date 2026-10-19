@@ -1379,6 +1379,8 @@ describe('tabs ui behavior', () => {
   describe('select tab by position (#717)', () => {
     const setup = async (count) => {
       const loaded = await loadTabsModule();
+      const { configureShortcuts } = await import('./shortcuts.js');
+      configureShortcuts({ platform: 'linux', overrides: {} });
       await loaded.mod.initTabs();
       const tabs = [loaded.mod.getActiveTab()];
       // Real pages, not the new-tab page (which focuses the address bar).
