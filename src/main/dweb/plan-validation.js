@@ -11,6 +11,16 @@
  * `shape`, `method`, `node`, `path`, `header`, `retry`, `timers`,
  * `response`, `trust`, `redirect`, `error`.
  *
+ * A fetch plan is also judged against the request's own plan, made again
+ * here with main's copy of the core's planning (`dweb-open.js`), as the
+ * core's `validate_plan` makes it with `open` (freedom-core#97). A hash host
+ * (a Swarm reference, a CID, an IPNS key, a DNSLink name the node resolves
+ * itself) needs no lookup: its plan must fetch exactly the target rebuilt
+ * from the URL (`path`), and no name stands behind it, so its name label is
+ * `null` (`trust`). A request that plans no fetch (a gateway-form URL, an
+ * invalid host) gets none (`path`). Only a name host's target comes from
+ * the core's resolution, and only it may carry a name label.
+ *
  * This is fc-dweb's `validate_plan`, ported: both pass the design's vectors
  * (`vectors/dweb.json`, `validation`). Where it is stricter than today's
  * handlers, the design names the deviation: `plan-paths` (a target is judged
@@ -19,44 +29,16 @@
  */
 
 const { gatewayFormRedirect } = require('../ipfs/gateway-form');
-
-/** `bzz:`'s request header allowlist (security audit O-2, #429). */
-const FORWARDED_REQUEST_HEADERS = new Set([
-  'accept',
-  'accept-encoding',
-  'accept-language',
-  'if-match',
-  'if-modified-since',
-  'if-none-match',
-  'if-range',
-  'if-unmodified-since',
-  'range',
-  'user-agent',
-]);
-
-/** Swarm's retrieval hints: every `bzz:` fetch carries each once, at this value. */
-const SWARM_HEADERS = new Map([
-  ['swarm-chunk-retrieval-timeout', '30s'],
-  ['swarm-redundancy-strategy', '3'],
-  ['swarm-redundancy-fallback-mode', 'true'],
-]);
-
-/** `ipfs:`'s request header strip-list: none of these reaches the node. */
-const STRIPPED_REQUEST_HEADERS = new Set([
-  'host',
-  'origin',
-  'referer',
-  'cookie',
-  'authorization',
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
+const {
+  openDweb,
+  contentTrust,
+  normalizeTarget,
+  requestMethod,
+  urlScheme,
+  FORWARDED_REQUEST_HEADERS,
+  STRIPPED_REQUEST_HEADERS,
+  SWARM_HEADERS,
+} = require('./dweb-open');
 
 /** Today's retry table is the most a plan may ask for. */
 const RETRY_STATUSES = new Set([500, 502, 503, 504]);
@@ -101,33 +83,6 @@ function backendKind(backend) {
   return null;
 }
 
-/** What the content's bytes rest on, by backend (display only). */
-function contentTrust(backend) {
-  if (backend?.ant === 'bundled' || backend?.ipfs === 'native') return 'node_asserted';
-  return 'unverified';
-}
-
-/** `(method || 'GET').toUpperCase()`. */
-function requestMethod(method) {
-  return (method || 'GET').toUpperCase();
-}
-
-/** The URL's scheme, lowercased, as the URL parser's scheme state reads it:
- * leading and trailing C0 controls and spaces removed, then every tab and
- * newline. */
-function urlScheme(url) {
-  const text = String(url);
-  let start = 0;
-  let end = text.length;
-  while (start < end && text.charCodeAt(start) <= 0x20) start += 1;
-  while (end > start && text.charCodeAt(end - 1) <= 0x20) end -= 1;
-  const input = text.slice(start, end).replace(/[\t\n\r]/g, '');
-  const colon = input.indexOf(':');
-  if (colon < 0) return null;
-  const scheme = input.slice(0, colon);
-  return /^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme) ? scheme.toLowerCase() : null;
-}
-
 /** An object with exactly these keys. */
 function exact(value, keys) {
   return (
@@ -156,20 +111,6 @@ function stringPairs(value) {
 /** A whole number from `min` to `max`. */
 function integerIn(value, min, max) {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
-}
-
-/**
- * A node-relative request target as an HTTP client sends it: dot segments
- * resolved, `\` read as `/`, the path and query sets percent-encoded. Null
- * if the URL parser refuses it.
- */
-function normalizeTarget(target) {
-  try {
-    const url = new URL(`http://node${target}`);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return null;
-  }
 }
 
 /** `%2E`, `%2F` and `%5C`, in any case, decoded in one pass. */
@@ -280,11 +221,27 @@ function checkResponse(response, kind) {
   return true;
 }
 
-function checkTrust(trust, backend) {
+/** The content label is the backend's; a name label only behind a lookup
+ * (`named`): a hash host's is `null`. */
+function checkTrust(trust, backend, named) {
   return (
-    (trust.name === null || typeof trust.name === 'string') &&
+    (trust.name === null || (named && typeof trust.name === 'string')) &&
     trust.content === contentTrust(backend)
   );
+}
+
+/**
+ * What the request's host means for a fetch plan, as `dweb.open` plans the
+ * request (`dweb-open.js`): a hash host's target (`{ named: false, target }`),
+ * which depends on the URL alone; a name host (`{ named: true }`), whose
+ * target comes from the name's resolution; or null when no fetch answers the
+ * request (a gateway-form URL, an invalid host).
+ */
+function requestHost(request) {
+  const opened = openDweb({ url: request.url, method: request.method, backend: request.backend });
+  if (opened?.pending) return { named: true, target: null };
+  if (opened?.fetch) return { named: false, target: opened.fetch.path };
+  return null;
 }
 
 function checkFetch(body, request, scheme) {
@@ -315,11 +272,15 @@ function checkFetch(body, request, scheme) {
         (kind === 'native' || kind === 'gateway')));
   if (!nodeOk) return 'node';
   if (!checkPath(body.path, scheme)) return 'path';
+  // A hash host needs no lookup: the target is the request's own, rebuilt
+  // here, and no name stands behind it.
+  const host = requestHost(request);
+  if (!host || (!host.named && body.path !== host.target)) return 'path';
   if (!checkHeaders(headers, scheme)) return 'header';
   if (!checkRetry(body.retry, kind)) return 'retry';
   if (!checkTimers(body.timers, kind)) return 'timers';
   if (!checkResponse(body.response, kind)) return 'response';
-  if (!checkTrust(body.trust, backend)) return 'trust';
+  if (!checkTrust(body.trust, backend, host.named)) return 'trust';
   return null;
 }
 

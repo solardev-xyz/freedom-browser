@@ -73,8 +73,9 @@ beforeEach(() => {
 });
 
 describe('bounds before the core is asked', () => {
-  // `bzz://<hash>/` is 71 code units; the rest is path.
-  const urlOf = (units) => `bzz://${HASH}/${'a'.repeat(units - 71)}`;
+  // `bzz://site.eth/` is 15 code units; the rest is path. A name host, so
+  // the scripted plan's target may be the lookup's.
+  const urlOf = (units) => `bzz://site.eth/${'a'.repeat(units - 15)}`;
 
   test('a URL over 64 KiB of UTF-16 code units is a 414', async () => {
     expect(urlOf(MAX_URL_UNITS)).toHaveLength(65_536);
@@ -87,7 +88,7 @@ describe('bounds before the core is asked', () => {
   test('headers over 64 KiB in all, each counting 4 more, are a 431', async () => {
     // `x-pad: …` counts its name (5), its value and 4.
     const withPad = (units) =>
-      new Request(`bzz://${HASH}/`, { headers: { 'x-pad': 'p'.repeat(units - 9) } });
+      new Request(`bzz://${HASH}/index.html`, { headers: { 'x-pad': 'p'.repeat(units - 9) } });
     expect(MAX_HEADER_UNITS).toBe(65_536);
     expect((await handle(withPad(MAX_HEADER_UNITS))).status).toBe(200);
     const res = await handle(withPad(MAX_HEADER_UNITS + 1));
@@ -153,6 +154,17 @@ describe('a refused plan is a 502 before any dial', () => {
     ['path', 'a target that climbs out of /bzz/<ref>', { path: `/bzz/${HASH}/../stamps` }],
     ['path', 'an encoded separator that climbs', { path: `/bzz/${HASH}/..%2F..%2Fstamps` }],
     ['path', 'another node path altogether', { path: '/stamps/1/17' }],
+    // A hash host's target is the request's own (freedom-core#97).
+    [
+      'path',
+      "another reference than the hash host's",
+      { path: `/bzz/${'cd'.repeat(32)}/index.html` },
+    ],
+    [
+      'trust',
+      'a name label for a hash host',
+      { trust: { name: 'verified', content: 'node_asserted' } },
+    ],
     ['header', 'a header off the allowlist', { headers: [['swarm-pin', 'true'], ...SWARM] }],
     ['header', 'a CR LF in a value', { headers: [['accept', 'a\r\nx: 1'], ...SWARM] }],
     ['node', 'a URL where the node reference goes', { node: 'http://127.0.0.1:1633' }],
@@ -246,7 +258,7 @@ describe('the plans', () => {
     mockAdmission = createFetchAdmission({ maxActive: 1, maxWaiting: 0 });
     const held = await mockAdmission.acquire();
     const backend = antBackend();
-    const res = await handle(new Request(`bzz://${HASH}/`), backend);
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ code: 503, message: 'Too many dweb requests' });
     expect(backend.request).not.toHaveBeenCalled();

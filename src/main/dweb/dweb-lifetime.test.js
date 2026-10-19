@@ -269,7 +269,7 @@ describe("the page's abort", () => {
     await setUp({ maxActive: 1, maxWaiting: 1 });
     const held = await mockAdmission.acquire();
     const page = new AbortController();
-    const pending = handle(`bzz://${HASH}/index.html`, { signal: page.signal });
+    const pending = handle('bzz://site.eth/index.html', { signal: page.signal });
     await until(() => mockAdmission.stats().waiting === 1);
     // A control is in flight when the slot comes: the plan waits for it.
     client.holdControls = true;
