@@ -15,10 +15,15 @@
  *   If the core can't come back, the operation stays pending: it is settled,
  *   with its continuation, as soon as the core is ready again, and no other
  *   mutation runs before that.
+ * - Every request runs under its method's hang watchdog (core-deadlines.js):
+ *   15 s for an immediate method, 45 s on the vault queue. A core that hangs
+ *   past it is killed and restarted, which fails the request
+ *   `core_unavailable`, so a mutation reconciles as after a crash.
  */
 
 const log = require('../logger');
 const { getCoreClient } = require('./core-process');
+const { watchdogMs } = require('./core-deadlines');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
 // @scure/bip39 strengths (bits) and their word counts.
@@ -47,10 +52,15 @@ function client() {
   return core;
 }
 
-/** One core request, from main itself (caller `shell`). */
+/** One core request, from main itself (caller `shell`), under its watchdog. */
 async function call(method, params = {}) {
   try {
-    return await client().request(method, params, { caller: 'shell' });
+    return await client().request(
+      method,
+      params,
+      { caller: 'shell' },
+      { watchdogMs: watchdogMs(method) }
+    );
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
     throw new VaultBackendError(err.code || CORE_UNAVAILABLE, err.message, err.data);

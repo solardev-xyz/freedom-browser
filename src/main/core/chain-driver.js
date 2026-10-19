@@ -44,11 +44,11 @@
 const { keccak256 } = require('ethers');
 const { JsonParams } = require('./core-client');
 const { MAX_PAYLOAD } = require('./frame');
+const { SESSION_DEADLINE_MS, WATCHDOG_MARGIN_MS } = require('./core-deadlines');
 
-/** A call's overall deadline (design 0005, Deadlines): the core's bound. */
-const DEADLINE_MS = 120_000;
-/** The hang watchdog's margin past the core's deadline (design 0001). */
-const WATCHDOG_MARGIN_MS = 15_000;
+/** A call's overall deadline (design 0005, Deadlines): the core's bound for
+ * a session. The hang watchdog's margin past it is design 0001's. */
+const DEADLINE_MS = SESSION_DEADLINE_MS;
 /** The client's largest request ID, as wide as an ID gets on the wire. */
 const MAX_ID = Number.MAX_SAFE_INTEGER;
 /** The context chain requests go with (the client's default). */

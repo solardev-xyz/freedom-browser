@@ -14,10 +14,11 @@
 
 const crypto = require('crypto');
 const { EndpointReferences } = require('./naming-config');
+const { IMMEDIATE_WATCHDOG_MS } = require('./core-deadlines');
 
 /** A control request's hang watchdog (design 0001): the core answers it at
  * once, so its deadline is just the watchdog's margin. */
-const CONTROL_WATCHDOG_MS = 15_000;
+const CONTROL_WATCHDOG_MS = IMMEDIATE_WATCHDOG_MS;
 /** The core takes at most this many RPC endpoints per chain (design 0005,
  * Configuration): the first ones in registry order. */
 const MAX_RPC_ENDPOINTS = 64;
