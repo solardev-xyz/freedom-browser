@@ -8,6 +8,8 @@ const { validatePlan, urlScheme, normalizeTarget } = require('./plan-validation'
 
 const HASH = 'c0ffee'.repeat(10) + 'beef';
 const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+const CIDV0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+const CIDV0_AS_V1 = 'bafybeie5nqv6kd3qnfjupgvz34woh3oksc3iau6abmyajn7qvtf6d2ho34';
 const ANT = { ant: 'bundled', up: true };
 const NATIVE = { ipfs: 'native', up: true };
 const GATEWAY = { ipfs: 'gateway', up: true };
@@ -52,7 +54,7 @@ function ipfsPlan(backend, overrides = {}) {
       response: native
         ? ['strip_page_state', 'small_text']
         : ['strip_decoded_encoding', 'strip_page_state', 'canonicalize_redirect'],
-      trust: { name: 'verified', content: native ? 'node_asserted' : 'unverified' },
+      trust: { name: null, content: native ? 'node_asserted' : 'unverified' },
       ...overrides,
     },
   };
@@ -70,11 +72,19 @@ const ipfsRequest = (overrides = {}) => ({
   backend: NATIVE,
   ...overrides,
 });
+// A name host's target comes from its lookup: only the path's namespace and
+// shape are judged, so the path cases plan for one.
+const bzzName = (overrides = {}) => bzzRequest({ url: 'bzz://site.eth/', ...overrides });
+const ipfsName = (overrides = {}) => ipfsRequest({ url: 'ipfs://site.eth/', ...overrides });
 
 describe("the core's plans as main receives them", () => {
   test.each([
     ['an Ant fetch', antPlan(), bzzRequest()],
-    ['an encrypted reference', antPlan({ path: `/bzz/${HASH}${HASH}/` }), bzzRequest()],
+    [
+      'an encrypted reference',
+      antPlan({ path: `/bzz/${HASH}${HASH}/` }),
+      bzzRequest({ url: `bzz://${HASH}${HASH}/` }),
+    ],
     ['a native fetch', ipfsPlan(NATIVE), ipfsRequest()],
     ['a gateway fetch', ipfsPlan(GATEWAY), ipfsRequest({ backend: GATEWAY })],
     [
@@ -83,7 +93,19 @@ describe("the core's plans as main receives them", () => {
       ipfsRequest({ url: 'ipns://docs.ipfs.tech/install' }),
     ],
     // An encoded separator that doesn't climb passes to the IPFS node, as today.
-    ['a file name with %2F', ipfsPlan(NATIVE, { path: `/ipfs/${CID}/a%2Fb` }), ipfsRequest()],
+    [
+      'a file name with %2F',
+      ipfsPlan(NATIVE, { path: `/ipfs/${CID}/a%2Fb` }),
+      ipfsRequest({ url: `ipfs://${CID}/a%2Fb` }),
+    ],
+    [
+      "a name host's target and name label",
+      antPlan({
+        path: `/bzz/${'b'.repeat(64)}/`,
+        trust: { name: 'verified', content: 'node_asserted' },
+      }),
+      bzzName(),
+    ],
     ['a HEAD', antPlan(), bzzRequest({ method: 'head' })],
     ['an empty method, read as GET', antPlan(), bzzRequest({ method: '' })],
   ])('passes %s', (_label, plan, request) => {
@@ -153,7 +175,7 @@ describe('refusals before any dial', () => {
     ['a fragment', `/bzz/${HASH}/#x`],
     ['no leading slash', `bzz/${HASH}/`],
   ])('path (bzz:): %s', (_label, path) => {
-    expect(validatePlan(antPlan({ path }), bzzRequest())).toBe('path');
+    expect(validatePlan(antPlan({ path }), bzzName())).toBe('path');
   });
 
   test.each([
@@ -168,13 +190,62 @@ describe('refusals before any dial', () => {
     ['a reference with a colon', '/ipfs/a:b/'],
     ['no reference', '/ipfs/'],
   ])('path (ipfs:): %s', (_label, path) => {
-    expect(validatePlan(ipfsPlan(NATIVE, { path }), ipfsRequest())).toBe('path');
+    expect(validatePlan(ipfsPlan(NATIVE, { path }), ipfsName())).toBe('path');
   });
 
   test('path: the query is not judged', () => {
     const path = `/ipfs/${CID}/?a=%2E%2E%2F..%2F`;
     expect(normalizeTarget(path)).toBe(path);
-    expect(validatePlan(ipfsPlan(NATIVE, { path }), ipfsRequest())).toBeNull();
+    expect(validatePlan(ipfsPlan(NATIVE, { path }), ipfsName())).toBeNull();
+  });
+
+  // freedom-core#97: a hash host needs no lookup, so its plan fetches the
+  // target `dweb.open` plans for the request itself, and nothing else.
+  test.each([
+    ['another reference', antPlan({ path: `/bzz/${'b'.repeat(64)}/index.html` }), bzzRequest()],
+    [
+      'the reference in uppercase',
+      antPlan({ path: `/bzz/${HASH.toUpperCase()}/index.html` }),
+      bzzRequest(),
+    ],
+    ['another file', antPlan({ path: `/bzz/${HASH}/other.html` }), bzzRequest()],
+    ['the query dropped', antPlan(), bzzRequest({ url: `bzz://${HASH}/index.html?x=1` })],
+    ['another CID', ipfsPlan(NATIVE, { path: `/ipfs/${CID.slice(0, -1)}a/` }), ipfsRequest()],
+    [
+      'a CIDv0 not made canonical',
+      ipfsPlan(NATIVE, { path: `/ipfs/${CIDV0}/` }),
+      ipfsRequest({ url: `ipfs://${CIDV0}/` }),
+    ],
+    [
+      "another DNSLink name than the node's",
+      ipfsPlan(NATIVE, { path: '/ipns/evil.example/install' }),
+      ipfsRequest({ url: 'ipns://docs.ipfs.tech/install' }),
+    ],
+  ])('path (hash host): %s', (_label, plan, request) => {
+    expect(validatePlan(plan, request)).toBe('path');
+  });
+
+  test('path (hash host): a CIDv0 fetches its canonical CIDv1', () => {
+    const plan = ipfsPlan(NATIVE, { path: `/ipfs/${CIDV0_AS_V1}/` });
+    expect(validatePlan(plan, ipfsRequest({ url: `ipfs://${CIDV0}/` }))).toBeNull();
+  });
+
+  test.each([
+    ['a gateway-form URL', ipfsPlan(NATIVE), ipfsRequest({ url: `ipfs://localhost/ipfs/${CID}/` })],
+    ['an invalid host', antPlan(), bzzRequest({ url: 'bzz://not-a-reference/index.html' })],
+  ])('path: a fetch for a request that plans none: %s', (_label, plan, request) => {
+    expect(validatePlan(plan, request)).toBe('path');
+  });
+
+  test('path (hash host): judged after the node, before the headers and the name label', () => {
+    const plan = antPlan({
+      path: `/bzz/${'b'.repeat(64)}/index.html`,
+      headers: [['cookie', 'a=1'], ...SWARM],
+      trust: { name: 'verified', content: 'node_asserted' },
+    });
+    expect(validatePlan(plan, bzzRequest())).toBe('path');
+    expect(validatePlan(plan, bzzRequest({ backend: { ant: 'bundled', up: false } }))).toBe('node');
+    expect(validatePlan(plan, bzzName())).toBe('header');
   });
 
   // Deviation `plan-headers`: RFC 9110 field values only.
@@ -272,6 +343,20 @@ describe('refusals before any dial', () => {
     expect(
       validatePlan(antPlan({ trust: { name: 1, content: 'node_asserted' } }), bzzRequest())
     ).toBe('trust');
+  });
+
+  // A hash host had no lookup, so no name label (freedom-core#97).
+  test.each([
+    ['a Swarm reference', antPlan(), bzzRequest()],
+    ['a CID', ipfsPlan(NATIVE), ipfsRequest()],
+    [
+      'a DNSLink name',
+      ipfsPlan(NATIVE, { path: '/ipns/docs.ipfs.tech/' }),
+      ipfsRequest({ url: 'ipns://docs.ipfs.tech/' }),
+    ],
+  ])("trust: a hash host's plan has no name label: %s", (_label, plan, request) => {
+    plan.fetch.trust = { ...plan.fetch.trust, name: 'verified' };
+    expect(validatePlan(plan, request)).toBe('trust');
   });
 
   test.each([
