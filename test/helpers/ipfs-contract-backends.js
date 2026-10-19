@@ -47,10 +47,15 @@ const { createFakeDwebDriver } = require('./fake-dweb-core');
 const SRC = path.join(__dirname, '..', '..', 'src', 'main');
 const MIB = 1024 * 1024;
 
-/** The parity table's configuration ("Parity": today's values). */
+/** The add-on's own delegated router, which it uses when given ''. */
+const ADDON_DEFAULT_ROUTERS = ['https://delegated-ipfs.dev/routing/v1'];
+
+/** The parity table's configuration ("Parity": today's values). Since #700
+ * the node asks two delegated routers, in parallel (`DELEGATED_ROUTERS` in
+ * freedom-ipfs-native-node.js). */
 const TODAY_CONFIG = {
   routing: 'auto',
-  delegatedRouters: ['https://delegated-ipfs.dev/routing/v1'],
+  delegatedRouters: ['https://delegated-ipfs.dev/routing/v1', 'https://cid.contact/routing/v1'],
   dhtQueryTimeoutS: 3,
   dhtMaxProviders: 32,
   maxConcurrentRequests: 8,
@@ -180,10 +185,12 @@ async function loadAddonBackend({ router }) {
     startConfig() {
       const start = starts.at(-1);
       const [maxConcurrent, dhtTimeout, dhtProviders, queueMs] = start.rest;
-      // The add-on takes 0 and '' for v0.4.5's defaults.
+      // The add-on takes 0 and '' for its defaults (v0.4.6's are v0.4.5's).
+      // '' is its one built-in router, so a start that passed none (as
+      // before #700) doesn't read as today's configuration.
       return {
         routing: routingName(constants(), start.mode),
-        delegatedRouters: start.routers ? start.routers.split(',') : TODAY_CONFIG.delegatedRouters,
+        delegatedRouters: start.routers ? start.routers.split(',') : ADDON_DEFAULT_ROUTERS,
         dhtQueryTimeoutS: dhtTimeout,
         dhtMaxProviders: dhtProviders || TODAY_CONFIG.dhtMaxProviders,
         maxConcurrentRequests: maxConcurrent || TODAY_CONFIG.maxConcurrentRequests,
