@@ -340,13 +340,17 @@ the permanent `{"error","code":-32602}` without gossiping anything;
 uncertain" an engine error still gets. Main answers the core's broadcast
 operation with `rejected` for it (`core/chain-verified.js`), so the core's
 chain-data routing asks no second broadcaster and reports the broadcast as
-rejected; the core rebuilds that refusal with code `-32000` until its reply
-can carry the code. ABI 46-47 (v0.1.16) add no status key either. They add
-`getProofJson` (`eth_getProof`, ABI 46) and `resolveBlockHashJson` (the
-canonical number a block hash names, ABI 47), neither of which Freedom calls:
-`eth_getProof` stays with the other sources, and the core's chain-data routing
-hands Myotis only `latest` reads, so a block-hash selector (EIP-1898) never
-reaches the addon.
+rejected. A core whose `core.hello` offers `myotis_refusal_codes` gets the
+refusal's code as well, `{ rejected: { reason, code: -32602 } }`, and
+rebuilds the adapter's error exactly: code `-32602`,
+`myotisRefusal: 'invalid-params'`. An older core gets
+`{ rejected: { reason } }` and rebuilds it with code `-32000` and
+`myotisRefusal: 'rejected'`. ABI 46-47 (v0.1.16) add no status key either.
+They add `getProofJson` (`eth_getProof`, ABI 46) and `resolveBlockHashJson`
+(the canonical number a block hash names, ABI 47), neither of which Freedom
+calls: `eth_getProof` stays with the other sources, and the core's chain-data
+routing hands Myotis only `latest` reads, so a block-hash selector (EIP-1898)
+never reaches the addon.
 
 The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
 activationTime, forkId, observedPeers }`) is allowlisted only after strict
