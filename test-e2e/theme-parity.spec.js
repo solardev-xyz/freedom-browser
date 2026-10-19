@@ -579,9 +579,10 @@ for (const theme of ['dark', 'light']) {
         await check('private tab context menu', { minSamples: 3 });
         await pw.keyboard.press('Escape');
 
-        // The seeded bookmarks bar holds "vitalik.eth" and "Vitalik CID".
+        // The default bookmarks hold several `.eth` names, so this always
+        // opens a multi-row suggestion list.
         await pw.click('[data-test="address-input"]');
-        await pw.keyboard.type('vital');
+        await pw.keyboard.type('.eth');
         await pw.waitForSelector('#autocomplete-dropdown:not(.hidden) .autocomplete-item');
         await check('private address suggestions', { minSamples: 2 });
       }

@@ -80,6 +80,9 @@ function launchProfile(activeProfile, profileId, options = {}) {
 //
 // Returns one of:
 //   { focused: true }              — a running profile acknowledged the focus
+//                                    (on GNOME Wayland possibly through an
+//                                    xdg-open switch, which it acknowledges
+//                                    once its window is raised)
 //   { focused: false, launch }     — cold-started a new process
 //   { focused: false, error }      — the profile is running but did not respond
 //                                    to the focus request (we don't cold-start a
@@ -108,6 +111,23 @@ async function openOrFocusProfile(activeProfile, profileId, options = {}) {
     options.requestFocus || require('./profile-focus-handoff').requestProfileFocusAsyncAwait;
 
   const target = resolveFocusTarget(profileId);
+  // GNOME on Wayland raises the running profile's window only with an XDG
+  // activation token, which this process can mint for it only through
+  // shell.openExternal: xdg-open launches `freedom x-freedom-profile:<id>`
+  // with the token, and that launch hands it to the running profile through
+  // its single-instance lock (profile-switch-scheme.js, #142). Everywhere
+  // else, and whenever that path is unavailable, the focus-request file below
+  // does the switch. An --open-settings switch keeps to the file: the scheme
+  // carries a profile id and nothing else. A switch the running profile never
+  // confirms (deleted or quit meanwhile, the launch went elsewhere) falls
+  // through to the file too, which reports one that cannot land.
+  if (target?.isLocked && !options.openSettings) {
+    const switchViaXdgOpen =
+      options.switchViaXdgOpen || require('./profile-switch-scheme').switchProfileViaXdgOpen;
+    if (await switchViaXdgOpen(target)) {
+      return { focused: true };
+    }
+  }
   if (target?.isLocked) {
     const focus = await requestFocus(target, { openSettings: options.openSettings === true });
     if (focus?.ok) {

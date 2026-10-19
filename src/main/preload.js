@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   toggleFullscreen: () => ipcRenderer.send('window:toggle-fullscreen'),
+  onFullscreenChanged: (callback) => {
+    const handler = (_event, isFullScreen) => callback(isFullScreen === true);
+    ipcRenderer.on('window:fullscreen-changed', handler);
+    return () => ipcRenderer.removeListener('window:fullscreen-changed', handler);
+  },
   newWindow: () => ipcRenderer.send('window:new'),
   newPrivateWindow: () => ipcRenderer.send('window:new-private'),
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
@@ -283,6 +288,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:prev', handler);
     return () => ipcRenderer.removeListener('tab:prev', handler);
   },
+  onSelectTab: (callback) => {
+    const handler = (_event, position) => callback(position);
+    ipcRenderer.on('tab:select', handler);
+    return () => ipcRenderer.removeListener('tab:select', handler);
+  },
   onMoveTabLeft: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('tab:move-left', handler);
@@ -293,10 +303,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:move-right', handler);
     return () => ipcRenderer.removeListener('tab:move-right', handler);
   },
+  // The app menu's History > Recently Closed rows name the entry to reopen
+  // (#584); Reopen Closed Tab sends none and takes the most recent.
   onReopenClosedTab: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, entryId) => callback(entryId);
     ipcRenderer.on('tab:reopen-closed', handler);
     return () => ipcRenderer.removeListener('tab:reopen-closed', handler);
+  },
+  onHistoryBack: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('history:back', handler);
+    return () => ipcRenderer.removeListener('history:back', handler);
+  },
+  onHistoryForward: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('history:forward', handler);
+    return () => ipcRenderer.removeListener('history:forward', handler);
   },
   onOpenFindBar: (callback) => {
     const handler = () => callback();
@@ -624,8 +646,6 @@ contextBridge.exposeInMainWorld('remoteSigner', {
 contextBridge.exposeInMainWorld('swarmNode', {
   getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
   publishData: (data) => ipcRenderer.invoke('swarm:publish-data', data),
-  publishFile: (filePath) => ipcRenderer.invoke('swarm:publish-file', filePath),
-  publishDirectory: (dirPath) => ipcRenderer.invoke('swarm:publish-directory', dirPath),
   getUploadStatus: (tagUid) => ipcRenderer.invoke('swarm:get-upload-status', tagUid),
 });
 

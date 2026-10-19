@@ -155,6 +155,17 @@ async function tour(theme, failures) {
       await snap(50 + i, `page-${page}`);
     }
   });
+  // The harness launch above pins FREEDOM_TEST_USER_DATA, which turns the
+  // profile manager off, so 52 shows Profiles' error state. A real list needs
+  // a catalog-mode app of its own.
+  await step('profiles-list', async () => {
+    const pctx = await r.profilesPage(theme);
+    try {
+      await shot(pctx.win, `${t}-54-page-profiles-list`);
+    } finally {
+      await pctx.app.close();
+    }
+  });
   await step('private', async () => {
     const pw = await r.privateWindow(ctx);
     await shot(pw, `${t}-60-private-window`);

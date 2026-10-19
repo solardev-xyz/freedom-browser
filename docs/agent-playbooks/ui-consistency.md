@@ -101,10 +101,14 @@ all. Both are known drift waiting on a per-screen kind decision (#239); do not
 repaint them to the pairing without one, and do not read them as evidence the
 pairing above is wrong.
 
-**Sidebar sub-screens.** One header component: chevron, "Back", title, and
-the same close control on every screen (Send, Confirm Transaction, Sign
-Message, Connect, Swarm Access, Confirm Publish, Confirm Message, Feed
-Access, Connect Ledger, Connect Phone).
+**Sidebar sub-screens.** One header component, `lib/subscreen-header.js`:
+chevron, "Back", title (Send, Confirm Transaction, Sign Message, Connect,
+Swarm Access, Confirm Publish, Confirm Message, Feed Access, Connect Ledger,
+Connect Phone). The header has no close control of its own (#238): the
+sidebar's "×" is the one close affordance, and the approval screens
+(`.sidebar-modal`) cover it on purpose, so a pending dApp or Swarm request is
+answered with Reject or Back, never dismissed. Do not add a "×" to a
+sub-screen header.
 
 **Settings sections.** `h2.section-title` for the section, `h3.row-label` (or
 the 12 px uppercase category style) for sub-headings, never a second large

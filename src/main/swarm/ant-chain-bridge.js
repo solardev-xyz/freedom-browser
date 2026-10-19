@@ -21,7 +21,7 @@ const MAX_ERROR_MESSAGE = 500;
 // transaction itself, and nothing is sent again here.
 const BROADCAST_UNCERTAIN = 'Broadcast outcome uncertain; reconcile the signed transaction';
 
-// Ant v0.5.64 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// Ant v0.5.71 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
 // owned-batch/chequebook recovery otherwise.
@@ -201,7 +201,7 @@ function antErrorReply(method, error) {
 }
 
 // How long a transaction's receipt lookups may fail and still reach Ant as
-// "not mined yet". Ant v0.5.64's `wait_for_receipt` polls for 60 s with a
+// "not mined yet". Ant v0.5.71's `wait_for_receipt` polls for 60 s with a
 // backoff capped at 8 s, so past 40 s at least one more poll lands before its
 // deadline and gets the real chain error, instead of Ant reporting a mined
 // transaction as "never mined" after a lasting read outage. Measured from the
@@ -426,7 +426,7 @@ async function startAntChainBridge({
         now() - receiptWait.first < receiptGraceMs &&
         !receiptFailureIsPermanent(error)
       ) {
-        // Ant v0.5.64 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
+        // Ant v0.5.71 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
         // on the first JSON-RPC error, even a passing one, and reports a
         // transaction it already sent as failed (#614: Colibri cannot prove a
         // receipt until the block after it exists). Null is "no receipt yet":

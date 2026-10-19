@@ -214,6 +214,17 @@ describe('settings.html destructive actions follow one rule (#284)', () => {
     expect(SOURCE).toMatch(/class="btn danger" id="shortcuts-restore-defaults"/);
   });
 
+  test('the shortcut conflict row: Swap is primary, Cancel plain, both chords are key chips (#606)', () => {
+    expect(SOURCE).toMatch(/class="btn primary" data-action="swap">Swap</);
+    expect(SOURCE).toMatch(/class="btn" data-action="cancel-conflict">Cancel</);
+    // The pressed combination is a chip like the one offered in the swap, in
+    // both the swappable and the fixed message.
+    const conflict = SOURCE.match(/const renderConflict = [\s\S]*?\n {2}\};/)[0];
+    expect(conflict).not.toMatch(/\$\{esc\(state\.formatted\)\}/);
+    expect(conflict.match(/\$\{kbd\(state\.formatted\)\}/g)).toHaveLength(2);
+    expect(conflict).toContain('${kbd(conflict.swapFormatted)}');
+  });
+
   test('the three re-addable removals are plain', () => {
     // A remembered permission, one at a time…
     expect(SOURCE).toMatch(/<button class="btn" data-action="revoke"/);

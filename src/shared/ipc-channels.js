@@ -94,6 +94,9 @@ module.exports = {
   // Settings > Shortcuts arming/disarming a recording, so the browser-process
   // tab-switch keys (tab-switch-keys.js) let the chord reach the page.
   SHORTCUTS_SET_RECORDING: 'shortcuts:set-recording',
+  // A tab page's digit-row keydown it did not cancel (webview-preload.js), so
+  // tab-switch-keys.js can zoom where the menu accelerator cannot.
+  PAGE_UNHANDLED_KEY: 'page:unhandled-key',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
@@ -108,6 +111,9 @@ module.exports = {
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_TOGGLE_FULLSCREEN: 'window:toggle-fullscreen',
+  // main → chrome: the window entered (true) or left (false) full screen;
+  // the chrome hides itself while it is (browser-fullscreen.js, #78).
+  WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
   WINDOW_NEW: 'window:new',
   // Private windows (ephemeral, non-persisted partition per window)
   WINDOW_NEW_PRIVATE: 'window:new-private',
@@ -200,6 +206,9 @@ module.exports = {
   // Tab navigation
   TAB_NEXT: 'tab:next',
   TAB_PREV: 'tab:prev',
+  // Select a tab by position (Cmd/Ctrl+1…8) or the last tab (Cmd/Ctrl+9);
+  // payload is the 1-based position or 'last' (#717).
+  TAB_SELECT: 'tab:select',
   TAB_MOVE_LEFT: 'tab:move-left',
   TAB_MOVE_RIGHT: 'tab:move-right',
   TAB_REOPEN_CLOSED: 'tab:reopen-closed',

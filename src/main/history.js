@@ -86,6 +86,32 @@ function migrateDatabase() {
 // Prepared statements (lazily initialized)
 let statements = null;
 
+// Listeners told after every write that can change what "recent history"
+// looks like (a visit, a removal, a clear) — the app menu's History submenu
+// lists the latest visits and must drop a removed or cleared page at once.
+const changeListeners = new Set();
+
+/**
+ * Subscribe to history writes. The callback gets no arguments; re-read what
+ * you need. Returns an unsubscribe function.
+ * @param {() => void} listener
+ */
+function onHistoryChanged(listener) {
+  if (typeof listener !== 'function') return () => {};
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function notifyHistoryChanged() {
+  for (const listener of changeListeners) {
+    try {
+      listener();
+    } catch (err) {
+      log.warn('[History] Change listener failed:', err?.message || err);
+    }
+  }
+}
+
 function getStatements() {
   if (statements) return statements;
 
@@ -143,6 +169,7 @@ function addHistoryEntry(entry) {
 
   // Every navigation lands here: verbose keeps it out of main.log (#511).
   log.verbose('[History] Added/updated entry:', url, '(changes:', result.changes, ')');
+  notifyHistoryChanged();
 
   return {
     id: result.lastInsertRowid,
@@ -193,6 +220,7 @@ function removeHistoryEntry(id) {
   const stmt = getStatements().remove;
   const result = stmt.run(id);
   log.info('[History] Removed entry:', id, '(changes:', result.changes, ')');
+  if (result.changes > 0) notifyHistoryChanged();
   return result.changes > 0;
 }
 
@@ -207,6 +235,7 @@ function clearHistory() {
 
   // Vacuum to reclaim space
   getDb().exec('VACUUM');
+  notifyHistoryChanged();
 
   return result.changes;
 }
@@ -341,4 +370,5 @@ module.exports = {
   autocompleteHistory,
   getHistoryPage,
   registerHistoryIpc,
+  onHistoryChanged,
 };

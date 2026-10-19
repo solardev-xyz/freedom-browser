@@ -1,0 +1,5 @@
+- Internal pages look and behave more like their siblings ([#606](https://github.com/solardev-xyz/freedom-browser/issues/606))
+  - Settings keeps its tab icon after moving between sections; Downloads, History and Payments get their own
+  - The error page matches the other warning pages, with "Try again" as its main button
+  - Profile and search engine names are no longer set in a fixed-width font
+  - Profiles lines up with the other list pages and says once when it cannot load

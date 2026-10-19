@@ -204,7 +204,7 @@ function describeSwarmFailure() {
 // the network and a node can still gain peers. Each retry runs a fresh
 // probe (up to 5 minutes), so the waits between them stay short; the
 // count lives in sessionStorage because every retry lands on a new copy
-// of this page. A manual "Try Again", or a load that reached the content in
+// of this page. A manual "Try again", or a load that reached the content in
 // between (no `streak` param), starts the count over.
 const AUTO_RETRY_DELAYS_S = [30, 60, 120, 300, 300, 300];
 // A count older than this belongs to an earlier visit, not this streak.
@@ -241,9 +241,9 @@ function stopAutoRetry(message) {
 // Back/Forward onto this page is the user reading history, not a fresh
 // failure: a countdown started then would retry unasked, and its retry
 // (replayed by the chrome as a new navigation) drops the forward entry the
-// user came back from. So no countdown on a history traversal; Try Again
+// user came back from. So no countdown on a history traversal; Try again
 // still retries.
-const RETRY_PAUSED_TEXT = 'Not trying again automatically. Use Try Again to retry.';
+const RETRY_PAUSED_TEXT = 'Not trying again automatically. Use Try again to retry.';
 
 function reachedByHistoryTraversal() {
   try {

@@ -1498,9 +1498,10 @@ describe('injected provider request timeouts', () => {
   const preloadSource = fs.readFileSync(require.resolve('./webview-preload'), 'utf8');
 
   function extractScript(varName) {
-    const start = preloadSource.indexOf(`${varName}.textContent = \``);
+    const start = preloadSource.indexOf(`const ${varName} = \``);
+    expect(start).toBeGreaterThan(0);
     const bodyStart = preloadSource.indexOf('`', start) + 1;
-    const bodyEnd = preloadSource.indexOf('\n  `;', bodyStart);
+    const bodyEnd = preloadSource.indexOf('\n`;', bodyStart);
     expect(bodyStart).toBeGreaterThan(0);
     expect(bodyEnd).toBeGreaterThan(bodyStart);
     return preloadSource.slice(bodyStart, bodyEnd);
@@ -1537,7 +1538,7 @@ describe('injected provider request timeouts', () => {
     'radicle_editIssueState',
     'radicle_commentPatch',
   ])('radicle %s (can prompt) gets the 300s budget', (method) => {
-    expect(timeoutFor('radicleScript', 'radicle', method)).toBe(300000);
+    expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(300000);
   });
 
   test.each([
@@ -1549,13 +1550,13 @@ describe('injected provider request timeouts', () => {
     'radicle_getSeedStatus',
     'radicle_disconnect',
   ])('radicle %s (never prompts) keeps the 60s budget', (method) => {
-    expect(timeoutFor('radicleScript', 'radicle', method)).toBe(60000);
+    expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(60000);
   });
 
   // Parity with the sibling provider the radicle one was modelled on.
   test('swarm prompt/long-running methods use the same 300s budget', () => {
-    expect(timeoutFor('swarmScript', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
-    expect(timeoutFor('swarmScript', 'swarm', 'swarm_readChunk')).toBe(60000);
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
   });
 });
 
@@ -1643,10 +1644,16 @@ describe('webview-preload private windows', () => {
     // ethereum, swarm and radicle page→host bridges.
     expect(messageListeners).toHaveLength(3);
 
-    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
-    expect(contextBridge.executeInMainWorld).toHaveBeenCalledWith({
-      func: expect.any(Function),
+    // #683: all three providers run in the main world at document start —
+    // ethereum, then swarm, then radicle — with no DOMContentLoaded <script>.
+    const sources = contextBridge.executeInMainWorld.mock.calls.map(([arg]) => {
+      expect(arg).toEqual({ func: expect.any(Function) });
+      return String(arg.func);
     });
+    expect(sources).toHaveLength(3);
+    expect(sources[0]).toContain('/* ethereum inject source stub */');
+    expect(sources[1]).toContain('FREEDOM_SWARM_REQUEST');
+    expect(sources[2]).toContain('FREEDOM_RADICLE_REQUEST');
     expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
       'DOMContentLoaded'
     );
@@ -1679,17 +1686,22 @@ describe('webview-preload private windows', () => {
     });
 
     expect(documentHandlers.DOMContentLoaded).toBeUndefined();
+    expect(scripts).toHaveLength(3);
     expect(scripts[0].textContent).toBe('/* ethereum inject source stub */');
-    expect(head.insertBefore).toHaveBeenNthCalledWith(1, scripts[0], null);
-    expect(scripts[0].remove).toHaveBeenCalled();
+    expect(scripts[1].textContent).toContain('FREEDOM_SWARM_REQUEST');
+    expect(scripts[2].textContent).toContain('FREEDOM_RADICLE_REQUEST');
+    scripts.forEach((script, i) => {
+      expect(head.insertBefore).toHaveBeenNthCalledWith(i + 1, script, null);
+      expect(script.remove).toHaveBeenCalled();
+    });
   });
 });
 
-// #432: internal pages run `script-src 'self'`, so an inline <script> shim
-// injected into them is refused by their CSP and only logs a violation. They
-// reach main through freedomAPI and have no use for window.swarm /
-// window.radicle, so those two DOM-injected shims are skipped there — and
-// still injected into every web page.
+// #432: internal pages reach main through freedomAPI and have no use for
+// window.swarm / window.radicle, so those two shims are skipped there — and
+// still installed into every web page. Since #683 they run in the main world
+// through executeInMainWorld (like window.ethereum) rather than as an inline
+// <script>, so no shim is inserted into the DOM on either kind of page.
 describe('webview-preload page-world shims on internal pages', () => {
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -1706,10 +1718,10 @@ describe('webview-preload page-world shims on internal pages', () => {
     jest.restoreAllMocks();
   });
 
-  // Source of every <script> actually inserted into the page.
-  const injectedScripts = (location) => {
+  // Sources run in the main world, and of every <script> inserted into the page.
+  const injected = (location) => {
     const head = { firstChild: null, insertBefore: jest.fn() };
-    loadWebviewPreloadModule({
+    const { contextBridge } = loadWebviewPreloadModule({
       location,
       documentOverrides: {
         createElement: jest.fn(() => ({ remove: jest.fn(), textContent: '' })),
@@ -1717,28 +1729,34 @@ describe('webview-preload page-world shims on internal pages', () => {
         readyState: 'complete',
       },
     });
-    return head.insertBefore.mock.calls.map(([script]) => script.textContent);
+    return {
+      mainWorld: contextBridge.executeInMainWorld.mock.calls.map(([{ func }]) => String(func)),
+      scripts: head.insertBefore.mock.calls.map(([script]) => script.textContent),
+    };
   };
 
-  test('a web page gets the window.swarm and window.radicle shims', () => {
-    const sources = injectedScripts({
+  test('a web page gets the window.swarm and window.radicle shims in the main world', () => {
+    const { mainWorld, scripts } = injected({
       href: 'https://dapp.example/',
       protocol: 'https:',
       pathname: '/',
     });
-    expect(sources.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
-    expect(sources.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
+    expect(mainWorld.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
+    expect(mainWorld.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
+    expect(scripts).toEqual([]);
   });
 
   test.each(['history.html', 'settings.html', 'error.html'])(
-    'internal page %s gets no inline shim at all',
+    'internal page %s gets neither shim',
     (file) => {
-      const sources = injectedScripts({
+      const { mainWorld, scripts } = injected({
         href: `file:///app/pages/${file}`,
         protocol: 'file:',
         pathname: `/app/pages/${file}`,
       });
-      expect(sources).toEqual([]);
+      expect(mainWorld.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(false);
+      expect(mainWorld.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(false);
+      expect(scripts).toEqual([]);
     }
   );
 });
@@ -1982,7 +2000,8 @@ describe('webview-preload adblock scriptlets', () => {
     expect(ipcRenderer.invoke).not.toHaveBeenCalled();
     expect(ipcRenderer.on).not.toHaveBeenCalled();
     expect(Object.keys(documentHandlers)).toHaveLength(0);
-    expect(Object.keys(windowCaptureHandlers)).toHaveLength(0);
+    // Bar the digit-row zoom report, which has to run wherever focus is.
+    expect(Object.keys(windowCaptureHandlers)).toEqual(['keydown']);
   });
 
   // Same-origin inheriting documents: a page can reach into these
@@ -2083,8 +2102,8 @@ describe('webview-preload adblock scriptlets', () => {
       syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
     });
     expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('freedomAPI', expect.any(Object));
-    // Scriptlets + the ethereum provider.
-    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
+    // Scriptlets + the ethereum, swarm and radicle providers.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -2591,5 +2610,84 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
       // Private, per main: the provider source is not even fetched.
       expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_ETHEREUM_INJECT_SOURCE);
     });
+  });
+});
+
+// A digit-row zoom press (AZERTY Ctrl+`6` → `-`) the page did not cancel is
+// reported to main (tab-switch-keys.js). A keydown is dispatched only in the
+// focused frame's window, so the reporter has to run in a sub-frame too, or a
+// press made with focus in an iframe would never zoom.
+describe('webview-preload digit-row zoom report', () => {
+  const azerty6 = {
+    key: '-',
+    code: 'Digit6',
+    ctrlKey: true,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+  };
+  const keydown = (overrides = {}) => ({
+    isTrusted: true,
+    isComposing: false,
+    defaultPrevented: false,
+    ...azerty6,
+    ...overrides,
+  });
+  const reports = (ipcRenderer) =>
+    ipcRenderer.send.mock.calls.filter(([channel]) => channel === IPC.PAGE_UNHANDLED_KEY);
+
+  const webLocation = {
+    href: 'https://docs.example/edit',
+    protocol: 'https:',
+    pathname: '/edit',
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    delete global.origin;
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['the main frame', false],
+    ['a sub-frame', true],
+  ])('reports an uncancelled press made in %s', (_label, subframe) => {
+    const { ipcRenderer, windowCaptureHandlers } = loadWebviewPreloadModule({
+      location: webLocation,
+      subframe,
+    });
+    const onKeydown = windowCaptureHandlers.keydown;
+    expect(typeof onKeydown).toBe('function');
+
+    onKeydown(keydown());
+    // Decided after dispatch, so a page listener can still cancel it.
+    expect(reports(ipcRenderer)).toHaveLength(0);
+    jest.runAllTimers();
+    expect(reports(ipcRenderer)).toEqual([[IPC.PAGE_UNHANDLED_KEY, azerty6]]);
+
+    // A page that cancels it keeps it.
+    const cancelled = keydown();
+    onKeydown(cancelled);
+    cancelled.defaultPrevented = true;
+    jest.runAllTimers();
+    // Synthetic, composing, unmodified, the digit itself, off the digit row.
+    onKeydown(keydown({ isTrusted: false }));
+    onKeydown(keydown({ isComposing: true }));
+    onKeydown(keydown({ ctrlKey: false }));
+    onKeydown(keydown({ key: '6' }));
+    onKeydown(keydown({ code: 'Minus' }));
+    jest.runAllTimers();
+    expect(reports(ipcRenderer)).toHaveLength(1);
   });
 });

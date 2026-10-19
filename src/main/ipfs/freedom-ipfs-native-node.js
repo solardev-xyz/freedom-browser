@@ -6,6 +6,19 @@ const { loadNativeBinding, isNativeBindingAvailable } = require('./freedom-ipfs-
 const BUFFER_SIZE = 64 * 1024;
 const ATTEMPT_TIMEOUT_MS = 30_000;
 const REQUEST_QUEUE_TIMEOUT_MS = 15_000;
+// Delegated routers the node asks for content providers (and IPNS records),
+// comma-separated. The addon queries every entry in parallel and merges the
+// answers. An empty string would leave it on its single built-in default
+// (delegated-ipfs.dev); when that one lookup failed from some networks, the
+// DHT fallback found no usable provider and pages 502'd with "no HTTP-capable
+// providers found". cid.contact is the second, independent index (#700).
+// Known cost (freedom-ipfs v0.4.6): the same list also feeds IPNS, and the
+// addon's DelegatedIpnsResolver reports "not found" if any endpoint 404s.
+// cid.contact always 404s IPNS, so when delegated-ipfs.dev is unreachable an
+// /ipns/<key> load fails as "name not found" instead of as a network error.
+// Diagnostics only (nothing is negatively cached); tracked upstream in
+// https://github.com/solardev-xyz/freedom-ipfs/issues/30.
+const DELEGATED_ROUTERS = 'https://delegated-ipfs.dev/routing/v1,https://cid.contact/routing/v1';
 // How long stopDispatcher() waits for the worker to acknowledge a stop before
 // resorting to terminate(), and how long it then waits for the thread to end
 // once it has acknowledged. The acknowledgement is what proves no
@@ -382,7 +395,7 @@ class FreedomIpfsNativeNode {
     try {
       ok = await asyncLifecycleExport(addon, 'nodeStartNativeGatewayOnlineAsync')(
         handle,
-        '',
+        DELEGATED_ROUTERS,
         addon.constants.ROUTING_MODE_AUTO,
         0,
         3,
@@ -399,6 +412,7 @@ class FreedomIpfsNativeNode {
     }
     this.nodeHandle = handle;
     this.startDispatcher();
+    log.info(`[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`);
     return true;
   }
 
@@ -625,6 +639,7 @@ module.exports = {
   NativeGatewayController,
   ATTEMPT_TIMEOUT_MS,
   REQUEST_QUEUE_TIMEOUT_MS,
+  DELEGATED_ROUTERS,
   DISPATCHER_STOP_TIMEOUT_MS,
   DISPATCHER_EXIT_GRACE_MS,
 };

@@ -77,7 +77,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.64",
+      "version": "v0.5.71",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
@@ -95,7 +95,7 @@
     },
     {
       "name": "freedom-ipfs",
-      "version": "v0.4.5",
+      "version": "v0.4.6",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/freedom-ipfs" },
@@ -137,7 +137,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.14",
+      "version": "v0.1.16",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
