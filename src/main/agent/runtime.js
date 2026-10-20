@@ -158,7 +158,10 @@ function createFreedomAgentRuntime(options = {}) {
     isTrustedSender: options.isTrustedSender,
     isEnabled,
     isProviderSettingsSender,
-    onProviderChanged: () => broadcastToAllWebContents('agent:provider:changed', {}),
+    onProviderChanged: () => {
+      dictation.connectionsChanged();
+      broadcastToAllWebContents('agent:provider:changed', {});
+    },
     onEnabledChanged: listener => onSettingsChanged((next, previous) => {
       if (next.enableAi === previous.enableAi) return;
       featureController.abort();

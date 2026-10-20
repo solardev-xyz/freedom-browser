@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { createHash } = require('crypto');
+jest.mock('child_process', () => ({ execFile: jest.fn() }));
+const { execFile } = require('child_process');
 const { LocalDictation } = require('./dictation-local');
 
 describe('optional local dictation downloads', () => {
@@ -37,4 +39,48 @@ describe('optional local dictation downloads', () => {
     expect(local.ready()).toBe(false);
     expect(fs.readdirSync(path.dirname(local.root))).toEqual([]);
   });
+});
+
+
+test('startup removes only abandoned profile-owned phrase directories', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-stale-test-'));
+  try {
+    const scratch = path.join(root, 'dictation-audio');
+    fs.mkdirSync(path.join(scratch, 'phrase-Ab1234'), { recursive: true });
+    fs.writeFileSync(path.join(scratch, 'phrase-Ab1234', 'recording.wav'), 'private fixture audio');
+    fs.writeFileSync(path.join(scratch, 'unrelated.txt'), 'keep');
+    new LocalDictation({ dataDir: root });
+    expect(fs.readdirSync(scratch)).toEqual(['unrelated.txt']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('Windows install places dependent libraries beside the executable without replacing archive bin files', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-dll-test-'));
+  try {
+    const local = new LocalDictation({ dataDir: root, platform: 'win32', arch: 'x64' });
+    jest.spyOn(local, 'download').mockResolvedValue();
+    const stem = 'sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-no-tts';
+    const entries = ['bin/sherpa-onnx-offline.exe', 'lib/onnxruntime.dll', 'lib/shared.dll', 'bin/shared.dll'];
+    execFile.mockImplementation((_exe, args, _options, callback) => {
+      if (args[0] === '-tjf') callback(null, entries.map(entry => `${stem}/${entry}`).join('\n'));
+      else callback(null, Buffer.from(args[2]));
+    });
+    await local.install(new AbortController().signal);
+    expect(local.ready()).toBe(true);
+    expect(fs.readFileSync(path.join(local.root, 'runtime', 'bin', 'onnxruntime.dll'), 'utf8')).toContain('/lib/onnxruntime.dll');
+    expect(fs.readFileSync(path.join(local.root, 'runtime', 'bin', 'shared.dll'), 'utf8')).toContain('/bin/shared.dll');
+  } finally { execFile.mockReset(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('an invalid audio scratch directory disables local inference without breaking browser construction', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-blocked-test-'));
+  try {
+    fs.writeFileSync(path.join(root, 'dictation-audio'), 'not a directory');
+    const local = new LocalDictation({ dataDir: root });
+    jest.spyOn(local, 'ready').mockReturnValue(true);
+    await expect(local.transcribe(Buffer.alloc(100), 'auto', new AbortController().signal)).rejects.toThrow('could not be cleared');
+    expect(fs.readFileSync(path.join(root, 'dictation-audio'), 'utf8')).toBe('not a directory');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

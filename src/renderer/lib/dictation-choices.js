@@ -20,6 +20,15 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   const languageLabel = element('label', 'Language');
   const language = element('select'); language.setAttribute('aria-label', 'Dictation language'); languageLabel.appendChild(language);
   const detail = element('p', '', 'agent-dictation-help');
+  const unavailable = element('p', '', 'agent-dictation-help');
+  const manage = element('a', 'Voice dictation settings…', 'agent-dictation-help');
+  manage.href = '#';
+  manage.addEventListener('click', event => {
+    event.preventDefault();
+    const blocked = state?.options.find(option => !option.available && option.providerId === state.preferences.providerId) ||
+      state?.options.find(option => !option.available && option.providerId !== 'local');
+    host.dispatchEvent(new CustomEvent('dictation-settings', { bubbles: true, detail: { providerId: blocked?.providerId } }));
+  });
   const zeroLabel = element('label', '', 'agent-dictation-retention');
   const zero = element('input'); zero.type = 'checkbox';
   zeroLabel.append(zero, document.createTextNode('Require zero data retention on OpenRouter'));
@@ -34,7 +43,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     host.dispatchEvent(new CustomEvent('dictation-connect', { bubbles: true }));
   });
   actions.append(use, cancel);
-  host.replaceChildren(...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, zeroLabel, status, actions, connect);
+  host.replaceChildren(...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, unavailable, manage, zeroLabel, status, actions, connect);
   const renderSelection = () => {
     const option = state?.options.find(option => option.providerId === service.value);
     detail.textContent = option ? `${option.detail} ${option.price}.` : 'Connect an API-key provider in Settings → AI, or choose local dictation.';
@@ -48,6 +57,8 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   };
   const render = response => {
     state = response;
+    unavailable.textContent = state.options.filter(option => !option.available && option.providerId !== 'local').map(option => `${option.name}: ${option.detail}`).join(' ');
+    unavailable.hidden = !unavailable.textContent;
     service.replaceChildren(); language.replaceChildren();
     for (const option of state.options) {
       const node = element('option', `${option.name}${option.available ? '' : ' (unavailable)'}`);
@@ -92,7 +103,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
       if (current !== generation) return;
       if (!response?.ok) throw new Error(response?.error?.message || 'Could not select dictation.');
       render(response); status.textContent = 'Dictation is ready.';
-      onChosen(response);
+      onChosen(response, { downloaded: option.providerId === 'local' && !option.ready });
     } catch (error) { if (current === generation) status.textContent = error.message; }
     finally { if (current === generation) { busy = false; renderSelection(); } }
   };

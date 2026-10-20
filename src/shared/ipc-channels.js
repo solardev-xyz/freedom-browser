@@ -244,7 +244,6 @@ module.exports = {
   AGENT_DICTATION_BEGIN: 'agent:dictation:begin',
   AGENT_DICTATION_APPEND: 'agent:dictation:append',
   AGENT_DICTATION_FINISH: 'agent:dictation:finish',
-  AGENT_DICTATION_TRANSCRIBE: 'agent:dictation:transcribe',
   AGENT_DICTATION_CANCEL: 'agent:dictation:cancel',
   AGENT_DICTATION_EVENT: 'agent:dictation:event',
   AGENT_MCP_CONNECTIONS: 'agent:mcp:connections',

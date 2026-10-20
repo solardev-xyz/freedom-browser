@@ -1781,7 +1781,7 @@ function updateSendAvailability() {
     disabled = !currentRunId;
   }
   elements.run.dataset.action = action;
-  elements.run.disabled = disabled || !aiEnabled || dictationBusy;
+  elements.run.disabled = disabled || !aiEnabled || (action === 'send' && dictationBusy);
   elements.run.setAttribute('aria-label', label);
   elements.run.title = label;
 }
@@ -2444,7 +2444,7 @@ function workspaceCommandPermissionDetails(permission, reason) {
 }
 
 function renderApproval(request) {
-  dictation?.cancel();
+  dictation?.interrupt('Dictation stopped for an approval request.');
   approvalReadyAt = Math.max(Date.now(), lastApprovalDecisionAt + 600, lastDisplayedApprovalId && lastDisplayedApprovalId !== request?.approvalId ? Date.now() + 600 : 0);
   lastDisplayedApprovalId = request?.approvalId || lastDisplayedApprovalId;
   if (!request || typeof request.approvalId !== 'string') return;
@@ -3901,7 +3901,7 @@ async function startRun(options = {}) {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return false;
   }
-  const sharedPage = currentConversationId ? null : pageContextTab();
+  const sharedPage = currentConversationId || options.sharePage === false ? null : pageContextTab();
   const rendererTabId = currentConversationId
     ? conversationRendererTabId
     : Number.isSafeInteger(sharedPage?.id)
@@ -4019,8 +4019,12 @@ async function steerRun() {
   }
 }
 
-function submitComposer({ allowStop = false } = {}) {
-  if (dictationBusy) return;
+function submitComposer({ allowStop = false, sharePage = true } = {}) {
+  if (dictationBusy) {
+    if (elements.run.dataset.action === 'stop' && allowStop) { dictation?.interrupt('Dictation stopped with Agent.'); void stopRun(); }
+    else if (elements.run.dataset.action === 'resume') { dictation?.interrupt('Dictation stopped before resuming Agent.'); void resumeRun(); }
+    return;
+  }
   if (currentRunStatus === 'running') {
     if (elements.prompt.value.trim()) {
       void steerRun();
@@ -4030,7 +4034,7 @@ function submitComposer({ allowStop = false } = {}) {
   } else if (currentRunStatus === 'paused') {
     void resumeRun(elements.prompt.value.trim());
   } else if (currentRunStatus === 'idle') {
-    void startRun();
+    void startRun({ sharePage });
   }
 }
 
@@ -4401,7 +4405,7 @@ export function initAgentUi(options = {}) {
       ['idle', 'running', 'paused'].includes(currentRunStatus),
     onBusy: value => { dictationBusy = value; updateSendAvailability(); },
     onInput: updateSendAvailability, connectProvider: showProviderSetup,
-    openSettings: () => { setAgentFirstMode(false); closePanel(); openAiSettings('ai/voice'); },
+    openSettings: providerId => { setAgentFirstMode(false); closePanel(); openAiSettings(providerId ? `ai/voice/${providerId}` : 'ai/voice'); },
     onMenuOpening: () => { closeComposerPopovers(); options.onMenuOpening?.(); } });
   byId('agent-open-ai-settings')?.addEventListener('click', showProviderSetup);
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
@@ -4576,7 +4580,7 @@ export function initAgentUi(options = {}) {
       elements.prompt.value = button.dataset.agentExample;
       updateSendAvailability();
       focusComposer();
-      submitComposer();
+      submitComposer({ sharePage: false });
     });
   });
   elements.prompt.addEventListener('keydown', (event) => {
@@ -4748,6 +4752,7 @@ export function initAgentUi(options = {}) {
     providerUi.invalidateCatalog();
     void loadProviderCatalog();
     void refreshProvider();
+    void dictation?.refreshDestination();
   });
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {

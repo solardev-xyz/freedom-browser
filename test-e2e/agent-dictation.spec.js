@@ -69,6 +69,10 @@ async function prepare(window, electronApp, providerId = 'openrouter') {
     return window.electronAPI.configureHostedAgentProvider(providerId, model, 'dictation-fixture-key');
   }, providerId);
   expect(connected.ok).toBe(true);
+  // Explicit test consent to standard audio routing; OpenRouter cannot honor
+  // the default per-request zero-retention requirement for transcription.
+  if (providerId === 'openrouter')
+    expect((await window.evaluate(() => window.electronAPI.chooseAgentDictation({ requireZeroRetention: false }))).ok).toBe(true);
   await window.locator('#agent-toggle-btn').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
   await window.evaluate(() => {
@@ -158,7 +162,7 @@ test('menu switches provider without recording and opens voice management direct
     const result = await window.electronAPI.getAgentProviderCatalog();
     const model = result.catalog.find(provider => provider.providerId === 'openai').models[0].id;
     await window.electronAPI.configureHostedAgentProvider('openai', model, 'dictation-fixture-key');
-    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true });
+    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: false });
   });
   const menu = window.locator('#agent-dictation-menu');
   await window.locator('#agent-prompt').fill('Keep my draft');
@@ -166,7 +170,7 @@ test('menu switches provider without recording and opens voice management direct
   await menu.getByRole('menuitemradio', { name: /OpenAI/ }).click();
   await expect(menu).toBeHidden();
   await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences)).toEqual({
-    providerId: 'openai', language: 'de', requireZeroRetention: true,
+    providerId: 'openai', language: 'de', requireZeroRetention: false,
   });
   await expect(window.locator('#agent-dictation-feedback')).toBeHidden();
   await window.locator('#agent-dictation-options').click();
@@ -186,7 +190,7 @@ test('menu switches provider without recording and opens voice management direct
 
 test('closing during transcription discards late text and releases audio', async ({ window, electronApp }) => {
   await prepare(window, electronApp);
-  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true }));
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: false }));
   await window.locator('#agent-prompt').fill('Keep this draft');
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
@@ -208,7 +212,7 @@ test('Voice settings use service cards and detail pages in both themes, preservi
     const result = await window.electronAPI.getAgentProviderCatalog();
     const model = result.catalog.find(provider => provider.providerId === 'openai').models[0].id;
     await window.electronAPI.configureHostedAgentProvider('openai', model, 'dictation-fixture-key');
-    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'auto', requireZeroRetention: true });
+    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false });
   });
   const chatModel = (await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.modelId;
   const before = recordings.length;
@@ -231,7 +235,7 @@ test('Voice settings use service cards and detail pages in both themes, preservi
     await expect(voice.getByRole('link', { name: /OpenAI/ })).toContainText('In use');
     await settings.screenshot({ path: testInfo.outputPath(`voice-services-${theme}.png`) });
     await voice.getByRole('link', { name: /OpenRouter/ }).click();
-    await expect(voice).toContainText('Audio is sent to OpenRouter');
+    await expect(voice).toContainText('OpenRouter cannot enforce this policy for dictation');
     await voice.getByLabel('Require zero data retention').uncheck();
     await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences)).toMatchObject({
       providerId: 'openai', language: 'de', requireZeroRetention: false,
@@ -252,7 +256,7 @@ test('Voice settings use service cards and detail pages in both themes, preservi
     await expect(voice.getByRole('link', { name: 'Connect provider' })).toHaveAttribute('href', '#ai/providers/venice');
     await settings.locator('#ai-voice-breadcrumbs').getByRole('link', { name: 'Voice dictation', exact: true }).click();
   }
-  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true }));
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: false }));
   await settings.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('In use');
   await electronApp.evaluate(({ BrowserWindow }) => {
@@ -310,4 +314,49 @@ test('a phrase appears during a pause while the microphone continues, and Escape
   await window.keyboard.press('Escape');
   await expect(window.locator('#agent-prompt')).toHaveValue('Build');
   await expect(window.locator('#agent-run')).toBeEnabled();
+});
+
+
+test('OpenRouter retention requirement blocks capture and can only be relaxed explicitly in Voice settings', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ requireZeroRetention: true }));
+  const before = recordings.length;
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-dictation-panel')).toBeVisible();
+  expect(await window.evaluate(() => Boolean(window.dictationTestStream))).toBe(false);
+  expect(recordings.length).toBe(before);
+  await window.keyboard.press('Escape');
+  const settings = await openProviderSettings(window);
+  await settings.locator('.nav-item[data-target="appearance"]').click();
+  await expect(settings.locator('#appearance')).toBeVisible();
+  await settings.locator('#settings-search').fill('Require zero data retention');
+  await expect(settings.locator('#settings-search-list')).toContainText('Voice dictation');
+  await settings.locator('#settings-search-list').getByRole('button', { name: /Require zero data retention/ }).click();
+  await expect(settings).toHaveURL(/#ai\/voice\/openrouter$/);
+  const voice = settings.locator('#ai-dictation-settings');
+  await expect(voice).toContainText('cannot enforce');
+  await expect(voice.getByLabel('Require zero data retention')).toBeChecked();
+  await voice.getByLabel('Require zero data retention').uncheck();
+  await expect(voice.getByRole('button', { name: 'Used for dictation', exact: true })).toBeVisible();
+  expect((await window.evaluate(() => window.electronAPI.getAgentDictationState())).options.find(option => option.providerId === 'openrouter').available).toBe(true);
+  expect(recordings.length).toBe(before);
+});
+
+
+test('blocked first-use setup explains the policy and links directly to its Voice service settings', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ requireZeroRetention: true }));
+  const before = recordings.length;
+  await window.locator('#agent-dictation').click();
+  const panel = window.locator('#agent-dictation-panel');
+  await expect(panel).toContainText('cannot enforce per-request zero data retention');
+  await panel.getByRole('link', { name: 'Voice dictation settings…', exact: true }).click();
+  let settings;
+  await expect.poll(() => {
+    settings = window.context().pages().find(page => page.url().includes('/pages/settings.html'));
+    return settings?.url();
+  }).toContain('#ai/voice/openrouter');
+  await expect(settings.locator('#ai-dictation-settings').getByLabel('Require zero data retention')).toBeChecked();
+  expect(recordings.length).toBe(before);
+  expect(await window.evaluate(() => Boolean(window.dictationTestStream))).toBe(false);
 });

@@ -35,10 +35,6 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
   const progress = node('progress', '', 'voice-download-progress');
   progress.setAttribute('aria-label', 'Local dictation download');
 
-  const selectedId = () =>
-    state?.options.find(
-      (option) => option.providerId === state.preferences.providerId && option.available
-    )?.providerId || state?.suggestedProviderId;
   const optionFor = (id) => state?.options.find((option) => option.providerId === id);
   const nameFor = (id) => (id === 'local' ? 'On this device' : SERVICES[id]?.name);
   const message = (text = '', error = false) => {
@@ -85,7 +81,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
           : option?.model || 'Connect an API account'
       )
     );
-    const active = state.preferences.providerId === id && option?.ready && option?.available;
+    const active = (state.preferences.providerId || state.suggestedProviderId) === id && option?.ready && option?.available;
     let label = active
       ? 'In use'
       : !option
@@ -198,7 +194,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     );
     if (option?.price) card.appendChild(preferenceRow('Billing', option.price));
     const children = [summary, card];
-    if (page === 'openrouter' && option?.available) {
+    if (page === 'openrouter' && option) {
       const toggle = node('label', '', 'toggle');
       const zero = node('input');
       zero.type = 'checkbox';
@@ -213,8 +209,8 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
       const row = preferenceRow(
         'Require zero data retention',
         option.requireZeroRetention
-          ? 'Required by this connection. Audio is routed only to services with zero data retention.'
-          : 'Route audio only to services with zero data retention.'
+          ? 'Required by this connection. OpenRouter dictation is unavailable because its audio endpoint cannot enforce this policy.'
+          : 'OpenRouter cannot enforce this policy for dictation. Keep it on to block audio uploads, or turn it off to use standard routing.'
       );
       const holder = node('div', '', 'row-control');
       holder.appendChild(toggle);
@@ -228,7 +224,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     }
     const actions = node('div', '', 'agent-config-actions');
     if (option?.available) {
-      const active = state.preferences.providerId === page && option.ready;
+      const active = (state.preferences.providerId || state.suggestedProviderId) === page && option.ready;
       const use = node(
         'button',
         installing && local
@@ -307,8 +303,6 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
   };
   const savePreferences = async (patch = {}) => {
     if (busy || !state) return;
-    const providerId = selectedId() || state.options.find((option) => option.available)?.providerId;
-    if (!providerId) return;
     const current = ++operation;
     const focusId = document.activeElement?.id;
     const previousPage = page;
@@ -317,7 +311,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     message('Updating dictation settings…');
     render();
     try {
-      const response = await save({ ...state.preferences, providerId, ...patch });
+      const response = await save(patch);
       if (current !== operation) return;
       state = response;
       message('Settings updated.');
@@ -335,8 +329,8 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
   const save = async (preferences) => {
     const response = await api.chooseAgentDictation({
       ...preferences,
-      requireZeroRetention:
-        optionFor(preferences.providerId)?.requireZeroRetention || preferences.requireZeroRetention,
+      ...(optionFor(preferences.providerId || state.preferences.providerId)?.requireZeroRetention
+        ? { requireZeroRetention: true } : {}),
     });
     if (!response?.ok)
       throw new Error(response?.error?.message || 'Could not change dictation settings.');

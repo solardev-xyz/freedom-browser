@@ -691,7 +691,7 @@ const settingsSearchAllRows = (el, out = []) => {
     if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
     const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
     if (isRow) {
-      if (settingsSearchHidden(child)) continue;
+      if (settingsSearchHidden(child) && child.getAttribute('data-search-only') !== 'true') continue;
       out.push(child);
     }
     settingsSearchAllRows(child, out);
@@ -712,7 +712,9 @@ const settingsSearchRows = (section) =>
       row,
       label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
-    .filter((entry) => entry.label);
+    .filter((entry) => entry.label)
+    .filter((entry, _index, entries) => entry.row.getAttribute('data-search-only') !== 'true' ||
+      !entries.some(other => other.label === entry.label && other.row.getAttribute('data-search-only') !== 'true'));
 
 // One entry per section plus one per labelled row, in document order.
 // `sectionLabels` maps a section id to its nav label, the fallback for
@@ -942,7 +944,7 @@ const settingsSearchResets = [];
     const section = document.getElementById(result.sectionId);
     if (!section) return null;
     if (result.element === section) return section;
-    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label);
+    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label && entry.row.getAttribute('data-search-only') !== 'true');
     return (matches[result.labelIndex || 0] || matches[0])?.row || null;
   };
 

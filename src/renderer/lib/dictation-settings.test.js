@@ -53,7 +53,7 @@ function setup({ localReady = false } = {}) {
   const api = {
     getAgentDictationState: jest.fn(async () => state),
     chooseAgentDictation: jest.fn(async (preferences) => {
-      state = { ...state, preferences };
+      state = { ...state, preferences: { ...state.preferences, ...preferences } };
       return state;
     }),
     installAgentDictation: jest.fn(),
@@ -233,4 +233,13 @@ test('connection-enforced zero retention stays locked and is preserved when sele
     providerId: 'openrouter',
     requireZeroRetention: true,
   });
+});
+
+
+test('changing language does not replace a disconnected remembered service with a suggestion', async () => {
+  const ctx = setup(); await ctx.view.refresh();
+  ctx.getState().preferences.providerId = 'missing-service';
+  const language = tree(ctx.host).find(el => el.tagName === 'SELECT');
+  language.value = 'de'; language.dispatch('change'); await flush();
+  expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({ language: 'de' });
 });

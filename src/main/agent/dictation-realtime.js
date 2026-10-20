@@ -54,7 +54,9 @@ class DictationRealtime {
       if (event.type === 'input_audio_buffer.committed') {
         if (!this.pending || typeof event.item_id !== 'string' || this.commits.some(item => item.id === event.item_id))
           throw failure('The live transcript could not be ordered. Please try again.');
-        this.commits.push({ id: event.item_id, previous: event.previous_item_id || null });
+        // Some transcription sessions omit predecessor metadata. WebSocket
+        // commit acknowledgements then provide the available audio order.
+        this.commits.push({ id: event.item_id, previous: event.previous_item_id || this.commits.at(-1)?.id || null });
         if (!this.items.has(event.item_id)) this.items.set(event.item_id, { text: '', final: false });
         // Completion events may arrive out of order. Commits follow the audio
         // order through previous_item_id; never order by completion time.

@@ -12,7 +12,7 @@ test('dictation IPC keeps microphone/audio authority out of Settings and untrust
   const call = (channel, sender, payload) => handlers.get(channel)({ sender }, payload);
   expect(await call(IPC.AGENT_DICTATION_STATE, 'page')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_BEGIN, 'settings')).toMatchObject({ ok: false });
-  expect(await call(IPC.AGENT_DICTATION_TRANSCRIBE, 'settings')).toMatchObject({ ok: false });
+  expect(handlers.has('agent:dictation:transcribe')).toBe(false);
   expect(await call(IPC.AGENT_DICTATION_APPEND, 'settings')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_FINISH, 'settings')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_APPEND, 'page')).toMatchObject({ ok: false });
@@ -23,5 +23,5 @@ test('dictation IPC keeps microphone/audio authority out of Settings and untrust
   expect(await call(IPC.AGENT_DICTATION_CANCEL, 'chrome')).toMatchObject({ ok: true });
   service.state.mockImplementation(() => { throw new Error('secret upstream data'); }); enabled = true;
   expect(JSON.stringify(await call(IPC.AGENT_DICTATION_STATE, 'settings'))).not.toContain('secret');
-  await dispose(); expect(service.cancelAll).toHaveBeenCalled(); expect(ipcMain.removeHandler).toHaveBeenCalledTimes(8);
+  await dispose(); expect(service.cancelAll).toHaveBeenCalled(); expect(ipcMain.removeHandler).toHaveBeenCalledTimes(7);
 });

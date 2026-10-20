@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-20
-Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain skills planned
+Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain research complete; implementation planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
@@ -11,9 +11,10 @@ The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
-AI3 example prompts are implemented; AI4 dictation has an experimental first
-draft with incremental text awaiting its next microphone/provider smoke. AI5 domain skills remains
-planned. Ordinary browsing remains a complete experience with AI off.
+AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation has an experimental first
+draft with incremental text and service-management pages; maintainer OpenRouter smoke passed.
+AI1–AI4 received a further Claude review with repairs tracked below. AI5 domain
+research is complete; implementation has not started. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -372,7 +373,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Initial microphone smoke passed; incremental text implemented on experiment/agent-dictation for next smoke |
-| 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
+| 5 | AI5 — Domain skills | Give a published site a name and update it later | Read-only contract research complete; typed wallet adapter/skills implementation next |
 
 AI3 can ship before dictation while AI4's transcription backend is evaluated.
 AI5 starts with binding an already-owned name, then purchases and renewals, so
@@ -507,6 +508,20 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-20 overnight review:** Claude independently reviewed AI1–AI4 through
+Herdr. Three medium and nine low findings were investigated and repaired; second
+pass and final focused review reported no remaining actionable defects.
+[Review and qualification record](../docs/audits/agent-ai-entrypoints-review-2026-10.md):
+lint clean; 473 unit suites / 10,652 tests; 18 relevant Electron tests passed. Most importantly,
+OpenRouter's audio endpoint does **not** honor the per-request retention routing
+used by chat. The default zero-retention preference now blocks OpenRouter
+dictation; users must explicitly turn it off on the Voice detail page for standard
+routing. Connection-enforced ZDR remains locked. Earlier successful maintainer
+OpenRouter smokes tested transcription, not enforcement of those ignored flags.
+See [dictation qualification](../docs/agent-dictation.md) for privacy/lifecycle
+repairs and remaining live/cross-platform checks.
+
+
 **2026-10-20 Voice settings redesign:** replaced the setup-form layout with
 provider-style service cards, active-service badges, an Add service catalogue,
 and individual service pages with breadcrumbs. Shared language preferences stay
@@ -595,6 +610,24 @@ for approval before adding it.
 
 ### AI5 — Buy/manage dWeb names and bind a published site
 
+**2026-10-20 research complete, implementation not started:** the
+[implementation handoff](../docs/agent-domain-skills-research.md) records pinned
+sources/ABIs, read-only mainnet evidence cross-checked through two RPC services,
+commitment vectors, fees/timing, wrapped ENS renewal, record/transfer/subname
+calls, Swarm contenthash encoding, built-in wallet integration, durable recovery,
+and a qualification matrix. No wallet accessed and no transactions sent.
+
+A concrete gap was found: native `wallet_transfer` cannot encode contract calls,
+and skills/browser UI alone cannot safely retain commit secrets or recover
+uncertain dispatch. Recommendation is a small typed naming adapter behind the
+existing wallet approval/signing boundary, plus progressively loaded skills.
+Implement owned-name binding first, registration/renewal second, standard
+management third. Keep ENSv2 deployment/ABI qualification separate; current docs
+and pinned Sepolia resolver artifacts differ. Live small-value qualification
+requires the maintainer's chosen names/budget. Optional storefront/escrow,
+passport claims, fuses/migration, marketplace buying and bulk work stay extensions.
+
+
 **Product:** teach Agent to connect an existing Swarm publication to a name,
 register a name when requested, and later renew or repoint it. Reuse progressively
 loaded built-in skills, browser automation, the wallet approval boundary, and
@@ -620,8 +653,9 @@ Swarm publication/status receipts. Skills guide work; they do not grant authorit
    from a name that Freedom has actually resolved. Keep immutable publication
    references separate from future feed/mutable-site workflows.
 
-Use existing browser/dApp wallet support for the initial slice; introduce a narrow
-native naming tool only if qualification exposes a concrete missing capability.
+Reuse existing browser/dApp wallet support for integration tests and fallback.
+Research has exposed the missing native preparation/recovery capability above;
+introduce a narrow typed naming tool for deterministic execution.
 No arbitrary signing/raw-transaction shortcut is implied. Support existing owned
 names without forcing a purchase, and allow an unavailable name, declined spend,
 expired quote or interrupted transaction to be handled conversationally.
@@ -630,8 +664,10 @@ expired quote or interrupted transaction to be handled conversationally.
 live small-value flow for each advertised namespace. Cover invalid/unavailable
 names, wrong owner/network, existing record replacement, decline, insufficient
 funds, commit/reveal recovery, renewal, republishing and fresh-name resolution.
-Ordinary test runs must not buy a real domain. Transfers, arbitrary record editing,
-marketplace buying and bulk domain management remain later extensions.
+Ordinary test runs must not buy a real domain. Standard address/text records,
+primary names, transfers and owned-parent subnames follow the core site/purchase
+slice; their call matrix is researched. Arbitrary custom-resolver operations,
+marketplace buying and bulk management remain separate extensions.
 
 Primary references to recheck during implementation:
 [ENS registration](https://docs.ens.domains/registry/eth/),

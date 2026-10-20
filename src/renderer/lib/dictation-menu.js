@@ -5,7 +5,7 @@ import { onWindowDeactivated } from './window-deactivation.js';
 let dismissMenu = () => {};
 export const closeAgentDictationMenu = () => dismissMenu();
 
-export function createDictationMenu({ host, button, api, canOpen, onOpening = () => {}, openSettings, onError }) {
+export function createDictationMenu({ host, button, api, canOpen, onOpening = () => {}, openSettings, onError, onChosen = () => {} }) {
   let revision = 0;
   let rows = [];
   let saving = false;
@@ -66,7 +66,7 @@ export function createDictationMenu({ host, button, api, canOpen, onOpening = ()
               const response = await api.chooseAgentDictation({ ...state.preferences, providerId: option.providerId });
               if (current !== revision) return;
               if (!response?.ok) throw new Error(response?.error?.message || 'Could not change dictation service.');
-              close(true);
+              close(true); onChosen(response);
             } catch (error) { if (current === revision) { close(true); onError(error.message); } }
             finally { saving = false; }
           } });

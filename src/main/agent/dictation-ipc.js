@@ -11,7 +11,6 @@ function registerDictationIpc({ ipcMain, service, isTrustedSender, isSettingsSen
     [IPC.AGENT_DICTATION_BEGIN, event => service.begin(event.sender)],
     [IPC.AGENT_DICTATION_APPEND, (event, payload) => service.append(event.sender, payload)],
     [IPC.AGENT_DICTATION_FINISH, (event, payload) => service.finish(event.sender, payload)],
-    [IPC.AGENT_DICTATION_TRANSCRIBE, (event, payload) => service.transcribe(event.sender, payload)],
     [IPC.AGENT_DICTATION_CANCEL, event => { service.cancel(event.sender); return {}; }],
   ]);
   const settingsChannels = new Set([IPC.AGENT_DICTATION_STATE, IPC.AGENT_DICTATION_CHOOSE, IPC.AGENT_DICTATION_INSTALL, IPC.AGENT_DICTATION_CANCEL]);

@@ -50,3 +50,14 @@ test('cancellation closes the connection and provider bodies never become user-f
   expect(JSON.stringify(ctx.onError.mock.calls)).not.toContain('secret');
   const other = setup(); other.controller.abort(); expect(other.socket.terminate).toHaveBeenCalled();
 });
+
+
+test('commit acknowledgement order is retained when predecessor metadata is omitted', async () => {
+  const ctx = setup();
+  ctx.live.commit(); ctx.event({ type: 'input_audio_buffer.committed', item_id: 'one' });
+  ctx.live.commit(); ctx.event({ type: 'input_audio_buffer.committed', item_id: 'two' });
+  const result = ctx.live.finish();
+  ctx.event({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'two', transcript: 'Second.' });
+  ctx.event({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'one', transcript: 'First.' });
+  await expect(result).resolves.toBe('First. Second.'); ctx.live.close();
+});

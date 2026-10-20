@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { pathToFileURL } = require('url');
-const { DictationService, validateAudio } = require('./dictation-service');
+const { DictationService } = require('./dictation-service');
 const { permitsDictationCapture } = require('./dictation-capture');
 const frame = (voice = true) => voice ? recording().subarray(44, 3244) : Buffer.alloc(3200);
 
@@ -23,6 +23,11 @@ function sender() {
   return owner;
 }
 
+async function transcribe(service, owner, { id, audio }) {
+  service.append(owner, { id, sequence: 0, audio: audio.subarray(44) });
+  return service.finish(owner, { id });
+}
+
 describe('dictation service', () => {
   let root, service, store, local, owner, fetchImpl, enabled, events;
   beforeEach(() => {
@@ -39,7 +44,7 @@ describe('dictation service', () => {
   });
   afterEach(() => { service.cancelAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
-  const choose = providerId => service.choose({ providerId, language: 'de', requireZeroRetention: true });
+  const choose = providerId => service.choose({ providerId, language: 'de', requireZeroRetention: providerId !== 'openrouter' });
 
   test('offers only supported connected API services and an explicit local option', () => {
     expect(service.state().options.map(option => option.providerId)).toEqual(['local', 'openai', 'venice', 'near-ai', 'openrouter']);
@@ -53,23 +58,22 @@ describe('dictation service', () => {
 
   test('first microphone use remembers the active supported provider without requiring setup', async () => {
     expect(service.state().suggestedProviderId).toBe('venice');
-    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
+    await transcribe(service, owner, { id: service.begin(owner).id, audio: recording() });
     expect(service.state().preferences).toEqual({ providerId: 'venice', language: 'auto', requireZeroRetention: true });
     expect(fetchImpl.mock.calls[0][0]).toContain('api.venice.ai');
     const reopened = new DictationService({ dataDir: root, providerStore: store, local, assertEnabled: () => {} });
     expect(reopened.state().preferences.providerId).toBe('venice');
   });
 
-  test('an unsupported chat subscription uses another connected speech service, keeping ZDR on', async () => {
+  test('an unsupported chat subscription cannot auto-select a service unable to honor retention', async () => {
     store.getPublicStatus.mockReturnValue({ providerId: 'anthropic-claude', connections: [
       { kind: 'subscription', providerId: 'anthropic-claude' },
       { kind: 'hosted', providerId: 'openrouter' },
       { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
     ] });
-    expect(service.state().suggestedProviderId).toBe('openrouter');
-    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).provider.zdr).toBe(true);
-    expect(service.state().preferences.providerId).toBe('openrouter');
+    expect(service.state().suggestedProviderId).toBe(null);
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test('automatic selection respects saved choices and never falls back after a saved connection disappears', () => {
@@ -95,11 +99,11 @@ describe('dictation service', () => {
     expect(service.state().preferences.providerId).toBe(null);
   });
 
-  test.each(['openai', 'venice', 'near-ai'])('%s uploads only validated audio and transcription settings', async providerId => {
+  test.each(['venice', 'near-ai'])('%s uploads only validated audio and transcription settings', async providerId => {
     choose(providerId);
     const session = service.begin(owner);
     expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(true);
-    await expect(service.transcribe(owner, { id: session.id, audio: recording() })).resolves.toMatchObject({ text: 'A dictated prompt.', providerId });
+    await expect(transcribe(service, owner, { id: session.id, audio: recording() })).resolves.toMatchObject({ text: 'A dictated prompt.', providerId });
     const [url, request] = fetchImpl.mock.calls[0];
     expect(url).toContain('/audio/transcriptions');
     expect(request.redirect).toBe('error');
@@ -110,28 +114,27 @@ describe('dictation service', () => {
     expect(owner.listenerCount('destroyed')).toBe(0);
   });
 
-  test('OpenRouter explicitly requires zero-retention routing and sends no conversation context', async () => {
+  test('explicit standard OpenRouter dictation sends audio without conversation context or unsupported policy flags', async () => {
     choose('openrouter');
-    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
+    await transcribe(service, owner, { id: service.begin(owner).id, audio: recording() });
     const request = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(request.provider).toEqual({ zdr: true });
+    expect(request.provider).toBeUndefined();
     expect(request.input_audio.format).toBe('wav');
     expect(Buffer.from(request.input_audio.data, 'base64')).toEqual(recording());
-    expect(Object.keys(request).sort()).toEqual(['model', 'input_audio', 'language', 'provider', 'response_format'].sort());
+    expect(Object.keys(request).sort()).toEqual(['model', 'input_audio', 'language', 'response_format'].sort());
   });
 
   test('a ZDR-only connection remains enforced even when dictation preferences request standard routing', async () => {
     store.getPublicStatus.mockReturnValue({ connections: [{ providerId: 'openrouter', kind: 'hosted', privacyPolicy: 'zdr' }] });
-    service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false });
-    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).provider.zdr).toBe(true);
+    expect(() => service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false })).toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test('the owning recording is single-use and cannot be consumed by another sender', async () => {
     choose('venice'); const session = service.begin(owner);
-    await expect(service.transcribe(sender(), { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_EXPIRED' });
-    await service.transcribe(owner, { id: session.id, audio: recording() });
-    await expect(service.transcribe(owner, { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_EXPIRED' });
+    await expect(transcribe(service, sender(), { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_EXPIRED' });
+    await transcribe(service, owner, { id: session.id, audio: recording() });
+    await expect(transcribe(service, owner, { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_EXPIRED' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -139,7 +142,8 @@ describe('dictation service', () => {
     choose('venice');
     let resolve;
     fetchImpl.mockImplementation(() => new Promise(done => { resolve = done; }));
-    const pending = service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
+    const pending = transcribe(service, owner, { id: service.begin(owner).id, audio: recording() });
+    await Promise.resolve(); await Promise.resolve();
     service.cancel(owner);
     expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(true);
     resolve(new Response(JSON.stringify({ text: 'Late text must not be inserted.' })));
@@ -152,7 +156,7 @@ describe('dictation service', () => {
     expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
     const session = service.begin(owner);
     store.getSelection.mockReturnValue(null);
-    await expect(service.transcribe(owner, { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_SETUP' });
+    await expect(transcribe(service, owner, { id: session.id, audio: recording() })).rejects.toMatchObject({ code: 'DICTATION_SETUP' });
     enabled = false;
     expect(() => service.begin(owner)).toThrow('off');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -161,7 +165,7 @@ describe('dictation service', () => {
   test('local transcription uses no model-provider request', async () => {
     choose('local');
     const audio = recording();
-    await expect(service.transcribe(owner, { id: service.begin(owner).id, audio })).resolves.toMatchObject({ text: 'Local transcript.' });
+    await expect(transcribe(service, owner, { id: service.begin(owner).id, audio })).resolves.toMatchObject({ text: 'Local transcript.' });
     expect(local.transcribe).toHaveBeenCalledWith(audio, 'de', expect.any(AbortSignal));
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -190,7 +194,8 @@ describe('dictation service', () => {
     expect(() => append(owner, 0)).toThrow('could not be read');
     expect(() => append(owner, 1, new Uint8Array(100000))).toThrow('could not be read');
     store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' }] });
-    expect(() => append(owner, 1)).toThrow('connection changed');
+    service.connectionsChanged();
+    expect(() => append(owner, 1)).toThrow('recording has ended');
     expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -221,16 +226,68 @@ describe('dictation service', () => {
 
   test('invalid audio, silence, oversized responses and provider errors fail without leaking response bodies', async () => {
     choose('venice');
-    const malformed = recording(); malformed.writeUInt16LE(2, 22);
-    expect(() => validateAudio(malformed)).toThrow();
     const silent = recording(); silent.fill(0, 44);
-    expect(() => validateAudio(silent)).toThrow('No speech');
+    await expect(transcribe(service, owner, { id: service.begin(owner).id, audio: silent })).rejects.toThrow('No speech');
     fetchImpl.mockResolvedValue(new Response('private upstream body with a credential', { status: 401 }));
-    await expect(service.transcribe(owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('did not accept');
+    await expect(transcribe(service, owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('did not accept');
     fetchImpl.mockResolvedValue(new Response('x'.repeat(270000)));
-    await expect(service.transcribe(owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('too large');
+    await expect(transcribe(service, owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('too large');
     fetchImpl.mockResolvedValue(new Response('{"wrong":"value"}'));
-    await expect(service.transcribe(owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('usable transcript');
+    await expect(transcribe(service, owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('usable transcript');
+  });
+
+  test('OpenRouter dictation refuses zero retention instead of sending ignored routing flags', () => {
+    expect(() => service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: true })).toThrow();
+    expect(service.state().options.find(option => option.providerId === 'openrouter')).toMatchObject({ available: false });
+    service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false });
+    service.choose({ requireZeroRetention: true });
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('language-only changes preserve an unavailable remembered destination', () => {
+    choose('near-ai');
+    store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'openrouter' }] });
+    service.choose({ language: 'fr' });
+    expect(service.state().preferences).toEqual({ providerId: 'near-ai', language: 'fr', requireZeroRetention: true });
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+  });
+
+  test('preference saves leave installs and unaffected recordings alone but revoke affected capture', async () => {
+    let finishInstall;
+    local.install.mockImplementation(signal => new Promise(resolve => { finishInstall = () => { expect(signal.aborted).toBe(false); resolve(); }; }));
+    const installing = service.install(sender());
+    const capture = service.begin(owner);
+    service.choose({ language: 'auto' });
+    expect(service.sessions.get(owner).id).toBe(capture.id);
+    service.choose({ language: 'de' });
+    expect(service.sessions.has(owner)).toBe(false);
+    expect(events.find(event => event.type === 'error').message).toContain('settings changed');
+    finishInstall(); await installing;
+  });
+
+  test('frames do not perform credential reads, while provider changes revoke capture immediately', () => {
+    choose('venice'); const session = service.begin(owner);
+    store.getSelection.mockClear(); store.getPublicStatus.mockClear(); local.ready.mockClear();
+    for (let i = 0; i < 5; i++) service.append(owner, { id: session.id, sequence: i, audio: frame() });
+    expect(store.getSelection).not.toHaveBeenCalled(); expect(local.ready).not.toHaveBeenCalled();
+    store.getSelection.mockReturnValue(null);
+    service.connectionsChanged();
+    expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
+  });
+
+  test('a Stop flush failure aborts queued uploads before ending the session', async () => {
+    choose('venice'); const session = service.begin(owner);
+    const active = service.sessions.get(owner);
+    let resolveUpload;
+    fetchImpl.mockImplementation(() => new Promise(resolve => { resolveUpload = resolve; }));
+    for (let i = 0; i < 480; i++) service.append(owner, { id: session.id, sequence: i, audio: frame() });
+    service.append(owner, { id: session.id, sequence: 480, audio: frame() });
+    await Promise.resolve(); await Promise.resolve();
+    await expect(service.finish(owner, { id: session.id })).rejects.toMatchObject({ code: 'DICTATION_BUSY' });
+    expect(active.controller.signal.aborted).toBe(true);
+    resolveUpload(new Response(JSON.stringify({ text: 'late' }))); await service.drain();
+    expect(fetchImpl).toHaveBeenCalledTimes(1); expect(events.some(event => event.type === 'transcript')).toBe(false);
   });
 
   test('a TEE-only connection cannot silently downgrade audio requests', () => {
@@ -241,3 +298,22 @@ describe('dictation service', () => {
 });
 
 module.exports = { recording };
+
+
+test('chat-only mutations and unrelated retention preferences keep an active speech connection', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-identity-test-'));
+  const owner = sender();
+  const store = { getPublicStatus: () => ({ connections: [{ kind: 'hosted', providerId: 'venice' }] }),
+    getSelection: jest.fn(() => ({ kind: 'hosted', apiKey: 'fixture-key', modelId: 'first' })) };
+  const service = new DictationService({ dataDir: root, providerStore: store, local: { supported: true, ready: () => true }, assertEnabled() {} });
+  try {
+    const capture = service.begin(owner);
+    service.choose({ requireZeroRetention: false });
+    store.getSelection.mockReturnValue({ kind: 'hosted', apiKey: 'fixture-key', modelId: 'second', favoriteModelIds: ['other'] });
+    service.connectionsChanged();
+    expect(service.sessions.get(owner).id).toBe(capture.id);
+    store.getSelection.mockReturnValue({ kind: 'hosted', apiKey: 'new-fixture-key' });
+    service.connectionsChanged();
+    expect(service.sessions.has(owner)).toBe(false);
+  } finally { service.cancelAll(); fs.rmSync(root, { recursive: true, force: true }); }
+});

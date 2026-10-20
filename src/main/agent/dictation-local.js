@@ -45,6 +45,21 @@ class LocalDictation {
     this.root = path.join(dataDir, 'dictation-local', `sherpa-1.13.8-whisper-base-${platform}-${arch}`);
     this.executable = path.join(this.root, 'runtime', 'bin', `sherpa-onnx-offline${platform === 'win32' ? '.exe' : ''}`);
     this.fetch = fetchImpl;
+    this.scratchRoot = path.join(dataDir, 'dictation-audio');
+    // Only our generated phrase directories live here. Recover interrupted
+    // cleanup on startup; never sweep the shared OS temporary directory.
+    this.scratchCleanupFailed = false;
+    try {
+      const stat = fs.lstatSync(this.scratchRoot);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Invalid audio scratch directory');
+      for (const entry of fs.readdirSync(this.scratchRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && /^phrase-[A-Za-z0-9]+$/.test(entry.name))
+          fs.rmSync(path.join(this.scratchRoot, entry.name), { recursive: true, force: true });
+      }
+    } catch (error) {
+      // Cleanup failure disables local recording, never ordinary browser startup.
+      this.scratchCleanupFailed = error.code !== 'ENOENT';
+    }
     this.tar = platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
   }
 
@@ -120,6 +135,17 @@ class LocalDictation {
       // Linux distributions load the versioned SONAME. Some upstream archives
       // carry aliases as tar symlinks; create only these fixed local aliases.
       const libDir = path.join(stage, 'ready', 'runtime', 'lib');
+      if (this.platform === 'win32') {
+        // Windows searches beside the executable for its dependent DLLs.
+        const libraries = await fs.promises.readdir(libDir).catch(error => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+        for (const file of libraries.filter(file => /^[A-Za-z0-9_.+-]+\.dll$/i.test(file))) {
+          try { await fs.promises.copyFile(path.join(libDir, file), path.join(stage, 'ready', 'runtime', 'bin', file), fs.constants.COPYFILE_EXCL); }
+          catch (error) { if (error.code !== 'EEXIST') throw error; }
+        }
+      }
       if (this.platform === 'linux') {
         const libraries = await fs.promises.readdir(libDir);
         for (const file of libraries.filter(file => /^libonnxruntime\.so\.[0-9.]+$/.test(file))) {
@@ -145,7 +171,12 @@ class LocalDictation {
 
   async transcribe(audio, language, signal) {
     if (!this.ready()) throw dictationError('DICTATION_SETUP', 'Download local dictation before recording.');
-    const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-dictation-'));
+    if (this.scratchCleanupFailed) throw dictationError('DICTATION_LOCAL', 'Previous temporary audio could not be cleared. Check profile storage access before using local dictation.');
+    await fs.promises.mkdir(this.scratchRoot, { recursive: true, mode: 0o700 });
+    const stat = await fs.promises.lstat(this.scratchRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw dictationError('DICTATION_LOCAL', 'The local audio directory is unavailable.');
+    const scratch = await fs.promises.mkdtemp(path.join(this.scratchRoot, 'phrase-'));
+    await fs.promises.chmod(scratch, 0o700);
     try {
       const file = path.join(scratch, 'recording.wav');
       await fs.promises.writeFile(file, audio, { mode: 0o600, flag: 'wx' });

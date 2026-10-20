@@ -41,13 +41,21 @@ Chat history, project files and attachments are not included. Usage is billed to
 the selected service. There is no automatic fallback to a different destination.
 Cancel stops further uploads and restores the original draft, but cannot recall
 audio already sent. A service failure keeps completed phrases so they can be
-edited or sent manually, and drops any unfinished provisional tail.
+edited or sent manually, and drops any unfinished provisional tail. An approval request or a service/language change stops dictation while keeping completed text. Unrelated preference saves do not cancel model downloads or unaffected recordings.
 
 The selected chat model's end-to-end encryption and hardware checks do not cover
-these audio uploads. The chooser and recording indicator name the actual audio
-destination. TEE-only connections are unavailable for dictation in this draft.
-OpenRouter dictation requires zero-retention routing by default; an explicitly
-ZDR-only connection cannot be weakened through the dictation preference.
+these audio uploads. The microphone tooltip/accessibility label, chooser and recording indicator name
+its actual audio destination. Private/TEE-only connections are unavailable unless
+that policy can be established for the separate audio endpoint.
+
+**OpenRouter's transcription endpoint does not enforce per-request retention
+routing**, unlike its chat API. With the default “Require zero data retention”
+preference, OpenRouter dictation is unavailable and no audio is uploaded. Users
+can explicitly turn that preference off on its Voice detail page to use standard
+routing. A connection-level ZDR requirement remains locked and cannot be weakened
+there. Merely adding `zdr`, `data_collection` or `require_parameters` to an audio
+request would not establish retention protection. See OpenRouter's explicit
+[transcription routing limitation](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/).
 
 The composer models are `gpt-live-transcribe` for OpenAI and
 `openai/whisper-large-v3` for the other three services. These are separate from
@@ -64,7 +72,7 @@ the Agent model catalogue. Reference documentation:
 Choose **On this device**, then **Download & use on this device**. Freedom downloads
 about 230 MB once, verifies pinned SHA-256 hashes and installs files in the active
 profile's Agent data directory. No Ollama, terminal setup or Python installation
-is needed. Downloading never happens on browser startup or while AI is off.
+is needed. After a download, click the microphone again to start; completion never automatically enables capture. Downloading never happens on browser startup or while AI is off.
 
 The engine is sherpa-onnx 1.13.8 with the multilingual Whisper Base model using
 quantized ONNX weights. This was selected for the draft because upstream provides
@@ -74,7 +82,7 @@ installation. See [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and
 [Whisper](https://github.com/openai/whisper).
 
 Audio stays on this device during local transcription. A private temporary WAV
-is removed on completion or cancellation; raw audio is not saved in conversation
+lives in the profile-owned scratch directory and is removed on completion or cancellation; abandoned phrase directories are swept on startup; raw audio is not saved in conversation
 history. Sending the resulting prompt subsequently shares its text with the chat
 provider in the ordinary way.
 
@@ -113,3 +121,23 @@ editable insertion, both themes and narrow windows. A local native
 install/inference smoke used the upstream English sample without sending audio
 to a provider. Actual microphone hardware/TCC prompts, English/German accuracy
 and the four live cloud services remain maintainer smoke tests.
+
+## 2026-10-20 review qualification
+
+Claude reviewed AI1–AI4 through Herdr at `112d016c`. Repairs cover approval-time
+text preservation; example prompts starting without implicitly sharing the active
+page; preference-only saves preserving an unavailable remembered service;
+installation/recording cancellation isolation; aborting queued uploads after a
+Stop failure; no microphone auto-start after a download; available Stop/Resume;
+removing synchronous credential/model-file work from each PCM frame; private
+scratch cleanup; removal of the unused whole-recording IPC; and stable Settings
+search entries. OpenRouter retention behavior was corrected against current
+primary documentation rather than assuming chat routing flags work for audio.
+
+OpenAI's current documentation confirms `gpt-live-transcribe`, 24 kHz PCM and the
+session shape used here; that documentation check is not a live microphone/provider
+qualification. OpenRouter's maintainer smoke predates the corrected retention gate.
+Venice/NEAR live audio, packaged local runtimes outside macOS arm64, real microphone
+permission denial/device loss, and the Linux Settings screenshot-tour update remain
+explicit qualification work. No paid-provider queries or real capture were run
+while the maintainer was away.

@@ -192,3 +192,52 @@ test('an oversized live phrase preserves the last fitting text and always releas
   expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
   expect(ctx.recorder.cancel).toHaveBeenCalled();
 });
+
+
+test('approval interruption keeps completed text, stops capture and ignores late phrases', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game unfinished', stableText: 'a game' });
+  ctx.ui.interrupt('Dictation stopped for an approval request.');
+  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.recorder.cancel).toHaveBeenCalled(); expect(ctx.feedback.textContent).toContain('kept');
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'late', stableText: 'late' });
+  expect(ctx.prompt.value).toBe('Build a game please');
+});
+
+test('the microphone names its automatic audio destination before capture', async () => {
+  const ctx = setup(); await flush();
+  expect(ctx.button.getAttribute('aria-label')).toContain('Venice');
+  expect(ctx.button.title).toContain('audio sent to this service');
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+});
+
+
+test('a delayed local installation requires a fresh microphone click', async () => {
+  const ctx = setup();
+  ctx.state.preferences.providerId = null;
+  ctx.state.options = [{ providerId: 'local', name: 'On this device', available: true, ready: false }];
+  let installed;
+  ctx.api.installAgentDictation = jest.fn(() => new Promise(resolve => { installed = resolve; }));
+  ctx.api.chooseAgentDictation.mockImplementation(async () => ({ ...ctx.state, preferences: { ...ctx.state.preferences, providerId: 'local' },
+    options: [{ providerId: 'local', name: 'On this device', available: true, ready: true }] }));
+  ctx.button.dispatch('click'); await flush();
+  ctx.panel.children.find(el => el.classList.contains('agent-dictation-actions')).children[0].dispatch('click'); await flush();
+  installed({ ok: true }); await flush();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  expect(ctx.feedback.textContent).toContain('Click the microphone');
+});
+
+
+test('hover and microphone clicks refresh a changed audio destination', async () => {
+  const ctx = setup(); await flush();
+  ctx.state.preferences.providerId = 'local';
+  ctx.state.options.push({ providerId: 'local', name: 'On this device', available: true, ready: true });
+  ctx.button.dispatch('pointerenter'); await flush();
+  expect(ctx.button.title).toContain('audio stays on this device');
+  ctx.state.preferences.providerId = 'venice';
+  ctx.button.dispatch('click'); await flush();
+  ctx.ui.cancel();
+  expect(ctx.button.title).toContain('Venice');
+  expect(ctx.button.title).toContain('audio sent to this service');
+});

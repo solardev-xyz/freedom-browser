@@ -12,6 +12,8 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   let busy = false;
   let finishing = false;
   let chooserStart = false;
+  let destinationRevision = 0;
+  let destination = 'Dictate task';
   let snapshot;
   let renderedValue;
   let stableText = '';
@@ -33,23 +35,29 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     prompt.readOnly = value;
     button.setAttribute('aria-pressed', String(value));
     button.dataset.recording = String(value && !finishing);
-    button.setAttribute('aria-label', value ? 'Finish dictation' : 'Dictate task');
-    button.title = value ? 'Finish dictation' : 'Dictate task';
+    button.setAttribute('aria-label', value ? 'Finish dictation' : destination);
+    button.title = value ? 'Finish dictation' : destination;
     optionsButton.disabled = value;
     cancelButton.hidden = !value;
     onBusy(value);
   };
   const choices = createDictationChoices(panel, api, {
-    onChosen() {
+    onChosen(_state, { downloaded } = {}) {
       hideChoices();
-      if (chooserStart) void start(); else button.focus();
+      void refreshDestination();
+      if (chooserStart && !downloaded) void start();
+      else {
+        if (downloaded) status('Local dictation is ready. Click the microphone to start.');
+        button.focus();
+      }
     },
     onCancel() { hideChoices(); button.focus(); },
   });
   const servicesMenu = menu ? createDictationMenu({ host: menu, button: optionsButton, api,
     canOpen: () => !busy && canRecord(), onOpening: onMenuOpening,
-    openSettings, onError: message => status(message, true) }) : null;
+    openSettings, onChosen: () => void refreshDestination(), onError: message => status(message, true) }) : null;
   panel.addEventListener('dictation-connect', () => { cancel(); connectProvider(); });
+  panel.addEventListener('dictation-settings', event => { cancel(); openSettings(event.detail?.providerId); });
 
   function cancel({ keepMessage = false } = {}) {
     if (busy && snapshot && prompt.value === renderedValue) {
@@ -191,6 +199,7 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
       if (!state?.ok) throw new Error(state?.error?.message || 'Could not load dictation.');
       const providerId = state.preferences.providerId || state.suggestedProviderId;
       const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
+      updateDestination(state);
       if (option) void start(); else await openChoices(true);
     } catch (error) { if (current === generation) status(error.message, true); }
     finally { button.disabled = false; }
@@ -208,16 +217,36 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
       status('Dictation stopped. Your draft is unchanged.'); cancel({ keepMessage: true });
     }
   });
+  function updateDestination(state) {
+    const id = state.preferences.providerId || state.suggestedProviderId;
+    const option = state.options.find(item => item.providerId === id && item.available && item.ready);
+    destination = option ? `Dictate with ${option.name} · ${id === 'local' ? 'audio stays on this device' : 'audio sent to this service'}` : 'Set up voice dictation';
+    if (!busy) { button.title = destination; button.setAttribute('aria-label', destination); }
+  }
+  async function refreshDestination() {
+    const current = ++destinationRevision;
+    try {
+      const state = await api.getAgentDictationState();
+      if (!state?.ok || current !== destinationRevision) return;
+      updateDestination(state);
+    } catch { /* Availability is rechecked on every explicit microphone click. */ }
+  }
+  button.addEventListener('pointerenter', refreshDestination);
+  button.addEventListener('focus', refreshDestination);
+  void refreshDestination();
+  window.addEventListener('focus', refreshDestination);
   const pageHide = () => cancel();
   window.addEventListener('pagehide', pageHide, { once: true });
   return {
     get busy() { return busy; }, cancel,
+    interrupt(message) { if (busy) failed(message); },
+    refreshDestination,
     escape() {
       if (servicesMenu?.open) { servicesMenu.close(true); return true; }
       if (!busy && panel.hidden) return false;
       cancel(); prompt.focus(); return true;
     },
     closeMenu() { servicesMenu?.close(); },
-    dispose() { cancel(); choices.dispose(); servicesMenu?.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
+    dispose() { destinationRevision += 1; button.removeEventListener('pointerenter', refreshDestination); button.removeEventListener('focus', refreshDestination); window.removeEventListener('focus', refreshDestination); cancel(); choices.dispose(); servicesMenu?.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
   };
 }
