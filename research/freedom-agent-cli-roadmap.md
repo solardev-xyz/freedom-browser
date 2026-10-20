@@ -284,7 +284,7 @@ The maintainer approved this order and requested AI1/AI2 on
    profiles without an enable choice; canonical provider/model management.
 2. Ship the dismissible start-page invitation with that settings/onboarding
    flow. Enabling, connecting and opening the composer form one journey.
-3. Add four editable example prompts: game, personal website, source comparison
+3. Add four starting prompts: game, personal website, source comparison
    and attached-project review. This remains a separate implementation slice.
 4. Spike on-device dictation (including whisper.cpp versus OS facilities), then
    implement record/stop/edit/send. Measure English/German accuracy, latency and
@@ -455,8 +455,9 @@ Initial examples:
 - **Review a project:** “Review a project I attach and suggest the five most
   useful improvements. Don't change files.”
 
-Clicking a card fills an editable draft; it does not submit. Examples are bundled
-copy, not model-generated suggestions that send data before the first message.
+Clicking a card starts its task immediately, using the ordinary composer submission
+path and any staged attachments. Examples are bundled copy, not model-generated
+suggestions that send data before the user chooses one.
 Creation prompts lead through preview and the existing explicit public-publication
 approval. Disclose postage/network costs when relevant; no example silently buys
 storage or a domain. Project examples request attachment through the existing UI.
@@ -468,10 +469,10 @@ only once AI5's corresponding namespace flow is qualified.
 
 **Implementation — October 20:** four bundled cards appear in a new chat in
 both floating and Agent-first layouts, as standalone tiles below the composer
-rather than inside its glass surface. Selection fills an editable draft and
-focuses the composer; it does not send, publish, purchase, alter approval posture
-or replace existing text. Cards retain their space and become unavailable while
-a draft is present, so typing does not move the composer. They disappear once a
+rather than inside its glass surface. At the maintainer’s request, selection now
+starts the task immediately. It does not replace existing text or alter approval
+posture; publication and purchases keep their existing approvals. Cards retain
+their space and become unavailable while a draft is present, so typing does not move the composer. They disappear once a
 conversation starts. Attachments are preserved; without a provider the existing
 setup flow leads to Settings. The project example uses the existing **Add folder…**
 attachment flow; opening a managed/external project is a separate conversation flow.
@@ -483,22 +484,23 @@ attachment flow; opening a managed/external project is a separate conversation f
   the floating launcher hides the tiles to prioritise composer controls. The
   workspace view cannot shrink below the composer height. Regression cases cover
   760×420 and 380×500/540/610, including the compact/visible boundary.
-- Automated checks cover keyboard selection, editable/stationary drafts and
-  the first-send animation starting from the displayed launcher geometry,
-  conversation/reset state, no inference on selection, staged-file preservation
+- Automated checks cover immediate single submission by mouse/keyboard, retained
+  drafts and the first-send animation starting from the displayed launcher geometry,
+  conversation/reset state, duplicate-start prevention and staged-file submission
   through the real attachment store with a stubbed picker dialog, and no-provider
-  setup. Holding Enter cannot turn selection into repeated prompt submission.
-- Lint and the full unit suite passed (**10,561 tests / 129 skipped**) on the
+  setup. A failed start restores the prompt for retry; holding Enter cannot cause
+  repeated prompt submission.
+- Lint and the full unit suite passed (**10,563 tests / 129 skipped**) on the
   follow-up tree. The new E2E spec is included in the Agent CI job. Existing
   creation/publication approvals remain unchanged; no live publication or domain
   purchase was part of these fixtures.
 - Final focused checks: **5/5 example cases on macOS and Linux** after the
   review repairs; the full Linux theme/onboarding/product run passed **19/19**
-  earlier in this slice. Claude re-reviewed through Herdr and reported **no
+  earlier in this slice. Claude re-reviewed the layout repairs through Herdr and reported **no
   remaining defects**; its review was source/image based, while the automated
   runs above exercised Electron. The final cropped AI entry references passed
   a separate ordinary Linux comparison (**2/2**).
-- Maintainer smoke remains: open a new chat, choose/edit each example, attach a
+- Maintainer smoke remains: open a new chat, start each example, attach a
   project using **Add folder…**, and check the preferred theme/window size. Real
   model quality and public publication are separate from deterministic UI checks.
 

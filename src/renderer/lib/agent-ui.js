@@ -1756,7 +1756,8 @@ function updateSendAvailability() {
   if (elements.examples) {
     elements.examples.hidden = !aiEnabled || Boolean(currentConversationId) || !elements.transcript.hidden;
     elements.examples.querySelectorAll('[data-agent-example]').forEach(button => {
-      button.disabled = Boolean(elements.prompt.value) || currentRunStatus !== 'idle' || Boolean(pendingApproval);
+      button.disabled = Boolean(elements.prompt.value) || currentRunStatus !== 'idle' || Boolean(pendingApproval) ||
+        !providerStatus?.configured || approvalModeMutationPending || attachmentSelectionPending;
     });
   }
   let action = 'send';
@@ -4544,11 +4545,12 @@ export function initAgentUi(options = {}) {
   elements.prompt.addEventListener('input', updateSendAvailability);
   elements.examples?.querySelectorAll('[data-agent-example]').forEach(button => {
     button.addEventListener('click', () => {
-      if (!aiEnabled || currentConversationId || currentRunStatus !== 'idle' ||
+      if (button.disabled || !aiEnabled || currentConversationId || currentRunStatus !== 'idle' ||
           !elements.transcript.hidden || pendingApproval || elements.prompt.value) return;
       elements.prompt.value = button.dataset.agentExample;
       updateSendAvailability();
       focusComposer();
+      submitComposer();
     });
   });
   elements.prompt.addEventListener('keydown', (event) => {

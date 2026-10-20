@@ -893,30 +893,54 @@ describe('Agent UI', () => {
     expect(note.textContent).toContain('page you shared');
   });
 
-  test('examples prepare an editable draft without submitting or replacing existing text', async () => {
+  test('examples start immediately once and never replace an existing draft', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-toggle-btn'].dispatch('click');
-    const examples = ctx.elements['agent-examples'];
-    const button = examples.children[0];
+    const button = ctx.elements['agent-examples'].children[0];
     const prompt = ctx.elements['agent-prompt'];
-    expect(examples.hidden).toBe(false);
-    button.dispatch('click');
-    expect(prompt.value).toBe('Build a small browser game');
-    expect(examples.hidden).toBe(false);
-    expect(button.disabled).toBe(true);
-    prompt.dispatch('keydown', { key: 'Enter', repeat: true, preventDefault: jest.fn() });
-    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
-
     prompt.value = 'Keep my own draft';
+    prompt.dispatch('input');
     button.dispatch('click');
     expect(prompt.value).toBe('Keep my own draft');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+
     prompt.value = '';
     prompt.dispatch('input');
-    expect(examples.hidden).toBe(false);
-    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'A task' });
-    expect(examples.hidden).toBe(true);
     button.dispatch('click');
+    button.dispatch('click');
+    prompt.dispatch('keydown', { key: 'Enter', repeat: true, preventDefault: jest.fn() });
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.startAgent.mock.calls[0][1]).toBe('Build a small browser game');
     expect(prompt.value).toBe('');
+    await flush();
+    expect(ctx.elements['agent-examples'].hidden).toBe(true);
+  });
+
+  test('an example submits staged attachments through the ordinary composer path', async () => {
+    const selectionId = `selection_${'e'.repeat(20)}`;
+    const ctx = await loadAgentUi({ electronAPI: {
+      pickAgentFiles: jest.fn().mockResolvedValue({ ok: true, selections: [
+        { selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 10 },
+      ] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-examples'].children[0].dispatch('click');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7, 'Build a small browser game', 'sensitive_actions', [selectionId]
+    );
+  });
+
+  test('a failed example start restores its prompt for retry', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      startAgent: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Could not start' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-examples'].children[0].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-prompt'].value).toBe('Build a small browser game');
+    expect(ctx.elements['agent-examples'].children[0].disabled).toBe(true);
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {

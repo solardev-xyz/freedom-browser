@@ -6,17 +6,26 @@ const { configureOllamaAgent } = require('./agent-provider-fixture');
 
 let server;
 let baseUrl;
-let inferenceRequests = 0;
+const inferenceRequests = [];
 
 test.beforeAll(async () => {
-  server = http.createServer((request, response) => {
+  server = http.createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/tags') {
       response.end(JSON.stringify({ models: [{ name: 'freedom-examples-fixture' }] }));
     } else {
-      inferenceRequests += 1;
-      response.writeHead(500);
-      response.end(JSON.stringify({ error: 'Examples must not run without Send' }));
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      inferenceRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const chunk = (delta, finishReason = null) => ({
+        id: 'chatcmpl_examples', object: 'chat.completion.chunk', created: 1,
+        model: 'freedom-examples-fixture',
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+      });
+      response.write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Example started.' }))}\n\n`);
+      response.write(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+      response.end('data: [DONE]\n\n');
     }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -27,60 +36,46 @@ test.afterAll(async () => {
   await new Promise(resolve => server.close(resolve));
 });
 
-test('examples fill editable drafts without sending and respect conversation chronology', async ({ electronApp, window }) => {
+test('each example starts immediately once, while a typed draft stays protected', async ({ window }) => {
   await window.emulateMedia({ reducedMotion: 'reduce' });
   await configureOllamaAgent(window, baseUrl);
   const prompt = window.locator('#agent-prompt');
   const examples = window.locator('#agent-examples');
-  const before = inferenceRequests;
   const buttons = examples.getByRole('button');
   await expect(buttons).toHaveCount(4);
+  const before = inferenceRequests.length;
+  await prompt.fill('Keep my own draft');
+  for (const button of await buttons.all()) await expect(button).toBeDisabled();
+  await window.locator('#agent-sidebar-close').click();
+  await window.locator('#agent-toggle-btn').click();
+  await expect(prompt).toHaveValue('Keep my own draft');
+  expect(inferenceRequests.length).toBe(before);
+  await prompt.fill('');
+
   for (let i = 0; i < 4; i += 1) {
+    const agentFirst = i === 3;
+    if (agentFirst) await window.locator('#agent-first-toggle').click();
     const button = buttons.nth(i);
-    const draft = await button.getAttribute('data-agent-example');
-    const position = await prompt.boundingBox();
-    await button.focus();
-    await button.press('Enter');
-    await expect(prompt).toBeFocused();
-    await expect(prompt).toHaveValue(draft);
-    await expect(window.locator('#agent-run')).toBeEnabled();
+    const text = await button.getAttribute('data-agent-example');
+    const count = inferenceRequests.length;
+    if (i % 2) await button.click();
+    else await button.press('Enter');
+    await expect(window.locator('#agent-run-status')).toHaveText('Complete');
+    await expect(window.locator('#agent-transcript')).toContainText(text);
+    await expect(window.locator('#agent-transcript')).toContainText('Example started.');
+    await expect(examples).toBeHidden();
+    await expect(prompt).toHaveValue('');
+    expect(inferenceRequests.length).toBe(count + 1);
+    expect(JSON.stringify(inferenceRequests[count].messages)).toContain(text);
+    await window.locator('#agent-new-chat').click();
     await expect(examples).toBeVisible();
-    await expect(button).toBeDisabled();
-    expect((await prompt.boundingBox()).y).toBeCloseTo(position.y, 0);
-    await prompt.fill('My own edited prompt');
-    expect((await prompt.boundingBox()).y).toBeCloseTo(position.y, 0);
-    await window.locator('#agent-sidebar-close').click();
-    await window.locator('#agent-toggle-btn').click();
-    await expect(prompt).toHaveValue('My own edited prompt');
-    await expect(examples).toBeVisible();
-    await expect(button).toBeDisabled();
-    expect((await prompt.boundingBox()).y).toBeCloseTo(position.y, 0);
-    await prompt.fill('');
-    await expect(examples).toBeVisible();
+    if (agentFirst) await window.keyboard.press('Escape');
   }
-  expect(inferenceRequests).toBe(before);
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
-    for (const event of [
-      { type: 'run_started', userText: 'A real conversation' },
-      { type: 'assistant_text_delta', text: 'A finished response' },
-      { type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 },
-    ]) win.webContents.send('agent:event', { runId: 'examples-fixture', conversationId: 'examples-conversation', ...event });
-  });
-  await expect(window.locator('#agent-empty-state')).toBeHidden();
-  await expect(examples).toBeHidden();
-  // The run above is a renderer fixture, so clear it through the matching event.
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    BrowserWindow.getAllWindows().find(win => !win.isDestroyed()).webContents.send('agent:event',
-      { type: 'conversation_cleared', conversationId: 'examples-conversation' });
-  });
-  await expect(examples).toBeVisible();
 });
 
 test('first send moves the composer from its visible launcher position', async ({ window }) => {
   await window.emulateMedia({ reducedMotion: 'no-preference' });
   await configureOllamaAgent(window, baseUrl);
-  await window.locator('#agent-prompt').fill('Build a small browser game');
   await window.locator('.agent-sidebar-inner').evaluate(async element => {
     await Promise.allSettled(element.getAnimations().map(animation => animation.finished));
   });
@@ -109,7 +104,7 @@ test('first send moves the composer from its visible launcher position', async (
       }
     }).observe(document.body, { childList: true });
   });
-  await window.locator('#agent-prompt').press('Enter');
+  await window.locator('#agent-examples button').first().click();
   await expect.poll(() => window.evaluate(() => Boolean(window.exampleFlight && window.exampleGhost))).toBe(true);
   const { flight, ghost } = await window.evaluate(() => ({ flight: window.exampleFlight, ghost: window.exampleGhost }));
   expect(flight.sourceY).toBeCloseTo(before.y, 0);
@@ -117,7 +112,7 @@ test('first send moves the composer from its visible launcher position', async (
   expect(ghost).toMatchObject({ cardsVisible: false, inert: true, duplicateIds: 0 });
 });
 
-test('choosing a project review keeps a staged attachment and sends no request', async ({ electronApp, window, userDataDir }) => {
+test('starting a project review includes the staged attachment', async ({ electronApp, window, userDataDir }) => {
   await configureOllamaAgent(window, baseUrl);
   const file = path.join(userDataDir, 'example-notes.txt');
   fs.writeFileSync(file, 'A project note for review.');
@@ -128,12 +123,12 @@ test('choosing a project review keeps a staged attachment and sends no request',
   await window.locator('#agent-attach-files').click();
   const attachment = window.locator('#agent-attachment-contexts');
   await expect(attachment).toContainText('example-notes.txt');
-  const before = inferenceRequests;
+  const before = inferenceRequests.length;
   await window.locator('#agent-examples').getByRole('button', { name: /Review a project/ }).click();
-  await expect(window.locator('#agent-prompt')).toHaveValue(/Don't change files/);
-  await expect(attachment).toContainText('example-notes.txt');
-  await expect(window.locator('#agent-approval')).toBeHidden();
-  expect(inferenceRequests).toBe(before);
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete');
+  await expect(window.locator('#agent-transcript')).toContainText("Don't change files");
+  await expect(window.locator('#agent-transcript .agent-message-attachment-name')).toHaveText('example-notes.txt');
+  expect(inferenceRequests.length).toBe(before + 1);
 });
 
 test('examples and composer remain reachable in both themes, small windows and Agent-first mode', async ({ electronApp, window }, testInfo) => {
@@ -172,9 +167,8 @@ test('examples and composer remain reachable in both themes, small windows and A
         }
         await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}-${mode}.png`) });
         if (mode === 'agent-first') {
-          await window.locator('#agent-examples button').first().click();
-          await expect(window.locator('#agent-prompt')).toHaveValue(/Build a small browser game/);
-          await window.locator('#agent-prompt').fill('');
+          await window.locator('#agent-examples button').first().focus();
+          await expect(window.locator('#agent-examples button').first()).toBeFocused();
           await window.keyboard.press('Escape');
           await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
         }
@@ -184,10 +178,10 @@ test('examples and composer remain reachable in both themes, small windows and A
 });
 
 test('without a connection, Agent directs users to Settings without running an example', async ({ window }) => {
-  const before = inferenceRequests;
+  const before = inferenceRequests.length;
   await window.locator('#agent-toggle-btn').click();
   await expect(window.locator('#agent-setup-view')).toBeVisible();
   await expect(window.locator('#agent-examples')).toBeHidden();
   await expect(window.locator('#agent-open-ai-settings')).toBeVisible();
-  expect(inferenceRequests).toBe(before);
+  expect(inferenceRequests.length).toBe(before);
 });
