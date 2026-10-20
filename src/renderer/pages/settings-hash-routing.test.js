@@ -123,7 +123,14 @@ describe('settings hash routing', () => {
       startup: 'nodes',
       experimental: 'advanced',
       updates: 'about',
+      voice: 'ai',
     });
+  });
+
+  it('deep-links directly to voice dictation management under AI', () => {
+    const { location, shown } = drive('#ai/voice');
+    expect(shown).toEqual(['ai/voice']);
+    expect(location.hash).toBe('#ai/voice');
   });
 
   // ── The bug: a hash naming no section (#280) ───────────────────────────

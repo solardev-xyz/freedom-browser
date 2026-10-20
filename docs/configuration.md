@@ -10,8 +10,9 @@ Connected MCP services remain in the Agent composer's **+ → Connections** menu
 
 **Voice dictation** in Settings → AI selects a separate transcription service
 and language. The microphone starts with a remembered choice or suitable connected
-API service; its options arrow opens setup, including an optional local Whisper
-download. Dictation inserts editable text and never
+API service; its options arrow opens a compact service selector. Choose **Voice
+dictation settings…** for language, privacy preferences and the optional local
+Whisper download in Settings → AI → Voice dictation. Dictation inserts editable text and never
 sends a prompt automatically. See [dictation setup](agent-dictation.md) for audio
 privacy, provider support and current experimental limitations.
 

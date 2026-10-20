@@ -14,7 +14,10 @@ let pending = false;
 let loaded = false;
 const dictationHost = document.getElementById('ai-dictation-settings');
 const dictation = createDictationChoices(dictationHost, api, { autoSave: true });
-dictationHost.addEventListener('dictation-connect', () => document.getElementById('agent-provider-add').click());
+dictationHost.addEventListener('dictation-connect', () => {
+  location.hash = 'ai';
+  document.getElementById('agent-provider-add').click();
+});
 const updateNext = (state) => {
   next.hidden = !enabled || state?.configured !== true;
   if (enabled && state?.configured && status.textContent === 'Loading providers…')
@@ -62,6 +65,7 @@ function apply(settings) {
   toggle.checked = enabled;
   providers.hidden = !enabled;
   dictationHost.hidden = !enabled;
+  document.getElementById('voice').hidden = !enabled;
   note.hidden = enabled;
   updateNext(providerUi.state.providerStatus);
   if (!enabled) {

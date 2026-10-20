@@ -1,8 +1,9 @@
 import { createDictationChoices } from './dictation-choices.js';
 import { createDictationRecorder } from './dictation-recorder.js';
+import { createDictationMenu } from './dictation-menu.js';
 
-export function createAgentDictation({ button, optionsButton, panel, feedback, cancelButton, prompt, api,
-  canRecord, onBusy = () => {}, onInput = () => {}, connectProvider = () => {} }) {
+export function createAgentDictation({ button, optionsButton, panel, menu, feedback, cancelButton, prompt, api,
+  canRecord, onBusy = () => {}, onInput = () => {}, connectProvider = () => {}, openSettings = connectProvider, onMenuOpening = () => {} }) {
   if (!button || !panel || !api.getAgentDictationState) return null;
   let generation = 0;
   let session = null;
@@ -45,6 +46,9 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
     },
     onCancel() { hideChoices(); button.focus(); },
   });
+  const servicesMenu = menu ? createDictationMenu({ host: menu, button: optionsButton, api,
+    canOpen: () => !busy && canRecord(), onOpening: onMenuOpening,
+    openSettings, onError: message => status(message, true) }) : null;
   panel.addEventListener('dictation-connect', () => { cancel(); connectProvider(); });
 
   function cancel({ keepMessage = false } = {}) {
@@ -61,6 +65,7 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
     finishing = false;
     button.disabled = false;
     choices.cancel(); hideChoices();
+    servicesMenu?.close();
     void api.cancelAgentDictation().catch(() => {});
     setBusy(false);
     snapshot = null;
@@ -93,6 +98,7 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
 
   async function start() {
     if (busy || !canRecord()) return;
+    servicesMenu?.close();
     const current = ++generation;
     snapshot = { value: prompt.value, start: prompt.selectionStart ?? prompt.value.length,
       end: prompt.selectionEnd ?? prompt.value.length };
@@ -189,7 +195,6 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
     } catch (error) { if (current === generation) status(error.message, true); }
     finally { button.disabled = false; }
   });
-  optionsButton.addEventListener('click', () => void openChoices());
   panel.addEventListener('cancel', event => { event.preventDefault(); cancel(); prompt.focus(); });
   cancelButton.addEventListener('click', () => { cancel(); prompt.focus(); });
   const unsubscribe = api.onAgentDictationEvent?.(event => {
@@ -208,9 +213,11 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
   return {
     get busy() { return busy; }, cancel,
     escape() {
+      if (servicesMenu?.open) { servicesMenu.close(true); return true; }
       if (!busy && panel.hidden) return false;
       cancel(); prompt.focus(); return true;
     },
-    dispose() { cancel(); choices.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
+    closeMenu() { servicesMenu?.close(); },
+    dispose() { cancel(); choices.dispose(); servicesMenu?.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
   };
 }

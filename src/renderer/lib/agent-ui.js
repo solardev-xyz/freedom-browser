@@ -596,6 +596,7 @@ async function revokeConversationFolder(resource) {
 }
 
 function closeComposerPopovers() {
+  dictation?.closeMenu();
   workspaceInspector?.dismissPopover();
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
@@ -4394,11 +4395,14 @@ export function initAgentUi(options = {}) {
   dictationBusy = false;
   dictation = createAgentDictation({ button: byId('agent-dictation'), optionsButton: byId('agent-dictation-options'),
     panel: byId('agent-dictation-panel'), feedback: byId('agent-dictation-feedback'), cancelButton: byId('agent-dictation-cancel'),
+    menu: byId('agent-dictation-menu'),
     prompt: elements.prompt, api: window.electronAPI,
     canRecord: () => aiEnabled && panelOpen && agentView === 'workspace' && !pendingApproval &&
       ['idle', 'running', 'paused'].includes(currentRunStatus),
     onBusy: value => { dictationBusy = value; updateSendAvailability(); },
-    onInput: updateSendAvailability, connectProvider: showProviderSetup });
+    onInput: updateSendAvailability, connectProvider: showProviderSetup,
+    openSettings: () => { setAgentFirstMode(false); closePanel(); openAiSettings('ai/voice'); },
+    onMenuOpening: () => { closeComposerPopovers(); options.onMenuOpening?.(); } });
   byId('agent-open-ai-settings')?.addEventListener('click', showProviderSetup);
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];

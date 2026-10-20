@@ -1,4 +1,5 @@
 import { closeAgentPrivacy } from './lib/agent-privacy.js';
+import { closeAgentDictationMenu } from './lib/dictation-menu.js';
 // Renderer process entry point
 import { updateRegistry, applySettingsToState } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
@@ -218,6 +219,7 @@ const onAnyMenuOpening = () => {
   closeGatewayOfferPopover();
   closeGithubBridgePanel();
   closeAgentPrivacy();
+  closeAgentDictationMenu();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -747,6 +749,7 @@ async function initProfileIndicator() {
 
 // Close all menus and context menus
 const closeAllMenus = () => {
+  closeAgentDictationMenu();
   closeMenus();
   closeProfileMenu();
   hideTabContextMenu();
@@ -923,7 +926,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
-    openSettings: () => openOrFocusInternalPage('settings', 'ai'),
+    openSettings: (route = 'ai') => openOrFocusInternalPage('settings', route),
+    onMenuOpening: onAnyMenuOpening,
     getActiveTab,
     getOpenTabs: getTabPresentation,
     createWorkspaceViewerTab,

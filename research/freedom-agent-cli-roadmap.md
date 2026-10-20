@@ -507,6 +507,13 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-20 menu refinement:** OpenRouter incremental dictation passed maintainer
+smoke. The microphone chevron now opens a compact service menu with the active
+choice checked, without starting capture. Language/privacy preferences and local
+installation stay in Settings → AI → Voice dictation, linked directly from the
+menu (`ai/voice`). The full setup dialog remains the microphone's onboarding
+path only when no ready service is available. Menu/provider smoke pending.
+
 **2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
 now shows provisional/final text through OpenAI's `gpt-live-transcribe` WebSocket
 API, and phrase updates at pauses or six-second boundaries through OpenRouter,

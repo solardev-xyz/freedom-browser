@@ -14,22 +14,24 @@ function setup() {
   global.window = { addEventListener: jest.fn() };
   const prompt = createElement(); prompt.value = 'Build this please'; prompt.selectionStart = 6; prompt.selectionEnd = 10;
   prompt.setSelectionRange = jest.fn();
-  const nodes = Object.fromEntries(['button', 'optionsButton', 'panel', 'feedback', 'cancelButton'].map(name => [name, createElement()]));
+  const nodes = Object.fromEntries(['button', 'optionsButton', 'panel', 'menu', 'feedback', 'cancelButton'].map(name => [name, createElement()]));
   nodes.panel.hidden = true;
+  nodes.menu.hidden = true;
   const state = { ok: true, preferences: { providerId: 'venice', language: 'auto', requireZeroRetention: true },
     options: [{ providerId: 'venice', name: 'Venice', available: true, ready: true, detail: 'Audio goes to Venice.', price: 'Usage charges' }], languages: ['auto', 'de'] };
   let event;
   const api = { getAgentDictationState: jest.fn(async () => state), beginAgentDictation: jest.fn(async () => ({ ok: true, id: 'capture', name: 'Venice' })),
     finishAgentDictation: jest.fn(async () => ({ ok: true, text: 'a game' })), appendAgentDictation: jest.fn(async () => ({ ok: true })),
-    cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(),
+    cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(async () => ({ ok: true })),
     onAgentDictationEvent: jest.fn(handler => { event = handler; return jest.fn(); }) };
   const stream = { getTracks: () => [{ stop: jest.fn() }] };
   Object.defineProperty(global, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: jest.fn(async () => stream) } } });
   const recorder = { finish: jest.fn(async () => new Uint8Array(100)), cancel: jest.fn() };
   createDictationRecorder.mockResolvedValue(recorder);
   const onInput = jest.fn(), onBusy = jest.fn();
-  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord: () => true, onInput, onBusy });
-  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, emit: value => event(value) };
+  const openSettings = jest.fn();
+  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord: () => true, onInput, onBusy, openSettings });
+  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, openSettings, emit: value => event(value) };
 }
 
 afterEach(() => { delete global.document; delete global.window; delete global.navigator; jest.clearAllMocks(); });
@@ -81,11 +83,42 @@ test('first use starts the suggested connected service without showing setup', a
   expect(ctx.feedback.textContent).toContain('Listening · Venice');
 });
 
-test('the chevron opens preferences without starting the microphone even when a service is connected', async () => {
+test('the chevron opens a provider menu without starting the microphone or showing setup', async () => {
   const ctx = setup(); ctx.state.preferences.providerId = null; ctx.state.suggestedProviderId = 'venice';
   ctx.optionsButton.dispatch('click'); await flush();
-  expect(ctx.panel.hidden).toBe(false); expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  expect(ctx.panel.hidden).toBe(true); expect(ctx.menu.hidden).toBe(false);
+  expect(ctx.menu.querySelector('[data-provider-id="venice"]').getAttribute('aria-checked')).toBe('true');
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
   expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+});
+
+test('provider selection preserves language and retention preferences and never starts recording', async () => {
+  const ctx = setup();
+  ctx.state.preferences.language = 'de';
+  ctx.state.options.push({ providerId: 'openrouter', name: 'OpenRouter', available: true, ready: true });
+  ctx.optionsButton.dispatch('click'); await flush();
+  ctx.menu.querySelector('[data-provider-id="openrouter"]').dispatch('click'); await flush();
+  expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({ providerId: 'openrouter', language: 'de', requireZeroRetention: true });
+  expect(ctx.menu.hidden).toBe(true); expect(ctx.panel.hidden).toBe(true);
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+});
+
+test('an uninstalled local choice opens Settings rather than downloading or showing setup', async () => {
+  const ctx = setup();
+  ctx.state.options.push({ providerId: 'local', name: 'On this device', available: true, ready: false });
+  ctx.optionsButton.dispatch('click'); await flush();
+  ctx.menu.querySelector('[data-provider-id="local"]').dispatch('click'); await flush();
+  expect(ctx.openSettings).toHaveBeenCalledTimes(1); expect(ctx.panel.hidden).toBe(true);
+  expect(ctx.api.chooseAgentDictation).not.toHaveBeenCalled();
+});
+
+test('Escape dismisses the menu first and a late options response cannot reopen it', async () => {
+  const ctx = setup(); let resolve;
+  ctx.api.getAgentDictationState.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  ctx.optionsButton.dispatch('click'); await flush();
+  expect(ctx.ui.escape()).toBe(true);
+  resolve(ctx.state); await flush();
+  expect(ctx.menu.hidden).toBe(true); expect(ctx.optionsButton.getAttribute('aria-expanded')).toBe('false');
 });
 
 test('without a suitable connection first use shows setup before starting the microphone', async () => {

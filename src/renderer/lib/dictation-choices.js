@@ -13,7 +13,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   let state;
   let busy = false;
   let generation = 0;
-  const heading = element(autoSave ? 'h3' : 'strong', 'Voice dictation', autoSave ? 'row-label' : '');
+  const heading = element('strong', 'Voice dictation');
   const intro = element('p', 'Words appear while you speak. Choose where your speech becomes text. Your chat model stays the same.', `agent-dictation-help${autoSave ? ' row-help' : ''}`);
   const serviceLabel = element('label', 'Transcription');
   const service = element('select'); service.setAttribute('aria-label', 'Dictation service'); serviceLabel.appendChild(service);
@@ -34,7 +34,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     host.dispatchEvent(new CustomEvent('dictation-connect', { bubbles: true }));
   });
   actions.append(use, cancel);
-  host.replaceChildren(heading, intro, serviceLabel, languageLabel, detail, zeroLabel, status, actions, connect);
+  host.replaceChildren(...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, zeroLabel, status, actions, connect);
   const renderSelection = () => {
     const option = state?.options.find(option => option.providerId === service.value);
     detail.textContent = option ? `${option.detail} ${option.price}.` : 'Connect an API-key provider in Settings → AI, or choose local dictation.';

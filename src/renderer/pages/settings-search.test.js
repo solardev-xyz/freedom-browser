@@ -209,7 +209,7 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(19);
+    expect(sections).toHaveLength(20);
     expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
@@ -243,7 +243,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(18);
+    expect(sections).toHaveLength(19);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -259,6 +259,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
     expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
     expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
+    expect(named('voice')).toMatchObject({ label: 'Voice dictation', section: 'AI › Voice dictation' });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {

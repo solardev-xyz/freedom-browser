@@ -100,27 +100,33 @@ test('first microphone click uses a connected service immediately without setup'
   await expect(window.locator('#agent-transcript')).toBeHidden();
 });
 
-test('chevron opens preferences, real audio capture, cloud upload and editable insertion without sending', async ({ window, electronApp }, testInfo) => {
+test('chevron opens a compact provider menu in both themes; selection does not record or send', async ({ window, electronApp }, testInfo) => {
   await prepare(window, electronApp);
   const prompt = window.locator('#agent-prompt');
   await prompt.fill('Build');
-  await window.locator('#agent-dictation-options').click();
-  const chooser = window.locator('#agent-dictation-panel');
-  await expect(chooser).toBeVisible();
-  await chooser.getByLabel('Dictation service').selectOption('openrouter');
-  await expect(chooser).toContainText('Audio is sent to OpenRouter while you speak');
+  const menu = window.locator('#agent-dictation-menu');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     for (const [width, height] of [[1100, 800], [760, 560], [420, 640]]) {
       await electronApp.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows().find(window => window.isVisible()).setSize(...size), [width, height]);
-      await expect(chooser.getByRole('button', { name: 'Use for dictation' })).toBeInViewport();
+      await window.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await window.locator('#agent-dictation-options').click();
+      await expect(menu).toBeVisible();
+      await expect(menu.getByRole('menuitemradio', { name: /OpenRouter/ })).toHaveAttribute('aria-checked', 'true');
+      await expect(menu.getByRole('menuitem', { name: 'Voice dictation settings…' })).toBeInViewport();
+      await expect(window.locator('#agent-dictation-panel')).toBeHidden();
       await expect(window.locator('#agent-dictation')).toBeInViewport();
-      await window.screenshot({ path: testInfo.outputPath(`dictation-chooser-${theme}-${width}.png`) });
+      await window.screenshot({ path: testInfo.outputPath(`dictation-menu-${theme}-${width}.png`) });
+      await window.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
     }
   }
   await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible()).setSize(1100, 800));
-  await chooser.getByRole('button', { name: 'Use for dictation' }).click();
-  await expect(chooser).toBeHidden();
+  await window.locator('#agent-dictation-options').click();
+  await menu.getByRole('menuitemradio', { name: /OpenRouter/ }).click();
+  await expect(menu).toBeHidden();
+  await expect(prompt).toHaveValue('Build');
+  await expect(window.locator('#agent-dictation-feedback')).toBeHidden();
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
   await expect(prompt).toHaveAttribute('readonly', '');
@@ -138,12 +144,44 @@ test('chevron opens preferences, real audio capture, cloud upload and editable i
   expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
 
   await window.locator('#agent-dictation').click();
-  await expect(chooser).toBeHidden();
+  await expect(menu).toBeHidden();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
   await window.keyboard.press('Escape');
   await expect(prompt).toHaveValue('Build a small browser game');
   await expect(window.locator('#agent-sidebar')).toBeVisible();
   expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
+});
+
+test('menu switches provider without recording and opens voice management directly', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  await window.evaluate(async () => {
+    const result = await window.electronAPI.getAgentProviderCatalog();
+    const model = result.catalog.find(provider => provider.providerId === 'openai').models[0].id;
+    await window.electronAPI.configureHostedAgentProvider('openai', model, 'dictation-fixture-key');
+    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true });
+  });
+  const menu = window.locator('#agent-dictation-menu');
+  await window.locator('#agent-prompt').fill('Keep my draft');
+  await window.locator('#agent-dictation-options').click();
+  await menu.getByRole('menuitemradio', { name: /OpenAI/ }).click();
+  await expect(menu).toBeHidden();
+  await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences)).toEqual({
+    providerId: 'openai', language: 'de', requireZeroRetention: true,
+  });
+  await expect(window.locator('#agent-dictation-feedback')).toBeHidden();
+  await window.locator('#agent-dictation-options').click();
+  await window.locator('#menu-backdrop').click({ position: { x: 2, y: 2 } });
+  await expect(menu).toBeHidden(); await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await window.locator('#agent-dictation-options').click();
+  await menu.getByRole('menuitem', { name: 'Voice dictation settings…' }).click();
+  let settings;
+  await expect.poll(() => {
+    settings = window.context().pages().find(page => page.url().includes('/pages/settings.html'));
+    return settings?.url();
+  }).toContain('#ai/voice');
+  await expect(settings.locator('#ai-dictation-settings')).toBeInViewport();
+  await expect(window.locator('#agent-sidebar')).toBeHidden();
+  await expect(window.locator('#agent-prompt')).toHaveValue('Keep my draft');
 });
 
 test('closing during transcription discards late text and releases audio', async ({ window, electronApp }) => {

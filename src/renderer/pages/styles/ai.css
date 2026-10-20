@@ -6,12 +6,13 @@
   margin: 24px 0 0;
   max-height: none;
 }
-#ai-dictation-settings h3 { margin: 0; font-size: 14px; }
-#ai [hidden],
-#ai .hidden {
+#voice[hidden],
+#voice:has(#ai-dictation-settings[hidden]),
+:is(#ai, #voice) [hidden],
+:is(#ai, #voice) .hidden {
   display: none !important;
 }
-#ai .section-description {
+:is(#ai, #voice) .section-description {
   color: var(--text-muted);
   line-height: 1.6;
   margin-bottom: 24px;
@@ -27,26 +28,26 @@
   font-size: 13px;
   margin: 0;
 }
-#ai .agent-setup-intro p,
-#ai .agent-catalog-status,
-#ai .agent-subscription-note,
-#ai .agent-provider-models-empty {
+:is(#ai, #voice) .agent-setup-intro p,
+:is(#ai, #voice) .agent-catalog-status,
+:is(#ai, #voice) .agent-subscription-note,
+:is(#ai, #voice) .agent-provider-models-empty {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.6;
 }
-#ai .agent-field {
+:is(#ai, #voice) .agent-field {
   display: grid;
   gap: 8px;
   margin: 18px 0;
   font-size: 13px;
 }
-#ai .agent-field > span {
+:is(#ai, #voice) .agent-field > span {
   font-weight: 600;
 }
-#ai input:not([type='checkbox']),
-#ai select,
-#ai textarea {
+:is(#ai, #voice) input:not([type='checkbox']),
+:is(#ai, #voice) select,
+:is(#ai, #voice) textarea {
   width: 100%;
   min-width: 0;
   padding: 10px 12px;
@@ -56,21 +57,21 @@
   color: var(--text);
   font: inherit;
 }
-#ai input[type='url'],
-#ai input[type='password'],
-#ai textarea {
+:is(#ai, #voice) input[type='url'],
+:is(#ai, #voice) input[type='password'],
+:is(#ai, #voice) textarea {
   font-family: var(--font-mono);
 }
-#ai input:focus-visible,
-#ai select:focus-visible,
-#ai textarea:focus-visible,
-#ai button:focus-visible,
-#ai summary:focus-visible {
+:is(#ai, #voice) input:focus-visible,
+:is(#ai, #voice) select:focus-visible,
+:is(#ai, #voice) textarea:focus-visible,
+:is(#ai, #voice) button:focus-visible,
+:is(#ai, #voice) summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
-#ai .agent-button,
-#ai .agent-text-button {
+:is(#ai, #voice) .agent-button,
+:is(#ai, #voice) .agent-text-button {
   padding: 8px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -80,20 +81,20 @@
   font-size: 13px;
   cursor: pointer;
 }
-#ai .agent-button:not(.secondary) {
+:is(#ai, #voice) .agent-button:not(.secondary) {
   background: var(--accent);
   color: var(--bg);
   border-color: var(--accent);
 }
-#ai .agent-text-button {
+:is(#ai, #voice) .agent-text-button {
   border-color: transparent;
   color: var(--accent);
 }
-#ai .agent-button:hover,
-#ai .agent-text-button:hover {
+:is(#ai, #voice) .agent-button:hover,
+:is(#ai, #voice) .agent-text-button:hover {
   filter: brightness(1.1);
 }
-#ai button:disabled {
+:is(#ai, #voice) button:disabled {
   opacity: 0.55;
   cursor: default;
 }
