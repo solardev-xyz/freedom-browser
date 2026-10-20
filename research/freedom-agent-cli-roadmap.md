@@ -2,16 +2,16 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-20
-Status: Review fixes implemented; qualification in progress; product iteration remains planned
+Status: Review fixes and AI settings/onboarding integrated; qualification in progress; examples, dictation and domain skills planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
 
 The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
-example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2 are implemented on an experimental branch pending maintainer smoke
-testing; AI3–AI5 remain planned. Ordinary
-browsing remains a complete experience with AI off.
+example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
+passed maintainer smoke testing and are integrated into the feature branch;
+AI3–AI5 remain planned. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -298,10 +298,12 @@ pending approvals, and preserves already-running development servers and
 host-owned transaction/publication reconciliation. It does not undo dispatched
 external effects. AI3–AI5 are planned, not part of this experimental slice.
 
-### AI1/AI2 experimental implementation — October 20
+### AI1/AI2 implementation and integration — October 20
 
-Branch: `experiment/ai-settings-onboarding`, based on `e71c5f62`. Keep this
-separate from PR #457 until the maintainer smoke test and integration approval.
+Implemented on `experiment/ai-settings-onboarding`, based on `e71c5f62`.
+The maintainer reported successful smoke testing and approved integration into
+`feature/freedom-automation-kernel` on October 20. The invitation copy was refined
+after that smoke test; competing notification surfaces are tracked separately in #759.
 
 - AI is an explicit, strict-boolean profile setting, default off for new and
   existing profiles without a choice. Main-process IPC and provider transport
@@ -330,9 +332,9 @@ separate from PR #457 until the maintainer smoke test and integration approval.
   persistence, retained model routing, start/disable races, cancellation across
   saved chats, preserved previews, MCP sign-in/transport cancellation, Settings
   subscription cleanup, storage errors and catalogue invalidation.
-- Linux screenshot baselines must be regenerated/reviewed before integrating
-  this experimental UI, including adding AI to the Linux screenshot tour once
-  the design is smoke-approved. Mac captures are visual evidence, not Linux
+- Linux screenshot baselines remain an integration qualification follow-up before
+  release, including adding AI to the Linux screenshot tour now that the design
+  is smoke-approved. Mac captures are visual evidence, not Linux
   baseline replacements. Live account reauthentication and Windows/Linux UI
   smoke remain separate from the deterministic Mac fixtures.
 - A historical chat with messages but no recorded model cannot safely infer
@@ -361,8 +363,8 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 
 | Order | Package | Outcome | Dependency/status |
 | --- | --- | --- | --- |
-| 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Implemented on experimental branch; maintainer smoke pending |
-| 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Implemented with AI1; maintainer smoke pending |
+| 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
+| 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | AI1/AI2 entry flow; not started |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
@@ -410,8 +412,13 @@ services**; model-provider migration must not mix those screens again.
 
 **Product:** show one compact, dismissible banner on Freedom's ordinary start/new-tab
 page while AI is off. Suggested copy: **“Try AI in Freedom”**, a **Beta** badge,
-**“Research, build and publish with Agent.”**, and **“Explore AI”** as the action.
+**“Research, build and publish to the decentralized web with Freedom Agent.”**,
+and **“Explore AI”** as the action.
 Use specific copy rather than a generic promise about unspecified beta features.
+
+Cross-surface notification and announcement consistency is tracked separately in
+[#759](https://github.com/solardev-xyz/freedom-browser/issues/759), including the AI
+invitation, node notices and download shelf.
 
 - The action opens Settings → AI. Explain the feature, then let the user enable
   it and connect a provider. Clicking the banner alone sends no inference and
