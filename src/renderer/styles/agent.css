@@ -978,7 +978,15 @@ body.agent-first-mode.agent-workspace-page-empty .agent-page-surface > .content 
 body.agent-first-mode .agent-workspace-view {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+body.agent-first-mode .agent-examples {
+  grid-column: 1;
+  grid-row: 3;
+  width: min(100%, calc(var(--agent-conversation-width) + 2 * var(--agent-conversation-gutter)));
+  padding: 0 var(--agent-conversation-gutter) 20px;
+  margin: 0 auto;
 }
 
 body.agent-first-mode .agent-workspace-body {
@@ -1443,7 +1451,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-empty-state {
-  max-width: 480px;
+  max-width: 250px;
   margin: 72px auto 0;
   color: var(--muted);
   text-align: center;

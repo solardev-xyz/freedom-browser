@@ -168,6 +168,41 @@
   min-height: 0;
 }
 
+/* The ideas float below the launcher, outside its painted glass rectangle. */
+.agent-floating[data-presentation='launcher'][data-agent-view='workspace'] .agent-sidebar-inner {
+  max-height: calc(100% - var(--agent-launcher-top) - var(--agent-examples-height, 156px) - 24px);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-view {
+  position: relative;
+  min-height: var(--agent-composer-height, 160px);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-examples {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 14px;
+  left: 14px;
+  margin: 0;
+  pointer-events: auto;
+}
+
+.agent-floating .agent-example {
+  background: var(--agent-bubble-agent);
+  box-shadow: var(--agent-glass-shadow-soft);
+}
+
+.agent-floating[data-presentation='column'] .agent-examples {
+  display: none;
+}
+
+/* Prioritise composer controls when there is no room for a separate row. */
+@media (max-height: 520px), (max-width: 380px) and (max-height: 600px) {
+  .agent-floating[data-presentation='launcher'] .agent-examples {
+    display: none;
+  }
+}
+
 .agent-floating[data-presentation='launcher'] .agent-workspace-scroll {
   flex: 0 1 auto;
   padding: 0 24px;

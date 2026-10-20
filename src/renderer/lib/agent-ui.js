@@ -1324,12 +1324,15 @@ function observeComposerHeight() {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
+    const examplesHeight = elements.examples?.offsetHeight || 0;
+    setBodyStyleProperty('--agent-examples-height', `${examplesHeight ? examplesHeight + 12 : 0}px`);
     captureLauncherSnapshot();
   };
   update();
   if (typeof ResizeObserver === 'function') {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
+    if (elements.examples) composerResizeObserver.observe(elements.examples);
   }
 }
 

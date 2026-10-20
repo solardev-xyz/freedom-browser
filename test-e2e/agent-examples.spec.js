@@ -114,7 +114,7 @@ test('first send moves the composer from its visible launcher position', async (
   const { flight, ghost } = await window.evaluate(() => ({ flight: window.exampleFlight, ghost: window.exampleGhost }));
   expect(flight.sourceY).toBeCloseTo(before.y, 0);
   expect(ghost.height).toBeCloseTo(launcher.height, 0);
-  expect(ghost).toMatchObject({ cardsVisible: true, inert: true, duplicateIds: 0 });
+  expect(ghost).toMatchObject({ cardsVisible: false, inert: true, duplicateIds: 0 });
 });
 
 test('choosing a project review keeps a staged attachment and sends no request', async ({ electronApp, window, userDataDir }) => {
@@ -140,7 +140,7 @@ test('examples and composer remain reachable in both themes, small windows and A
   await configureOllamaAgent(window, baseUrl);
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-    for (const [width, height] of [[1100, 800], [760, 560], [420, 640]]) {
+    for (const [width, height] of [[1100, 800], [760, 560], [420, 640], [760, 420], [380, 500], [380, 540], [380, 610]]) {
       await electronApp.evaluate(({ BrowserWindow }, size) => {
         const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
         win.setMinimumSize(320, 300);
@@ -148,7 +148,11 @@ test('examples and composer remain reachable in both themes, small windows and A
       }, { width, height });
       for (const mode of ['floating', 'agent-first']) {
         if (mode === 'agent-first') await window.locator('#agent-first-toggle').click();
-        for (const selector of ['#agent-examples button:last-child', '#agent-prompt', '#agent-attachment-button', '#agent-run']) {
+        const compact = mode === 'floating' && (height <= 520 || (width <= 380 && height <= 600));
+        if (compact) await expect(window.locator('#agent-examples')).toBeHidden();
+        const controls = ['#agent-prompt', '#agent-attachment-button', '#agent-run'];
+        if (!compact) controls.unshift('#agent-examples button:last-child');
+        for (const selector of controls) {
           if (mode === 'agent-first') await window.locator(selector).scrollIntoViewIfNeeded();
           await expect.poll(() => window.locator(selector).evaluate(element => {
             const r = element.getBoundingClientRect();
@@ -156,6 +160,15 @@ test('examples and composer remain reachable in both themes, small windows and A
             return r.width > 0 && r.height > 0 && r.left >= 0 && r.right <= innerWidth &&
               r.top >= 0 && r.bottom <= innerHeight && (target === element || element.contains(target));
           })).toBe(true);
+        }
+        if (!compact) {
+          const cards = await window.locator('#agent-examples').boundingBox();
+          const composer = await window.locator('#agent-composer-wrap').boundingBox();
+          expect(cards.y).toBeGreaterThanOrEqual(composer.y + composer.height);
+          if (mode === 'floating') {
+            const glass = await window.locator('.agent-sidebar-inner').boundingBox();
+            expect(cards.y).toBeGreaterThan(glass.y + glass.height + 8);
+          }
         }
         await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}-${mode}.png`) });
         if (mode === 'agent-first') {

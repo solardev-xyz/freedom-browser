@@ -467,7 +467,8 @@ including no connected provider and a local-model setup. Add a named-site exampl
 only once AI5's corresponding namespace flow is qualified.
 
 **Implementation — October 20:** four bundled cards appear in a new chat in
-both floating and Agent-first layouts. Selection fills an editable draft and
+both floating and Agent-first layouts, as standalone tiles below the composer
+rather than inside its glass surface. Selection fills an editable draft and
 focuses the composer; it does not send, publish, purchase, alter approval posture
 or replace existing text. Cards retain their space and become unavailable while
 a draft is present, so typing does not move the composer. They disappear once a
@@ -477,7 +478,11 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 - Both-theme captures and reachability checks cover 1100×800, 760×560 and
   420×640 in floating and Agent-first layouts. Short launchers compact the cards
-  and allow greeting content to scroll without overlapping the composer.
+  and allow greeting content to scroll without overlapping the composer. Below
+  520 px in height (600 px for a single-column layout at widths up to 380 px),
+  the floating launcher hides the tiles to prioritise composer controls. The
+  workspace view cannot shrink below the composer height. Regression cases cover
+  760×420 and 380×500/540/610, including the compact/visible boundary.
 - Automated checks cover keyboard selection, editable/stationary drafts and
   the first-send animation starting from the displayed launcher geometry,
   conversation/reset state, no inference on selection, staged-file preservation
