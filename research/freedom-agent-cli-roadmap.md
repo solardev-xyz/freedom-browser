@@ -1,12 +1,471 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-10
-Status: Living research roadmap
+Last updated: 2026-10-20
+Status: Review fixes implemented; qualification in progress; product iteration remains planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
-Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
-Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
+## Active plan — colleague review follow-up, 2026-10-20
+
+The user reports a positive colleague review of PR #457 and has selected five
+product improvements: an opt-in AI section in Settings, voice dictation, useful
+example prompts, decentralized-domain skills, and start-page discovery. This is
+planning authorization; the packages below are not yet delivered. Ordinary
+browsing remains a complete experience with AI off.
+
+This section is the canonical priority and status index. The collapsed historical
+record preserves previous design decisions, experiments and dated qualification;
+its older “next”, “unsupported” and “remaining” statements do not override this
+plan. Optional extensions remain recorded below and are not prerequisites for
+this iteration.
+
+### Current baseline and qualification
+
+- PR [#457](https://github.com/solardev-xyz/freedom-browser/pull/457) is open and
+  ready for review, not draft. Positive colleague feedback is user-reported; it
+  does not establish that every provider/platform or release gate has passed.
+- The review baseline was `0b4bb4f2`, including main through
+  `f8709ed5` and the Agent popover stacking follow-up. October 20 repairs are
+  `5779425e` (authority/runtime) and `d234673b` (renderer/qualification). The earlier synchronization
+  `a6cdeb08` incorporated main at `8487e566`; `9251baf0` fixed test portability.
+- Local validation at `9251baf0`: lint, **10,121 unit tests passed / 129 skipped**;
+  **36 applicable Electron cases passed** across Agent cancellation, tab
+  shortcuts, context menus and publish setup, including the corrected macOS
+  modifier test (6 platform-specific skips). The full 16-case context-menu suite
+  was rerun successfully. This does not qualify subsequent styling changes.
+- GitHub checks at `0b4bb4f2`: Windows sandbox succeeded; general CI failed at
+  **Compare renderer screenshots** (`e2e-renderer-screenshots`), also failing the
+  aggregate `ci-ok` check. [Inspect the differences in that run](https://github.com/solardev-xyz/freedom-browser/actions/runs/39286074277)
+  and fix the regression or qualify intentional baseline changes before claiming
+  a green review/release baseline; the failed comparison alone does not say which.
+- macOS has the broadest live product/provider coverage. Core Windows x64 sandbox
+  and packaged workflows are implemented and qualified at recorded revisions;
+  broad reads are an accepted Windows policy. Linux has dated Bubblewrap/package
+  evidence. Windows/Linux Claude-CLI and newer provider/privacy/package paths
+  still need their own qualification; previous passes do not cover every update.
+
+Delivered product inventory:
+
+| Area | Implemented baseline |
+| --- | --- |
+| Conversation UX | Floating composer/chat, Agent-first mode, streaming, steering, Stop/takeover, saved conversations, attachments including drag/drop, file/diff/history viewers. The microphone is currently a disabled “coming soon” placeholder. |
+| Providers | Pi 1.0.2; connected hosted/local providers; ChatGPT sign-in; installed Claude CLI session adapter; custom OpenAI-compatible endpoints and optional model compatibility checks. |
+| Creation and browser work | Semantic browser tools, managed projects, external read-only/edit grants, builds, previews, reviewed history/checkpoints and conversational Git recovery. |
+| Delegation and services | Foreground/background helpers, scoped editing/browser work, individual Stop, saved reports, autonomous orchestration, codemode and profile-owned connected MCP services. |
+| dWeb | Native wallet approvals, node operations, Swarm publication and stamp readiness/retry/continuation. `.eth`, `.wei` and `.gwei` resolution exists; domain buying/management skills do not. |
+| Privacy | Session shield and picker symbols, per-chat OpenRouter ZDR, NEAR request-bound evidence/E2EE and eligible Venice text E2EE with disclosed fallback. GPU/software verification and broader coverage remain open; no blanket private-inference claim. |
+
+### PR review follow-ups — indexed 2026-10-20
+
+Read all **17 discussion comments** on PR #457, including the original hardening
+pass, merge checks, helper review, fixes/re-reviews, UI surface map and visual
+review. At this check the PR has no separate formal review or inline-review
+comments; the actionable feedback is in the discussion. The notes below apply to
+reviewed heads through `0b4bb4f2`. That indexing pass used source inspection; the implementation and fresh fixture/
+visual evidence added afterward are recorded below, with their limits.
+
+**Priority:** qualify the repaired authority/path and UI boundaries, inspect/adopt
+intentional screenshot changes, and restore green CI before broad beta rollout.
+AI1–AI5 remain the selected product iteration; AI1’s provider-management move must
+inherit this qualification matrix. Mark an item closed only with a fix and
+applicable evidence, or a documented, explicit acceptance of the stated limit. The reviewer called the earlier M findings
+non-blocking; this priority order is planning, not a new claim about their severity.
+
+#### A. Authority, filesystem and runtime follow-ups
+
+Sources: [October 13 M1–M8](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6155372410)
+and [October 14 merge follow-ups](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6166710132).
+The code findings below have been addressed in `5779425e`; R2 retains an explicit
+policy limit rather than claiming recursive enforcement. Qualification limits
+remain separate under Q1–Q9.
+
+| ID / original finding | Work to do and evidence needed |
+| --- | --- |
+| R1 — Oct 13 M1: attached-folder read race — fixed | Reads and PDF rendering validate the opened descriptor’s device/inode against the expected file and the post-open path, reject symlinks and out-of-scope/hardlinked folder entries, and close before reading on mismatch. Deterministic text/image/PDF-extraction/PDF-render tests swap a directory, open an outside file, and restore the original path before validation; no bytes or PDF processing occur. |
+| R2 — Oct 13 M2: nested Git metadata — documented policy limit | Direct file tools still reject every `.git` segment; shell protection covers only the selected project root. Nested clones/new Git directories can be modified by shell commands, including hooks/config a user or IDE could later execute. The approval disclosure, existing-project guide and review guide now state this limit. Recursive shell enforcement is deferred, not implemented or claimed; treat nested repositories as untrusted before running host Git/IDE actions in them. |
+| R3 — Oct 13 M3: approval scope fields — fixed | Decisions reject workspace/diagnostic scopes on unrelated approvals, invalid scope values, and wallet indices absent from that pending connection request. Invalid decisions leave the approval pending. One-shot and conversation approvals retain their existing behavior; regression tests cover added/widened fields and unoffered accounts. |
+| R4 — Oct 13 M4: runtime socket directory — fixed | Unix runtimes use unique private socket directories under a validated short private `XDG_RUNTIME_DIR`, otherwise `/tmp`. Owner/mode/symlink checks, authenticated discovery and stale-socket validation remain. Tests cover uniqueness, unsafe XDG fallback, actual socket connection and shutdown cleanup. Windows named pipes are unchanged. |
+| R5 — Oct 13 M5: Claude login-check working directory — fixed | Version/auth probes run in a private scratch directory with restricted mode and empty setting sources. Launch-contract tests pass, and the installed authenticated macOS CLI successfully completed the real read-only login probe with these flags. Whether the previous probes loaded project settings remains unconfirmed. |
+| R6 — Oct 13 M6: Claude scratch accumulation — fixed | Owned auth/session/catalogue scratch directories are removed after probes, process/bridge shutdown and failed startup. Tests cover successful close and spawn failure; revocation still clears prompt/config contents before directory cleanup. No arbitrary temporary-directory cleanup was added. |
+| R7 — Oct 13 M7: origin-scope contract — clarified | The legacy controller name is documented as conversation-owned-tab/scheme scoping; cross-origin research remains intentional. The single supported `navigationScope: workspace` value is validated directly rather than bound to an unused variable. Existing cross-origin, foreign-tab and stale-document tests remain in the full passing suite. |
+| R8 — Oct 13 M8: wallet context trace — traced and hardened | Main obtains the page URL from its controller and checks the forwarded permission/display origin against it. The chosen chain is resolved once; explicit transaction/typed-data chains must match it before approval/signing. Tests show that mutation during approval cannot change the signed transaction’s chain. Ordinary/Agent wallet and simulated Ledger regressions are included in qualification; a physical Ledger/live transaction is not claimed. |
+| R9 — Oct 14 runtime handoff M2 — fixed | A windowless runtime refuses GUI focus/link requests with a useful outcome instead of accepting a queue it cannot drain. It does not advertise the GUI second-instance listener. Both handoff routes have unit regressions; runtime profile ownership remains intact. |
+
+The other October 14 merge follow-up, Agent fullscreen concealment, is merged into
+U8 below rather than tracked twice.
+
+#### B. Layout, accessibility and visual repairs
+
+Source: [October 19 UI review](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6276796988).
+IDs U1–U18 match its numbered findings; U0 is its preceding toolbar finding.
+The review used Linux/headless captures at several sizes plus static inspection.
+The repairs below are implemented. Fresh Electron checks cover both themes,
+380/500/600/1100/1440px geometry, real hit testing and scrolling; simulated Linux
+chrome checks do not replace native Linux/Windows qualification. The original
+acceptance wording is retained so later platform runs can repeat it.
+
+| Priority / ID | Concrete task and acceptance |
+| --- | --- |
+| Implemented — U0: narrow toolbar (verified) | Keep a usable address-input minimum or adapt lower-priority controls at narrow widths. At ~380 CSS px, prevent the input/star overlapping Nodes; account for the extra Agent button and the AI-off state. |
+| Implemented — U1: Agent-first responsive layout (verified) | Replace the ~942px combined column minimum with a reachable narrow layout. At 600px, sessions/page/workspace controls must remain reachable without clipped offscreen panes. Protect native Linux/Windows controls and macOS traffic lights, including around 1100px. |
+| Implemented — U2: floating chrome collisions (verified) | Handle widths below 720px: the find bar must remain operable and download cards must not cover the composer's Send button. Coordinate geometry rather than only raising z-index. |
+| Implemented — U3: Agent-first autocomplete (code finding) | Reproduce and correct the transformed page surface/backdrop stacking interaction; suggestions must paint above the backdrop, receive clicks and support keyboard selection while the address bar is re-hosted. |
+| Implemented — U4: invisible input capture | Fix the full-height transparent workspace body swallowing page clicks, wheel input and scrollbar dragging above short conversations. Keep actual bubbles/composer interactive and retain intentional scroll behavior over transcript content. |
+| Implemented — U5: hidden context-menu items (verified) | Ensure `[hidden]` beats `.context-menu-item { display: block }`. Claim appears only on Agent-owned tabs; Mute is absent on workspace viewers. Check ordinary, claimed, pinned and viewer tabs. |
+| Implemented — U6: crushed download cards (verified) | Give download feedback usable geometry when wallet/Agent leaves a very narrow page area; preserve filename/status and all actions at a 500px window with the wallet open. |
+| Implemented — U7: missing download feedback | Keep download state and actions available in Agent-first mode when the page pane is empty or closed; do not rely solely on the hidden `.content` subtree. |
+| Implemented — U8: fullscreen behavior | Reconcile browser F11 and page/video fullscreen with floating and Agent-first modes. Conceal/restore the appropriate Agent chrome, allow the requested content to fill the window, and keep a recoverable exit. Covers Oct 14 fullscreen M1 too. |
+| Implemented — U9: re-hosted address popovers | Bound the permission prompt, site-info/ENS trust popovers and copy tooltip to the viewport/page geometry. Fix transform-created containing blocks so Allow and all other controls stay visible/clickable at narrow widths. |
+| Implemented — U10: find bar under page interlock | Make browser Find usable on Agent-owned pages without unexpectedly opening Take over. Preserve the actual page interaction boundary. |
+| Implemented — U11: occluded hints/status | Keep Take over hints and right-flipped link-status URLs clear of the floating composer; test both normal and Agent-controlled pages. |
+| Implemented — U12: platform styling (verified) | Use the before-paint platform state consistently; do not reserve macOS traffic-light padding on every OS or depend on an unset `platform-linux` class. Check Linux tabs-in-title-bar on/off. |
+| Implemented — U13: composer focus visibility | Restore an obvious keyboard focus indicator in both floating presentations and Agent-first, especially dark theme; blur/fill changes must not erase it. |
+| Implemented — U14: accent contrast | Correct foreground-on-accent contrast for tab badges, Add/Connect service and Take over. Check text size and both theme token values; do not change unrelated palette surfaces. |
+| Implemented — U15: uncertain-outcome readability | Give the browser-outcome-uncertain card a legible surface, type size and contrast over busy pages, consistent with other floating messages. |
+| Implemented — U16: Agent-first transcript/strip | Prevent table headers breaking mid-word; make task-page tabs readable with ellipsis and a deliberate scrollbar; stop messages showing through the strip under the composer. Preserve intentional sideways scrolling within code/table blocks, without overflowing the conversation. |
+| Implemented — U17: page-context wording | Make the “Current page” chip describe the actual attached context. Either update the context deliberately or label it as the conversation's attached/start page; never silently suggest a different active tab was shared. |
+| Implemented — U18: approval/takeover button convention | Align primary/secondary buttons with the shared filled-accent/outlined-secondary convention; check Allow/Don't allow/Stop and Keep Agent working without changing approval meaning. |
+
+Lower-priority polish, each retained as a separate task:
+
+- **Implemented: L1 — Pinned-tab badge:** fit favicon, spacing and the Agent dot in the narrow
+  pinned tab, in both themes and hover/claimed states.
+- **Implemented: L2 — Floating alignment:** align header/composer/transcript edges and style
+  the transcript scrollbar; avoid the light-theme strip at the window edge.
+- **Implemented: L3 — Composer labels:** reduce avoidable truncation of approval posture and
+  model names, including the wide-window “Ask when nee…” case.
+- **Implemented: L4 — Agent-first readability:** reconsider the forced 10px centered address
+  text, 9–10px empty-state copy and hidden scrollbars.
+- **Implemented: L5 — Helper Stop parity:** consistent stop-icon shape, hit area and styling
+  in dark/light themes.
+- **Implemented: L6 — Model-menu indentation:** align the privacy-symbol help row with the
+  surrounding items.
+- **Open: L7 — Blur cost:** profile animated backdrop filters over video and long
+  conversations on lower-end/no-GPU Linux. This was not profiled by the reviewer;
+  preserve the accepted glass design unless measurements justify a change.
+
+Implementation notes: narrow Agent-first windows use one temporary session/page
+overlay at a time; address menus remain outside the page content’s stacking
+context. Download feedback lives at window level and reports its measured height
+so narrow floating conversations reserve space above it. Short conversations no
+longer stretch an invisible input-capturing body across the page. Fullscreen hides
+and restores Agent chrome without stopping the task; the composer strip is opaque,
+not a live blur over scrolling messages. Focus, accent contrast, page-context copy,
+helper Stop styling and primary/secondary approval buttons follow the shared UI
+conventions. No model/provider logic or renderer/main ownership changed.
+
+The original review did not reach real ChatGPT/Meta login, publication approval,
+project access or Agent wallet approvals. The fresh harness runs exercise their
+synthetic UI/lifecycle paths, including publication continuation, project access
+and wallet approval; they do not claim new real-account or hardware qualification.
+
+#### Execution evidence — October 20
+
+- `5779425e`: authority/filesystem/runtime repairs; lint and **10,141 unit tests
+  passed / 129 skipped**. The real installed Claude CLI login probe passed without
+  inference or exposing credentials. All tests use controlled fixtures for races,
+  wallet signatures and provider/network side effects.
+- Renderer repairs have fresh dark/light captures and Electron pointer/keyboard
+  checks. The new `agent-review-layout.spec.js` runs in both the macOS Agent and
+  Linux chrome CI jobs, not just locally. Across the targeted suites, **150
+  distinct Electron cases passed**, including all eight new layout regressions,
+  headless runtime/socket discovery, provider recovery, project/viewer flows,
+  Agent wallet approvals, simulated Ledger, private windows, Find, downloads and
+  publication continuation. One ordinary native Fullscreen API case remains
+  below. Fresh GitHub CI results are still pending.
+- The pre-existing `0b4bb4f2` screenshot failure is an outdated light permission
+  reference: bookmark labels and toolbar spacing changed. Its actual/diff images
+  were inspected. CI can now capture **every** surface in both themes as review
+  artifacts while still running comparisons and without rewriting references.
+  Candidate adoption and a fresh comparison pass remain required.
+- One native macOS ordinary-page Fullscreen API test stalls awaiting
+  `document.exitFullscreen()`. It reproduces on the unchanged `0b4bb4f2` source
+  exported to a separate scratch directory as well as the repaired tree. F11,
+  Agent conceal/restore, preserved running status and compact pane restoration
+  pass. The native Fullscreen API stall remains a qualification follow-up.
+- Still requiring explicit live/manual evidence: lower-end/no-GPU Linux blur cost
+  (L7), VoiceOver/Narrator announcements, physical Ledger, real-account/provider
+  login across advertised OSes, packaged restart/profile switching and Windows
+  UAC cancellation/retry. Unit/harness passes do not close those gaps.
+
+#### C. Manual qualification and product decisions
+
+Source of truth for individual unchecked boxes:
+[UI surface map and manual checklist](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6272735848).
+The grouped tasks below preserve its coverage; they are not all confirmed bugs.
+Retain the checklist's one recorded pass (existing permission-indicator/wallet/menu
+anchoring) with its scope, rather than treating every surface as unchecked.
+
+| ID | Qualification task |
+| --- | --- |
+| Q1 — Agent/provider/service screens | Exercise loading, provider setup, catalogue/search/logos, subscription/API-key choice, device-code/cancel/redirect fallback, custom endpoints/key removal, privacy requirements, per-model settings, refresh/test/compatibility flows, MCP add/reconnect/disconnect, workspace/process inspector, privacy panel, all approval variants and helper/artifact/outcome cards. Dark/light; narrow/wide; long provider/model names and URLs. The planned provider-settings move inherits this matrix. |
+| Q2 — Keyboard and assistive technology | Tab/Shift+Tab through composer, attachments, + menu and approvals; Escape order and focus return; screen-reader announcements for approval alerts, mode radios and live status with VoiceOver/Narrator. Keep table/code scrolling inside their blocks and the conversation within its width. |
+| Q3 — Glass, lifecycle and performance | Contrast over white/black/busy pages, open/close animation and closed-layer hit testing; long-chat scrolling on lower-end/no-GPU hosts; find/link/download visibility. Profile before attributing a freeze to blur. |
+| Q4 — Agent-first/window integration | Toggle back/forth with pinned, muted and reordered tabs; restore tab order/custody. Check traffic lights/native controls, resizer limits/persistence, fullscreen, re-hosted address typing/autocomplete and ENS trust UI. |
+| Q5 — Ordinary browser regressions | With Agent closed/off and open: Find position/prev/next/Escape, left/wallet sidebar geometry, link status, download card/footer open/show/cancel and click-through of empty shelf space; bookmarks/update-toast combinations. Check narrow/pinned Agent badges and all three Claim/Take over entry points. |
+| Q6 — Custody, viewers and previews | Drive actual menu/accelerator/context-menu Back/Forward/Reload/Stop/Escape under custody, then after Claim, plus normal tabs. Check closing the last viewer, Cmd/Ctrl+T/L from a viewer, read-only copy/search/diff and restore/Finish recovery; preview reload/copy/bookmark and exclusion from history. Code fixes below do not substitute for these real-window checks. |
+| Q7 — Page actions, shortcuts and private windows | Check WebMCP hint dismissal across reload/navigation and closure with other popovers. Confirm the deliberate global Cmd/Ctrl+K choice vs website search, test remapping/clearing/menu labels and page/chrome focus. Verify Agent is unavailable in private windows and private tabs never enter its tab list. AI1's default-off control must gate this shortcut. |
+| Q8 — Wallet and existing dialogs | Test ordinary-page account/connect/sign/send, including Ledger, and Agent-page account selection/unlock/approvals; verify GNO appears in the Gnosis token list. Check the formatting-only Ledger/x402/Swarm permission/messaging changes for copy/spacing regressions. R8’s chain/origin trace is completed above; real hardware/live signing remains separate. |
+| Q9 — Packaged/live lifecycle | Each advertised OS/provider path, including Claude CLI and simultaneous custom endpoints; app restart during a conversation, helpers/approvals/custody restoration, manual Agent-tab/window closure and profile switch while running. Check file/folder attachment drop, large PDF and non-vision-model image handling, build→preview→checkpoint→restore, and real Windows UAC cancellation/retry. Do not relabel controller-only UAC coverage as a live pass. |
+
+The already-recorded live Swarm no-duplicate-purchase/publication check and editing
+helper Stop/reopened-receipt check remain in the maintenance list below. They are
+not duplicated or silently marked complete by this UI checklist.
+
+#### D. Resolved review findings — retain regression coverage
+
+- **Menu/context-menu custody bypass (Oct 14/15 R1-F1): fixed in `78d4824b`.**
+  History Back/Forward, View Reload/Force Reload, context-menu navigation and
+  menu enable state are custody-gated. Later re-review confirmed the fix.
+- **Helper in-flight/final receipt loss (Oct 15 R1-M1) and undelivered completed
+  reports after steering (R1-M2): fixed in `78d4824b`.** Running jobs stay tracked
+  until settled; old-generation completed reports are collected once. The later
+  reviewer traced the fix but did not freshly rerun those reproductions.
+- **Escape cancelling Agent-owned loads (Oct 15 R2-F1): fixed in `545a03fb`.**
+  The shared chrome Stop wrapper checks custody; automation's own Stop remains
+  available. Re-review found no remaining chrome Stop bypass.
+- **Shared popover stacking migration: reviewed at `0b4bb4f2`.** No new finding
+  in the mechanical merge or token follow-up. This does not resolve the distinct
+  transformed-container/backdrop problems in U3/U9.
+
+Evidence: [fix and helper re-review](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6202119673),
+[Escape re-review](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6202169425),
+[stacking follow-up](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6272307118).
+Those comments reported no remaining blocking finding in their then-reviewed
+scope; the original minors, runtime handoff and later UI repairs now have the
+separate October 20 status/evidence above. Unperformed manual checks remain open. Human review of the bot fix/merge commits was still
+listed as outstanding in the October 19 review; keep that distinct from the
+agent re-reviews and the colleague's overall positive feedback.
+
+### Product delivery order
+
+Resolve the priority review follow-ups above before broad beta rollout; the table
+below orders the five new product packages rather than declaring existing defects
+closed. Design and feasibility work can proceed alongside focused repairs.
+
+| Order | Package | Outcome | Dependency/status |
+| --- | --- | --- | --- |
+| 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Foundation; not started |
+| 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Ship with AI1; not started |
+| 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | AI1/AI2 entry flow; not started |
+| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
+| 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
+
+AI3 can ship before dictation while AI4's transcription backend is evaluated.
+AI5 starts with binding an already-owned name, then purchases and renewals, so
+registration complexity does not block the first useful named-site workflow.
+
+### AI1 — A dedicated, opt-in AI section in Settings
+
+**Product:** add **Settings → AI**, with an **Enable AI features** switch, off by
+default. Put provider connections, authentication, custom endpoints, model
+catalogues/favourites and their connection settings there. Model selection stays
+available in the composer; connection management opens the canonical Settings
+screen and returns to the existing chat without losing its draft.
+
+This new section is explicitly requested by the maintainer. Update the
+[settings-placement playbook](../docs/agent-playbooks/settings-placement.md)
+alongside implementation to record this exception to its existing nav/Beta rules;
+do not leave duplicate AI enable controls in Advanced. Preserve/redirect old
+entry points, add searchable settings labels and use the existing Beta badge.
+Connected MCP services remain a separate concept under composer **+ → Connected
+services**; model-provider migration must not mix those screens again.
+
+**Behavior and acceptance:**
+
+- The switch is profile-owned. A fresh profile starts off. Existing credentials
+  or history are not evidence of opt-in: profiles without an explicit prior
+  enable choice also start off; preserve an explicit choice once it exists.
+- Enforce off in the main process, including main/helper/classifier requests,
+  automatic provider/model refresh, login attempts and dictation. Starting or
+  deep-linking to chat cannot silently enable AI. The disabled state and Settings
+  remain reachable without a configured model.
+- Turning off stops active model/helper/dictation work, cancels pending approvals
+  and prevents queued work from restarting. Retain conversations and connection
+  credentials; disabling is separate from deleting data or disconnecting accounts.
+- Already-dispatched payments/publications are not undone by this toggle. Keep
+  host-owned reconciliation/receipts available. Define running workspace-process
+  behavior explicitly; do not silently destroy projects or abandon uncertain work.
+- Verify fresh/existing profiles, restart, toggling during a run/login, helper
+  cancellation, Settings deep links/search, and draft/history retention. Check
+  the full Settings/provider flow in both themes and at small window sizes.
+
+### AI2 — A quiet invitation on the browser start page
+
+**Product:** show one compact, dismissible banner on Freedom's ordinary start/new-tab
+page while AI is off. Suggested copy: **“Try AI in Freedom”**, a **Beta** badge,
+**“Research, build and publish with Agent.”**, and **“Explore AI”** as the action.
+Use specific copy rather than a generic promise about unspecified beta features.
+
+- The action opens Settings → AI. Explain the feature, then let the user enable
+  it and connect a provider. Clicking the banner alone sends no inference and
+  grants no wallet, publication or microphone permission.
+- Remember dismissal per profile, hide the invitation after enablement, and do
+  not re-display it on every new tab or inject it into third-party/custom home
+  pages. Keep the private start page free of this promotion in the first slice.
+- Keep enablement, provider setup and the first prompt connected: after setup,
+  the user can open the composer with examples rather than reach a dead end.
+- Verify off/on/dismissed/restart states, keyboard/screen-reader access, both
+  themes, and a start page that remains usable with no AI runtime initialized.
+
+### AI3 — Examples that demonstrate Freedom's strengths
+
+**Product:** a small, curated set of prompt cards in the empty conversation /
+centered composer. Show creation and dWeb use cases alongside everyday browsing;
+retain a simple empty input for users who already know what they want.
+
+Initial examples:
+
+- **Build a game:** “Build a small browser game, let me try it, then help me
+  publish it on Swarm.”
+- **Create my website:** “Help me build a personal website. Ask what should be
+  on it, show me a preview, then help me publish it on Swarm.”
+- **Compare sources:** “Research three sources on a topic I choose and compare
+  their findings with links.”
+- **Review a project:** “Review a project I attach and suggest the five most
+  useful improvements. Don't change files.”
+
+Clicking a card fills an editable draft; it does not submit. Examples are bundled
+copy, not model-generated suggestions that send data before the first message.
+Creation prompts lead through preview and the existing explicit public-publication
+approval. Disclose postage/network costs when relevant; no example silently buys
+storage or a domain. Project examples request attachment through the existing UI.
+
+Keep cards compact and keyboard-accessible, preserve user drafts/attachments, and
+hide them once a conversation starts. Qualify the example workflows end to end,
+including no connected provider and a local-model setup. Add a named-site example
+only once AI5's corresponding namespace flow is qualified.
+
+### AI4 — Voice dictation in the composer
+
+**Product:** make the existing microphone control functional as push-to-talk or
+explicit start/stop recording. Dictation produces editable text in the composer;
+the user sends it normally. It is not a voice assistant or an automatic command
+submission feature.
+
+First perform a small backend spike: compare on-device/OS transcription and an
+explicitly configured transcription service across macOS, Windows and Linux.
+Prefer on-device transcription where practical; do not assume Chromium's web
+speech API works in Electron or that the selected chat model supports audio.
+Choose the first backend from measured latency, accuracy, packaging/download size,
+platform support and privacy behavior. Record any dependency/model-download choice
+for approval before adding it.
+
+- Microphone permission follows a user action, with visible recording, stop,
+  transcribing, error and cancel states. No background listening or auto-restart.
+- Name the actual transcription destination and local/cloud behavior before
+  capture; no silent cloud fallback. The conversation's text-model privacy shield
+  must not imply audio shares the same protections. Do not transmit existing chat
+  or attachments just to transcribe audio.
+- Preserve the draft, cursor placement and attachments; allow cancel/discard and
+  stop dictation when AI is disabled, the conversation changes or the surface
+  closes. Release the microphone and discard temporary audio on every exit path.
+- Support the active-run guidance composer too. The transcript cannot approve a
+  payment, submit the prompt or change approval posture by itself.
+- Qualify real microphone permission, denial, device loss, cancel, long/partial
+  transcription and accessible controls on each advertised platform. Mark any
+  unsupported platform plainly rather than leaving an apparently working icon.
+
+### AI5 — Buy/manage dWeb names and bind a published site
+
+**Product:** teach Agent to connect an existing Swarm publication to a name,
+register a name when requested, and later renew or repoint it. Reuse progressively
+loaded built-in skills, browser automation, the wallet approval boundary, and
+Swarm publication/status receipts. Skills guide work; they do not grant authority.
+
+**Sequence:**
+
+1. Add shared naming guidance and namespace-specific ENS (`.eth`), WNS (`.wei`)
+   and GNS (`.gwei`) procedures. Verify current official apps, deployed contracts,
+   normalization, supported record formats and registration/renewal semantics
+   separately. Reading names today does not qualify registration or record writes.
+2. Start with a user-owned name plus a verified Swarm manifest reference. Check
+   control of the name/resolver, prepare the correctly encoded contenthash, obtain
+   the normal exact wallet approval, read the record back, and open the name in
+   Freedom to verify it resolves to that publication. Preserve unrelated records.
+3. Add availability/pricing and purchase. Present the full normalized name,
+   network, owner, duration, quoted price and gas before approval. ENS registrar
+   commit/reveal is a multi-step lifecycle: use the applicable contract's timing,
+   retain progress and reconcile transaction receipts after interruption. Never
+   buy again just because a wait timed out. WNS/GNS need their own verified flow.
+4. Add renewal/expiry checks and updating the contenthash after a new deployment.
+   Distinguish a submitted transaction from confirmed ownership/record changes and
+   from a name that Freedom has actually resolved. Keep immutable publication
+   references separate from future feed/mutable-site workflows.
+
+Use existing browser/dApp wallet support for the initial slice; introduce a narrow
+native naming tool only if qualification exposes a concrete missing capability.
+No arbitrary signing/raw-transaction shortcut is implied. Support existing owned
+names without forcing a purchase, and allow an unavailable name, declined spend,
+expired quote or interrupted transaction to be handled conversationally.
+
+**Acceptance:** fixture/fork coverage first, followed by a separately authorized
+live small-value flow for each advertised namespace. Cover invalid/unavailable
+names, wrong owner/network, existing record replacement, decline, insufficient
+funds, commit/reveal recovery, renewal, republishing and fresh-name resolution.
+Ordinary test runs must not buy a real domain. Transfers, arbitrary record editing,
+marketplace buying and bulk domain management remain later extensions.
+
+Primary references to recheck during implementation:
+[ENS registration](https://docs.ens.domains/registry/eth/),
+[ENS resolver records](https://docs.ens.domains/resolvers/interfaces/),
+[ENS dWeb hosting](https://docs.ens.domains/dweb/intro/),
+[WNS source/app](https://github.com/z0r0z/wei-names),
+[GNS source/app](https://github.com/lucadonnoh/gwei-names).
+
+### Existing qualification and maintenance follow-ups
+
+These remain visible alongside the new product work; a positive UX review is not
+recorded as completing unrelated validation.
+
+- Track R1–R9, U0–U18, L1–L7 and Q1–Q9 in the review index above; keep resolved
+  custody/helper fixes closed and their real-window verification explicit.
+- Triage current-head CI failures and rerun the affected checks. Keep historical
+  local, hosted CI, physical Windows and packaged-app evidence separately scoped.
+- Confirm the recorded live Swarm readiness/retry/continuation smoke uses one
+  approved batch and publication without duplicate spending/upload.
+- Confirm Stop of an editing helper, sibling continuation, retained partial edits
+  and the saved receipt after reopening. Automated coverage already exists.
+- Retain recovery-evidence retention/consolidation, scripted-download gaps and
+  historical stopped-turn presentation as concrete audit follow-ups; previously
+  fixed findings must not be relabelled as still open.
+- Requalify changed provider/auth/privacy and native packaged paths on the exact
+  candidate before release. Preserve documented detached-process/resource limits;
+  Windows ARM64, MXC and managed Claude accounts are not current support claims.
+
+### Deferred extensions — retained, not scheduled
+
+| Area | Later work / boundary |
+| --- | --- |
+| Helpers | Per-helper models and reusable roles; nested delegation; remote Herdr placement; durable child sessions; optional Jev workers. Durable reports already exist. [Detailed scope](#subagents-and-parallel-delegation). |
+| Projects and history | Saved-server editing/removal; linked Git worktrees; individual file grants/multiple writable projects; larger checkpoint budgets/retention; richer comparisons; external rollback/branch/remotes/push. Explicit server restart/reattach and ordinary recovery already exist. |
+| Browser and services | Wider WebMCP schemas/frame support driven by real failures; scripted downloads; SSE/separate-port preview transports; explicit crash-restart policy; broader third-party MCP qualification. Connected MCP services and core WebMCP are delivered. |
+| Privacy | GPU/approved-software checks; Venice proxy/response binding; NEAR v2/Ed25519; stricter verified-only policy; route-level OpenRouter availability/pricing; broader E2EE and packaged-worker coverage. Eligible E2EE and per-chat ZDR are delivered. |
+| Providers/platforms | Broader real-model/vision/rate-limit qualification; Claude CLI Windows/Linux/package coverage; managed-account policy support; Windows ARM64 and alternate MXC backend. Core Windows x64 execution is delivered. |
+| Other capabilities | Safe signing/transfers, bounded Radicle operations and a node-effect corpus; widgets pending their own authoring/install platform; broader tool deferral, image generation, model routing/classifiers and Pi Durable evaluation. |
+| Runtime/distribution | Stronger descendant/resource containment, optional bundled developer tools, embedded llama.cpp and packaged external CLI/MCP. Full access is not a selected permission mode. |
+
+### Completion criteria for this iteration
+
+A new user can discover AI, explicitly enable it, connect a provider, choose an
+example, and create/preview/publish a site without losing their place. They can
+dictate editable text on a qualified platform, and use each qualified naming skill
+to attach/update a name through normal approvals. Turning AI off reliably stops
+AI activity while ordinary browsing and existing user data remain usable.
+
+Close or explicitly disposition the open review findings, execute the applicable
+manual matrix, and restore green exact-head CI. Record implementation, user smoke,
+platform coverage and exact-head CI separately for every package. Update Settings placement/docs, old deep links/search, both-theme
+UI evidence and changelog fragments in the PRs that actually deliver behavior.
+
+## Historical delivery and design record
+
+<details>
+<summary>Expand dated implementation evidence and earlier design decisions (August–October 2026)</summary>
+
+Historical snapshots below preserve their original dates and qualification scope.
+The active plan above supersedes old priorities and incomplete first-slice status.
+Older Pi research and `feature/local-agent-pi` are not implementation prerequisites.
 
 ## Current working status — 2026-10-10
 
@@ -189,6 +648,50 @@ Agent-compatible E2EE. Current hardware checks are independent historical endpoi
 checks, not proof of inference privacy; the UI states that explicitly. Linux/Windows
 and packaged-worker qualification also remain open. Numeric trust scores and
 blanket "private" claims are not the baseline.
+
+### Session privacy: request-bound evidence follow-up (2026-10-06)
+
+On `experiment/agent-privacy-verification`: the shield now uses plain language,
+groups routes by provider/model, and keeps technical evidence collapsed. NEAR
+chat completions verify fresh CPU evidence before each request, bind the actual
+inference TLS socket, and check gateway/model signatures over the exact wire
+exchange. Live real-Pi test passed connection + gateway signature checks; Intel
+hardware advisories remain visible. Per-role history preserves partial coverage.
+
+Venice's sampled proxy receipt signs different upstream bytes with a different
+signer from the model attestation, so it cannot yet verify Freedom's exchange.
+Remaining: documented Venice proxy binding, GPU evidence, measured/approved
+software, stricter hardware/software acceptance policy, and packaged
+cross-platform qualification. No fully-private inference claim is made.
+See [the implementation and protocol notes](../docs/agent-session-privacy.md).
+
+
+### Session privacy: active protections (2026-10-06)
+
+Implemented on the same privacy experiment: per-conversation OpenRouter ZDR on
+by default, switchable in the shield, persisted and enforced for every runtime
+role with historical requirements preserved. NEAR ECDSA E2EE covers messages,
+tool schemas/calls/results and assistant history; live real-Pi text and tool
+round trips passed, with model signatures checked over ciphertext exchanges.
+Venice encrypts ordinary text conversations and assistant history, even when
+optional Agent tools are available. An encrypted answering step can hand actual
+tool work back to the native workflow. Actual tool requests/history, attachments
+and non-streaming requests retain the disclosed HTTPS fallback. Stale encryption
+capability metadata refreshes automatically before model resolution. Plain-text
+content-part arrays from Pi are normalized before checking E2EE eligibility;
+full AgentSession regression coverage includes browser tools, skills and codemode.
+Invalid
+encryption evidence never triggers plaintext retry. Both
+providers' hardware update advisories remain visible independently of encryption.
+No new dependency. UI checked in dark/light and a small window.
+
+Picker and connection overview now use compact privacy symbols with per-symbol
+tooltips and screen-reader descriptions.
+
+Remaining: live OpenRouter endpoint-level
+ZDR availability/pricing previews; NEAR Ed25519/v2 support; GPU and approved
+software verification; Venice response/proxy binding; stricter hardware policy;
+packaged and cross-platform verification. See the privacy implementation notes.
 
 ### Pi 1.0.2 qualification and PR refresh — 2026-10-04
 
@@ -459,9 +962,9 @@ manual-reconciliation limits are recorded in the whole-feature audit above.
 
 ### Current backlog and next decision — 2026-09-29
 
-This is the active backlog. The dated implementation records below preserve
-historical scope and test evidence; older statements of “next” or “remaining”
-must be read against this index. The feature remains unreleased.
+Historical backlog snapshot, superseded by the active plan at the top of this
+document. Its dated implementation details and evidence remain useful; statements
+of “next” or “remaining” here are not current priorities or implementation status.
 
 **Completed for the accepted development workflow:** provider-manager redesign
 and adapters; browser competence improvements; native WebMCP execution and page
@@ -4661,47 +5164,4 @@ feature branch. Live-provider qualification remains separate.
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
 
-
-### Session privacy: request-bound evidence follow-up (2026-10-06)
-
-On `experiment/agent-privacy-verification`: the shield now uses plain language,
-groups routes by provider/model, and keeps technical evidence collapsed. NEAR
-chat completions verify fresh CPU evidence before each request, bind the actual
-inference TLS socket, and check gateway/model signatures over the exact wire
-exchange. Live real-Pi test passed connection + gateway signature checks; Intel
-hardware advisories remain visible. Per-role history preserves partial coverage.
-
-Venice's sampled proxy receipt signs different upstream bytes with a different
-signer from the model attestation, so it cannot yet verify Freedom's exchange.
-Remaining: documented Venice proxy binding, GPU evidence, measured/approved
-software, stricter hardware/software acceptance policy, and packaged
-cross-platform qualification. No fully-private inference claim is made.
-See [the implementation and protocol notes](../docs/agent-session-privacy.md).
-
-
-### Session privacy: active protections (2026-10-06)
-
-Implemented on the same privacy experiment: per-conversation OpenRouter ZDR on
-by default, switchable in the shield, persisted and enforced for every runtime
-role with historical requirements preserved. NEAR ECDSA E2EE covers messages,
-tool schemas/calls/results and assistant history; live real-Pi text and tool
-round trips passed, with model signatures checked over ciphertext exchanges.
-Venice encrypts ordinary text conversations and assistant history, even when
-optional Agent tools are available. An encrypted answering step can hand actual
-tool work back to the native workflow. Actual tool requests/history, attachments
-and non-streaming requests retain the disclosed HTTPS fallback. Stale encryption
-capability metadata refreshes automatically before model resolution. Plain-text
-content-part arrays from Pi are normalized before checking E2EE eligibility;
-full AgentSession regression coverage includes browser tools, skills and codemode.
-Invalid
-encryption evidence never triggers plaintext retry. Both
-providers' hardware update advisories remain visible independently of encryption.
-No new dependency. UI checked in dark/light and a small window.
-
-Picker and connection overview now use compact privacy symbols with per-symbol
-tooltips and screen-reader descriptions.
-
-Remaining: live OpenRouter endpoint-level
-ZDR availability/pricing previews; NEAR Ed25519/v2 support; GPU and approved
-software verification; Venice response/proxy binding; stricter hardware policy;
-packaged and cross-platform verification. See the privacy implementation notes.
+</details>
