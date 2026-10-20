@@ -3,6 +3,7 @@
   display: grid;
   --agent-bubble-agent: var(--bg-card);
   --muted: var(--text-muted);
+  gap: 24px;
   margin: 24px 0 0;
   max-height: none;
 }
@@ -98,12 +99,12 @@
   opacity: 0.55;
   cursor: default;
 }
-#providers .agent-connected-provider-list {
+:is(#providers, #voice) .agent-connected-provider-list {
   display: grid;
   gap: 10px;
   margin: 18px 0;
 }
-#providers .agent-connected-provider,
+:is(#providers, #voice) .agent-connected-provider,
 #providers .agent-provider-choice {
   display: flex;
   align-items: center;
@@ -119,32 +120,32 @@
   font: inherit;
   cursor: pointer;
 }
-#providers .agent-connected-provider:hover,
+:is(#providers, #voice) .agent-connected-provider:hover,
 #providers .agent-provider-choice:hover {
   background: var(--bg-card-hover);
 }
-#providers .agent-connected-provider-copy,
+:is(#providers, #voice) .agent-connected-provider-copy,
 #providers .agent-provider-choice-copy {
   display: grid;
   gap: 5px;
   flex: 1;
   min-width: 0;
 }
-#providers .agent-connected-provider-copy span,
+:is(#providers, #voice) .agent-connected-provider-copy span,
 #providers .agent-provider-choice-copy > span,
 #providers .agent-provider-method-state {
   color: var(--text-muted);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-#providers .agent-provider-avatar {
+:is(#providers, #voice) .agent-provider-avatar {
   display: grid;
   place-items: center;
   width: 36px;
   height: 36px;
   flex: 0 0 36px;
 }
-#providers .agent-provider-logo {
+:is(#providers, #voice) .agent-provider-logo {
   max-width: 32px;
   max-height: 32px;
   object-fit: contain;
@@ -178,12 +179,12 @@
   justify-content: space-between;
   gap: 12px;
 }
-#providers .agent-badge {
+:is(#providers, #voice) .agent-badge {
   color: var(--text-muted);
   font-size: 12px;
   flex-shrink: 0;
 }
-#providers .agent-badge.active {
+:is(#providers, #voice) .agent-badge.active {
   color: var(--success);
 }
 #providers .agent-provider-models {
@@ -258,17 +259,17 @@
   cursor: pointer;
   font-size: 13px;
 }
-#providers .agent-config-actions {
+:is(#providers, #voice) .agent-config-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin: 16px 0;
 }
-#providers .agent-message {
+:is(#providers, #voice) .agent-message {
   font-size: 13px;
   line-height: 1.6;
 }
-#providers .error {
+:is(#providers, #voice) .error {
   color: var(--danger);
 }
 #providers .agent-compatibility,
@@ -302,7 +303,7 @@
   min-width: 180px;
 }
 
-#ai .toggle input {
+:is(#ai, #voice) .toggle input {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -310,7 +311,7 @@
   margin: 0;
   z-index: 1;
 }
-#ai .toggle:has(input:focus-visible) {
+:is(#ai, #voice) .toggle:has(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
   border-radius: 20px;
@@ -366,4 +367,78 @@
 #providers #agent-provider-detail-back,
 #providers #agent-provider-form-heading {
   display: none;
+}
+
+#voice .section-description,
+#voice .subsection-title,
+#voice .agent-connected-provider-list {
+  margin: 0;
+}
+.voice-settings-group {
+  display: grid;
+  gap: 12px;
+}
+#voice .agent-button {
+  width: fit-content;
+  text-decoration: none;
+}
+#voice .voice-service {
+  text-decoration: none;
+}
+#voice .voice-service .agent-badge {
+  font-size: 12px;
+}
+#voice .voice-service:focus-visible,
+#voice a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#voice .agent-provider-avatar svg {
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+}
+.voice-service-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+}
+.voice-service-summary p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+.voice-service-summary strong {
+  font-size: 14px;
+}
+#voice .agent-message:empty {
+  display: none;
+}
+.voice-download-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.voice-empty {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  #voice .voice-service {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #voice .voice-service .agent-badge {
+    white-space: normal;
+  }
+  #voice .row {
+    flex-wrap: wrap;
+  }
+  #voice .row-control {
+    min-width: 0;
+  }
 }

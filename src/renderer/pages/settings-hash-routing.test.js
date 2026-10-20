@@ -138,6 +138,9 @@ describe('settings hash routing', () => {
     'ai/providers/add',
     'ai/providers/openai-chatgpt',
     'ai/providers/custom-example',
+    'ai/voice/local',
+    'ai/voice/openrouter',
+    'ai/voice/add',
   ])('preserves AI subpage %s', (route) => {
     expect(drive(`#${route}`).shown).toEqual([route]);
   });

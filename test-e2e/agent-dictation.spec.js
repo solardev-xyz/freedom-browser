@@ -202,25 +202,86 @@ test('closing during transcription discards late text and releases audio', async
   expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
 });
 
-test('Settings offers the same dictation choices in both themes and AI off disables it', async ({ window, electronApp }, testInfo) => {
+test('Voice settings use service cards and detail pages in both themes, preserving chat and dictation preferences', async ({ window, electronApp }, testInfo) => {
   await prepare(window, electronApp);
+  await window.evaluate(async () => {
+    const result = await window.electronAPI.getAgentProviderCatalog();
+    const model = result.catalog.find(provider => provider.providerId === 'openai').models[0].id;
+    await window.electronAPI.configureHostedAgentProvider('openai', model, 'dictation-fixture-key');
+    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'auto', requireZeroRetention: true });
+  });
+  const chatModel = (await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.modelId;
+  const before = recordings.length;
   const settings = await openProviderSettings(window);
   await settings.evaluate(() => { location.hash = 'ai/voice'; });
   const voice = settings.locator('#ai-dictation-settings');
+  await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('In use');
+  await expect(voice.getByLabel('Dictation service')).toHaveCount(0);
+  await voice.getByLabel('Dictation language').selectOption('de');
+  await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.language)).toBe('de');
+  await voice.getByRole('link', { name: /OpenAI/ }).click();
+  await expect(settings).toHaveURL(/#ai\/voice\/openai$/);
+  await expect(settings.locator('#ai-voice-breadcrumbs')).toHaveText('AI›Voice dictation›OpenAI');
+  await voice.getByRole('button', { name: 'Use for dictation', exact: true }).click();
+  await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.providerId)).toBe('openai');
+  await settings.locator('#ai-voice-breadcrumbs').getByRole('link', { name: 'Voice dictation', exact: true }).click();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-    await expect(voice.getByLabel('Dictation service')).toBeVisible();
-    await voice.getByLabel('Dictation service').selectOption('openrouter');
-    await voice.getByLabel('Dictation language').selectOption('de');
-    await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.language)).toBe('de');
-    await voice.scrollIntoViewIfNeeded();
-    await window.screenshot({ path: testInfo.outputPath(`dictation-settings-${theme}.png`) });
+    await expect(settings.locator('html')).toHaveAttribute('data-theme', theme);
+    await expect(voice.getByRole('link', { name: /OpenAI/ })).toContainText('In use');
+    await settings.screenshot({ path: testInfo.outputPath(`voice-services-${theme}.png`) });
+    await voice.getByRole('link', { name: /OpenRouter/ }).click();
+    await expect(voice).toContainText('Audio is sent to OpenRouter');
+    await voice.getByLabel('Require zero data retention').uncheck();
+    await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences)).toMatchObject({
+      providerId: 'openai', language: 'de', requireZeroRetention: false,
+    });
+    await voice.getByLabel('Require zero data retention').check();
+    await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.requireZeroRetention)).toBe(true);
+    await settings.screenshot({ path: testInfo.outputPath(`voice-openrouter-${theme}.png`) });
+    await settings.locator('#ai-voice-breadcrumbs').getByRole('link', { name: 'Voice dictation', exact: true }).click();
+    await voice.getByRole('link', { name: /On this device/ }).click();
+    await expect(voice.getByRole('button', { name: 'Download & use on this device' })).toBeVisible();
+    await expect(voice).toContainText('230 MB');
+    await settings.screenshot({ path: testInfo.outputPath(`voice-local-${theme}.png`) });
+    await settings.goBack();
+    await voice.getByRole('link', { name: 'Add service', exact: true }).click();
+    await expect(voice.locator('.voice-service')).toHaveCount(4);
+    await settings.screenshot({ path: testInfo.outputPath(`voice-add-${theme}.png`) });
+    await voice.getByRole('link', { name: /Venice/ }).click();
+    await expect(voice.getByRole('link', { name: 'Connect provider' })).toHaveAttribute('href', '#ai/providers/venice');
+    await settings.locator('#ai-voice-breadcrumbs').getByRole('link', { name: 'Voice dictation', exact: true }).click();
   }
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true }));
+  await settings.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('In use');
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => win.isVisible());
+    win.setMinimumSize(320, 300); win.setContentSize(640, 760);
+  });
+  expect(await settings.locator('main.content').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await settings.screenshot({ path: testInfo.outputPath('voice-services-narrow.png') });
+  await voice.getByRole('link', { name: /On this device/ }).click();
+  await expect(voice.getByRole('button', { name: 'Download & use on this device' })).toBeInViewport();
+  await settings.screenshot({ path: testInfo.outputPath('voice-local-narrow.png') });
+  expect(recordings.length).toBe(before);
+  expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.modelId).toBe(chatModel);
+  await settings.evaluate(() => { location.hash = 'ai/voice/openrouter'; });
+  await expect(voice.getByLabel('Require zero data retention')).toBeVisible();
+  await settings.locator('.nav-item[data-target="appearance"]').click();
+  await expect(settings.locator('#appearance')).toBeVisible();
+  await settings.locator('#settings-search').fill('Require zero data retention');
+  await settings.locator('#settings-search').dispatchEvent('input');
+  await expect(settings.locator('#settings-search-list')).toContainText('Require zero data retention');
+  await settings.locator('#settings-search-list').getByRole('button', { name: /Require zero data retention/ }).click();
+  await expect(settings).toHaveURL(/#ai\/voice\/openrouter$/);
+  await expect(voice.getByLabel('Require zero data retention')).toBeVisible();
+  await settings.evaluate(() => { location.hash = 'ai/voice/not-a-service'; });
+  await expect(settings).toHaveURL(/#ai\/voice$/);
   await settings.getByRole('link', { name: 'AI', exact: true }).click();
   await settings.locator('#enable-ai').uncheck();
   await expect(voice).toBeHidden();
-  const response = await window.evaluate(() => window.electronAPI.beginAgentDictation());
-  expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
+  expect(await window.evaluate(() => window.electronAPI.beginAgentDictation())).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
 });
 
 test('OpenAI live words appear before Stop and reconcile to the final editable text', async ({ window, electronApp }) => {

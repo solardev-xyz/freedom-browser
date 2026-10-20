@@ -565,7 +565,7 @@ const resolveRoute = (hash) => {
   if (
     PANEL_NAV[sub] === head ||
     head === 'networks' ||
-    (head === 'ai' && /^providers\/[a-z0-9-]+$/.test(sub))
+    (head === 'ai' && /^(providers|voice)\/[a-z0-9-]+$/.test(sub))
   ) return `${head}/${sub}`;
   return head;
 };
@@ -760,12 +760,14 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
     const seen = new Map();
     for (const { row, label } of settingsSearchRows(section)) {
       const labelIndex = seen.get(label) || 0;
+      const settingsRoute = row.getAttribute?.('data-settings-route');
       seen.set(label, labelIndex + 1);
       index.push({
         sectionId: section.id,
         section: sectionLabel,
         label,
         labelIndex,
+        ...(settingsRoute ? { route: settingsRoute } : {}),
         help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
@@ -997,6 +999,23 @@ const settingsSearchResets = [];
     closeResults({ restoreSection: false });
     revealToken += 1;
     const route = resolveRoute(location.hash);
+    // AI pages replace each other rather than sharing one scroll. A control
+    // on a service detail returns to that detail, even from another section.
+    if (entry === 'ai') {
+      const fallback = panelId === 'ai' ? 'ai' : `ai/${panelId}`;
+      const target =
+        result.route?.startsWith('ai/') && resolveRoute(result.route) === result.route
+          ? result.route
+          : fallback;
+      if (route === target) {
+        showSection(target);
+        revealResult(result, revealToken);
+      } else {
+        pending = { result, token: revealToken };
+        location.hash = target;
+      }
+      return;
+    }
     if (route.split('/')[0] === entry) {
       showSection(route);
       if (document.getElementById(panelId)?.getClientRects().length) {

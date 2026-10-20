@@ -1,4 +1,4 @@
-const LANGUAGE_NAMES = { auto: 'Detect automatically', en: 'English', de: 'German', es: 'Spanish', fr: 'French',
+export const LANGUAGE_NAMES = { auto: 'Detect automatically', en: 'English', de: 'German', es: 'Spanish', fr: 'French',
   it: 'Italian', pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ja: 'Japanese', zh: 'Chinese', ko: 'Korean', uk: 'Ukrainian' };
 
 const element = (tag, text, className) => {

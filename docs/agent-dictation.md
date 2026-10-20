@@ -14,6 +14,12 @@ service menu with the active choice checked; switching service does not start
 recording. **Voice dictation settings…** opens Settings → AI → Voice dictation
 directly for language, retention preferences and local downloads. AI settings
 has a separate Models & providers page, with individual connection pages.
+Voice dictation lists local and connected services as cards, marking the service
+in use. Open a service for its model, billing, audio privacy and a “Use for
+dictation” action. “Add service” lists the supported API providers and links to
+their connection settings. Language is shared across services; OpenRouter's
+retention control stays on its detail page. Local download/progress/cancellation
+live on the local detail page and require an explicit download action.
 Breadcrumb links and browser Back/Forward navigate between these pages. An
 uninstalled local choice also opens those settings instead of starting a download
 from the menu. The conversation model stays

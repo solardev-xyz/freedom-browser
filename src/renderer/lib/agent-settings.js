@@ -1,5 +1,5 @@
 import { createAgentProviderUi } from './agent-provider-ui.js';
-import { createDictationChoices } from './dictation-choices.js';
+import { createDictationSettings } from './dictation-settings.js';
 
 const api = window.freedomAPI;
 const toggle = document.getElementById('enable-ai');
@@ -14,9 +14,16 @@ let revision = 0;
 let pending = false;
 let loaded = false;
 const dictationHost = document.getElementById('ai-dictation-settings');
-const dictation = createDictationChoices(dictationHost, api, { autoSave: true });
-dictationHost.addEventListener('dictation-connect', () => {
-  location.hash = 'ai/providers/add';
+const dictation = createDictationSettings(dictationHost, api, {
+  heading: document.getElementById('ai-voice-page-title'),
+  breadcrumbs: document.getElementById('ai-voice-breadcrumbs'),
+  navigate(providerId, replace = false) {
+    const route = providerId ? `ai/voice/${providerId}` : 'ai/voice';
+    if (replace) {
+      history.replaceState(null, '', `#${route}`);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    } else location.hash = route;
+  },
 });
 const updateNext = (state) => {
   next.hidden = !enabled || state?.configured !== true;
@@ -64,7 +71,7 @@ function renderRoute({ focus = false } = {}) {
   }
   if (page !== 'providers') {
     void providerUi.cancelProviderLogin();
-    if (focus && page === 'voice') document.querySelector('#voice h2').focus();
+    if (page === 'voice') dictation.setPage(providerId, { focus });
     return;
   }
   const screen = !providerId ? 'home' : providerId === 'add' ? 'browser' : 'detail';
@@ -115,7 +122,7 @@ function renderRoute({ focus = false } = {}) {
 async function refresh() {
   if (!enabled || location.hash.slice(1).split('/')[0].toLowerCase() !== 'ai') return;
   const current = ++revision;
-  if (location.hash.toLowerCase() === '#ai/voice') void dictation.refresh();
+  if (location.hash.toLowerCase().startsWith('#ai/voice')) void dictation.refresh();
   if (!loaded) {
     providerUi.invalidateCatalog();
     status.textContent = 'Loading providers…';
@@ -183,10 +190,13 @@ api.onAgentProviderChanged?.(() => {
   // A different Settings tab may have changed a connection. Keep a partially
   // edited form intact; the next visit refreshes its model catalogue.
   loaded = false;
-  const editing = document.getElementById('agent-provider-home').hidden;
+  const editing = location.hash.toLowerCase().startsWith('#ai/providers/');
   providerUi.invalidateCatalog({ keepModels: editing });
   if (editing) return;
   void refresh();
+});
+window.addEventListener('focus', () => {
+  if (enabled && location.hash.toLowerCase().startsWith('#ai/voice')) void dictation.refresh();
 });
 window.addEventListener('hashchange', () => {
   renderRoute({ focus: true });

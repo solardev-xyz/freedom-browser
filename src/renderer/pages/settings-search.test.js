@@ -263,14 +263,32 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
     expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
     expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
-    expect(named('voice')).toMatchObject({ label: 'Voice dictation', section: 'AI › Voice dictation' });
+    expect(named('voice')).toMatchObject({
+      label: 'Voice dictation',
+      section: 'AI › Voice dictation',
+    });
   });
 
   test('keeps a provider catalogue searchable while its detail heading changes', () => {
-    const content = parseFragment('<section class="section" id="providers" data-search-title="Models &amp; providers"><h2 class="section-title">Ollama</h2></section>');
+    const content = parseFragment(
+      '<section class="section" id="providers" data-search-title="Models &amp; providers"><h2 class="section-title">Ollama</h2></section>'
+    );
     expect(buildSettingsSearchIndex(content, { groups: { providers: 'AI' } })[0]).toMatchObject({
-      sectionId: 'providers', label: 'Models & providers', section: 'AI › Models & providers',
+      sectionId: 'providers',
+      label: 'Models & providers',
+      section: 'AI › Models & providers',
     });
+  });
+
+  test('keeps the service detail route for a preference revealed from another section', () => {
+    const content = parseFragment(
+      '<section class="section" id="voice"><h2 class="section-title">Voice dictation</h2><div class="row" data-settings-route="ai/voice/openrouter"><p class="row-label">Require zero data retention</p></div></section>'
+    );
+    expect(
+      buildSettingsSearchIndex(content).find(
+        (entry) => entry.label === 'Require zero data retention'
+      )
+    ).toMatchObject({ sectionId: 'voice', route: 'ai/voice/openrouter' });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {

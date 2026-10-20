@@ -507,6 +507,18 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-20 Voice settings redesign:** replaced the setup-form layout with
+provider-style service cards, active-service badges, an Add service catalogue,
+and individual service pages with breadcrumbs. Shared language preferences stay
+on the overview; privacy/billing, OpenRouter retention and local download
+controls live on the relevant detail page. Existing provider connections are
+reused; voice selection does not change the chat model. No automatic download,
+recording or transcription request is triggered by browsing settings.
+Validated on macOS: lint; 473 unit suites / 10,638 tests; dictation and
+onboarding Electron checks, both themes, narrow windows, search/deep links and
+Back/Forward. Linux screenshot baseline refresh remains for integration.
+Maintainer smoke pending on `experiment/agent-dictation`.
+
 **2026-10-20 Settings refinement:** AI now has an overview linking to dedicated
 Models & providers and Voice dictation pages. Adding a provider and managing an
 individual connection have their own URLs and breadcrumb navigation. Browser
