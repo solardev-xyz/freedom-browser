@@ -376,6 +376,7 @@ const {
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
 const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-manager');
+const { startCore, stopCore } = require('./core/core-process');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
@@ -501,6 +502,9 @@ async function bootstrap() {
   registerServiceRegistryIpc();
   registerIdentityIpc();
   registerQuickUnlockIpc();
+  // Dev builds only, behind FREEDOM_CORE=1: supervise the Rust core. Nothing
+  // calls it yet (freedom-core design 0001, migration step 1).
+  startCore().catch((err) => log.error('[Core] failed to start:', err.message));
   registerWalletIpc();
   registerLedgerIpc();
   registerRemoteSignerIpc();
@@ -793,6 +797,7 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // place that decides when quitting is allowed.
 async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
+  const coreStopped = stopCore();
   // Before any window closes: a window's 'closed' event arms a History-menu
   // refresh that would otherwise fire after closeHistoryDb() and reopen it.
   stopHistoryMenuRefresh();
@@ -849,6 +854,7 @@ async function windDown() {
   // for more legs can't wedge the quit.
   const LEGS = [
     ['Myotis', () => myotisStopped],
+    ['Core', () => coreStopped],
     ['Ant', stopAnt],
     ['IPFS', stopIpfs],
     ['Radicle', stopRadicle],
