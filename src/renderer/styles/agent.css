@@ -934,6 +934,7 @@ body.agent-first-mode.agent-workspace-sidebar-closed {
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-task-pages {
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
   transform: translateX(100%);
 }
 

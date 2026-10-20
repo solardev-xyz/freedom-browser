@@ -248,6 +248,8 @@ test('before-paint platform styling leaves Linux window controls and Agent pane 
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
     await expect(window.locator('.agent-first-titlebar-left')).toHaveCSS('padding-left', '12px');
   }
+  await window.locator('#agent-workspace-sidebar-toggle').click();
+  await expect(window.locator('#agent-task-pages')).toBeHidden();
 });
 
 
