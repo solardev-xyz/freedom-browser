@@ -86,9 +86,12 @@ async function navigate(window, url) {
 }
 
 async function openConfiguredAgent(window) {
+  const settings = await window.evaluate(() => window.electronAPI.getSettings());
+  expect(settings.enableAi, 'Enable AI in Settings → AI in the qualification profile first').toBe(true);
+  const status = await window.evaluate(() => window.electronAPI.getAgentProviderStatus());
+  expect(status.status.providerId).toBe('openai-codex');
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await expect(window.locator('#agent-provider-status')).toContainText('ChatGPT (Codex)');
-  await expect(window.locator('#agent-provider-select')).toHaveValue('openai-codex');
+  await expect(window.locator('#agent-workspace-view')).toBeVisible();
 }
 
 async function runTask(window, prompt) {

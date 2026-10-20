@@ -1105,6 +1105,36 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
   relaunchApp: guardInternal('relaunchApp', () => ipcRenderer.send('app:relaunch')),
 
+  // Model connections are managed only by the trusted Settings page.
+  getAgentProviderStatus: guardSettingsPage('getAgentProviderStatus', () => ipcRenderer.invoke('agent:provider:get-status')),
+  getAgentProviderCatalog: guardSettingsPage('getAgentProviderCatalog', () => ipcRenderer.invoke('agent:provider:get-catalog')),
+  refreshAgentProviderModels: guardSettingsPage('refreshAgentProviderModels', (providerId, apiKey) =>
+    ipcRenderer.invoke('agent:provider:refresh-models', { providerId, apiKey })),
+  setAgentProviderPreferences: guardSettingsPage('setAgentProviderPreferences', (providerId, preferences) =>
+    ipcRenderer.invoke('agent:provider:set-preferences', { providerId, ...preferences })),
+  testAgentProviderConnection: guardSettingsPage('testAgentProviderConnection', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:test-connection', { providerId, modelId })),
+  configureHostedAgentProvider: guardSettingsPage('configureHostedAgentProvider', (providerId, modelId, apiKey, privacyPolicy) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey,
+      ...(privacyPolicy !== undefined && { privacyPolicy }) })),
+  configureCompatibleAgentProvider: guardSettingsPage('configureCompatibleAgentProvider', (connection) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { ...connection, kind: 'compatible' })),
+  configureOllamaAgentProvider: guardSettingsPage('configureOllamaAgentProvider', (modelId, baseUrl) =>
+    ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl })),
+  loginSubscriptionAgentProvider: guardSettingsPage('loginSubscriptionAgentProvider', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:login-subscription', { providerId, modelId })),
+  cancelAgentProviderLogin: guardSettingsPage('cancelAgentProviderLogin', () => ipcRenderer.invoke('agent:provider:cancel-login')),
+  submitAgentProviderLogin: guardSettingsPage('submitAgentProviderLogin', (requestId, callbackUrl) => ipcRenderer.invoke('agent:provider:submit-login', { requestId, callbackUrl })),
+  selectAgentModel: guardSettingsPage('selectAgentModel', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId })),
+  removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
+  clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
+  openAgent: guardSettingsPage('openAgent', () => ipcRenderer.invoke('agent:open')),
+  onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
+    guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),
+  onAgentProviderChanged: guardSettingsPage('onAgentProviderChanged',
+    guardInternalSubscription('onAgentProviderChanged', 'agent:provider:changed')),
+
   // Ad blocking (settings page)
   adblockGetStatus: guardInternal('adblockGetStatus', () =>
     ipcRenderer.invoke('adblock:get-status')

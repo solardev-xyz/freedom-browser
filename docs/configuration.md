@@ -1,5 +1,24 @@
 # Configuration
 
+## AI
+
+AI is an explicit, profile-specific opt-in under **Settings → AI**
+(`freedom://settings/ai`). It is off until you enable it, including in existing
+profiles without a saved choice. Connect providers, manage favourite models and
+choose the model for new chats on that page; existing chats keep their model.
+Connected MCP services remain in the Agent composer's **+ → Connections** menu.
+
+Turning AI off cancels current Agent work and sign-in, closes pending approvals,
+hides Agent entry points and blocks new model requests. Chats, provider
+credentials, attachments and projects remain on this device; preview servers
+already running keep running. It cannot undo an external action already sent.
+Re-enable AI in the same place to continue. Ordinary browsing and wallet/node
+features do not depend on this toggle.
+
+The built-in start page offers a dismissible AI invitation while AI is off.
+Dismissal is saved for that profile and survives restart; Settings remains
+available. Private windows and custom homepages do not show this invitation.
+
 ## Node Endpoints
 
 Freedom automatically manages node connections per profile. In a **packaged build**, the default profile's managed endpoints start at:

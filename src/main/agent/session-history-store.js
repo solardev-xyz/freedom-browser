@@ -425,6 +425,10 @@ class AgentSessionHistoryStore {
           status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
+      setSessionModel: db.prepare(`
+        UPDATE agent_sessions SET provider_id = ?, model_id = ?, thinking_level = ?
+        WHERE id = ? AND COALESCE(provider_id, '') = '' AND COALESCE(model_id, '') = ''
+      `),
       insertTurn: db.prepare(`
         INSERT INTO agent_turns (
           id, session_id, position, user_text, assistant_text, status,
@@ -512,6 +516,14 @@ class AgentSessionHistoryStore {
       createdAt
     );
     return this.getSession(id);
+  }
+
+  setSessionModel(entry) {
+    const id = requiredString(entry?.conversationId, 'Agent conversation ID', 160);
+    const providerId = requiredString(entry?.providerId, 'Agent provider ID', MAX_MODEL_FIELD_LENGTH);
+    const modelId = requiredString(entry?.modelId, 'Agent model ID', MAX_MODEL_FIELD_LENGTH);
+    return this.#getStatements().setSessionModel.run(providerId, modelId,
+      optionalString(entry.thinkingLevel, 80), id).changes === 1;
   }
 
   startTurn(entry) {

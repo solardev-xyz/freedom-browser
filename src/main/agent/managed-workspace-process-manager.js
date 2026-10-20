@@ -480,11 +480,11 @@ class ManagedWorkspaceProcessManager {
     return this.inspect(conversationId, id);
   }
 
-  cancelConversation(conversationId) {
+  cancelConversation(conversationId, preservedProcessIds = []) {
     const owner = validConversationId(conversationId);
     let count = 0;
     for (const entry of this.entries.values()) {
-      if (entry.conversationId !== owner || entry.state !== 'running') continue;
+      if (entry.conversationId !== owner || entry.state !== 'running' || preservedProcessIds.includes(entry.processId)) continue;
       entry.controller.abort();
       count += 1;
     }

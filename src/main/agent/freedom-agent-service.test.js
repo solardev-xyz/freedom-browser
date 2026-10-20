@@ -99,6 +99,7 @@ function startOptions(overrides = {}) {
 
 function createHistoryStore(overrides = {}) {
   return {
+    setSessionModel: jest.fn(),
     createSession: jest.fn(),
     startTurn: jest.fn(),
     finishTurn: jest.fn(),
@@ -648,6 +649,8 @@ describe('FreedomAgentService', () => {
         conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'run_started',
+        providerId: 'test',
+        modelId: 'model_test',
         tabId: 'tab_assigned',
         approvalMode: 'every_interaction',
         userText: 'Summarize this page',

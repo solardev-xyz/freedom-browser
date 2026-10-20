@@ -923,6 +923,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
+    openSettings: () => openOrFocusInternalPage('settings', 'ai'),
     getActiveTab,
     getOpenTabs: getTabPresentation,
     createWorkspaceViewerTab,

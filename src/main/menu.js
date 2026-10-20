@@ -61,7 +61,7 @@ const aliasMenuItems = (id, label, channel, platform = process.platform) =>
 onSettingsChanged((merged, previous) => {
   const before = JSON.stringify(previous?.shortcutOverrides || {});
   const after = JSON.stringify(merged?.shortcutOverrides || {});
-  if (before !== after) {
+  if (before !== after || merged?.enableAi !== previous?.enableAi) {
     setupApplicationMenu();
   }
 });
@@ -545,7 +545,8 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'toggle-agent',
       label: 'Show Agent',
-      accelerator: acc('view.toggleAgent'),
+      accelerator: loadSettings()?.enableAi === true ? acc('view.toggleAgent') : undefined,
+      enabled: loadSettings()?.enableAi === true,
       click: () => {
         const win = getTargetWindow();
         if (win) {

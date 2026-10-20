@@ -582,3 +582,17 @@ test('Claude catalogue discovery is shared, preserves alias selections, and refr
   expect(fallback.models.map(m => m.name)).toEqual(['Claude Sonnet · CLI default', 'Claude Opus · CLI default', 'Claude Haiku · CLI default']);
   expect(fallback.models.some(m => m.name.includes('5.5'))).toBe(false);
 });
+
+test('a disabled-generation discovery cannot save a connection after AI is re-enabled', async () => {
+  let finish;
+  const controller = new AbortController();
+  const { resolver, store } = createResolver(null, {
+    featureSignal: () => controller.signal,
+    fetch: () => new Promise(resolve => { finish = resolve; }),
+  });
+  const pending = resolver.configureOllama();
+  controller.abort();
+  finish(new Response(JSON.stringify({ models: [{ name: 'fixture' }] })));
+  await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  expect(store.saveOllama).not.toHaveBeenCalled();
+});

@@ -1,3 +1,4 @@
+const { openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test, expect } = require('./fixtures');
 
 // Opt-in real subscription test: no credentials are read or copied by the harness.
@@ -5,25 +6,26 @@ test.skip(process.env.FREEDOM_CLAUDE_LIVE !== '1', 'Requires an authenticated na
 test.setTimeout(360000);
 
 test('connect installed Claude, chat, remember context, and show privacy in the normal UI', async ({ window }, testInfo) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
-  await expect(window.locator('#agent-subscription-method-title')).toHaveText('Claude subscription');
-  await window.locator('#agent-provider-chatgpt').click();
-  await expect(window.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
-  const models = window.locator('#agent-provider-models-list');
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
+  await expect(providerPage.locator('#agent-subscription-method-title')).toHaveText('Claude subscription');
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await expect(providerPage.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
+  const models = providerPage.locator('#agent-provider-models-list');
   await expect(models).toContainText(/Claude Opus \d/);
   await expect(models).toContainText(/Claude Sonnet \d/);
   await expect(models).toContainText(/Claude Haiku \d/);
   await expect(models).not.toContainText('· subscription');
   await expect(models).not.toContainText('CLI default');
   for (const theme of ['dark', 'light']) {
-    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    await window.locator('#agent-sidebar').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await providerPage.locator('#ai').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });
   }
-  await window.locator('#agent-provider-login').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
-  await window.locator('#agent-sidebar-back').click();
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
+  await closeProviderSettings(window);
   await window.locator('#agent-prompt').fill('Remember the word ORBIT. Reply exactly: Ready.');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 60000 });
@@ -42,13 +44,14 @@ test('connect installed Claude, chat, remember context, and show privacy in the 
 
 
 test('Claude browser actions retain real UI approval, decline and Stop; helpers return reports', async ({ window, harness, electronApp }) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
-  await window.locator('#agent-provider-chatgpt').click();
-  await window.locator('#agent-provider-login').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
-  await window.locator('#agent-sidebar-back').click();
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
+  await closeProviderSettings(window);
   await window.locator('#agent-approval-mode-button').click();
   await window.locator('#agent-approval-mode-every').click();
   const url = 'https://freedom-claude-qualification.test/';
@@ -88,15 +91,16 @@ test('Claude browser actions retain real UI approval, decline and Stop; helpers 
 
 
 test('Claude builds a managed workspace through Freedom tools and opens its preview', async ({ window, electronApp }) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
-  await expect(window.locator('#agent-subscription-method-title')).toHaveText('Claude subscription');
-  await window.locator('#agent-provider-chatgpt').click();
-  await expect(window.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
-  await window.locator('#agent-provider-login').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
-  await window.locator('#agent-sidebar-back').click();
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Anthropic', exact: true }).click();
+  await expect(providerPage.locator('#agent-subscription-method-title')).toHaveText('Claude subscription');
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await expect(providerPage.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
+  await closeProviderSettings(window);
   await window.locator('#agent-prompt').fill('Create a tiny static index.html in this new workspace. The page should have a heading ORBIT BUILD 731 and an accessible button that toggles a paragraph. Use codemode for the file work. Open the working preview. Do not install dependencies or run shell commands.');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 120000 });

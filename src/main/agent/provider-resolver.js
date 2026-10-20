@@ -107,6 +107,8 @@ class AgentProviderResolver {
       throw new TypeError('AgentProviderResolver requires an app-owned credential store');
     }
     this.credentials = this.store.createCredentialStore();
+    this.assertEnabled = options.assertEnabled || (() => {});
+    this.featureSignal = options.featureSignal || (() => undefined);
   }
 
   getStatus() {
@@ -114,12 +116,17 @@ class AgentProviderResolver {
   }
 
   async getClaudeModels() {
+    this.assertEnabled();
     if (this.claudeCatalog?.expiresAt > Date.now()) return this.claudeCatalog.models;
     if (!this.claudeCatalogPending) {
-      this.claudeCatalogPending = this.discoverClaudeModels().then(models => {
+      const enabledSignal = this.featureSignal();
+      this.claudeCatalogPending = this.discoverClaudeModels({ signal: enabledSignal }).then(models => {
+        enabledSignal?.throwIfAborted();
+        this.assertEnabled();
         this.claudeCatalog = { models, expiresAt: Date.now() + 5 * 60_000 };
         return models;
-      }).catch(() => {
+      }).catch(error => {
+        if (enabledSignal?.aborted) throw error;
         // No CLI/login or discovery unavailable: honest alias labels, never a
         // guessed/stale version, and no failure of unrelated provider pickers.
         this.claudeCatalog = { models: CLAUDE_MODELS, expiresAt: Date.now() + 30_000 };
@@ -130,7 +137,11 @@ class AgentProviderResolver {
   }
 
   async getCatalog() {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const [runtime, claudeModels] = await Promise.all([this.#createRuntime(), this.getClaudeModels()]);
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
     const catalogProviders = [
       ...Object.entries(HOSTED_PROVIDERS).map(([providerId, name]) => ({
         providerId,
@@ -177,6 +188,8 @@ class AgentProviderResolver {
   }
 
   async configureCompatible(input) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const providerId = input.providerId === 'openai-compatible' ? `custom-${randomUUID()}` : input.providerId;
     if (!isCompatibleId(providerId) || !cleanText(input.name, 80)) throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Invalid custom connection');
     const previous = this.store.getSelection(providerId);
@@ -187,11 +200,15 @@ class AgentProviderResolver {
     if (typeof apiKey !== 'string' || apiKey.length > 16384 || /[\r\n]/.test(apiKey)) throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Invalid key');
     const models = input.models?.length ? normalizeCompatibleModels(input.models) : await discoverCompatibleModels(baseUrl, apiKey, this.fetch);
     const modelId = models.some(m => m.id === input.modelId) ? input.modelId : models.some(m => m.id === previous?.modelId) ? previous.modelId : models[0].id;
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
     this.store.saveCompatible({ providerId, baseUrl, apiKey, name: input.name, models, modelId });
     return this.getStatus();
   }
 
   async configureHosted(input = {}) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     if (input.kind === 'compatible') return this.configureCompatible(input);
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
@@ -222,6 +239,8 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Privacy policy is invalid');
     }
     this.#assertModelPolicy(providerId, modelId, privacyPolicy);
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
     this.store.saveHosted({
       providerId,
       modelId,
@@ -232,6 +251,8 @@ class AgentProviderResolver {
   }
 
   async configureOllama(input = {}, { activate = true } = {}) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const baseUrl = normalizeOllamaBaseUrl(input.baseUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -240,7 +261,7 @@ class AgentProviderResolver {
       const response = await this.fetch(`${baseUrl.slice(0, -3)}/api/tags`, {
         method: 'GET',
         redirect: 'error',
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, enabledSignal].filter(Boolean)),
         headers: { Accept: 'application/json' },
       });
       if (!response.ok) throw new Error('Ollama discovery failed');
@@ -272,11 +293,15 @@ class AgentProviderResolver {
     const previous = this.getStatus().connections?.find((connection) => connection.providerId === 'ollama');
     const preferred = input.modelId || (previous?.baseUrl === baseUrl ? previous.modelId : undefined);
     const modelId = modelIds.includes(preferred) ? preferred : modelIds[0];
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
     this.store.saveOllama({ modelId, modelIds, baseUrl, activate });
     return this.getStatus();
   }
 
   async loginSubscription(input = {}, interaction) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
     if (!Object.hasOwn(SUBSCRIPTION_PROVIDERS, providerId)) {
@@ -290,6 +315,8 @@ class AgentProviderResolver {
       this.claudeCatalog = null;
       if (!(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
       interaction?.signal?.throwIfAborted();
+      enabledSignal?.throwIfAborted();
+      this.assertEnabled();
       this.store.saveSubscription({ providerId, modelId });
       return this.getStatus();
     }
@@ -322,6 +349,8 @@ class AgentProviderResolver {
     await runtime.login(runtimeProviderId(providerId), 'oauth', interaction,
       providerId === 'openai-chatgpt' ? { getDeviceId: () => this.store.getDeviceId() } : undefined);
     try {
+      enabledSignal?.throwIfAborted();
+      this.assertEnabled();
       this.store.saveSubscription({ providerId, modelId });
     } catch (error) {
       await runtime.logout(runtimeProviderId(providerId)).catch(() => {});
@@ -331,6 +360,8 @@ class AgentProviderResolver {
   }
 
   async selectModel(input = {}) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
     const connection = this.getStatus().connections.find(
@@ -348,6 +379,8 @@ class AgentProviderResolver {
       }
     }
     this.#assertModelPolicy(providerId, modelId);
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
     this.store.select(providerId, modelId);
     return this.getStatus();
   }
@@ -364,6 +397,8 @@ class AgentProviderResolver {
   }
 
   async refreshModels(input = {}) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const providerId = requireIdentifier(input.providerId, 'providerId');
     if (isCompatibleId(providerId)) {
       const previous = this.store.getSelection(providerId);
@@ -371,6 +406,8 @@ class AgentProviderResolver {
       const discovered = await discoverCompatibleModels(previous.baseUrl, previous.apiKey, this.fetch);
       // Preserve manual entries, per-model settings, favourites and the selected model.
       const models = [...previous.models, ...discovered.filter(m => !previous.models.some(old => old.id === m.id))];
+      enabledSignal?.throwIfAborted();
+      this.assertEnabled();
       this.store.saveCompatible({ ...previous, models, activate: false });
       return this.getCatalog();
     }
@@ -406,7 +443,7 @@ class AgentProviderResolver {
       let auth;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15_000);
-      try { auth = await runtime.getAuth(providerId, { signal: controller.signal }); }
+      try { auth = await runtime.getAuth(providerId, { signal: AbortSignal.any([controller.signal, enabledSignal].filter(Boolean)) }); }
       catch { throw new AgentProviderError('AGENT_CATALOG_AUTH_FAILED', 'Could not resolve ChatGPT account'); }
       finally { clearTimeout(timeout); }
       apiKey = auth?.auth?.apiKey;
@@ -441,6 +478,7 @@ class AgentProviderResolver {
         ...new Set(input.favoriteModelIds.map((id) => requireIdentifier(id, 'modelId'))),
       ];
     }
+    this.assertEnabled();
     this.store.savePreferences(providerId, patch);
     return this.getStatus();
   }
@@ -515,6 +553,8 @@ class AgentProviderResolver {
   }
 
   async testConnection(input = {}) {
+    this.assertEnabled();
+    const enabledSignal = this.featureSignal();
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
     const { model, modelRuntime } = await this.resolveModel({ providerId, modelId });
@@ -523,7 +563,7 @@ class AgentProviderResolver {
     const startedAt = Date.now();
     try {
       if (isCompatibleId(providerId)) {
-        const result = await testCompatibleConnection(model, modelRuntime, controller.signal);
+        const result = await testCompatibleConnection(model, modelRuntime, AbortSignal.any([controller.signal, enabledSignal].filter(Boolean)));
         return { elapsedMs: Date.now() - startedAt, ...result };
       }
       const response = await modelRuntime.completeSimple(
@@ -531,7 +571,7 @@ class AgentProviderResolver {
         {
           messages: [{ role: 'user', content: 'Reply with OK.', timestamp: Date.now() }],
         },
-        { signal: controller.signal, maxTokens: 32, maxRetries: 0, timeoutMs: 20_000 }
+        { signal: AbortSignal.any([controller.signal, enabledSignal].filter(Boolean)), maxTokens: 32, maxRetries: 0, timeoutMs: 20_000 }
       );
       if (response.stopReason === 'length') {
         return { elapsedMs: Date.now() - startedAt, outcome: 'token_limit' };
@@ -549,6 +589,8 @@ class AgentProviderResolver {
   }
 
   async resolveModel(input) {
+    this.assertEnabled();
+    this.featureSignal()?.throwIfAborted();
     const saved = this.store.getSelection(input?.providerId);
     const selection = saved && { ...saved, ...(input?.modelId && { modelId: input.modelId }) };
     if (!selection) {

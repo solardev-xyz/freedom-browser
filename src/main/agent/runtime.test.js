@@ -1,5 +1,6 @@
 'use strict';
 
+jest.mock('../settings-store', () => ({ loadSettings: jest.fn(() => ({ enableAi: false })), onSettingsChanged: jest.fn(() => jest.fn()) }));
 jest.mock('./freedom-agent-service');
 jest.mock('./ipc');
 jest.mock('./provider-resolver');
@@ -69,7 +70,7 @@ describe('Freedom agent runtime', () => {
     expect(ManagedWorkspaceController).not.toHaveBeenCalled();
     expect(FreedomAgentService).not.toHaveBeenCalled();
     expect(registerFreedomAgentIpc).not.toHaveBeenCalled();
-    expect(registerUnavailableAgentIpc).toHaveBeenCalledWith(options);
+    expect(registerUnavailableAgentIpc).toHaveBeenCalledWith(expect.objectContaining({ ...options, isProviderSettingsSender: expect.any(Function) }));
     await runtime.dispose();
     expect(unregister).toHaveBeenCalledTimes(1);
   });
@@ -170,10 +171,13 @@ describe('Freedom agent runtime', () => {
       userDataDir: options.profile.userDataDir,
       profileId: options.profile.id,
     });
-    expect(AgentProviderResolver).toHaveBeenCalledWith({
+    expect(AgentProviderResolver).toHaveBeenCalledWith(expect.objectContaining({
       store: providerStore,
       dataDir: options.dataDir,
-    });
+      assertEnabled: expect.any(Function),
+      featureSignal: expect.any(Function),
+      fetch: expect.any(Function),
+    }));
     expect(AgentSessionHistoryStore).toHaveBeenCalledWith({
       userDataDir: options.profile.userDataDir,
     });
@@ -254,11 +258,24 @@ describe('Freedom agent runtime', () => {
       desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
       createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
+      isEnabled: expect.any(Function),
+      isProviderSettingsSender: expect.any(Function),
+      onEnabledChanged: expect.any(Function),
+      onProviderChanged: expect.any(Function),
       openExternal: options.openExternal,
       attachmentStore,
       getOwnerWindow: options.getOwnerWindow,
       dialog: options.dialog,
     });
+
+    const enabledChanged = jest.fn();
+    const { onSettingsChanged } = require('../settings-store');
+    registerFreedomAgentIpc.mock.calls[0][0].onEnabledChanged(enabledChanged);
+    workspaceController.cancelAllConversations = jest.fn(() => { throw new Error('broken store'); });
+    const onChange = onSettingsChanged.mock.calls[0][0];
+    expect(() => onChange({ enableAi: false }, { enableAi: true })).not.toThrow();
+    expect(enabledChanged).toHaveBeenCalledWith(false);
+    expect(enabledChanged.mock.invocationCallOrder[0]).toBeLessThan(workspaceController.cancelAllConversations.mock.invocationCallOrder[0]);
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;
     await expect(resolveModel()).resolves.toEqual({ model: {} });

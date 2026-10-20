@@ -1,4 +1,5 @@
 - Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Opt-in AI features and provider connections under Settings > AI, with a dismissible start-page invitation
   - ChatGPT, Meta Muse and installed Claude Code subscriptions; provider API keys, custom OpenAI-compatible servers, and local Ollama models
   - Website actions, parallel helpers, connected MCP services, and permission controls
   - Sandboxed tool scripts for multi-step tasks

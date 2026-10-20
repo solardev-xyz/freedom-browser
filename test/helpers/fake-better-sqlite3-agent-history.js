@@ -191,6 +191,15 @@ class FakeBetterSqlite3AgentHistoryDatabase {
       };
     }
 
+    if (query.startsWith('UPDATE agent_sessions SET provider_id = ?')) {
+      return { run: (providerId, modelId, thinkingLevel, id) => {
+        const row = this.state.sessions.find(candidate => candidate.id === id);
+        if (!row || row.provider_id || row.model_id) return { changes: 0 };
+        Object.assign(row, { provider_id: providerId, model_id: modelId, thinking_level: thinkingLevel });
+        return { changes: 1 };
+      } };
+    }
+
     if (query === 'UPDATE agent_sessions SET privacy_json = ? WHERE id = ?') {
       return { run: (privacyJson, id) => {
         const row = this.state.sessions.find(row => row.id === id);

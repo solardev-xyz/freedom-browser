@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; object-src 'none'; base-uri 'none'; form-action 'none';"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <title>Settings</title>
     <link
@@ -13,6 +13,7 @@
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xOS40IDE1YTEuNjUgMS42NSAwIDAgMCAuMzMgMS44MmwuMDYuMDZhMiAyIDAgMSAxLTIuODMgMi44M2wtLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAtMS44Mi0uMzMgMS42NSAxLjY1IDAgMCAwLTEgMS41MVYyMWEyIDIgMCAwIDEtNCAwdi0uMDlBMS42NSAxLjY1IDAgMCAwIDkgMTkuNGExLjY1IDEuNjUgMCAwIDAtMS44Mi4zM2wtLjA2LjA2YTIgMiAwIDEgMS0yLjgzLTIuODNsLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAgLjMzLTEuODIgMS42NSAxLjY1IDAgMCAwLTEuNTEtMUgzYTIgMiAwIDAgMSAwLTRoLjA5QTEuNjUgMS42NSAwIDAgMCA0LjYgOWExLjY1IDEuNjUgMCAwIDAtLjMzLTEuODJsLS4wNi0uMDZhMiAyIDAgMSAxIDIuODMtMi44M2wuMDYuMDZhMS42NSAxLjY1IDAgMCAwIDEuODIuMzNIOWExLjY1IDEuNjUgMCAwIDAgMS0xLjUxVjNhMiAyIDAgMCAxIDQgMHYuMDlhMS42NSAxLjY1IDAgMCAwIDEgMS41MSAxLjY1IDEuNjUgMCAwIDAgMS44Mi0uMzNsLjA2LS4wNmEyIDIgMCAxIDEgMi44MyAyLjgzbC0uMDYuMDZhMS42NSAxLjY1IDAgMCAwLS4zMyAxLjgyVjlhMS42NSAxLjY1IDAgMCAwIDEuNTEgMUgyMWEyIDIgMCAwIDEgMCA0aC0uMDlhMS42NSAxLjY1IDAgMCAwLTEuNTEgMXoiLz48L3N2Zz4="
     />
     <link rel="stylesheet" href="styles/theme.css" />
+    <link rel="stylesheet" href="styles/ai.css" />
     <style>
       *,
       *::before,
@@ -1233,6 +1234,10 @@
             Nodes
           </button>
           <div class="nav-rule" role="separator"></div>
+          <button type="button" class="nav-item" data-target="ai">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" /></svg>
+            AI
+          </button>
           <button type="button" class="nav-item" data-target="advanced">
             <svg
               width="16"
@@ -1760,6 +1765,116 @@
           </div>
         </section>
 
+        <section class="section" id="ai" data-nav="ai">
+          <div class="section-header"><h2 class="section-title">AI</h2><span class="resolver-badge">Beta</span></div>
+          <p class="section-description">Research, build and publish with Agent, using a provider you choose.</p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <label class="row-label" for="enable-ai">Enable AI features</label>
+                <p class="row-help" id="enable-ai-help">Off by default. Your provider receives the prompts and content shared with Agent.</p>
+              </div>
+              <div class="row-control"><label class="toggle"><input type="checkbox" id="enable-ai" aria-describedby="enable-ai-help" /><span class="slider"></span></label></div>
+            </div>
+          </div>
+          <p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p>
+          <p class="rpc-status" id="ai-settings-status" aria-live="polite"></p>
+          <div id="ai-provider-settings" hidden>
+            <div id="agent-provider-home">
+              <div class="agent-setup-intro"><h3 class="subsection-title">Models &amp; providers</h3><p>Your connected models, all in one place.</p></div>
+              <div id="agent-connected-providers" class="agent-connected-providers" hidden>
+                <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
+              </div>
+              <button id="agent-provider-add" class="agent-button secondary" type="button">Add provider</button>
+            </div>
+            <div id="agent-provider-browser" hidden>
+              <button id="agent-provider-list-back" class="agent-text-button" type="button">Providers</button>
+              <h3>Add a provider</h3>
+              <input id="agent-provider-search" type="search" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" />
+              <div id="agent-provider-choices" class="agent-provider-choices"></div>
+            </div>
+            <section id="agent-provider-detail" aria-labelledby="agent-provider-form-heading" hidden>
+              <button id="agent-provider-detail-back" class="agent-text-button" type="button">Providers</button>
+              <div class="agent-card-heading"><h3 id="agent-provider-form-heading">Choose a provider</h3><span id="agent-provider-status" class="agent-badge">Not connected</span></div>
+              <section id="agent-compatibility" class="agent-compatibility" hidden aria-labelledby="agent-compatibility-heading">
+                <h4 id="agent-compatibility-heading">Optional compatibility check</h4>
+                <label class="agent-field"><span>Model to check</span><span id="agent-compatibility-model"></span></label>
+                <div id="agent-compatibility-note"></div>
+                <p id="agent-compatibility-result" class="agent-message" aria-live="polite"></p>
+                <div id="agent-compatibility-actions" class="agent-config-actions"><button id="agent-compatibility-continue" class="agent-text-button" type="button">Continue without checking</button></div>
+                <p class="agent-catalog-status">Results apply only to this model and saved settings. This is a quick check, not a guarantee of full API compatibility.</p>
+              </section>
+              <select id="agent-provider-select" hidden aria-label="Provider"></select>
+              <div id="agent-provider-methods" hidden>
+                <p class="agent-catalog-status">How would you like to connect?</p>
+                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong id="agent-subscription-method-title">ChatGPT subscription</strong><span id="agent-subscription-method-help">Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
+                <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
+              </div>
+              <div id="agent-provider-connection-fields">
+                <button id="agent-provider-disconnect" class="agent-button secondary" type="button" hidden>Disconnect</button>
+                <div id="agent-custom-fields" hidden>
+                  <label class="agent-field"><span>Connection name</span><input id="agent-custom-name" type="text" maxlength="80" placeholder="My AI server" /></label>
+                  <label class="agent-field"><span>API base URL</span><input id="agent-custom-url" type="url" maxlength="2048" spellcheck="false" placeholder="https://example.com/v1" /></label>
+                  <p id="agent-custom-transport" class="agent-catalog-status">Use the API base URL, including any path such as /v1. Requests go directly to this endpoint.</p>
+                  <label class="agent-field"><span>Model IDs (optional, one per line)</span><textarea id="agent-custom-models" rows="3" placeholder="Leave empty to discover models" spellcheck="false"></textarea></label>
+                  <p class="agent-catalog-status">If discovery is unavailable, enter the model IDs supplied by your server.</p>
+                  <label id="agent-custom-clear-key-field" class="agent-field"><span><input id="agent-custom-clear-key" type="checkbox" /> Remove saved API key</span></label>
+                </div>
+                <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
+                <div id="agent-subscription-fields" class="hidden">
+                  <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
+                  <div id="agent-auth-code" class="agent-auth-code" hidden><span id="agent-auth-code-instruction">Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
+                  <details id="agent-auth-callback" class="agent-auth-callback" hidden><summary>Sign-in did not return?</summary><label class="agent-field"><span>Paste the final redirect URL from the sign-in browser</span><input id="agent-auth-callback-input" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:1455/auth/callback…" /></label><button id="agent-auth-callback-submit" class="agent-button secondary" type="button">Complete sign-in</button></details>
+                  <div class="agent-config-actions"><button id="agent-provider-login" class="agent-button secondary" type="button">Continue with ChatGPT</button><button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>Cancel sign-in</button></div>
+                </div>
+                <div id="agent-privacy-controls" hidden>
+                  <label class="agent-field"><span>Privacy requirement</span><select id="agent-privacy-policy"></select></label>
+                  <button id="agent-privacy-save" class="agent-text-button" type="button">Save privacy setting</button>
+                </div>
+                <div class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button></div>
+                <section class="agent-provider-models" aria-labelledby="agent-provider-models-heading">
+                  <div class="agent-provider-models-heading">
+                    <h4 id="agent-provider-models-heading">Available models</h4>
+                    <button id="agent-model-refresh" class="agent-provider-models-refresh" type="button" aria-label="Refresh available models" title="Refresh available models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
+                  </div>
+                  <ul id="agent-provider-models-list" class="agent-provider-models-list" aria-labelledby="agent-provider-models-heading" tabindex="0" hidden></ul>
+                  <p class="agent-catalog-status">Hover over privacy symbols for details. Hardware checks run when used.</p>
+                  <p id="agent-provider-models-empty" class="agent-provider-models-empty">Connect to discover available models</p>
+                </section>
+                <details id="agent-provider-advanced" class="agent-provider-advanced">
+                  <summary>Details &amp; connection settings</summary>
+                  <div id="agent-ollama-fields" class="hidden">
+                    <label class="agent-field"><span>Local URL</span><input id="agent-ollama-url" type="url" spellcheck="false" value="http://127.0.0.1:11434/v1" /></label>
+                  </div>
+                  <p id="agent-provider-privacy" class="agent-catalog-status"></p>
+                  <div id="agent-hosted-fields">
+                    <p id="agent-catalog-status" class="agent-catalog-status" aria-live="polite"></p>
+                    <select id="agent-model-select" hidden aria-label="Model"></select>
+                  </div>
+                  <p id="agent-model-details" class="agent-catalog-status"></p>
+                  <div id="agent-custom-model-settings" hidden>
+                    <p class="agent-catalog-status">Settings for the selected model. Defaults are estimates; use your server’s documented limits.</p>
+                    <label class="agent-field"><span>Context window (tokens)</span><input id="agent-custom-context" type="number" min="1024" max="10000000" value="32768" /></label>
+                    <label class="agent-field"><span>Maximum output tokens</span><input id="agent-custom-output" type="number" min="128" value="4096" /></label>
+                    <label class="agent-field"><span><input id="agent-custom-vision" type="checkbox" /> Supports images</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-reasoning" type="checkbox" /> Supports reasoning controls</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-schema" type="checkbox" /> Supports strict JSON schema</span></label>
+                  </div>
+                  <div id="agent-provider-key-settings"></div>
+                  <button id="agent-provider-test" class="agent-text-button" type="button" hidden>Send test prompt</button>
+                  <p id="agent-provider-test-note" class="agent-catalog-status" hidden>Sends only “Reply with OK.” to this model. Token charges may apply.</p>
+                </details>
+              </div>
+            </section>
+            <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
+
+          </div>
+          <div class="ai-next-step" id="ai-next-step" hidden>
+            <button class="btn primary" id="ai-open-agent" type="button">Open Agent</button>
+            <span class="row-help" id="ai-next-help">Your current conversation and draft stay in place.</span>
+          </div>
+        </section>
+
         <!-- Startup -->
         <section class="section panel" id="startup" data-nav="nodes">
           <h3 class="panel-title">Startup</h3>
@@ -1939,5 +2054,6 @@
 
     <script src="scripts/settings.js"></script>
     <script src="scripts/settings-updates.js"></script>
+    <script type="module" src="../lib/agent-settings.js"></script>
   </body>
 </html>

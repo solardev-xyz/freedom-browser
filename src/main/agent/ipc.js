@@ -13,6 +13,7 @@ const AGENT_IPC_ERROR_CODES = Object.freeze({
 });
 const OPENAI_DEVICE_VERIFICATION_URL = 'https://auth.openai.com/codex/device';
 const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
+  AGENT_DISABLED: 'AI is off. Enable AI features in Settings → AI.',
   AGENT_CLAUDE_VERSION: 'Update Claude Code to version 2.1.290 or newer, then connect again.',
   AGENT_CLAUDE_MANAGED: 'This connection supports personal Claude Pro and Max accounts without managed policies. Managed Claude installations can run hooks outside Freedom’s permissions; use the Anthropic API connection instead.',
   AGENT_CLAUDE_UNAVAILABLE: 'Could not connect to Claude Code. Install or update its native CLI, run claude auth login with your subscription in a terminal, then try again.',
@@ -73,13 +74,14 @@ function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
 }
 
-function registerUnavailableAgentIpc({ ipcMain, isTrustedSender }) {
+function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSettingsSender }) {
   const channels = Object.entries(IPC)
     .filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'))
     .map(([, channel]) => channel);
   for (const channel of channels) {
     ipcMain.handle(channel, (event) => {
-      if (!isTrustedSender(event.sender))
+      const settingsRequest = (channel.startsWith('agent:provider:') || channel === IPC.AGENT_OPEN) && isProviderSettingsSender?.(event);
+      if (!isTrustedSender(event.sender) && !settingsRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
       if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
       return errorEnvelope(
@@ -296,6 +298,7 @@ function registerFreedomAgentIpc(options = {}) {
   }
   let owner = null;
   let startPending = false;
+  let enableGeneration = 0;
   let providerLogin = null;
   let providerMutationPending = false;
   const attachmentOwnerCleanup = new Map();
@@ -366,12 +369,21 @@ function registerFreedomAgentIpc(options = {}) {
   };
 
   const unsubscribe = service.subscribe(sendEvent);
+  const isEnabled = options.isEnabled || (() => true);
+  const disabled = () => errorEnvelope('AGENT_DISABLED', 'AI is off. Enable AI features in Settings → AI.');
+  const unsubscribeSettings = options.onEnabledChanged?.((enabled) => {
+    enableGeneration += 1;
+    if (enabled) return;
+    providerLogin?.controller.abort();
+    void service.stop(undefined, { preserveServers: true }).catch(() => {});
+  });
 
   const handleStart = async (event, rawPayload) => {
     if (startPending || owner?.runId) {
       return errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Freedom agent already has an active run');
     }
     startPending = true;
+    const generation = enableGeneration;
     try {
       if (!isTrustedSender(event?.sender)) {
         return errorEnvelope(
@@ -398,7 +410,8 @@ function registerFreedomAgentIpc(options = {}) {
       let pendingOwner = owner;
       let tabId;
       let resolved;
-      const needsRuntime = !continuing || service.getState().runtimeAvailable !== true;
+      const conversationState = continuing ? service.getState() : null;
+      const needsRuntime = !continuing || conversationState.runtimeAvailable !== true;
       if (needsRuntime) {
         tabId = rendererTabId ? automationTabIdForRenderer(event?.sender, rendererTabId) : null;
         if (rendererTabId && !tabId) {
@@ -408,7 +421,13 @@ function registerFreedomAgentIpc(options = {}) {
           );
         }
         try {
-          resolved = await resolveModel();
+          const savedModel = continuing && conversationState.providerId && conversationState.modelId
+            ? { providerId: conversationState.providerId, modelId: conversationState.modelId } : null;
+          if (continuing && !savedModel && conversationState.transcript?.length) {
+            return errorEnvelope(AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE, 'This saved chat has no model information. Start a new chat.');
+          }
+          // Opening a project creates an empty conversation before a model is chosen.
+          resolved = savedModel ? await resolveModel(savedModel) : await resolveModel();
         } catch (error) {
           const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
           console.error('[agent] Model resolution failed:', errorCode);
@@ -417,13 +436,13 @@ function registerFreedomAgentIpc(options = {}) {
           }
           return errorEnvelope(
             AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
-            'No configured agent model is available'
+            continuing ? 'Reconnect this chat’s model in Settings → AI, or start a new chat.' : 'No configured agent model is available'
           );
         }
         if (!resolved?.model || !resolved?.modelRuntime) {
           return errorEnvelope(
             AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
-            'No configured agent model is available'
+            continuing ? 'Reconnect this chat’s model in Settings → AI, or start a new chat.' : 'No configured agent model is available'
           );
         }
         if (!continuing) {
@@ -448,6 +467,12 @@ function registerFreedomAgentIpc(options = {}) {
         pendingOwner.buffer = [];
       }
 
+      if (!isEnabled() || generation !== enableGeneration) {
+        pendingOwner.starting = false;
+        pendingOwner.buffer = [];
+        if (!continuing && owner === pendingOwner) detachOwner();
+        return disabled();
+      }
       let started;
       try {
         started = await service.start({
@@ -1028,7 +1053,7 @@ function registerFreedomAgentIpc(options = {}) {
   const handleProviderRequest = async (event, action) => {
     let trusted;
     try {
-      trusted = isTrustedSender(event?.sender);
+      trusted = isTrustedSender(event?.sender) || options.isProviderSettingsSender?.(event);
     } catch {
       return errorEnvelope(
         AGENT_IPC_ERROR_CODES.NOT_OWNER,
@@ -1048,21 +1073,24 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
-  const handleMcpConnections = (event, payload) => handleProviderRequest(event, async () => {
-    const manager = options.mcpConnections;
-    if (!manager) return { connections: [] };
-    const actions = {
-      list: () => manager.list(),
-      add: () => manager.add({ name: payload.name, url: payload.url }),
-      reconnect: () => manager.reconnect(payload.id),
-      signin: () => manager.signIn(payload.id),
-      cancel: () => manager.cancelSignIn(payload.id),
-      remove: () => manager.remove(payload.id),
-    };
-    if (!Object.hasOwn(actions, payload?.action)) return { error: { message: 'Unknown connection action.' }, ok: false };
-    try { return { connections: await actions[payload.action]() }; }
-    catch { return { ok: false, error: { message: 'Connection action failed. Check the URL, try signing in or reconnect, and ensure the system keyring is available.' } }; }
-  });
+  const handleMcpConnections = (event, payload) => {
+    if (!isTrustedSender(event?.sender)) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Connected services require browser chrome');
+    return handleProviderRequest(event, async () => {
+      const manager = options.mcpConnections;
+      if (!manager) return { connections: [] };
+      const actions = {
+        list: () => manager.list(),
+        add: () => manager.add({ name: payload.name, url: payload.url }),
+        reconnect: () => manager.reconnect(payload.id),
+        signin: () => manager.signIn(payload.id),
+        cancel: () => manager.cancelSignIn(payload.id),
+        remove: () => manager.remove(payload.id),
+      };
+      if (!Object.hasOwn(actions, payload?.action)) return { error: { message: 'Unknown connection action.' }, ok: false };
+      try { return { connections: await actions[payload.action]() }; }
+      catch { return { ok: false, error: { message: 'Connection action failed. Check the URL, try signing in or reconnect, and ensure the system keyring is available.' } }; }
+    });
+  };
 
   const handleProviderStatus = (event) =>
     handleProviderRequest(event, () => ({ status: providerResolver.getStatus() }));
@@ -1078,7 +1106,9 @@ function registerFreedomAgentIpc(options = {}) {
       }
       providerMutationPending = true;
       try {
-        return await action();
+        const result = await action();
+        options.onProviderChanged?.();
+        return result;
       } finally {
         providerMutationPending = false;
       }
@@ -1365,7 +1395,23 @@ function registerFreedomAgentIpc(options = {}) {
 
   // Trusted chrome only; binding resolution confines discovery to this window.
   const previewPending = new WeakSet();
-  ipcMain.handle(IPC.AGENT_PAGE_ACTIONS, async (event, payload) => {
+  const availableWhileOff = new Set([
+    IPC.AGENT_GET_STATE, IPC.AGENT_STOP, IPC.AGENT_PAUSE, IPC.AGENT_CLEAR_CONVERSATION,
+    IPC.AGENT_HISTORY_LIST, IPC.AGENT_HISTORY_OPEN, IPC.AGENT_HISTORY_RENAME, IPC.AGENT_HISTORY_DELETE,
+    IPC.AGENT_HELPER_REPORTS, IPC.AGENT_TAB_CLAIM, IPC.AGENT_WORKSPACE_INSPECT,
+    IPC.AGENT_PROCESS_STOP, IPC.AGENT_PROCESS_PREVIEW_OPEN, IPC.AGENT_PUBLICATION_OPEN,
+    IPC.AGENT_PROVIDER_GET_STATUS, IPC.AGENT_PROVIDER_REMOVE, IPC.AGENT_PROVIDER_CLEAR,
+    IPC.AGENT_PROVIDER_CANCEL_LOGIN, IPC.AGENT_ATTACHMENTS_REMOVE, IPC.AGENT_ATTACHMENTS_REVOKE,
+  ]);
+  const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
+    if (!isEnabled() && !availableWhileOff.has(channel)) {
+      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
+      return disabled();
+    }
+    return handler(event, payload);
+  });
+
+  handle(IPC.AGENT_PAGE_ACTIONS, async (event, payload) => {
     if (!isTrustedSender(event?.sender) || event.sender.isDestroyed?.())
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender is not trusted browser chrome');
     if (previewPending.has(event.sender)) return { ok: false };
@@ -1385,51 +1431,61 @@ function registerFreedomAgentIpc(options = {}) {
     }
   });
 
-  ipcMain.handle(IPC.AGENT_START, handleStart);
-  ipcMain.handle(IPC.AGENT_STEER, handleSteer);
-  ipcMain.handle(IPC.AGENT_PAUSE, handlePause);
-  ipcMain.handle(IPC.AGENT_RESUME, handleResume);
-  ipcMain.handle(IPC.AGENT_STOP, handleStop);
-  ipcMain.handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
-  ipcMain.handle(IPC.AGENT_WALLET_REQUEST, handleAgentWalletRequest);
-  ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
-  ipcMain.handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
-  ipcMain.handle(IPC.AGENT_HELPER_REPORTS, handleHelperReports);
-  ipcMain.handle(IPC.AGENT_HISTORY_LIST, handleHistoryList);
-  ipcMain.handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
-  ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
-  ipcMain.handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FILES, handlePickFiles);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_DROP_FILES, handleDropFiles);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
-  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
-  ipcMain.handle(IPC.AGENT_PRIVACY_SETTINGS_SET, handleSetPrivacySettings);
-  ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
-  ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
-  ipcMain.handle(IPC.AGENT_WORKSPACE_HISTORY, handleWorkspaceHistory);
-  ipcMain.handle(IPC.AGENT_WORKSPACE_INSPECT, handleWorkspaceInspect);
-  ipcMain.handle(IPC.AGENT_PROJECT_ACCESS, handleProjectAccess);
-  ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
-  ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
-  ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
-  ipcMain.handle(IPC.AGENT_MCP_CONNECTIONS, handleMcpConnections);
-  ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
-  ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
-  ipcMain.handle(IPC.AGENT_PROVIDER_REFRESH_MODELS, handleRefreshModels);
-  ipcMain.handle(IPC.AGENT_PROVIDER_SET_PREFERENCES, handleProviderPreferences);
-  ipcMain.handle(IPC.AGENT_PROVIDER_TEST_CONNECTION, handleTestConnection);
-  ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
-  ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
-  ipcMain.handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
-  ipcMain.handle(IPC.AGENT_PROVIDER_CANCEL_LOGIN, handleCancelProviderLogin);
-  ipcMain.handle(IPC.AGENT_PROVIDER_SUBMIT_LOGIN, handleSubmitProviderLogin);
-  ipcMain.handle(IPC.AGENT_PROVIDER_SELECT_MODEL, handleSelectModel);
-  ipcMain.handle(IPC.AGENT_PROVIDER_REMOVE, handleRemoveProvider);
-  ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
+  handle(IPC.AGENT_OPEN, (event) => {
+    if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event))
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open Agent from Settings');
+    const window = getOwnerWindow?.(event.sender);
+    if (!window || window.isDestroyed?.()) return { ok: false };
+    window.webContents.send('agent:show');
+    return { ok: true };
+  });
+  handle(IPC.AGENT_START, handleStart);
+  handle(IPC.AGENT_STEER, handleSteer);
+  handle(IPC.AGENT_PAUSE, handlePause);
+  handle(IPC.AGENT_RESUME, handleResume);
+  handle(IPC.AGENT_STOP, handleStop);
+  handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
+  handle(IPC.AGENT_WALLET_REQUEST, handleAgentWalletRequest);
+  handle(IPC.AGENT_GET_STATE, handleGetState);
+  handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
+  handle(IPC.AGENT_HELPER_REPORTS, handleHelperReports);
+  handle(IPC.AGENT_HISTORY_LIST, handleHistoryList);
+  handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
+  handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
+  handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
+  handle(IPC.AGENT_ATTACHMENTS_PICK_FILES, handlePickFiles);
+  handle(IPC.AGENT_ATTACHMENTS_DROP_FILES, handleDropFiles);
+  handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
+  handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
+  handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
+  handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
+  handle(IPC.AGENT_PRIVACY_SETTINGS_SET, handleSetPrivacySettings);
+  handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
+  handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
+  handle(IPC.AGENT_WORKSPACE_HISTORY, handleWorkspaceHistory);
+  handle(IPC.AGENT_WORKSPACE_INSPECT, handleWorkspaceInspect);
+  handle(IPC.AGENT_PROJECT_ACCESS, handleProjectAccess);
+  handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
+  handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
+  handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
+  handle(IPC.AGENT_MCP_CONNECTIONS, handleMcpConnections);
+  handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
+  handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
+  handle(IPC.AGENT_PROVIDER_REFRESH_MODELS, handleRefreshModels);
+  handle(IPC.AGENT_PROVIDER_SET_PREFERENCES, handleProviderPreferences);
+  handle(IPC.AGENT_PROVIDER_TEST_CONNECTION, handleTestConnection);
+  handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
+  handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
+  handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
+  handle(IPC.AGENT_PROVIDER_CANCEL_LOGIN, handleCancelProviderLogin);
+  handle(IPC.AGENT_PROVIDER_SUBMIT_LOGIN, handleSubmitProviderLogin);
+  handle(IPC.AGENT_PROVIDER_SELECT_MODEL, handleSelectModel);
+  handle(IPC.AGENT_PROVIDER_REMOVE, handleRemoveProvider);
+  handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
 
   return async () => {
+    unsubscribeSettings?.();
+    ipcMain.removeHandler?.(IPC.AGENT_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_MCP_CONNECTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STEER);

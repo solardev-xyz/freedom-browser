@@ -1,3 +1,4 @@
+.agent-toggle-btn[hidden] { display: none !important; }
 .agent-toggle-btn {
   display: flex;
   align-items: center;

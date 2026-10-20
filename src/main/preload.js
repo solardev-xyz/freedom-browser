@@ -279,6 +279,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId }),
   removeAgentProvider: (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId }),
   clearAgentProvider: () => ipcRenderer.invoke('agent:provider:clear'),
+  onAgentProviderChanged: callback => {
+    const handler = () => callback();
+    ipcRenderer.on('agent:provider:changed', handler);
+    return () => ipcRenderer.removeListener('agent:provider:changed', handler);
+  },
+  onShowAgent: callback => {
+    const handler = () => callback();
+    ipcRenderer.on('agent:show', handler);
+    return () => ipcRenderer.removeListener('agent:show', handler);
+  },
+  onAiSettingsChanged: callback => {
+    const handler = (_event, settings) => callback(settings);
+    ipcRenderer.on('settings:updated', handler);
+    return () => ipcRenderer.removeListener('settings:updated', handler);
+  },
   onAgentProviderAuthEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('agent:provider:auth-event', handler);

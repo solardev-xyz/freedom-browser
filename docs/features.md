@@ -191,8 +191,10 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 
 ## Freedom Agent
 
-Open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`. Connect your own model
-provider or a local Ollama model, then ask it to research pages, compare sources,
+AI is off by default for each profile. Enable it in **Settings → AI**
+(`freedom://settings/ai`), then connect your own model provider or a local Ollama
+model there. The start page offers a dismissible invitation to try it. Once
+enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to research pages, compare sources,
 or work on a project. Conversations appear over the page; Agent-first mode gives
 the conversation the full window.
 
@@ -201,6 +203,12 @@ the conversation the full window.
 - **Project work:** Create a managed workspace or attach an existing folder read-only.
   Grant editing separately. Drag files into the composer to attach them to a prompt.
   File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **AI settings:** Provider connections, model discovery, favourites and the default
+  model for new chats live in Settings → AI. An existing conversation keeps its
+  model. Turning AI off stops Agent work and pending approvals, hides Agent entry
+  points and prevents model requests; it keeps chats, connections, attachments and
+  projects. Already-running preview servers keep running. Dispatched external
+  effects are not undone. Turning it back on restores access.
 - **Connections and permissions:** Manage MCP services from the composer's `+` menu.
   Permission controls govern consequential actions and command access. The conversation
   privacy panel reports provider settings and the evidence available for that conversation.
@@ -339,7 +347,7 @@ are not supported. See [setup and qualification](agent-claude-subscription.md).
 
 ### Experimental custom AI connections
 
-**Models → Add provider → OpenAI-compatible** connects a custom Chat Completions
+**Settings → AI → Add provider → OpenAI-compatible** connects a custom Chat Completions
 endpoint using an optional API key. Models can be discovered or entered manually;
 multiple connections appear independently in the model picker. Saved keys are
 encrypted, and model limits/capabilities can be configured in connection settings.

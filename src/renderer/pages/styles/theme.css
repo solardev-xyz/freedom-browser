@@ -45,6 +45,7 @@ html {
   --text-meta: #6e7681;
   --text-subtle: #6e7681;
   --accent: #58a6ff;
+  --accent-strong: #58a6ff;
   --accent-muted: rgba(88, 166, 255, 0.12);
   --danger: #f85149;
   --danger-bg: #f8514915;
@@ -207,6 +208,7 @@ html[data-theme='light'] {
   --text-meta: #57606a;
   --text-subtle: #8c959f;
   --accent: #0969da;
+  --accent-strong: #0550ae;
   --accent-muted: rgba(9, 105, 218, 0.1);
   --danger: #cf222e;
   --danger-bg: #ffebe9;

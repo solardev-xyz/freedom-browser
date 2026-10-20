@@ -398,6 +398,21 @@ describe('webview-preload', () => {
     );
   });
 
+  test.each([
+    ['onAgentProviderAuthEvent', 'agent:provider:auth-event'],
+    ['onAgentProviderChanged', 'agent:provider:changed'],
+  ])('%s stays Settings-only and unsubscribes on navigation', (name, channel) => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: { href: 'file:///app/pages/settings.html', protocol: 'file:', pathname: '/app/pages/settings.html' } });
+    const callback = jest.fn();
+    exposures.freedomAPI[name](callback);
+    ipcRenderer.emit(channel, { type: 'fixture' });
+    expect(callback).toHaveBeenCalled();
+    global.window.addEventListener.mock.calls.find(([event]) => event === 'pagehide')[1]();
+    callback.mockClear();
+    ipcRenderer.emit(channel, {});
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   test('onSettingsUpdated forwards the broadcast and unsubscribes on pagehide', () => {
     const { exposures, ipcRenderer } = loadWebviewPreloadModule();
 

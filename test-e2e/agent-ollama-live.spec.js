@@ -1,3 +1,4 @@
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 const { test, expect } = require('./fixtures');
 
 const OLLAMA_MODEL = process.env.FREEDOM_OLLAMA_TEST_MODEL?.trim();
@@ -68,14 +69,7 @@ async function prepareEvaluationPage(window, harness) {
 }
 
 async function configureOllama(window) {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(OLLAMA_BASE_URL);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, OLLAMA_BASE_URL);
   await window.locator('#agent-model-menu-button').click();
   await window.locator('#agent-model-menu-list [role="menuitemradio"]').filter({ hasText: OLLAMA_MODEL }).click();
 }

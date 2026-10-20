@@ -2,7 +2,7 @@
 
 Experimental branch: `experiment/agent-claude-subscription`.
 
-In **Models & providers → Add provider → Anthropic**, choose **Claude subscription**,
+In **Settings → AI → Add provider → Anthropic**, choose **Claude subscription**,
 then **Connect installed Claude**. Freedom checks the native Claude Code installation
 and its existing login. It never reads, copies or stores the CLI's OAuth credentials.
 Disconnecting in Freedom removes its connection metadata; it does not log the CLI out.

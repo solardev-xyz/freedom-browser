@@ -110,7 +110,7 @@ describe('settings.html section headings match their nav label (#276)', () => {
   test('every nav entry carries exactly one page heading, and it is the nav label', () => {
     const titles = entryTitles();
     const items = navItems();
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
     // One `<h2>` per entry however many panels it owns (#268) — a second
     // would put two page headings on one route.
     const mismatches = items

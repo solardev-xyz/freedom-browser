@@ -138,6 +138,7 @@ test('re-hosted page permission controls remain reachable at narrow widths', asy
     try { return await document.querySelector('webview:not(.hidden)').executeJavaScript('document.title'); }
     catch { return ''; }
   })).toBe('Permission fixture');
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)').isLoading())).toBe(false);
   await resize(electronApp, 600, 600);
   if (await workspaceToggle.getAttribute('aria-expanded') === 'false') await workspaceToggle.click();
   await window.evaluate(async () => {

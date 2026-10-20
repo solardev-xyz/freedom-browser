@@ -33,6 +33,8 @@ const REMOVED_KEYS = new Set(['enableRadicleIntegration', 'antNodeMode', 'beeNod
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
+  enableAi: false,
+  aiInvitationDismissed: false,
   enableIdentityWallet: true,
   startAntAtLaunch: true,
   // Bee's `swap-enable` for the bundled Swarm node (#488): pay peers with
@@ -246,6 +248,8 @@ function loadSettings() {
         }
       }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
+      cachedSettings.enableAi = parsed.enableAi === true;
+      cachedSettings.aiInvitationDismissed = parsed.aiInvitationDismissed === true;
     } else {
       cachedSettings = { ...DEFAULT_SETTINGS };
     }
@@ -315,6 +319,8 @@ function saveSettings(newSettings) {
     if (newSettings && typeof newSettings === 'object') {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
+
+        if (['enableAi', 'aiInvitationDismissed'].includes(key) && typeof newSettings[key] !== 'boolean') continue;
 
         if (key === 'shortcutOverrides') {
           // The conflict pass has to run here too, not just at load: this is
