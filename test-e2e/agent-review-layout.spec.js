@@ -32,6 +32,17 @@ async function resize(electronApp, width, height = 800) {
     win.setMinimumSize(320, 300);
     win.setContentSize(size.width, size.height);
   }, { width, height });
+  // setContentSize returns before the renderer lays out the new size, and the
+  // compact Agent layout reacts to the resize event. Wait until the page sees
+  // the window's actual width (macOS may clamp it to the screen) and a frame
+  // has passed, so pane state read next reflects the new layout.
+  await expect.poll(() => electronApp.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const seen = await win.webContents.executeJavaScript(
+      'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(innerWidth))))'
+    );
+    return seen === win.getContentBounds().width;
+  })).toBe(true);
 }
 
 async function hit(window, selector) {
