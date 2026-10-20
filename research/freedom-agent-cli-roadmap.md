@@ -144,14 +144,18 @@ Lower-priority polish, each retained as a separate task:
   in dark/light themes.
 - **Implemented: L6 — Model-menu indentation:** align the privacy-symbol help row with the
   surrounding items.
-- **L7 — Blur cost: instrumentation delivered; Linux evidence pending.** A
+- **L7 — Blur cost: bounded software-rendering profile qualified.** A
   disposable Electron run disables GPU acceleration, plays a generated video
   behind a 320-paragraph conversation, scrolls upward, and records frame gaps,
   main-thread long tasks and actual GPU feature state. Local software rendering
   on macOS: 175 frames / 2s, p95 33.3ms, max 84.1ms, no observed main-thread long
-  tasks, scroll reached top. This is a bounded sample, not a guarantee for long
-  sessions/low-end devices. Both macOS Agent and Linux chrome CI jobs retain JSON
-  profiles. Keep the accepted glass design unless measurements justify a change.
+  tasks, scroll reached top. Linux CI at `fd6725ca`: 121 frames / 2s, p95 16.7ms,
+  max 16.8ms, no observed main-thread long tasks, scroll reached top; GPU
+  compositing and video decode/encode reported software rendering. [Raw Linux
+  profile](https://github.com/solardev-xyz/freedom-browser/actions/runs/39386789292/artifacts/12247638804).
+  This is a bounded sample, not a guarantee for long sessions/low-end devices.
+  Both macOS Agent and Linux chrome CI jobs retain JSON profiles. Keep the
+  accepted glass design unless measurements justify a change.
 
 Implementation notes: narrow Agent-first windows use one temporary session/page
 overlay at a time; address menus remain outside the page content’s stacking
@@ -161,7 +165,13 @@ longer stretch an invisible input-capturing body across the page. Fullscreen hid
 and restores Agent chrome without stopping the task; the composer strip is opaque,
 not a live blur over scrolling messages. Focus, accent contrast, page-context copy,
 helper Stop styling and primary/secondary approval buttons follow the shared UI
-conventions. No model/provider logic or renderer/main ownership changed.
+conventions. Find’s close path now restores focus to Take over while Agent
+controls the page; a failing-then-passing real-window test verifies that incidental
+typing cannot edit it and the same run remains reusable (`aefd7532`). Ordinary
+pages retain their normal focus behavior through the composition root’s injected
+callback; Find itself does not import Agent state. Folded workspace tabs also
+leave keyboard navigation (`b154d591`). No model/provider logic or renderer/main
+ownership changed.
 
 The original review did not reach real ChatGPT/Meta login, publication approval,
 project access or Agent wallet approvals. The fresh harness runs exercise their
@@ -170,30 +180,39 @@ and wallet approval; they do not claim new real-account or hardware qualificatio
 
 #### Execution evidence — October 20
 
-- `5779425e`: authority/filesystem/runtime repairs; lint and **10,141 unit tests
-  passed / 129 skipped**. The real installed Claude CLI login probe passed without
-  inference or exposing credentials. All tests use controlled fixtures for races,
+- `5779425e`: authority/filesystem/runtime repairs; initial lint and **10,141 unit
+  tests passed / 129 skipped**. After main integration and the Find regression,
+  lint and **10,533 unit tests / 129 skipped** pass. The real installed Claude
+  CLI login probe passed without inference or exposing credentials. All tests use controlled fixtures for races,
   wallet signatures and provider/network side effects.
 - Renderer repairs have fresh dark/light captures and Electron pointer/keyboard
   checks. The new `agent-review-layout.spec.js` runs in both the macOS Agent and
-  Linux chrome CI jobs, not just locally. Across the targeted suites, **150
-  distinct Electron cases passed**, including all eight new layout regressions plus the software-video profile,
+  Linux chrome CI jobs, not just locally. Across the targeted suites, **164
+  distinct Electron cases passed**, including the eight new layout regressions,
+  the software-video profile and controlled-page Find focus,
   headless runtime/socket discovery, provider recovery, project/viewer flows,
   Agent wallet approvals, simulated Ledger, private windows, Find, downloads and
   publication continuation. One ordinary native Fullscreen API case remains
-  below. Fresh GitHub CI results are still pending.
+  below. At `fd6725ca`, Linux chrome/layout/software-rendering, theme parity and
+  screenshot comparisons pass. CI also found a page-tools test assuming an
+  always-open sessions column; it now exercises the narrow Sessions toggle and
+  returns to browser mode successfully. Final-head PR checks remain pending.
 - The pre-existing `0b4bb4f2` screenshot failure is an outdated light permission
   reference: bookmark labels and toolbar spacing changed. Its actual/diff images
   were inspected. CI can now capture **every** surface in both themes as review
   artifacts while still running comparisons and without rewriting references.
-  Candidate adoption and a fresh comparison pass remain required.
+  All 104 combined-head surfaces were inspected; 99 visibly changed references
+  were adopted in both themes, with Settings taken after the main merge rather
+  than from the older capture. The Linux comparison passes at `fd6725ca`; the
+  final reference/Find-focus commits still need their normal PR comparison.
 - One native macOS ordinary-page Fullscreen API test stalls awaiting
   `document.exitFullscreen()`. It reproduces on the unchanged `0b4bb4f2` source
   exported to a separate scratch directory as well as the repaired tree. F11,
   Agent conceal/restore, preserved running status and compact pane restoration
   pass. The native Fullscreen API stall remains a qualification follow-up.
-- Still requiring explicit live/manual evidence: the new Linux software-rendering profile and lower-end device follow-through
-  (L7), VoiceOver/Narrator announcements, physical Ledger, real-account/provider
+- Still requiring explicit live/manual evidence: lower-end device/long-session
+  follow-through beyond the bounded software profile (Q3), VoiceOver/Narrator
+  announcements, physical Ledger, real-account/provider
   login across advertised OSes, packaged restart/profile switching and Windows
   UAC cancellation/retry. Unit/harness passes do not close those gaps.
 
