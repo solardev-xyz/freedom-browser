@@ -211,6 +211,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseAgentDictation: choice => ipcRenderer.invoke('agent:dictation:choose', choice),
   installAgentDictation: () => ipcRenderer.invoke('agent:dictation:install'),
   beginAgentDictation: () => ipcRenderer.invoke('agent:dictation:begin'),
+  appendAgentDictation: (id, sequence, audio) => ipcRenderer.invoke('agent:dictation:append', { id, sequence, audio }),
+  finishAgentDictation: id => ipcRenderer.invoke('agent:dictation:finish', { id }),
   transcribeAgentDictation: (id, audio) => ipcRenderer.invoke('agent:dictation:transcribe', { id, audio }),
   cancelAgentDictation: () => ipcRenderer.invoke('agent:dictation:cancel'),
   onAgentDictationEvent: callback => {

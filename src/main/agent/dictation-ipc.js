@@ -9,6 +9,8 @@ function registerDictationIpc({ ipcMain, service, isTrustedSender, isSettingsSen
     [IPC.AGENT_DICTATION_CHOOSE, (_event, payload) => service.choose(payload)],
     [IPC.AGENT_DICTATION_INSTALL, event => service.install(event.sender)],
     [IPC.AGENT_DICTATION_BEGIN, event => service.begin(event.sender)],
+    [IPC.AGENT_DICTATION_APPEND, (event, payload) => service.append(event.sender, payload)],
+    [IPC.AGENT_DICTATION_FINISH, (event, payload) => service.finish(event.sender, payload)],
     [IPC.AGENT_DICTATION_TRANSCRIBE, (event, payload) => service.transcribe(event.sender, payload)],
     [IPC.AGENT_DICTATION_CANCEL, event => { service.cancel(event.sender); return {}; }],
   ]);
@@ -36,6 +38,7 @@ function registerDictationIpc({ ipcMain, service, isTrustedSender, isSettingsSen
     service.cancelAll();
     for (const channel of registrations.keys()) ipcMain.removeHandler(channel);
     await Promise.allSettled([...inFlight]);
+    await service.drain?.();
   };
 }
 

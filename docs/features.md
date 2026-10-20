@@ -217,8 +217,8 @@ and purchases keep their normal approval steps.
 - **Connections and permissions:** Manage MCP services from the composer's `+` menu.
   Permission controls govern consequential actions and command access. The conversation
   privacy panel reports provider settings and the evidence available for that conversation.
-- **Voice dictation:** The composer microphone records a prompt and inserts editable
-  text without sending it. It starts immediately with a supported connected API
+- **Voice dictation:** The composer microphone shows words or phrases while you
+  speak, then leaves editable text without sending the prompt. It starts immediately with a supported connected API
   service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
   or the microphone's options. Audio privacy is separate from chat-model privacy.
   See [dictation setup and draft limitations](agent-dictation.md).

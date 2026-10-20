@@ -12,15 +12,24 @@ and NEAR AI are supported. With no suitable connection it opens setup, including
 the optional local download. Settings → AI and the arrow beside the microphone
 always expose the service and language preferences. The conversation model stays
 unchanged. Subscription connections do not establish transcription
-access and are not offered as speech services. Meta, xAI, custom endpoints and
-live partial transcripts are outside this first draft.
+access and are not offered as speech services. Meta, xAI and custom transcription
+endpoints are outside this first draft.
 
 ## Cloud transcription
 
-Audio is recorded in memory, then sent after Stop to the chosen service. The
-request contains only the recording, speech-model settings and language hint.
+Audio is sent to the chosen service **while you speak**, and text appears in the
+composer before Stop. OpenAI uses its live transcription WebSocket API with
+provisional text and corrected final transcripts. OpenRouter, Venice and NEAR
+receive short audio segments at pauses (about 600 ms of quiet), or at six seconds
+of uninterrupted speech. These are phrase updates, not word-by-word streaming;
+their delay depends on the provider. Earlier phrases are never re-uploaded.
+
+Requests contain only audio, speech-model settings and the language hint.
 Chat history, project files and attachments are not included. Usage is billed to
 the selected service. There is no automatic fallback to a different destination.
+Cancel stops further uploads and restores the original draft, but cannot recall
+audio already sent. A service failure keeps completed phrases so they can be
+edited or sent manually, and drops any unfinished provisional tail.
 
 The selected chat model's end-to-end encryption and hardware checks do not cover
 these audio uploads. The chooser and recording indicator name the actual audio
@@ -28,11 +37,12 @@ destination. TEE-only connections are unavailable for dictation in this draft.
 OpenRouter dictation requires zero-retention routing by default; an explicitly
 ZDR-only connection cannot be weakened through the dictation preference.
 
-The initial models are `gpt-transcribe` for OpenAI and
+The composer models are `gpt-live-transcribe` for OpenAI and
 `openai/whisper-large-v3` for the other three services. These are separate from
 the Agent model catalogue. Reference documentation:
 
 - [OpenAI transcription](https://developers.openai.com/api/docs/guides/transcription)
+- [OpenAI live transcription](https://developers.openai.com/api/docs/guides/realtime-transcription)
 - [OpenRouter transcription and retention routing](https://openrouter.ai/docs/guides/overview/multimodal/stt)
 - [Venice transcription](https://docs.venice.ai/api-reference/endpoint/audio/transcriptions)
 - [NEAR specialized endpoints](https://docs.near.ai/cloud/guides/specialized-endpoints)
@@ -56,6 +66,13 @@ is removed on completion or cancellation; raw audio is not saved in conversation
 history. Sending the resulting prompt subsequently shares its text with the chat
 provider in the ordinary way.
 
+Local Whisper uses the same pause/six-second segmentation as the file-based cloud
+services. It currently starts native inference for each phrase. On the development
+Mac, two four-second English sample segments completed in 486 ms and 379 ms,
+including startup; this is not a cross-device or accuracy guarantee. A persistent
+private worker remains a follow-up: the upstream prebuilt WebSocket server binds
+all interfaces and provides no authentication, so Freedom does not start it.
+
 Runtime downloads are mapped for macOS arm64/x64, Linux x64/arm64 and Windows x64.
 Unsupported architectures are marked unavailable. Native installation and
 inference have been exercised on macOS arm64; Windows/Linux local inference and
@@ -63,14 +80,14 @@ signed-package behavior still need qualification before release.
 
 ## Draft behavior and qualification
 
-- Recordings are capped at two minutes. Text appears after transcription,
-  rather than incrementally while speaking
+- Recordings are capped at two minutes. Text appears during recording; Stop
+  flushes the remaining audio and waits for its final text
 - Recording and transcription block Send. Draft text, cursor selection and
   attachments are preserved; the transcript replaces the original selection
 - Closing Agent, changing conversation, disabling AI, cancelling or losing the
   microphone releases capture and prevents a late transcript entering another draft
-- Cloud permission denial, provider errors and no-speech recordings leave the
-  draft unchanged. No cloud service is silently selected after a failure
+- Microphone denial and no-speech recordings leave the draft unchanged. A provider
+  failure preserves completed phrases. No other service is selected after failure
 - A remembered service that becomes unavailable opens setup rather than silently
   switching the audio destination. TEE-only connections are excluded from automatic selection
 - Chromium capture uses an AudioWorklet, with resampling outside the renderer
@@ -79,7 +96,8 @@ signed-package behavior still need qualification before release.
 Automated tests exercise ownership, audio validation, retention routing, safe
 error responses, cancellation, native-download integrity, first-use choice,
 actual Chromium AudioWorklet capture with generated audio, cloud upload to a
-local fixture, editable insertion, both themes and narrow windows. A local native
+local fixture, live WebSocket deltas/final ordering, pre-Stop phrase updates,
+editable insertion, both themes and narrow windows. A local native
 install/inference smoke used the upstream English sample without sending audio
 to a provider. Actual microphone hardware/TCC prompts, English/German accuracy
 and the four live cloud services remain maintainer smoke tests.

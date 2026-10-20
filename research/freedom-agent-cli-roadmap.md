@@ -12,7 +12,7 @@ product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
 AI3 example prompts are implemented; AI4 dictation has an experimental first
-draft awaiting microphone/provider smoke testing. AI5 domain skills remains
+draft with incremental text awaiting its next microphone/provider smoke. AI5 domain skills remains
 planned. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
@@ -371,7 +371,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
-| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | First draft on experiment/agent-dictation; maintainer microphone/provider smoke pending |
+| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Initial microphone smoke passed; incremental text implemented on experiment/agent-dictation for next smoke |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
 
 AI3 can ship before dictation while AI4's transcription backend is evaluated.
@@ -507,6 +507,20 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
+now shows provisional/final text through OpenAI's `gpt-live-transcribe` WebSocket
+API, and phrase updates at pauses or six-second boundaries through OpenRouter,
+Venice, NEAR and local Whisper. Audio is sent during recording; Cancel restores
+the original draft, provider failures retain completed phrases, and results are
+ordered without re-uploading earlier audio. Automated coverage exercises live
+deltas/final reconciliation, pre-Stop phrase delivery and cancellation. Local
+four-second English sample segments took 486/379 ms on the development Mac,
+including native startup. A persistent private local worker remains open: the
+upstream server binds all interfaces without authentication, so this draft keeps
+per-phrase native processes. Live provider access, real microphone latency,
+German/mixed-language accuracy, cross-platform/package qualification and private
+warm local inference remain follow-ups.
+
 **2026-10-20 first draft:** implemented on `experiment/agent-dictation` following
 the maintainer's approval of cloud-plus-local onboarding. OpenAI, OpenRouter,
 Venice and NEAR API connections provide stop-then-transcribe dictation; an optional
@@ -518,8 +532,8 @@ No automatic Send, destination fallback or inherited chat-E2EE claim. Native
 installation/inference was exercised on macOS arm64, with generated-audio Electron
 coverage for capture/insert/cancel and responsive themes. Real microphone/TCC,
 English/German quality, live provider access and Windows/Linux/package qualification
-remain open. Meta/xAI/custom transcription adapters and live partial transcripts
-remain follow-ons. Details: [dictation draft](../docs/agent-dictation.md).
+remain open. Meta/xAI/custom transcription adapters remain follow-ons.
+Details: [dictation draft](../docs/agent-dictation.md).
 
 **Product:** make the existing microphone control functional as push-to-talk or
 explicit start/stop recording. Dictation produces editable text in the composer;

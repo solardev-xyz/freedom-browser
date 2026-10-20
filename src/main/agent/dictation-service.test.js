@@ -5,6 +5,7 @@ const { EventEmitter } = require('events');
 const { pathToFileURL } = require('url');
 const { DictationService, validateAudio } = require('./dictation-service');
 const { permitsDictationCapture } = require('./dictation-capture');
+const frame = (voice = true) => voice ? recording().subarray(44, 3244) : Buffer.alloc(3200);
 
 function recording() {
   const audio = Buffer.alloc(44 + 32000);
@@ -163,6 +164,59 @@ describe('dictation service', () => {
     await expect(service.transcribe(owner, { id: service.begin(owner).id, audio })).resolves.toMatchObject({ text: 'Local transcript.' });
     expect(local.transcribe).toHaveBeenCalledWith(audio, 'de', expect.any(AbortSignal));
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each(['venice', 'near-ai', 'openrouter', 'local'])('%s emits phrases before Stop and finalizes without transcribing audio twice', async providerId => {
+    choose(providerId);
+    const session = service.begin(owner);
+    let sequence = 0;
+    for (let i = 0; i < 10; i++) service.append(owner, { id: session.id, sequence: sequence++, audio: frame() });
+    for (let i = 0; i < 6; i++) service.append(owner, { id: session.id, sequence: sequence++, audio: frame(false) });
+    await service.sessions.get(owner).pending;
+    expect(events.find(event => event.type === 'transcript')).toMatchObject({ id: session.id,
+      text: providerId === 'local' ? 'Local transcript.' : 'A dictated prompt.' });
+    expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(true);
+    const result = await service.finish(owner, { id: session.id });
+    expect(result.text).toBe(providerId === 'local' ? 'Local transcript.' : 'A dictated prompt.');
+    expect(providerId === 'local' ? local.transcribe : fetchImpl).toHaveBeenCalledTimes(1);
+    expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
+  });
+
+  test('streaming frames are owned, sequential, bounded and revoked when a connection policy changes', () => {
+    choose('venice'); const session = service.begin(owner);
+    const append = (who, sequence, audio = frame()) => service.append(who, { id: session.id, sequence, audio });
+    expect(() => append(sender(), 0)).toThrow('recording has ended');
+    append(owner, 0);
+    expect(() => append(owner, 0)).toThrow('could not be read');
+    expect(() => append(owner, 1, new Uint8Array(100000))).toThrow('could not be read');
+    store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' }] });
+    expect(() => append(owner, 1)).toThrow('connection changed');
+    expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('a cancelled phrase cannot publish late text', async () => {
+    choose('venice'); const session = service.begin(owner);
+    let resolve;
+    fetchImpl.mockImplementation(() => new Promise(done => { resolve = done; }));
+    for (let i = 0; i < 60; i++) service.append(owner, { id: session.id, sequence: i, audio: frame() });
+    const pending = service.sessions.get(owner).pending;
+    await Promise.resolve(); await Promise.resolve();
+    service.cancel(owner); resolve(new Response(JSON.stringify({ text: 'late' })));
+    await pending;
+    expect(events.some(event => event.type === 'transcript')).toBe(false);
+    expect(service.sessions.size).toBe(0);
+  });
+
+  test('shutdown drains cancelled native work before its temporary audio cleanup is considered complete', async () => {
+    choose('local'); const session = service.begin(owner); let cleaned = false;
+    local.transcribe.mockImplementation((_audio, _language, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => setTimeout(() => { cleaned = true; reject(new Error('cancelled')); }, 5), { once: true });
+    }));
+    for (let i = 0; i < 60; i++) service.append(owner, { id: session.id, sequence: i, audio: frame() });
+    await Promise.resolve(); await Promise.resolve();
+    service.cancelAll();
+    expect(cleaned).toBe(false); await service.drain(); expect(cleaned).toBe(true);
   });
 
   test('invalid audio, silence, oversized responses and provider errors fail without leaking response bodies', async () => {

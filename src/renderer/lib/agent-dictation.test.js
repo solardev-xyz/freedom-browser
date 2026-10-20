@@ -20,7 +20,7 @@ function setup() {
     options: [{ providerId: 'venice', name: 'Venice', available: true, ready: true, detail: 'Audio goes to Venice.', price: 'Usage charges' }], languages: ['auto', 'de'] };
   let event;
   const api = { getAgentDictationState: jest.fn(async () => state), beginAgentDictation: jest.fn(async () => ({ ok: true, id: 'capture', name: 'Venice' })),
-    transcribeAgentDictation: jest.fn(async () => ({ ok: true, text: 'a game' })),
+    finishAgentDictation: jest.fn(async () => ({ ok: true, text: 'a game' })), appendAgentDictation: jest.fn(async () => ({ ok: true })),
     cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(),
     onAgentDictationEvent: jest.fn(handler => { event = handler; return jest.fn(); }) };
   const stream = { getTracks: () => [{ stop: jest.fn() }] };
@@ -40,7 +40,7 @@ test('record, stop, insert at the selection and keep the draft unsent', async ()
   expect(ctx.ui.busy).toBe(true); expect(ctx.prompt.readOnly).toBe(true);
   expect(ctx.feedback.textContent).toContain('Listening · Venice');
   ctx.button.dispatch('click'); await flush();
-  expect(ctx.api.transcribeAgentDictation).toHaveBeenCalledWith('capture', expect.any(Uint8Array));
+  expect(ctx.api.finishAgentDictation).toHaveBeenCalledWith('capture');
   expect(ctx.prompt.value).toBe('Build a game please');
   expect(ctx.onInput).toHaveBeenCalledTimes(1); expect(ctx.ui.busy).toBe(false);
   expect(ctx.prompt.readOnly).toBe(false);
@@ -50,12 +50,12 @@ test('Escape cancels a recording without changing or sending the draft', async (
   const ctx = setup(); ctx.button.dispatch('click'); await flush();
   expect(ctx.ui.escape()).toBe(true); await flush();
   expect(ctx.recorder.cancel).toHaveBeenCalled(); expect(ctx.prompt.value).toBe('Build this please');
-  expect(ctx.api.transcribeAgentDictation).not.toHaveBeenCalled(); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled(); expect(ctx.ui.busy).toBe(false);
 });
 
 test('a cancelled in-flight transcription cannot insert late text into a new conversation', async () => {
   const ctx = setup(); let resolve;
-  ctx.api.transcribeAgentDictation.mockImplementation(() => new Promise(done => { resolve = done; }));
+  ctx.api.finishAgentDictation.mockImplementation(() => new Promise(done => { resolve = done; }));
   ctx.button.dispatch('click'); await flush(); ctx.button.dispatch('click'); await flush();
   expect(ctx.button.disabled).toBe(true);
   ctx.ui.cancel(); ctx.prompt.value = 'New conversation draft';
@@ -108,4 +108,54 @@ test('main-process cancellation releases the recorder and ignores any late finis
   ctx.emit({ type: 'cancelled', id: 'capture' }); await flush();
   expect(ctx.recorder.cancel).toHaveBeenCalled(); expect(ctx.ui.busy).toBe(false);
   expect(ctx.prompt.value).toBe('Build this please');
+});
+
+test('live text replaces provisional words without duplicating the final answer or sending the prompt', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a guess', stableText: '' });
+  expect(ctx.prompt.value).toBe('Build a guess please');
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: 'a game' });
+  expect(ctx.prompt.value).toBe('Build a game please');
+  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled();
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.prompt.readOnly).toBe(false);
+});
+
+test('Escape restores the original selected text after live transcription and discards late events', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: 'a game' });
+  ctx.ui.escape();
+  expect(ctx.prompt.value).toBe('Build this please');
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'late words', stableText: 'late words' });
+  expect(ctx.prompt.value).toBe('Build this please');
+});
+
+test('a service failure preserves completed phrases and drops the unfinished tail', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game unfinished', stableText: 'a game' });
+  ctx.emit({ type: 'error', id: 'capture', stableText: 'a game', message: 'Connection lost.' });
+  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.feedback.textContent).toContain('Text already transcribed was kept');
+});
+
+test('captured PCM frames reach main in sequence and Stop waits for the last frame acknowledgement', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  const { onChunk } = createDictationRecorder.mock.calls[0][3];
+  let resolve;
+  ctx.api.appendAgentDictation.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  onChunk(new Uint8Array([1, 2])); onChunk(new Uint8Array([3, 4]));
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled();
+  resolve({ ok: true }); await flush();
+  expect(ctx.api.appendAgentDictation.mock.calls.map(call => call[1])).toEqual([0, 1]);
+  expect(ctx.api.finishAgentDictation).toHaveBeenCalledTimes(1);
+});
+
+test('an oversized live phrase preserves the last fitting text and always releases the microphone', async () => {
+  const ctx = setup(); ctx.prompt.maxLength = 24;
+  ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: 'a game' });
+  expect(() => ctx.emit({ type: 'transcript', id: 'capture', text: 'x'.repeat(100), stableText: 'x'.repeat(100) })).not.toThrow();
+  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.recorder.cancel).toHaveBeenCalled();
 });

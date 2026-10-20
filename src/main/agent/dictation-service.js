@@ -4,10 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { grantDictationCapture, revokeDictationCapture } = require('./dictation-capture');
+const { DictationSegments, pcmToWav } = require('./dictation-segments');
+const { DictationRealtime } = require('./dictation-realtime');
 
 const LANGUAGES = Object.freeze(['auto', 'en', 'de', 'es', 'fr', 'it', 'pt', 'nl', 'pl', 'ja', 'zh', 'ko', 'uk']);
 const CLOUD = Object.freeze({
-  openai: { name: 'OpenAI', url: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-transcribe', price: 'About $0.0045 per minute' },
+  openai: { name: 'OpenAI', url: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-transcribe', price: 'Live dictation: about $0.017 per minute' },
   openrouter: { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'Usage billed to OpenRouter' },
   venice: { name: 'Venice', url: 'https://api.venice.ai/api/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'About $0.006 per minute' },
   'near-ai': { name: 'NEAR AI', url: 'https://cloud-api.near.ai/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'Usage billed to NEAR AI' },
@@ -67,14 +69,17 @@ async function readTranscript(response) {
 }
 
 class DictationService {
-  constructor({ dataDir, providerStore, local, fetch: fetchImpl = globalThis.fetch, assertEnabled, onEvent = () => {} }) {
+  constructor({ dataDir, providerStore, local, fetch: fetchImpl = globalThis.fetch, assertEnabled, onEvent = () => {},
+    createRealtime = options => new DictationRealtime(options) }) {
     this.file = path.join(dataDir, 'dictation.json');
     this.providerStore = providerStore;
     this.local = local;
     this.fetch = fetchImpl;
     this.assertEnabled = assertEnabled;
     this.onEvent = onEvent;
+    this.createRealtime = createRealtime;
     this.sessions = new Map();
+    this.operations = new Set();
     this.installations = new Map();
     this.preferences = { providerId: null, language: 'auto', requireZeroRetention: true };
     try {
@@ -97,10 +102,10 @@ class DictationService {
       const provider = CLOUD[connection.providerId];
       if (!provider || connection.kind !== 'hosted') continue;
       const allowed = connection.privacyPolicy !== 'tee';
-      options.push({ providerId: connection.providerId, name: provider.name, model: provider.model,
+      options.push({ providerId: connection.providerId, name: provider.name, model: connection.providerId === 'openai' ? 'gpt-live-transcribe' : provider.model,
         available: allowed, ready: true, price: provider.price,
         requireZeroRetention: connection.privacyPolicy === 'zdr',
-        detail: allowed ? `Audio is sent to ${provider.name} over HTTPS. Chat end-to-end encryption does not cover dictation.`
+        detail: allowed ? `Audio is sent to ${provider.name} while you speak. Chat end-to-end encryption does not cover dictation.`
           : 'Dictation does not meet this connection’s TEE-only policy.' });
     }
     const connected = options.filter(option => option.providerId !== 'local' && option.available && option.ready);
@@ -149,14 +154,116 @@ class DictationService {
     if (!this.preferences.providerId) this.choose({ ...this.preferences, providerId });
     const id = randomUUID();
     const controller = new AbortController();
-    const session = { id, controller, preferences: { ...this.preferences }, recording: true };
+    const session = { id, controller, preferences: { ...this.preferences }, recording: true,
+      sampleRate: providerId === 'openai' ? 24000 : 16000, sequence: 0, bytes: 0, pending: Promise.resolve(),
+      queued: 0, text: '', stableText: '' };
+    const publish = result => {
+      if (controller.signal.aborted || this.sessions.get(sender) !== session) return;
+      session.text = result.text; session.stableText = result.stableText;
+      this.onEvent(sender, { type: 'transcript', id, ...result });
+    };
+    const enqueue = task => {
+      if (session.queued >= 100) throw dictationError('DICTATION_BUSY', 'Transcription cannot keep up. Please finish and try again.');
+      session.queued += 1;
+      session.pending = session.pending.then(async () => {
+        controller.signal.throwIfAborted();
+        await task();
+      }).catch(error => this.failSession(sender, session, error)).finally(() => { session.queued -= 1; });
+      const operation = session.pending;
+      this.operations.add(operation);
+      operation.then(() => this.operations.delete(operation), () => this.operations.delete(operation));
+    };
+    session.segments = new DictationSegments({ sampleRate: session.sampleRate,
+      onAudio: providerId === 'openai' ? pcm => {
+        if (!session.live) {
+          const connection = this.connection('openai');
+          session.live = this.createRealtime({ apiKey: connection.apiKey, language: session.preferences.language,
+            signal: controller.signal, onTranscript: publish, onError: error => this.failSession(sender, session, error) });
+        }
+        enqueue(() => session.live.append(pcm));
+      } : undefined,
+      onSegment: pcm => {
+        if (providerId === 'openai') enqueue(() => session.live.commit());
+        else {
+          if (session.queued >= 8) throw dictationError('DICTATION_BUSY', 'Transcription cannot keep up. Please finish and try again.');
+          enqueue(async () => {
+            let text;
+            try { text = await this.transcribeAudio(pcmToWav(pcm), session.preferences, controller.signal); }
+            catch (error) { if (error.code === 'DICTATION_SILENCE') return; throw error; }
+            controller.signal.throwIfAborted();
+            text = [session.stableText, text].filter(Boolean).join(' ');
+            if (text.length > MAX_TEXT) throw dictationError('DICTATION_RESPONSE', 'The transcript is too long. Please finish this recording.');
+            publish({ text, stableText: text });
+          });
+        }
+      } });
     session.destroyed = () => this.cancel(sender);
     session.timeout = setTimeout(() => this.cancel(sender), 3 * 60_000);
     session.timeout.unref?.();
     sender.once?.('destroyed', session.destroyed);
     this.sessions.set(sender, session);
     grantDictationCapture(sender, id);
-    return { id, name: option.name, local: option.providerId === 'local' };
+    return { id, name: option.name, local: option.providerId === 'local', sampleRate: session.sampleRate,
+      mode: providerId === 'openai' ? 'live' : 'phrases' };
+  }
+
+  connection(providerId) {
+    const connection = this.providerStore.getSelection(providerId);
+    if (connection?.kind !== 'hosted' || !connection.apiKey ||
+        !this.state().options.some(option => option.providerId === providerId && option.available))
+      throw dictationError('DICTATION_SETUP', 'The dictation connection changed. Choose a service again.');
+    return connection;
+  }
+
+  failSession(sender, session, error) {
+    if (session.failure || session.controller.signal.aborted || this.sessions.get(sender) !== session) return;
+    session.failure = error;
+    this.onEvent(sender, { type: 'error', id: session.id, stableText: session.stableText,
+      message: error?.code?.startsWith('DICTATION_') ? error.message : 'Transcription stopped. Please try again.' });
+    session.controller.abort();
+    this.end(sender, session);
+  }
+
+  append(sender, payload) {
+    this.assertEnabled();
+    const session = this.sessions.get(sender);
+    if (!session || session.id !== payload?.id || !session.recording)
+      throw dictationError('DICTATION_EXPIRED', 'This recording has ended. Please start again.');
+    const pcm = payload.audio;
+    if (payload.sequence !== session.sequence || !(pcm instanceof Uint8Array) || pcm.byteLength < 2 ||
+        pcm.byteLength % 2 || pcm.byteLength > session.sampleRate * 2 ||
+        session.bytes + pcm.byteLength > session.sampleRate * 2 * 120)
+      throw dictationError('DICTATION_AUDIO', 'The live recording could not be read. Please record again.');
+    // Recheck connection policy during recording, not only at the first upload.
+    try {
+      if (session.preferences.providerId !== 'local') this.connection(session.preferences.providerId);
+      session.sequence += 1; session.bytes += pcm.byteLength;
+      session.segments.append(Buffer.from(pcm));
+    }
+    catch (error) { this.failSession(sender, session, error); throw error; }
+    return {};
+  }
+
+  async finish(sender, payload) {
+    this.assertEnabled();
+    const session = this.sessions.get(sender);
+    if (!session || session.id !== payload?.id || !session.recording)
+      throw dictationError('DICTATION_EXPIRED', 'This recording has ended. Please start again.');
+    session.recording = false;
+    revokeDictationCapture(sender, session.id);
+    clearTimeout(session.timeout);
+    session.timeout = setTimeout(() => this.cancel(sender), 120000);
+    session.timeout.unref?.();
+    try {
+      session.segments.flush();
+      await session.pending;
+      if (session.failure) throw session.failure;
+      const text = session.live ? await session.live.finish() : session.text;
+      session.controller.signal.throwIfAborted();
+      this.assertEnabled();
+      if (!text?.trim()) throw dictationError('DICTATION_SILENCE', 'No speech detected. Please try again.');
+      return { text: text.trim(), providerId: session.preferences.providerId };
+    } finally { this.end(sender, session); }
   }
 
   async transcribe(sender, payload) {
@@ -168,43 +275,55 @@ class DictationService {
     revokeDictationCapture(sender, session.id);
     try {
       const audio = validateAudio(payload.audio);
-      const { providerId, language, requireZeroRetention } = session.preferences;
       const signal = AbortSignal.any([session.controller.signal, AbortSignal.timeout(120000)]);
-      let text;
-      if (providerId === 'local') text = await this.local.transcribe(audio, language, signal);
-      else {
-        const provider = CLOUD[providerId];
-        const connection = this.providerStore.getSelection(providerId);
-        const currentOption = this.state().options.find(option => option.providerId === providerId && option.available);
-        if (connection?.kind !== 'hosted' || !connection.apiKey ||
-            !currentOption)
-          throw dictationError('DICTATION_SETUP', 'The dictation connection changed. Choose a service again.');
-        let body;
-        const headers = { Authorization: `Bearer ${connection.apiKey}` };
-        if (providerId === 'openrouter') {
-          headers['Content-Type'] = 'application/json';
-          body = JSON.stringify({ model: provider.model, input_audio: { data: audio.toString('base64'), format: 'wav' },
-            ...(language !== 'auto' && { language }), provider: { zdr: requireZeroRetention || currentOption.requireZeroRetention === true }, response_format: 'json' });
-        } else {
-          body = new FormData();
-          body.set('model', provider.model);
-          if (language !== 'auto') body.set(providerId === 'openai' ? 'languages[]' : 'language', language);
-          body.set('response_format', 'json');
-          body.set('file', new Blob([audio], { type: 'audio/wav' }), 'dictation.wav');
-        }
-        text = await readTranscript(await this.fetch(provider.url, { method: 'POST', headers, body, signal, redirect: 'error' }));
-      }
+      const text = await this.transcribeAudio(audio, session.preferences, signal);
       signal.throwIfAborted();
       this.assertEnabled();
       if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT)
         throw dictationError('DICTATION_RESPONSE', 'No usable speech was returned. Please try again.');
-      return { text: text.trim(), providerId };
+      return { text: text.trim(), providerId: session.preferences.providerId };
     } finally { this.end(sender, session); }
+  }
+
+  async transcribeAudio(audio, { providerId, language, requireZeroRetention }, signal) {
+    this.assertEnabled();
+    signal = AbortSignal.any([signal, AbortSignal.timeout(120000)]);
+    let text;
+    if (providerId === 'local') text = await this.local.transcribe(audio, language, signal);
+    else {
+      const provider = CLOUD[providerId];
+      const connection = this.connection(providerId);
+      const currentOption = this.state().options.find(option => option.providerId === providerId && option.available);
+      if (connection?.kind !== 'hosted' || !connection.apiKey ||
+          !currentOption)
+        throw dictationError('DICTATION_SETUP', 'The dictation connection changed. Choose a service again.');
+      let body;
+      const headers = { Authorization: `Bearer ${connection.apiKey}` };
+      if (providerId === 'openrouter') {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({ model: provider.model, input_audio: { data: audio.toString('base64'), format: 'wav' },
+          ...(language !== 'auto' && { language }), provider: { zdr: requireZeroRetention || currentOption.requireZeroRetention === true }, response_format: 'json' });
+      } else {
+        body = new FormData();
+        body.set('model', provider.model);
+        if (language !== 'auto') body.set(providerId === 'openai' ? 'languages[]' : 'language', language);
+        body.set('response_format', 'json');
+        body.set('file', new Blob([audio], { type: 'audio/wav' }), 'dictation.wav');
+      }
+      text = await readTranscript(await this.fetch(provider.url, { method: 'POST', headers, body, signal, redirect: 'error' }));
+    }
+    signal.throwIfAborted();
+    if (typeof text !== 'string' || text.length > MAX_TEXT)
+      throw dictationError('DICTATION_RESPONSE', 'No usable transcript was returned. Please try again.');
+    if (!text.trim()) throw dictationError('DICTATION_SILENCE', 'No speech detected. Please try again.');
+    return text.trim();
   }
 
   end(sender, session) {
     if (this.sessions.get(sender) !== session) return;
     clearTimeout(session.timeout);
+    session.live?.close();
+    session.segments?.clear();
     sender.off?.('destroyed', session.destroyed);
     revokeDictationCapture(sender, session.id);
     this.sessions.delete(sender);
@@ -223,6 +342,8 @@ class DictationService {
     for (const controller of this.installations.values()) controller.abort();
     for (const sender of this.sessions.keys()) this.cancel(sender);
   }
+
+  async drain() { await Promise.allSettled([...this.operations]); }
 }
 
 module.exports = { DictationService, LANGUAGES, CLOUD, validateAudio, dictationError };

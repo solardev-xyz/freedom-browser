@@ -12,7 +12,7 @@ export function encodeDictationWav(chunks) {
   return bytes;
 }
 
-export async function createDictationRecorder(stream, onLimit, onLost) {
+export async function createDictationRecorder(stream, onLimit, onLost, { onChunk, sampleRate = 16000 } = {}) {
   let context;
   let source;
   let node;
@@ -33,20 +33,20 @@ export async function createDictationRecorder(stream, onLimit, onLost) {
     void context?.close().catch(() => {});
   };
   try {
-    context = new AudioContext({ sampleRate: 16000 });
+    context = new AudioContext({ sampleRate });
     await context.audioWorklet.addModule('./lib/dictation-worklet.js');
-    node = new AudioWorkletNode(context, 'freedom-dictation-capture');
+    node = new AudioWorkletNode(context, 'freedom-dictation-capture', { processorOptions: { sampleRate } });
     node.addEventListener('processorerror', lost);
     node.port.onmessage = event => {
       if (ended) return;
       if (event.data === 'flushed') { flushed?.(); return; }
       if (!(event.data instanceof ArrayBuffer)) return;
-      const remaining = 16000 * 2 * 120 - length;
+      const remaining = sampleRate * 2 * 120 - length;
       if (remaining <= 0) return;
       const chunk = event.data.slice(0, remaining);
-      chunks.push(chunk);
+      if (onChunk) onChunk(new Uint8Array(chunk)); else chunks.push(chunk);
       length += chunk.byteLength;
-      if (length >= 16000 * 2 * 120) onLimit();
+      if (length >= sampleRate * 2 * 120) onLimit();
     };
     source = context.createMediaStreamSource(stream);
     gain = context.createGain();

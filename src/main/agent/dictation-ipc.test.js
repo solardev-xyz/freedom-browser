@@ -5,7 +5,7 @@ test('dictation IPC keeps microphone/audio authority out of Settings and untrust
   const handlers = new Map();
   const ipcMain = { handle: (channel, fn) => handlers.set(channel, fn), removeHandler: jest.fn() };
   const service = { state: jest.fn(() => ({ options: [] })), begin: jest.fn(() => ({ id: 'test' })),
-    choose: jest.fn(), install: jest.fn(), cancel: jest.fn(), transcribe: jest.fn(), cancelAll: jest.fn() };
+    choose: jest.fn(), install: jest.fn(), cancel: jest.fn(), transcribe: jest.fn(), append: jest.fn(), finish: jest.fn(), cancelAll: jest.fn() };
   let enabled = true;
   const dispose = registerDictationIpc({ ipcMain, service, isEnabled: () => enabled,
     isTrustedSender: sender => sender === 'chrome', isSettingsSender: event => event.sender === 'settings' });
@@ -13,6 +13,9 @@ test('dictation IPC keeps microphone/audio authority out of Settings and untrust
   expect(await call(IPC.AGENT_DICTATION_STATE, 'page')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_BEGIN, 'settings')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_TRANSCRIBE, 'settings')).toMatchObject({ ok: false });
+  expect(await call(IPC.AGENT_DICTATION_APPEND, 'settings')).toMatchObject({ ok: false });
+  expect(await call(IPC.AGENT_DICTATION_FINISH, 'settings')).toMatchObject({ ok: false });
+  expect(await call(IPC.AGENT_DICTATION_APPEND, 'page')).toMatchObject({ ok: false });
   expect(await call(IPC.AGENT_DICTATION_STATE, 'settings')).toMatchObject({ ok: true });
   expect(await call(IPC.AGENT_DICTATION_BEGIN, 'chrome')).toMatchObject({ ok: true, id: 'test' });
   enabled = false;
@@ -20,5 +23,5 @@ test('dictation IPC keeps microphone/audio authority out of Settings and untrust
   expect(await call(IPC.AGENT_DICTATION_CANCEL, 'chrome')).toMatchObject({ ok: true });
   service.state.mockImplementation(() => { throw new Error('secret upstream data'); }); enabled = true;
   expect(JSON.stringify(await call(IPC.AGENT_DICTATION_STATE, 'settings'))).not.toContain('secret');
-  dispose(); expect(service.cancelAll).toHaveBeenCalled(); expect(ipcMain.removeHandler).toHaveBeenCalledTimes(6);
+  await dispose(); expect(service.cancelAll).toHaveBeenCalled(); expect(ipcMain.removeHandler).toHaveBeenCalledTimes(8);
 });

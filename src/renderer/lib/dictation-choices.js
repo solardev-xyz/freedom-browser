@@ -14,7 +14,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   let busy = false;
   let generation = 0;
   const heading = element(autoSave ? 'h3' : 'strong', 'Voice dictation', autoSave ? 'row-label' : '');
-  const intro = element('p', 'Choose where your speech becomes text. Your chat model stays the same.', `agent-dictation-help${autoSave ? ' row-help' : ''}`);
+  const intro = element('p', 'Words appear while you speak. Choose where your speech becomes text. Your chat model stays the same.', `agent-dictation-help${autoSave ? ' row-help' : ''}`);
   const serviceLabel = element('label', 'Transcription');
   const service = element('select'); service.setAttribute('aria-label', 'Dictation service'); serviceLabel.appendChild(service);
   const languageLabel = element('label', 'Language');

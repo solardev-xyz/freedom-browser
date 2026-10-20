@@ -1,4 +1,5 @@
 const http = require('http');
+const { WebSocketServer } = require('ws');
 const { test, expect } = require('./fixtures');
 const { openProviderSettings } = require('./agent-provider-fixture');
 
@@ -7,6 +8,8 @@ let endpoint;
 const recordings = [];
 let hold = false;
 let heldResponse;
+let sockets;
+const liveEvents = [];
 
 test.beforeAll(async () => {
   server = http.createServer(async (request, response) => {
@@ -17,23 +20,54 @@ test.beforeAll(async () => {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({ text: 'a small browser game' }));
   });
+  sockets = new WebSocketServer({ server });
+  sockets.on('connection', socket => {
+    let next = 1; let previous = null; let partial = false;
+    socket.on('message', data => {
+      const event = JSON.parse(data.toString()); liveEvents.push(event);
+      const send = value => socket.send(JSON.stringify(value));
+      if (event.type === 'session.update') send({ type: 'session.updated' });
+      if (event.type === 'input_audio_buffer.append' && !partial) {
+        partial = true;
+        send({ type: 'conversation.item.input_audio_transcription.delta', item_id: `phrase-${next}`, delta: 'a small browser' });
+      }
+      if (event.type === 'input_audio_buffer.commit') {
+        const id = `phrase-${next++}`;
+        send({ type: 'input_audio_buffer.committed', item_id: id, previous_item_id: previous }); previous = id;
+        send({ type: 'conversation.item.input_audio_transcription.completed', item_id: id, transcript: 'a small browser game' });
+        partial = false;
+      }
+    });
+  });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   endpoint = `http://127.0.0.1:${server.address().port}`;
 });
-test.afterAll(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-test.beforeEach(() => { hold = false; heldResponse = null; });
+test.afterAll(async () => {
+  for (const socket of sockets.clients) socket.terminate();
+  sockets.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+});
+test.beforeEach(() => { hold = false; heldResponse = null; liveEvents.length = 0; });
 
-async function prepare(window, electronApp) {
+async function prepare(window, electronApp, providerId = 'openrouter') {
   await window.emulateMedia({ reducedMotion: 'reduce' });
-  await electronApp.evaluate((_electron, endpoint) => {
+  await electronApp.evaluate(async (_electron, endpoint) => {
     const fetch = globalThis.fetch;
-    globalThis.fetch = (url, options) => fetch(String(url).includes('api.openai.com/v1/audio/transcriptions') ? endpoint : url, options);
+    globalThis.fetch = (url, options) => fetch(String(url).includes('openrouter.ai/api/v1/audio/transcriptions') ? endpoint : url, options);
+    const https = process.getBuiltinModule('https');
+    const http = process.getBuiltinModule('http');
+    const original = https.request;
+    https.request = (options, ...rest) => {
+      if (options.host !== 'api.openai.com' || !options.path?.startsWith('/v1/realtime')) return original(options, ...rest);
+      const local = { ...options, protocol: 'http:', host: '127.0.0.1', port: Number(new URL(endpoint).port), defaultPort: 80 };
+      delete local.createConnection;
+      return http.request(local, ...rest);
+    };
   }, endpoint);
-  const connected = await window.evaluate(async () => {
+  const connected = await window.evaluate(async providerId => {
     const result = await window.electronAPI.getAgentProviderCatalog();
-    const model = result.catalog.find(provider => provider.providerId === 'openai').models[0].id;
-    return window.electronAPI.configureHostedAgentProvider('openai', model, 'dictation-fixture-key');
-  });
+    const model = result.catalog.find(provider => provider.providerId === providerId).models[0].id;
+    return window.electronAPI.configureHostedAgentProvider(providerId, model, 'dictation-fixture-key');
+  }, providerId);
   expect(connected.ok).toBe(true);
   await window.locator('#agent-toggle-btn').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
@@ -58,8 +92,8 @@ test('first microphone click uses a connected service immediately without setup'
   await window.locator('#agent-prompt').fill('Build');
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-panel')).toBeHidden();
-  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening · OpenAI');
-  expect((await window.evaluate(() => window.electronAPI.getAgentDictationState())).preferences.providerId).toBe('openai');
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening · OpenRouter');
+  expect((await window.evaluate(() => window.electronAPI.getAgentDictationState())).preferences.providerId).toBe('openrouter');
   await window.waitForTimeout(600);
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
@@ -73,8 +107,8 @@ test('chevron opens preferences, real audio capture, cloud upload and editable i
   await window.locator('#agent-dictation-options').click();
   const chooser = window.locator('#agent-dictation-panel');
   await expect(chooser).toBeVisible();
-  await chooser.getByLabel('Dictation service').selectOption('openai');
-  await expect(chooser).toContainText('Audio is sent to OpenAI');
+  await chooser.getByLabel('Dictation service').selectOption('openrouter');
+  await expect(chooser).toContainText('Audio is sent to OpenRouter while you speak');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     for (const [width, height] of [[1100, 800], [760, 560], [420, 640]]) {
@@ -99,7 +133,7 @@ test('chevron opens preferences, real audio capture, cloud upload and editable i
   await expect(window.locator('#agent-run')).toBeEnabled();
   await expect(window.locator('#agent-transcript')).toBeHidden();
   expect(recordings.length).toBe(before + 1);
-  expect(recordings.at(-1).includes(Buffer.from('RIFF'))).toBe(true);
+  expect(Buffer.from(JSON.parse(recordings.at(-1).toString()).input_audio.data, 'base64').subarray(0, 4).toString()).toBe('RIFF');
   expect(recordings.at(-1).includes(Buffer.from('Build'))).toBe(false);
   expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
 
@@ -114,7 +148,7 @@ test('chevron opens preferences, real audio capture, cloud upload and editable i
 
 test('closing during transcription discards late text and releases audio', async ({ window, electronApp }) => {
   await prepare(window, electronApp);
-  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openai', language: 'de', requireZeroRetention: true }));
+  await window.evaluate(() => window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: true }));
   await window.locator('#agent-prompt').fill('Keep this draft');
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
@@ -137,7 +171,7 @@ test('Settings offers the same dictation choices in both themes and AI off disab
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(voice.getByLabel('Dictation service')).toBeVisible();
-    await voice.getByLabel('Dictation service').selectOption('openai');
+    await voice.getByLabel('Dictation service').selectOption('openrouter');
     await voice.getByLabel('Dictation language').selectOption('de');
     await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.language)).toBe('de');
     await voice.scrollIntoViewIfNeeded();
@@ -147,4 +181,32 @@ test('Settings offers the same dictation choices in both themes and AI off disab
   await expect(voice).toBeHidden();
   const response = await window.evaluate(() => window.electronAPI.beginAgentDictation());
   expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
+});
+
+test('OpenAI live words appear before Stop and reconcile to the final editable text', async ({ window, electronApp }) => {
+  await prepare(window, electronApp, 'openai');
+  await window.locator('#agent-prompt').fill('Build');
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser');
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  expect(liveEvents.find(event => event.type === 'session.update').session.audio.input.format.rate).toBe(24000);
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
+  await expect(window.locator('#agent-prompt')).not.toHaveAttribute('readonly', '');
+  expect(liveEvents.filter(event => event.type === 'input_audio_buffer.commit')).toHaveLength(1);
+  expect(liveEvents.some(event => JSON.stringify(event).includes('Build'))).toBe(false);
+});
+
+test('a phrase appears during a pause while the microphone continues, and Escape restores the draft', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  await window.locator('#agent-prompt').fill('Build');
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await window.waitForTimeout(500);
+  await window.evaluate(() => { window.dictationTestStream.getAudioTracks()[0].enabled = false; });
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await window.keyboard.press('Escape');
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build');
+  await expect(window.locator('#agent-run')).toBeEnabled();
 });
