@@ -386,10 +386,16 @@ test('page actions are discoverable from the toolbar and hand off to chat withou
   await window.screenshot({ path: testInfo.outputPath('page-actions-dark.png') });
   await window.evaluate(() => document.documentElement.dataset.theme = 'light');
   await window.screenshot({ path: testInfo.outputPath('page-actions-light.png') });
+  // Exercise the compact presentation deterministically, including returning
+  // through its reachable Sessions toggle rather than an always-open column.
+  await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 800));
   await window.locator('#agent-first-toggle').click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(actions).toBeVisible();
   await window.screenshot({ path: testInfo.outputPath('page-actions-agent-first-light.png') });
+  if (!(await window.locator('#agent-mode-toggle').isVisible())) {
+    await window.locator('#agent-session-sidebar-toggle').click();
+  }
   await window.locator('#agent-mode-toggle').click();
   await window.locator('#agent-mode-browser').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);

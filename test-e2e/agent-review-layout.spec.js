@@ -105,6 +105,10 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(window.locator('#agent-sidebar')).toBeVisible();
     await window.locator('#agent-workspace-sidebar-toggle').click();
   }
+  await window.locator('#agent-session-sidebar-toggle').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
 });
 
 test('narrow chrome keeps the address field and native controls within the window', async ({ electronApp, window }) => {
