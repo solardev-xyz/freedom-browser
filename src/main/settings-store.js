@@ -75,6 +75,14 @@ const DEFAULT_SETTINGS = {
   // endpoints, prover, quorum params) lives in the network registry —
   // this is the one ENS-navigation setting kept here.
   blockUnverifiedEns: true,
+  // "Always open without gateway" (#70): when true, a page on an ENS/Swarm
+  // gateway (vitalik.eth.limo, vitalik.bzz.link, <cid>.bzz.link, …) that has
+  // a native version opens that `ipfs://` / `bzz://` address instead. Off by
+  // default — without it the address bar only *offers* the native version
+  // (the "Open without gateway" pill) and never rewrites a URL itself. Set
+  // from that pill's popover, the trust popover, or Settings → Networks →
+  // Name Resolution.
+  openWithoutGateway: false,
   // Experimental: when true, IPFS request progress phases ("Finding
   // providers…", "Searching the DHT…", etc.) are surfaced in the link
   // hover preview bar during ipfs:// / ipns:// loads. Off by default so the

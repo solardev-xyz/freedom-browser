@@ -6,12 +6,20 @@ jest.mock('../networks/chain-data-router', () => ({
   request: (...args) => mockChainRequest(...args),
   getFeeQuote: (...args) => mockGetFeeQuote(...args),
   broadcastRawTransaction: (...args) => mockBroadcastRawTransaction(...args),
+  SOURCE_CAPABILITIES: {
+    myotis: { unsupported: new Set() },
+    colibri: { unsupported: new Set(['eth_getLogs']) },
+    quorum: { unsupported: new Set() },
+    direct: { unsupported: new Set() },
+    blockscout: { unsupported: new Set(['eth_getTransactionReceipt', 'eth_getTransactionCount']) },
+  },
 }));
 const {
   estimateGas,
   getGasPrices,
   signAndSendTransaction,
   waitForTransaction,
+  getTransactionStatus,
 } = require('./transaction-service');
 jest.mock('./chains', () => ({
   getTxExplorerUrl: (chainId, hash) => `https://explorer.test/${chainId}/${hash}`,
@@ -107,6 +115,52 @@ describe('signAndSendTransaction (signer-based)', () => {
     const parsed = Transaction.from(broadcastedRaw);
     expect(parsed.type).toBe(0);
     expect(parsed.gasPrice).toBe(7_000_000_000n);
+  });
+
+  // #749: the router's quote already carries the headroom (a type-2 cap
+  // derived from the block's base fee, or a buffered legacy gasPrice on a
+  // chain without EIP-1559); resolveFeeParams signs it as quoted.
+  it('signs a type-2 quote the router derived from the block base fee', async () => {
+    mockGetFeeQuote.mockResolvedValue({
+      type: 'eip1559',
+      baseFee: '137164402',
+      maxPriorityFeePerGas: '50000000',
+      maxFeePerGas: '324328804',
+      effectiveGasPrice: '187164402',
+      source: 'colibri',
+    });
+
+    await signAndSendTransaction(
+      { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000', chainId: 1 },
+      signer,
+    );
+
+    const parsed = Transaction.from(broadcastedRaw);
+    expect(parsed.type).toBe(2);
+    expect(parsed.gasPrice).toBeNull();
+    expect(parsed.maxFeePerGas).toBe(324_328_804n);
+    expect(parsed.maxPriorityFeePerGas).toBe(50_000_000n);
+  });
+
+  it('never downgrades an unusable type-2 quote to a legacy gas price', async () => {
+    const signTransaction = jest.fn();
+    // A type-2 quote whose tip exceeds its cap cannot be signed; the stray
+    // gasPrice on it must not be signed instead.
+    mockGetFeeQuote.mockResolvedValue({
+      type: 'eip1559',
+      maxFeePerGas: '100',
+      maxPriorityFeePerGas: '1000',
+      gasPrice: '137168303',
+      source: 'colibri',
+    });
+
+    await expect(
+      signAndSendTransaction(
+        { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000', chainId: 1 },
+        { ...signer, signTransaction },
+      ),
+    ).rejects.toThrow('Unable to determine a gas price');
+    expect(signTransaction).not.toHaveBeenCalled();
   });
 
   it('refuses to sign when the network reports no usable gas price', async () => {
@@ -244,6 +298,180 @@ describe('signAndSendTransaction (signer-based)', () => {
         decliningSigner,
       ),
     ).rejects.toThrow(/User rejected on device/);
+  });
+});
+
+describe('getTransactionStatus', () => {
+  const HASH = `0x${'aa'.repeat(32)}`;
+  const FROM = testWallet.address;
+
+  beforeEach(() => {
+    mockChainRequest.mockReset();
+  });
+
+  // Each read answers from `source`, unless the caller excluded it: then the
+  // next source in [myotis, colibri, quorum, direct] that is left answers.
+  function chain(answers, { sourceFor = () => 'direct' } = {}) {
+    mockChainRequest.mockImplementation(async (_chainId, method, _params, opts = {}) => {
+      const queue = answers[method];
+      if (!queue || queue.length === 0) throw new Error(`unexpected ${method}`);
+      const excluded = new Set(opts.excludeSources || []);
+      const preferred = sourceFor(method);
+      const source = excluded.has(preferred)
+        ? ['myotis', 'colibri', 'quorum', 'direct'].find((s) => !excluded.has(s))
+        : preferred;
+      if (!source) throw new Error(`No chain source left for ${method}`);
+      const next = queue.shift();
+      const result = typeof next === 'function' ? next(source) : next;
+      return { result, source };
+    });
+  }
+
+  test('reports a transaction whose nonce another transaction took as dropped', async () => {
+    chain({
+      eth_getTransactionReceipt: [null, null],
+      eth_getTransactionCount: ['0x1'],
+    });
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toEqual({
+      status: 'dropped',
+      hash: HASH,
+      nonce: 0,
+    });
+    expect(mockChainRequest).toHaveBeenCalledWith(
+      1,
+      'eth_getTransactionCount',
+      [FROM, 'latest'],
+      expect.objectContaining({ excludeSources: expect.arrayContaining(['myotis']) })
+    );
+  });
+
+  test('stays pending while the sender\'s mined nonce has not reached it', async () => {
+    chain({
+      eth_getTransactionReceipt: [null],
+      eth_getTransactionCount: ['0x3'],
+    });
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 3 })).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  test('is not dropped when it was this transaction that moved the nonce', async () => {
+    // Mined between the first receipt lookup and the nonce read.
+    chain({
+      eth_getTransactionReceipt: [null, { status: '0x1', blockNumber: '0xa', gasUsed: '0x5208' }],
+      eth_getTransactionCount: ['0x1'],
+    });
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  test('a source ahead of the receipt source never decides dropped (Myotis nonce, lagging receipts)', async () => {
+    // The chain as each source sees it: Myotis has the block that mined this
+    // transaction (nonce 1); quorum, which would answer receipts, does not
+    // yet. Routed independently that reads as "nonce taken, no receipt".
+    const view = {
+      myotis: { count: '0x1', receipt: undefined },
+      quorum: { count: '0x0', receipt: null },
+    };
+    chain(
+      {
+        eth_getTransactionReceipt: [null, (source) => view[source].receipt],
+        eth_getTransactionCount: [(source) => view[source].count],
+      },
+      { sourceFor: (method) => (method === 'eth_getTransactionCount' ? 'myotis' : 'quorum') }
+    );
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  // Colibri traps on a receipt for a hash it has never seen instead of
+  // answering null (colibri-stateless 3.0.2, mainnet prover). A nonce read it
+  // answered would pin the re-check to it, which then always throws.
+  test('a dropped transaction is decided on a Colibri chain (Colibri never answers the nonce)', async () => {
+    const colibriTrap = (source) => {
+      if (source === 'colibri') throw new Error('memory access out of bounds');
+      return null;
+    };
+    chain(
+      {
+        eth_getTransactionReceipt: [null, colibriTrap],
+        eth_getTransactionCount: ['0x1'],
+      },
+      { sourceFor: () => 'colibri' }
+    );
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toMatchObject({
+      status: 'dropped',
+    });
+    const nonceRead = mockChainRequest.mock.calls[1];
+    expect(nonceRead[1]).toBe('eth_getTransactionCount');
+    expect(nonceRead[3].excludeSources).toEqual(expect.arrayContaining(['myotis', 'colibri']));
+    expect(mockChainRequest.mock.calls[2][3].excludeSources).toContain('colibri');
+  });
+
+  test('the receipt re-check is pinned to the source that answered the nonce', async () => {
+    chain(
+      {
+        eth_getTransactionReceipt: [null, null],
+        eth_getTransactionCount: ['0x1'],
+      },
+      { sourceFor: () => 'quorum' }
+    );
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toMatchObject({
+      status: 'dropped',
+    });
+    const recheck = mockChainRequest.mock.calls[2];
+    expect(recheck[1]).toBe('eth_getTransactionReceipt');
+    expect(new Set(recheck[3].excludeSources)).toEqual(
+      new Set(['myotis', 'colibri', 'direct', 'blockscout'])
+    );
+  });
+
+  test('a receipt answer from any other source does not decide dropped', async () => {
+    // The pinned source is gone from the order; a router answering from
+    // elsewhere anyway must not be trusted for a final status.
+    mockChainRequest.mockImplementation(async (_chainId, method) => {
+      if (method === 'eth_getTransactionCount') return { result: '0x1', source: 'quorum' };
+      return { result: null, source: 'direct' };
+    });
+
+    await expect(getTransactionStatus(HASH, 1, { from: FROM, nonce: 0 })).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  test('without the sent nonce, a missing receipt is only ever pending', async () => {
+    chain({ eth_getTransactionReceipt: [null] });
+
+    await expect(getTransactionStatus(HASH, 1)).resolves.toMatchObject({ status: 'pending' });
+    expect(mockChainRequest).toHaveBeenCalledTimes(1);
+  });
+
+  // R3-M1: Colibri traps (and retires its worker) on a hash it has no
+  // receipt for, which is most of what a background sweep polls.
+  test('a background sweep reads the receipt without Colibri', async () => {
+    chain({ eth_getTransactionReceipt: [null] }, { sourceFor: () => 'colibri' });
+
+    await expect(getTransactionStatus(HASH, 1, { sweep: true })).resolves.toMatchObject({
+      status: 'pending',
+    });
+    expect(mockChainRequest).toHaveBeenCalledWith(
+      1, 'eth_getTransactionReceipt', [HASH], { excludeSources: ['colibri'] }
+    );
+  });
+
+  test('an interactive status read still lets Colibri answer the receipt', async () => {
+    chain({ eth_getTransactionReceipt: [null] }, { sourceFor: () => 'colibri' });
+
+    await getTransactionStatus(HASH, 1);
+    expect(mockChainRequest).toHaveBeenCalledWith(1, 'eth_getTransactionReceipt', [HASH], undefined);
   });
 });
 

@@ -142,6 +142,15 @@ npm run ipfs:native:smoke
 npm test
 ```
 
-`npm run ipfs:native:smoke` loads the real native addon, starts it, and retrieves
-`/ipns/ipfs.tech/` through the native request API. Set
-`FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0` for startup/diagnostics-only checks.
+`npm run ipfs:native:smoke` loads the real native addon, starts it, serves an
+identity CID through the local gateway, and retrieves an immutable, widely
+provided `/ipfs/<cid>` from the live network through the native request API.
+Network-only live failures (HTTP 502/504 with no addon error code, and
+timeouts) are retried within a bounded budget and then reported as a GitHub
+Actions warning rather than a failure; addon faults (a 500, a 503
+`gateway_busy`, any 4xx or wrong body) still fail. The issue #102 high-fanout
+check (`FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102=1`) treats its root page fetch the
+same way. Set `FREEDOM_IPFS_NATIVE_SMOKE_LIVE=strict` (or
+`FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102=strict`) to make network failures fail, or
+`FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0` for startup/diagnostics-only checks. The
+script header lists every environment variable.

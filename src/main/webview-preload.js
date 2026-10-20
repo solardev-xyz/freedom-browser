@@ -1764,7 +1764,9 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_writeSingleOwnerChunk' ||
             method === 'swarm_getSigningIdentity' ||
             method === 'swarm_getMessagingIdentity' ||
-            method === 'swarm_subscribe';
+            method === 'swarm_subscribe' ||
+            // A blob of up to 5 MiB joined from the network can outlast 60s.
+            method === 'swarm_readData';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1789,6 +1791,7 @@ const SWARM_INJECT_SOURCE = `
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
+      readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
       readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
       getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },

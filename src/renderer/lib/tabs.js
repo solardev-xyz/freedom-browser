@@ -228,6 +228,14 @@ export const setWebviewEventHandler = (handler) => {
   onWebviewEvent = handler;
 };
 
+// Modules that watch every tab's <webview> from the moment it exists (the
+// gateway offer, #70) register here instead of being imported by this file,
+// which most of them import in turn.
+const webviewCreatedListeners = [];
+export const onWebviewCreated = (listener) => {
+  if (typeof listener === 'function') webviewCreatedListeners.push(listener);
+};
+
 // Report a commit that Chromium produced for a back/forward traversal, so
 // navigation.js can re-verify an ENS-backed restored entry under today's
 // verification settings (#86). Reported for background tabs too — the regular
@@ -1168,6 +1176,14 @@ const createWebview = (tabId, initialUrl) => {
   setupWebviewProvider(webview);
   setupSwarmProvider(webview);
   setupRadicleProvider(webview);
+
+  for (const listener of webviewCreatedListeners) {
+    try {
+      listener(webview);
+    } catch (err) {
+      console.error('[tabs] webview-created listener failed:', err);
+    }
+  }
 
   return webview;
 };

@@ -350,6 +350,17 @@
                   <div class="trust-popover-fields" id="trust-popover-content-fields"></div>
                 </div>
               </div>
+              <!-- The "always" half of the gateway offer (#70), shown for .eth
+                   names: the same setting as the pill popover's checkbox and
+                   Settings > Networks > Name Resolution. -->
+              <label class="trust-popover-gateway" id="trust-popover-gateway" hidden>
+                <input
+                  type="checkbox"
+                  id="trust-popover-gateway-toggle"
+                  data-test="trust-popover-gateway-toggle"
+                />
+                Always open without gateway
+              </label>
               <div class="trust-popover-tooltip" id="trust-popover-tooltip" hidden>Copy</div>
             </div>
             <!-- Site permission prompt, anchored under the address bar. Shown
@@ -442,6 +453,55 @@
                 </div>
               </div>
             </div>
+            <!-- "Open without gateway" popover (#70), anchored to the pill:
+                 the native address an ENS/Swarm gateway page stands for. -->
+            <div
+              id="gateway-offer-popover"
+              class="permission-popover gateway-offer-popover chrome-popover"
+              role="dialog"
+              aria-labelledby="gateway-offer-title"
+              data-test="gateway-offer-popover"
+              hidden
+            >
+              <div class="gateway-offer-heading">
+                <span
+                  class="gateway-offer-icon"
+                  id="gateway-offer-popover-icon"
+                  aria-hidden="true"
+                ></span>
+                <span class="permission-popover-title" id="gateway-offer-title"
+                  >Decentralized version available</span
+                >
+              </div>
+              <div
+                class="gateway-offer-destination"
+                id="gateway-offer-destination"
+                data-test="gateway-offer-destination"
+              ></div>
+              <div class="gateway-offer-explanation" id="gateway-offer-explanation"></div>
+              <label class="permission-prompt-remember">
+                <input type="checkbox" id="gateway-offer-always" data-test="gateway-offer-always" />
+                Always open without gateway
+              </label>
+              <div class="permission-prompt-actions">
+                <button
+                  id="gateway-offer-cancel"
+                  class="permission-btn"
+                  type="button"
+                  data-test="gateway-offer-cancel"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="gateway-offer-open"
+                  class="permission-btn primary"
+                  type="button"
+                  data-test="gateway-offer-open"
+                >
+                  Open without gateway
+                </button>
+              </div>
+            </div>
             <span id="protocol-icon" class="protocol-icon" aria-hidden="true">
               <!-- Swarm icon (official logo) -->
               <svg class="icon-swarm" viewBox="18 34 44 45" fill="currentColor">
@@ -513,6 +573,19 @@
               spellcheck="false"
               data-test="address-input"
             />
+            <button
+              id="gateway-offer-pill"
+              class="gateway-offer-pill hidden"
+              type="button"
+              aria-label="Open without gateway"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="gateway-offer-popover"
+              data-test="gateway-offer-pill"
+            >
+              <span class="gateway-offer-icon" id="gateway-offer-pill-icon" aria-hidden="true"></span>
+              <span class="gateway-offer-pill-label">Open without gateway</span>
+            </button>
             <button
               id="permission-indicator"
               class="icon-btn input-action-btn permission-indicator hidden"

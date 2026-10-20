@@ -1,6 +1,7 @@
 var mockMakeContentAddressedChunk = jest.fn();
 var mockUploadChunk = jest.fn();
 var mockDownloadChunk = jest.fn();
+var mockDownloadData = jest.fn();
 var mockUnmarshalContentAddressedChunk = jest.fn();
 var mockUnmarshalSingleOwnerChunk = jest.fn();
 var mockCalculateSingleOwnerChunkAddress = jest.fn();
@@ -69,6 +70,9 @@ var mockBee = {
     upload: mockUploadChunk,
     download: mockDownloadChunk,
   },
+  data: {
+    download: mockDownloadData,
+  },
   unmarshalContentAddressedChunk: mockUnmarshalContentAddressedChunk,
   unmarshalSingleOwnerChunk: mockUnmarshalSingleOwnerChunk,
   calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,
@@ -90,6 +94,9 @@ jest.mock('./swarm-service', () => ({
 const {
   publishChunk,
   readChunk,
+  readDataRoot,
+  readData,
+  dataSizeFromSpan,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
@@ -246,6 +253,95 @@ describe('chunk-service', () => {
 
     await expect(readChunk(CAC_REFERENCE)).rejects.toMatchObject({
       reason: 'chunk_not_found',
+    });
+  });
+
+  describe('blob reads', () => {
+    // Bee's redundancy.EncodeLevel: level | 0x80 in the span's last byte.
+    const withLevel = (size, level) => BigInt(size) | (BigInt(0x80 | level) << 56n);
+    const span = (value) => new MockSpan(value).toUint8Array();
+
+    test('dataSizeFromSpan reads a plain span as is', () => {
+      expect(dataSizeFromSpan(span(5n))).toBe(5n);
+      expect(dataSizeFromSpan(span(10_000_000n))).toBe(10_000_000n);
+    });
+
+    test('dataSizeFromSpan clears an encoded redundancy level', () => {
+      for (const level of [1, 2, 3, 4]) {
+        expect(dataSizeFromSpan(span(withLevel(1_234_567, level)))).toBe(1_234_567n);
+      }
+    });
+
+    test('dataSizeFromSpan keeps a top byte that is not a level as size', () => {
+      // 0x80 alone is not an encoded level (Bee: IsLevelEncoded is `> 128`).
+      expect(dataSizeFromSpan(span(0x80n << 56n))).toBe(0x80n << 56n);
+      expect(dataSizeFromSpan(span(1n << 56n))).toBe(1n << 56n);
+    });
+
+    test('readDataRoot verifies the root chunk and returns the size from its span', async () => {
+      const payload = Buffer.alloc(64, 0x01);
+      mockDownloadChunk.mockResolvedValue(Buffer.alloc(8 + 64));
+      mockUnmarshalContentAddressedChunk.mockReturnValue(
+        makeCac(payload, withLevel(9000, 1), CAC_REFERENCE)
+      );
+
+      const root = await readDataRoot(CAC_REFERENCE);
+
+      expect(mockDownloadChunk).toHaveBeenCalledWith(CAC_REFERENCE);
+      // chunkBytes is what came off the wire, so the caller can charge it.
+      expect(root).toEqual({ size: 9000n, payload, chunkBytes: 72 });
+      expect(mockDownloadData).not.toHaveBeenCalled();
+    });
+
+    test('readDataRoot maps a missing root to chunk_not_found', async () => {
+      mockDownloadChunk.mockRejectedValue(new MockBeeResponseError(404));
+
+      await expect(readDataRoot(CAC_REFERENCE)).rejects.toMatchObject({ reason: 'chunk_not_found' });
+    });
+
+    test('readDataRoot refuses a root that does not hash to the reference', async () => {
+      mockDownloadChunk.mockResolvedValue(Buffer.from('raw'));
+      mockUnmarshalContentAddressedChunk.mockReturnValue(makeCac('hello', 5n, 'ff'.repeat(32)));
+
+      await expect(readDataRoot(CAC_REFERENCE)).rejects.toMatchObject({ reason: 'chunk_type_mismatch' });
+    });
+
+    test('readData has the node join a multi-chunk blob', async () => {
+      const blob = Buffer.alloc(9000, 0x61);
+      mockDownloadData.mockResolvedValue(new MockPayload(blob));
+
+      const result = await readData(CAC_REFERENCE, { size: 9000n, payload: Buffer.alloc(96) });
+
+      expect(mockDownloadData).toHaveBeenCalledWith(CAC_REFERENCE);
+      expect(result).toEqual({ data: blob.toString('base64'), encoding: 'base64' });
+    });
+
+    test('readData returns a single-chunk blob from its verified root without a second request', async () => {
+      const result = await readData(CAC_REFERENCE, { size: 5n, payload: Buffer.from('hello') });
+
+      expect(mockDownloadData).not.toHaveBeenCalled();
+      expect(result).toEqual({ data: Buffer.from('hello').toString('base64'), encoding: 'base64' });
+    });
+
+    test('readData maps a chunk the node cannot find to chunk_not_found', async () => {
+      mockDownloadData.mockRejectedValue(new MockBeeResponseError(404));
+
+      await expect(readData(CAC_REFERENCE, { size: 9000n, payload: Buffer.alloc(96) }))
+        .rejects.toMatchObject({ reason: 'chunk_not_found' });
+    });
+
+    test('readData preserves transient Bee errors', async () => {
+      const err = new MockBeeResponseError(503);
+      mockDownloadData.mockRejectedValue(err);
+
+      await expect(readData(CAC_REFERENCE, { size: 9000n, payload: Buffer.alloc(96) })).rejects.toBe(err);
+    });
+
+    test('readData refuses a join whose length differs from the root span', async () => {
+      mockDownloadData.mockResolvedValue(new MockPayload(Buffer.alloc(9001)));
+
+      await expect(readData(CAC_REFERENCE, { size: 9000n, payload: Buffer.alloc(96) }))
+        .rejects.toThrow('Node returned 9001 bytes for a 9000-byte blob');
     });
   });
 

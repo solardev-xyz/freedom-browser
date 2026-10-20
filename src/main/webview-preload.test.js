@@ -1558,6 +1558,10 @@ describe('injected provider request timeouts', () => {
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
   });
+
+  test('swarm_readData gets the 300s budget: a multi-MiB join can outlast 60s', () => {
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readData')).toBe(300000);
+  });
 });
 
 // PRIVATE MODE GUARD coverage (providers): in private windows none of

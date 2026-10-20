@@ -258,13 +258,16 @@ describe('FreedomIpfsNativeNode', () => {
   test('cancels a timed-out request before freeing the native handle', async () => {
     jest.useFakeTimers();
     const binding = createBindingMock();
-    const { FreedomIpfsNativeNode, ATTEMPT_TIMEOUT_MS } = loadModule(binding);
+    const { FreedomIpfsNativeNode, ATTEMPT_TIMEOUT_MS, REQUEST_TIMEOUT_CODE } = loadModule(binding);
     const node = createStartedNode(FreedomIpfsNativeNode);
 
     const responsePromise = node.request({ path: '/ipfs/bafy', headers: new Headers() });
     jest.advanceTimersByTime(ATTEMPT_TIMEOUT_MS);
 
     await expect(responsePromise).rejects.toThrow('freedom-ipfs native request timeout');
+    // The CI smoke keys its network-weather classification on this code.
+    expect(REQUEST_TIMEOUT_CODE).toBe('FREEDOM_IPFS_NATIVE_REQUEST_TIMEOUT');
+    await expect(responsePromise).rejects.toMatchObject({ code: REQUEST_TIMEOUT_CODE });
     expect(binding.gatewayRequestCancel).toHaveBeenCalledWith('1', '2');
     expect(binding.gatewayRequestFree).toHaveBeenCalledWith('1', '2');
     expect(binding.gatewayRequestCancel.mock.invocationCallOrder[0]).toBeLessThan(

@@ -399,6 +399,7 @@ const { createAgentFileUploadController } = require('./agent/file-upload-control
 const { dropPartition: dropPrivateDownloads } = require('./downloads/private-downloads-store');
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
+const { registerGatewayOfferIpc } = require('./gateway-offer');
 const myotisManager = require('./myotis/myotis-manager');
 const { registerTezosDomainsIpc } = require('./tezos-domains-resolver');
 const {
@@ -606,6 +607,7 @@ async function bootstrap() {
   );
   registerFaviconsIpc();
   registerEnsIpc();
+  registerGatewayOfferIpc();
   registerTezosDomainsIpc();
   registerAntIpc();
   registerIpfsIpc();

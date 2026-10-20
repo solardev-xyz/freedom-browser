@@ -50,6 +50,7 @@ describe('settings-store', () => {
         sidebarOpen: false,
         sidebarWidth: 320,
         blockUnverifiedEns: true,
+        openWithoutGateway: false,
         showIpfsProgressStatus: false,
       })
     );

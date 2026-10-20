@@ -37,6 +37,7 @@ import {
   signingButtonLabel,
 } from './wallet-utils.js';
 import { getPermissionKey } from '../origin-utils.js';
+import { goBackInHistory } from '../history-traversal.js';
 import { refreshBalances } from './balance-display.js';
 import { showX402Permissions } from './permission-manage.js';
 import { showVaultUnlock } from './vault-unlock.js';
@@ -934,13 +935,40 @@ async function reject() {
       // subresource fetch.
       await window.electronAPI.x402Reject({ detectionId });
     } else {
-      // mainFrame paywall page: existing behaviour — clear detection
-      // and navigate the webview back (or to about:blank if no history).
-      await window.electronAPI.x402Cancel({ webContentsId: id });
+      // mainFrame paywall page: clear the detection and step the webview
+      // back (or to about:blank if there is no history). The Back is
+      // driven from here, through `goBackInHistory`, whenever the guest
+      // can be found and has somewhere to go: a `goBack()` issued by main
+      // is invisible to the renderer's traversal count, so the gateway
+      // offer (#70) would take the restored gateway page for a fresh
+      // visit and, with "Always open without gateway" on, redirect it
+      // straight back off the page the user asked to return to. Main
+      // keeps the navigation only as the fallback (no history, or no
+      // matching guest in this window).
+      const webview = findWebviewByWebContentsId(id);
+      if (webview?.canGoBack?.()) {
+        await window.electronAPI.x402Cancel({ webContentsId: id, navigate: false });
+        goBackInHistory(webview);
+      } else {
+        await window.electronAPI.x402Cancel({ webContentsId: id });
+      }
     }
   } catch (err) {
     console.error('[x402] reject/cancel failed:', err);
   }
+}
+
+// The guest `<webview>` for a paying tab, resolved off the DOM (like
+// page-context-menu.js does) so this module needs no `tabs.js` import.
+function findWebviewByWebContentsId(webContentsId) {
+  for (const webview of document.querySelectorAll?.('webview') || []) {
+    try {
+      if (webview.getWebContentsId() === webContentsId) return webview;
+    } catch {
+      // Not attached yet — cannot be the tab that hit the 402.
+    }
+  }
+  return null;
 }
 
 function closeAndReset() {

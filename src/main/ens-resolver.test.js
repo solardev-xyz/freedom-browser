@@ -619,6 +619,106 @@ describe('ens-resolver', () => {
       expect(result.trust.agreed.length).toBeGreaterThanOrEqual(2);
     });
 
+    // The exact error ethers raises for a JSON-RPC error answer to eth_call.
+    const rpcCallError = (rpcError, calldata = '0x9061b923') => {
+      const provider = new actualEthers.JsonRpcProvider('http://127.0.0.1:1', 1, { staticNetwork: true });
+      try {
+        return provider.getRpcError(
+          { method: 'eth_call', params: [{ to: '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe', data: calldata }, 'latest'], id: 1, jsonrpc: '2.0' },
+          { id: 1, jsonrpc: '2.0', error: rpcError }
+        );
+      } finally {
+        provider.destroy();
+      }
+    };
+
+    test.each([
+      // Every row has three values: a shorter one would hand jest's `done`
+      // to the third parameter.
+      [-32000, 'header not found', undefined],
+      [-32000, 'missing trie node 0xabc (path ) <nil>', undefined],
+      [-32005, 'daily request count exceeded, request rate limited', undefined],
+      [-32001, 'resource not found', undefined],
+      // Diagnostic objects aren't revert data.
+      [-32001, 'resource not found', { detail: 'block unavailable' }],
+      [-32005, 'limit exceeded', { see: 'https://example.com/limits' }],
+      // Providers' rate limits in the JSON-RPC body.
+      [-32007, 'Per-second request limit reached', undefined],
+      [-32008, 'Per-minute request limit reached', undefined],
+      [429, 'Your app has exceeded its compute units per second capacity.', undefined],
+    ])('node failures (%i %s) never agree into a verified not-found', async (code, message, data) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      const failure = () => rpcCallError(data === undefined ? { code, message } : { code, message, data });
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: failure() }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: failure() }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+
+      const result = await resolveEnsContent(`node-failure-${Math.abs(code)}-${message.length}-${data ? 'd' : 'n'}.box`);
+
+      expect(result.type).toBe('ok');
+      expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
+      expect(result.trust.level).not.toBe('verified');
+    });
+
+    test.each([
+      ['a revert without data', { code: -32000, message: 'execution reverted' }],
+      ['out of gas', { code: -32000, message: 'out of gas' }],
+      ['an invalid opcode', { code: -32000, message: 'invalid opcode: INVALID' }],
+      ['a legacy empty revert', { code: -32015, message: 'VM execution error.', data: 'Reverted 0x' }],
+      // Code 3 is an execution revert whatever its message says.
+      ['a code-3 revert whose reason mentions capacity', { code: 3, message: 'capacity exceeded' }],
+      ['a code-3 revert whose reason mentions compute units', { code: 3, message: 'compute units exhausted' }],
+    ])('%s stays an execution outcome and quarantines no endpoint', async (_label, rpcError) => {
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: rpcCallError(rpcError) }])));
+      const failing = await resolveEnsContent(`execution-${rpcError.message.length}-${-rpcError.code}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+      // Every endpoint is still healthy: the next name uses the full pool.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${rpcError.message.length}-${-rpcError.code}.box`);
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    // ethers' CALL_EXCEPTION message embeds the request calldata, so the
+    // HTTP-status check must not read hex digits as a 429/5xx status.
+    test.each(['429', '502', '503', '504'])(
+      'a data-less revert whose calldata contains %s stays an execution outcome',
+      async (status) => {
+        const calldata = `0x9061b923${'00'.repeat(4)}${status}0${'ab'.repeat(8)}`;
+        const revert = () => rpcCallError({ code: -32000, message: 'execution reverted' }, calldata);
+        expect(revert().message).toContain(status);
+        routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: revert() }])));
+        const failing = await resolveEnsContent(`calldata-${status}.box`);
+        expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+        const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+        routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+        const healthy = await resolveEnsContent(`healthy-after-calldata-${status}.box`);
+        expect(healthy.trust).toMatchObject({ level: 'verified' });
+        expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+      }
+    );
+
+    test('an HTTP 503 in the error message is still a provider error', async () => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      const unavailable = () => new Error('bad response (status=503, statusText="Service Unavailable")');
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: unavailable() }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: unavailable() }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+
+      const result = await resolveEnsContent('http-503.box');
+
+      expect(result.type).toBe('ok');
+      expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
+      expect(result.trust.level).not.toBe('verified');
+    });
+
     test('caches successful resolutions (warm resolution skips RPC entirely)', async () => {
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
@@ -1017,6 +1117,25 @@ describe('ens-resolver', () => {
       });
       expect(result.groups).toHaveLength(3);
       expect(mockUrReverse).toHaveBeenCalledTimes(3);
+    });
+
+    test('a legacy revert envelope keeps a reverse mismatch semantic', async () => {
+      // Data in the envelope (ethers leaves err.data null): still a mismatch,
+      // never a provider failure that quarantines honest endpoints.
+      const input = addr('1099');
+      const data = actualEthers.id('ReverseAddressMismatch(string,bytes)').slice(0, 10) +
+        actualEthers.AbiCoder.defaultAbiCoder().encode(['string', 'bytes'], ['claimed.eth', '0x']).slice(2);
+      const provider = new actualEthers.JsonRpcProvider('http://127.0.0.1:1', 1, { staticNetwork: true });
+      const error = provider.getRpcError(
+        { method: 'eth_call', params: [{ to: RESOLVER, data: '0x5d78a217' }, 'latest'], id: 1, jsonrpc: '2.0' },
+        { id: 1, jsonrpc: '2.0', error: { code: 3, message: 'VM execution error.', data } }
+      );
+      provider.destroy();
+      mockUrReverse.mockRejectedValue(error);
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result).toMatchObject({ success: false, reason: 'UNVERIFIED', claimedName: 'claimed.eth' });
     });
 
     test('falls back to WNS reverse when ENS has no primary name', async () => {
