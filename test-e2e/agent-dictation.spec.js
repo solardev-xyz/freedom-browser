@@ -205,6 +205,7 @@ test('closing during transcription discards late text and releases audio', async
 test('Settings offers the same dictation choices in both themes and AI off disables it', async ({ window, electronApp }, testInfo) => {
   await prepare(window, electronApp);
   const settings = await openProviderSettings(window);
+  await settings.evaluate(() => { location.hash = 'ai/voice'; });
   const voice = settings.locator('#ai-dictation-settings');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
@@ -215,6 +216,7 @@ test('Settings offers the same dictation choices in both themes and AI off disab
     await voice.scrollIntoViewIfNeeded();
     await window.screenshot({ path: testInfo.outputPath(`dictation-settings-${theme}.png`) });
   }
+  await settings.getByRole('link', { name: 'AI', exact: true }).click();
   await settings.locator('#enable-ai').uncheck();
   await expect(voice).toBeHidden();
   const response = await window.evaluate(() => window.electronAPI.beginAgentDictation());

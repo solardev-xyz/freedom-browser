@@ -41,7 +41,7 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await providerPage.locator('#agent-api-key').fill('fixture-only-key');
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-      await providerPage.locator('#ai').screenshot({ path: testInfo.outputPath(`custom-provider-connect-${theme}.png`) });
+      await providerPage.locator('#providers').screenshot({ path: testInfo.outputPath(`custom-provider-connect-${theme}.png`) });
     }
     await providerPage.locator('#agent-provider-save').click();
     await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 20000 });
@@ -120,7 +120,7 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await providerPage.locator('#agent-provider-test').click();
     await expect(providerPage.locator('#agent-compatibility-result')).toContainText('Chat and tools verified', { timeout: 20000 });
     expect(requests.slice(before).every(r => !r.auth)).toBe(true);
-    await providerPage.locator('#agent-provider-detail-back').click();
+    await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
     await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Fixture gateway');
     await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Keyless fixture');
   } finally { releaseTool?.(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

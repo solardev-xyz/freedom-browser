@@ -102,6 +102,10 @@ const element = (tagName, attrs = '') => {
   }
   const node = {
     tagName,
+    getAttribute(name) {
+      const match = attrs.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+      return match ? decode(match[1]) : null;
+    },
     id: (attrs.match(/\bid="([^"]*)"/) || [])[1] || '',
     classList: { contains: (name) => classes.has(name) },
     style,
@@ -177,7 +181,7 @@ const NAV_LABELS = Object.fromEntries(
 // `data-title` to be named by until then (Chains, RPC Providers).
 const PANEL_TAGS = [
   ...SOURCE.matchAll(
-    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?>/g
+    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?[^>]*>/g
   ),
 ];
 const PANEL_NAV = Object.fromEntries(PANEL_TAGS.map(([, id, nav]) => [id, nav]));
@@ -209,7 +213,7 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(20);
+    expect(sections).toHaveLength(21);
     expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
@@ -243,7 +247,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(19);
+    expect(sections).toHaveLength(20);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -260,6 +264,13 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
     expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
     expect(named('voice')).toMatchObject({ label: 'Voice dictation', section: 'AI › Voice dictation' });
+  });
+
+  test('keeps a provider catalogue searchable while its detail heading changes', () => {
+    const content = parseFragment('<section class="section" id="providers" data-search-title="Models &amp; providers"><h2 class="section-title">Ollama</h2></section>');
+    expect(buildSettingsSearchIndex(content, { groups: { providers: 'AI' } })[0]).toMatchObject({
+      sectionId: 'providers', label: 'Models & providers', section: 'AI › Models & providers',
+    });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {

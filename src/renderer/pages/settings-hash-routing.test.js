@@ -133,6 +133,22 @@ describe('settings hash routing', () => {
     expect(location.hash).toBe('#ai/voice');
   });
 
+  it.each([
+    'ai/providers',
+    'ai/providers/add',
+    'ai/providers/openai-chatgpt',
+    'ai/providers/custom-example',
+  ])('preserves AI subpage %s', (route) => {
+    expect(drive(`#${route}`).shown).toEqual([route]);
+  });
+
+  it.each(['ai/nope', 'ai/providers/openai/extra', 'ai/providers/%3Cscript%3E'])(
+    'rejects unknown AI route %s',
+    (route) => {
+      expect(drive(`#${route}`).shown).toEqual(['ai']);
+    }
+  );
+
   // ── The bug: a hash naming no section (#280) ───────────────────────────
   it('rewrites a hash that names no section to the section it shows', () => {
     const { location, replaced, shown } = drive('#nonsense');

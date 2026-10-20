@@ -29,11 +29,7 @@ async function openProviderSettings(window) {
       return Boolean(page);
     })
     .toBe(true);
-  await page.evaluate(() => {
-    location.hash = 'ai';
-  });
-  const back = page.locator('#agent-provider-detail-back');
-  if (await back.isVisible()) await back.click();
+  await expect(page).toHaveURL(/#ai\/providers$/);
   await expect(page.locator('#agent-provider-add')).toBeVisible();
   return page;
 }

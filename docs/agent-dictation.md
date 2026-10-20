@@ -12,9 +12,11 @@ and NEAR AI are supported. With no suitable connection it opens setup, including
 the optional local download. The arrow beside the microphone opens a compact
 service menu with the active choice checked; switching service does not start
 recording. **Voice dictation settings…** opens Settings → AI → Voice dictation
-directly for language, retention preferences, local downloads and provider
-management. An uninstalled local choice also opens those settings instead of
-starting a download from the menu. The conversation model stays
+directly for language, retention preferences and local downloads. AI settings
+has a separate Models & providers page, with individual connection pages.
+Breadcrumb links and browser Back/Forward navigate between these pages. An
+uninstalled local choice also opens those settings instead of starting a download
+from the menu. The conversation model stays
 unchanged. Subscription connections do not establish transcription
 access and are not offered as speech services. Meta, xAI and custom transcription
 endpoints are outside this first draft.

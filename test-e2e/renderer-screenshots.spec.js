@@ -638,7 +638,7 @@ test.describe('renderer screenshots', () => {
         await expect(page.locator('#enable-ai')).not.toBeChecked();
         await snap(surfaces, window, `${theme}-54-settings-ai-off`, { mask: scrollbar });
         await page.locator('#enable-ai').check();
-        await expect(page.locator('#agent-provider-add')).toBeVisible();
+        await expect(page.locator('#ai-settings-links')).toBeVisible();
         await expect(page.locator('#ai-settings-status')).toBeEmpty({ timeout: 30_000 });
         await snap(surfaces, window, `${theme}-55-settings-ai-on`, { mask: scrollbar });
         await page.locator('#enable-ai').uncheck();

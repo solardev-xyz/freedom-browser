@@ -507,12 +507,23 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-20 Settings refinement:** AI now has an overview linking to dedicated
+Models & providers and Voice dictation pages. Adding a provider and managing an
+individual connection have their own URLs and breadcrumb navigation. Browser
+Back/Forward and direct voice-menu links use those same routes. Provider
+management describes its purpose as “Connect accounts and manage local models.”
+Validated on macOS: lint; 472 unit suites / 10,627 tests; 12 onboarding,
+dictation and custom-provider Electron checks plus three subscription-sign-in
+checks. Provider/voice pages inspected in both themes; deep-link reload and
+Back/Forward covered. Linux screenshot baselines remain for integration.
+Maintainer smoke pending on `experiment/agent-dictation`.
+
 **2026-10-20 menu refinement:** OpenRouter incremental dictation passed maintainer
 smoke. The microphone chevron now opens a compact service menu with the active
 choice checked, without starting capture. Language/privacy preferences and local
 installation stay in Settings → AI → Voice dictation, linked directly from the
 menu (`ai/voice`). The full setup dialog remains the microphone's onboarding
-path only when no ready service is available. Menu/provider smoke pending.
+path only when no ready service is available. Compact menu maintainer smoke passed.
 
 **2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
 now shows provisional/final text through OpenAI's `gpt-live-transcribe` WebSocket

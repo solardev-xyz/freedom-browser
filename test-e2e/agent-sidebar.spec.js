@@ -239,13 +239,22 @@ test('Meta subscription sign-in shows device codes, cancels and connects in both
     await providerPage.locator('#agent-provider-cancel-login').click();
     await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
   }
+  // Breadcrumb navigation cancels the sign-in rather than leaving it running
+  // behind another page. Forward can reopen the connection for a fresh attempt.
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-auth-code')).toBeVisible();
+  await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
+  await expect(providerPage.locator('#agent-provider-add')).toBeVisible();
+  await providerPage.goBack();
+  await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
+  await expect(providerPage.locator('#agent-auth-code')).toBeHidden();
   expect(await electronApp.evaluate(() => globalThis.metaLoginUrl)).toBe('https://auth.meta.com/device');
   await providerPage.locator('#agent-provider-login').click();
   await expect(providerPage.locator('#agent-auth-code')).toBeVisible();
   await electronApp.evaluate(() => globalThis.completeMetaLogin());
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
   await expect(providerPage.locator('#agent-provider-login')).toBeHidden();
-  await providerPage.locator('#agent-provider-detail-back').click();
+  await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
   await providerPage.locator('#agent-provider-add').click();
   await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
@@ -901,7 +910,7 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(providerPage.locator('#agent-provider-login')).toHaveText('Continue with ChatGPT');
   await expect(providerPage.locator('#agent-model-select')).not.toHaveValue('');
 
-  await providerPage.locator('#agent-provider-detail-back').click();
+  await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
   await providerPage.locator('#agent-provider-add').click();
   await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
   await expect(providerPage.locator('#agent-provider-privacy')).toHaveText(

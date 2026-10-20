@@ -6,6 +6,7 @@ const toggle = document.getElementById('enable-ai');
 const providers = document.getElementById('ai-provider-settings');
 const note = document.getElementById('ai-disabled-note');
 const status = document.getElementById('ai-settings-status');
+const providerMessage = document.getElementById('agent-provider-message');
 const next = document.getElementById('ai-next-step');
 const open = document.getElementById('ai-open-agent');
 let enabled = false;
@@ -15,8 +16,7 @@ let loaded = false;
 const dictationHost = document.getElementById('ai-dictation-settings');
 const dictation = createDictationChoices(dictationHost, api, { autoSave: true });
 dictationHost.addEventListener('dictation-connect', () => {
-  location.hash = 'ai';
-  document.getElementById('agent-provider-add').click();
+  location.hash = 'ai/providers/add';
 });
 const updateNext = (state) => {
   next.hidden = !enabled || state?.configured !== true;
@@ -28,6 +28,14 @@ const providerUi = createAgentProviderUi({
   assetBase: '../assets/provider-logos/',
   elements: { runMessage: document.getElementById('agent-provider-message') },
   onStatusChange: updateNext,
+  onScreenChange(screen, providerId) {
+    location.hash =
+      screen === 'detail'
+        ? `ai/providers/${providerId}`
+        : screen === 'browser'
+          ? 'ai/providers/add'
+          : 'ai/providers';
+  },
   context: {
     conversationId: null,
     runStatus: 'idle',
@@ -43,13 +51,75 @@ const providerUi = createAgentProviderUi({
   },
 });
 
+function renderRoute({ focus = false } = {}) {
+  const [section, page, providerId] = location.hash.slice(1).toLowerCase().split('/');
+  if (section !== 'ai') {
+    void providerUi.cancelProviderLogin();
+    return;
+  }
+  if (!enabled && page) {
+    history.replaceState(null, '', '#ai');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    return;
+  }
+  if (page !== 'providers') {
+    void providerUi.cancelProviderLogin();
+    if (focus && page === 'voice') document.querySelector('#voice h2').focus();
+    return;
+  }
+  const screen = !providerId ? 'home' : providerId === 'add' ? 'browser' : 'detail';
+  if (screen !== 'detail') void providerUi.cancelProviderLogin();
+  if (
+    loaded &&
+    screen === 'detail' &&
+    !['openai-compatible', 'ollama'].includes(providerId) &&
+    !providerUi.state.providerCatalog.some((item) => item.providerId === providerId) &&
+    !providerUi.state.providerStatus?.connections?.some((item) => item.providerId === providerId)
+  ) {
+    history.replaceState(null, '', '#ai/providers');
+    renderRoute({ focus });
+    return;
+  }
+  const title =
+    screen === 'home'
+      ? 'Models & providers'
+      : screen === 'browser'
+        ? 'Add a provider'
+        : providerUi.providerName(providerId);
+  const heading = document.getElementById('ai-provider-page-title');
+  heading.textContent = title;
+  const crumbs = document.getElementById('ai-provider-breadcrumbs');
+  crumbs.replaceChildren();
+  const crumb = (label, href) => {
+    if (crumbs.childNodes.length) {
+      const separator = document.createElement('span');
+      separator.textContent = '›';
+      separator.setAttribute('aria-hidden', 'true');
+      crumbs.appendChild(separator);
+    }
+    const item = document.createElement(href ? 'a' : 'span');
+    item.textContent = label;
+    if (href) {
+      item.href = href;
+      item.className = 'ai-breadcrumb-link';
+    } else item.setAttribute('aria-current', 'page');
+    crumbs.appendChild(item);
+  };
+  crumb('AI', '#ai');
+  crumb('Models & providers', screen === 'home' ? null : '#ai/providers');
+  if (screen !== 'home') crumb(title);
+  if (loaded) providerUi.showSettingsPage(screen, providerId);
+  if (focus) heading.focus();
+}
+
 async function refresh() {
-  if (!enabled || !location.hash.replace(/^#/, '').startsWith('ai')) return;
+  if (!enabled || location.hash.slice(1).split('/')[0].toLowerCase() !== 'ai') return;
   const current = ++revision;
-  void dictation.refresh();
+  if (location.hash.toLowerCase() === '#ai/voice') void dictation.refresh();
   if (!loaded) {
     providerUi.invalidateCatalog();
     status.textContent = 'Loading providers…';
+    providerMessage.textContent = status.textContent;
     await providerUi.loadProviderCatalog();
     if (current !== revision || !enabled) return;
     loaded = providerUi.state.providerCatalog.length > 0;
@@ -57,6 +127,9 @@ async function refresh() {
   await providerUi.refreshProvider();
   if (current !== revision || !enabled) return;
   status.textContent = loaded ? '' : 'Could not load providers. Open AI settings again to retry.';
+  if (!loaded || providerMessage.textContent === 'Loading providers…')
+    providerMessage.textContent = status.textContent;
+  renderRoute();
 }
 
 function apply(settings) {
@@ -64,6 +137,8 @@ function apply(settings) {
   enabled = settings?.enableAi === true;
   toggle.checked = enabled;
   providers.hidden = !enabled;
+  document.getElementById('ai-settings-links').hidden = !enabled;
+  document.getElementById('providers').hidden = !enabled;
   dictationHost.hidden = !enabled;
   document.getElementById('voice').hidden = !enabled;
   note.hidden = enabled;
@@ -75,6 +150,7 @@ function apply(settings) {
     providerUi.invalidateCatalog();
     status.textContent = '';
   } else if (changed) void refresh();
+  renderRoute();
 }
 
 toggle.addEventListener('change', async () => {
@@ -112,12 +188,10 @@ api.onAgentProviderChanged?.(() => {
   if (editing) return;
   void refresh();
 });
-for (const id of ['agent-provider-detail-back', 'agent-provider-list-back']) {
-  document.getElementById(id).addEventListener('click', () => {
-    if (!loaded) void refresh();
-  });
-}
-window.addEventListener('hashchange', refresh);
+window.addEventListener('hashchange', () => {
+  renderRoute({ focus: true });
+  void refresh();
+});
 window.addEventListener(
   'pagehide',
   () => {

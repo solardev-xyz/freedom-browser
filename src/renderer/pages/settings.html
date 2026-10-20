@@ -1780,9 +1780,21 @@
           </div>
           <p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p>
           <p class="rpc-status" id="ai-settings-status" aria-live="polite"></p>
+          <div class="card ai-settings-links settings-search-skip" id="ai-settings-links" hidden>
+            <a class="net-row" href="#ai/providers"><span class="net-row-text"><span class="net-row-name">Models &amp; providers</span><span class="net-row-sub">Connect accounts and manage local models</span></span><span class="net-chevron" aria-hidden="true">›</span></a>
+            <a class="net-row" href="#ai/voice"><span class="net-row-text"><span class="net-row-name">Voice dictation</span><span class="net-row-sub">Choose where your speech becomes text</span></span><span class="net-chevron" aria-hidden="true">›</span></a>
+          </div>
+          <div class="ai-next-step" id="ai-next-step" hidden>
+            <button class="btn primary" id="ai-open-agent" type="button">Open Agent</button>
+            <span class="row-help" id="ai-next-help">Your current conversation and draft stay in place.</span>
+          </div>
+        </section>
+        <section class="section panel" id="providers" data-nav="ai" data-search-title="Models &amp; providers">
+          <nav class="ai-breadcrumbs" id="ai-provider-breadcrumbs" aria-label="Breadcrumb"></nav>
+          <h2 class="section-title" id="ai-provider-page-title" tabindex="-1">Models &amp; providers</h2>
           <div id="ai-provider-settings" hidden>
             <div id="agent-provider-home">
-              <div class="agent-setup-intro"><h3 class="subsection-title">Models &amp; providers</h3><p>Your connected models, all in one place.</p></div>
+              <p class="section-description">Your connected models, all in one place.</p>
               <div id="agent-connected-providers" class="agent-connected-providers" hidden>
                 <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
               </div>
@@ -1790,7 +1802,7 @@
             </div>
             <div id="agent-provider-browser" hidden>
               <button id="agent-provider-list-back" class="agent-text-button" type="button">Providers</button>
-              <h3>Add a provider</h3>
+              <p class="section-description">Choose a service or connect your own model server.</p>
               <input id="agent-provider-search" type="search" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" />
               <div id="agent-provider-choices" class="agent-provider-choices"></div>
             </div>
@@ -1870,13 +1882,10 @@
             <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
 
           </div>
-          <div class="ai-next-step" id="ai-next-step" hidden>
-            <button class="btn primary" id="ai-open-agent" type="button">Open Agent</button>
-            <span class="row-help" id="ai-next-help">Your current conversation and draft stay in place.</span>
-          </div>
         </section>
         <section class="section panel" id="voice" data-nav="ai">
-          <h3 class="panel-title">Voice dictation</h3>
+          <nav class="ai-breadcrumbs" aria-label="Breadcrumb"><a class="ai-breadcrumb-link" href="#ai">AI</a><span aria-hidden="true">›</span><span aria-current="page">Voice dictation</span></nav>
+          <h2 class="section-title" tabindex="-1">Voice dictation</h2>
           <div id="ai-dictation-settings" class="agent-dictation-panel row" hidden></div>
         </section>
 

@@ -1447,7 +1447,7 @@ function showProviderSetup() {
   setScopeHelpOpen(false);
   closeComposerPopovers();
   closePanel();
-  openAiSettings();
+  openAiSettings('ai/providers');
 }
 
 function setPanelOpen(nextOpen) {
