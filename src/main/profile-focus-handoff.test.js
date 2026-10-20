@@ -156,6 +156,19 @@ describe('profile focus handoff', () => {
     expect(onFocusWindow).toHaveBeenCalledTimes(1);
   });
 
+  test('a windowless runtime refuses focus instead of acknowledging undelivered links', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const onFocusWindow = jest.fn();
+    trackWatcher(startProfileFocusRequestWatcher(profile, onFocusWindow, {
+      pollIntervalMs: 10, allowFocus: false, logger: { warn: jest.fn() },
+    }));
+    const result = await requestProfileFocusAsyncAwait(profile, {
+      nonce: 'runtime-cannot-focus', urls: ['https://example.test/'], pollIntervalMs: 10, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('automation runtime') });
+    expect(onFocusWindow).not.toHaveBeenCalled();
+  });
+
   test('async-await focus request reports timedOut when no process responds', async () => {
     const profile = trackProfile(makeTempProfile('work'));
 

@@ -220,21 +220,26 @@ async function assertUnmanagedClaude({ platform = process.platform, home = os.ho
 async function checkClaudeLogin({ signal, executable, run = execFileAsync, checkPolicy = assertUnmanagedClaude } = {}) {
   await checkPolicy();
   executable ||= await findClaudeExecutable();
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-claude-auth-'));
   let status;
   try {
-    const version = await run(executable, ['--version'], { env: claudeEnvironment(), cwd: os.tmpdir(), timeout: 10000, maxBuffer: 65536, signal, windowsHide: true });
+    await fs.promises.chmod(directory, 0o700);
+    const isolation = ['--restricted', '--setting-sources', ''];
+    const version = await run(executable, [...isolation, '--version'], { env: claudeEnvironment(), cwd: directory, timeout: 10000, maxBuffer: 65536, signal, windowsHide: true });
     const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.stdout.trim());
     if (!match || (Number(match[1]) < 2 || Number(match[1]) === 2 && (Number(match[2]) < 1 || Number(match[2]) === 1 && Number(match[3]) < 290))) {
       throw Object.assign(new Error('Update Claude Code to version 2.1.290 or newer, then connect again.'), { code: 'AGENT_CLAUDE_VERSION' });
     }
-    const result = await run(executable, ['auth', 'status', '--json'], {
-      env: claudeEnvironment(), cwd: os.tmpdir(), timeout: 15000, maxBuffer: 65536, signal, windowsHide: true,
+    const result = await run(executable, [...isolation, 'auth', 'status', '--json'], {
+      env: claudeEnvironment(), cwd: directory, timeout: 15000, maxBuffer: 65536, signal, windowsHide: true,
     });
     status = JSON.parse(result.stdout);
   } catch (error) {
     if (signal?.aborted) throw signal.reason;
     if (error.code === 'AGENT_CLAUDE_VERSION') throw error;
     throw cliError('Claude Code could not confirm its login. Run claude auth login in a terminal, then try again.');
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true });
   }
   if (status.loggedIn !== true || status.authMethod !== 'claude.ai' || status.apiProvider !== 'firstParty') {
     throw cliError('Sign in to Claude Code with your Claude subscription using claude auth login, then try again. API billing is not used by this connection.');
@@ -247,20 +252,22 @@ async function checkClaudeLogin({ signal, executable, run = execFileAsync, check
 
 // One child per live session. Stream input keeps Claude's context in memory;
 // --no-session-persistence prevents a second conversation archive in Claude.
-async function startClaudeProcess({ executable, model, systemPrompt, tools, signal: ownerSignal, onEvent, onClose }) {
-  await checkClaudeLogin({ executable, signal: ownerSignal });
+async function startClaudeProcess({ executable, model, systemPrompt, tools, signal: ownerSignal, onEvent, onClose,
+  checkLogin = checkClaudeLogin, spawnProcess = spawn }) {
+  await checkLogin({ executable, signal: ownerSignal });
   const localAbort = new AbortController();
   const signal = AbortSignal.any([ownerSignal, localAbort.signal]);
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-claude-'));
-  await fs.promises.chmod(directory, 0o700);
   let ready = false, child, bridge, killTimer, closed = false;
   const config = path.join(directory, 'mcp.json');
   const promptFile = path.join(directory, 'system.txt');
   const revoke = async () => {
-    await Promise.all([fs.promises.writeFile(config, '{}', { mode: 0o600 }),
+    await Promise.allSettled([fs.promises.writeFile(config, '{}', { mode: 0o600 }),
       fs.promises.writeFile(promptFile, '', { mode: 0o600 })]);
+    await fs.promises.rm(directory, { recursive: true, force: true });
   };
   try {
+    await fs.promises.chmod(directory, 0o700);
     signal.throwIfAborted();
     bridge = await createToolBridge(tools, signal, undefined, () => ready);
     await fs.promises.writeFile(config, JSON.stringify(bridge.config), { mode: 0o600 });
@@ -273,7 +280,7 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--model', model, '--system-prompt-file', promptFile];
     if (tools.length) args.push('--allowedTools', tools.map(t => `mcp__freedom__${t.name}`).join(','));
-    child = spawn(executable, args, { cwd: directory, env: claudeEnvironment(),
+    child = spawnProcess(executable, args, { cwd: directory, env: claudeEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let buffer = '', failure, stopping = false;
     const stop = () => {

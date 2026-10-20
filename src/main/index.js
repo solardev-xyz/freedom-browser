@@ -213,6 +213,7 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
   },
   {
     logger: console,
+    allowFocus: !RUNTIME_MODE,
     // Another Freedom process asked us to close — e.g. it is deleting this
     // profile and needs our lock released first. Quit on the next tick so the
     // ack is written before shutdown begins.
@@ -230,6 +231,7 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
 // focus-request watcher above stays the fallback for launches that cannot
 // reach this lock, or that this process does not answer the probe for.
 listeningOnInstanceLock = listenForProfileRelaunches(app, {
+  runtimeMode: RUNTIME_MODE,
   settingsUrl: PROFILE_SETTINGS_DEEPLINK,
   firstWindowLinks,
   focusWindow: (urls) => focusCurrentProfileWindow(urls),

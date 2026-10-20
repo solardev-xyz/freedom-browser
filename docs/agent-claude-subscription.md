@@ -65,8 +65,9 @@ authorization. Reopening after an app restart uses the existing saved conversati
 history. Raw tool output and screenshots are not duplicated in this restart transcript.
 
 The CLI runs with `--no-session-persistence`. Freedom still saves its normal conversation
-history. Claude can keep separate diagnostics under its own data policy. The private MCP
-configuration and system-prompt scratch files are emptied when the child closes; the
+history. Claude can keep separate diagnostics under its own data policy. Login/version probes run from a private directory with restricted settings. The private MCP
+configuration and system-prompt scratch files are emptied and their owned directories
+removed when the child closes; the
 loopback server and its capability are retired. Crash leftovers have no live server.
 
 ## Privacy and evidence limits

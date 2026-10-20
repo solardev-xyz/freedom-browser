@@ -75,7 +75,11 @@ it does not add an editor or individual writable-file grants.
   in that UI; it cannot restore, reset, switch branches, merge, rebase or push.
 - The main-owned Git service runs fixed, bounded commands with a constructed
   environment and disabled execution/network features. Ordinary shell commands
-  still cannot write `.git`. It requires normal SHA-1 Git directories and refuses
+  cannot write the selected project root’s `.git`. This is not recursive Git
+  isolation: a command may create or modify metadata in a nested clone. Direct
+  file tools reject every `.git` path segment, but shell backends do not provide
+  that same recursive guarantee. Nested hooks/config can affect a later user or
+  IDE Git invocation outside the sandbox. It requires normal SHA-1 Git directories and refuses
   unsafe metadata, linked worktrees, active hooks, signing requirements, content
   conversion, global ignore rules, includes, advanced indexes and partial/shallow repositories rather
   than bypassing their requirements. Local/global Git identity is read without

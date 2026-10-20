@@ -355,6 +355,41 @@ describe('automation runtime server', () => {
     expect(endpoint.path.endsWith('-abc123')).toBe(true);
   });
 
+  test('uses unique private socket directories and retires them after shutdown', async () => {
+    const first = createFixture({ socketRoot: undefined });
+    const second = createFixture({ socketRoot: undefined });
+    const directories = [first, second].map(({ server }) => path.dirname(server.endpoint.path));
+    cleanupPaths.push(...directories);
+    expect(directories[0]).not.toBe(directories[1]);
+    for (const fixture of [first, second]) {
+      const directory = path.dirname(fixture.server.endpoint.path);
+      expect(fs.lstatSync(directory).mode & 0o777).toBe(0o700);
+      await fixture.server.start();
+      await fixture.server.stop();
+      expect(fs.existsSync(directory)).toBe(false);
+    }
+  });
+
+  test('uses a private XDG runtime base and ignores a shared one', () => {
+    const previous = process.env.XDG_RUNTIME_DIR;
+    const base = fs.mkdtempSync('/tmp/freedom-xdg-');
+    cleanupPaths.push(base);
+    try {
+      fs.chmodSync(base, 0o700);
+      process.env.XDG_RUNTIME_DIR = base;
+      const first = createFixture({ socketRoot: undefined });
+      expect(path.dirname(path.dirname(first.server.endpoint.path))).toBe(base);
+      cleanupPaths.push(path.dirname(first.server.endpoint.path));
+      fs.chmodSync(base, 0o755);
+      const second = createFixture({ socketRoot: undefined });
+      expect(path.dirname(path.dirname(second.server.endpoint.path))).toBe('/tmp');
+      cleanupPaths.push(path.dirname(second.server.endpoint.path));
+    } finally {
+      if (previous === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = previous;
+    }
+  });
+
   test('classifies discovery as live, stale, missing, or invalid', () => {
     const { server, userDataDir } = createFixture();
     const profile = { id: 'automation', userDataDir };

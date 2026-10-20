@@ -389,6 +389,35 @@ describe('AgentWalletController', () => {
     );
   });
 
+  test.each(['eth_sendTransaction', 'eth_signTypedData_v4'])('refuses a conflicting explicit chain before %s approval', async method => {
+    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+    const approve = jest.fn(async () => 'approved');
+    const address = '0x1111111111111111111111111111111111111111';
+    const params = method === 'eth_sendTransaction'
+      ? [{ from: address, to: address, value: '0x0', chainId: '0x1' }]
+      : [address, JSON.stringify({ domain: { chainId: 1 }, types: {}, message: {} })];
+    const result = await harness.controller.handleRequest(context(approve), request(method, params));
+    expect(result).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
+    expect(approve).not.toHaveBeenCalled();
+    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+    expect(harness.signer.signTypedData).not.toHaveBeenCalled();
+  });
+
+  test('keeps the approved transaction network when provider selection changes while waiting', async () => {
+    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+    const input = request('eth_sendTransaction', [{
+      to: '0x3333333333333333333333333333333333333333', value: '0x0', chainId: '0x64',
+    }]);
+    const approve = jest.fn(async displayed => {
+      expect(displayed.wallet.chainId).toBe(100);
+      expect(displayed.origin).toBe('https://app.example');
+      input.chainId = 1;
+      return 'approved';
+    });
+    await expect(harness.controller.handleRequest(context(approve), input)).resolves.toMatchObject({ result: '0xtransaction' });
+    expect(harness.dependencies.signAndRecord.mock.calls[0][0].chainId).toBe(100);
+  });
+
   test('keeps signatures out of the Agent receipt while returning them to the page', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const approval = jest.fn(async () => 'approved');

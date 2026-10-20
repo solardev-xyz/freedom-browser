@@ -2212,6 +2212,16 @@ class FreedomAgentService {
     ) {
       return false;
     }
+    const request = run.pendingApproval.publicRequest;
+    if (typeof approved === 'object' && (
+      (approved.walletIndex !== undefined &&
+        (request.wallet?.kind !== 'connection' ||
+          !request.wallet.wallets?.some(wallet => wallet.index === approved.walletIndex))) ||
+      (approved.diagnosticScope !== undefined &&
+        (!request.diagnostic || !['once', 'conversation'].includes(approved.diagnosticScope))) ||
+      (approved.workspacePermissionScope !== undefined &&
+        (!request.workspacePermission || !['once', 'conversation'].includes(approved.workspacePermissionScope)))
+    )) return false;
     this.#resolveApproval(
       run,
       typeof approved === 'object'

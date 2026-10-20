@@ -407,7 +407,7 @@ class AgentWalletController {
   async #executeRequest(context, payload, permissionKey) {
     const chainId = Number(payload.chainId);
     const chain = this.getChain(chainId);
-    if (!Number.isSafeInteger(chainId) || !chain) {
+    if (!Number.isSafeInteger(chainId) || !chain || chain.chainId !== chainId) {
       throw new AutomationError(
         ERROR_CODES.INVALID_ARGUMENT,
         'The wallet request uses an unsupported chain'
@@ -496,6 +496,9 @@ class AgentWalletController {
         ERROR_CODES.INVALID_ARGUMENT,
         'Transaction parameters are incomplete'
       );
+    }
+    if (txParams.chainId !== undefined && Number(txParams.chainId) !== chain.chainId) {
+      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Transaction chain does not match the approved wallet network');
     }
     if (txParams.data !== undefined && (typeof txParams.data !== 'string' || txParams.data.length > 65_536 || !/^0x(?:[a-f0-9]{2})*$/i.test(txParams.data))) {
       throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Use valid transaction data no larger than the approval display limit.');
@@ -591,6 +594,12 @@ class AgentWalletController {
         ERROR_CODES.INVALID_ARGUMENT,
         'The signature payload is invalid or too large to review safely'
       );
+    }
+    if (!personal) {
+      const domainChain = JSON.parse(exactPayload)?.domain?.chainId;
+      if (domainChain !== undefined && Number(domainChain) !== chain.chainId) {
+        throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Typed-data chain does not match the approved wallet network');
+      }
     }
     await this.#approve(context, {
       action: 'wallet_signature',

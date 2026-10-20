@@ -120,7 +120,7 @@ function handleLockedProfileLaunch({
     const profileName = profile?.displayName || profile?.id || 'selected';
     showError(
       'Freedom profile is already open',
-      `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
+      `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or stop its automation runtime, or launch a different profile.`
     );
   }
 }
@@ -196,7 +196,7 @@ function createSecondInstanceHandler({
 // should not fail; the fallback is for the unforeseen.)
 function listenForProfileRelaunches(app, options = {}) {
   const platform = options.platform || process.platform;
-  if (platform !== 'linux') return false;
+  if (platform !== 'linux' || options.runtimeMode === true) return false;
   if (!app.requestSingleInstanceLock()) {
     options.logger?.warn?.(
       "[profile] Another process holds this profile's single-instance lock; " +

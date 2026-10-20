@@ -1969,6 +1969,16 @@ describe('FreedomAgentService', () => {
     await expect(service.decideApproval('run_other', approval.approvalId, true)).resolves.toBe(
       false
     );
+    for (const extra of [
+      { workspacePermissionScope: 'conversation' },
+      { diagnosticScope: 'conversation' },
+      { walletIndex: 0 },
+    ]) {
+      await expect(service.decideApproval('run_test', approval.approvalId, {
+        approved: true, ...extra,
+      })).resolves.toBe(false);
+      expect(service.getState().pendingApproval.approvalId).toBe(approval.approvalId);
+    }
     await expect(service.decideApproval('run_test', approval.approvalId, true)).resolves.toBe(true);
     await expect(decision).resolves.toBe('approved');
     expect(events.at(-1)).toMatchObject({
@@ -2575,6 +2585,11 @@ describe('FreedomAgentService', () => {
       origin: 'https://app.example',
     });
     expect(externalBarriers).toHaveLength(1);
+    await expect(service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      walletIndex: 99,
+    })).resolves.toBe(false);
+    expect(service.getState().pendingApproval.approvalId).toBe(approval.approvalId);
     await service.decideApproval('run_test', approval.approvalId, {
       approved: true,
       walletIndex: 0,

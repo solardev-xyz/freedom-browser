@@ -69,15 +69,54 @@ test('requires native subscription authentication and a compatible CLI without A
   const { checkClaudeLogin } = require('./claude-cli');
   const checkPolicy = jest.fn(async () => {});
   const status = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'max' };
-  const run = jest.fn(async (_file, args) => ({ stdout: args[0] === '--version' ? '2.1.290 (Claude Code)' : JSON.stringify(status) }));
+  const run = jest.fn(async (_file, args, options) => {
+    const fs = require('fs');
+    const os = require('os');
+    expect(options.cwd).not.toBe(os.tmpdir());
+    expect(fs.statSync(options.cwd).isDirectory()).toBe(true);
+    expect(args.slice(0, 3)).toEqual(['--restricted', '--setting-sources', '']);
+    return { stdout: args.includes('--version') ? '2.1.290 (Claude Code)' : JSON.stringify(status) };
+  });
   const options = { executable: '/native/claude', run, checkPolicy };
   await expect(checkClaudeLogin(options)).resolves.toBe('/native/claude');
+  expect(require('fs').existsSync(run.mock.calls[0][2].cwd)).toBe(false);
   status.authMethod = 'api_key';
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_UNAVAILABLE' });
   status.authMethod = 'claude.ai'; status.subscriptionType = 'team';
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
   run.mockResolvedValueOnce({ stdout: '2.1.100' });
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_VERSION' });
+});
+
+test.each([false, true])('retires owned CLI scratch files on shutdown or failed spawn (failure=%s)', async failure => {
+  const { EventEmitter } = require('events');
+  const { PassThrough } = require('stream');
+  const fs = require('fs');
+  const path = require('path');
+  const { startClaudeProcess } = require('./claude-cli');
+  const child = new EventEmitter();
+  child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  child.kill = jest.fn(() => { queueMicrotask(() => child.emit('close', 0)); return true; });
+  let directory;
+  const onClose = jest.fn();
+  const starting = startClaudeProcess({
+    executable: '/native/claude', model: 'sonnet', systemPrompt: 'Synthetic prompt', tools: [],
+    signal: new AbortController().signal, checkLogin: async () => {}, onEvent: () => {}, onClose,
+    spawnProcess: (_executable, _args, options) => {
+      directory = options.cwd;
+      expect(fs.readFileSync(path.join(directory, 'system.txt'), 'utf8')).toBe('Synthetic prompt');
+      expect(fs.existsSync(path.join(directory, 'mcp.json'))).toBe(true);
+      if (failure) throw new Error('Synthetic spawn failure');
+      return child;
+    },
+  });
+  if (failure) await expect(starting).rejects.toThrow('Synthetic spawn failure');
+  else {
+    const connection = await starting;
+    await connection.close();
+    expect(onClose).toHaveBeenCalledWith(null);
+  }
+  expect(fs.existsSync(directory)).toBe(false);
 });
 
 test('model discovery validates entries without guessing versions or duplicating the account default', () => {

@@ -318,10 +318,8 @@ class ConversationAttachmentStore {
     if (!filePath || classification.category === 'unsupported') {
       throw new Error('That attachment type cannot be read by Agent');
     }
-    const handle = await this.fs.open(filePath, SAFE_READ_FLAGS);
+    const { handle, stat } = await this.#openVerifiedAttachment(resource, filePath);
     try {
-      const stat = await handle.stat();
-      if (!stat.isFile()) throw new Error('The requested attachment is not a file');
       if (classification.category === 'pdf') {
         if (!this.pdfProcessor) throw new Error('PDF processing is unavailable');
         if (stat.size > MAX_FILE_BYTES) throw new Error('The PDF is larger than the 20 MB limit');
@@ -387,10 +385,8 @@ class ConversationAttachmentStore {
     if (!filePath || classification.category !== 'pdf') {
       throw new Error('Only PDF attachments can be rendered as PDF pages');
     }
-    const handle = await this.fs.open(filePath, SAFE_READ_FLAGS);
+    const { handle, stat } = await this.#openVerifiedAttachment(resource, filePath);
     try {
-      const stat = await handle.stat();
-      if (!stat.isFile()) throw new Error('The requested attachment is not a file');
       if (stat.size > MAX_FILE_BYTES) throw new Error('The PDF is larger than the 20 MB limit');
       const data = await handle.readFile();
       try {
@@ -581,6 +577,30 @@ class ConversationAttachmentStore {
     const stat = await this.fs.stat(resolved);
     if (requireDirectory && !stat.isDirectory()) throw new Error('Requested folder path is not a directory');
     return resolved;
+  }
+
+  async #openVerifiedAttachment(resource, filePath) {
+    const expected = await this.fs.lstat(filePath);
+    const handle = await this.fs.open(filePath, SAFE_READ_FLAGS);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error('The requested attachment is not a file');
+      const resolved = await this.fs.realpath(filePath);
+      const current = await this.fs.lstat(filePath);
+      if (
+        expected.isSymbolicLink() || current.isSymbolicLink() ||
+        expected.dev !== stat.dev || expected.ino !== stat.ino ||
+        current.dev !== stat.dev || current.ino !== stat.ino ||
+        (resource.kind === 'folder' &&
+          (!pathInside(resource.sourcePath, resolved) || stat.nlink !== 1))
+      ) {
+        throw new Error('The attachment changed while it was being opened; try again');
+      }
+      return { handle, stat };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
   }
 
   async #writeManifest(conversationId, resources) {

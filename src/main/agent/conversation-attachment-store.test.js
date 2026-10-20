@@ -294,6 +294,67 @@ describe('ConversationAttachmentStore', () => {
     expect(JSON.stringify(folder)).not.toContain(sourceDir);
   });
 
+  test.each([
+    ['text', 'read', 'notes.txt'],
+    ['image', 'read', 'picture.png'],
+    ['PDF text', 'read', 'report.pdf'],
+    ['PDF image', 'renderPdfPage', 'report.pdf'],
+  ])('refuses a directory-swap race before reading %s bytes', async (_kind, operation, filename) => {
+    const root = fs.realpathSync(sourceDir);
+    const folder = path.join(root, 'project');
+    const inside = path.join(folder, 'nested');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(inside, { recursive: true });
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(inside, filename), 'inside');
+    fs.writeFileSync(path.join(outside, filename), 'outside synthetic marker');
+    const pdfProcessor = { extractText: jest.fn(), renderPage: jest.fn(), renderPreview: jest.fn() };
+    const store = createStore([folder], pdfProcessor);
+    const [selection] = await store.pickFolder({ ownerId: 'window_1' });
+    const conversationId = 'conversation_bbbbbbbbbbbbbbbb';
+    const [resource] = await store.consume('window_1', [selection.selectionId], conversationId);
+    let opened;
+    store.fs = {
+      ...fs.promises,
+      async open(file, flags) {
+        // Swap the intermediate directory only during open, then restore it.
+        // A second realpath alone sees the original path again (the ABA case).
+        fs.renameSync(inside, `${inside}-original`);
+        fs.symlinkSync(outside, inside, process.platform === 'win32' ? 'junction' : 'dir');
+        opened = await fs.promises.open(file, flags);
+        fs.renameSync(inside, `${inside}-link`);
+        fs.renameSync(`${inside}-original`, inside);
+        jest.spyOn(opened, 'readFile');
+        jest.spyOn(opened, 'read');
+        jest.spyOn(opened, 'close');
+        return opened;
+      },
+    };
+    await expect(store[operation](conversationId, resource.resourceId, {
+      path: `nested/${filename}`,
+    })).rejects.toThrow('changed while it was being opened');
+    expect(opened.readFile).not.toHaveBeenCalled();
+    expect(opened.read).not.toHaveBeenCalled();
+    expect(opened.close).toHaveBeenCalledTimes(1);
+    expect(pdfProcessor.extractText).not.toHaveBeenCalled();
+    expect(pdfProcessor.renderPage).not.toHaveBeenCalled();
+  });
+
+  test('refuses hard-linked files in live folder grants', async () => {
+    const folder = path.join(sourceDir, 'project');
+    fs.mkdirSync(folder);
+    const outside = path.join(sourceDir, 'outside.txt');
+    fs.writeFileSync(outside, 'outside synthetic marker');
+    fs.linkSync(outside, path.join(folder, 'notes.txt'));
+    const store = createStore([folder]);
+    const [selection] = await store.pickFolder({ ownerId: 'window_1' });
+    const conversationId = 'conversation_bbbbbbbbbbbbbbbb';
+    const [resource] = await store.consume('window_1', [selection.selectionId], conversationId);
+    await expect(store.read(conversationId, resource.resourceId, {
+      path: 'notes.txt',
+    })).rejects.toThrow('changed while it was being opened');
+  });
+
   test('restores file snapshots but requires folders to be explicitly re-added', async () => {
     const textPath = path.join(sourceDir, 'notes.md');
     const folderPath = path.join(sourceDir, 'project');

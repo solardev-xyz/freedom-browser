@@ -130,9 +130,21 @@ function profileEndpointHash(profile) {
     .slice(0, 16);
 }
 
+function privateRuntimeBase() {
+  const candidate = process.env.XDG_RUNTIME_DIR;
+  if (candidate && path.isAbsolute(candidate) && Buffer.byteLength(candidate) < 32) {
+    try {
+      const stat = fs.lstatSync(candidate);
+      if (stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0 &&
+          typeof process.getuid === 'function' && stat.uid === process.getuid()) return candidate;
+    } catch { /* A missing/untrusted XDG directory does not prevent startup. */ }
+  }
+  return '/tmp';
+}
+
 function defaultUnixSocketRoot() {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
-  return path.join('/tmp', `freedom-runtime-${uid}`);
+  return fs.mkdtempSync(path.join(privateRuntimeBase(), `freedom-runtime-${uid}-`));
 }
 
 function createRuntimeEndpoint(profile, options = {}) {
@@ -161,8 +173,19 @@ function cleanupStaleRuntimeEndpoint(profile, inspection, options = {}) {
   if (inspection?.state !== 'stale' || inspection.discovery?.endpoint?.kind !== 'unix') {
     return false;
   }
-  const socketRoot = path.resolve(options.socketRoot || defaultUnixSocketRoot());
   const socketPath = path.resolve(inspection.discovery.endpoint.path);
+  const socketRoot = path.dirname(socketPath);
+  if (options.socketRoot) {
+    if (socketRoot !== path.resolve(options.socketRoot)) return false;
+  } else {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
+    if (!['/tmp', privateRuntimeBase()].includes(path.dirname(socketRoot)) ||
+        !new RegExp(`^freedom-runtime-${uid}(?:-[a-zA-Z0-9]{6})?$`).test(path.basename(socketRoot))) return false;
+    try {
+      const stat = fs.lstatSync(socketRoot);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o077) !== 0) return false;
+    } catch { return false; }
+  }
   const expectedPrefix = `${profileEndpointHash(requireProfile(profile))}-`;
   if (
     path.dirname(socketPath) !== socketRoot ||
@@ -213,6 +236,12 @@ function createRuntimeServer(options = {}) {
   const appVersion = options.appVersion || '0.0.0';
   const runtimePaths = getRuntimePaths(profile);
   const endpoint = createRuntimeEndpoint(profile, options);
+  const ownedSocketRoot = endpoint.kind === 'unix' && !options.socketRoot ? path.dirname(endpoint.path) : null;
+  const retireSocketRoot = () => {
+    if (!ownedSocketRoot) return;
+    try { fs.rmdirSync(ownedSocketRoot); }
+    catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error; }
+  };
   const token = options.token || crypto.randomBytes(32).toString('hex');
   if (!/^[a-f0-9]{64}$/.test(token)) {
     throw new TypeError('Runtime authentication token must be 32 bytes encoded as hex');
@@ -459,6 +488,7 @@ function createRuntimeServer(options = {}) {
 
   async function start() {
     if (state !== 'stopped') throw new Error(`Runtime server cannot start from state: ${state}`);
+    if (ownedSocketRoot) ensurePrivateDirectory(ownedSocketRoot);
     ensurePrivateDirectory(runtimePaths.runtimeDir);
     const previousRuntime = inspectRuntimeDiscovery(profile, {
       ...(options.isProcessAlive && { isProcessAlive: options.isProcessAlive }),
@@ -493,12 +523,13 @@ function createRuntimeServer(options = {}) {
       state = 'failed';
       writePrivateFile(runtimePaths.tokenPath, '');
       writeDiscovery(runtimePaths.discoveryPath, discoveryPayload());
+      retireSocketRoot();
       throw error;
     }
   }
 
   async function stop() {
-    if (state === 'stopped') return false;
+    if (state === 'stopped') { retireSocketRoot(); return false; }
     state = 'stopping';
     writeDiscovery(runtimePaths.discoveryPath, discoveryPayload());
     const activeServer = server;
@@ -514,6 +545,7 @@ function createRuntimeServer(options = {}) {
       ...discoveryPayload(),
       stoppedAt: new Date().toISOString(),
     });
+    retireSocketRoot();
     return true;
   }
 

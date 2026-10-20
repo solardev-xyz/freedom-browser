@@ -1,5 +1,10 @@
 'use strict';
 
+// Historical module/API name: the authority boundary is the conversation's
+// owned tabs and supported URL schemes, not one fixed origin. Cross-origin
+// navigation is intentional. References and approvals remain bound to the
+// observed document/origin and are rechecked before an effect is dispatched.
+
 const {
   AGENT_APPROVAL_MODES,
   normalizeAgentApprovalMode,
@@ -1174,8 +1179,9 @@ async function createOriginScopedAutomationController(options = {}) {
   ) {
     throw new TypeError('Origin-scoped automation requires a valid workspace tab observer');
   }
-  const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
-  if (!navigationScope) {
+  // Only the workspace contract is supported. This compatibility validation
+  // does not select a same-origin policy or create broader tab authority.
+  if (!normalizeAgentNavigationScope(options.navigationScope)) {
     throw new TypeError('Origin-scoped automation requires a valid navigation scope');
   }
   const approvalMode = normalizeAgentApprovalMode(options.approvalMode);
