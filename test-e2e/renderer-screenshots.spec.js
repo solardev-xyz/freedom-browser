@@ -629,6 +629,29 @@ test.describe('renderer screenshots', () => {
         surfaces.tookEverySurface();
       });
 
+      test(`AI entry points (${theme})`, async ({ electronApp, window }) => {
+        test.setTimeout(120_000);
+        const surfaces = surfaceGroup(theme, 'AI entry points');
+        await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+        const page = await recipes.settings({ app: electronApp, win: window }, 'ai');
+        const scrollbar = await guestScrollbarMask(window);
+        await expect(page.locator('#enable-ai')).not.toBeChecked();
+        await snap(surfaces, window, `${theme}-54-settings-ai-off`, { mask: scrollbar });
+        await page.locator('#enable-ai').check();
+        await expect(page.locator('#agent-provider-add')).toBeVisible();
+        await expect(page.locator('#ai-settings-status')).toBeEmpty({ timeout: 30_000 });
+        await snap(surfaces, window, `${theme}-55-settings-ai-on`, { mask: scrollbar });
+        await page.locator('#enable-ai').uncheck();
+        await go(window, 'freedom://home', 1_800);
+        const home = await pageFor(electronApp, '/pages/home.html');
+        await expect(home.locator('#ai-invitation')).toBeVisible();
+        await expect.soft(home).toHaveScreenshot(surfaces.declared(`${theme}-56-home-ai-invitation`), {
+          ...COMPARE,
+          clip: { x: 0, y: 0, width: 720, height: 320 },
+        });
+        surfaces.tookEverySurface();
+      });
+
       test(`internal page: home (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(120_000);
         const surfaces = surfaceGroup(theme, 'internal page: home');
