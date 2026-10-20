@@ -171,7 +171,23 @@
 .agent-floating[data-presentation='launcher'] .agent-workspace-scroll {
   flex: 0 1 auto;
   padding: 0 24px;
-  overflow: visible;
+  overflow: auto;
+}
+
+@media (max-height: 700px) {
+  .agent-floating[data-presentation='launcher'] .agent-sidebar-inner {
+    --agent-launcher-top: 16px;
+  }
+
+  .agent-floating[data-presentation='launcher'] .agent-example-detail,
+  .agent-floating-ghost-greeting .agent-example-detail {
+    display: none;
+  }
+
+  .agent-floating[data-presentation='launcher'] .agent-example,
+  .agent-floating-ghost-greeting .agent-example {
+    padding: 9px 12px;
+  }
 }
 
 .agent-floating[data-presentation='launcher'] .agent-run-header,
@@ -739,9 +755,11 @@
 
 /* The centred card dissolving while its composer moves to the column. */
 .agent-floating-ghost {
+  --muted: var(--agent-glass-muted);
   position: fixed;
   z-index: 39;
   pointer-events: none;
+  overflow: hidden;
   border-radius: 26px;
 }
 

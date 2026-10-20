@@ -1443,7 +1443,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-empty-state {
-  max-width: 250px;
+  max-width: 480px;
   margin: 72px auto 0;
   color: var(--muted);
   text-align: center;
@@ -1469,6 +1469,71 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   margin-top: 7px;
   font-size: 11px;
   line-height: 1.5;
+}
+
+.agent-examples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.agent-examples[hidden] {
+  display: none;
+}
+
+.agent-example {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--agent-glass-border);
+  border-radius: 12px;
+  background: var(--agent-glass-field);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-example:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.agent-example:disabled {
+  cursor: default;
+}
+
+.agent-example:disabled .agent-example-title {
+  color: var(--muted);
+}
+
+.agent-example:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-example-title {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.agent-example-detail {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (max-width: 380px) {
+  .agent-examples {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-example {
+    padding: 9px 12px;
+  }
 }
 
 .agent-card {

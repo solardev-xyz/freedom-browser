@@ -198,6 +198,10 @@ enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to 
 or work on a project. Conversations appear over the page; Agent-first mode gives
 the conversation the full window.
 
+A new chat offers starting prompts for a game, personal website, source
+comparison or project review. Choose one to fill the composer, edit it, then send
+when ready. Choosing an example never starts work or publishes anything by itself.
+
 - **Browser work:** Agent uses conversation-owned tabs and can delegate independent
   work to helpers. Helper cards show progress, reports, and individual Stop controls.
 - **Project work:** Create a managed workspace or attach an existing folder read-only.

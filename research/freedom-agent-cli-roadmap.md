@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-20
-Status: Review fixes and AI settings/onboarding integrated; qualification in progress; examples, dictation and domain skills planned
+Status: Review fixes and AI settings/onboarding integrated; examples implemented for smoke testing; dictation and domain skills planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
@@ -11,7 +11,8 @@ The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
-AI3–AI5 remain planned. Ordinary browsing remains a complete experience with AI off.
+AI3 example prompts are implemented for maintainer smoke testing; AI4/AI5 remain
+planned. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -332,11 +333,14 @@ after that smoke test; competing notification surfaces are tracked separately in
   persistence, retained model routing, start/disable races, cancellation across
   saved chats, preserved previews, MCP sign-in/transport cancellation, Settings
   subscription cleanup, storage errors and catalogue invalidation.
-- Linux screenshot baselines remain an integration qualification follow-up before
-  release, including adding AI to the Linux screenshot tour now that the design
-  is smoke-approved. Mac captures are visual evidence, not Linux
-  baseline replacements. Live account reauthentication and Windows/Linux UI
-  smoke remain separate from the deterministic Mac fixtures.
+- Linux screenshot integration is qualified on the October 20 follow-up tree:
+  the full native Linux tour rendered **112 captures / 16 tests**, and the ordinary
+  comparison run passed **16/16** after reviewing the intended changes. All 38
+  updated existing images change only the Settings navigation (AI plus displaced
+  Advanced/About entries); six new references cover AI off/on and the invitation
+  in both themes. The Linux theme/product run passed **19/19**. Hosted exact-head
+  CI, live account reauthentication and physical Windows/Linux UI smoke remain
+  separately scoped; these Linux references were not generated on macOS.
 - A historical chat with messages but no recorded model cannot safely infer
   which connection originally served it: it remains readable and asks for a
   new chat instead of silently using a changed default. New project chats now
@@ -365,7 +369,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | --- | --- | --- | --- |
 | 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
-| 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | AI1/AI2 entry flow; not started |
+| 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
 
@@ -461,6 +465,37 @@ Keep cards compact and keyboard-accessible, preserve user drafts/attachments, an
 hide them once a conversation starts. Qualify the example workflows end to end,
 including no connected provider and a local-model setup. Add a named-site example
 only once AI5's corresponding namespace flow is qualified.
+
+**Implementation — October 20:** four bundled cards appear in a new chat in
+both floating and Agent-first layouts. Selection fills an editable draft and
+focuses the composer; it does not send, publish, purchase, alter approval posture
+or replace existing text. Cards retain their space and become unavailable while
+a draft is present, so typing does not move the composer. They disappear once a
+conversation starts. Attachments are preserved; without a provider the existing
+setup flow leads to Settings. The project example uses the existing **Add folder…**
+attachment flow; opening a managed/external project is a separate conversation flow.
+
+- Both-theme captures and reachability checks cover 1100×800, 760×560 and
+  420×640 in floating and Agent-first layouts. Short launchers compact the cards
+  and allow greeting content to scroll without overlapping the composer.
+- Automated checks cover keyboard selection, editable/stationary drafts and
+  the first-send animation starting from the displayed launcher geometry,
+  conversation/reset state, no inference on selection, staged-file preservation
+  through the real attachment store with a stubbed picker dialog, and no-provider
+  setup. Holding Enter cannot turn selection into repeated prompt submission.
+- Lint and the full unit suite passed (**10,561 tests / 129 skipped**) on the
+  follow-up tree. The new E2E spec is included in the Agent CI job. Existing
+  creation/publication approvals remain unchanged; no live publication or domain
+  purchase was part of these fixtures.
+- Final focused checks: **5/5 example cases on macOS and Linux** after the
+  review repairs; the full Linux theme/onboarding/product run passed **19/19**
+  earlier in this slice. Claude re-reviewed through Herdr and reported **no
+  remaining defects**; its review was source/image based, while the automated
+  runs above exercised Electron. The final cropped AI entry references passed
+  a separate ordinary Linux comparison (**2/2**).
+- Maintainer smoke remains: open a new chat, choose/edit each example, attach a
+  project using **Add folder…**, and check the preferred theme/window size. Real
+  model quality and public publication are separate from deterministic UI checks.
 
 ### AI4 — Voice dictation in the composer
 

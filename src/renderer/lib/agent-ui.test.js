@@ -156,6 +156,7 @@ function createAgentElements() {
     'agent-wallet-unlock-submit',
     'agent-transcript',
     'agent-empty-state',
+    'agent-examples',
     'agent-model-menu-button',
     'agent-active-model-label',
     'agent-model-menu',
@@ -271,6 +272,9 @@ function createAgentElements() {
   elements['agent-wallet-password'] = createElement('input');
   elements['agent-wallet-unlock-submit'] = createElement('button');
   elements['agent-transcript'].hidden = true;
+  const example = createElement('button');
+  example.dataset.agentExample = 'Build a small browser game';
+  elements['agent-examples'].appendChild(example);
   elements['agent-model-menu-button'] = createElement('button');
   elements['agent-model-menu'] = createElement('div');
   elements['agent-model-menu'].hidden = true;
@@ -887,6 +891,32 @@ describe('Agent UI', () => {
     await flush();
     expect(help.hidden).toBe(false);
     expect(note.textContent).toContain('page you shared');
+  });
+
+  test('examples prepare an editable draft without submitting or replacing existing text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const examples = ctx.elements['agent-examples'];
+    const button = examples.children[0];
+    const prompt = ctx.elements['agent-prompt'];
+    expect(examples.hidden).toBe(false);
+    button.dispatch('click');
+    expect(prompt.value).toBe('Build a small browser game');
+    expect(examples.hidden).toBe(false);
+    expect(button.disabled).toBe(true);
+    prompt.dispatch('keydown', { key: 'Enter', repeat: true, preventDefault: jest.fn() });
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+
+    prompt.value = 'Keep my own draft';
+    button.dispatch('click');
+    expect(prompt.value).toBe('Keep my own draft');
+    prompt.value = '';
+    prompt.dispatch('input');
+    expect(examples.hidden).toBe(false);
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'A task' });
+    expect(examples.hidden).toBe(true);
+    button.dispatch('click');
+    expect(prompt.value).toBe('');
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {

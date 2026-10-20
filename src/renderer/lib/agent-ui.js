@@ -1616,6 +1616,7 @@ function dissolveLauncherGhost(rect, greetingRect) {
   if (typeof document.createElement !== 'function' || !document.body?.appendChild) return;
   const ghost = document.createElement('div');
   ghost.className = 'agent-floating-ghost';
+  ghost.inert = true;
   ghost.setAttribute('aria-hidden', 'true');
   Object.assign(ghost.style, {
     left: `${rect.left}px`,
@@ -1627,6 +1628,7 @@ function dissolveLauncherGhost(rect, greetingRect) {
   if (greetingRect?.width && typeof elements.emptyState.cloneNode === 'function') {
     greeting = elements.emptyState.cloneNode(true);
     greeting.removeAttribute?.('id');
+    greeting.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'));
     greeting.hidden = false;
     greeting.classList?.add('agent-floating-ghost-greeting');
     Object.assign(greeting.style, {
@@ -1748,6 +1750,12 @@ function setRunState(status, label) {
 
 function updateSendAvailability() {
   const hasText = Boolean(elements.prompt.value.trim());
+  if (elements.examples) {
+    elements.examples.hidden = !aiEnabled || Boolean(currentConversationId) || !elements.transcript.hidden;
+    elements.examples.querySelectorAll('[data-agent-example]').forEach(button => {
+      button.disabled = Boolean(elements.prompt.value) || currentRunStatus !== 'idle' || Boolean(pendingApproval);
+    });
+  }
   let action = 'send';
   let label = 'Run task';
   let disabled = true;
@@ -4308,6 +4316,7 @@ export function initAgentUi(options = {}) {
     walletUnlockSubmit: byId('agent-wallet-unlock-submit'),
     transcript: byId('agent-transcript'),
     emptyState: byId('agent-empty-state'),
+    examples: byId('agent-examples'),
     modelMenuButton: byId('agent-model-menu-button'),
     activeModelLabel: byId('agent-active-model-label'),
     modelMenu: byId('agent-model-menu'),
@@ -4423,7 +4432,8 @@ export function initAgentUi(options = {}) {
         dismissedPageContextTabId = null;
         const prompt = pageActionPrompt(action, tab.url);
         if (!providerReady) {
-          elements.prompt.value = prompt;
+          if (!elements.prompt.value) elements.prompt.value = prompt;
+          updateSendAvailability();
           showProviderSetup();
           return;
         }
@@ -4529,9 +4539,19 @@ export function initAgentUi(options = {}) {
   });
   elements.newChat.addEventListener('click', clearConversation);
   elements.prompt.addEventListener('input', updateSendAvailability);
+  elements.examples?.querySelectorAll('[data-agent-example]').forEach(button => {
+    button.addEventListener('click', () => {
+      if (!aiEnabled || currentConversationId || currentRunStatus !== 'idle' ||
+          !elements.transcript.hidden || pendingApproval || elements.prompt.value) return;
+      elements.prompt.value = button.dataset.agentExample;
+      updateSendAvailability();
+      focusComposer();
+    });
+  });
   elements.prompt.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     event.preventDefault();
+    if (event.repeat) return;
     if (!elements.run.disabled) submitComposer();
   });
   elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
