@@ -511,8 +511,9 @@ attachment flow; opening a managed/external project is a separate conversation f
 the maintainer's approval of cloud-plus-local onboarding. OpenAI, OpenRouter,
 Venice and NEAR API connections provide stop-then-transcribe dictation; an optional
 checksum-pinned sherpa-onnx 1.13.8/Whisper Base download provides local inference
-without a new npm dependency. First use asks for the audio destination; subsequent
-clicks record immediately. Settings → AI holds the same service/language choice.
+without a new npm dependency. Microphone clicks record immediately with a saved
+choice or a suitable connected API service; setup opens only when neither is
+available. The chevron and Settings → AI hold the same service/language choice.
 No automatic Send, destination fallback or inherited chat-E2EE claim. Native
 installation/inference was exercised on macOS arm64, with generated-audio Electron
 coverage for capture/insert/cancel and responsive themes. Real microphone/TCC,

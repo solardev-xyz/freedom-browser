@@ -142,7 +142,8 @@ export function createAgentDictation({ button, optionsButton, panel, feedback, c
       const state = await api.getAgentDictationState();
       if (current !== generation || !canRecord()) return;
       if (!state?.ok) throw new Error(state?.error?.message || 'Could not load dictation.');
-      const option = state.options.find(option => option.providerId === state.preferences.providerId && option.available && option.ready);
+      const providerId = state.preferences.providerId || state.suggestedProviderId;
+      const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
       if (option) void start(); else await openChoices(true);
     } catch (error) { if (current === generation) status(error.message, true); }
     finally { button.disabled = false; }

@@ -43,12 +43,55 @@ describe('dictation service', () => {
   test('offers only supported connected API services and an explicit local option', () => {
     expect(service.state().options.map(option => option.providerId)).toEqual(['local', 'openai', 'venice', 'near-ai', 'openrouter']);
     expect(service.state().preferences.providerId).toBe(null);
-    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
     choose('venice');
     expect(fs.readFileSync(path.join(root, 'dictation.json'), 'utf8')).not.toContain('credential');
     store.getPublicStatus.mockReturnValue({ connections: [] });
     expect(() => service.begin(owner)).toThrow();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('first microphone use remembers the active supported provider without requiring setup', async () => {
+    expect(service.state().suggestedProviderId).toBe('venice');
+    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
+    expect(service.state().preferences).toEqual({ providerId: 'venice', language: 'auto', requireZeroRetention: true });
+    expect(fetchImpl.mock.calls[0][0]).toContain('api.venice.ai');
+    const reopened = new DictationService({ dataDir: root, providerStore: store, local, assertEnabled: () => {} });
+    expect(reopened.state().preferences.providerId).toBe('venice');
+  });
+
+  test('an unsupported chat subscription uses another connected speech service, keeping ZDR on', async () => {
+    store.getPublicStatus.mockReturnValue({ providerId: 'anthropic-claude', connections: [
+      { kind: 'subscription', providerId: 'anthropic-claude' },
+      { kind: 'hosted', providerId: 'openrouter' },
+      { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
+    ] });
+    expect(service.state().suggestedProviderId).toBe('openrouter');
+    await service.transcribe(owner, { id: service.begin(owner).id, audio: recording() });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).provider.zdr).toBe(true);
+    expect(service.state().preferences.providerId).toBe('openrouter');
+  });
+
+  test('automatic selection respects saved choices and never falls back after a saved connection disappears', () => {
+    choose('local');
+    service.begin(owner);
+    expect(service.state().preferences.providerId).toBe('local');
+    choose('near-ai');
+    service.begin(owner);
+    expect(service.state().preferences.providerId).toBe('near-ai');
+    store.getPublicStatus.mockReturnValue({ providerId: 'openrouter', connections: [{ kind: 'hosted', providerId: 'openrouter' }] });
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(service.state().preferences.providerId).toBe('near-ai');
+  });
+
+  test('without a suitable cloud connection first use requires setup rather than downloading or selecting local', () => {
+    store.getPublicStatus.mockReturnValue({ providerId: 'openai-chatgpt', connections: [
+      { kind: 'subscription', providerId: 'openai-chatgpt' },
+      { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
+    ] });
+    expect(service.state().suggestedProviderId).toBe(null);
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(local.install).not.toHaveBeenCalled();
+    expect(service.state().preferences.providerId).toBe(null);
   });
 
   test.each(['openai', 'venice', 'near-ai'])('%s uploads only validated audio and transcription settings', async providerId => {

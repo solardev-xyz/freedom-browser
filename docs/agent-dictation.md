@@ -5,10 +5,13 @@ click again to finish, then review the text and send it normally. Escape or Canc
 discards a recording. Dictation also works when composing guidance for a running
 Agent task.
 
-On first use, choose a transcription service and language. Supported existing
-API-key connections are OpenAI, OpenRouter, Venice and NEAR AI. The conversation
-model stays unchanged. Settings → AI and the arrow beside the microphone expose
-the same preferences. Subscription connections do not establish transcription
+The microphone starts immediately with a remembered dictation service. On first
+use it selects the active provider when supported, otherwise the first suitable
+connected API-key service, and remembers that choice. OpenAI, OpenRouter, Venice
+and NEAR AI are supported. With no suitable connection it opens setup, including
+the optional local download. Settings → AI and the arrow beside the microphone
+always expose the service and language preferences. The conversation model stays
+unchanged. Subscription connections do not establish transcription
 access and are not offered as speech services. Meta, xAI, custom endpoints and
 live partial transcripts are outside this first draft.
 
@@ -68,6 +71,8 @@ signed-package behavior still need qualification before release.
   microphone releases capture and prevents a late transcript entering another draft
 - Cloud permission denial, provider errors and no-speech recordings leave the
   draft unchanged. No cloud service is silently selected after a failure
+- A remembered service that becomes unavailable opens setup rather than silently
+  switching the audio destination. TEE-only connections are excluded from automatic selection
 - Chromium capture uses an AudioWorklet, with resampling outside the renderer
   thread. Native inference runs in a separate process
 

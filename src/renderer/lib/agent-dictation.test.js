@@ -73,12 +73,34 @@ test('microphone denial is actionable and preserves draft and selection', async 
   expect(ctx.prompt.value).toBe('Build this please'); expect(ctx.ui.busy).toBe(false);
 });
 
-test('first use shows a chooser before starting the microphone', async () => {
+test('first use starts the suggested connected service without showing setup', async () => {
+  const ctx = setup(); ctx.state.preferences.providerId = null; ctx.state.suggestedProviderId = 'venice';
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.panel.hidden).toBe(true); expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+  expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+  expect(ctx.feedback.textContent).toContain('Listening · Venice');
+});
+
+test('the chevron opens preferences without starting the microphone even when a service is connected', async () => {
+  const ctx = setup(); ctx.state.preferences.providerId = null; ctx.state.suggestedProviderId = 'venice';
+  ctx.optionsButton.dispatch('click'); await flush();
+  expect(ctx.panel.hidden).toBe(false); expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+});
+
+test('without a suitable connection first use shows setup before starting the microphone', async () => {
   const ctx = setup(); ctx.state.preferences.providerId = null;
+  ctx.state.options = [{ providerId: 'local', name: 'On this device', available: true, ready: false }];
   ctx.button.dispatch('click'); await flush();
   expect(ctx.panel.hidden).toBe(false); expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
   expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
   ctx.ui.escape(); expect(ctx.panel.hidden).toBe(true);
+});
+
+test('a saved unavailable service opens setup instead of silently choosing another connection', async () => {
+  const ctx = setup(); ctx.state.preferences.providerId = 'near-ai'; ctx.state.suggestedProviderId = 'venice';
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.panel.hidden).toBe(false); expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
 });
 
 test('main-process cancellation releases the recorder and ignores any late finish', async () => {

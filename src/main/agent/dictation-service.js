@@ -103,8 +103,9 @@ class DictationService {
         detail: allowed ? `Audio is sent to ${provider.name} over HTTPS. Chat end-to-end encryption does not cover dictation.`
           : 'Dictation does not meet this connection’s TEE-only policy.' });
     }
+    const connected = options.filter(option => option.providerId !== 'local' && option.available && option.ready);
     return { preferences: { ...this.preferences }, options, languages: [...LANGUAGES],
-      suggestedProviderId: options.find(option => option.providerId === status.providerId && option.available)?.providerId || null };
+      suggestedProviderId: (connected.find(option => option.providerId === status.providerId) || connected[0])?.providerId || null };
   }
 
   choose(input) {
@@ -141,8 +142,11 @@ class DictationService {
   begin(sender) {
     this.assertEnabled();
     this.cancel(sender);
-    const option = this.state().options.find(option => option.providerId === this.preferences.providerId && option.available && option.ready);
+    const state = this.state();
+    const providerId = this.preferences.providerId || state.suggestedProviderId;
+    const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
     if (!option) throw dictationError('DICTATION_SETUP', 'Choose a dictation service or download the local model first.');
+    if (!this.preferences.providerId) this.choose({ ...this.preferences, providerId });
     const id = randomUUID();
     const controller = new AbortController();
     const session = { id, controller, preferences: { ...this.preferences }, recording: true };

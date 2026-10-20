@@ -52,11 +52,25 @@ async function prepare(window, electronApp) {
   });
 }
 
-test('first-use consent, real audio capture, cloud upload and editable insertion without sending', async ({ window, electronApp }, testInfo) => {
+test('first microphone click uses a connected service immediately without setup', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  expect((await window.evaluate(() => window.electronAPI.getAgentDictationState())).preferences.providerId).toBe(null);
+  await window.locator('#agent-prompt').fill('Build');
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-dictation-panel')).toBeHidden();
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening · OpenAI');
+  expect((await window.evaluate(() => window.electronAPI.getAgentDictationState())).preferences.providerId).toBe('openai');
+  await window.waitForTimeout(600);
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
+  await expect(window.locator('#agent-transcript')).toBeHidden();
+});
+
+test('chevron opens preferences, real audio capture, cloud upload and editable insertion without sending', async ({ window, electronApp }, testInfo) => {
   await prepare(window, electronApp);
   const prompt = window.locator('#agent-prompt');
   await prompt.fill('Build');
-  await window.locator('#agent-dictation').click();
+  await window.locator('#agent-dictation-options').click();
   const chooser = window.locator('#agent-dictation-panel');
   await expect(chooser).toBeVisible();
   await chooser.getByLabel('Dictation service').selectOption('openai');
@@ -72,6 +86,8 @@ test('first-use consent, real audio capture, cloud upload and editable insertion
   }
   await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible()).setSize(1100, 800));
   await chooser.getByRole('button', { name: 'Use for dictation' }).click();
+  await expect(chooser).toBeHidden();
+  await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
   await expect(prompt).toHaveAttribute('readonly', '');
   await expect(window.locator('#agent-run')).toBeDisabled();
