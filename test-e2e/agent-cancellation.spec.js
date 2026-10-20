@@ -480,10 +480,24 @@ test('Take over cancels an active browser wait and the same run can resume', asy
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
 });
 
+async function openAgentPane(window, pane) {
+  const toggle = window.locator(`#agent-${pane}-sidebar-toggle`);
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
+async function exitAgentFirst(window) {
+  await openAgentPane(window, 'session');
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
+}
+
 test('a conversation survives its original and then all task tabs closing', async ({
+  electronApp,
   window,
   harness,
 }) => {
+  await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 800));
   for (let index = 1; index <= 5; index += 1) {
     await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
       body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
@@ -512,6 +526,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
     /linear-gradient/
   );
   await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');
+  await openAgentPane(window, 'workspace');
   await expect(window.locator('#agent-page-surface webview:not(.hidden)')).toBeVisible();
   const compactTabStrip = await window.locator('#agent-task-page-list').evaluate((list) => {
     const tabs = [...list.querySelectorAll('.tab:not([hidden])')];
@@ -541,8 +556,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await window.locator('#agent-task-page-list .tab:not([hidden])').first().click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
-  await window.locator('#agent-mode-toggle').click();
-  await window.locator('#agent-mode-browser').click();
+  await exitAgentFirst(window);
 
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
@@ -571,9 +585,11 @@ test('a conversation survives its original and then all task tabs closing', asyn
 });
 
 test('session switching restores live workspaces and Claim transfers Agent tabs', async ({
+  electronApp,
   window,
   harness,
 }) => {
+  await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 800));
   for (let index = 1; index <= 5; index += 1) {
     await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
       body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
@@ -589,8 +605,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
-  await window.locator('#agent-mode-toggle').click();
-  await window.locator('#agent-mode-browser').click();
+  await exitAgentFirst(window);
 
   await window.locator('[data-test="new-tab-btn"]').click();
   await expect(window.locator('[data-test="tab"]')).toHaveCount(7);
@@ -604,6 +619,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(2);
   await expect(window.locator('#agent-task-page-count')).toHaveText('0');
 
+  await openAgentPane(window, 'session');
   const firstSession = window
     .locator('#agent-session-list .agent-session-row')
     .filter({ hasText: 'CREATE_FIVE_TASK_TABS' })
@@ -619,8 +635,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('0');
   await firstSession.click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
-  await window.locator('#agent-mode-toggle').click();
-  await window.locator('#agent-mode-browser').click();
+  await exitAgentFirst(window);
 
   const claimedTab = window.locator('[data-test="tab"].agent-owned').first();
   await claimedTab.click();
@@ -633,8 +648,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('4');
   await window.locator('#agent-new-chat').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
-  await window.locator('#agent-mode-toggle').click();
-  await window.locator('#agent-mode-browser').click();
+  await exitAgentFirst(window);
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');
   await expect(window.locator('#webview-container webview:not(.hidden)')).toBeVisible();

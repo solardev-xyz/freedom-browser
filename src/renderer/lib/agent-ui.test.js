@@ -2663,6 +2663,28 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
   });
 
+  test.each([
+    ['agent-approval-mode-button', 'agent-approval-mode-popover'],
+    ['agent-attachment-button', 'agent-attachment-menu'],
+  ])('an empty workspace refresh preserves the open %s menu', async (button, menu) => {
+    let resolveProjection;
+    const pendingProjection = new Promise(resolve => { resolveProjection = resolve; });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn()
+        .mockResolvedValueOnce({ ok: true, state: { status: 'idle' } })
+        .mockReturnValue(pendingProjection),
+    } });
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Research' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    ctx.elements[button].dispatch('click');
+    expect(ctx.elements[menu].hidden).toBe(false);
+    resolveProjection({ ok: true, state: { status: 'ready', conversationId: 'conversation_test', workspace: null } });
+    await flush();
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(true);
+    expect(ctx.elements[menu].hidden).toBe(false);
+    expect(ctx.elements[button].getAttribute('aria-expanded')).toBe('true');
+  });
+
   test('shows conversation-owned running processes and exposes preview and stop controls', async () => {
     const process = {
       processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa',

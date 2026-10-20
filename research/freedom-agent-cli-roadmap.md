@@ -29,7 +29,7 @@ this iteration.
   `5779425e` (authority/runtime) and `d234673b` (renderer/qualification).
   `6b68cf3e` then integrated main at `11615a9a`, resolving the HTTP fixture
   overlap while retaining exact URL matching, response delay and cancellation
-  activity accounting. The combined tree passes lint and **10,532 unit tests /
+  activity accounting. The combined tree passes lint and **10,535 unit tests /
   129 skipped**; fresh gateway and Agent product/layout checks pass too. The earlier synchronization
   `a6cdeb08` incorporated main at `8487e566`; `9251baf0` fixed test portability.
 - Local validation at `9251baf0`: lint, **10,121 unit tests passed / 129 skipped**;
@@ -182,7 +182,7 @@ and wallet approval; they do not claim new real-account or hardware qualificatio
 
 - `5779425e`: authority/filesystem/runtime repairs; initial lint and **10,141 unit
   tests passed / 129 skipped**. After main integration and the Find regression,
-  lint and **10,533 unit tests / 129 skipped** pass. The real installed Claude
+  lint and **10,535 unit tests / 129 skipped** pass. The real installed Claude
   CLI login probe passed without inference or exposing credentials. All tests use controlled fixtures for races,
   wallet signatures and provider/network side effects.
 - Renderer repairs have fresh dark/light captures and Electron pointer/keyboard
@@ -204,7 +204,16 @@ and wallet approval; they do not claim new real-account or hardware qualificatio
   All 104 combined-head surfaces were inspected; 99 visibly changed references
   were adopted in both themes, with Settings taken after the main merge rather
   than from the older capture. The Linux comparison passes at `fd6725ca`; the
-  final reference/Find-focus commits still need their normal PR comparison.
+  final reference/Find-focus comparison also passes at `ab7ee059`, along with
+  Linux chrome/layout and theme parity.
+- CI's smaller macOS desktop exposed old tests that assumed Agent-first's page
+  and sessions panes were always open. Conversation/session and permission tests
+  now use the compact overlay controls explicitly; all three pass locally at
+  narrow widths. A separate late workspace refresh genuinely closed unrelated
+  composer menus: the refresh now dismisses only workspace controls, with two
+  failing-before/passing-after regressions. The wallet fixture now waits for
+  actual account/transaction completion rather than racing ahead after clicks;
+  wallet and cross-origin cases each passed three consecutive Electron runs.
 - One native macOS ordinary-page Fullscreen API test stalls awaiting
   `document.exitFullscreen()`. It reproduces on the unchanged `0b4bb4f2` source
   exported to a separate scratch directory as well as the repaired tree. F11,

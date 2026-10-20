@@ -728,15 +728,23 @@ async function handleCompletion(request, response) {
         });
         break;
       case 4:
-        emitToolCall(response, 5, 'browser_snapshot', {});
+        // Provider requests resolve asynchronously after a click. Wait for the
+        // actual account before constructing a transaction with its address.
+        emitToolCall(response, 5, 'browser_wait', { condition: 'text', text: 'Connected 0x' });
         break;
       case 5:
-        emitToolCall(response, 6, 'browser_click', {
+        emitToolCall(response, 6, 'browser_snapshot', {});
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_click', {
           ref: requireRef(elements, 'Send test transaction'),
         });
         break;
-      case 6:
-        emitToolCall(response, 7, 'browser_snapshot', {});
+      case 7:
+        emitToolCall(response, 8, 'browser_wait', { condition: 'text', text: 'Transaction 0x' });
+        break;
+      case 8:
+        emitToolCall(response, 9, 'browser_snapshot', {});
         break;
       default:
         emitFinal(
@@ -1958,8 +1966,10 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
     'browser_click',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
   ]);
 });

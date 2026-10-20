@@ -1285,7 +1285,11 @@ function renderWorkspaceProcesses(processes, servers = []) {
     }
     for (const process of unsaved) list.appendChild(createWorkspaceProcessItem(process));
   }
-  if (!hasWorkspacePanel) closeComposerPopovers();
+  if (!hasWorkspacePanel) {
+    elements.processCompactPopover.hidden = true;
+    elements.processCompactToggle.setAttribute('aria-expanded', 'false');
+    workspaceInspector?.dismissPopover();
+  }
 }
 
 async function refreshWorkspaceProjection() {

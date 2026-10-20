@@ -129,6 +129,8 @@ test('re-hosted page permission controls remain reachable at narrow widths', asy
   await harness.setContentFixture(page, { body: '<!doctype html><title>Permission fixture</title><button id="ask" onclick="Notification.requestPermission()">Ask</button>' });
   await openConversation(electronApp, window);
   await window.locator('#agent-first-toggle').click();
+  const workspaceToggle = window.locator('#agent-workspace-sidebar-toggle');
+  if (await workspaceToggle.getAttribute('aria-expanded') === 'false') await workspaceToggle.click();
   const input = window.locator('#address-input');
   await input.fill(page);
   await input.press('Enter');
@@ -137,7 +139,7 @@ test('re-hosted page permission controls remain reachable at narrow widths', asy
     catch { return ''; }
   })).toBe('Permission fixture');
   await resize(electronApp, 600, 600);
-  await window.locator('#agent-workspace-sidebar-toggle').click();
+  if (await workspaceToggle.getAttribute('aria-expanded') === 'false') await workspaceToggle.click();
   await window.evaluate(async () => {
     await document.querySelector('webview:not(.hidden)').executeJavaScript('document.getElementById("ask").click(); true');
   });
