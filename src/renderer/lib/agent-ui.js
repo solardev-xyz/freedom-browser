@@ -152,6 +152,9 @@ let scopeNotice = '';
 let sessionSidebarOpen = true;
 let compactAgentLayout = false;
 let compactWorkspaceOpen = false;
+// Whether the sessions column was open when the compact layout closed it, so
+// widening back past the breakpoint can restore it (null = nothing to restore).
+let sessionSidebarOpenBeforeCompact = null;
 let taskPagesHome = null;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
@@ -1362,7 +1365,11 @@ function syncCompactAgentLayout() {
   }
   if (compact) {
     compactWorkspaceOpen = false;
+    sessionSidebarOpenBeforeCompact = sessionSidebarOpen;
     setSessionSidebarOpen(false);
+  } else if (sessionSidebarOpenBeforeCompact !== null) {
+    setSessionSidebarOpen(sessionSidebarOpenBeforeCompact);
+    sessionSidebarOpenBeforeCompact = null;
   }
   syncWorkspaceSidebar();
 }

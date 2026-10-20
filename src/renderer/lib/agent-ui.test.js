@@ -832,6 +832,36 @@ describe('Agent UI', () => {
     expect(view.children.filter(child => child === strip)).toHaveLength(1);
   });
 
+  test('restores the sessions column the compact layout closed once the window widens again', async () => {
+    const ctx = await loadAgentUi({ windowGlobals: { innerWidth: 1280 } });
+    const resize = () => window.addEventListener.mock.calls
+      .filter(([type]) => type === 'resize')
+      .forEach(([, handler]) => handler());
+    const closed = () => ctx.document.body.classList.contains('agent-session-sidebar-closed');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.emit({ type: 'run_started', runId: 'run_compact', conversationId: 'compact_test', userText: 'Plan a trip' });
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(closed()).toBe(false);
+
+    window.innerWidth = 1000;
+    resize();
+    expect(closed()).toBe(true);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(false);
+    expect(ctx.elements['agent-session-sidebar-toggle'].getAttribute('aria-expanded')).toBe('true');
+
+    // A column the user hid before narrowing stays hidden after widening.
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(true);
+    window.innerWidth = 1000;
+    resize();
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(true);
+  });
+
   test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {
     const ctx = await loadAgentUi({
       electronAPI: {

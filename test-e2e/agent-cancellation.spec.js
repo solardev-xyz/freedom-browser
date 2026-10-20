@@ -308,9 +308,35 @@ async function configureFixtureProvider(window) {
   await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
   await window.locator('#agent-sidebar-back').click();
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
-  await window.locator('#agent-approval-mode-button').click();
-  await window.locator('#agent-approval-mode-every').click();
+  await chooseApprovalMode(window, '#agent-approval-mode-every');
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
+}
+
+// Leaving setup moves the floating conversation from its column into the
+// centred launcher, which plays Web Animations on the panel and composer. On
+// slow CI desktops the menu click could land while that settled and the menu
+// was not open afterwards (a 30s wait for its option, then a pass on retry).
+// Let the move finish, then confirm the menu actually opened before choosing.
+async function chooseApprovalMode(window, option) {
+  const button = window.locator('#agent-approval-mode-button');
+  const popover = window.locator('#agent-approval-mode-popover');
+  await expect
+    .poll(() =>
+      window.evaluate(() =>
+        document.getAnimations().filter((animation) =>
+          animation.playState === 'running' &&
+          animation.effect?.getComputedTiming().iterations !== Infinity
+        ).length
+      )
+    )
+    .toBe(0);
+  await expect(async () => {
+    if (await popover.isHidden()) await button.click();
+    await expect(popover).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 10_000 });
+  await window.locator(option).click();
+  await expect(popover).toBeHidden();
+  await expect(window.locator(option)).toHaveAttribute('aria-pressed', 'true');
 }
 
 async function openSharedStartPage(window, harness) {
