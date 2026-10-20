@@ -1,4 +1,5 @@
 import { createAgentProviderUi } from './agent-provider-ui.js';
+import { createDictationChoices } from './dictation-choices.js';
 
 const api = window.freedomAPI;
 const toggle = document.getElementById('enable-ai');
@@ -11,6 +12,9 @@ let enabled = false;
 let revision = 0;
 let pending = false;
 let loaded = false;
+const dictationHost = document.getElementById('ai-dictation-settings');
+const dictation = createDictationChoices(dictationHost, api, { autoSave: true });
+dictationHost.addEventListener('dictation-connect', () => document.getElementById('agent-provider-add').click());
 const updateNext = (state) => {
   next.hidden = !enabled || state?.configured !== true;
   if (enabled && state?.configured && status.textContent === 'Loading providers…')
@@ -39,6 +43,7 @@ const providerUi = createAgentProviderUi({
 async function refresh() {
   if (!enabled || !location.hash.replace(/^#/, '').startsWith('ai')) return;
   const current = ++revision;
+  void dictation.refresh();
   if (!loaded) {
     providerUi.invalidateCatalog();
     status.textContent = 'Loading providers…';
@@ -56,9 +61,11 @@ function apply(settings) {
   enabled = settings?.enableAi === true;
   toggle.checked = enabled;
   providers.hidden = !enabled;
+  dictationHost.hidden = !enabled;
   note.hidden = enabled;
   updateNext(providerUi.state.providerStatus);
   if (!enabled) {
+    dictation.cancel();
     revision += 1;
     loaded = false;
     providerUi.invalidateCatalog();
@@ -110,6 +117,7 @@ window.addEventListener('hashchange', refresh);
 window.addEventListener(
   'pagehide',
   () => {
+    dictation.dispose();
     revision += 1;
     void providerUi.cancelProviderLogin();
   },

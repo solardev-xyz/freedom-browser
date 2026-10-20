@@ -1,4 +1,12 @@
 /* Provider forms share the internal Settings palette, never chrome's glass. */
+#ai-dictation-settings {
+  display: grid;
+  --agent-bubble-agent: var(--bg-card);
+  --muted: var(--text-muted);
+  margin: 24px 0 0;
+  max-height: none;
+}
+#ai-dictation-settings h3 { margin: 0; font-size: 14px; }
 #ai [hidden],
 #ai .hidden {
   display: none !important;

@@ -1233,6 +1233,7 @@ jobs:
           npm run test:e2e -- \
             test-e2e/ai-onboarding.spec.js \
             test-e2e/agent-examples.spec.js \
+            test-e2e/agent-dictation.spec.js \
             test-e2e/agent-cancellation.spec.js \
             test-e2e/agent-evaluation.spec.js \
             test-e2e/agent-product-qualification.spec.js \

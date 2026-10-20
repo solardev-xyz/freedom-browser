@@ -153,7 +153,7 @@
       "extendInfo": {
         "LSMultipleInstancesProhibited": false,
         "NSCameraUsageDescription": "Freedom needs camera access so websites you allow can use it for video calls.",
-        "NSMicrophoneUsageDescription": "Freedom needs microphone access so websites you allow can use it for video calls."
+        "NSMicrophoneUsageDescription": "Freedom uses your microphone for Agent dictation and for websites you allow to use it."
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",

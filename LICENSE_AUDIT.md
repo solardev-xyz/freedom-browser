@@ -17,6 +17,15 @@
 
 ---
 
+## Optional dictation downloads (2026-10-20)
+
+The **optional local dictation notices** in
+`src/main/agent/dictation-local-notices.txt` are upstream license texts that ship
+in `app.asar`. The binaries and model are not bundled: choosing local dictation
+downloads checksum-pinned sherpa-onnx 1.13.8 (Apache-2.0), ONNX Runtime (MIT) and
+the multilingual Whisper Base model (MIT). These license texts are copied to
+the installation as `NOTICES.txt`. No npm package was added.
+
 ## Executive Summary
 
 **VERDICT: OK TO SHIP UNDER MPL-2.0**, with the notice obligations in `NOTICES` met as written.

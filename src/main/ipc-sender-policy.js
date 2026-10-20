@@ -145,6 +145,10 @@ const INTERNAL_CHANNELS = [
 
 // freedomAPI methods wrapped in guardSettingsPage.
 const SETTINGS_CHANNELS = [
+  'agent:dictation:state',
+  'agent:dictation:choose',
+  'agent:dictation:install',
+  'agent:dictation:cancel',
   'agent:provider:get-status',
   'agent:provider:get-catalog',
   'agent:provider:refresh-models',

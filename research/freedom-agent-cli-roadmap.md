@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-20
-Status: Review fixes and AI settings/onboarding integrated; examples implemented for smoke testing; dictation and domain skills planned
+Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain skills planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
@@ -11,7 +11,8 @@ The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
-AI3 example prompts are implemented for maintainer smoke testing; AI4/AI5 remain
+AI3 example prompts are implemented; AI4 dictation has an experimental first
+draft awaiting microphone/provider smoke testing. AI5 domain skills remains
 planned. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
@@ -370,7 +371,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
-| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
+| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | First draft on experiment/agent-dictation; maintainer microphone/provider smoke pending |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
 
 AI3 can ship before dictation while AI4's transcription backend is evaluated.
@@ -505,6 +506,19 @@ attachment flow; opening a managed/external project is a separate conversation f
   model quality and public publication are separate from deterministic UI checks.
 
 ### AI4 — Voice dictation in the composer
+
+**2026-10-20 first draft:** implemented on `experiment/agent-dictation` following
+the maintainer's approval of cloud-plus-local onboarding. OpenAI, OpenRouter,
+Venice and NEAR API connections provide stop-then-transcribe dictation; an optional
+checksum-pinned sherpa-onnx 1.13.8/Whisper Base download provides local inference
+without a new npm dependency. First use asks for the audio destination; subsequent
+clicks record immediately. Settings → AI holds the same service/language choice.
+No automatic Send, destination fallback or inherited chat-E2EE claim. Native
+installation/inference was exercised on macOS arm64, with generated-audio Electron
+coverage for capture/insert/cancel and responsive themes. Real microphone/TCC,
+English/German quality, live provider access and Windows/Linux/package qualification
+remain open. Meta/xAI/custom transcription adapters and live partial transcripts
+remain follow-ons. Details: [dictation draft](../docs/agent-dictation.md).
 
 **Product:** make the existing microphone control functional as push-to-talk or
 explicit start/stop recording. Dictation produces editable text in the composer;

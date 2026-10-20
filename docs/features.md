@@ -217,6 +217,11 @@ and purchases keep their normal approval steps.
 - **Connections and permissions:** Manage MCP services from the composer's `+` menu.
   Permission controls govern consequential actions and command access. The conversation
   privacy panel reports provider settings and the evidence available for that conversation.
+- **Voice dictation:** The composer microphone records a prompt and inserts editable
+  text without sending it. First use offers supported connected API services or an
+  optional local Whisper download. Change the service and language in Settings → AI
+  or the microphone's options. Audio privacy is separate from chat-model privacy.
+  See [dictation setup and draft limitations](agent-dictation.md).
 - **Windows projects:** First use requires administrator setup of restricted execution
   accounts and network rules. Subsequent commands run without administrator rights.
   Windows restricts writes and network access but allows broader file reads than the

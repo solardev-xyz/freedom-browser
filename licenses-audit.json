@@ -833,6 +833,15 @@
   },
   "assets": [
     {
+      "name": "optional local dictation notices",
+      "path": "src/main/agent/dictation-local-notices.txt",
+      "type": "license-text",
+      "license": { "spdx": ["Apache-2.0", "MIT"], "raw": "Upstream license texts for sherpa-onnx, ONNX Runtime and Whisper", "notice_required": true },
+      "risk": "green",
+      "issues": [],
+      "notes": "Only the notice text ships in app.asar. The checksum-pinned sherpa-onnx 1.13.8 runtime and multilingual Whisper Base ONNX model are optional user-requested downloads. Their license texts are copied alongside the downloaded files as NOTICES.txt."
+    },
+    {
       "name": "model provider marks",
       "path": "src/renderer/assets/provider-logos/",
       "type": "asset",

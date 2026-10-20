@@ -2,7 +2,7 @@ Third-Party Notices
 
 This software includes the following third-party components.
 
-Every component listed here ships inside the packaged application. The
+The bundled components listed below ship inside the packaged application. The
 inventory is derived from `package.json`'s `build.extraResources` (the
 external binaries and native addons under `resources/`) and from what
 `build.files`' `src/**/*` pattern commits into `app.asar` — the pre-built
@@ -12,6 +12,14 @@ of those grows a component that is not named below. That is a test, not a
 packaging step: run `npm test` before you build, because packaging itself
 refuses only one thing, a missing `LICENSES.chromium.html`
 (`scripts/build.js`).
+
+Optional local dictation downloads
+  Downloaded only when the user selects local dictation, not bundled by default.
+  sherpa-onnx 1.13.8: Apache-2.0, https://github.com/k2-fsa/sherpa-onnx
+  ONNX Runtime: MIT, https://github.com/microsoft/onnxruntime
+  Whisper model: MIT, https://github.com/openai/whisper
+  Their license texts accompany each installation as NOTICES.txt and are
+  included in src/main/agent/dictation-local-notices.txt.
 
 == External binaries and native addons (resources/) ==
 
