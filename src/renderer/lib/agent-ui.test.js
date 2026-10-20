@@ -319,6 +319,7 @@ async function loadAgentUi(options = {}) {
   let eventHandler = null;
   let providerAuthEventHandler = null;
   const electronAPI = {
+    getSettings: jest.fn().mockResolvedValue({ enableAi: true }),
     getAgentProviderStatus: jest.fn().mockResolvedValue({
       ok: true,
       status: {
@@ -469,8 +470,10 @@ async function loadAgentUi(options = {}) {
       },
     ]);
   let tabPresentationListener;
+  const openSettings = jest.fn();
   const mod = await import('./agent-ui.js');
   mod.initAgentUi({
+    openSettings,
     getActiveTab:
       options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
     getOpenTabs,
@@ -491,6 +494,7 @@ async function loadAgentUi(options = {}) {
   await flush();
   return {
     mod,
+    openSettings,
     elements,
     document,
     electronAPI,
@@ -1606,6 +1610,42 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
   });
 
+  test('a late catalogue response cannot overwrite a newer Settings connection change', async () => {
+    let changed;
+    let finishOld;
+    const ctx = await loadAgentUi({ electronAPI: {
+      onAgentProviderChanged: callback => { changed = callback; },
+    } });
+    ctx.electronAPI.getAgentProviderCatalog
+      .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }))
+      .mockResolvedValueOnce({ ok: true, catalog: [{ providerId: 'openai', models: [{ id: 'gpt-4.1-mini', name: 'Updated catalogue' }] }] });
+    changed();
+    changed();
+    await flush();
+    finishOld({ ok: true, catalog: [{ providerId: 'openai', models: [{ id: 'gpt-4.1-mini', name: 'Old catalogue' }] }] });
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('Updated catalogue');
+  });
+
+  test('Settings changes the new-chat model without relabelling an existing conversation', async () => {
+    let changed;
+    const ctx = await loadAgentUi({ electronAPI: {
+      onAgentProviderChanged: callback => { changed = callback; },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', providerId: 'openai', modelId: 'gpt-4.1-mini' });
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    ctx.electronAPI.getAgentProviderStatus.mockResolvedValue({ ok: true, status: {
+      configured: true, providerId: 'ollama', modelId: 'local-model',
+      connections: [{ providerId: 'ollama', modelId: 'local-model', modelIds: ['local-model'] }],
+    } });
+    changed();
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('GPT 4.1 mini');
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('local-model');
+  });
+
   test('shows model privacy capabilities in the picker and setup before any inference', async () => {
     const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
     const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
@@ -1654,8 +1694,8 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('venice', 'test-key');
     expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalledWith('venice', 'tee', 'test-key', 'tee');
-    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
-    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.openSettings).toHaveBeenCalled();
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
     expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
     expect(ctx.elements['agent-api-key'].value).toBe('');
     expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
@@ -4658,13 +4698,13 @@ describe('Agent UI', () => {
     ctx.elements['agent-provider-save'].dispatch('click');
     await flush();
     expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11434/v1');
-    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
-    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.openSettings).toHaveBeenCalled();
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
     expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
     const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
     expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
-    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
     expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
     ctx.electronAPI.refreshAgentProviderModels = jest.fn().mockResolvedValue({

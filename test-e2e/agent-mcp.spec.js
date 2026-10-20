@@ -1,3 +1,4 @@
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 const { test, expect } = require('./fixtures');
 const http = require('http');
 const path = require('path');
@@ -24,15 +25,7 @@ test('MCP services work in existing chats independently of model settings; Elect
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
-    await window.locator('[data-test="agent-toggle-btn"]').click();
-    await window.locator('#agent-provider-add').click();
-    await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-    await window.locator('#agent-provider-advanced > summary').click();
-    await window.locator('#agent-ollama-url').fill(`http://127.0.0.1:${server.address().port}/v1`);
-    await window.locator('#agent-provider-save').click();
-    await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-    await expect(window.locator('#agent-setup-view #agent-mcp-open')).toHaveCount(0);
-    await window.locator('#agent-sidebar-back').click();
+    await configureOllamaAgent(window, `http://127.0.0.1:${server.address().port}/v1`);
     await window.locator('#agent-prompt').fill('Hello');
     await window.locator('#agent-run').click();
     await expect(window.locator('#agent-run-status')).toHaveText('Provider issue', { timeout: 15_000 });

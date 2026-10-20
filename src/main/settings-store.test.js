@@ -37,6 +37,8 @@ describe('settings-store', () => {
     expect(mod.loadSettings()).toEqual(
       expect.objectContaining({
         theme: 'system',
+        enableAi: false,
+        aiInvitationDismissed: false,
         enableIdentityWallet: true,
         startAntAtLaunch: true,
         startIpfsAtLaunch: true,
@@ -56,6 +58,19 @@ describe('settings-store', () => {
     );
     expect(mod.loadSettings()).not.toHaveProperty('antNodeMode');
     expect(nativeTheme.themeSource).toBe('system');
+  });
+
+  test.each([undefined, 'true', 1, null, false])('AI requires an explicit boolean opt-in (stored %p)', value => {
+    fs.writeFileSync(path.join(userDataDir, 'settings.json'), JSON.stringify({ enableAi: value }));
+    const { mod } = loadSettingsStore({ userDataDir });
+    expect(mod.loadSettings().enableAi).toBe(false);
+    mod.saveSettings({ enableAi: true, aiInvitationDismissed: true });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    mod.saveSettings({ enableAi: 'false', aiInvitationDismissed: 0 });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    mod.saveSettings({ enableAi: false });
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
   });
 
   test('merges persisted settings with defaults and applies the saved theme', () => {

@@ -1,3 +1,4 @@
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 const http = require('http');
 const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
 
@@ -788,14 +789,7 @@ async function approveInteraction(window, label) {
 }
 
 async function configureAgentProvider(window, approvalMode = 'allow') {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, `${baseUrl}/v1`);
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, approvalMode);
 }
@@ -820,14 +814,7 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
     )
     .toBe(PAGE_URL);
 
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, `${baseUrl}/v1`);
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, 'every');
 
@@ -1520,14 +1507,7 @@ test('every-interaction mode blocks a prompt-injected page action without approv
     )
     .toBe(INJECTION_PAGE_URL);
 
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, `${baseUrl}/v1`);
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, 'every');
 

@@ -80,7 +80,7 @@ also keeps the supplied credential in memory. No dependencies were added.
 
 ## Implemented connection flow
 
-Choose **Models → Add provider → OpenAI-compatible**, enter a connection name,
+Choose **Settings → AI → Add provider → OpenAI-compatible**, enter a connection name,
 API base URL (including `/v1` or any proxy prefix) and optional API key. Leave model
 IDs empty to discover them through `GET /models`, or enter IDs manually when
 discovery is unavailable. Connections appear independently in the normal model

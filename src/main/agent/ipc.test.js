@@ -20,6 +20,15 @@ function createIpcMain() {
   };
 }
 
+test('unavailable Agent explains storage failure to Settings without granting conversation access', () => {
+  const ipcMain = createIpcMain();
+  const sender = createSender();
+  const dispose = registerUnavailableAgentIpc({ ipcMain, isTrustedSender: () => false, isProviderSettingsSender: event => event.sender === sender });
+  expect(ipcMain.handlers.get(IPC.AGENT_PROVIDER_GET_CATALOG)({ sender })).toMatchObject({ error: { code: 'AGENT_STORAGE_UNAVAILABLE' } });
+  expect(ipcMain.handlers.get(IPC.AGENT_START)({ sender })).toMatchObject({ error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+  dispose();
+});
+
 test('unavailable Agent rejects every request safely while preserving chrome ownership', async () => {
   const ipcMain = createIpcMain();
   const sender = createSender();
@@ -656,6 +665,25 @@ describe('Freedom agent IPC', () => {
     ).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
   });
 
+  test.each([false, true])('a conversation without model identity can start only before it has exchanged messages (history %s)', async hasHistory => {
+    const state = { status: 'ready', conversationId: 'conversation_saved', runtimeAvailable: false,
+      providerId: '', modelId: '', transcript: hasHistory ? [{ userText: 'Earlier chat' }] : [] };
+    const service = createService({ openConversation: jest.fn(async () => state) });
+    service.getState.mockReturnValue(state);
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_OPEN)({ sender: ctx.sender }, { conversationId: state.conversationId });
+    const response = await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: null, prompt: 'First project task' });
+    if (hasHistory) {
+      expect(response.ok).toBe(false);
+      expect(ctx.resolveModel).not.toHaveBeenCalled();
+      expect(service.start).not.toHaveBeenCalled();
+    } else {
+      expect(response.ok).toBe(true);
+      expect(ctx.resolveModel).toHaveBeenCalledWith();
+      expect(service.start).toHaveBeenCalled();
+    }
+  });
+
   test('creates fresh browser authority when continuing a dormant saved session', async () => {
     const service = createService({
       runtimeAvailable: false,
@@ -674,6 +702,8 @@ describe('Freedom agent IPC', () => {
       status: 'ready',
       conversationId: 'conversation_saved',
       runtimeAvailable: false,
+      providerId: 'openai',
+      modelId: 'saved-model',
       transcript: [],
     });
     const ctx = register({ service });
@@ -693,7 +723,7 @@ describe('Freedom agent IPC', () => {
       conversationId: 'conversation_saved',
     });
     expect(ctx.automationTabIdForRenderer).toHaveBeenCalledWith(ctx.sender, 7);
-    expect(ctx.resolveModel).toHaveBeenCalledTimes(1);
+    expect(ctx.resolveModel).toHaveBeenCalledWith({ providerId: 'openai', modelId: 'saved-model' });
     expect(service.start).toHaveBeenCalledWith({
       prompt: 'Continue it',
       approvalMode: 'every_interaction',
@@ -1576,4 +1606,79 @@ test('page-action previews are single-flight and discard a removed binding', asy
   finish({ tools: [] });
   expect((await pending).ok).toBe(false);
   expect(previewPageTools).toHaveBeenCalledTimes(1);
+});
+
+describe('profile AI opt-in', () => {
+  test('off blocks model/auth/discovery/work without erasing stored connection status', async () => {
+    const ctx = register({ isEnabled: () => false });
+    for (const channel of [IPC.AGENT_START, IPC.AGENT_STEER, IPC.AGENT_RESUME,
+      IPC.AGENT_PROVIDER_GET_CATALOG, IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION,
+      IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA,
+      IPC.AGENT_PROVIDER_TEST_CONNECTION, IPC.AGENT_PROVIDER_REFRESH_MODELS,
+      IPC.AGENT_PAGE_ACTIONS, IPC.AGENT_ATTACHMENTS_PICK_FILES, IPC.AGENT_APPROVAL_DECIDE]) {
+      expect(await ctx.ipcMain.handlers.get(channel)({ sender: ctx.sender }, {})).toMatchObject({
+        ok: false, error: { code: 'AGENT_DISABLED' },
+      });
+    }
+    await expect(ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_GET_STATUS)({ sender: ctx.sender })).resolves.toMatchObject({ ok: true });
+    expect(ctx.providerResolver.getCatalog).not.toHaveBeenCalled();
+    expect(ctx.providerResolver.loginSubscription).not.toHaveBeenCalled();
+    expect(ctx.resolveModel).not.toHaveBeenCalled();
+    expect(ctx.service.start).not.toHaveBeenCalled();
+    await ctx.dispose();
+  });
+
+  test('Settings gets provider authority without receiving conversation or MCP authority', async () => {
+    const settings = createSender();
+    const ctx = register({ isProviderSettingsSender: event => event.sender === settings });
+    await expect(ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_GET_CATALOG)({ sender: settings })).resolves.toMatchObject({ ok: true });
+    await expect(ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: settings }, { prompt: 'Do work' })).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_MCP_CONNECTIONS)({ sender: settings }, { action: 'list' })).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await ctx.dispose();
+  });
+
+  test('a stale restored-chat start releases its starting state without discarding the chat', async () => {
+    let notify;
+    let enabled = true;
+    let finish;
+    const state = { status: 'ready', conversationId: 'conversation_saved', runtimeAvailable: false,
+      providerId: 'openai', modelId: 'saved-model', transcript: [] };
+    const service = createService({ openConversation: jest.fn(async () => state) });
+    service.getState.mockReturnValue(state);
+    const model = { model: { id: 'saved-model' }, modelRuntime: {} };
+    const resolveModel = jest.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue(model);
+    const ctx = register({ service, resolveModel, isEnabled: () => enabled,
+      onEnabledChanged: listener => { notify = listener; return jest.fn(); } });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_OPEN)({ sender: ctx.sender }, { conversationId: state.conversationId });
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const pending = start({ sender: ctx.sender }, { rendererTabId: null, prompt: 'Continue chat' });
+    enabled = false; notify(false);
+    enabled = true; notify(true);
+    finish(model);
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
+    expect(service.clearConversation).not.toHaveBeenCalled();
+    expect(await start({ sender: ctx.sender }, { rendererTabId: null, prompt: 'Try again' })).toMatchObject({ ok: true });
+    await ctx.dispose();
+  });
+
+  test('disable then re-enable cannot restart a start request still resolving its model', async () => {
+    let notify;
+    let enabled = true;
+    let resolveModel;
+    const ctx = register({
+      isEnabled: () => enabled,
+      onEnabledChanged: listener => { notify = listener; return jest.fn(); },
+      resolveModel: () => new Promise(resolve => { resolveModel = resolve; }),
+    });
+    const pending = ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: null, prompt: 'Wait for model', approvalMode: 'sensitive_actions' });
+    enabled = false;
+    notify(false);
+    expect(ctx.service.stop).toHaveBeenCalledWith(undefined, { preserveServers: true });
+    enabled = true;
+    notify(true);
+    resolveModel({ model: { id: 'fixture' }, modelRuntime: {} });
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
+    expect(ctx.service.start).not.toHaveBeenCalled();
+    await ctx.dispose();
+  });
 });

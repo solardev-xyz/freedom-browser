@@ -1113,6 +1113,8 @@ class FreedomAgentService {
         tabId: conversation.tabId,
         approvalMode: conversation.approvalMode,
         title: conversation.title,
+        providerId: conversation.providerId,
+        modelId: conversation.modelId,
         runtimeAvailable: Boolean(conversation.session && conversation.scopedController),
         resources: Array.isArray(conversation.resources)
           ? conversation.resources.map((resource) => ({ ...resource }))
@@ -1129,6 +1131,8 @@ class FreedomAgentService {
       tabId: this.activeRun.tabId,
       approvalMode: conversation.approvalMode,
       title: conversation.title,
+      providerId: conversation.providerId,
+      modelId: conversation.modelId,
       runtimeAvailable: Boolean(conversation.session && conversation.scopedController),
       resources: Array.isArray(conversation.resources)
         ? conversation.resources.map((resource) => ({ ...resource }))
@@ -1662,6 +1666,8 @@ class FreedomAgentService {
       }
       this.#emit(run, {
         type: 'run_started',
+        providerId: run.providerId,
+        modelId: run.modelId,
         tabId,
         approvalMode,
         userText: prompt,
@@ -1940,6 +1946,10 @@ class FreedomAgentService {
             createdAt: run.startedAt,
           });
         } else {
+          if (!conversation.providerId && !conversation.modelId) {
+            this.#persistHistory('setSessionModel', { conversationId: run.conversationId,
+              providerId: run.providerId, modelId: run.modelId, thinkingLevel: options.thinkingLevel });
+          }
           conversation.tabId = tabId;
           conversation.session = session;
           conversation.scopedController = scopedController;
@@ -2043,7 +2053,7 @@ class FreedomAgentService {
     return await run.delegationTool?.stop(run, taskId) || false;
   }
 
-  async stop(runId) {
+  async stop(runId, options = {}) {
     const run = this.activeRun;
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
     this.#diagnostic(run, 'stop_requested');
@@ -2057,7 +2067,7 @@ class FreedomAgentService {
       log.warn('[Agent] Could not cancel conversation downloads:', error?.message || error);
     }
     try {
-      this.workspaceController?.cancelConversation(run.conversationId);
+      this.workspaceController?.cancelConversation(run.conversationId, { preserveServers: options.preserveServers === true });
     } catch (error) {
       log.warn('[AgentWorkspace] Could not cancel conversation commands:', error?.message || error);
     }

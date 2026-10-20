@@ -145,6 +145,21 @@ const INTERNAL_CHANNELS = [
 
 // freedomAPI methods wrapped in guardSettingsPage.
 const SETTINGS_CHANNELS = [
+  'agent:provider:get-status',
+  'agent:provider:get-catalog',
+  'agent:provider:refresh-models',
+  'agent:provider:set-preferences',
+  'agent:provider:test-connection',
+  'agent:provider:configure-hosted',
+  'agent:provider:configure-ollama',
+  'agent:provider:login-subscription',
+  'agent:provider:cancel-login',
+  'agent:provider:submit-login',
+  'agent:provider:select-model',
+  'agent:provider:remove',
+  'agent:provider:clear',
+  'agent:open',
+
   'adblock:add-allowlist-host',
   'adblock:remove-allowlist-host',
   'ant:cache-clear',

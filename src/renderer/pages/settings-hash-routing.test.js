@@ -106,6 +106,7 @@ describe('settings hash routing', () => {
       'privacy',
       'networks',
       'nodes',
+      'ai',
       'advanced',
       'about',
     ]);

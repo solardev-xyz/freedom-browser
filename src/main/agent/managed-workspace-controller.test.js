@@ -955,6 +955,49 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
+  test('off-cleanup still reaches other conversations if one cleanup fails', () => {
+    const { controller } = createController();
+    controller.historyControllers.set('first', new AbortController());
+    controller.historyControllers.set('second', new AbortController());
+    const cancel = jest.spyOn(controller, 'cancelConversation').mockImplementationOnce(() => { throw new Error('broken record'); }).mockReturnValue(0);
+    expect(() => controller.cancelAllConversations({ preserveServers: true })).not.toThrow();
+    expect(cancel).toHaveBeenNthCalledWith(2, 'second', { preserveServers: true });
+  });
+
+  test('disabling AI preserves registered servers, cancels other commands, and keeps other conversations untouched', async () => {
+    const { controller, dependencies } = createController();
+    let command = 0;
+    dependencies.store.startCommand.mockImplementation(() => `workspace_cmd_${String(++command).padStart(24, '0')}`);
+    const requests = [];
+    dependencies.executor.execute.mockImplementation((_policy, request) => {
+      requests.push(request);
+      return new Promise(resolve => {
+        request.signal.addEventListener('abort', () => resolve({ ...completedExecution(''), state: 'cancelled' }), { once: true });
+      });
+    });
+    const run = new AbortController();
+    try {
+      const server = await controller.startProcess('conversation_one', { command: 'node server.js', yieldMs: 250, signal: run.signal });
+      const build = await controller.startProcess('conversation_one', { command: 'npm run build', yieldMs: 250, signal: run.signal });
+      await controller.startProcess('conversation_other', { command: 'node other.js', yieldMs: 250 });
+      // Only servers already present in the authoritative registry are preserved.
+      jest.spyOn(controller.servers, 'list').mockReturnValue([{ state: 'running', processId: server.processId }]);
+      run.abort();
+      controller.cancelConversation('conversation_one', { preserveServers: true });
+      expect(requests.map(request => request.signal.aborted)).toEqual([false, true, false]);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(controller.processManager.inspect('conversation_one', server.processId).state).toBe('running');
+      expect(controller.processManager.inspect('conversation_one', build.processId).state).toBe('cancelled');
+      // Off also covers ordinary background work left by a finished/other chat.
+      controller.cancelAllConversations({ preserveServers: true });
+      expect(requests.map(request => request.signal.aborted)).toEqual([false, true, true]);
+      // An explicit Stop still stops the server.
+      controller.cancelConversation('conversation_one');
+      expect(requests[0].signal.aborted).toBe(true);
+      expect(requests[2].signal.aborted).toBe(true);
+    } finally { await controller.dispose(); }
+  });
+
   test('cancels every active command owned by the conversation', async () => {
     const pending = {};
     pending.promise = new Promise((resolve) => {

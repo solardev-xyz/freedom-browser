@@ -59,6 +59,15 @@ describe('AgentSessionHistoryStore', () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
+  test('pins a project chat model once and retains it across reopen', () => {
+    store.createSession({ conversationId: 'project', title: 'Project', approvalMode: 'sensitive_actions', status: 'ready' });
+    expect(store.setSessionModel({ conversationId: 'project', providerId: 'ollama', modelId: 'first', thinkingLevel: 'low' })).toBe(true);
+    expect(store.setSessionModel({ conversationId: 'project', providerId: 'openai', modelId: 'other' })).toBe(false);
+    store.close();
+    store = new AgentSessionHistoryStore({ userDataDir });
+    expect(store.getSession('project')).toMatchObject({ providerId: 'ollama', modelId: 'first', thinkingLevel: 'low' });
+  });
+
   test('persists profile-local sessions and visible turn history across store instances', () => {
     store.createSession({
       conversationId: 'conversation_one',

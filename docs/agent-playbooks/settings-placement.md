@@ -26,7 +26,7 @@ happening again.
 ## 2. Where it goes
 
 Place a setting by **what the user is trying to do**, not by the subsystem that
-implements it. Settings has ten entries, and a new setting joins one of them:
+implements it. Settings has eleven entries, and a new setting joins one of them:
 
 | Entry                    | Holds                                                                                                                                                                            | Doesn't hold                                               |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -38,6 +38,7 @@ implements it. Settings has ten entries, and a new setting joins one of them:
 | **Privacy and security** | What sites may do and what gets blocked: content blocking, site permissions, popups, per-site exceptions                                                                         | Which network or node serves the content (Networks, Nodes) |
 | **Networks**             | How Freedom reaches blockchains and resolves names: chains, RPC providers and keys, name resolution, verification. Per-chain options go in the chain's detail (`#networks/<id>`) | Running a node (Nodes)                                     |
 | **Nodes**                | The bundled services (Swarm, IPFS, Radicle, Ethereum and Gnosis nodes, Tor): mode, endpoint, whether each one starts with Freedom                                                | A protocol's network or chain choices (Networks)           |
+| **AI**                  | Enable AI features (off by default), provider connections, model catalogues and connection preferences. Maintainer-approved dedicated section for the Agent beta. | Connected MCP services (composer + menu) |
 | **Advanced**             | Below the rule. Beta features and power-user controls                                                                                                                            | Anything finished. It is a waiting room, not a home        |
 | **About Freedom**        | Version, updates, licences, links                                                                                                                                                |                                                            |
 
@@ -64,7 +65,8 @@ The Ethereum and Gnosis nodes have no Advanced toggle at all: they are one
   don't all match word for word (Nodes says "Myotis" where Startup says
   "Start Ethereum node" / "Start Gnosis node"); don't rename an existing row
   just to match, and don't flag that pre-existing mismatch in an unrelated PR.
-- A Beta feature's on/off switch lives in Advanced, with the `.resolver-badge`
+- Exception approved for Freedom Agent: its enable switch and provider management live together in **AI**, with the Beta badge. Do not duplicate them in Advanced.
+- Other Beta features' on/off switches live in Advanced, with the `.resolver-badge`
   Beta badge, never "(Beta)" in the label. A Beta _node's_ own configuration
   (mode, endpoint) stays in the Nodes panel beside the other nodes, as Tor's
   and Myotis's do; don't move node rows into Advanced. Its start-at-launch

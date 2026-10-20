@@ -1,3 +1,4 @@
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -968,14 +969,7 @@ async function selectApprovalMode(window, mode) {
 }
 
 async function configureFixtureProvider(window, approvalMode = 'allow') {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, `${baseUrl}/v1`);
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, approvalMode);
 }

@@ -1,4 +1,8 @@
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const { test, expect } = require('./fixtures');
 
 const MODEL_ID = 'freedom-cancellation-fixture';
@@ -299,14 +303,7 @@ test.afterAll(async () => {
 });
 
 async function configureFixtureProvider(window) {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, `${baseUrl}/v1`);
   await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await window.locator('#agent-approval-mode-button').click();
   await window.locator('#agent-approval-mode-every').click();
@@ -368,6 +365,68 @@ test('Stop cancels a streaming provider request', async ({ window }) => {
 
   await stopAndExpectReusable(window);
   await expect.poll(() => streamingResponseClosed).toBe(true);
+});
+
+test('turning AI off aborts a streaming request and restores the conversation after re-enabling', async ({ window }) => {
+  streamingResponseClosed = false;
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+  await expect(window.locator('#agent-toggle-btn')).toBeHidden();
+  await expect(window.locator('#agent-sidebar')).toBeHidden();
+  await expect.poll(() => streamingResponseClosed).toBe(true);
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped');
+  const state = await window.evaluate(() => window.electronAPI.getAgentState());
+  expect(state.state.status).toBe('ready');
+  const blocked = await window.evaluate(() => window.electronAPI.startAgent({ rendererTabId: 1, prompt: 'Should not run' }));
+  expect(blocked).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await window.locator('#agent-toggle-btn').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  await window.locator('#agent-prompt').fill('AFTER_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete');
+  await expect(window.locator('.agent-output').last()).toHaveText('READY');
+});
+
+test('a project chat persists its first model and resumes it after a real restart despite a different default', async ({ electronApp, window, relaunchApp }) => {
+  await configureFixtureProvider(window);
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-model-pin-project-'));
+  test.info().annotations.push({ type: 'fixture', description: project });
+  await electronApp.evaluate(({ dialog }, selected) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] });
+  }, project);
+  await window.locator('#agent-attachment-button').click();
+  await window.locator('#agent-open-project').click();
+  await expect(window.locator('#agent-run-message')).toContainText('Project opened');
+  await window.locator('#agent-prompt').fill('AFTER_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete');
+  const before = await window.evaluate(() => window.electronAPI.getAgentState());
+  expect(before.state).toMatchObject({ providerId: 'ollama', modelId: MODEL_ID });
+  const configured = await window.evaluate(baseUrl => window.electronAPI.configureCompatibleAgentProvider({
+    providerId: 'openai-compatible', name: 'Different new-chat default', baseUrl: `${baseUrl}/v1`,
+    models: [{ id: 'new-default' }],
+  }), baseUrl);
+  expect(configured.ok).toBe(true);
+  await electronApp.close();
+  const restarted = await relaunchApp();
+  const chrome = await restarted.firstWindow();
+  await chrome.waitForSelector('#agent-toggle-btn', { state: 'visible' });
+  const restored = await chrome.evaluate(id => window.electronAPI.openAgentSession(id), before.state.conversationId);
+  expect(restored).toMatchObject({ ok: true, state: { providerId: 'ollama', modelId: MODEL_ID } });
+  const profile = await chrome.evaluate(() => window.electronAPI.getAgentProviderStatus());
+  expect(profile.status.modelId).toBe('new-default');
+  await chrome.reload();
+  await chrome.locator('#agent-toggle-btn').click();
+  await chrome.locator('#agent-prompt').fill('AFTER_CANCEL again');
+  await chrome.locator('#agent-run').click();
+  await expect(chrome.locator('#agent-run-status')).toHaveText('Complete');
+  const after = await chrome.evaluate(() => window.electronAPI.getAgentState());
+  expect(after.state).toMatchObject({ providerId: 'ollama', modelId: MODEL_ID });
+  await expect(chrome.locator('.agent-output').last()).toHaveText('READY');
 });
 
 test('follow-up prompts retain Pi context and the visible chat across sidebar reopen', async ({

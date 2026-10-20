@@ -1,3 +1,4 @@
+const { configureOllamaAgent, openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test: baseTest, expect } = require('./fixtures');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -67,11 +68,12 @@ test('ChatGPT callback uses Freedom branding and a declined login can be retried
   await electronApp.evaluate(({ shell }) => {
     shell.openExternal = async url => { globalThis.chatGPTAuthorization = url; };
   });
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await window.locator('#agent-provider-chatgpt').click();
-  await window.locator('#agent-provider-login').click();
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await providerPage.locator('#agent-provider-login').click();
   await expect.poll(() => electronApp.evaluate(() => globalThis.chatGPTAuthorization)).toBeTruthy();
   const authorization = new URL(await electronApp.evaluate(() => globalThis.chatGPTAuthorization));
   expect(authorization.searchParams.get('agent_name_hint')).toBe('Freedom Browser');
@@ -92,11 +94,11 @@ test('ChatGPT callback uses Freedom branding and a declined login can be retried
     await page.emulateMedia({ colorScheme });
     await page.screenshot({ path: testInfo.outputPath(`chatgpt-cancelled-${colorScheme}.png`) });
   }
-  await expect(window.locator('#agent-provider-login')).toBeVisible();
-  await window.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
+  await providerPage.locator('#agent-provider-login').click();
   await expect.poll(() => electronApp.evaluate(() => globalThis.chatGPTAuthorization)).not.toBe(authorization.toString());
-  await window.locator('#agent-provider-cancel-login').click();
-  await expect(window.locator('#agent-provider-login')).toBeVisible();
+  await providerPage.locator('#agent-provider-cancel-login').click();
+  await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
   await page.close();
 });
 
@@ -162,43 +164,44 @@ test('ChatGPT browser sign-in supports cancellation and a private callback fallb
       return this.getStatus();
     };
   }, repositoryRoot);
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await window.locator('#agent-provider-chatgpt').click();
-  await expect(window.locator('#agent-provider-select')).toHaveValue('openai-chatgpt');
-  await expect(window.locator('#agent-model-select')).toHaveValue('gpt-6.1-sol');
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await expect(providerPage.locator('#agent-provider-select')).toHaveValue('openai-chatgpt');
+  await expect(providerPage.locator('#agent-model-select')).toHaveValue('gpt-6.1-sol');
   for (const theme of ['dark', 'light']) {
-    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-before.png`) });
-    await window.locator('#agent-provider-login').click();
-    await expect(window.locator('#agent-provider-message')).toContainText('Finish signing in');
-    await expect(window.locator('#agent-auth-code')).toBeHidden();
-    await window.locator('#agent-auth-callback summary').click();
-    await expect(window.locator('#agent-auth-callback-input')).toBeVisible();
-    await expect(window.locator('#agent-auth-callback-input')).toHaveAttribute('type', 'password');
-    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-callback.png`) });
-    await window.locator('#agent-provider-cancel-login').click();
-    await expect(window.locator('#agent-provider-login')).toBeVisible();
-    await expect(window.locator('#agent-auth-callback')).toBeHidden();
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await providerPage.locator('#ai-provider-settings').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-before.png`) });
+    await providerPage.locator('#agent-provider-login').click();
+    await expect(providerPage.locator('#agent-provider-message')).toContainText('Finish signing in');
+    await expect(providerPage.locator('#agent-auth-code')).toBeHidden();
+    await providerPage.locator('#agent-auth-callback summary').click();
+    await expect(providerPage.locator('#agent-auth-callback-input')).toBeVisible();
+    await expect(providerPage.locator('#agent-auth-callback-input')).toHaveAttribute('type', 'password');
+    await providerPage.locator('#ai-provider-settings').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-callback.png`) });
+    await providerPage.locator('#agent-provider-cancel-login').click();
+    await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
+    await expect(providerPage.locator('#agent-auth-callback')).toBeHidden();
   }
-  await window.locator('#agent-provider-login').click();
-  await window.locator('#agent-auth-callback summary').click();
-  await window.locator('#agent-auth-callback-input').fill('http://127.0.0.1:1455/auth/callback?code=fixture&state=test&client_id=test');
-  await window.locator('#agent-auth-callback-submit').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(window.locator('#agent-auth-callback-input')).toHaveValue('');
-  await expect(window.locator('#agent-auth-callback')).toBeHidden();
-  await expect(window.locator('#agent-provider-login')).toBeHidden();
-  window.once('dialog', dialog => dialog.accept());
-  await window.locator('#agent-provider-disconnect').click();
-  await expect(window.locator('#agent-provider-add')).toBeVisible();
+  await providerPage.locator('#agent-provider-login').click();
+  await providerPage.locator('#agent-auth-callback summary').click();
+  await providerPage.locator('#agent-auth-callback-input').fill('http://127.0.0.1:1455/auth/callback?code=fixture&state=test&client_id=test');
+  await providerPage.locator('#agent-auth-callback-submit').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-auth-callback-input')).toHaveValue('');
+  await expect(providerPage.locator('#agent-auth-callback')).toBeHidden();
+  await expect(providerPage.locator('#agent-provider-login')).toBeHidden();
+  providerPage.once('dialog', dialog => dialog.accept());
+  await providerPage.locator('#agent-provider-disconnect').click();
+  await expect(providerPage.locator('#agent-provider-add')).toBeVisible();
   expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
-  await window.locator('#agent-provider-api').click();
-  await expect(window.locator('#agent-model-select')).toHaveValue('muse-spark-1.3');
-  await expect(window.locator('#agent-provider-models-list')).toContainText('Muse Spark');
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await providerPage.locator('#agent-provider-api').click();
+  await expect(providerPage.locator('#agent-model-select')).toHaveValue('muse-spark-1.3');
+  await expect(providerPage.locator('#agent-provider-models-list')).toContainText('Muse Spark');
 });
 
 test('Meta subscription sign-in shows device codes, cancels and connects in both themes', async ({ electronApp, window }, testInfo) => {
@@ -217,40 +220,41 @@ test('Meta subscription sign-in shows device codes, cancels and connects in both
       return this.getStatus();
     };
   }, repositoryRoot);
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
-  await expect(window.locator('#agent-provider-chatgpt')).toContainText('Meta subscription');
-  await window.locator('#agent-provider-chatgpt').click();
-  await expect(window.locator('#agent-provider-select')).toHaveValue('meta-subscription');
-  await expect(window.locator('#agent-api-key')).toBeHidden();
-  await expect(window.locator('#agent-provider-login')).toHaveText('Sign in with Meta');
+
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await expect(providerPage.locator('#agent-provider-chatgpt')).toContainText('Meta subscription');
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await expect(providerPage.locator('#agent-provider-select')).toHaveValue('meta-subscription');
+  await expect(providerPage.locator('#agent-api-key')).toBeHidden();
+  await expect(providerPage.locator('#agent-provider-login')).toHaveText('Sign in with Meta');
   for (const theme of ['dark', 'light']) {
-    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-    await window.locator('#agent-provider-login').click();
-    await expect(window.locator('#agent-auth-code')).toContainText('TEST-1234');
-    await expect(window.locator('#agent-auth-code')).toContainText('Meta page');
-    await expect(window.locator('#agent-auth-callback')).toBeHidden();
-    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`meta-${theme}-login.png`) });
-    await window.locator('#agent-provider-cancel-login').click();
-    await expect(window.locator('#agent-provider-login')).toBeVisible();
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await providerPage.locator('#agent-provider-login').click();
+    await expect(providerPage.locator('#agent-auth-code')).toContainText('TEST-1234');
+    await expect(providerPage.locator('#agent-auth-code')).toContainText('Meta page');
+    await expect(providerPage.locator('#agent-auth-callback')).toBeHidden();
+    await providerPage.locator('#ai-provider-settings').screenshot({ path: testInfo.outputPath(`meta-${theme}-login.png`) });
+    await providerPage.locator('#agent-provider-cancel-login').click();
+    await expect(providerPage.locator('#agent-provider-login')).toBeVisible();
   }
   expect(await electronApp.evaluate(() => globalThis.metaLoginUrl)).toBe('https://auth.meta.com/device');
-  await window.locator('#agent-provider-login').click();
-  await expect(window.locator('#agent-auth-code')).toBeVisible();
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-auth-code')).toBeVisible();
   await electronApp.evaluate(() => globalThis.completeMetaLogin());
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(window.locator('#agent-provider-login')).toBeHidden();
-  await window.locator('#agent-provider-detail-back').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(window.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
-  await expect(window.locator('#agent-provider-api-state')).toHaveText('Connect');
-  await window.locator('#agent-provider-chatgpt').click();
-  window.once('dialog', dialog => dialog.accept());
-  await window.locator('#agent-provider-disconnect').click();
-  await expect(window.locator('#agent-provider-add')).toBeVisible();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-provider-login')).toBeHidden();
+  await providerPage.locator('#agent-provider-detail-back').click();
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('Connect');
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  providerPage.once('dialog', dialog => dialog.accept());
+  await providerPage.locator('#agent-provider-disconnect').click();
+  await expect(providerPage.locator('#agent-provider-add')).toBeVisible();
   expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
 });
 
@@ -572,14 +576,7 @@ test('helper history persists reports and marks crash-left work interrupted in r
 });
 
 test('delegated reports are expandable, inert and coherent in both themes and layouts', async ({ electronApp, window, ollamaServer }, testInfo) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(ollamaServer);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
@@ -675,14 +672,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
 // events as the service. Authority/grant application is covered by production
 // qualification and unit tests; this test does not grant project access.
 test('project editing approval sheet is clear in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(ollamaServer);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     window.webContents.send('agent:event', { type: 'run_started', runId: 'run_project_approval_ui' });
@@ -726,14 +716,7 @@ test('existing project picker and access controls work in both layouts and theme
     await electronApp.evaluate(({ dialog }, selected) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] });
     }, project);
-    await window.locator('[data-test="agent-toggle-btn"]').click();
-    await window.locator('#agent-provider-add').click();
-    await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-    await window.locator('#agent-provider-advanced > summary').click();
-    await window.locator('#agent-ollama-url').fill(ollamaServer);
-    await window.locator('#agent-provider-save').click();
-    await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-    await window.locator('#agent-sidebar-back').click();
+    await configureOllamaAgent(window, ollamaServer);
     await window.locator('#agent-attachment-button').click();
     await window.locator('#agent-open-project').click();
     await expect(window.locator('#agent-run-message')).toContainText('Project opened');
@@ -855,7 +838,7 @@ test('sent attachments form a compact horizontally scrollable shelf', async ({ w
   expect(geometry.lineClamp).toBe('2');
 });
 
-test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
+test('AI Settings configures hosted and local models and reports the run lifecycle', async ({
   electronApp,
   window,
   ollamaServer,
@@ -869,23 +852,22 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-setup-view')).toBeVisible();
   await expect(window.locator('#agent-workspace-view')).toBeHidden();
   await expect(window.locator('#agent-sidebar-title')).toHaveText('Set up Agent');
-  await expect(window.locator('#agent-provider-status')).toHaveText('Not connected');
 
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await window.locator('#agent-provider-api').click();
-  await expect(window.locator('#agent-provider-privacy')).toContainText('Requests go to OpenAI');
-  await expect(window.locator('#agent-model-select')).not.toHaveValue('');
-  const hostedModelName = await window.locator('#agent-model-select option:checked').textContent();
-  await window.locator('#agent-api-key').fill('test-only-not-a-credential');
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(window.locator('#agent-api-key')).toHaveValue('');
-  await expect(window.locator('#agent-setup-view')).toBeVisible();
+  let providerPage = await openProviderSettings(window);
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await providerPage.locator('#agent-provider-api').click();
+  await expect(providerPage.locator('#agent-provider-privacy')).toContainText('Requests go to OpenAI');
+  await expect(providerPage.locator('#agent-model-select')).not.toHaveValue('');
+  const hostedModelName = await providerPage.locator('#agent-model-select option:checked').textContent();
+  await providerPage.locator('#agent-api-key').fill('test-only-not-a-credential');
+  await providerPage.locator('#agent-provider-save').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-api-key')).toHaveValue('');
+  await expect(providerPage.locator('#ai-provider-settings')).toBeVisible();
   await expect(window.locator('#agent-model-menu')).toBeHidden();
-  await window.locator('#agent-sidebar-back').click();
+  await closeProviderSettings(window);
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
-  await expect(window.locator('#agent-setup-view')).toBeHidden();
   await expect(window.locator('#agent-active-model-label')).toHaveText(hostedModelName);
   await window.locator('#agent-approval-mode-button').click();
   await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
@@ -903,42 +885,43 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('#agent-model-menu-button').click();
   await expect(window.locator('#agent-model-menu')).toBeVisible();
   await window.locator('#agent-manage-providers').click();
-  await expect(window.locator('#agent-setup-view')).toBeVisible();
-  await expect(window.locator('#agent-connected-provider-list')).toContainText('OpenAI');
+  providerPage = await openProviderSettings(window);
+  await expect(providerPage.locator('#ai-provider-settings')).toBeVisible();
+  await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('OpenAI');
 
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await window.locator('#agent-provider-chatgpt').click();
-  await expect(window.locator('#agent-provider-privacy')).toContainText(
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await providerPage.locator('#agent-provider-chatgpt').click();
+  await expect(providerPage.locator('#agent-provider-privacy')).toContainText(
     'through your ChatGPT subscription'
   );
-  await expect(window.locator('#agent-subscription-fields')).not.toHaveClass(/hidden/);
-  await expect(window.locator('#agent-api-key-field')).toHaveClass(/hidden/);
-  await expect(window.locator('#agent-provider-save')).toBeHidden();
-  await expect(window.locator('#agent-provider-login')).toHaveText('Continue with ChatGPT');
-  await expect(window.locator('#agent-model-select')).not.toHaveValue('');
+  await expect(providerPage.locator('#agent-subscription-fields')).not.toHaveClass(/hidden/);
+  await expect(providerPage.locator('#agent-api-key-field')).toHaveClass(/hidden/);
+  await expect(providerPage.locator('#agent-provider-save')).toBeHidden();
+  await expect(providerPage.locator('#agent-provider-login')).toHaveText('Continue with ChatGPT');
+  await expect(providerPage.locator('#agent-model-select')).not.toHaveValue('');
 
-  await window.locator('#agent-provider-detail-back').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await expect(window.locator('#agent-provider-privacy')).toHaveText(
+  await providerPage.locator('#agent-provider-detail-back').click();
+  await providerPage.locator('#agent-provider-add').click();
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await expect(providerPage.locator('#agent-provider-privacy')).toHaveText(
     'Model requests stay on this device and are sent only to your local Ollama server.'
   );
-  await expect(window.locator('#agent-hosted-fields')).toHaveClass(/hidden/);
-  await expect(window.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
-  await expect(window.locator('#agent-ollama-model')).toHaveCount(0);
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(ollamaServer);
-  await window.locator('#agent-provider-save').click();
+  await expect(providerPage.locator('#agent-hosted-fields')).toHaveClass(/hidden/);
+  await expect(providerPage.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
+  await expect(providerPage.locator('#agent-ollama-model')).toHaveCount(0);
+  await providerPage.locator('#agent-provider-advanced > summary').click();
+  await providerPage.locator('#agent-ollama-url').fill(ollamaServer);
+  await providerPage.locator('#agent-provider-save').click();
 
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(window.locator('#agent-provider-message')).toHaveText(
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(providerPage.locator('#agent-provider-message')).toHaveText(
     'Ollama models ready'
   );
-  await expect(window.locator('#agent-setup-view')).toBeVisible();
-  await expect(window.locator('#agent-provider-models-list')).toContainText('freedom-e2e-no-server');
+  await expect(providerPage.locator('#ai-provider-settings')).toBeVisible();
+  await expect(providerPage.locator('#agent-provider-models-list')).toContainText('freedom-e2e-no-server');
   await expect(window.locator('#agent-model-menu')).toBeHidden();
-  await window.locator('#agent-sidebar-back').click();
+  await closeProviderSettings(window);
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
   await expect(window.locator('#agent-active-model-label')).toHaveText('freedom-e2e-no-server');
   await window.locator('#agent-model-menu-button').click();
@@ -954,9 +937,10 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-active-model-label')).toHaveText('freedom-e2e-no-server');
   await window.locator('#agent-model-menu-button').click();
   await window.locator('#agent-manage-providers').click();
-  await expect(window.locator('#agent-connected-provider-list')).toContainText('OpenAI');
-  await expect(window.locator('#agent-connected-provider-list')).toContainText('Ollama');
-  await window.locator('#agent-sidebar-back').click();
+  providerPage = await openProviderSettings(window);
+  await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('OpenAI');
+  await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Ollama');
+  await closeProviderSettings(window);
 
   const compactComposer = await window.evaluate(() => {
     const footer = document.querySelector('.agent-composer-footer').getBoundingClientRect();
@@ -1498,14 +1482,7 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
 });
 
 test('saved helper reports load on expansion and page through complete SQLite text', async ({ electronApp, window, ollamaServer, userDataDir }, testInfo) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(ollamaServer);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow, ipcMain }, { root, userDataDir }) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
     const { AgentSessionHistoryStore } = require(root + '/src/main/agent/session-history-store');
@@ -1619,14 +1596,7 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
 });
 
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
-  await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
-  await window.locator('#agent-provider-advanced > summary').click();
-  await window.locator('#agent-ollama-url').fill(ollamaServer);
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow }) => {
     const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => page.webContents.send('agent:event', { runId: 'run_publication_ui', ...event });

@@ -209,8 +209,8 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(18);
-    expect(Object.keys(NAV_LABELS)).toHaveLength(10);
+    expect(sections).toHaveLength(19);
+    expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
 
@@ -243,7 +243,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(17);
+    expect(sections).toHaveLength(18);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…

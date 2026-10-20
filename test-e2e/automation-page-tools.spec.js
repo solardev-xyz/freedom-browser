@@ -371,13 +371,9 @@ test('page actions are discoverable from the toolbar and hand off to chat withou
   await hint.locator('[data-page-actions-explore]').click();
   await expect(hint).toBeHidden();
   // Connect a test-only credential without making any inference request.
-  await window.locator('#agent-provider-add').click();
-  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await window.locator('#agent-provider-api').click();
-  await window.locator('#agent-api-key').fill('test-only-not-a-credential');
-  await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
-  await window.locator('#agent-sidebar-back').click();
+  expect((await window.evaluate(() => window.electronAPI.configureHostedAgentProvider('openai', 'gpt-6.1-sol', 'test-only-not-a-credential'))).ok).toBe(true);
+  if (await window.locator('#agent-toggle-btn').getAttribute('aria-expanded') !== 'true') await window.locator('#agent-toggle-btn').click();
+  await expect(window.locator('#agent-workspace-view')).toBeVisible();
   const actions = window.locator('#agent-page-actions');
   await expect(actions).toBeVisible();
   await expect(actions.locator('.agent-page-action')).toHaveCount(3);

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <link rel="stylesheet" href="styles/theme.css" />
     <style>
@@ -89,6 +89,16 @@
       .logo-light {
         display: var(--light-only-display);
       }
+      .ai-invitation { display: flex; align-items: center; gap: 18px; max-width: 620px; margin-top: 36px; padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel-translucent); color: var(--text); }
+      .ai-invitation[hidden] { display: none; }
+      .ai-invitation-copy { flex: 1; min-width: 0; }
+      .ai-invitation h2 { font-size: 16px; margin: 0 0 8px; }
+      .ai-invitation p { font-size: 13px; margin: 0; color: var(--text-muted); }
+      .ai-invitation-beta { font-size: 10px; font-weight: 500; border: 1px solid var(--border-strong); border-radius: 5px; padding: 2px 5px; margin-left: 5px; vertical-align: middle; }
+      .ai-invitation a { color: var(--bg); background: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 9px 12px; font-size: 13px; text-decoration: none; white-space: nowrap; }
+      .ai-invitation-dismiss { border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 20px; padding: 4px 6px; cursor: pointer; }
+      .ai-invitation a:focus-visible, .ai-invitation button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+      @media (max-width: 580px) { .ai-invitation { flex-wrap: wrap; gap: 12px; padding: 16px; } .ai-invitation-copy { flex-basis: calc(100% - 48px); } .ai-invitation a { order: 3; } }
     </style>
   </head>
   <body>
@@ -108,5 +118,11 @@
       The decentralized web is here. Powered by built-in nodes, this browser connects you directly
       to peers, keeping the network strong and user-controlled.
     </p>
+    <aside class="ai-invitation" id="ai-invitation" aria-labelledby="ai-invitation-title" hidden>
+      <div class="ai-invitation-copy"><h2 id="ai-invitation-title">Try AI in Freedom <span class="ai-invitation-beta">Beta</span></h2><p>Research, build and publish to the decentralized web with Freedom Agent.</p><p id="ai-invitation-status" role="status"></p></div>
+      <a href="freedom://settings/ai">Explore AI</a>
+      <button class="ai-invitation-dismiss" id="ai-invitation-dismiss" type="button" aria-label="Dismiss AI invitation">×</button>
+    </aside>
+    <script src="scripts/home-ai.js"></script>
   </body>
 </html>

@@ -2,16 +2,16 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-20
-Status: Review fixes implemented; qualification in progress; product iteration remains planned
+Status: Review fixes and AI settings/onboarding integrated; qualification in progress; examples, dictation and domain skills planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
 
 The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
-example prompts, decentralized-domain skills, and start-page discovery. This is
-planning authorization; the packages below are not yet delivered. Ordinary
-browsing remains a complete experience with AI off.
+example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
+passed maintainer smoke testing and are integrated into the feature branch;
+AI3–AI5 remain planned. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -274,6 +274,87 @@ separate October 20 status/evidence above. Unperformed manual checks remain open
 listed as outstanding in the October 19 review; keep that distinct from the
 agent re-reviews and the colleague's overall positive feedback.
 
+### Agreed delivery proposal — October 20
+
+The maintainer approved this order and requested AI1/AI2 on
+`experiment/ai-settings-onboarding` for smoke testing before integration:
+
+1. Settings → AI: explicit profile opt-in, default off including existing
+   profiles without an enable choice; canonical provider/model management.
+2. Ship the dismissible start-page invitation with that settings/onboarding
+   flow. Enabling, connecting and opening the composer form one journey.
+3. Add four editable example prompts: game, personal website, source comparison
+   and attached-project review. This remains a separate implementation slice.
+4. Spike on-device dictation (including whisper.cpp versus OS facilities), then
+   implement record/stop/edit/send. Measure English/German accuracy, latency and
+   packaging on supported hardware before choosing a backend. Model-download
+   size and any optional cloud mode remain product decisions.
+5. Domain skills: first connect an already-owned name and verify resolution;
+   then registrations, renewals and republishing. Default investigation order:
+   `.eth`, `.wei`, `.gwei`; namespace priority remains open to maintainer input.
+
+Disabling AI retains credentials, history and projects, cancels AI work and
+pending approvals, and preserves already-running development servers and
+host-owned transaction/publication reconciliation. It does not undo dispatched
+external effects. AI3–AI5 are planned, not part of this experimental slice.
+
+### AI1/AI2 implementation and integration — October 20
+
+Implemented on `experiment/ai-settings-onboarding`, based on `e71c5f62`.
+The maintainer reported successful smoke testing and approved integration into
+`feature/freedom-automation-kernel` on October 20. The invitation copy was refined
+after that smoke test; competing notification surfaces are tracked separately in #759.
+
+- AI is an explicit, strict-boolean profile setting, default off for new and
+  existing profiles without a choice. Main-process IPC and provider transport
+  enforce off; a disabled-generation start or connection save cannot resume
+  after re-enabling. The toolbar, page actions and global shortcut are gated.
+- Settings → AI owns provider sign-in, connections, catalogues, favourites and
+  new-chat defaults. Composer management entry points open/reuse that Settings
+  tab without replacing the page being browsed. The shared provider UI preserves
+  subscription, custom endpoint and compatibility-check behavior. MCP remains
+  in the composer. Saved chats resume their recorded model.
+- Off stops active model/helper work and approvals and cancels ordinary commands;
+  it preserves registered running preview servers and host-owned reconciliation.
+  Drafts, history, credentials, attachments and projects are retained.
+- The ordinary built-in home page has a compact invitation, visible only while
+  off and not dismissed. It links to AI Settings, remembers dismissal across
+  restart and does not run inference. Private/custom home pages do not include it.
+- Qualification on the experimental tree: lint; **10,559 unit tests passed /
+  129 skipped**; **150 distinct Electron cases passed across focused runs**
+  covering Agent, Settings, providers, page actions and private windows; both
+  internal-page theme/contrast cases passed. The final product subset passed
+  **16/16**, including a real project-chat restart with a different new-chat
+  default and the Settings favourite/broadcast regression. Captures were inspected
+  for AI off, connected provider and the home invitation in both themes.
+- Claude reviewed through Herdr and re-reviewed the repairs to completion:
+  **no remaining actionable defects**. Repairs include first-project model
+  persistence, retained model routing, start/disable races, cancellation across
+  saved chats, preserved previews, MCP sign-in/transport cancellation, Settings
+  subscription cleanup, storage errors and catalogue invalidation.
+- Linux screenshot baselines remain an integration qualification follow-up before
+  release, including adding AI to the Linux screenshot tour now that the design
+  is smoke-approved. Mac captures are visual evidence, not Linux
+  baseline replacements. Live account reauthentication and Windows/Linux UI
+  smoke remain separate from the deterministic Mac fixtures.
+- A historical chat with messages but no recorded model cannot safely infer
+  which connection originally served it: it remains readable and asks for a
+  new chat instead of silently using a changed default. New project chats now
+  persist their model before the first request. Existing preview tabs remain
+  usable while AI is off; re-enable AI to access Agent's process controls.
+
+Maintainer smoke:
+1. Restart the experimental build. With no explicit opt-in, Agent is hidden;
+   the ordinary start page offers **Explore AI**. Dismiss it and restart to
+   check that dismissal persists.
+2. Visit `freedom://settings/ai`, enable AI, check existing connections and
+   add/edit one. Try model favourites and a new-chat default, then **Open Agent**.
+3. Keep a draft/current chat, open provider management from the composer, then
+   return. The draft and that chat's model should be unchanged.
+4. Switch AI off during a response or approval: work should stop and Agent
+   should disappear. Re-enable to resume access to saved data. A preview server
+   already running should remain available; explicit Stop still stops it.
+
 ### Product delivery order
 
 Resolve the priority review follow-ups above before broad beta rollout; the table
@@ -282,8 +363,8 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 
 | Order | Package | Outcome | Dependency/status |
 | --- | --- | --- | --- |
-| 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Foundation; not started |
-| 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Ship with AI1; not started |
+| 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
+| 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | AI1/AI2 entry flow; not started |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
@@ -331,8 +412,13 @@ services**; model-provider migration must not mix those screens again.
 
 **Product:** show one compact, dismissible banner on Freedom's ordinary start/new-tab
 page while AI is off. Suggested copy: **“Try AI in Freedom”**, a **Beta** badge,
-**“Research, build and publish with Agent.”**, and **“Explore AI”** as the action.
+**“Research, build and publish to the decentralized web with Freedom Agent.”**,
+and **“Explore AI”** as the action.
 Use specific copy rather than a generic promise about unspecified beta features.
+
+Cross-surface notification and announcement consistency is tracked separately in
+[#759](https://github.com/solardev-xyz/freedom-browser/issues/759), including the AI
+invitation, node notices and download shelf.
 
 - The action opens Settings → AI. Explain the feature, then let the user enable
   it and connect a provider. Clicking the banner alone sends no inference and
@@ -341,9 +427,12 @@ Use specific copy rather than a generic promise about unspecified beta features.
   not re-display it on every new tab or inject it into third-party/custom home
   pages. Keep the private start page free of this promotion in the first slice.
 - Keep enablement, provider setup and the first prompt connected: after setup,
-  the user can open the composer with examples rather than reach a dead end.
+  the user can open the composer without losing the existing draft. Example
+  prompts are AI3 and remain a separate delivery.
 - Verify off/on/dismissed/restart states, keyboard/screen-reader access, both
-  themes, and a start page that remains usable with no AI runtime initialized.
+  themes, and a start page that remains usable when AI is off or Agent storage
+  is unavailable. The dormant runtime still initializes local stores; off
+  prevents model, authentication and catalogue network work.
 
 ### AI3 — Examples that demonstrate Freedom's strengths
 

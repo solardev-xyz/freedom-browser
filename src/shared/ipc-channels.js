@@ -205,6 +205,8 @@ module.exports = {
   AUTOMATION_FOCUS_TAB_RESULT: 'automation:focus-tab-result',
 
   // Embedded agent IPC is available only through the trusted chrome preload.
+  AGENT_OPEN: 'agent:open',
+  AGENT_PROVIDER_CHANGED_EVENT: 'agent:provider:changed',
   AGENT_START: 'agent:start',
   AGENT_STEER: 'agent:steer',
   AGENT_PAUSE: 'agent:pause',

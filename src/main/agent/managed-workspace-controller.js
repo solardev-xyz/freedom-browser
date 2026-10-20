@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const log = require('../logger');
 const { unsafeWindowsRelativePath } = require('./workspace-execution/windows-paths');
 const { collectCommandReviewEvidence } = require('./command-review-evidence');
 const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
@@ -2437,12 +2438,29 @@ Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''"
     });
   }
 
-  cancelConversation(conversationId) {
+  cancelAllConversations(options = {}) {
+    const conversations = new Set([
+      ...this.historyControllers.keys(),
+      ...[...this.activeCommands.values()].map(command => command.conversationId),
+      ...[...this.processManager.entries.values()].map(process => process.conversationId),
+    ]);
+    for (const conversationId of conversations) {
+      try { this.cancelConversation(conversationId, options); }
+      catch { log.warn('[AgentWorkspace] Conversation command cleanup did not complete'); }
+    }
+  }
+
+  cancelConversation(conversationId, options = {}) {
     this.historyControllers.get(conversationId)?.abort();
-    this.processManager.cancelConversation(conversationId);
+    const preservedProcesses = options.preserveServers
+      ? this.servers.list(conversationId).filter(server => server.state === 'running').map(server => server.processId) : [];
+    const preservedCommands = new Set(this.processManager.list(conversationId)
+      .filter(process => preservedProcesses.includes(process.processId))
+      .map(process => process.workspace?.commandId));
+    this.processManager.cancelConversation(conversationId, preservedProcesses);
     let count = 0;
-    for (const active of this.activeCommands.values()) {
-      if (active.conversationId !== conversationId) continue;
+    for (const [commandId, active] of this.activeCommands) {
+      if (active.conversationId !== conversationId || preservedCommands.has(commandId)) continue;
       active.controller.abort();
       count += 1;
     }

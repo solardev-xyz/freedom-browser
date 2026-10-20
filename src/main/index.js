@@ -672,7 +672,7 @@ async function bootstrap() {
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,
       cancelAgentDownloads,
       dialog,
-      getOwnerWindow: (webContents) => BrowserWindow.fromWebContents(webContents),
+      getOwnerWindow: (webContents) => BrowserWindow.fromWebContents(webContents) || webContents.getOwnerBrowserWindow?.(),
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),

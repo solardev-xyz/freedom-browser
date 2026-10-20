@@ -158,7 +158,7 @@ function loadMenuModule(platform, options = {}) {
   // In-memory settings so menu accelerators resolve overrides without
   // touching a real settings.json; settingsListeners captures the menu's
   // rebuild-on-remap subscription.
-  const settings = { shortcutOverrides: options.shortcutOverrides || {} };
+  const settings = { enableAi: options.enableAi !== false, shortcutOverrides: options.shortcutOverrides || {} };
   const settingsListeners = [];
 
   // Tests that invoke an item's click() need getTargetWindow() to resolve;
@@ -293,6 +293,13 @@ function findTopLabel(template, label) {
 }
 
 describe('menu', () => {
+  test.each(['darwin', 'linux', 'win32'])('AI off does not reserve the Show Agent shortcut on %s', platform => {
+    const { capturedTemplate } = loadMenuModule(platform, { enableAi: false });
+    const item = findTopLabel(capturedTemplate, 'View').submenu.find(item => item.label === 'Show Agent');
+    expect(item.enabled).toBe(false);
+    expect(item.accelerator).toBeUndefined();
+  });
+
   test('Windows template omits macOS-only appMenu and windowMenu', () => {
     const { capturedTemplate } = loadMenuModule('win32');
 
