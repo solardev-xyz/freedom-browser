@@ -1,5 +1,8 @@
 const { test, expect } = require('./fixtures');
+const { _electron: electron } = require('@playwright/test');
+const { closeApp } = require('./close-app');
 const path = require('path');
+const fs = require('fs');
 const root = path.resolve(__dirname, '..');
 
 async function openConversation(electronApp, window) {
@@ -245,4 +248,74 @@ test('before-paint platform styling leaves Linux window controls and Agent pane 
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
     await expect(window.locator('.agent-first-titlebar-left')).toHaveCSS('padding-left', '12px');
   }
+});
+
+
+test('software rendering profiles long-chat scrolling over a playing video', async ({ userDataDir }, testInfo) => {
+  test.setTimeout(45000);
+  const app = await electron.launch({ args: ['.', '--disable-gpu'], cwd: root,
+    env: { ...process.env, FREEDOM_TEST_MODE: '1', FREEDOM_TEST_USER_DATA: userDataDir,
+      ELECTRON_DISABLE_SECURITY_WARNINGS: 'true', LANG: 'en_US.UTF-8' } });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('#agent-toggle-btn');
+    await openConversation(app, win);
+    await app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture('https://motion.test/', {
+      body: `<!doctype html><title>Moving video</title><canvas hidden width="640" height="480"></canvas>
+        <video autoplay muted playsinline style="width:100vw;height:100vh;object-fit:cover"></video>
+        <script>
+          const canvas = document.querySelector('canvas'), context = canvas.getContext('2d');
+          const video = document.querySelector('video');
+          video.srcObject = canvas.captureStream(30); video.play();
+          let frame = 0;
+          function draw() {
+            context.fillStyle = frame++ % 2 ? '#164e63' : '#9a3412'; context.fillRect(0,0,640,480);
+            context.fillStyle = '#fef3c7'; context.fillRect((frame * 5) % 640,0,160,480);
+            requestAnimationFrame(draw);
+          }
+          draw();
+        </script>`,
+    }));
+    await win.locator('#address-input').fill('https://motion.test/');
+    await win.locator('#address-input').press('Enter');
+    await expect.poll(() => win.evaluate(async () => {
+      try { return await document.querySelector('webview:not(.hidden)').executeJavaScript('document.querySelector("video")?.readyState'); }
+      catch { return null; }
+    })).toBeGreaterThanOrEqual(2);
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+      const emit = event => win.webContents.send('agent:event', { runId: 'software-scroll', ...event });
+      emit({ type: 'run_started', userText: 'Explain the video' });
+      emit({ type: 'assistant_text_delta', text: Array(320).fill('Readable conversation content above a continuously playing video.').join('\n\n') });
+      emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+    });
+    await expect.poll(() => win.locator('.agent-workspace-scroll').evaluate(el => el.scrollHeight)).toBeGreaterThan(10000);
+    const features = await app.evaluate(({ app }) => ({ platform: process.platform,
+      electron: process.versions.electron, gpu: app.getGPUFeatureStatus() }));
+    const collect = win.evaluate(async () => {
+      const gaps = [], longTasks = [];
+      let previous = performance.now(), running = true;
+      const observe = new PerformanceObserver(list => longTasks.push(...list.getEntries().map(entry => entry.duration)));
+      observe.observe({ type: 'longtask' });
+      const frame = time => { gaps.push(time - previous); previous = time; if (running) requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      running = false; observe.disconnect(); gaps.sort((a,b) => a-b);
+      return { frames: gaps.length, p95Ms: gaps[Math.floor(gaps.length * 0.95)], maxMs: gaps.at(-1), longTasksMs: longTasks,
+        scrollTop: document.querySelector('.agent-workspace-scroll').scrollTop,
+        movingBubbleBlur: getComputedStyle(document.querySelector('.agent-output')).backdropFilter,
+        composerBlur: getComputedStyle(document.querySelector('.agent-composer-wrap')).backdropFilter };
+    });
+    await win.locator('.agent-workspace-scroll').hover();
+    await win.mouse.wheel(0, -100000);
+    const metrics = await collect;
+    const profile = testInfo.outputPath('software-video-scroll-profile.json');
+    fs.writeFileSync(profile, JSON.stringify({ ...features, ...metrics }, null, 2));
+    await testInfo.attach('software-video-scroll-profile', { path: profile, contentType: 'application/json' });
+    // Timing is evidence, not a hardware-independent pass threshold.
+    expect(metrics.frames).toBeGreaterThan(0);
+    expect(metrics.movingBubbleBlur).toBe('none');
+    expect(metrics.composerBlur).toContain('blur');
+    expect(metrics.scrollTop).toBe(0);
+  } finally { await closeApp(app); }
 });

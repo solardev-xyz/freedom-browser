@@ -869,6 +869,7 @@ body.agent-first-mode.agent-session-sidebar-closed .agent-session-sidebar {
   margin-right: calc(0px - var(--agent-session-sidebar-width));
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
   transform: translateX(-100%);
 }
 
