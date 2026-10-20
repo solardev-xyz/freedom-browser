@@ -150,6 +150,9 @@ let scopeHelpButton = null;
 let scopeHelpText = null;
 let scopeNotice = '';
 let sessionSidebarOpen = true;
+let compactAgentLayout = false;
+let compactWorkspaceOpen = false;
+let taskPagesHome = null;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
 const hiddenWorkspaceConversations = new Set();
@@ -248,10 +251,10 @@ function pageContextLabel(tab) {
     try {
       pageName = new URL(tab.url).hostname;
     } catch {
-      pageName = 'Current page';
+      pageName = 'Shared page';
     }
   }
-  return `Current page · ${pageName}`;
+  return `Attached page · ${pageName}`;
 }
 
 function renderPageContext() {
@@ -1319,6 +1322,7 @@ function setAgentFirstMode(nextMode) {
   elements.modeAgent.setAttribute('aria-checked', String(agentFirstMode));
   elements.modeBrowser.setAttribute('aria-checked', String(!agentFirstMode));
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
+  syncCompactAgentLayout();
   syncFloatingPresentation();
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
@@ -1341,8 +1345,30 @@ function setAgentFirstMode(nextMode) {
   }
 }
 
+function syncCompactAgentLayout() {
+  // Native fullscreen resizes are temporary; preserve the user's pane state.
+  if (document.body.classList.contains('browser-fullscreen')) return;
+  const compact = agentFirstMode && Number.isFinite(window.innerWidth) && window.innerWidth <= 1100;
+  if (compact === compactAgentLayout) return;
+  compactAgentLayout = compact;
+  taskPagesHome ||= elements.taskPages.parentNode;
+  if (taskPagesHome) {
+    if (compact) elements.pageSurface.insertBefore(elements.taskPages, elements.pageSurface.firstChild);
+    else taskPagesHome.insertBefore(elements.taskPages, elements.workspaceSidebarToggle);
+  }
+  if (compact) {
+    compactWorkspaceOpen = false;
+    setSessionSidebarOpen(false);
+  }
+  syncWorkspaceSidebar();
+}
+
 function setSessionSidebarOpen(nextOpen) {
   sessionSidebarOpen = nextOpen === true;
+  if (sessionSidebarOpen && compactAgentLayout) {
+    compactWorkspaceOpen = false;
+    syncWorkspaceSidebar();
+  }
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   elements.sessionSidebarToggle.setAttribute('aria-expanded', String(sessionSidebarOpen));
   elements.sessionSidebarToggle.setAttribute(
@@ -1352,7 +1378,8 @@ function setSessionSidebarOpen(nextOpen) {
 }
 
 function syncWorkspaceSidebar(hasPages = workspacePages().length > 0) {
-  workspaceSidebarOpen = hasPages && !hiddenWorkspaceConversations.has(currentConversationId);
+  workspaceSidebarOpen = hasPages && !hiddenWorkspaceConversations.has(currentConversationId) &&
+    (!compactAgentLayout || compactWorkspaceOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
   const toggle = elements.workspaceSidebarToggle;
   toggle.disabled = !hasPages;
@@ -1364,6 +1391,8 @@ function syncWorkspaceSidebar(hasPages = workspacePages().length > 0) {
 }
 
 function setWorkspaceSidebarOpen(nextOpen) {
+  compactWorkspaceOpen = nextOpen === true;
+  if (compactWorkspaceOpen && compactAgentLayout) setSessionSidebarOpen(false);
   if (nextOpen) hiddenWorkspaceConversations.delete(currentConversationId);
   else hiddenWorkspaceConversations.add(currentConversationId);
   syncWorkspaceSidebar();
@@ -1375,6 +1404,7 @@ function observeComposerHeight() {
     const height = elements.composerWrap.getBoundingClientRect().height;
     if (height > 0) {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+      setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
     captureLauncherSnapshot();
   };
@@ -3225,13 +3255,13 @@ function approvalOriginSummary(request) {
 
 function workspaceEnablementDetails(workspace) {
   if (workspace?.backend === 'windows-elevated') {
-    return `${workspace.setupRequired ? 'One-time setup creates dedicated Windows sandbox accounts and firewall rules. Windows will ask for administrator approval. Freedom and Agent commands continue running without administrator privileges.\n\n' : ''}Commands can read files accessible to the sandbox accounts, including files outside the project. Writes are limited to the project and private temporary storage; protected Git metadata stays read-only. Internet, localhost and LAN access require separate permission. Stopping commands is best-effort; Freedom does not yet guarantee that every detached process has stopped.`;
+    return `${workspace.setupRequired ? 'One-time setup creates dedicated Windows sandbox accounts and firewall rules. Windows will ask for administrator approval. Freedom and Agent commands continue running without administrator privileges.\n\n' : ''}Commands can read files accessible to the sandbox accounts, including files outside the project. Writes are limited to the project and private temporary storage; the project root’s Git metadata stays read-only. Nested repositories are not recursively protected. Internet, localhost and LAN access require separate permission. Stopping commands is best-effort; Freedom does not yet guarantee that every detached process has stopped.`;
   }
   const lifecycle =
     workspace?.backend === 'macos-seatbelt'
       ? 'On macOS, stopping detached subprocesses is best-effort. Any survivor remains inside the same filesystem and network boundary.'
       : 'On Linux, Freedom tears down the complete sandbox process namespace when a command stops.';
-  return `Freedom stores one local workspace for this conversation and removes it when the conversation is deleted. Agent may write only inside that workspace; protected .git metadata remains read-only. Workspace commands may read and execute required system tools and separately approved executable packages, but cannot write to them. This approval does not grant internet, localhost, or LAN access; those require a separate capability.\n\n${lifecycle}`;
+  return `Freedom stores one local workspace for this conversation and removes it when the conversation is deleted. Agent may write only inside that workspace; the project root’s .git metadata remains read-only. Nested repositories are not recursively protected. Workspace commands may read and execute required system tools and separately approved executable packages, but cannot write to them. This approval does not grant internet, localhost, or LAN access; those require a separate capability.\n\n${lifecycle}`;
 }
 
 function workspaceCommandPermissionSummary(permission, reason) {
@@ -5546,6 +5576,7 @@ export function initAgentUi(options = {}) {
   });
   document.addEventListener('scroll', () => closeSessionContextMenu(), true);
   window.addEventListener('resize', () => {
+    syncCompactAgentLayout();
     closeSessionContextMenu();
     setModeMenuOpen(false);
   });

@@ -1333,7 +1333,7 @@ describe('Agent UI', () => {
     const ctx = await loadAgentUi();
 
     expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
-    expect(ctx.elements['agent-page-context-label'].textContent).toBe('Current page · Start page');
+    expect(ctx.elements['agent-page-context-label'].textContent).toBe('Attached page · Start page');
     ctx.elements['agent-page-context'].dispatch('click');
     expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
 
@@ -4282,11 +4282,12 @@ describe('Agent UI', () => {
       'removes it when the conversation is deleted'
     );
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
-      'protected .git metadata remains read-only'
+      'root’s .git metadata remains read-only'
     );
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
       'separately approved executable packages'
     );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Nested repositories are not recursively protected');
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
       'does not grant internet, localhost, or LAN access'
     );

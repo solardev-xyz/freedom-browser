@@ -275,7 +275,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 4px;
-  margin: 6px 6px 4px;
+  margin: 0 0 4px;
   padding: 6px 6px 6px 12px;
   border-radius: 16px;
   pointer-events: auto;
@@ -384,6 +384,7 @@
 }
 
 .agent-floating[data-presentation='column'] .agent-workspace-body {
+  flex: 0 1 auto;
   min-height: 0;
   margin-bottom: -6px;
   pointer-events: auto;
@@ -773,5 +774,45 @@
   .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] > summary::before,
   .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] .agent-tool-item[data-state] .agent-tool-state {
     animation: none;
+  }
+}
+
+.agent-floating[data-presentation='column'] .agent-composer-wrap {
+  margin-top: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-outcome {
+  background: var(--agent-message-surface);
+  border-color: var(--agent-message-border);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-outcome-copy {
+  font-size: 12px;
+}
+
+/* Narrow windows share the corner with browser Find and downloads. Reserve
+   real space instead of letting either cover the conversation's controls. */
+@media (max-width: 719px) {
+  body.agent-floating-column:has(.find-bar:not([hidden])) .agent-sidebar-inner {
+    top: 54px;
+  }
+
+  body.agent-floating-column.has-visible-downloads .agent-sidebar-inner {
+    bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  }
+
+  body.agent-floating-column .agent-page-lock-hint,
+  body.agent-floating-column .link-status--right {
+    bottom: calc(var(--agent-floating-composer-height, 150px) + var(--download-shelf-height, 0px) + 22px);
+  }
+}
+
+@media (min-width: 720px) {
+  body.agent-floating-column .agent-page-lock-hint,
+  body.agent-floating-column .link-status--right {
+    right: calc(min(408px, 100vw - 20px) + 22px);
+    max-width: calc(100vw - min(408px, 100vw - 20px) - 42px);
   }
 }

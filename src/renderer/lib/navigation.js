@@ -780,8 +780,12 @@ const toggleTrustPopover = () => {
 
   const positionTooltip = (clientX, clientY) => {
     if (!tooltipEl) return;
-    tooltipEl.style.left = `${clientX + 12}px`;
-    tooltipEl.style.top = `${clientY + 18}px`;
+    // The shared tooltip is fixed in the viewport, including when the address
+    // bar lives in Agent-first's page pane. Keep its full label on screen.
+    tooltipEl.hidden = false;
+    const { width, height } = tooltipEl.getBoundingClientRect();
+    tooltipEl.style.left = `${Math.max(8, Math.min(clientX + 12, window.innerWidth - width - 8))}px`;
+    tooltipEl.style.top = `${Math.max(8, Math.min(clientY + 18, window.innerHeight - height - 8))}px`;
   };
 
   // Build a single field row: a non-clickable label span + a

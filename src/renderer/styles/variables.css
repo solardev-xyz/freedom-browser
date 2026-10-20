@@ -22,7 +22,7 @@
   --agent-pdf-mark: #ef726d;
   --agent-image-mark: #8f8ce7;
   --agent-caution: #d6a85f;
-  --agent-on-accent: #ffffff;
+  --agent-on-accent: var(--bg);
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
   /* Floating Agent glass: small translucent surfaces over the live page,
      blurred through backdrop-filter. The backdrop filter and the tint are

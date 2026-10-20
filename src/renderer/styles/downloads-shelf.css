@@ -1,10 +1,13 @@
 /* Download shelf — bottom-right stack of compact download cards.
    (The update toast owns the bottom-left corner.) */
 .download-shelf {
-  position: absolute;
+  position: fixed;
   bottom: 16px;
-  left: 16px;
   right: 16px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: 36vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
   z-index: var(--z-popover);
   display: flex;
   flex-direction: column;

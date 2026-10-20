@@ -1073,8 +1073,8 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(unifiedChrome.sessions).not.toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
-  // The floating composer exposes the conversation background beneath it.
-  expect(unifiedChrome.composer).toBe('rgba(0, 0, 0, 0)');
+  // The composer strip hides messages scrolling underneath its bottom gutter.
+  expect(unifiedChrome.composer).toBe(unifiedChrome.conversation);
   await expect(window.locator('[data-test="agent-attachment"]')).toBeEnabled();
   await window.locator('[data-test="agent-attachment"]').click();
   await expect(window.locator('#agent-attachment-menu')).toBeVisible();

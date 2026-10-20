@@ -96,6 +96,7 @@
 
 .address-wrapper {
   position: relative;
+  min-width: 0;
   flex: 1;
 }
 
@@ -497,4 +498,15 @@
 
 .input-action-btn.hidden {
   display: none;
+}
+
+.address-bar-container { min-width: 0; }
+.address-input { min-width: 0; }
+@media (max-width: 560px) {
+  .toolbar { padding-inline: 4px; }
+  .toolbar .nav-buttons #home-btn { display: none; }
+  .toolbar .icon-btn,
+  .toolbar .agent-toggle-btn,
+  .toolbar .menu-button { width: 28px; margin-inline: 0; }
+  #nav-form { margin-inline: 2px; }
 }

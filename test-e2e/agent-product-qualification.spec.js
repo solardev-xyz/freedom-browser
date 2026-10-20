@@ -1641,15 +1641,14 @@ test('baseline: file delivery uses scoped download authority and a verified rece
   await expect(shelfCard).toBeVisible({ timeout: 10_000 });
   const shelfLayout = await shelfCard.evaluate((card) => {
     const cardRect = card.getBoundingClientRect();
-    const pageRect = card.closest('.content-page').getBoundingClientRect();
     const sidebarRect = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
     return {
       cardRight: cardRect.right,
-      pageRight: pageRect.right,
+      viewportRight: window.innerWidth,
       sidebarLeft: sidebarRect.left,
     };
   });
-  expect(shelfLayout.cardRight).toBeLessThanOrEqual(shelfLayout.pageRight);
+  expect(shelfLayout.cardRight).toBeLessThanOrEqual(shelfLayout.viewportRight);
   expect(shelfLayout.cardRight).toBeLessThan(shelfLayout.sidebarLeft);
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
   const downloadsDir = await electronApp.evaluate(({ app }) => app.getPath('downloads'));

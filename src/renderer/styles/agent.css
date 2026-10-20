@@ -137,7 +137,7 @@
 
 .agent-first-titlebar {
   display: none;
-  width: 100%;
+  width: auto;
   flex: 1 1 auto;
   grid-template-columns:
     var(--agent-session-titlebar-width, var(--agent-session-sidebar-width, 242px))
@@ -179,11 +179,11 @@
   height: 17px;
 }
 
-body.platform-mac.agent-first-mode .agent-titlebar-button {
+html[data-platform='darwin'] body.agent-first-mode .agent-titlebar-button {
   transform: translateY(2px);
 }
 
-body.platform-mac.agent-first-mode .agent-first-title {
+html[data-platform='darwin'] body.agent-first-mode .agent-first-title {
   transform: translateY(2px);
 }
 
@@ -198,7 +198,7 @@ body.platform-mac.agent-first-mode .agent-first-title {
   position: relative;
   display: flex;
   align-items: center;
-  padding-left: 76px;
+  padding-left: 12px;
   overflow: hidden;
   background: var(--bg);
 }
@@ -225,8 +225,8 @@ body.platform-mac.agent-first-mode .agent-first-title {
   z-index: 1;
 }
 
-.platform-linux .agent-first-titlebar-left {
-  padding-left: 12px;
+html[data-platform='darwin'] .agent-first-titlebar-left {
+  padding-left: 76px;
 }
 
 .agent-titlebar-button:hover {
@@ -410,12 +410,12 @@ body.platform-mac.agent-first-mode .agent-first-title {
 
 body.agent-first-mode .agent-workspace-scroll,
 .agent-session-sidebar-content {
-  scrollbar-width: none;
+  scrollbar-width: thin;
 }
 
 body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 .agent-session-sidebar-content::-webkit-scrollbar {
-  display: none;
+  width: 6px;
 }
 
 .agent-session-section-label {
@@ -476,7 +476,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 
 .agent-session-history-empty {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .agent-session-actions {
@@ -747,8 +747,8 @@ body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
   overflow: hidden;
   color: var(--text);
   font: inherit;
-  font-size: 10px;
-  text-align: center;
+  font-size: 12px;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
   background: var(--agent-browser-address, var(--bg));
@@ -762,7 +762,7 @@ body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
 }
 
 .agent-workspace-nav .address-input[readonly]:focus {
-  text-align: center;
+  text-align: left;
 }
 
 .agent-workspace-nav .trust-shield {
@@ -786,7 +786,7 @@ body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
   flex: 1;
   padding: 24px 18px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   text-align: center;
 }
@@ -873,7 +873,7 @@ body.agent-first-mode.agent-session-sidebar-closed .agent-session-sidebar {
 }
 
 body.agent-first-mode.agent-session-sidebar-closed {
-  --agent-session-titlebar-width: 118px;
+  --agent-session-titlebar-width: 54px;
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left {
@@ -884,8 +884,8 @@ body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left::b
   transform: translateX(-100%);
 }
 
-.platform-linux.agent-first-mode.agent-session-sidebar-closed {
-  --agent-session-titlebar-width: 54px;
+html[data-platform='darwin'] body.agent-first-mode.agent-session-sidebar-closed {
+  --agent-session-titlebar-width: 118px;
 }
 
 body.agent-first-mode .agent-sidebar {
@@ -913,19 +913,17 @@ body.agent-first-mode .agent-page-surface {
   margin-left: 0;
   background: var(--bg);
   border-left: 1px solid var(--agent-divider);
-  transform: translateX(0);
+  /* Do not create a containing block/stacking context for address popovers. */
   transition:
     margin-left 220ms cubic-bezier(0.2, 0, 0, 1),
-    transform 220ms cubic-bezier(0.2, 0, 0, 1),
     opacity 160ms ease;
-  will-change: margin-left, transform;
 }
 
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
   margin-left: calc(0px - var(--agent-workspace-sidebar-width));
   pointer-events: none;
   opacity: 0;
-  transform: translateX(100%);
+  visibility: hidden;
 }
 
 body.agent-first-mode.agent-workspace-sidebar-closed {
@@ -1005,7 +1003,7 @@ body.agent-first-mode .agent-composer-wrap {
   padding: 0 var(--agent-composer-gutter) 20px;
   margin: 0 auto;
   border-top: 0;
-  background: transparent;
+  background: var(--bg);
   pointer-events: none;
 }
 
@@ -2094,12 +2092,12 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-composer-tools {
-  flex: 1 1 45%;
+  flex: 0 1 auto;
   overflow: hidden;
 }
 
 .agent-composer-actions {
-  flex: 1 1 55%;
+  flex: 1 1 0;
   justify-content: flex-end;
   overflow: hidden;
 }
@@ -2328,8 +2326,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--text);
   font-size: 11px;
   font-weight: 600;
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-  border: 0;
+  background: transparent;
+  border: 1px solid var(--border);
   border-radius: 7px;
 }
 
@@ -2796,12 +2794,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   font: inherit;
   font-size: 12px;
   font-weight: 580;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 9px;
 }
 
 .agent-approval-button.secondary {
-  background: color-mix(in srgb, var(--text) 8%, transparent);
+  background: transparent;
+  border: 1px solid var(--border);
 }
 
 .agent-approval-button.secondary:hover:not(:disabled) {
@@ -2809,12 +2808,12 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-approval-button.primary {
-  color: var(--bg);
-  background: var(--text);
+  color: var(--agent-on-accent);
+  background: var(--accent);
 }
 
 .agent-approval-button.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 88%, var(--muted));
+  background: color-mix(in srgb, var(--accent) 88%, var(--text));
 }
 
 .agent-approval button:disabled {
@@ -3912,4 +3911,86 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 
 .agent-compatibility .agent-config-actions {
   flex-wrap: wrap;
+}
+
+/* Keyboard focus must survive the floating surface's shadow overrides. */
+.agent-composer:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-output.rendered-markdown th,
+.agent-output.rendered-markdown td {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.agent-output.rendered-markdown th { white-space: nowrap; }
+
+.agent-workspace-scroll,
+.agent-session-sidebar-content,
+.agent-task-page-list {
+  scrollbar-color: var(--border) transparent;
+}
+
+.agent-task-page-list::-webkit-scrollbar { height: 6px; }
+.agent-task-page-list::-webkit-scrollbar-button { display: none; }
+.agent-task-page-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+.agent-task-page-list .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-subagent-report .agent-helper-stop { color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 50%; }
+.agent-model-menu > .agent-catalog-status { padding: 6px 10px; }
+
+/* At this width three side-by-side panes leave no usable conversation.
+   The existing session/workspace toggles instead open one overlay at a time. */
+@media (max-width: 1100px) {
+  body.agent-first-mode .agent-first-titlebar {
+    grid-template-columns: 54px minmax(0, 1fr) 42px;
+  }
+
+  html[data-platform='darwin'] body.agent-first-mode .agent-first-titlebar {
+    grid-template-columns: 118px minmax(0, 1fr) 42px;
+  }
+
+  body.agent-first-mode .agent-sidebar { min-width: 0; }
+  body.agent-first-mode .agent-first-title { max-width: 100%; }
+  body.agent-first-mode .agent-task-pages { display: none; }
+  body.agent-first-mode .agent-page-surface .agent-task-pages { display: flex; flex: 0 0 38px; height: 38px; }
+  body.agent-first-mode .agent-session-sidebar,
+  body.agent-first-mode .agent-page-surface {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 45;
+    max-width: calc(100% - 48px);
+    margin: 0;
+    box-shadow: var(--agent-glass-shadow-soft);
+  }
+
+  body.agent-first-mode .agent-session-sidebar { left: 0; }
+  body.agent-first-mode .agent-page-surface { right: 0; z-index: auto; }
+  /* Only the page content needs to cover the conversation's composer. Keep
+     the address host outside a stacking context so its menus cross backdrop. */
+  body.agent-first-mode .agent-page-surface > .content { position: relative; z-index: 2; }
+  body.agent-first-mode.agent-session-sidebar-closed .agent-session-sidebar,
+  body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
+    margin: 0;
+    visibility: hidden;
+  }
+
+  body.agent-first-mode .agent-pane-resizer { display: none; }
+}
+
+@container agent-composer (max-width: 360px) {
+  .agent-composer-footer { flex-wrap: wrap; gap: 2px; }
+  .agent-composer-tools { flex: 1 1 100%; }
+  .agent-composer-actions { flex: 1 1 100%; }
+}
+
+/* These anchored panels can be wider than the compact workspace's address
+   field. Anchor their right edge inside the page instead of past the window. */
+.agent-workspace-nav .permission-prompt,
+.agent-workspace-nav .permission-popover,
+.agent-workspace-nav .trust-popover {
+  left: auto;
+  right: 0;
 }

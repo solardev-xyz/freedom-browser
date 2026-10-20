@@ -86,6 +86,7 @@
 // scrollbar — is masked instead; see `guestScrollbarMask`.
 
 const path = require('path');
+const fs = require('fs');
 
 const { test, expect } = require('./fixtures');
 
@@ -321,10 +322,16 @@ function surfaceGroup(theme, group) {
  * the whole diff artifact.
  */
 async function snap(surfaces, page, name, { mask = [], extra = [] } = {}) {
-  await expect.soft(page).toHaveScreenshot(surfaces.declared(name), {
-    ...COMPARE,
-    mask: [...maskFor(page, extra), ...mask],
-  });
+  const file = surfaces.declared(name);
+  const masks = [...maskFor(page, extra), ...mask];
+  await expect.soft(page).toHaveScreenshot(file, { ...COMPARE, mask: masks });
+  // Optional review artifacts, including surfaces whose dark-theme drift falls
+  // below the comparison threshold. Never overwrite a committed reference.
+  if (process.env.FREEDOM_CAPTURE_RENDERER_BASELINES === '1') {
+    const candidate = test.info().outputPath('baseline-candidates', file);
+    fs.mkdirSync(path.dirname(candidate), { recursive: true });
+    await page.screenshot({ path: candidate, mask: masks, animations: 'disabled', caret: 'hide' });
+  }
 }
 
 test.describe('renderer screenshots', () => {

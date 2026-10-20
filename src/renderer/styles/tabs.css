@@ -542,3 +542,16 @@ html[data-platform='darwin'] .title-bar-spacer {
 .tab.pinned.active {
   padding: 0 10px 4px 10px;
 }
+
+/* A pinned tab has room for one favicon; custody is an overlay dot. */
+.tab.pinned .tab-agent-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  overflow: hidden;
+  color: transparent;
+  border: 1px solid var(--bg);
+}
