@@ -65,7 +65,8 @@ test('floating conversation leaves the page interactive and shares narrow corner
     await expect.poll(() => hit(window, '#agent-run')).toBe(true);
     await expect.poll(() => hit(window, '#find-bar-input')).toBe(true);
     await expect.poll(() => hit(window, '[data-test="download-cancel"]')).toBe(true);
-    await window.screenshot({ path: testInfo.outputPath(`floating-${theme}.png`) });
+    await expect(window.locator('.agent-floating-ghost')).toHaveCount(0);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`floating-${theme}.png`) });
     await window.evaluate(() => { document.getElementById('find-bar').hidden = true; });
     await window.locator('[data-test="download-close"]').click();
   }
@@ -96,7 +97,7 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(window.locator('#autocomplete-dropdown')).toBeVisible();
     await expect.poll(() => hit(window, '#autocomplete-dropdown')).toBe(true);
     await window.keyboard.press('Escape');
-    await window.screenshot({ path: testInfo.outputPath(`agent-first-${theme}.png`) });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`agent-first-${theme}.png`) });
     await window.evaluate(() => document.body.classList.add('browser-fullscreen'));
     await expect(window.locator('#agent-sidebar')).toBeHidden();
     const pageWidth = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().width);
@@ -144,7 +145,7 @@ test('re-hosted page permission controls remain reachable at narrow widths', asy
   for (const width of [600, 380]) {
     await resize(electronApp, width, 600);
     await expect.poll(() => hit(window, '#permission-prompt-allow')).toBe(true);
-    await window.screenshot({ path: testInfo.outputPath(`permission-${width}.png`) });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`permission-${width}.png`) });
   }
   await window.locator('#permission-prompt-block').click();
   await expect(window.locator('#permission-prompt')).toBeHidden();
@@ -234,7 +235,7 @@ test('ordinary tab menus exclude Claim and long Agent-first content scrolls with
   await expect.poll(() => window.locator('.agent-workspace-scroll').evaluate(el => el.scrollTop)).toBe(0);
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    await window.screenshot({ path: testInfo.outputPath(`long-content-${theme}.png`) });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`long-content-${theme}.png`) });
   }
 });
 
