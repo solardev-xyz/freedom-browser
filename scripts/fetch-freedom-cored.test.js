@@ -12,7 +12,7 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'v0.1.0-test';
-const PINNED_TAG = 'v0.5.0';
+const PINNED_TAG = 'cored-v0.6.0';
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 let fetcher;
 let https;
@@ -57,7 +57,8 @@ function mockResponses(responses) {
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 function releaseFixture(tag = TEST_TAG) {
   const downloads = fetcher.TARGETS.map((target) => {
-    const name = `freedom-cored-${tag}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
+    const version = tag.replace(/^cored-/, '');
+    const name = `freedom-cored-${version}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
     return {
       name,
       browser_download_url: `https://assets.example/${name}`,
@@ -85,6 +86,14 @@ function installResponses(fixture, bodies = fixture.downloads.map((a) => a.body)
   ]);
 }
 
+// Extracts the requested members (everything after the archive name).
+function extractRequested(_command, args, options) {
+  for (const member of args.slice(2)) {
+    const body = member.startsWith('freedom-cored') ? 'verified-binary' : `notice ${member}`;
+    fs.writeFileSync(path.join(options.cwd, member), body);
+  }
+}
+
 beforeEach(() => {
   for (const key of envKeys) delete process.env[key];
   load();
@@ -93,13 +102,7 @@ beforeEach(() => {
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
-  // Extracts the requested members (everything after the archive name).
-  execFileSync.mockImplementation((_command, args, options) => {
-    for (const member of args.slice(2)) {
-      const body = member.startsWith('freedom-cored') ? 'verified-binary' : `notice ${member}`;
-      fs.writeFileSync(path.join(options.cwd, member), body);
-    }
-  });
+  execFileSync.mockImplementation(extractRequested);
 });
 
 afterEach(() => {
@@ -220,6 +223,23 @@ describe('manifest and asset selection', () => {
       );
     }
   });
+
+  test('a cored-v tag names its archives by the version alone', () => {
+    const tag = 'cored-v0.6.0';
+    expect(fetcher.archiveVersion(tag)).toBe('v0.6.0');
+    expect(fetcher.archiveVersion('v0.5.0')).toBe('v0.5.0');
+    const { release } = releaseFixture(tag);
+    for (const target of fetcher.TARGETS) {
+      const asset = fetcher.assetFor(release.assets, target, tag);
+      expect(asset.name).toMatch(/^freedom-cored-v0\.6\.0-/);
+      // The tag's own spelling is never an archive name.
+      const prefixed = {
+        ...asset,
+        name: asset.name.replace('freedom-cored-', `freedom-cored-${tag}-`),
+      };
+      expect(fetcher.assetFor([prefixed], target, tag)).toBeUndefined();
+    }
+  });
 });
 
 describe('verified installation', () => {
@@ -312,6 +332,30 @@ describe('verified installation', () => {
       expect(process.exitCode).toBe(1);
       expect(calls.length).toBeLessThanOrEqual(2);
       expect(execFileSync).not.toHaveBeenCalled();
+    }
+  );
+
+  test('installs from a cored-v tagged release', async () => {
+    load('cored-v0.6.0-test');
+    // A reload brings a fresh child_process mock.
+    execFileSync.mockImplementation(extractRequested);
+    const calls = installResponses(releaseFixture('cored-v0.6.0-test'));
+    await fetcher.main({ outputDir: dir });
+    expect(process.exitCode).toBeUndefined();
+    expect(calls).toHaveLength(7);
+    expect(fs.existsSync(path.join(dir, 'linux-x64', 'freedom-cored'))).toBe(true);
+  });
+
+  test.each(['ipfsd-v0.1.0', 'radicled-v0.1.0', 'cored-0.6.0', 'cored-cored-v0.6.0'])(
+    'refuses a %s release that latest names',
+    async (tag) => {
+      load('latest');
+      const fixture = releaseFixture();
+      fixture.release.tag_name = tag;
+      const calls = installResponses(fixture);
+      await fetcher.main({ outputDir: dir });
+      expect(process.exitCode).toBe(1);
+      expect(calls).toHaveLength(1);
     }
   );
 

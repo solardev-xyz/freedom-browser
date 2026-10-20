@@ -13,13 +13,14 @@ const CORE_REPO = process.env.FREEDOM_CORE_REPO || 'solardev-xyz/freedom-core';
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_CORE_RELEASE_TAG for local testing.
-const PINNED_RELEASE_TAG = 'v0.5.0';
+const PINNED_RELEASE_TAG = 'cored-v0.6.0';
 // In-repo trust root: the sha256 of the pinned release's SHA256SUMS asset
 // (the freedom-core release workflow prints it). Without it, a compromised
 // release could swap binaries and checksums together. Update with the tag.
-// v0.5.0: published as an immutable release; this digest matches the one its
-// publish job printed and was re-checked against the downloaded assets.
-const PINNED_SHA256SUMS_DIGEST = '98543bd3c7d267dbd19004dbc7202328d085267847cd5bc2a78bc101f0ca93cc';
+// cored-v0.6.0: published as an immutable release; this digest matches the
+// one its publish job printed and was re-checked against the downloaded
+// assets (every archive verified against it).
+const PINNED_SHA256SUMS_DIGEST = '139be530981a692407a6337f456b4a460485362c2d551bc1b634b58039f6a7e4';
 const CORE_RELEASE_TAG = process.env.FREEDOM_CORE_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';
@@ -34,6 +35,17 @@ const TARGETS = [
   { os: 'linux', arch: 'arm64', keywords: ['linux', 'arm64'] },
   { os: 'win', arch: 'x64', keywords: ['windows', 'amd64'], exe: true },
 ];
+
+// freedom-core tags the core's releases `cored-vX.Y.Z` from 0.6.0 on (its
+// service binaries get tags of their own, `ipfsd-v*` and `radicled-v*`), and
+// tagged them `vX.Y.Z` up to 0.5.0. Any other family is refused, including a
+// service release that `latest` might name.
+const TAG_PATTERN = /^(?:cored-)?v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** The archives keep `vX.Y.Z` in their names under a `cored-vX.Y.Z` tag. */
+function archiveVersion(tag) {
+  return tag.replace(/^cored-/, '');
+}
 
 function releaseUrl() {
   const releasePath =
@@ -96,7 +108,7 @@ function parseChecksums(text) {
 
 /** Exact names exclude sidecars, wrong releases and ambiguous keyword matches. */
 function assetFor(assets, target, tag = CORE_RELEASE_TAG) {
-  const name = `freedom-cored-${tag}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
+  const name = `freedom-cored-${archiveVersion(tag)}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
   const matches = assets.filter((asset) => asset.name === name);
   if (matches.length > 1) throw new Error(`Duplicate release asset ${name}`);
   return matches[0];
@@ -107,7 +119,7 @@ async function main({ outputDir = OUTPUT_DIR } = {}) {
     console.log(`Fetching freedom-cored release info from ${CORE_REPO} @ ${CORE_RELEASE_TAG}...`);
     const release = await fetchRelease();
     if (
-      !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(release.tag_name) ||
+      !TAG_PATTERN.test(release.tag_name) ||
       (CORE_RELEASE_TAG !== 'latest' && release.tag_name !== CORE_RELEASE_TAG) ||
       release.draft
     ) {
@@ -234,6 +246,7 @@ module.exports = {
   releaseUrl,
   parseChecksums,
   assetFor,
+  archiveVersion,
   TARGETS,
   NOTICE_FILES,
   CORE_REPO,
