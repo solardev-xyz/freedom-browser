@@ -910,7 +910,17 @@ window.addEventListener('DOMContentLoaded', async () => {
       loadTarget(url, null, webview, auto ? { pageInitiated: true } : {}),
   });
   initLinkStatus();
-  initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
+  initFindBar({
+    getActiveWebview,
+    restoreFocus: (webview) => {
+      const interlock = document.getElementById('agent-page-interlock');
+      if (interlock && !interlock.hidden) {
+        // Find is read-only; closing it must not bypass Take over by giving
+        // the guest keyboard input while Agent is still controlling it.
+        document.getElementById('agent-page-lock-trigger')?.focus();
+      } else webview.focus();
+    },
+  }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
     getActiveTab,

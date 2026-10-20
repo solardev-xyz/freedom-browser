@@ -670,3 +670,28 @@ test('Stop cancels an active declarative wait', async ({ window, harness }) => {
 
   await stopAndExpectReusable(window);
 });
+
+test('Find stays usable without handing keyboard input to an Agent-controlled page', async ({ window, harness }) => {
+  await openSharedStartPage(window, harness);
+  await configureFixtureProvider(window);
+  await window.evaluate(() => document.querySelector('webview:not(.hidden)').executeJavaScript(
+    'const editor = document.createElement("input"); editor.id = "custody-editor"; document.body.appendChild(editor); editor.focus(); true'
+  ));
+  await window.locator('#agent-prompt').fill('WAIT_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('.agent-tool-item')).toContainText('Waiting for');
+  await expect(window.locator('#agent-page-interlock')).toBeVisible();
+  await window.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
+  await window.locator('#find-bar-input').fill('Shared');
+  await expect(window.locator('#find-bar-count')).toHaveText('1/1');
+  await window.locator('#find-bar-close').click();
+  await expect(window.locator('#agent-page-lock-trigger')).toBeFocused();
+  await window.keyboard.type('incidentaltyping');
+  const value = await window.evaluate(() => document.querySelector('webview:not(.hidden)').executeJavaScript(
+    'document.getElementById("custody-editor").value'
+  ));
+  expect(value).toBe('');
+  await expect(window.locator('#agent-takeover-dialog')).toBeHidden();
+  await expect(window.locator('#agent-run-status')).toHaveText('Running');
+  await stopAndExpectReusable(window);
+});
