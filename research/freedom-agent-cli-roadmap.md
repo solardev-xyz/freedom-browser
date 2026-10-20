@@ -26,7 +26,11 @@ this iteration.
   does not establish that every provider/platform or release gate has passed.
 - The review baseline was `0b4bb4f2`, including main through
   `f8709ed5` and the Agent popover stacking follow-up. October 20 repairs are
-  `5779425e` (authority/runtime) and `d234673b` (renderer/qualification). The earlier synchronization
+  `5779425e` (authority/runtime) and `d234673b` (renderer/qualification).
+  `6b68cf3e` then integrated main at `11615a9a`, resolving the HTTP fixture
+  overlap while retaining exact URL matching, response delay and cancellation
+  activity accounting. The combined tree passes lint and **10,532 unit tests /
+  129 skipped**; fresh gateway and Agent product/layout checks pass too. The earlier synchronization
   `a6cdeb08` incorporated main at `8487e566`; `9251baf0` fixed test portability.
 - Local validation at `9251baf0`: lint, **10,121 unit tests passed / 129 skipped**;
   **36 applicable Electron cases passed** across Agent cancellation, tab
@@ -140,9 +144,14 @@ Lower-priority polish, each retained as a separate task:
   in dark/light themes.
 - **Implemented: L6 — Model-menu indentation:** align the privacy-symbol help row with the
   surrounding items.
-- **Open: L7 — Blur cost:** profile animated backdrop filters over video and long
-  conversations on lower-end/no-GPU Linux. This was not profiled by the reviewer;
-  preserve the accepted glass design unless measurements justify a change.
+- **L7 — Blur cost: instrumentation delivered; Linux evidence pending.** A
+  disposable Electron run disables GPU acceleration, plays a generated video
+  behind a 320-paragraph conversation, scrolls upward, and records frame gaps,
+  main-thread long tasks and actual GPU feature state. Local software rendering
+  on macOS: 175 frames / 2s, p95 33.3ms, max 84.1ms, no observed main-thread long
+  tasks, scroll reached top. This is a bounded sample, not a guarantee for long
+  sessions/low-end devices. Both macOS Agent and Linux chrome CI jobs retain JSON
+  profiles. Keep the accepted glass design unless measurements justify a change.
 
 Implementation notes: narrow Agent-first windows use one temporary session/page
 overlay at a time; address menus remain outside the page content’s stacking
@@ -168,7 +177,7 @@ and wallet approval; they do not claim new real-account or hardware qualificatio
 - Renderer repairs have fresh dark/light captures and Electron pointer/keyboard
   checks. The new `agent-review-layout.spec.js` runs in both the macOS Agent and
   Linux chrome CI jobs, not just locally. Across the targeted suites, **150
-  distinct Electron cases passed**, including all eight new layout regressions,
+  distinct Electron cases passed**, including all eight new layout regressions plus the software-video profile,
   headless runtime/socket discovery, provider recovery, project/viewer flows,
   Agent wallet approvals, simulated Ledger, private windows, Find, downloads and
   publication continuation. One ordinary native Fullscreen API case remains
@@ -183,7 +192,7 @@ and wallet approval; they do not claim new real-account or hardware qualificatio
   exported to a separate scratch directory as well as the repaired tree. F11,
   Agent conceal/restore, preserved running status and compact pane restoration
   pass. The native Fullscreen API stall remains a qualification follow-up.
-- Still requiring explicit live/manual evidence: lower-end/no-GPU Linux blur cost
+- Still requiring explicit live/manual evidence: the new Linux software-rendering profile and lower-end device follow-through
   (L7), VoiceOver/Narrator announcements, physical Ledger, real-account/provider
   login across advertised OSes, packaged restart/profile switching and Windows
   UAC cancellation/retry. Unit/harness passes do not close those gaps.
