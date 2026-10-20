@@ -860,6 +860,27 @@ describe('Agent UI', () => {
     window.innerWidth = 1280;
     resize();
     expect(closed()).toBe(true);
+
+    // A column hidden before narrowing but opened while compact stays open.
+    window.innerWidth = 1000;
+    resize();
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(false);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(false);
+
+    // A column open before narrowing but closed while compact stays closed.
+    window.innerWidth = 1000;
+    resize();
+    expect(closed()).toBe(true);
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(false);
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(true);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(true);
   });
 
   test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {

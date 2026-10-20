@@ -5395,9 +5395,13 @@ export function initAgentUi(options = {}) {
       next.focus();
     }
   });
-  elements.sessionSidebarToggle.addEventListener('click', () =>
-    setSessionSidebarOpen(!sessionSidebarOpen)
-  );
+  elements.sessionSidebarToggle.addEventListener('click', () => {
+    const nextOpen = !sessionSidebarOpen;
+    // An explicit toggle while compact is the user's newest choice, so it is
+    // what the column returns to once the window widens again.
+    if (compactAgentLayout) sessionSidebarOpenBeforeCompact = nextOpen;
+    setSessionSidebarOpen(nextOpen);
+  });
   elements.workspaceSidebarToggle.addEventListener('click', () => {
     if (!elements.workspaceSidebarToggle.disabled) setWorkspaceSidebarOpen(!workspaceSidebarOpen);
   });
