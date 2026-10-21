@@ -67,6 +67,17 @@ test("the gates are 0007's, on the medians", () => {
   });
 });
 
+test('a value just past a limit fails, though the report rounds it onto the limit', () => {
+  const justPast = gateVerdicts({
+    firstByteMs: { addon: [2, 2, 2], ipfsd: [7.0004, 7.0004, 7.0004] },
+    throughputMibs: { addon: [100, 100, 100], ipfsd: [79.999, 79.999, 79.999] },
+  });
+  expect(justPast).toEqual({
+    firstByte: { deltaMs: 5, gateMs: 5, pass: false },
+    throughput: { ratio: 0.8, gate: 0.8, pass: false },
+  });
+});
+
 test('FREEDOM_IPFS_COST_ENFORCE: unset or 1 enforces, 0 reports, and anything else is a mistake', () => {
   expect(costEnforced({})).toBe(true);
   expect(costEnforced({ FREEDOM_IPFS_COST_ENFORCE: '' })).toBe(true);

@@ -45,13 +45,23 @@ function costEnforced(env = process.env) {
 }
 
 /** The two gates on the samples: the first byte's median delta (ms) and the
- * throughput's median ratio, each with whether it passes. */
+ * throughput's median ratio, each with whether it passes. Judged on the
+ * unrounded medians: the rounded values are the report's, so a value just
+ * past a limit can't round onto it and pass. */
 function gateVerdicts({ firstByteMs, throughputMibs }) {
-  const deltaMs = round(median(firstByteMs.ipfsd) - median(firstByteMs.addon), 3);
-  const ratio = round(median(throughputMibs.ipfsd) / median(throughputMibs.addon), 4);
+  const delta = median(firstByteMs.ipfsd) - median(firstByteMs.addon);
+  const ratio = median(throughputMibs.ipfsd) / median(throughputMibs.addon);
   return {
-    firstByte: { deltaMs, gateMs: GATES.firstByteMs, pass: deltaMs <= GATES.firstByteMs },
-    throughput: { ratio, gate: GATES.throughputRatio, pass: ratio >= GATES.throughputRatio },
+    firstByte: {
+      deltaMs: round(delta, 3),
+      gateMs: GATES.firstByteMs,
+      pass: delta <= GATES.firstByteMs,
+    },
+    throughput: {
+      ratio: round(ratio, 4),
+      gate: GATES.throughputRatio,
+      pass: ratio >= GATES.throughputRatio,
+    },
   };
 }
 

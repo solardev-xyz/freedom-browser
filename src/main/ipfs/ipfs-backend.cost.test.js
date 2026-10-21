@@ -321,15 +321,14 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
     expect(results).toBeDefined();
     const { verdict } = gateOutcome(results.ttfb.pass, results.enforced);
     console.log(`first-byte gate: ${verdict} (${results.ttfb.deltaMs} ms)`);
-    if (results.enforced) expect(results.ttfb.deltaMs).toBeLessThanOrEqual(GATES.firstByteMs);
+    // The verdict, judged unrounded (gateVerdicts), not the report's figure.
+    if (results.enforced) expect(results.ttfb).toMatchObject({ pass: true });
   });
 
   test(`freedom-ipfsd's median throughput is at least ${GATES.throughputRatio * 100} % of the add-on's`, () => {
     expect(results).toBeDefined();
     const { verdict } = gateOutcome(results.throughput.pass, results.enforced);
     console.log(`throughput gate: ${verdict} (${round(results.throughput.ratio * 100, 1)} %)`);
-    if (results.enforced) {
-      expect(results.throughput.ratio).toBeGreaterThanOrEqual(GATES.throughputRatio);
-    }
+    if (results.enforced) expect(results.throughput).toMatchObject({ pass: true });
   });
 });
