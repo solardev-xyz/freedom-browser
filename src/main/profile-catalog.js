@@ -872,42 +872,55 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       throw new Error(`Profile is currently open: ${displayName}`);
     }
 
-    catalog.profiles.splice(recordIndex, 1);
-    saveCatalog(appRoot, catalog);
-    if (sharesAppRoot) {
-      await removeDefaultProfileDataFromAppRoot(appRoot);
-    } else {
-      await fsOffload.removePath(resolvedProfileDir, { recursive: true, force: true });
-    }
+    // The profile's IPFS data goes under its gate (freedom-core design 0007,
+    // "Lifetime lock"): `withIpfsGate(dir, fn)` holds freedom-ipfsd's lock on
+    // it while `fn` runs, so a writer that holds it (the service, or the
+    // add-on under hold-lock) fails the delete before anything is changed,
+    // rather than having its directory removed under it.
+    const ipfsDataDir = path.join(
+      sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir,
+      'ipfs-data',
+      'freedom-ipfs'
+    );
+    const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn());
+    return withIpfsGate(ipfsDataDir, async () => {
+      catalog.profiles.splice(recordIndex, 1);
+      saveCatalog(appRoot, catalog);
+      if (sharesAppRoot) {
+        await removeDefaultProfileDataFromAppRoot(appRoot);
+      } else {
+        await fsOffload.removePath(resolvedProfileDir, { recursive: true, force: true });
+      }
 
-    /*
-     * IMPORTANT: Radicle data is the managed-node exception to the normal
-     * "everything lives under the profile directory" rule.
-     *
-     * profile-paths.js stores catalog-managed Radicle homes at app-owned short
-     * paths (`R/<slot>` or dev `R/<checkoutHash>/<slot>`) because the embedded
-     * runtime creates `$RAD_HOME/node/control.sock` and Unix socket paths have a hard
-     * length limit. Deleting a profile must remove this sibling Radicle home too;
-     * otherwise a later profile that reuses the freed slot could inherit the old
-     * Radicle identity, node database, and seeded repository state.
-     */
-    const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
-    if (radicleDir) {
-      const radicleRoot = options.dev
-        ? path.join(path.dirname(appRoot), RADICLE_SHORT_HOME_DIR)
-        : path.join(appRoot, RADICLE_SHORT_HOME_DIR);
-      const resolvedRadicleDir = assertPathInside(radicleRoot, radicleDir, 'Radicle data');
-      await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
-      // Also any staging copy an interrupted legacy `radicle-data/` carry-over
-      // left next to it (profile-paths.js, `<slot>.migrating-<pid>-<ts>`) —
-      // otherwise its GBs outlive the profile.
-      await removeRadicleStagingSiblings(resolvedRadicleDir, radicleRoot);
-    }
+      /*
+       * IMPORTANT: Radicle data is the managed-node exception to the normal
+       * "everything lives under the profile directory" rule.
+       *
+       * profile-paths.js stores catalog-managed Radicle homes at app-owned short
+       * paths (`R/<slot>` or dev `R/<checkoutHash>/<slot>`) because the embedded
+       * runtime creates `$RAD_HOME/node/control.sock` and Unix socket paths have a hard
+       * length limit. Deleting a profile must remove this sibling Radicle home too;
+       * otherwise a later profile that reuses the freed slot could inherit the old
+       * Radicle identity, node database, and seeded repository state.
+       */
+      const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
+      if (radicleDir) {
+        const radicleRoot = options.dev
+          ? path.join(path.dirname(appRoot), RADICLE_SHORT_HOME_DIR)
+          : path.join(appRoot, RADICLE_SHORT_HOME_DIR);
+        const resolvedRadicleDir = assertPathInside(radicleRoot, radicleDir, 'Radicle data');
+        await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
+        // Also any staging copy an interrupted legacy `radicle-data/` carry-over
+        // left next to it (profile-paths.js, `<slot>.migrating-<pid>-<ts>`) —
+        // otherwise its GBs outlive the profile.
+        await removeRadicleStagingSiblings(resolvedRadicleDir, radicleRoot);
+      }
 
-    return {
-      catalog,
-      record,
-    };
+      return {
+        catalog,
+        record,
+      };
+    });
   });
 }
 

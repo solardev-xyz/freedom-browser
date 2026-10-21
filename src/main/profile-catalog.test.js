@@ -660,6 +660,109 @@ describe('profile catalog', () => {
     expect(isCatalogLockHeld(appRoot)).toBe(false);
   });
 
+  // freedom-core design 0007, "Lifetime lock": the profile's IPFS data is
+  // removed under freedom-ipfsd's gate on it, and a writer that holds the gate
+  // fails the delete before anything is changed.
+  describe("under the profile's IPFS gate", () => {
+    const devOptions = (appRoot) => ({
+      checkoutHash: 'abcdef12',
+      defaultProfileDir: path.join(appRoot, 'Profiles', 'default'),
+      dev: true,
+    });
+
+    test('removes nothing but inside the gate, which it takes on <profile>/ipfs-data/freedom-ipfs', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+
+      let held = false;
+      const gates = [];
+      const removals = [];
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation(async (target) => {
+        removals.push({ target, held });
+      });
+      const withIpfsGate = async (dir, fn) => {
+        gates.push({ dir, catalogIds: loadCatalog(appRoot).profiles.map((p) => p.id) });
+        held = true;
+        try {
+          return await fn();
+        } finally {
+          held = false;
+        }
+      };
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      // Taken once, on the directory the service would use, before the
+      // catalog changed.
+      expect(gates).toEqual([
+        {
+          dir: path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs'),
+          catalogIds: ['default', 'work'],
+        },
+      ]);
+      expect(removals.length).toBeGreaterThan(0);
+      expect(removals.every((removal) => removal.held)).toBe(true);
+    });
+
+    test('a gate another writer holds fails the delete, and changes nothing', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const store = path.join(record.dir, 'ipfs-data', 'freedom-ipfs', 'freedom-ipfs.sqlite3');
+      fs.mkdirSync(path.dirname(store), { recursive: true });
+      fs.writeFileSync(store, 'blocks');
+      const held = Object.assign(
+        new Error('The IPFS data is in use by another process. Close it and try again.'),
+        { name: 'IpfsGateError', code: 'lock_held' }
+      );
+      const rmSpy = jest.spyOn(fsOffload, 'removePath');
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', {
+            ...options,
+            withIpfsGate: async () => {
+              throw held;
+            },
+          })
+        ).rejects.toBe(held);
+        expect(rmSpy).not.toHaveBeenCalled();
+      } finally {
+        rmSpy.mockRestore();
+      }
+      expect(fs.readFileSync(store, 'utf-8')).toBe('blocks');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+      expect(isCatalogLockHeld(appRoot)).toBe(false);
+    });
+
+    test("packaged layout: the default profile's gate is the app data root's ipfs-data/freedom-ipfs", async () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+      fs.mkdirSync(path.join(appRoot, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+      const dirs = [];
+
+      await deleteProfile(appRoot, 'default', 'My Profile', {
+        withIpfsGate: async (dir, fn) => {
+          dirs.push(dir);
+          return fn();
+        },
+      });
+
+      expect(dirs).toEqual([path.join(path.resolve(appRoot), 'ipfs-data', 'freedom-ipfs')]);
+      expect(fs.existsSync(path.join(appRoot, 'ipfs-data'))).toBe(false);
+    });
+  });
+
   describe('deleting the default profile (#124)', () => {
     test('dev layout: removes Profiles/default and its Radicle home, keeps the rest', async () => {
       const tempRoot = track(makeTempDir());
