@@ -16,7 +16,8 @@
  *   (`npm run ipfsd:download`), the default, driven by the production
  *   `ipfs-manager.js` with `FREEDOM_IPFS_BACKEND=service` and
  *   `FreedomIpfsdNode`, a real child process on its own temporary data and
- *   lock directories.
+ *   lock directories; and a private partition's own instance in the
+ *   ephemeral process (`PrivateInstances`, step 7).
  *
  * Every backend serves the suite's local fixture (`ipfs-fixture.js`) and
  * nothing else: its delegated router is the fixture's, in delegated-only
@@ -293,6 +294,7 @@ function afterFreshStats(body, fresh) {
 async function loadIpfsdBackend({ router, freshStats = true }) {
   const clientPath = path.join(SRC, 'ipfs', 'ipfsd-client.js');
   const nodePath = path.join(SRC, 'ipfs', 'freedom-ipfsd-node.js');
+  const privatePath = path.join(SRC, 'ipfs', 'freedom-ipfsd-private.js');
   const binary = jest.requireActual(clientPath).getIpfsdBinaryPath();
   if (!fs.existsSync(binary)) {
     throw new Error(
@@ -303,6 +305,7 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
   const dataDir = path.join(root, 'ipfs-data');
   const lockDir = path.join(root, 'locks');
   const nodes = [];
+  const privates = [];
   const starts = [];
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
   const backendBefore = process.env.FREEDOM_IPFS_BACKEND;
@@ -320,12 +323,16 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
       [clientPath]: () => {
         const actual = jest.requireActual(clientPath);
         class ShimmedClient extends actual.IpfsdClient {
-          startInstance(gen, params) {
+          startInstance(gen, params, options) {
             starts.push(params);
-            return super.startInstance(gen, {
-              ...params,
-              routing: { ...params.routing, mode: 'delegated', delegated_routers: [router] },
-            });
+            return super.startInstance(
+              gen,
+              {
+                ...params,
+                routing: { ...params.routing, mode: 'delegated', delegated_routers: [router] },
+              },
+              options
+            );
           }
         }
         return { ...actual, IpfsdClient: ShimmedClient };
@@ -374,6 +381,17 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
         }
         return { ...actual, FreedomIpfsdNode: RecordedNode };
       },
+      // The private windows' instances the manager makes, for their pins.
+      [privatePath]: () => {
+        const actual = jest.requireActual(privatePath);
+        class RecordedPrivates extends actual.PrivateInstances {
+          constructor(options) {
+            super(options);
+            privates.push(this);
+          }
+        }
+        return { ...actual, PrivateInstances: RecordedPrivates };
+      },
       [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
       [path.join(SRC, 'logger.js')]: () => log,
       [path.join(SRC, 'service-registry.js')]: () => ({
@@ -418,14 +436,15 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
     handleRequest,
     log,
     closeDwebSession,
-    // Leases come with private instances (step 7).
-    pins: null,
+    // A private partition's leases, on the manager's instances now.
+    pins: (partition) => privates.at(-1)?.pins(partition) ?? 0,
     // Deviation `read-ahead`: the 128 KiB credit window of a stream.
     readAheadBytes: 128 * 1024,
     // Deviation `exit-text`.
     exitText: 'freedom-ipfs service exited',
     startConfig() {
-      const start = starts.at(-1);
+      // The profile's instance: a private one is in memory.
+      const start = starts.findLast((params) => params.store.kind === 'disk');
       return {
         routing: routingModeName(start.routing.mode),
         delegatedRouters: start.routing.delegated_routers,
@@ -467,7 +486,10 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
  */
 const BACKENDS = {
   addon: { load: loadAddonBackend, honours: [] },
-  ipfsd: { load: loadIpfsdBackend, honours: ['auto-restart'] },
+  ipfsd: {
+    load: loadIpfsdBackend,
+    honours: ['auto-restart', 'private-instances', 'leases', 'backend-busy'],
+  },
 };
 
 /** The backend named by FREEDOM_IPFS_CONTRACT_BACKEND, or null when unset. */

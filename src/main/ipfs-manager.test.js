@@ -188,6 +188,38 @@ function loadIpfsManagerModule(options = {}) {
       return options.serviceAvailable !== false;
     }
   }
+  // Private windows' instances beside the service node (design 0007, step
+  // 7): each lease they hand out, and the partitions they were told closed.
+  const privateInstances = [];
+  class MockPrivateInstances {
+    constructor(config) {
+      this.config = config;
+      this.up = options.privatesUp !== false;
+      this.leases = [];
+      this.closed = [];
+      this.lease = jest.fn((partition) => {
+        if (options.privatesFull) {
+          throw Object.assign(new Error('Too many private windows are loading IPFS content'), {
+            name: 'BackendBusy',
+          });
+        }
+        const lease = {
+          partition,
+          request: jest.fn(async () => new Response('private-body', { status: 200 })),
+          release: jest.fn(),
+        };
+        this.leases.push(lease);
+        return lease;
+      });
+      this.close = jest.fn((partition) => this.closed.push(partition));
+      this.stop = jest.fn(async () => {
+        this.up = false;
+      });
+      privateInstances.push(this);
+    }
+  }
+  // fetch-admission's session-close listeners, called by `closeSession`.
+  const closeListeners = [];
   app.getVersion = () => '0.9.0-test';
   // freedom-ipfsd's gate, which the add-on takes (design 0007, Rollback).
   const takeIpfsGate = jest.fn(async () => ({ release: jest.fn(async () => {}) }));
@@ -218,6 +250,12 @@ function loadIpfsManagerModule(options = {}) {
       }),
       [require.resolve('./ipfs/freedom-ipfsd-node')]: () => ({
         FreedomIpfsdNode: MockFreedomIpfsdNode,
+      }),
+      [require.resolve('./ipfs/freedom-ipfsd-private')]: () => ({
+        PrivateInstances: MockPrivateInstances,
+      }),
+      [require.resolve('./dweb/fetch-admission')]: () => ({
+        onDwebSessionClosed: (listener) => closeListeners.push(listener),
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
       [require.resolve('./ipfs/ipfsd-gate')]: () => ({ takeIpfsGate }),
@@ -254,6 +292,8 @@ function loadIpfsManagerModule(options = {}) {
     mod,
     nativeInstances,
     serviceInstances,
+    privateInstances,
+    closeSession: (partition) => closeListeners.forEach((listener) => listener(partition)),
     takeIpfsGate,
     setStatusMessage,
     setErrorState,
@@ -3198,6 +3238,92 @@ describe('the freedom-ipfsd backend (the default)', () => {
     const init = { path: '/ipfs/bafy', method: 'GET', headers: new Headers() };
     await backend.request(init);
     expect(node.request).toHaveBeenCalledWith(captured, init);
+  });
+
+  // Step 7, "Private windows": a private partition is served by an instance of
+  // its own, pinned by the capture's lease; the profile's partition by the
+  // profile's instance, as before.
+  test("a private partition's capture leases its own instance, which serves it, and its release gives the pin back", async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const [privates] = ctx.privateInstances;
+    expect(privates.config).toEqual({ shellVersion: '0.9.0-test' });
+
+    const backend = ctx.mod.ipfsBackend({ partition: 'private-a' });
+    expect(backend.ref).toEqual({ ipfs: 'native', up: true });
+    expect(privates.lease).toHaveBeenCalledWith('private-a');
+    const init = { path: '/ipfs/bafy', method: 'GET', headers: new Headers() };
+    const res = await backend.request(init);
+    expect(await res.text()).toBe('private-body');
+    expect(privates.leases[0].request).toHaveBeenCalledWith(init);
+    expect(ctx.serviceInstances[0].request).not.toHaveBeenCalled();
+    backend.release();
+    expect(privates.leases[0].release).toHaveBeenCalledTimes(1);
+
+    // The profile's partition takes no lease of them.
+    await ctx.mod.ipfsBackend({ partition: null }).request(init);
+    expect(ctx.serviceInstances[0].request).toHaveBeenCalledTimes(1);
+    expect(privates.lease).toHaveBeenCalledTimes(1);
+  });
+
+  test("capacity is BackendBusy from the capture; readiness is the profile's node's, and the instances' own", async () => {
+    const full = loadIpfsManagerModule({ privatesFull: true });
+    await full.mod.startIpfs();
+    expect(() => full.mod.ipfsBackend({ partition: 'private-ninth' })).toThrow(
+      expect.objectContaining({ name: 'BackendBusy' })
+    );
+
+    for (const options of [{ isHealthy: false }, { privatesUp: false }]) {
+      const ctx = loadIpfsManagerModule(options);
+      await ctx.mod.startIpfs();
+      const backend = ctx.mod.ipfsBackend({ partition: 'private-a' });
+      expect(backend.ref).toEqual({ ipfs: 'native', up: false });
+      await expect(backend.request({ path: '/ipfs/bafy' })).rejects.toThrow(
+        'freedom-ipfs native node is not running'
+      );
+      expect(() => backend.release()).not.toThrow();
+      expect(ctx.privateInstances[0].lease).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a closed private session closes its partition's instance", async () => {
+    const ctx = loadIpfsManagerModule();
+    ctx.closeSession('private-early');
+    await ctx.mod.startIpfs();
+    ctx.closeSession('private-a');
+    expect(ctx.privateInstances[0].closed).toEqual(['private-a']);
+  });
+
+  test('the private instances are made with the service node, and stopped with it, on a stop and on a failure', async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    await ctx.mod.stopIpfs();
+    expect(ctx.privateInstances[0].stop).toHaveBeenCalledTimes(1);
+
+    await ctx.mod.startIpfs();
+    expect(ctx.privateInstances).toHaveLength(2);
+    ctx.serviceInstances[1].config.onFailure(
+      'freedom-ipfs service exited',
+      ctx.serviceInstances[1]
+    );
+    expect(ctx.privateInstances[1].stop).toHaveBeenCalledTimes(1);
+    // Down with its node: nothing more is leased.
+    const backend = ctx.mod.ipfsBackend({ partition: 'private-a' });
+    expect(backend.ref.up).toBe(false);
+    expect(ctx.privateInstances[1].lease).not.toHaveBeenCalled();
+    ctx.closeSession('private-a');
+    expect(ctx.privateInstances[1].closed).toEqual([]);
+  });
+
+  test("the add-on (Rollback) serves private partitions from the profile's node, as before", async () => {
+    selectBackend('addon');
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const backend = ctx.mod.ipfsBackend({ partition: 'private-a' });
+    expect(backend.ref).toEqual({ ipfs: 'native', up: true });
+    await backend.request({ path: '/ipfs/bafy', method: 'GET', headers: new Headers() });
+    expect(ctx.nativeInstances[0].request).toHaveBeenCalledTimes(1);
+    expect(ctx.privateInstances).toHaveLength(0);
   });
 
   test("a node that isn't healthy: down, and a request rejects as not running", async () => {

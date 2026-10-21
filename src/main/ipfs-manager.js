@@ -16,7 +16,9 @@ const {
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
+const { PrivateInstances } = require('./ipfs/freedom-ipfsd-private');
 const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
+const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -51,6 +53,11 @@ let stopsRequested = 0;
 // node takes the gate only once the old one has let it go.
 let failedNodeStop = null;
 let healthCheckInterval = null;
+// Private windows' instances, in the ephemeral freedom-ipfsd process
+// (freedom-core design 0007, "Private windows"): made with the service node
+// they serve beside, and stopped with it. Nothing spawns until a private
+// window's first IPFS request.
+let privateInstances = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
 // bundled freedom-ipfs node (nativeBackendKind); EXTERNAL routes gateway
@@ -467,6 +474,7 @@ function handleNativeNodeFailure(reason, node = activeNode) {
   const message = reason || 'Native node unavailable';
   const failedNode = activeNode;
   activeNode = null;
+  const privatesStopped = stopPrivateInstances();
   stopHealthCheck();
   clearService('ipfs');
   setStatusMessage('ipfs', 'Node unavailable');
@@ -474,16 +482,24 @@ function handleNativeNodeFailure(reason, node = activeNode) {
   updateState(STATUS.ERROR, message);
 
   if (failedNode) {
-    const cleanup = failedNode
-      .stop()
-      .catch((err) => {
+    const cleanup = Promise.all([
+      failedNode.stop().catch((err) => {
         log.warn('[IPFS] Error while cleaning up failed freedom-ipfs native node:', err.message);
-      })
-      .finally(() => {
-        if (failedNodeStop === cleanup) failedNodeStop = null;
-      });
+      }),
+      privatesStopped,
+    ]).finally(() => {
+      if (failedNodeStop === cleanup) failedNodeStop = null;
+    });
     failedNodeStop = cleanup;
   }
+}
+
+/** Stops the private windows' instances, if any: their process shuts down,
+ * killed 5 s after `ipfs.shutdown` at most. */
+function stopPrivateInstances() {
+  const privates = privateInstances;
+  privateInstances = null;
+  return privates ? privates.stop() : Promise.resolve();
 }
 
 function startHealthCheck() {
@@ -815,6 +831,9 @@ async function doStartIpfs(requestedAt = stopsRequested) {
   }
 
   activeNode = node;
+  if (node.restartsItself) {
+    privateInstances = new PrivateInstances({ shellVersion: app.getVersion() });
+  }
   const nodeLabel = nativeNodeLabel(node);
   updateService('ipfs', {
     api: null,
@@ -936,6 +955,8 @@ async function doStopIpfs(takeover = null) {
 
   const node = activeNode;
   activeNode = null;
+  // Quit's IPFS leg: both processes stop at once, each within its 5 s.
+  const privatesStopped = stopPrivateInstances();
   if (node) {
     try {
       await node.stop();
@@ -943,6 +964,7 @@ async function doStopIpfs(takeover = null) {
       log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
     }
   }
+  await privatesStopped;
   await takeover;
   await failedNodeStop;
 
@@ -1106,15 +1128,18 @@ async function requestExternalGateway(
  * node's absence, as today.
  *
  * It is captured for the request's partition, and carries a lease the
- * handler releases on every exit (freedom-core design 0007, "Main's side"):
- * idempotent, and holding nothing while every partition is served by the
- * profile's node, until private windows get instances of their own (step 7).
+ * handler releases on every exit (freedom-core design 0007, "Main's side"),
+ * idempotent. On freedom-ipfsd, a private partition is served by an
+ * instance of its own, which the lease pins (`privateBackend`); everything
+ * else is served by the profile's node, and its lease holds nothing.
  *
- * @param {{partition?: string|null}} [_options] - the request's partition
+ * @param {{partition?: string|null}} [options] - the request's partition
  * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean}, url: string|null,
  *   request: Function, release: Function}}
+ * @throws {BackendBusy} a private partition that needs an instance while
+ *   all 8 are pinned by others
  */
-function ipfsBackend(_options = {}) {
+function ipfsBackend({ partition = null } = {}) {
   if (currentMode === MODE.EXTERNAL) {
     const url = currentState === STATUS.RUNNING && externalGatewayUrl ? externalGatewayUrl : null;
     return {
@@ -1127,7 +1152,9 @@ function ipfsBackend(_options = {}) {
   // The native node pulls with real backpressure, and runs the plan's
   // headers deadline itself; its queue bound is the one it was started with.
   const node = checkHealth() ? activeNode : null;
-  if (activeNode?.restartsItself) return serviceBackend(node);
+  if (activeNode?.restartsItself) {
+    return partition === null ? serviceBackend(node) : privateBackend(node, partition);
+  }
   return {
     ref: { ipfs: 'native', up: Boolean(node) },
     url: null,
@@ -1142,8 +1169,7 @@ function ipfsBackend(_options = {}) {
  * the generation and instance serving now, captured at admission, so a
  * request that goes on past a stop, a restart or an instance the service
  * retired fails before anything is sent instead of reaching their
- * replacement. Every partition is served by the profile's instance until
- * private windows get their own (step 7), so its lease holds nothing.
+ * replacement. Its lease holds nothing.
  */
 function serviceBackend(node) {
   const captured = node ? node.capture() : null;
@@ -1157,6 +1183,36 @@ function serviceBackend(node) {
     release() {},
   };
 }
+
+/**
+ * A private partition's backend on freedom-ipfsd (freedom-core design 0007,
+ * "Private windows"): its own memory instance in the ephemeral process,
+ * pinned by the capture's lease, which may reserve it (and evict another).
+ * `ref.up` is the node's readiness only: the profile's node is up, and the
+ * private instances haven't failed. A cold partition still gets a fetch
+ * plan; its instance starts inside `request()`.
+ */
+function privateBackend(node, partition) {
+  if (!node || !privateInstances?.up) {
+    return {
+      ref: { ipfs: 'native', up: false },
+      url: null,
+      request: () => Promise.reject(new Error('freedom-ipfs native node is not running')),
+      release() {},
+    };
+  }
+  const lease = privateInstances.lease(partition);
+  return {
+    ref: { ipfs: 'native', up: true },
+    url: null,
+    request: (init) => lease.request(init),
+    release: () => lease.release(),
+  };
+}
+
+// A private session that closed releases what its leases still pin, and its
+// instance goes (0007, "Main's side": `closeDwebSession`'s backstop).
+onDwebSessionClosed((partition) => privateInstances?.close(partition));
 
 function getNativeDiagnostics() {
   if (currentMode === MODE.EXTERNAL) {

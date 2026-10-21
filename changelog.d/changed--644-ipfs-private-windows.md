@@ -1,0 +1,1 @@
+- Each private window loads IPFS content in a memory-only node of its own, apart from the profile's cache ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
