@@ -1,8 +1,9 @@
 /**
  * The IPFS cost measurement's arithmetic and report
  * (`src/main/ipfs/ipfs-backend.cost.test.js`; freedom-core design 0007,
- * "Cost"): the summaries of the samples, the two gates' verdicts, whether a
- * miss fails the run, and the step summary's table.
+ * "Cost"): the summaries of the samples, the two gates' verdicts, a missed
+ * gate's second measurement, whether a miss fails the run, and the step
+ * summary's table.
  *
  * 0007's gates guard the default switch, not the measurement: until it
  * switches, CI runs with FREEDOM_IPFS_COST_ENFORCE=0, which reports each
@@ -65,6 +66,38 @@ function gateVerdicts({ firstByteMs, throughputMibs }) {
   };
 }
 
+/** Which samples each gate judges. */
+const GATE_SAMPLES = Object.freeze({ firstByte: 'firstByteMs', throughput: 'throughputMibs' });
+
+/**
+ * The gates on `samples`, a missed one measured once more:
+ * `remeasure(name)` resolves to new samples for `samples[name]`, and the
+ * gate is judged on both runs' samples pooled. Pooled, not the better run:
+ * a pass stands as measured, and a miss is overturned only by the samples
+ * taken together, never by a luckier run alone. Near a limit, that makes a
+ * miss from runner noise rare, and passes a service truly past it about as
+ * rarely as one run does. Resolves to the samples judged and the verdicts,
+ * each saying whether it was `remeasured`, and if so its `firstRun`.
+ */
+async function judgeGates(samples, remeasure) {
+  const firstRun = gateVerdicts(samples);
+  const judged = { ...samples };
+  for (const [gate, name] of Object.entries(GATE_SAMPLES)) {
+    if (firstRun[gate].pass) continue;
+    const more = await remeasure(name);
+    judged[name] = {
+      addon: [...samples[name].addon, ...more.addon],
+      ipfsd: [...samples[name].ipfsd, ...more.ipfsd],
+    };
+  }
+  const gates = gateVerdicts(judged);
+  for (const [gate, name] of Object.entries(GATE_SAMPLES)) {
+    gates[gate].remeasured = judged[name] !== samples[name];
+    if (gates[gate].remeasured) gates[gate].firstRun = firstRun[gate];
+  }
+  return { samples: judged, gates };
+}
+
 /** A gate's verdict for the report, and whether it fails the run. */
 function gateOutcome(pass, enforced) {
   return { verdict: pass ? 'PASS' : '**FAIL**', failsRun: enforced && !pass };
@@ -73,8 +106,13 @@ function gateOutcome(pass, enforced) {
 /** The step summary's Markdown for a run's `results`. */
 function costTable(results) {
   const { ttfb, throughput, fanout } = results;
-  const mark = (pass) => gateOutcome(pass, results.enforced).verdict;
+  const mark = ({ pass, remeasured }) =>
+    `${gateOutcome(pass, results.enforced).verdict}${remeasured ? ' (re-measured)' : ''}`;
   const signed = (value) => `${value >= 0 ? '+' : ''}${value}`;
+  const firstRuns = [
+    ttfb.remeasured && `first byte ${signed(ttfb.firstRun.deltaMs)} ms`,
+    throughput.remeasured && `throughput ${round(throughput.firstRun.ratio * 100, 1)} %`,
+  ].filter(Boolean);
   return [
     `### freedom-ipfsd against the add-on (${results.target})`,
     '',
@@ -93,17 +131,24 @@ function costTable(results) {
     `| First byte, cached 1 KiB: median ms (p10–p90) | ${ttfb.addon.median} ` +
       `(${ttfb.addon.p10}–${ttfb.addon.p90}) | ${ttfb.ipfsd.median} ` +
       `(${ttfb.ipfsd.p10}–${ttfb.ipfsd.p90}) | at most ${ttfb.gateMs} ms later ` +
-      `(${signed(ttfb.deltaMs)} ms) | ${mark(ttfb.pass)} |`,
+      `(${signed(ttfb.deltaMs)} ms) | ${mark(ttfb)} |`,
     `| Throughput, cached 100 MiB: median MiB/s (p10–p90) | ${throughput.addon.median} ` +
       `(${throughput.addon.p10}–${throughput.addon.p90}) | ${throughput.ipfsd.median} ` +
       `(${throughput.ipfsd.p10}–${throughput.ipfsd.p90}) | at least ` +
       `${round(throughput.gate * 100, 1)} % (${round(throughput.ratio * 100, 1)} %) | ` +
-      `${mark(throughput.pass)} |`,
+      `${mark(throughput)} |`,
     `| #102 fan-out, cached, ${fanout.assets} assets ${fanout.concurrency} at a time: ` +
       `median ms | ${fanout.addon.median} | ${fanout.ipfsd.median} | reported | |`,
     `| #102 fan-out, cold (from the loopback fixture): ms | ${fanout.coldMs.addon} | ` +
       `${fanout.coldMs.ipfsd} | reported | |`,
     '',
+    ...(firstRuns.length
+      ? [
+          `Re-measured: a gate that missed on its first run (${firstRuns.join(', ')}) was ` +
+            "measured once more, and is judged on both runs' samples together.",
+          '',
+        ]
+      : []),
   ].join('\n');
 }
 
@@ -113,6 +158,7 @@ module.exports = {
   costTable,
   gateOutcome,
   gateVerdicts,
+  judgeGates,
   median,
   quantile,
   round,

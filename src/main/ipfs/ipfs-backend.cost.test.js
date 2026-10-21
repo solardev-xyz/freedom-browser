@@ -28,7 +28,9 @@
  *   fails the run.
  * - **Noise:** warm-up rounds are discarded; within each round the backends
  *   alternate, and which goes first alternates between rounds, so runner
- *   noise lands on both alike.
+ *   noise lands on both alike. A gate that misses is measured once more,
+ *   and judged on both runs' samples pooled (`judgeGates`), never on the
+ *   better run alone.
  *
  * Skipped unless FREEDOM_IPFS_COST=1; it needs the add-on (`npm run
  * ipfs:download`) and the binary (`npm run ipfsd:download`). The table goes
@@ -49,7 +51,7 @@ const {
   costEnforced,
   costTable,
   gateOutcome,
-  gateVerdicts,
+  judgeGates,
   round,
   summarize,
 } = require('../../../test/helpers/ipfs-cost-report');
@@ -235,29 +237,40 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
     }
     const askedBefore = blockRequests(fixture);
 
-    const ttfb = await interleaved(
-      backends,
-      { warmup: TTFB_WARMUP, rounds: TTFB_ROUNDS },
-      async (backend) => (await fetchWhole(backend, site.small.path, site.small.size)).firstByteMs
-    );
-    const throughput = await interleaved(
-      backends,
-      { warmup: THROUGHPUT_WARMUP, rounds: THROUGHPUT_ROUNDS },
-      async (backend) => {
-        const { lastByteMs } = await fetchWhole(backend, site.large.path, site.large.size);
-        return LARGE_BYTES / MIB / (lastByteMs / 1000);
-      }
-    );
+    // The gated measures, by their samples' names (judgeGates).
+    const measure = {
+      firstByteMs: () =>
+        interleaved(
+          backends,
+          { warmup: TTFB_WARMUP, rounds: TTFB_ROUNDS },
+          async (backend) =>
+            (await fetchWhole(backend, site.small.path, site.small.size)).firstByteMs
+        ),
+      throughputMibs: () =>
+        interleaved(
+          backends,
+          { warmup: THROUGHPUT_WARMUP, rounds: THROUGHPUT_ROUNDS },
+          async (backend) => {
+            const { lastByteMs } = await fetchWhole(backend, site.large.path, site.large.size);
+            return LARGE_BYTES / MIB / (lastByteMs / 1000);
+          }
+        ),
+    };
+    const firstRun = {
+      firstByteMs: await measure.firstByteMs(),
+      throughputMibs: await measure.throughputMibs(),
+    };
     const fanoutRuns = await interleaved(
       backends,
       { warmup: FANOUT_WARMUP, rounds: FANOUT_ROUNDS },
       (backend) => fanOut(backend, site.assets)
     );
+    const { samples, gates } = await judgeGates(firstRun, (name) => measure[name]());
+    const { firstByteMs: ttfb, throughputMibs: throughput } = samples;
 
     // Cached: nothing of the measured runs came from the fixture.
     expect(blockRequests(fixture)).toBe(askedBefore);
 
-    const gates = gateVerdicts({ firstByteMs: ttfb, throughputMibs: throughput });
     results = {
       enforced: costEnforced(),
       target: `${process.platform}-${process.arch}`,
@@ -266,7 +279,7 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
       node: process.versions.node,
       ttfb: {
         bytes: SMALL_BYTES,
-        rounds: TTFB_ROUNDS,
+        rounds: ttfb.addon.length,
         warmup: TTFB_WARMUP,
         addon: summarize(ttfb.addon, 3),
         ipfsd: summarize(ttfb.ipfsd, 3),
@@ -274,7 +287,7 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
       },
       throughput: {
         bytes: LARGE_BYTES,
-        rounds: THROUGHPUT_ROUNDS,
+        rounds: throughput.addon.length,
         warmup: THROUGHPUT_WARMUP,
         addon: summarize(throughput.addon, 1),
         ipfsd: summarize(throughput.ipfsd, 1),
