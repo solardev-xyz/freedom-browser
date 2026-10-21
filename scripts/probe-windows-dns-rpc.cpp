@@ -66,22 +66,31 @@ int wmain() {
         }
         FWP_BYTE_BLOB user = { GetSecurityDescriptorLength(descriptor.value), static_cast<UINT8*>(descriptor.value) };
 
-        // A successful baseline is unexpected: this experiment is for the
-        // existing reproduced leak, while the production gate stays unchanged.
-        if (_wsystem(L"node scripts/qualify-windows-dns.js") == 0) throw std::runtime_error("Expected baseline leak absent");
+        // Succeeds only for a positively controlled completed workload that
+        // reproduces the known leak, never for an unrelated fixture failure.
+        if (_wsystem(L"node scripts/qualify-windows-dns.js --expect-existing-leak") != 0)
+            throw std::runtime_error("Expected baseline leak absent");
         Engine engine;
         FWPM_SESSION0 session = {};
         session.flags = FWPM_SESSION_FLAG_DYNAMIC;
         checked(FwpmEngineOpen0(nullptr, RPC_C_AUTHN_DEFAULT, nullptr, &session, &engine.handle), "FwpmEngineOpen0");
+        FWPM_SUBLAYER0 sublayer = {};
+        checked(UuidCreate(&sublayer.subLayerKey), "UuidCreate(sublayer)");
+        sublayer.displayData.name = const_cast<wchar_t*>(L"Freedom owned DNS RPC probe");
+        sublayer.weight = 0xffff;
+        checked(FwpmSubLayerAdd0(engine.handle, &sublayer, nullptr), "FwpmSubLayerAdd0");
         unsigned installed = 0;
-        const UUID management = {0xafa8bd80,0x7d8a,0x11c9,{0xbe,0xf4,0x08,0x00,0x2b,0x10,0x29,0x89}};
+        // Observed on both CI versions. Do not block the separate NRP/policy
+        // interface: disabling policy could invalidate the NRPT test route.
+        const UUID resolver = {0x45776b01,0x5956,0x4485,{0x9f,0x80,0xf4,0x28,0xf7,0xd6,0x01,0x29}};
         for (unsigned i = 0; i < interfaces.value->Count; i++) {
             const RPC_IF_ID& entry = *interfaces.value->IfId[i];
-            if (!std::memcmp(&entry.Uuid, &management, sizeof(UUID))) continue;
-            RPC_WSTR uuid = nullptr;
-            checked(UuidToStringW(&entry.Uuid, &uuid), "UuidToStringW");
-            std::wprintf(L"Observed DNS interface %ls v%u.%u\n", uuid, entry.VersMajor, entry.VersMinor);
-            RpcStringFreeW(&uuid);
+            if (std::memcmp(&entry.Uuid, &resolver, sizeof(UUID))) continue;
+            RPC_CSTR uuid = nullptr;
+            checked(UuidToStringA(&entry.Uuid, &uuid), "UuidToStringA");
+            std::printf("Observed DNS interface %s v%u.%u\n", reinterpret_cast<char*>(uuid),
+                static_cast<unsigned>(entry.VersMajor), static_cast<unsigned>(entry.VersMinor));
+            RpcStringFreeA(&uuid);
             if (entry.VersMinor) throw std::runtime_error("Unqualified minor-version encoding");
 
             FWP_BYTE_ARRAY16 uuid_bytes = {};
@@ -104,7 +113,7 @@ int wmain() {
             checked(UuidCreate(&filter.filterKey), "UuidCreate");
             filter.displayData.name = const_cast<wchar_t*>(L"Freedom owned DNS RPC probe");
             filter.layerKey = FWPM_LAYER_RPC_UM;
-            filter.subLayerKey = FWPM_SUBLAYER_UNIVERSAL;
+            filter.subLayerKey = sublayer.subLayerKey;
             filter.action.type = FWP_ACTION_BLOCK;
             filter.numFilterConditions = 4;
             filter.filterCondition = conditions;
@@ -113,7 +122,8 @@ int wmain() {
             FWPM_FILTER0* actual = nullptr;
             checked(FwpmFilterGetById0(engine.handle, id, &actual), "FwpmFilterGetById0");
             bool matches = actual->numFilterConditions == 4 && actual->action.type == FWP_ACTION_BLOCK &&
-                IsEqualGUID(actual->layerKey, FWPM_LAYER_RPC_UM);
+                IsEqualGUID(actual->layerKey, FWPM_LAYER_RPC_UM) &&
+                IsEqualGUID(actual->subLayerKey, sublayer.subLayerKey);
             // WFP may reorder conditions. Verify every typed field survived.
             for (const auto& expected : conditions) {
                 bool found = false;

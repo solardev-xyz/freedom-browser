@@ -46,7 +46,13 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 2000));
     console.log(JSON.stringify({ control, offlinePackets: packets, state: receipt.state }));
     assert.equal(receipt.state, 'completed');
-    assert.equal(packets, 0, 'An offline workload must not send DNS through the shared service');
+    if (process.argv.includes('--expect-existing-leak')) {
+      // Explicit diagnostic control only. Normal CI qualification still
+      // requires zero packets; a setup/execution failure cannot be a baseline.
+      assert(packets > 0, 'The diagnostic baseline must reproduce the existing DNS leak');
+    } else {
+      assert.equal(packets, 0, 'An offline workload must not send DNS through the shared service');
+    }
   } finally {
     if (rule) await ps(`Remove-DnsClientNrptRule -Name '${rule}' -Force`);
     await new Promise(resolve => dns.close(resolve));
