@@ -1015,10 +1015,11 @@ describe('profile catalog', () => {
       const shared = sharedIpfs(tempRoot);
       // Once the fence has moved the directory, ipfs-data becomes a link.
       const realRename = fs.renameSync;
-      // The fence moves the canonical path: the temp directory's own can
-      // differ from the one named (/private/var on macOS, long names on
-      // Windows).
-      const ipfsDir = path.join(fs.realpathSync(record.dir), 'ipfs-data', 'freedom-ipfs');
+      // The fence moves the canonical path, as the native realpath gives it
+      // (gatedPlace): the temp directory's own can differ from the one named
+      // (/private/var on macOS; on Windows, long names for 8.3 ones, which
+      // only the native realpath expands).
+      const ipfsDir = path.join(fs.realpathSync.native(record.dir), 'ipfs-data', 'freedom-ipfs');
       let planted = false;
       const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
         realRename(from, to);
@@ -1072,7 +1073,7 @@ describe('profile catalog', () => {
       // No ipfs-data yet: a writer creates it, store and all, as the fence
       // finds nothing to move.
       // The fence moves the canonical path (see above).
-      const ipfsDir = path.join(fs.realpathSync(record.dir), 'ipfs-data', 'freedom-ipfs');
+      const ipfsDir = path.join(fs.realpathSync.native(record.dir), 'ipfs-data', 'freedom-ipfs');
       let planted = false;
       const realRename = fs.renameSync;
       const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
