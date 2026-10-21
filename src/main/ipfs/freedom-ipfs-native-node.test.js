@@ -919,6 +919,33 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
+  test('a stop while the start waits for its gate cancels the wait, and the store is never opened', async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    let signal = null;
+    const takeGate = jest.fn(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          signal = options.signal;
+          signal.addEventListener('abort', () =>
+            reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))
+          );
+        })
+    );
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+    const starting = node.start();
+    await flush();
+    expect(signal.aborted).toBe(false);
+
+    const stopping = node.stop();
+    expect(signal.aborted).toBe(true);
+    await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+    expect(node.gate).toBeNull();
+  });
+
   test('a hold released by its own stop is never lost', async () => {
     const order = [];
     const binding = recordedBinding(order);

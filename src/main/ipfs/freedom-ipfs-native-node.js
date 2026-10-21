@@ -312,6 +312,7 @@ class FreedomIpfsNativeNode {
     this.takeGate = takeGate;
     this.gate = null;
     this.gateLost = false;
+    this.gateAbort = null;
     this.nodeHandle = '0';
     this.dispatcher = null;
     this.requests = new Map();
@@ -375,6 +376,10 @@ class FreedomIpfsNativeNode {
   }
 
   stop() {
+    // A start still waiting for its data directory's gate gives up at once
+    // (freedom-core design 0007, Rollback): a stop never waits out another
+    // writer's hold.
+    this.gateAbort?.abort();
     if (!this.queuedStop) {
       this.queuedStart = null;
       this.queuedStop = this.queueLifecycle(() => this.stopNative(), 'queuedStop');
@@ -478,12 +483,22 @@ class FreedomIpfsNativeNode {
     this.failureError = null;
   }
 
-  /** Takes the data directory's gate, if the node has one to take. */
+  /** Takes the data directory's gate, if the node has one to take; a stop
+   * meanwhile cancels the wait. */
   async holdGate() {
     if (!this.takeGate) return;
     this.gateLost = false;
-    const hold = await this.takeGate({ onLost: () => this.onGateLost(hold) });
-    this.gate = hold;
+    const abort = new AbortController();
+    this.gateAbort = abort;
+    try {
+      const hold = await this.takeGate({
+        onLost: () => this.onGateLost(hold),
+        signal: abort.signal,
+      });
+      this.gate = hold;
+    } finally {
+      if (this.gateAbort === abort) this.gateAbort = null;
+    }
   }
 
   async releaseGate() {

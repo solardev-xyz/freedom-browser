@@ -45,6 +45,7 @@ const MESSAGES = {
   storage: "The IPFS data directory's lock can't be taken on this storage",
   usage: 'freedom-ipfsd refused the hold-lock command',
   missing: 'freedom-ipfsd is missing from this installation. Reinstall Freedom.',
+  cancelled: "Taking the IPFS data directory's lock was cancelled",
   failed: "freedom-ipfsd couldn't hold the IPFS data directory's lock",
 };
 const EXIT_CODES = new Map([
@@ -54,7 +55,7 @@ const EXIT_CODES = new Map([
 ]);
 
 /** The gate couldn't be had: `code` is `lock_held` (75), `storage` (74),
- * `usage` (64), `missing` or `failed`. */
+ * `usage` (64), `missing`, `cancelled` (its signal) or `failed`. */
 class IpfsGateError extends Error {
   constructor(code, message = MESSAGES[code]) {
     super(message);
@@ -72,7 +73,9 @@ function isIpfsdAvailable() {
  * Takes the gate of `dataDir` with `hold-lock`. Resolves once the holder has
  * written `locked`, to a hold whose `release()` closes its stdin and resolves
  * once it has exited (killed after 1 s); rejects with an IpfsGateError.
- * `onLost(exit)` runs if the holder ends without being released.
+ * `onLost(exit)` runs if the holder ends without being released. `signal`
+ * gives up a wait for `locked` (the holder is killed): a stop never waits
+ * out another writer's hold.
  *
  * @param {object} options
  * @param {string} options.dataDir - the directory the service would use
@@ -80,6 +83,7 @@ function isIpfsdAvailable() {
  * @param {string} [options.lockDir] - the core's lock directory
  * @param {Function} [options.onLost] - ({ code, signal }) once a held gate is
  *   lost
+ * @param {AbortSignal} [options.signal] - cancels the wait for `locked`
  * @param {string} [options.command]
  * @param {Function} [options.spawn]
  * @param {object} [options.log]
@@ -90,6 +94,7 @@ function holdIpfsGate({
   dataDir,
   lockDir = getLockDir(),
   onLost = null,
+  signal = null,
   command = getIpfsdBinaryPath(),
   spawn = spawnProcess,
   log = defaultLog,
@@ -97,6 +102,10 @@ function holdIpfsGate({
   clearTimer = clearTimeout,
 }) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new IpfsGateError('cancelled'));
+      return;
+    }
     let child;
     try {
       child = spawn(command, ['hold-lock', '--data-dir', dataDir, '--lock-dir', lockDir], {
@@ -117,13 +126,22 @@ function holdIpfsGate({
     const exitWaiters = [];
     let lockTimer = null;
 
+    const onAbort = () => {
+      if (state !== 'pending') return;
+      fail(new IpfsGateError('cancelled'), null);
+      child.kill('SIGKILL');
+    };
     const fail = (error, detail) => {
       if (state !== 'pending') return;
       state = 'failed';
       clearTimer(lockTimer);
-      log.warn('[IPFS] freedom-ipfsd hold-lock failed', { code: error.code, ...detail });
+      signal?.removeEventListener('abort', onAbort);
+      // A cancelled wait is the caller's own doing: nothing to report.
+      if (detail)
+        log.warn('[IPFS] freedom-ipfsd hold-lock failed', { code: error.code, ...detail });
       reject(error);
     };
+    signal?.addEventListener('abort', onAbort, { once: true });
     lockTimer = setTimer(() => {
       if (state !== 'pending') return;
       fail(new IpfsGateError('failed'), { reason: 'no answer' });
@@ -163,6 +181,7 @@ function holdIpfsGate({
       if (stdout.startsWith(`${LOCKED}\n`)) {
         state = 'locked';
         clearTimer(lockTimer);
+        signal?.removeEventListener('abort', onAbort);
         resolve(hold);
       }
     });

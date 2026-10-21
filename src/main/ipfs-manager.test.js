@@ -517,7 +517,12 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
   });
 
-  test('a stop requested while the native start is still pending waits for it, then stops that node', async () => {
+  // The add-on's start waits for its data directory's gate, which another
+  // writer may hold for 5 s (freedom-core design 0007, Rollback): quit or a
+  // toggle-off mid-start takes the node over at once, as for the service.
+  // The node orders its own stop after its start, and a stop cancels a wait
+  // for the gate, so nothing half-started is torn down.
+  test('a stop requested while the native start is still pending takes that node over', async () => {
     const flush = () => new Promise((resolve) => setImmediate(resolve));
     let finishStart;
     const ctx = loadIpfsManagerModule({
@@ -534,16 +539,43 @@ describe('ipfs-manager', () => {
       status: 'starting',
     });
 
-    // Quit or a toggle-off lands mid-start: it queues behind the start rather
-    // than tearing down a node whose handle isn't published yet.
     const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
     await flush();
-    expect(ctx.nativeInstances[0].stop).not.toHaveBeenCalled();
+    expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
 
     finishStart(true);
-    expect((await startResult).status).toBe('running');
+    await startResult;
     expect((await stopResult).status).toBe('stopped');
     expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    // The start published nothing: no node is serving, and RUNNING never came.
+    expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: false });
+    expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.1');
+  });
+
+  test("a start after a node's failure waits for that node's stop", async () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let finishCleanup;
+    const ctx = loadIpfsManagerModule();
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    const failed = ctx.nativeInstances[0];
+    failed.stop.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCleanup = resolve;
+        })
+    );
+
+    failed.config.onFailure('freedom-ipfsd hold-lock exited', failed);
+    const restart = ctx.mod.startIpfs();
+    await flush();
+    // Its gate's holder may still be exiting: no new node takes the gate yet.
+    expect(ctx.nativeInstances).toHaveLength(1);
+
+    finishCleanup();
+    await restart;
+    expect(ctx.nativeInstances).toHaveLength(2);
+    expect(ctx.nativeInstances[1].start).toHaveBeenCalled();
   });
 
   test('moves to error and cleans up when the native node reports failure', async () => {

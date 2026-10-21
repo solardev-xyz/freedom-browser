@@ -38,13 +38,18 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let activeNode = null;
-// A freedom-ipfsd node whose start is still pending. Its start waits on the
-// service's replies, so a stop takes it over at once rather than queueing
-// behind it (freedom-core design 0007, "Startup and shutdown").
+// A node whose start is still pending. A freedom-ipfsd node's start waits on
+// the service's replies, and the add-on's on its data directory's gate, which
+// another writer may hold (freedom-core design 0007, "Startup and shutdown"
+// and Rollback): a stop takes it over at once rather than queueing behind it.
 let startingNode = null;
 // Counts stopIpfs() calls: a service start requested before the latest stop
 // is cancelled by it, whether or not its node exists yet.
 let stopsRequested = 0;
+// The stop of a node that failed, which runs on its own (its store closing,
+// its gate's holder exiting): the next start and stop wait for it, so a new
+// node takes the gate only once the old one has let it go.
+let failedNodeStop = null;
 let healthCheckInterval = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
@@ -469,9 +474,15 @@ function handleNativeNodeFailure(reason, node = activeNode) {
   updateState(STATUS.ERROR, message);
 
   if (failedNode) {
-    failedNode.stop().catch((err) => {
-      log.warn('[IPFS] Error while cleaning up failed freedom-ipfs native node:', err.message);
-    });
+    const cleanup = failedNode
+      .stop()
+      .catch((err) => {
+        log.warn('[IPFS] Error while cleaning up failed freedom-ipfs native node:', err.message);
+      })
+      .finally(() => {
+        if (failedNodeStop === cleanup) failedNodeStop = null;
+      });
+    failedNodeStop = cleanup;
   }
 }
 
@@ -751,6 +762,9 @@ async function doStartIpfs(requestedAt = stopsRequested) {
     return;
   }
 
+  // A node that failed may still hold the data directory: its stop is
+  // bounded, and the new node starts after it.
+  await failedNodeStop;
   const dataDir = getIpfsDataPath();
   const onFailure = (reason, failedNode) => handleNativeNodeFailure(reason, failedNode);
   const node =
@@ -777,11 +791,12 @@ async function doStartIpfs(requestedAt = stopsRequested) {
   // on the libuv thread pool; the main thread keeps serving the UI meanwhile
   // (#503 item 13). The state stays STARTING throughout, and enqueueOp holds
   // any stop/sync requested meanwhile until this settles. The service node's
-  // start lasts until its instance's first stats reply, so a stop doesn't
-  // wait for it: stopIpfs() stops the node, which settles start() false, and
-  // the stop's own op publishes STOPPED.
-  const takenOver = () => node.restartsItself && startingNode !== node;
-  if (node.restartsItself) startingNode = node;
+  // start lasts until its instance's first stats reply, and the add-on's
+  // waits for its gate, so a stop doesn't wait for either: stopIpfs() stops
+  // the node, which settles its start (false, or rejected: the add-on gives
+  // up its gate's wait), and the stop's own op publishes STOPPED.
+  const takenOver = () => startingNode !== node;
+  startingNode = node;
   try {
     const started = await node.start();
     if (takenOver()) return;
@@ -930,6 +945,7 @@ async function doStopIpfs(takeover = null) {
     }
   }
   await takeover;
+  await failedNodeStop;
 
   clearExternalGatewayState();
   clearErrorState('ipfs');
@@ -946,10 +962,11 @@ function startIpfs() {
 }
 
 function stopIpfs() {
-  // A service node still starting is stopped now, not after its start
-  // settles (doStartIpfs), and a service start queued before this stop is
-  // cancelled: the shutdown is bounded at 5 s, and so quit and a mode change
-  // are. A start requested after this stop waits for that shutdown.
+  // A node still starting is stopped now, not after its start settles
+  // (doStartIpfs): a service's shutdown is bounded at 5 s, and an add-on's
+  // start gives up its gate's wait, so quit and a mode change are bounded. A
+  // service start queued before this stop is cancelled. A start requested
+  // after this stop waits for that stop.
   stopsRequested += 1;
   const starting = startingNode;
   startingNode = null;

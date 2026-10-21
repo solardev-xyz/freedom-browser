@@ -11,7 +11,8 @@
  *   and removes nothing; once the service has stopped, it goes through;
  * - with the add-on downloaded too (`npm run ipfs:download`), the add-on runs
  *   under hold-lock (Rollback): a service on its directory exits 75 while
- *   the add-on runs, and starts once the add-on has stopped.
+ *   the add-on runs, and starts once the add-on has stopped; and an add-on
+ *   start waiting out a service's gate gives up at once when stopped.
  *
  * Each refusal waits out the binary's 5 s of contention retries.
  */
@@ -154,6 +155,30 @@ describeIfBinary('the IPFS data directory gate with the real freedom-ipfsd', () 
       await addon.stop();
       const next = service(dataDir);
       await expect(next.node.start()).resolves.toBe(true);
+    },
+    REFUSAL_MS
+  );
+
+  testIfAddon(
+    "an add-on start waiting out another writer's gate gives up at a stop, at once",
+    async () => {
+      const dataDir = path.join(root, 'ipfs-data', 'freedom-ipfs');
+      const { node } = service(dataDir);
+      await expect(node.start()).resolves.toBe(true);
+      const addon = new FreedomIpfsNativeNode({
+        dataDir,
+        takeGate: (options) => takeIpfsGate(dataDir, { ...options, lockDir, log: quietLog }),
+      });
+      running.push(() => addon.stop());
+      const starting = addon.start();
+      // hold-lock is retrying against the service's gate.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const stopped = Date.now();
+      await addon.stop();
+      await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+      expect(Date.now() - stopped).toBeLessThan(2_000);
+      expect(node.isHealthy()).toBe(true);
     },
     REFUSAL_MS
   );

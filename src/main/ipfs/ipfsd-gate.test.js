@@ -201,6 +201,31 @@ describe('holdIpfsGate', () => {
     expect(child.killedWith).toBe('SIGKILL');
   });
 
+  test('a cancelled wait kills the holder and gives up, quietly; a held gate ignores it', async () => {
+    const abort = new AbortController();
+    const { child, promise } = hold({ signal: abort.signal });
+    abort.abort();
+    await expect(promise).rejects.toMatchObject({ name: 'IpfsGateError', code: 'cancelled' });
+    expect(child.killedWith).toBe('SIGKILL');
+    expect(log.warn).not.toHaveBeenCalled();
+
+    const late = new AbortController();
+    const held = hold({ signal: late.signal });
+    held.child.locked();
+    const gate = await held.promise;
+    late.abort();
+    expect(held.child.killedWith).toBeNull();
+    await gate.release();
+  });
+
+  test('an already cancelled wait spawns nothing', async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const { promise, spawn } = hold({ signal: abort.signal });
+    await expect(promise).rejects.toMatchObject({ code: 'cancelled' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   test("a holder that doesn't exit at its stdin's EOF is killed", async () => {
     const { child, promise } = hold();
     child.exitOnEof = false;
