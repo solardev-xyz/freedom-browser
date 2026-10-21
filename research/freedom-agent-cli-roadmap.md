@@ -1,8 +1,8 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-21
-Status: Whole-feature security repairs implemented locally, native/review gates remain; AI settings, onboarding, examples and dictation integrated; domain research complete; implementation planned
+Last updated: 2026-10-22
+Status: Concrete security repairs implemented and independently re-reviewed; bounded Windows gate passed; AI settings, onboarding, examples and dictation integrated; domain research complete; broader release qualification remains
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-21
@@ -21,7 +21,7 @@ its older “next”, “unsupported” and “remaining” statements do not ov
 plan. Optional extensions remain recorded below and are not prerequisites for
 this iteration.
 
-### New priority — October 21 whole-feature security audit
+### October 21 whole-feature security audit — repairs and qualification
 
 [Meinhard's new audit](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6313239088)
 is a six-pass security review of `17d08d34e` against `a9d7e9978`, separate from
@@ -31,7 +31,7 @@ mechanisms from unrun platform hypotheses. Do not treat older passing tests or
 the dictation sign-off as clearance of these new findings.
 
 The [security audit intake](../docs/audits/agent-security-audit-triage-2026-10.md)
-indexes every item as S1–S8 and L1–L12. **Repair implementation is underway:**
+indexes every item as S1–S8 and L1–L12. **Concrete source repairs are implemented and re-reviewed; accepted limits and remaining qualification are recorded separately:**
 confined cleanup and drained deletion, opened-handle file validation, publication
 exclusions, narrow toolchain grants, internal-page protection, truthful WebMCP
 metadata, credential revocation, in-memory codemode output, retained effect
@@ -72,7 +72,13 @@ normal user custody.
 - PR [#457](https://github.com/solardev-xyz/freedom-browser/pull/457) is open and
   ready for review, not draft. Positive colleague feedback is user-reported; it
   does not establish that every provider/platform or release gate has passed.
-- The review baseline was `0b4bb4f2`, including main through
+- Latest qualified checkpoint: `462192d2` (last production-source change
+  `6f539472`). [General CI 39678913701](https://github.com/solardev-xyz/freedom-browser/actions/runs/39678913701)
+  and [Windows CI 39678913710](https://github.com/solardev-xyz/freedom-browser/actions/runs/39678913710)
+  passed. Local lint, **10,840 unit tests / 129 skipped** and five final real
+  Electron startup/delegated-edit cases passed. This supersedes the earlier CI
+  failure below; dated platform/provider limits still apply.
+- The earlier review baseline was `0b4bb4f2`, including main through
   `f8709ed5` and the Agent popover stacking follow-up. October 20 repairs are
   `5779425e` (authority/runtime) and `d234673b` (renderer/qualification).
   `6b68cf3e` then integrated main at `11615a9a`, resolving the HTTP fixture
@@ -85,11 +91,11 @@ normal user custody.
   shortcuts, context menus and publish setup, including the corrected macOS
   modifier test (6 platform-specific skips). The full 16-case context-menu suite
   was rerun successfully. This does not qualify subsequent styling changes.
-- GitHub checks at `0b4bb4f2`: Windows sandbox succeeded; general CI failed at
+- Historical GitHub failure at `0b4bb4f2`, superseded by the current green checkpoint: Windows sandbox succeeded; general CI failed at
   **Compare renderer screenshots** (`e2e-renderer-screenshots`), also failing the
   aggregate `ci-ok` check. [Inspect the differences in that run](https://github.com/solardev-xyz/freedom-browser/actions/runs/39286074277)
-  and fix the regression or qualify intentional baseline changes before claiming
-  a green review/release baseline; the failed comparison alone does not say which.
+  for the original differences. Later inspected baseline/layout repairs and the
+  current successful comparison supersede this failure; it remains historical evidence.
 - macOS has the broadest live product/provider coverage. Core Windows x64 sandbox
   and packaged workflows are implemented and qualified at recorded revisions;
   broad reads are an accepted Windows policy. Linux has dated Bubblewrap/package
