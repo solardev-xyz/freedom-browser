@@ -370,7 +370,12 @@ class FreedomIpfsNativeNode {
   start() {
     if (!this.queuedStart) {
       this.queuedStop = null;
-      this.queuedStart = this.queueLifecycle(() => this.startNative(), 'queuedStart');
+      // The gate wait's controller is made now, not when the queued start
+      // runs: a stop requested after this start cancels the wait before it
+      // has begun too, so it never waits out another writer's hold.
+      const gateAbort = this.takeGate ? new AbortController() : null;
+      this.gateAbort = gateAbort;
+      this.queuedStart = this.queueLifecycle(() => this.startNative(gateAbort), 'queuedStart');
     }
     return this.queuedStart;
   }
@@ -397,12 +402,12 @@ class FreedomIpfsNativeNode {
     return run;
   }
 
-  async startNative() {
+  async startNative(gateAbort = null) {
     if (normalizeNativeHandle(this.nodeHandle)) return true;
     this.failed = false;
     this.failureError = null;
     const addon = binding();
-    await this.holdGate();
+    await this.holdGate(gateAbort);
     let handle;
     try {
       handle = normalizeNativeHandle(
@@ -483,17 +488,16 @@ class FreedomIpfsNativeNode {
     this.failureError = null;
   }
 
-  /** Takes the data directory's gate, if the node has one to take; a stop
-   * meanwhile cancels the wait. */
-  async holdGate() {
+  /** Takes the data directory's gate, if the node has one to take; `abort`
+   * is its start's controller, which a stop requested after that start has
+   * aborted, or aborts meanwhile. */
+  async holdGate(abort) {
     if (!this.takeGate) return;
     this.gateLost = false;
-    const abort = new AbortController();
-    this.gateAbort = abort;
     try {
       const hold = await this.takeGate({
         onLost: () => this.onGateLost(hold),
-        signal: abort.signal,
+        signal: abort?.signal,
       });
       this.gate = hold;
     } finally {

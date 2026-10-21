@@ -182,4 +182,26 @@ describeIfBinary('the IPFS data directory gate with the real freedom-ipfsd', () 
     },
     REFUSAL_MS
   );
+
+  test(
+    'a stop in the same turn as the add-on start never waits out the gate',
+    async () => {
+      const dataDir = path.join(root, 'ipfs-data', 'freedom-ipfs');
+      const { node } = service(dataDir);
+      await expect(node.start()).resolves.toBe(true);
+      const addon = new FreedomIpfsNativeNode({
+        dataDir,
+        takeGate: (options) => takeIpfsGate(dataDir, { ...options, lockDir, log: quietLog }),
+      });
+      running.push(() => addon.stop());
+
+      const stopped = Date.now();
+      const starting = addon.start();
+      await addon.stop();
+      await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+      expect(Date.now() - stopped).toBeLessThan(1_000);
+      expect(node.isHealthy()).toBe(true);
+    },
+    REFUSAL_MS
+  );
 });

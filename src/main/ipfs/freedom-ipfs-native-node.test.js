@@ -946,6 +946,59 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
     expect(node.gate).toBeNull();
   });
 
+  // A gate wait honours its signal as holdIpfsGate does: one already aborted
+  // rejects at once, without a holder.
+  const cancellableGate = () =>
+    jest.fn(
+      (options) =>
+        new Promise((resolve, reject) => {
+          const cancelled = () =>
+            reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }));
+          if (options.signal.aborted) cancelled();
+          else options.signal.addEventListener('abort', cancelled);
+        })
+    );
+
+  test('a stop in the same turn as the start cancels the gate wait before it begins', async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const takeGate = cancellableGate();
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    const starting = node.start();
+    const stopping = node.stop();
+    await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    expect(takeGate.mock.calls[0][0].signal.aborted).toBe(true);
+    expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+    expect(node.gate).toBeNull();
+  });
+
+  test('a start requested after that stop waits on a gate of its own, uncancelled', async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const release = jest.fn(async () => {});
+    let call = 0;
+    const cancelled = cancellableGate();
+    const takeGate = jest.fn((options) => {
+      call += 1;
+      return call === 1 ? cancelled(options) : Promise.resolve({ release });
+    });
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    const first = node.start();
+    const stopping = node.stop();
+    const second = node.start();
+    await expect(first).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    await expect(second).resolves.toBe(true);
+    expect(takeGate).toHaveBeenCalledTimes(2);
+    expect(takeGate.mock.calls[1][0].signal.aborted).toBe(false);
+    expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledTimes(1);
+    await node.stop();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   // Until the service is the default, only development builds gate their
   // IPFS writers (ipfsd-gate.js, ipfsGateRequired).
   test.each([
