@@ -870,6 +870,14 @@ async function identitiesUp(target) {
  * Anything else is refused before anything changes. Null when the data root
  * isn't there: nothing to remove, and nothing to spare.
  *
+ * What it guards against: the writers the gate excludes (the service, the
+ * add-on, `hold-lock`), which write only inside the gated directory, a holder
+ * ending mid-delete, and a successor taking the gate. Not another process
+ * reshaping the profile's tree while the delete runs (renaming its
+ * directories, planting links after this check): the walk checks each entry
+ * with lstat and then goes by path, as the ungated `fs.rm` does, and such a
+ * process, with the user's own rights, needs no race to remove those files.
+ *
  * `gated` is the canonical path, which the fence moves; `steps` the
  * directories from the data root down to it, each one's name and identity
  * if it exists, the last the gated directory itself.
