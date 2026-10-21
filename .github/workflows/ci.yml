@@ -487,6 +487,119 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
+  # Whether a pull request touches what the IPFS cost measurement measures:
+  # the IPFS backends and their manager, the service client and its frames,
+  # the measurement and its helpers, the pinned binaries' fetch, the
+  # dependencies, and this workflow. Anything else can't move the numbers,
+  # and three runners for a few minutes each is a cost of its own.
+  ipfs-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ipfs: ${{ steps.filter.outputs.ipfs }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the IPFS backends changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — measuring"
+            echo "ipfs=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # No `-q`, as in the gates above: a >64 KiB path list would kill
+          # the `echo` with SIGPIPE, which `pipefail` turns into `ipfs=false`.
+          if echo "$changed" | grep -E '^(src/main/ipfs/|src/main/ipfs-manager\.js|src/main/core/(service-client|frame)\.js|test/helpers/(ipfs-contract-backends|ipfs-fixture|main-process-test-utils|fake-dweb-core)\.js|scripts/(fetch-freedom-ipfsd|fetch-freedom-ipfs-native)\.js|scripts/lib/freedom-core-release\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
+            echo "ipfs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ipfs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # What running IPFS on freedom-ipfsd costs against the add-on (freedom-core
+  # design 0007, "Cost"), on the same runner, before the default switches:
+  # the first byte of a cached 1 KiB file, the throughput of a cached 100 MiB
+  # file, and #102's fan-out on the loopback fixture. It fails when 0007's
+  # gates do: the median first byte more than 5 ms later than the add-on's,
+  # or the median throughput under 80 % of it. The table goes to the step
+  # summary, and the numbers to an artifact. Both backends' binaries are
+  # this runner's: the add-on for darwin-arm64, linux-x64 and win32-x64, and
+  # freedom-ipfsd's mac-arm64, linux-x64 and win-x64.
+  ipfs-cost:
+    needs: ipfs-changed
+    if: ${{ !cancelled() && needs.ipfs-changed.outputs.ipfs != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-15
+            target: darwin-arm64
+          - os: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Assert the runner's target
+        run: node -e "const target = process.platform + '-' + process.arch; if (target !== process.env.EXPECTED_TARGET) { console.error('Expected ' + process.env.EXPECTED_TARGET + ' runner, got ' + target); process.exit(1); } console.log(target);"
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download freedom-ipfsd binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Measure freedom-ipfsd against the add-on
+        run: npx jest src/main/ipfs/ipfs-backend.cost.test.js
+        env:
+          FREEDOM_IPFS_COST: '1'
+          FREEDOM_IPFS_COST_OUT: ipfs-cost-${{ matrix.target }}.json
+
+      - name: Upload the cost numbers
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ipfs-cost-${{ matrix.target }}
+          path: ipfs-cost-${{ matrix.target }}.json
+          if-no-files-found: warn
+
   # Package an unpacked `--dir` build for every shipped platform and fail if
   # app.asar holds anything outside the `build.files` allowlist (#576). The
   # same check runs from scripts/after-pack.js in release.yml, but only at tag
@@ -2266,6 +2379,8 @@ jobs:
         freedom-ipfs-native-addon,
         freedom-ipfsd-contract,
         freedom-ipfsd-smoke,
+        ipfs-changed,
+        ipfs-cost,
         ipfs-gateway-proxy,
         migration-cross-platform,
         myotis-addon-load,
