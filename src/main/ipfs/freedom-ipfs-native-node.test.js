@@ -771,3 +771,318 @@ describe('FreedomIpfsNativeNode', () => {
     });
   });
 });
+
+// freedom-core design 0007, Rollback: the add-on runs under freedom-ipfsd's
+// hold-lock, from before its store opens until after it is closed.
+describe("FreedomIpfsNativeNode under its data directory's gate", () => {
+  /** A gate whose takes and releases are recorded in `order`. */
+  function gate(order, { fails = null } = {}) {
+    const holds = [];
+    const takeGate = jest.fn(async ({ onLost }) => {
+      order.push('gate taken');
+      if (fails) throw fails;
+      const hold = {
+        onLost,
+        release: jest.fn(async () => {
+          order.push('gate released');
+        }),
+      };
+      holds.push(hold);
+      return hold;
+    });
+    return { takeGate, holds };
+  }
+
+  function recordedBinding(order) {
+    const binding = createBindingMock();
+    binding.nodeNewWithDataDirAsync.mockImplementation(async () => {
+      order.push('store opened');
+      return '1';
+    });
+    binding.nodeFreeAsync.mockImplementation(async () => {
+      order.push('store closed');
+    });
+    return binding;
+  }
+
+  async function stopNode(node) {
+    const stopping = node.stop();
+    await flush();
+    const worker = lastWorker();
+    worker.emit('message', { type: 'stopped' });
+    worker.emit('exit', 0);
+    await stopping;
+  }
+
+  test('takes the gate before its store opens, and releases it after the store is closed', async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { takeGate, holds } = gate(order);
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    await expect(node.start()).resolves.toBe(true);
+    expect(order).toEqual(['gate taken', 'store opened']);
+    await stopNode(node);
+
+    expect(order).toEqual(['gate taken', 'store opened', 'store closed', 'gate released']);
+    expect(holds[0].release).toHaveBeenCalledTimes(1);
+  });
+
+  test("a gate it can't have fails the start, and the store is never opened", async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const held = Object.assign(new Error('The IPFS data is in use by another process.'), {
+      name: 'IpfsGateError',
+      code: 'lock_held',
+    });
+    const { takeGate } = gate(order, { fails: held });
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    await expect(node.start()).rejects.toBe(held);
+    expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+    expect(node.nodeHandle).toBe('0');
+  });
+
+  test.each([
+    [
+      'the store opening throws',
+      (b) => b.nodeNewWithDataDirAsync.mockRejectedValue(new Error('x')),
+    ],
+    ['the store opening gives no handle', (b) => b.nodeNewWithDataDirAsync.mockResolvedValue('0')],
+    [
+      'the gateway refusing to start',
+      (b) => b.nodeStartNativeGatewayOnlineAsync.mockResolvedValue(false),
+    ],
+    [
+      'the gateway start throwing',
+      (b) => b.nodeStartNativeGatewayOnlineAsync.mockRejectedValue(new Error('x')),
+    ],
+  ])('a failed start releases the gate: %s', async (_label, breakIt) => {
+    const order = [];
+    const binding = recordedBinding(order);
+    breakIt(binding);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { takeGate, holds } = gate(order);
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    await node.start().catch(() => {});
+    expect(holds[0].release).toHaveBeenCalledTimes(1);
+    expect(node.gate).toBeNull();
+  });
+
+  test("a holder lost while it runs fails the node: today's failure, then a stop that frees the store", async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode, GATE_LOST } = loadModule(binding);
+    const { takeGate, holds } = gate(order);
+    const onFailure = jest.fn();
+    const node = new FreedomIpfsNativeNode({
+      dataDir: '/tmp/freedom-ipfs-test',
+      takeGate,
+      onFailure,
+    });
+    await node.start();
+
+    holds[0].onLost({ code: null, signal: 'SIGKILL' });
+
+    expect(onFailure).toHaveBeenCalledWith(GATE_LOST, node);
+    expect(node.isHealthy()).toBe(false);
+    await stopNode(node);
+    expect(order.slice(-2)).toEqual(['store closed', 'gate released']);
+  });
+
+  test("a holder lost while it starts: the start gives up, and the store isn't served", async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const started = deferred();
+    binding.nodeStartNativeGatewayOnlineAsync.mockImplementation(() => started.promise);
+    const { FreedomIpfsNativeNode, GATE_LOST } = loadModule(binding);
+    const { takeGate, holds } = gate(order);
+    const onFailure = jest.fn();
+    const node = new FreedomIpfsNativeNode({
+      dataDir: '/tmp/freedom-ipfs-test',
+      takeGate,
+      onFailure,
+    });
+    const starting = node.start();
+    await flush();
+
+    holds[0].onLost({ code: 1, signal: null });
+    started.resolve(true);
+
+    await expect(starting).rejects.toThrow(GATE_LOST);
+    expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
+    expect(order.slice(-2)).toEqual(['store closed', 'gate released']);
+    expect(node.nodeHandle).toBe('0');
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  test('a stop while the start waits for its gate cancels the wait, and the store is never opened', async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    let signal = null;
+    const takeGate = jest.fn(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          signal = options.signal;
+          signal.addEventListener('abort', () =>
+            reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))
+          );
+        })
+    );
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+    const starting = node.start();
+    await flush();
+    expect(signal.aborted).toBe(false);
+
+    const stopping = node.stop();
+    expect(signal.aborted).toBe(true);
+    await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+    expect(node.gate).toBeNull();
+  });
+
+  test("a start whose event worker can't start frees the node and its gate", async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { Worker } = require('worker_threads');
+    Worker.mockImplementationOnce(() => {
+      throw Object.assign(new Error('worker init failed'), { code: 'ERR_WORKER_INIT_FAILED' });
+    });
+    const release = jest.fn(async () => {});
+    const node = new FreedomIpfsNativeNode({
+      dataDir: '/tmp/freedom-ipfs-test',
+      takeGate: jest.fn(async () => ({ release })),
+    });
+
+    await expect(node.start()).rejects.toMatchObject({ code: 'ERR_WORKER_INIT_FAILED' });
+    expect(node.nodeHandle).toBe('0');
+    expect(binding.nodeStopGatewayAsync).toHaveBeenCalledTimes(1);
+    expect(binding.nodeFreeAsync).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(node.gate).toBeNull();
+  });
+
+  // A gate wait honours its signal as holdIpfsGate does: one already aborted
+  // rejects at once, without a holder.
+  const cancellableGate = () =>
+    jest.fn(
+      (options) =>
+        new Promise((resolve, reject) => {
+          const cancelled = () =>
+            reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }));
+          if (options.signal.aborted) cancelled();
+          else options.signal.addEventListener('abort', cancelled);
+        })
+    );
+
+  test('a stop in the same turn as the start cancels the gate wait before it begins', async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const takeGate = cancellableGate();
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    const starting = node.start();
+    const stopping = node.stop();
+    await expect(starting).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    expect(takeGate.mock.calls[0][0].signal.aborted).toBe(true);
+    expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+    expect(node.gate).toBeNull();
+  });
+
+  test('a start requested after that stop waits on a gate of its own, uncancelled', async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const release = jest.fn(async () => {});
+    let call = 0;
+    const cancelled = cancellableGate();
+    const takeGate = jest.fn((options) => {
+      call += 1;
+      return call === 1 ? cancelled(options) : Promise.resolve({ release });
+    });
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', takeGate });
+
+    const first = node.start();
+    const stopping = node.stop();
+    const second = node.start();
+    await expect(first).rejects.toMatchObject({ code: 'cancelled' });
+    await stopping;
+    await expect(second).resolves.toBe(true);
+    expect(takeGate).toHaveBeenCalledTimes(2);
+    expect(takeGate.mock.calls[1][0].signal.aborted).toBe(false);
+    expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledTimes(1);
+    await node.stop();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  // Until the service is the default, only development builds gate their
+  // IPFS writers (ipfsd-gate.js, ipfsGateRequired).
+  test.each([
+    ['a packaged build starts it with no gate', true, 0],
+    ['a development build starts it under hold-lock', false, 1],
+  ])('through the real gate: %s', async (_label, isPackaged, holders) => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { app } = require('electron');
+    const { takeIpfsGate } = require('./ipfsd-gate');
+    const wasPackaged = app.isPackaged;
+    const binaryBefore = process.env.FREEDOM_IPFSD_PATH;
+    app.isPackaged = isPackaged;
+    // A binary that is there, wherever the suite runs.
+    process.env.FREEDOM_IPFSD_PATH = __filename;
+    const spawn = jest.fn(() => {
+      const { EventEmitter } = require('events');
+      const { PassThrough } = require('stream');
+      const child = Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: jest.fn(),
+      });
+      child.stdin.on('finish', () => setImmediate(() => child.emit('exit', 0, null)));
+      setImmediate(() => child.stdout.write('locked\n'));
+      return child;
+    });
+    try {
+      const node = new FreedomIpfsNativeNode({
+        dataDir: '/tmp/freedom-ipfs-test',
+        takeGate: (options) =>
+          takeIpfsGate('/tmp/freedom-ipfs-test', {
+            ...options,
+            lockDir: '/tmp/freedom-locks',
+            spawn,
+          }),
+      });
+      await expect(node.start()).resolves.toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(holders);
+      await stopNode(node);
+    } finally {
+      app.isPackaged = wasPackaged;
+      if (binaryBefore === undefined) delete process.env.FREEDOM_IPFSD_PATH;
+      else process.env.FREEDOM_IPFSD_PATH = binaryBefore;
+    }
+  });
+
+  test('a hold released by its own stop is never lost', async () => {
+    const order = [];
+    const binding = recordedBinding(order);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { takeGate, holds } = gate(order);
+    const onFailure = jest.fn();
+    const node = new FreedomIpfsNativeNode({
+      dataDir: '/tmp/freedom-ipfs-test',
+      takeGate,
+      onFailure,
+    });
+    await node.start();
+    await stopNode(node);
+
+    holds[0].onLost({ code: 0, signal: null });
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+});

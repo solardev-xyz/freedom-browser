@@ -635,6 +635,32 @@ describe('profile resolver', () => {
     expect(fs.existsSync(radicleDir)).toBe(false);
   });
 
+  // freedom-core design 0007, "Lifetime lock": the caller's gate on the
+  // profile's IPFS data is the one the delete runs under.
+  test("deletes under the caller's IPFS gate, on the profile's IPFS data directory", async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { createProfileForActiveApp, deleteProfileForActiveApp, initializeProfile } =
+      require('./profile-resolver');
+    initializeProfile(app, { argv: ['electron', '.'], env: {}, now: '2026-05-25T00:00:00.000Z' });
+    const created = createProfileForActiveApp({ displayName: 'Work' });
+    const gated = [];
+    const withIpfsGate = jest.fn(async (dir, fn) => {
+      gated.push({ dir, present: fs.existsSync(created.record.dir) });
+      return fn();
+    });
+
+    await deleteProfileForActiveApp('work', 'Work', { withIpfsGate });
+
+    expect(gated).toEqual([
+      {
+        dir: path.join(path.resolve(created.record.dir), 'ipfs-data', 'freedom-ipfs'),
+        present: true,
+      },
+    ]);
+    expect(fs.existsSync(created.record.dir)).toBe(false);
+  });
+
   // #124: once another profile exists, the default one can be deleted, and
   // nothing that used to assume it exists may bring it back.
   test('deletes the packaged default profile from another profile and never resurrects it', async () => {

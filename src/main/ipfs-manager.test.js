@@ -189,6 +189,8 @@ function loadIpfsManagerModule(options = {}) {
     }
   }
   app.getVersion = () => '0.9.0-test';
+  // freedom-ipfsd's gate, which the add-on takes (design 0007, Rollback).
+  const takeIpfsGate = jest.fn(async () => ({ release: jest.fn(async () => {}) }));
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
     app,
@@ -218,6 +220,11 @@ function loadIpfsManagerModule(options = {}) {
         FreedomIpfsdNode: MockFreedomIpfsdNode,
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
+      [require.resolve('./ipfs/ipfsd-gate')]: () => ({
+        takeIpfsGate,
+        // As the real one: only where the service can run (dev builds).
+        ipfsGateRequired: () => !app.isPackaged,
+      }),
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
@@ -251,6 +258,7 @@ function loadIpfsManagerModule(options = {}) {
     mod,
     nativeInstances,
     serviceInstances,
+    takeIpfsGate,
     setStatusMessage,
     setErrorState,
     clearErrorState,
@@ -296,6 +304,35 @@ describe('ipfs-manager', () => {
     });
   });
 
+  // freedom-core design 0007, Rollback: the add-on is a writer that takes
+  // freedom-ipfsd's gate on its data directory, the one the service would use.
+  test('the add-on takes the gate on its own data directory', async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const onLost = jest.fn();
+
+    await ctx.nativeInstances[0].config.takeGate({ onLost });
+
+    expect(ctx.takeIpfsGate).toHaveBeenCalledWith(NATIVE_IPFS_DATA_DIR, { onLost });
+  });
+
+  test("a gate another writer holds fails the add-on's start, with its reason", async () => {
+    const held = Object.assign(
+      new Error('The IPFS data is in use by another process. Close it and try again.'),
+      { name: 'IpfsGateError', code: 'lock_held' }
+    );
+    const ctx = loadIpfsManagerModule({ startError: held });
+    ctx.mod.registerIpfsIpc();
+
+    await ctx.mod.startIpfs();
+
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+      error: held.message,
+    });
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node failed to start');
+  });
+
   test('starts the bundled freedom-ipfs native node', async () => {
     const window = createWindowMock();
     const ctx = loadIpfsManagerModule({ windows: [window] });
@@ -307,6 +344,7 @@ describe('ipfs-manager', () => {
     expect(ctx.nativeInstances[0].config).toEqual({
       dataDir: NATIVE_IPFS_DATA_DIR,
       onFailure: expect.any(Function),
+      takeGate: expect.any(Function),
     });
     expect(ctx.nativeInstances[0].start).toHaveBeenCalled();
     expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
@@ -483,7 +521,12 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
   });
 
-  test('a stop requested while the native start is still pending waits for it, then stops that node', async () => {
+  // The add-on's start waits for its data directory's gate, which another
+  // writer may hold for 5 s (freedom-core design 0007, Rollback): quit or a
+  // toggle-off mid-start takes the node over at once, as for the service.
+  // The node orders its own stop after its start, and a stop cancels a wait
+  // for the gate, so nothing half-started is torn down.
+  test('a stop requested while the native start is still pending takes that node over', async () => {
     const flush = () => new Promise((resolve) => setImmediate(resolve));
     let finishStart;
     const ctx = loadIpfsManagerModule({
@@ -500,8 +543,36 @@ describe('ipfs-manager', () => {
       status: 'starting',
     });
 
-    // Quit or a toggle-off lands mid-start: it queues behind the start rather
-    // than tearing down a node whose handle isn't published yet.
+    const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
+    await flush();
+    expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+
+    finishStart(true);
+    await startResult;
+    expect((await stopResult).status).toBe('stopped');
+    expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    // The start published nothing: no node is serving, and RUNNING never came.
+    expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: false });
+    expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.1');
+  });
+
+  // A packaged add-on takes no gate until the service is the default: a stop
+  // mid-start queues behind it, as it always has, rather than tearing down a
+  // node whose handle isn't published yet.
+  test('packaged: a stop requested while the native start is still pending waits for it', async () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let finishStart;
+    const ctx = loadIpfsManagerModule({
+      isPackaged: true,
+      startImpl: () =>
+        new Promise((resolve) => {
+          finishStart = resolve;
+        }),
+    });
+    ctx.mod.registerIpfsIpc();
+
+    const startResult = ctx.ipcMain.invoke(IPC.IPFS_START);
+    await flush();
     const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
     await flush();
     expect(ctx.nativeInstances[0].stop).not.toHaveBeenCalled();
@@ -510,6 +581,32 @@ describe('ipfs-manager', () => {
     expect((await startResult).status).toBe('running');
     expect((await stopResult).status).toBe('stopped');
     expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("a start after a node's failure waits for that node's stop", async () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let finishCleanup;
+    const ctx = loadIpfsManagerModule();
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    const failed = ctx.nativeInstances[0];
+    failed.stop.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCleanup = resolve;
+        })
+    );
+
+    failed.config.onFailure('freedom-ipfsd hold-lock exited', failed);
+    const restart = ctx.mod.startIpfs();
+    await flush();
+    // Its gate's holder may still be exiting: no new node takes the gate yet.
+    expect(ctx.nativeInstances).toHaveLength(1);
+
+    finishCleanup();
+    await restart;
+    expect(ctx.nativeInstances).toHaveLength(2);
+    expect(ctx.nativeInstances[1].start).toHaveBeenCalled();
   });
 
   test('moves to error and cleans up when the native node reports failure', async () => {
@@ -3245,14 +3342,56 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       expect(ctx.mod.checkHealth()).toBe(false);
     });
 
-    test("the add-on's start and stop in one turn still both run", async () => {
+    // The add-on's start can wait too wherever it takes its gate (dev builds,
+    // until the service is the default): the same rule cancels it.
+    test("a gated add-on's start and stop in one turn: the start is cancelled, and no node is made", async () => {
       process.env.FREEDOM_IPFS_BACKEND = 'addon';
       const ctx = loadIpfsManagerModule();
+      ctx.mod.registerIpfsIpc();
 
       await Promise.all([ctx.mod.startIpfs(), ctx.mod.stopIpfs()]);
 
+      expect(ctx.nativeInstances).toHaveLength(0);
+      expect(ctx.takeIpfsGate).not.toHaveBeenCalled();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+        error: null,
+      });
+    });
+
+    // A packaged add-on takes no gate yet, so its start is bounded, and its
+    // start-then-stop is today's.
+    test("a packaged add-on's start and stop in one turn still both run", async () => {
+      const ctx = loadIpfsManagerModule({ isPackaged: true });
+
+      await Promise.all([ctx.mod.startIpfs(), ctx.mod.stopIpfs()]);
+
+      expect(ctx.serviceInstances).toHaveLength(0);
       expect(ctx.nativeInstances).toHaveLength(1);
       expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    });
+
+    test("a stop while a start waits for a failed node's stop cancels that start", async () => {
+      const ctx = loadIpfsManagerModule();
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      const failed = ctx.serviceInstances[0];
+      const cleanup = deferred();
+      failed.shutdown = cleanup.promise;
+      failed.config.onFailure('freedom-ipfs service exited', failed);
+      expect(failed.stop).toHaveBeenCalledTimes(1);
+
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      const stopping = ctx.mod.stopIpfs();
+      await flush();
+      cleanup.resolve();
+      await Promise.all([restarting, stopping]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+      });
     });
 
     test('a second stop meanwhile stops the node once', async () => {

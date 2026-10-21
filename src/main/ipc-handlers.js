@@ -40,6 +40,7 @@ const { openOrFocusProfile } = require('./profile-launcher');
 const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
+const { withIpfsGate } = require('./ipfs/ipfsd-gate');
 const { relaunchArgs } = require('./launch-urls');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
@@ -589,7 +590,12 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
       );
     }
 
-    const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName);
+    // Its IPFS data is removed under the data directory's gate, where this
+    // build takes one: a writer that holds it fails the delete (freedom-core
+    // design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js).
+    const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName, {
+      withIpfsGate,
+    });
     if (!result) {
       return failure(
         'PROFILE_CATALOG_UNAVAILABLE',

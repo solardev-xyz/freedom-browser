@@ -225,6 +225,8 @@ function loadIpcHandlersModule(options = {}) {
     options.validateProfileDeletionForActiveApp || jest.fn(() => true);
   const requestProfileQuitAsync = options.requestProfileQuitAsync || jest.fn(() => ({ ok: true }));
   const isProfileLocked = options.isProfileLocked || jest.fn(() => false);
+  // freedom-ipfsd's gate on a profile's IPFS data (design 0007).
+  const withIpfsGate = jest.fn((_dir, fn) => fn());
   const myotisManager = options.myotisManager || {
     stopAllMyotis: jest.fn(),
     refreshMyotisStatus: jest.fn(),
@@ -269,6 +271,7 @@ function loadIpcHandlersModule(options = {}) {
       [require.resolve('./profile-lock')]: () => ({
         isProfileLocked,
       }),
+      [require.resolve('./ipfs/ipfsd-gate')]: () => ({ withIpfsGate }),
       [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
       ...(options.radicleManager
         ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
@@ -311,6 +314,7 @@ function loadIpcHandlersModule(options = {}) {
     validateProfileDeletionForActiveApp,
     requestProfileQuitAsync,
     isProfileLocked,
+    withIpfsGate,
     myotisManager,
     importProfileForActiveApp,
     listProfilesForActiveApp,
@@ -977,7 +981,27 @@ describe('ipc-handlers', () => {
         },
       })
     );
-    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work');
+    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
+      withIpfsGate: ctx.withIpfsGate,
+    });
+  });
+
+  // freedom-core design 0007, "Lifetime lock": a writer holding the
+  // profile's IPFS data gate fails the delete, with its reason.
+  test("a profile whose IPFS data is held by another writer isn't deleted", async () => {
+    const held = Object.assign(
+      new Error('The IPFS data is in use by another process. Close it and try again.'),
+      { name: 'IpfsGateError', code: 'lock_held' }
+    );
+    const ctx = loadIpcHandlersModule({
+      deleteProfileForActiveApp: jest.fn(async () => {
+        throw held;
+      }),
+    });
+
+    const result = await ctx.mod.deleteProfileFromIpc({ id: 'work', confirmDisplayName: 'Work' });
+
+    expect(result).toEqual(failure('PROFILE_DELETE_FAILED', held.message));
   });
 
   test('closes a running profile before deleting it', async () => {
@@ -1003,7 +1027,9 @@ describe('ipc-handlers', () => {
     ).resolves.toEqual(expect.objectContaining({ success: true }));
 
     expect(ctx.requestProfileQuitAsync).toHaveBeenCalledTimes(1);
-    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work');
+    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
+      withIpfsGate: ctx.withIpfsGate,
+    });
   });
 
   test('validates the request before closing a running profile', async () => {
@@ -1067,7 +1093,9 @@ describe('ipc-handlers', () => {
 
     expect(result).toEqual(expect.objectContaining({ success: true }));
     expect(isProcessAlive).toHaveBeenCalledWith(4321);
-    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work');
+    expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
+      withIpfsGate: ctx.withIpfsGate,
+    });
   });
 
   test('refuses to delete a running profile that will not close', async () => {

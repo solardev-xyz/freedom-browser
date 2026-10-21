@@ -7,7 +7,10 @@
  *
  * - `addon`: today's freedom-ipfs N-API add-on (`npm run ipfs:download`),
  *   driven by the production `ipfs-manager.js` and `FreedomIpfsNativeNode`,
- *   its event worker a real worker thread.
+ *   its event worker a real worker thread. With freedom-ipfsd downloaded
+ *   too, it runs under the binary's `hold-lock` on its data directory, as a
+ *   development build does (design 0007, Rollback); without it, ungated,
+ *   with the warning such a build logs.
  * - `ipfsd` (design 0007 step 6): the freedom-ipfsd service binary
  *   (`npm run ipfsd:download`), driven by the production `ipfs-manager.js`
  *   with `FREEDOM_IPFS_BACKEND=service` and `FreedomIpfsdNode`, a real
@@ -100,6 +103,10 @@ async function loadAddonBackend({ router }) {
   const bindingPath = path.join(SRC, 'ipfs', 'freedom-ipfs-native-binding.js');
   const nodePath = path.join(SRC, 'ipfs', 'freedom-ipfs-native-node.js');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ipfs-contract-'));
+  // A development build runs the add-on under freedom-ipfsd's hold-lock
+  // where the binary is there (design 0007, Rollback): its gate goes in a
+  // lock directory of the run's own.
+  const lockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ipfs-contract-locks-'));
   const nodes = [];
   const starts = [];
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -162,6 +169,7 @@ async function loadAddonBackend({ router }) {
       }),
       [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
       [path.join(SRC, 'profile-paths.js')]: () => ({ getIpfsDataDir: () => dataDir }),
+      [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
       [path.join(SRC, 'core', 'naming.js')]: () => ({
         namingDriver: () => createFakeDwebDriver(),
       }),
@@ -221,6 +229,7 @@ async function loadAddonBackend({ router }) {
       await Promise.all(nodes.map((node) => node.stop()));
       // Windows may hold the cache's files a moment after the node frees them.
       fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      fs.rmSync(lockDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     },
   };
 }

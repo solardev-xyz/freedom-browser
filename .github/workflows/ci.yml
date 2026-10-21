@@ -290,6 +290,16 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
           FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
 
+      # A development build runs the add-on under freedom-ipfsd's hold-lock
+      # on its data directory (design 0007, Rollback): with the binary here,
+      # the contract suite below runs the add-on under the real gate.
+      - name: Download freedom-ipfsd binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # The IPFS backend contract (freedom-core design 0007, "Tests first"):
       # what `ipfsBackend()` and the `ipfs:` handler must do, against this
       # runner's add-on and a loopback fixture (no public network). The
@@ -320,7 +330,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        include:
+          - os: ubuntu-latest
+            binary: linux-x64/freedom-ipfsd
+          - os: macos-15
+            binary: mac-arm64/freedom-ipfsd
+          - os: windows-latest
+            binary: win-x64/freedom-ipfsd.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
@@ -353,6 +369,14 @@ jobs:
         run: npx jest src/main/ipfs/ipfs-backend.contract.test.js
         env:
           FREEDOM_IPFS_CONTRACT_BACKEND: ipfsd
+
+      # The IPFS data directory's gate against the same binary (design 0007,
+      # "Lifetime lock"): hold-lock against a running service, a service
+      # under hold-lock, and a profile delete while a service writes.
+      - name: freedom-ipfsd gate (real binary)
+        run: npx jest src/main/ipfs/ipfsd-gate.integration.test.js
+        env:
+          FREEDOM_IPFSD_PATH: ${{ github.workspace }}/freedom-ipfsd-bin/${{ matrix.binary }}
 
   # libradicle is the ONLY Radicle runtime — there is no executable fallback —
   # so every release asset has to download, verify against the in-repo pinned
