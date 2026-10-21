@@ -52,6 +52,38 @@
       ]
     },
     {
+      "name": "freedom-ipfsd",
+      "version": "ipfsd-v0.1.0",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/solardev-xyz/freedom-core"
+      },
+      "license": {
+        "spdx": [],
+        "raw": "Not selected yet",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-ipfsd.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "missing-license",
+          "details": "freedom-ipfsd is released from freedom-core, which has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
+        },
+        {
+          "kind": "copyleft",
+          "details": "Statically links attohttpc 0.30.1 (MPL-2.0), unmodified: the one weak-copyleft crate in ipfsd-v0.1.0's THIRD-PARTY-NOTICES, which lists no GPL or LGPL crate. MPL-2.0 is file-level copyleft, so it reaches no other code, but the binary distributes it in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The audit's 'unmodified, no obligation beyond notice' reading for the npm MPL-2.0 packages does not cover this binary. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9, the checksum freedom-ipfsd's Cargo.lock records at ipfsd-v0.1.0), and the repository https://github.com/sbstp/attohttpc. ipfsd-v0.1.0's own THIRD-PARTY-NOTICES carries the license text but no source location; freedom-core is adding these source lines to its generated THIRD-PARTY-NOTICES for later releases.",
+          "recommended_fix": "Keep the NOTICES source pointer. On every ipfsd pin bump, re-read the release's crate list for MPL-2.0 crates and point NOTICES at the exact versions it links (or at the release's own notices once they carry the source lines)."
+        }
+      ]
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "type": "direct",
@@ -875,7 +907,7 @@
   ],
   "verdict": {
     "status": "OK_TO_SHIP",
-    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code remains after removing the unreferenced qrious bundle. The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
+    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code remains after removing the unreferenced qrious bundle. The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the one MPL-2.0 crate the freedom-ipfsd binary links (attohttpc) ships in executable form, so NOTICES names its exact source (section 3.2(a)); the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
     {
@@ -897,6 +929,11 @@
       "priority": "required",
       "action": "Keep shipping Electron's LICENSES.chromium.html on macOS",
       "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: electron-builder unlinks it, and the .dmg/-mac.zip carry only Freedom.app, so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
+    },
+    {
+      "priority": "required",
+      "action": "Keep freedom-ipfsd's MPL-2.0 source pointer current",
+      "details": "MPL-2.0 section 3.2(a): the freedom-ipfsd binary statically links attohttpc 0.30.1, so NOTICES names its exact crates.io source archive and repository. Re-read the release's THIRD-PARTY-NOTICES crate list on every ipfsd pin bump and move the pointer to the MPL-2.0 versions it links; licenses-audit.test.js fails if the pointer leaves NOTICES."
     },
     {
       "priority": "required",

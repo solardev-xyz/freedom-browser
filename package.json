@@ -51,6 +51,7 @@
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "core:download": "node scripts/fetch-freedom-cored.js",
+    "ipfsd:download": "node scripts/fetch-freedom-ipfsd.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
     "myotis:download": "node scripts/fetch-myotis.js",
     "myotis:smoke": "node scripts/smoke-myotis.js",
@@ -115,7 +116,8 @@
       "hardenedRuntime": true,
       "binaries": [
         "Contents/Resources/myotis-node/myotis-supervisor",
-        "Contents/Resources/freedom-cored/freedom-cored"
+        "Contents/Resources/freedom-cored/freedom-cored",
+        "Contents/Resources/freedom-ipfsd/freedom-ipfsd"
       ],
       "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
@@ -274,6 +276,16 @@
         "filter": [
           "freedom-cored",
           "freedom-cored.exe",
+          "THIRD-PARTY-NOTICES",
+          "THIRD-PARTY-NOTICES-rust-std.html"
+        ]
+      },
+      {
+        "from": "freedom-ipfsd-bin/${os}-${arch}/",
+        "to": "freedom-ipfsd",
+        "filter": [
+          "freedom-ipfsd",
+          "freedom-ipfsd.exe",
           "THIRD-PARTY-NOTICES",
           "THIRD-PARTY-NOTICES-rust-std.html"
         ]

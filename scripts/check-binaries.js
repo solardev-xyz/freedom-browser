@@ -5,6 +5,7 @@ const { checkInstalledElectronVersion } = require('./check-electron-version');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const CORE_BIN_DIR = path.join(__dirname, '..', 'freedom-cored-bin');
+const IPFSD_BIN_DIR = path.join(__dirname, '..', 'freedom-ipfsd-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
   __dirname,
   '..',
@@ -113,15 +114,20 @@ function checkBinaries(platforms) {
     if (!fs.existsSync(antPath)) {
       missing.push(`antd binary for ${platformDir}: ${antPath}`);
     }
-    const corePath = path.join(CORE_BIN_DIR, platformDir, `freedom-cored${antExt}`);
-    if (!fs.existsSync(corePath)) {
-      missing.push(`freedom-cored binary for ${platformDir}: ${corePath}`);
-    }
-    // Its third-party notices ship with it.
-    for (const notice of ['THIRD-PARTY-NOTICES', 'THIRD-PARTY-NOTICES-rust-std.html']) {
-      const noticePath = path.join(CORE_BIN_DIR, platformDir, notice);
-      if (!fs.existsSync(noticePath)) {
-        missing.push(`freedom-cored ${notice} for ${platformDir}: ${noticePath}`);
+    // freedom-core's binaries, each with its third-party notices.
+    for (const [binDir, binary] of [
+      [CORE_BIN_DIR, 'freedom-cored'],
+      [IPFSD_BIN_DIR, 'freedom-ipfsd'],
+    ]) {
+      const binPath = path.join(binDir, platformDir, `${binary}${antExt}`);
+      if (!fs.existsSync(binPath)) {
+        missing.push(`${binary} binary for ${platformDir}: ${binPath}`);
+      }
+      for (const notice of ['THIRD-PARTY-NOTICES', 'THIRD-PARTY-NOTICES-rust-std.html']) {
+        const noticePath = path.join(binDir, platformDir, notice);
+        if (!fs.existsSync(noticePath)) {
+          missing.push(`${binary} ${notice} for ${platformDir}: ${noticePath}`);
+        }
       }
     }
 
@@ -217,6 +223,7 @@ function main() {
     console.error('\nRun the following commands to download binaries:');
     console.error('  npm run ant:download');
     console.error('  npm run core:download');
+    console.error('  npm run ipfsd:download');
     console.error('  npm run ipfs:download');
     for (const { os, arch } of platforms) {
       console.error(`  npm run radicle:download -- --${os} --${arch}`);

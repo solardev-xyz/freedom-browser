@@ -38,6 +38,9 @@ test('restricts native helpers and preserves all other signing options', async (
   expect(forwarded.optionsForFile(`${app}/Contents/Resources/freedom-cored/freedom-cored`)).toEqual(
     helperOptions
   );
+  expect(forwarded.optionsForFile(`${app}/Contents/Resources/freedom-ipfsd/freedom-ipfsd`)).toEqual(
+    helperOptions
+  );
   for (const file of [
     app,
     `${app}/Contents/MacOS/Freedom`,
@@ -45,6 +48,7 @@ test('restricts native helpers and preserves all other signing options', async (
     `${app}/Contents/Resources/myotis-node/myotis_node.node`,
     `${app}/Contents/Resources/other/myotis-supervisor`,
     `${app}/Contents/Resources/other/freedom-cored`,
+    `${app}/Contents/Resources/other/freedom-ipfsd`,
   ]) {
     expect(forwarded.optionsForFile(file)).toBe(original);
   }

@@ -7,6 +7,7 @@ module.exports = async function signMyotisHelper(options) {
   const helperPaths = new Set([
     path.resolve(options.app, 'Contents/Resources/myotis-node/myotis-supervisor'),
     path.resolve(options.app, 'Contents/Resources/freedom-cored/freedom-cored'),
+    path.resolve(options.app, 'Contents/Resources/freedom-ipfsd/freedom-ipfsd'),
   ]);
   const entitlements = path.resolve(__dirname, '../config/entitlements.myotis-supervisor.plist');
   return sign({
