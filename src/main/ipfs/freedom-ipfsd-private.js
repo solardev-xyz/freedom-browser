@@ -41,12 +41,16 @@
  *   comes back lazily: an exit main didn't ask for retires every instance,
  *   and the next one that needs the process spawns it after the back-off
  *   (0.5 s, 2 s, 10 s). The service retiring an instance after a request
- *   panic counts too. The record outlives the process's idle shutdowns, so a
- *   crash on first use can't loop: three within 60 s fail the private
- *   instances until the manager starts them anew, and so do the exits that
- *   are never retried (64, 74, 75, a protocol mismatch). The shared client
- *   restarts on its own; this stops it from within its exit instead
- *   ("stopping is sticky"), and starts it again on demand.
+ *   panic counts as a crash of its process too: the back-off is the
+ *   process's, and every `ipfs.start` waits for it, whether the process
+ *   restarts or lives on serving other partitions. One timer serves every
+ *   start waiting, and goes with the last of them. The record outlives the
+ *   process's idle shutdowns, so a crash on first use can't loop: three
+ *   within 60 s fail the private instances until the manager starts them
+ *   anew, and so do the exits that are never retried (64, 74, 75, a
+ *   protocol mismatch). The shared client restarts on its own; this stops
+ *   it from within its exit instead ("stopping is sticky"), and starts it
+ *   again on demand.
  * - **Requests** are the persistent node's (`freedom-ipfsd-node.js`):
  *   today's texts, `BackendBusy` for the service's `busy`, and the
  *   pull-driven body. A start the service refuses for memory (`busy`) is
@@ -149,6 +153,8 @@ class PrivateInstances {
     this.counter = { gen: null, next: 1 };
     this.crashTimes = [];
     this.respawnAt = 0;
+    // The wait for `respawnAt`: its timer, and the instances waiting on it.
+    this.backoffWait = null;
     this.failed = false;
     this.stopped = false;
     this.stopping = null;
@@ -267,6 +273,8 @@ class PrivateInstances {
     if (instance.state === 'retired') return;
     instance.state = 'retired';
     instance.leave(error);
+    const backoff = this.backoffWait;
+    if (backoff?.waiters.delete(instance) && backoff.waiters.size === 0) this.settleBackoff();
     if (this.byPartition.get(instance.partition) === instance) {
       this.byPartition.delete(instance.partition);
     }
@@ -370,6 +378,11 @@ class PrivateInstances {
     // A slot that came from an eviction or a stop: that instance's
     // reservations are the service's until its teardown is proven.
     await instance.slot.draining;
+    // A crash's back-off, the process's: before it is spawned again, and
+    // before a live one gets another start.
+    while (instance.state === 'starting' && this.respawnAt > this.now()) {
+      await this.backoff(instance);
+    }
     if (instance.state !== 'starting') throw notRunning();
     const gen = await this.process();
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
@@ -420,6 +433,31 @@ class PrivateInstances {
     });
   }
 
+  /** Resolves once the back-off's timer has run, or nothing waits on it
+   * any more (`settleBackoff`). One timer, shared by every start waiting. */
+  backoff(instance) {
+    if (!this.backoffWait) {
+      let release;
+      const settled = new Promise((resolve) => {
+        release = resolve;
+      });
+      const timer = this.setTimer(() => this.settleBackoff(), this.respawnAt - this.now());
+      this.backoffWait = { settled, release, timer, waiters: new Set() };
+    }
+    this.backoffWait.waiters.add(instance);
+    return this.backoffWait.settled;
+  }
+
+  /** Ends the back-off's wait: its timer is cleared, and its waiters go on,
+   * each checking whether it is still wanted and the back-off over. */
+  settleBackoff() {
+    const backoff = this.backoffWait;
+    if (!backoff) return;
+    this.backoffWait = null;
+    this.clearTimer(backoff.timer);
+    backoff.release();
+  }
+
   nextInstanceId(gen) {
     if (this.counter.gen !== gen) this.counter = { gen, next: 1 };
     const id = `e-${this.counter.next}`;
@@ -443,8 +481,6 @@ class PrivateInstances {
 
   async spawn(life) {
     await this.shutdown;
-    const wait = this.respawnAt - this.now();
-    if (wait > 0) await new Promise((resolve) => this.setTimer(resolve, wait));
     if (this.life !== life || !this.up) throw notRunning();
     this.stopAsked = false;
     life.spawned = true;

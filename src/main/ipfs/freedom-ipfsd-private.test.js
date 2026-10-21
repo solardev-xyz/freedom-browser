@@ -29,6 +29,8 @@ function manualClock() {
     clearTimer(timer) {
       timers.delete(timer);
     },
+    /** How many timers are armed. */
+    pending: () => timers.size,
     /** Runs every timer due within `ms`, in order, letting I/O settle between. */
     async advance(ms) {
       const end = now + ms;
@@ -531,10 +533,17 @@ describe('the process', () => {
 
     await expect(stale.request(init())).rejects.toThrow('freedom-ipfs native node is not running');
     stale.release();
+    // The panicking partition's next load starts a new instance, cold, after
+    // the back-off of a crash: the process lives on, serving the other.
+    const next = load('private-a');
+    await settle();
     expect(await load('private-b')).toBe('private e-2');
-    // The panicking partition's next load starts a new instance, cold.
-    expect(await load('private-a')).toBe('private e-3');
+    await clock.advance(499);
+    expect(sent('ipfs.start')).toHaveLength(2);
+    await clock.advance(1);
+    expect(await next).toBe('private e-3');
     expect(sent('ipfs.stop')).toHaveLength(0);
+    expect(service.spawned).toHaveLength(1);
     expect(log.warn).toHaveBeenCalledWith('[IPFS] private freedom-ipfs instance retired', {
       instance: 'e-1',
       reason: 'panic',
@@ -546,6 +555,47 @@ describe('the process', () => {
       await settle();
     }
     expect(instances.up).toBe(false);
+  });
+
+  // The back-off is the process's (0007: a panic retirement counts as a
+  // crash of its process): every start waits for it, a new partition's too.
+  test("a crash's back-off holds every instance start, whether the process restarts or lives on", async () => {
+    newInstances();
+    await load('private-a');
+    await load('private-b');
+    child().event('ipfs.instance_retired', { instance: 'e-1', reason: 'panic' });
+    await settle();
+    const fresh = load('private-new');
+    await clock.advance(499);
+    expect(sent('ipfs.start')).toHaveLength(2);
+    await clock.advance(1);
+    expect(await fresh).toBe('private e-3');
+    expect(service.spawned).toHaveLength(1);
+  });
+
+  test.each([
+    ['its last lease', (lease) => lease.release()],
+    ["its partition's close", () => instances.close('private-b')],
+    ['the stop', () => instances.stop()],
+  ])('a start waiting out the back-off leaves no timer once %s goes', async (_label, end) => {
+    newInstances();
+    await load('private-a');
+    child().exit(null, 'SIGKILL');
+    await settle();
+    expect(clock.pending()).toBe(0);
+
+    const lease = instances.lease('private-b');
+    const pending = lease.request(init()).catch((err) => err);
+    await settle();
+    // The back-off's timer, and the waiter's head deadline.
+    expect(clock.pending()).toBe(2);
+    end(lease);
+    expect((await pending).message).toBe('freedom-ipfs native node is not running');
+    lease.release();
+    await settle();
+    expect(clock.pending()).toBe(0);
+    expect(instances.life).toBeNull();
+    expect(service.spawned).toHaveLength(1);
   });
 
   test('a start the service refuses for memory is BackendBusy, and the next request tries again', async () => {
