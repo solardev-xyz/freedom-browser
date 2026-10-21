@@ -29,7 +29,10 @@ function configureArguments(source, build, platform, arch) {
 
 async function buildDictationRuntime(arch = process.arch, platform = process.platform) {
   if (platform !== process.platform) throw new Error('Build the dictation runtime on the target operating system');
-  if (!SUPPORTED_TARGETS.includes(`${platform}-${arch}`)) throw new Error('Unsupported local dictation build target');
+  if (!SUPPORTED_TARGETS.includes(`${platform}-${arch}`)) {
+    console.log(`Skipping local dictation runtime for unsupported target ${platform}-${arch}`);
+    return;
+  }
   if (platform !== 'darwin' && arch !== process.arch) throw new Error('Build local dictation on its target architecture');
   const output = path.resolve(__dirname, '../out/dictation-runtime', `${{ darwin: 'mac', win32: 'win', linux: 'linux' }[platform]}-${arch}`);
   const executable = platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';

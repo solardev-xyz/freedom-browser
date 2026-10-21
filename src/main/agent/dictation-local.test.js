@@ -104,7 +104,7 @@ test('a missing or incompatible bundled runtime fails before a model download, w
 });
 
 test('Whisper uses discrete arguments, strips credential environment, returns text and clears audio on success or cancellation', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation cli test-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation Jürgen 测试-'));
   const saved = process.env.OPENAI_API_KEY;
   try {
     process.env.OPENAI_API_KEY = 'not-a-real-key';
@@ -119,12 +119,16 @@ test('Whisper uses discrete arguments, strips credential environment, returns te
       return child;
     });
     await expect(local.transcribe(Buffer.from('fixture audio'), 'de', signal)).resolves.toBe('Hello world.');
-    expect(execFile.mock.calls[0][1]).toEqual(['--model', local.model, '--file', expect.stringContaining('recording.wav'),
+    const [, args, options] = execFile.mock.calls[0];
+    expect(args).toEqual(['--model', path.relative(options.cwd, local.model), '--file', 'recording.wav',
       '--language', 'de', '--threads', '2', '--no-timestamps', '--no-prints', '--no-gpu']);
+    expect(args.every(arg => /^[\x20-\x7e]*$/.test(arg))).toBe(true);
+    expect(path.resolve(options.cwd, args[1])).toBe(local.model);
     expect(fs.readdirSync(local.scratchRoot)).toEqual([]);
     const abort = new AbortController(); abort.abort();
     execFile.mockImplementation((_exe, _args, _options, callback) => {
       const child = new EventEmitter();
+      child.kill = jest.fn();
       queueMicrotask(() => { callback(new Error('aborted')); child.emit('close', null, 'SIGKILL'); });
       return child;
     });
@@ -136,6 +140,31 @@ test('Whisper uses discrete arguments, strips credential environment, returns te
   }
 });
 
+test.each([
+  ['\n [BLANK_AUDIO]\n', ''],
+  ['[Musik]', ''],
+  ['(music) [Silence]', ''],
+  ['* Musik *', ''],
+  ['*musique* *musique*', ''],
+  ['**Musik**', ''],
+  ['[BLANK_AUDIO] Hello world. [BLANK_AUDIO]', 'Hello world.'],
+  ['[Music] Hello world.', '[Music] Hello world.'],
+  ['Say [hello] to everyone.', 'Say [hello] to everyone.'],
+  ['Use *italic* emphasis.', 'Use *italic* emphasis.'],
+])('local output %j excludes non-speech-only annotations', async (output, expected) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-tags-test-'));
+  try {
+    const local = fixture(root);
+    jest.spyOn(local, 'ready').mockReturnValue(true);
+    execFile.mockImplementation((_exe, _args, _options, callback) => {
+      const child = new EventEmitter();
+      queueMicrotask(() => { callback(null, output); child.emit('close', 0); });
+      return child;
+    });
+    await expect(local.transcribe(Buffer.from('fixture audio'), 'auto', new AbortController().signal)).resolves.toBe(expected);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('cancellation waits for the native process to close before deleting audio or resolving shutdown work', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-cancel-close-test-'));
   try {
@@ -143,6 +172,7 @@ test('cancellation waits for the native process to close before deleting audio o
     jest.spyOn(local, 'ready').mockReturnValue(true);
     const controller = new AbortController();
     const child = new EventEmitter();
+    child.kill = jest.fn();
     let callback;
     execFile.mockImplementation((_exe, _args, _options, done) => { callback = done; return child; });
     const pending = local.transcribe(Buffer.from('fixture audio'), 'en', controller.signal);
@@ -150,7 +180,8 @@ test('cancellation waits for the native process to close before deleting audio o
     const outcome = pending.catch(error => { settled = true; return error; });
     while (!callback) await new Promise(resolve => setImmediate(resolve));
     controller.abort();
-    callback(new Error('aborted'));
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    callback(null, 'late text after cancellation');
     await new Promise(resolve => setImmediate(resolve));
     expect(settled).toBe(false);
     expect(fs.readdirSync(local.scratchRoot)).toHaveLength(1);

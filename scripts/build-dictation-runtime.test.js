@@ -1,7 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { configureArguments } = require('./build-dictation-runtime');
+const { buildDictationRuntime, configureArguments } = require('./build-dictation-runtime');
+
+test('unsupported architectures leave dictation unavailable without preventing browser startup or packaging', async () => {
+  const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    await expect(buildDictationRuntime('riscv64')).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledWith(`Skipping local dictation runtime for unsupported target ${process.platform}-riscv64`);
+  } finally { log.mockRestore(); }
+});
 
 test.each(['darwin', 'win32', 'linux'])('%s CLI builds disable networking and use portable runtime CPU dispatch', platform => {
   const args = configureArguments('/source with spaces', '/build', platform, 'x64');

@@ -19,18 +19,25 @@ function run(executable, args, { signal, cwd } = {}) {
     let closed = false;
     const settle = () => {
       if (!result || !closed) return;
-      if (result.error) reject(dictationError(signal?.aborted ? 'DICTATION_CANCELLED' : 'DICTATION_LOCAL',
+      if (result.error || signal?.aborted) reject(dictationError(signal?.aborted ? 'DICTATION_CANCELLED' : 'DICTATION_LOCAL',
         signal?.aborted ? 'Dictation cancelled.' : 'Local transcription could not run. Try downloading the local files again.'));
       else resolve(result.stdout);
     };
-    const child = execFile(executable, args, { cwd, env, signal, windowsHide: true, timeout: 120000,
+    const child = execFile(executable, args, { cwd, env, windowsHide: true, timeout: 120000,
       killSignal: 'SIGKILL', maxBuffer: 256 * 1024, encoding: 'utf8' }, (error, stdout) => {
       result = { error, stdout };
       settle();
     });
-    // Abort invokes execFile's callback before the process necessarily exits.
-    // Wait for its handles to close before deleting audio or finishing shutdown.
-    child.once('close', () => { closed = true; settle(); });
+    // Own cancellation: Node's AbortSignal path can use SIGTERM and clear the
+    // timeout before the child exits. Force termination and retain the close
+    // barrier before deleting audio or finishing shutdown.
+    const abort = () => child.kill('SIGKILL');
+    child.once('close', () => {
+      signal?.removeEventListener('abort', abort);
+      closed = true; settle();
+    });
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -153,12 +160,19 @@ class LocalDictation {
     try {
       const file = path.join(scratch, 'recording.wav');
       await fs.promises.writeFile(file, audio, { mode: 0o600, flag: 'wx' });
-      const output = await run(this.executable, ['--model', this.model, '--file', file,
+      // The Windows CLI reads argv in the system code page, then treats model
+      // paths as UTF-8. Relative ASCII names avoid corrupting Unicode profiles;
+      // Node supplies the executable and working directory through wide APIs.
+      const output = await run(this.executable, ['--model', path.relative(scratch, this.model), '--file', path.basename(file),
         '--language', language, '--threads', '2', '--no-timestamps', '--no-prints', '--no-gpu'], { signal, cwd: scratch });
       // Diagnostics go to stderr; stdout contains only decoded speech. Keeping
       // plain text avoids creating an additional transcript file on disk.
-      return output.trim();
-    } finally { await fs.promises.rm(scratch, { recursive: true, force: true }); }
+      const text = output.replace(/\[BLANK_AUDIO\]/g, ' ').trim();
+      // Whisper can label a click/hum as [Music], [Musik], etc. Such an
+      // annotation alone is not dictated speech. Keep annotations accompanying
+      // actual words, and leave token suppression off (it can invent words).
+      return /^(?:(?:\[[^[\]\r\n]{1,40}\]|\([^()\r\n]{1,40}\)|\*{1,2}[^*\r\n]{1,40}\*{1,2})\s*)+$/.test(text) ? '' : text;
+    } finally { await fs.promises.rm(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
   }
 }
 

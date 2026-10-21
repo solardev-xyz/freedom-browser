@@ -14,6 +14,7 @@ on:
       - 'src/main/agent/dictation-local*'
       - 'src/shared/dictation-runtime.js'
       - 'scripts/*dictation-runtime*'
+      - 'scripts/prepare-native-supervisors.js'
       - '.github/workflows/agent-dictation-native.yml'
   workflow_dispatch:
 
