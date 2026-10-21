@@ -126,3 +126,24 @@ test("a valid hello: its public part; the wrong process's or a malformed one is 
   });
   expect(() => ipfsdService('other')).toThrow('unknown freedom-ipfsd process');
 });
+
+test("outside Electron (a script), `require('electron')` has no app: the dev path, and the override", () => {
+  jest.isolateModules(() => {
+    // What the electron package exports to plain Node: its binary's path.
+    // (Inside isolateModules, a doMock doesn't override this file's
+    // jest.mock once electron is loaded: the registry starts empty here.)
+    jest.resetModules();
+    jest.doMock('electron', () => '/path/to/electron', { virtual: true });
+    expect(require('electron')).toBe('/path/to/electron');
+    const { getIpfsdBinaryPath: resolve } = require('./ipfsd-client');
+    delete process.env.FREEDOM_IPFSD_PATH;
+    expect(resolve()).toContain(
+      path.join(
+        'freedom-ipfsd-bin',
+        `${{ darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform]}-${process.arch}`
+      )
+    );
+    process.env.FREEDOM_IPFSD_PATH = path.join('custom', 'freedom-ipfsd');
+    expect(resolve()).toBe(process.env.FREEDOM_IPFSD_PATH);
+  });
+});
