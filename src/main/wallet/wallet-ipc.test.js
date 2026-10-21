@@ -179,6 +179,19 @@ describe('signing handlers require a main-side confirmation', () => {
   });
 
   describe('wallet:dapp-send-transaction', () => {
+    test('Agent custody refuses automatic signing until the user explicitly takes control', async () => {
+      const { setAgentPageCustody } = require('./agent-tab-custody');
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+      setAgentPageCustody(guests.get(12), true);
+      const result = await handlers['wallet:dapp-send-transaction'](
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(signAndRecord).not.toHaveBeenCalled();
+      setAgentPageCustody(guests.get(12), false);
+      expect(await handlers['wallet:dapp-send-transaction'](
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 })).toMatchObject({ success: true });
+    });
     test('without a token: refused', async () => {
       const result = await handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });

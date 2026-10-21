@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { createRequire } = require('module');
 const { pathToFileURL } = require('url');
 const { PI_SDK_PACKAGE } = require('./pi-sdk');
+const { createMcpEndpointFetch, publicEndpointAddresses } = require('./mcp-endpoint-fetch');
 
 // Consume the protocol implementation shipped with the pinned Pi SDK. Resolve
 // from that package so a differently versioned top-level client is never used.
@@ -111,6 +112,7 @@ class McpConnectionManager {
     this.loadSdk = options.loadSdk || loadMcpSdk;
     this.openExternal = options.openExternal;
     this.fetch = options.fetch || globalThis.fetch;
+    this.fetchOptions = { fetch: this.fetch, assertEnabled: options.assertEnabled, featureSignal: options.featureSignal };
     this.connections = new Map();
     this.pending = new Map();
     this.logins = new Map();
@@ -153,6 +155,7 @@ class McpConnectionManager {
   }
   async open(id) {
     const server = this.server(id);
+    const endpointFetch = createMcpEndpointFetch(server.url, this.fetchOptions);
     const sdk = await this.loadSdk();
     const client = new sdk.McpClient({ name: 'Freedom Agent', version: '1.0', requestTimeoutMs: 30000 });
     try {
@@ -167,12 +170,12 @@ class McpConnectionManager {
         authProvider: { token: auth.token, onUnauthorized: async context => {
           this.challenges.set(id, sdk.parseWwwAuthenticate(context.response.headers.get('www-authenticate')));
           if (!this.store.credentials(id)?.tokens?.refresh_token) throw new sdk.McpOAuthAuthorizationRequiredError();
-          return auth.onUnauthorized(context);
+          return auth.onUnauthorized({ ...context, fetch: endpointFetch });
         } },
         // Never forward credentials through a server-controlled HTTP redirect.
         fetch: (url, init) => {
           validateMcpEndpoint(server.url, url);
-          return this.fetch(url, { ...init, redirect: 'error',
+          return endpointFetch(url, { ...init, redirect: 'error',
             signal: AbortSignal.any([AbortSignal.timeout(30000), ...(init?.signal ? [init.signal] : [])]),
           });
         },
@@ -180,7 +183,7 @@ class McpConnectionManager {
       });
       await client.connect(transport);
       const tools = client.serverCapabilities?.tools ? await client.listTools() : [];
-      if (tools.length > 1000 || tools.some(tool => typeof tool.name !== 'string' || tool.name.length > 128)) throw new Error('Invalid MCP catalog.');
+      if (tools.length > 1000 || tools.some(tool => typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 128 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(tool.name))) throw new Error('Invalid MCP catalog.');
       this.server(id); // Removal while connecting cannot resurrect a connection.
       const connection = { client, tools, server };
       this.connections.set(id, connection);
@@ -226,14 +229,16 @@ class McpConnectionManager {
         onRedirect: async url => {
           controller.signal.throwIfAborted();
           validateMcpEndpoint(server.url, url);
+          if (url.origin !== new URL(server.url).origin) await publicEndpointAddresses(url);
           callbackResult = callback.waitForCallback(url.searchParams.get('state'));
           callbackResult.catch(() => {});
           await this.openExternal(url.href);
         },
       });
+      const endpointFetch = createMcpEndpointFetch(server.url, this.fetchOptions);
       const fetch = (url, init) => {
         validateMcpEndpoint(server.url, url);
-        return this.fetch(url, { ...init, signal: AbortSignal.any([AbortSignal.timeout(30000), controller.signal, ...(init?.signal ? [init.signal] : [])]), redirect: 'error' });
+        return endpointFetch(url, { ...init, signal: AbortSignal.any([AbortSignal.timeout(30000), controller.signal, ...(init?.signal ? [init.signal] : [])]), redirect: 'error' });
       };
       const challenge = this.challenges.get(id);
       const result = await sdk.authorizeMcp(provider, { serverUrl: server.url, fetch, skipRefresh: true,

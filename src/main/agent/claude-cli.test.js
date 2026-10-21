@@ -62,6 +62,7 @@ test('refuses local or cached managed policies before starting Claude', async ()
   await expect(assertUnmanagedClaude({ platform: 'linux', exists: async p => p.endsWith('remote-settings.json'), exec })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
   await expect(assertUnmanagedClaude({ platform: 'darwin', exists: async () => false, exec: async () => ({ stdout: '{}' }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
   await expect(assertUnmanagedClaude({ platform: 'linux', exists: async () => { throw new Error('unreadable'); } })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
+  await expect(assertUnmanagedClaude({ platform: 'win32', exists: async file => /ClaudeCode[\\/]managed-settings\.json$/i.test(file), exec })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
 });
 
 

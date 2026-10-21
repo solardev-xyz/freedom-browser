@@ -62,7 +62,7 @@ Exact execution/setup commands and logs
 Actual single fixture orchestration command (working directory irrelevant; source derives own ROOT):
   python3 /private/tmp/freedom-bounded-phase2-4o1zph2v/watchdog.py
 W launched exactly:
-  /Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /private/tmp/freedom-bounded-phase2-4o1zph2v/qualification/scripts/qualify-agent-workspace.js processes
+  /Users/<qualification-user>/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /private/tmp/freedom-bounded-phase2-4o1zph2v/qualification/scripts/qualify-agent-workspace.js processes
 cwd qualification; ELECTRON_RUN_AS_NODE=1, HOME/TMPDIR newly owned fixtures/processes, fixed PATH/runtime PATH, per-group log directory and expiry deadline. No ambient credentials copied into runner environment. Full invocation/intent in logs/processes/intent.json; every actual child launch command, status and reserved cost in launches.jsonl. The phase-2 S binary is the prior repository-built optimized arm64 candidate; no native compilation/rebuild in this request. setup-attempt-01/02/03.json retain exact lint/generation/AST commands and diagnostics; /opt/homebrew/bin/node --version returnedv22.22.0. Electron setup startup emitted the already observed task_name_for_pid warning, preserved honestly, while watchdog genuine S token acquisition succeeded.
 
 Unchanged source proof
@@ -72,7 +72,7 @@ package.json 7ad2dce912ea545551c9343b26884da175800e0f
 scripts 18743216110ed329e19dac8994ad6d75f08a3194
 src a4fb6ff3d63374f983fc7ba9d191d511d87feeeb
 Native C SHA25601d67c27e99220ebb37e3d1e07e962703ceab10b832cadd053abc7fd0b458cce; arm64 binary SHA256f7cb7da6b40562def145bee3576567403225fb99ae8d56a488d2ecf22b176671. This is source-subtree equivalence to supplied d9f13f14, not full commit identity.
-Both original checkouts remain clean: /Users/flobot/Git/freedom-dev/freedom-browser at11a863ecad4c02ed139040243d0ed657b7a1443b (codex/agent-workspace-macos-qualification); /Users/flobot/Git/freedom-browser at38b07f33bae548f167114ea615770e4871525ea4 (feature/swarm-publishing-updated). Exact command outputs in production-and-checkout-proof.json. No production src/main/test-harness.js edit.
+Both original checkouts remain clean: /Users/<qualification-user>/Git/freedom-dev/freedom-browser at11a863ecad4c02ed139040243d0ed657b7a1443b (codex/agent-workspace-macos-qualification); /Users/<qualification-user>/Git/freedom-browser at38b07f33bae548f167114ea615770e4871525ea4 (feature/swarm-publishing-updated). Exact command outputs in production-and-checkout-proof.json. No production src/main/test-harness.js edit.
 
 Artifact inventory
 All paths below relative to evidence root:
@@ -603,7 +603,7 @@ Both prelaunch lint commands exited 0; Python AST checks exited 0; 8 pure stream
 Actual campaign launch (one invocation, exit0):
 python3 /private/tmp/freedom-phase2-retry-mz7bbbuk/watchdog.py
 Each child command, run once from the qualification directory with ELECTRON_RUN_AS_NODE=1:
-/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /private/tmp/freedom-phase2-retry-mz7bbbuk/qualification/scripts/qualify-agent-workspace.js GROUP
+/Users/<qualification-user>/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /private/tmp/freedom-phase2-retry-mz7bbbuk/qualification/scripts/qualify-agent-workspace.js GROUP
 GROUP order: processes, reconciliation, previews, process-controls. No --include-slow. Exact finite environment is in watchdog.py run_group, and per-group intent/expiry/owned runner identity is retained before composition. Command-attempts.json records launch intents and all settlements (some child argv are bounded by journal design); full fixture arguments/source and environment are reconstructible from included harness/fixtures and raw execution journals.
 
 | Group | Assertions | Exit | Seconds | Conservative roles incl B | Peak incl W/B | Direct launch intents | S / C registered / native reaped | Accounted roles incl B |
@@ -634,7 +634,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
   "candidate": "/private/tmp/freedom-final-candidate-he26qp5x/candidate",
   "checks": [
     {
-      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser",
       "command": [
         "git",
         "rev-parse",
@@ -645,7 +645,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
       "stderr": ""
     },
     {
-      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser",
       "command": [
         "git",
         "branch",
@@ -656,7 +656,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
       "stderr": ""
     },
     {
-      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser",
       "command": [
         "git",
         "status",
@@ -667,7 +667,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
       "stderr": ""
     },
     {
-      "repository": "/Users/flobot/Git/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-browser",
       "command": [
         "git",
         "rev-parse",
@@ -678,7 +678,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
       "stderr": ""
     },
     {
-      "repository": "/Users/flobot/Git/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-browser",
       "command": [
         "git",
         "branch",
@@ -689,7 +689,7 @@ Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, ui
       "stderr": ""
     },
     {
-      "repository": "/Users/flobot/Git/freedom-browser",
+      "repository": "/Users/<qualification-user>/Git/freedom-browser",
       "command": [
         "git",
         "status",

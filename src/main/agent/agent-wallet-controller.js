@@ -534,7 +534,10 @@ class AgentWalletController {
     } else {
       tx.gasPrice = gasPrices.gasPrice;
     }
-    const feePerGas = tx.maxFeePerGas || tx.gasPrice || '0';
+    const feePerGas = tx.maxFeePerGas || tx.gasPrice;
+    if (!gasLimit || !feePerGas || BigInt(gasLimit) <= 0n || BigInt(feePerGas) <= 0n) {
+      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Freedom could not determine the maximum transaction fee. Try again before approving.');
+    }
     const maxFee = BigInt(gasLimit) * BigInt(feePerGas);
     await this.#approve(context, {
       action: 'wallet_transaction',

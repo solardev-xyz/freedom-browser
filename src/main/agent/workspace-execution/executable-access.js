@@ -100,9 +100,13 @@ function isSystemExecutable(executablePath, platform) {
 function packageRootForExecutable(executablePath) {
   const executableDirectory = path.dirname(executablePath);
   const leaf = path.basename(executableDirectory);
-  const candidate =
+  let candidate =
     leaf === 'bin' || leaf === 'sbin' ? path.dirname(executableDirectory) : executableDirectory;
   const home = path.resolve(os.homedir());
+  const relative = path.relative(home, candidate);
+  // Do not turn a command shim into a read grant for credentials/keyrings in
+  // an entire ~/.cargo or ~/.local tree. Versioned runtime roots stay scoped.
+  if (relative.startsWith('.') && !relative.startsWith('..') && !relative.includes(path.sep)) candidate = executableDirectory;
   if (
     candidate === path.parse(candidate).root ||
     candidate === home ||

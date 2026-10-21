@@ -752,7 +752,7 @@ function normalizeApprovalRequest(request, recipient) {
     destinationOrigin: wallet
       ? getPermissionKey(request?.destinationOrigin) || origin
       : originScopeForUrl(request?.destinationOrigin) || '',
-    label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
+    label: typeof request?.label === 'string' ? request.label.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) : '',
     ...(interaction && { interaction }),
     ...(typeof request.pageMessage === 'string' && { pageMessage: request.pageMessage.slice(0, 8192) }),
     ...(typeof request.inputPreview === 'string' && { inputPreview: request.inputPreview }),
@@ -1462,7 +1462,7 @@ class FreedomAgentService {
       if (this.conversation === conversation) {
         this.conversation = null;
       }
-      this.#disposeConversation(conversation);
+      await this.#disposeConversation(conversation);
       for (const record of this.agentTabs.values()) {
         if (record.conversationId === conversationId) record.conversationId = null;
       }
@@ -1502,6 +1502,7 @@ class FreedomAgentService {
       conversation.scopedController?.releaseTab?.(tabId);
     }
     record.custody = 'user';
+    this.controller.setPageAgentCustody?.(tabId, false);
     record.conversationId = null;
     return true;
   }
@@ -1960,6 +1961,7 @@ class FreedomAgentService {
           conversation.providerLabel = run.providerLabel;
           conversation.modelId = run.modelId;
         }
+        conversation.connectionIsCurrent = options.modelRuntime?.connectionIsCurrent;
         if (run.attachments.length) {
           const known = new Map(
             (conversation.resources || []).map((resource) => [resource.resourceId, resource])
@@ -2257,6 +2259,20 @@ class FreedomAgentService {
   async waitForIdle() {
     const run = this.activeRun;
     if (run) await run.completion.promise;
+  }
+
+  async connectionsChanged() {
+    for (const conversation of this.conversations.values()) {
+      if (typeof conversation.connectionIsCurrent !== 'function') continue;
+      let current = false;
+      try { current = conversation.connectionIsCurrent() === true; } catch { /* Credential read failures revoke access. */ }
+      if (current) continue;
+      if (this.activeRun?.conversationId === conversation.conversationId) {
+        await this.stop(this.activeRun.runId, { preserveServers: true });
+      }
+      await this.#disposeConversation(conversation);
+      conversation.restored = true;
+    }
   }
 
   async clearConversation() {
@@ -3102,7 +3118,7 @@ class FreedomAgentService {
           })),
           guidance: run.guidance.filter(item => item.status !== 'cancelled').map(item => item.text),
           proposedAccess: { command: permission.command, workingDirectory: permission.workingDirectory,
-            executables: permission.commands.map(({ name, status }) => ({ name, status })),
+            executables: permission.commands.map(({ name, status, rootPath, executablePath }) => ({ name, status, rootPath, executablePath })),
             network: permission.network || { posture: 'none' }, scope: 'once',
             filesystem: 'Existing sandbox and user-granted project access only; installed executable roots are read/execute-only.' },
           agentReason: publicRequest.label,
@@ -3286,13 +3302,16 @@ class FreedomAgentService {
       }
       conversation.unsubscribe = null;
     }
+    let disposal;
     try {
-      conversation.session?.dispose();
+      disposal = conversation.session?.dispose();
     } catch {
       // The next turn still receives an independently created provider session.
     }
     conversation.session = null;
     conversation.restored = true;
+    conversation.disposal = Promise.allSettled([conversation.disposal, disposal]);
+    return conversation.disposal;
   }
 
   #emit(run, event) {
@@ -3372,6 +3391,7 @@ class FreedomAgentService {
 
   #registerAgentTab(tabId, conversationId) {
     if (typeof tabId !== 'string' || !tabId) return;
+    this.controller.setPageAgentCustody?.(tabId, true);
     this.agentTabs.set(tabId, {
       tabId,
       provenance: 'agent',
@@ -3400,12 +3420,15 @@ class FreedomAgentService {
       }
       conversation.unsubscribe = null;
     }
+    let disposal;
     try {
-      conversation.session?.dispose();
+      disposal = conversation.session?.dispose();
     } catch {
       // Cleanup failures are not exposed across the service boundary.
     }
     conversation.session = null;
+    conversation.disposal = Promise.allSettled([conversation.disposal, disposal]);
+    return conversation.disposal;
   }
 }
 

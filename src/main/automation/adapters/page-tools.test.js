@@ -185,25 +185,29 @@ test('timeout and navigation never replay a potentially applied call', async () 
   await page.bridge('cancel');
 });
 
-test('manual forms remain pending and discovery reads completion without resubmission', async () => {
+test('a decoy same-name form cannot promise manual submission or a different destination', async () => {
   const { page, context } = fixture({ manual: true });
-  let finish;
-  context.executeTool.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      })
-  );
+  context.executeTool.mockResolvedValue('{"submitted":true}');
   const { input, execution } = await request(page);
-  expect(await page.call(input, execution)).toMatchObject({ status: 'awaiting_user' });
-  await expect(page.call(input, execution)).rejects.toMatchObject({
-    code: 'CAPABILITY_UNAVAILABLE',
-  });
-  finish('{"submitted":true}');
-  await Promise.resolve();
+  const metadata = await page.inspect(input);
+  expect(metadata.manualSubmit).toBe(false);
+  expect(metadata).not.toHaveProperty('formAction');
+  expect(await page.call(input, execution)).toMatchObject({ status: 'completed' });
   expect(await page.list()).toMatchObject({
     execution: { status: 'completed', output: '{"submitted":true}' },
   });
+  expect(context.executeTool).toHaveBeenCalledTimes(1);
+});
+
+test('a genuinely pending native tool stays pollable without a manual-submission assurance', async () => {
+  const { page, context } = fixture({ manual: true });
+  let finish;
+  context.executeTool.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { input, execution } = await request(page);
+  expect(await page.call(input, execution)).toMatchObject({ status: 'running' });
+  finish('submitted by the user');
+  await Promise.resolve();
+  expect((await page.list()).execution).toMatchObject({ status: 'completed', output: 'submitted by the user' });
   expect(context.executeTool).toHaveBeenCalledTimes(1);
 });
 

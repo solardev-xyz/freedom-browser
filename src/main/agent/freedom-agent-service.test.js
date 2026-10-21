@@ -342,7 +342,7 @@ describe('independent command access review', () => {
       expect(await pending).toBe('declined'); await stop(ctx);
     });
 
-  test('reviews exact access without host paths and records reviewer provenance instead of user approval', async () => {
+  test('reviews exact executable roots and records reviewer provenance instead of user approval', async () => {
     const ctx = await setup();
     ctx.fake.emit({ type: 'tool_execution_start', toolCallId: 'access', toolName: 'request_permissions', args: {} });
     const result = await ctx.request(permissionRequest());
@@ -351,7 +351,9 @@ describe('independent command access review', () => {
     const [input, runtime] = ctx.accessReviewer.review.mock.calls[0];
     expect(input.proposedAccess).toMatchObject({ command: 'node --version', workingDirectory: '.', scope: 'once',
       network: { privateLan: true, hostAbstractUnixSockets: 'reachable' } });
-    expect(JSON.stringify(input)).not.toContain('/private/tools');
+    expect(input.proposedAccess.executables).toEqual([expect.objectContaining({
+      rootPath: '/private/tools/node', executablePath: '/private/tools/node/bin/node',
+    })]);
     expect(runtime.model.id).toBe('model_test');
     expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
     ctx.fake.emit({ type: 'tool_execution_end', toolCallId: 'access', toolName: 'request_permissions', isError: false });
@@ -2075,6 +2077,42 @@ describe('FreedomAgentService', () => {
     expect(await decision).toEqual({ status: 'approved' });
     await service.stop('run_test');
     await service.waitForIdle();
+  });
+
+  test('model approval reasons cannot introduce new lines or bidirectional control text', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({ action: 'browser_interaction', operation: 'browser_call_page_tool',
+      origin: 'https://example.test/', label: 'Inspect\nAPPROVED\u202e safely',
+      pageTool: { name: 'echo', argumentsJSON: '{}', manualSubmit: false } });
+    const approval = events.at(-1);
+    expect(approval.label).toBe('Inspect APPROVED safely');
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await decision;
+    await service.stop('run_test');
+  });
+
+  test('provider revocation awaits session disposal and preserves transcript restoration', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const current = jest.fn(() => true);
+    await service.start(startOptions({ modelRuntime: { connectionIsCurrent: current } }));
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    let release, finished = false;
+    fake.session.dispose.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    current.mockReturnValue(false);
+    const pending = service.connectionsChanged().then(() => { finished = true; });
+    await Promise.resolve();
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(finished).toBe(false);
+    release();
+    await pending;
+    expect(service.conversations.get('conversation_test')).toMatchObject({ session: null, restored: true });
   });
 
   test('shows a project-editing approval with bounded metadata and explicit user decision', async () => {

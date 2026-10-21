@@ -596,7 +596,11 @@ class AgentProviderResolver {
     if (!selection) {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
     }
-    if (selection.kind === 'compatible') return resolveCompatible(selection, await this.#createRuntime(), this.fetch, () => this.store.getSelection(selection.providerId));
+    if (selection.kind === 'compatible') {
+      const resolved = await resolveCompatible(selection, await this.#createRuntime(), this.fetch, () => this.store.getSelection(selection.providerId));
+      resolved.modelRuntime.connectionIsCurrent = () => this.store.getSelection(selection.providerId)?.baseUrl === selection.baseUrl;
+      return resolved;
+    }
     if (selection.providerId === CLAUDE_PROVIDER_ID && selection.kind === 'subscription') {
       const model = (await this.getClaudeModels()).find(model => model.id === selection.modelId);
       if (!model) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
@@ -620,6 +624,7 @@ class AgentProviderResolver {
           } finally { options.signal?.removeEventListener('abort', stop); await session.dispose(); }
         },
       };
+      this.bindConnection(modelRuntime, selection);
       return { model: { ...model }, modelRuntime, thinkingLevel: 'medium' };
     }
     if (selection.kind === 'hosted' && !Object.hasOwn(HOSTED_PROVIDERS, selection.providerId)) {
@@ -701,17 +706,44 @@ class AgentProviderResolver {
         apiKey: current.apiKey, signal, fetchImpl: this.fetch });
     };
     runtime.fetchPrivacyRequest = (requestModel, input, options, tracking) => {
+      runtime.assertConnectionCurrent?.();
       const current = this.store.getSelection(selection.providerId);
       const fetchRequest = selection.providerId === 'venice' ? fetchVeniceEncrypted : fetchNearWithEvidence;
       return fetchRequest({ input, options, modelId: requestModel.id, encrypt: true,
         apiKey: current?.apiKey, ...tracking });
     };
+    this.bindConnection(runtime, selection);
     return {
       model,
       modelRuntime: runtime,
       ...(runtimeProviderId(selection.providerId) !== selection.providerId && { connectionProviderId: selection.providerId }),
       thinkingLevel: selection.kind === 'subscription' || model.id === 'gpt-6-astra' ? 'medium' : 'off',
     };
+  }
+
+  bindConnection(runtime, selection) {
+    const current = () => {
+      try {
+        const saved = this.store.getSelection(selection.providerId);
+        return Boolean(saved && saved.kind === selection.kind && saved.apiKey === selection.apiKey && saved.baseUrl === selection.baseUrl);
+      } catch { return false; }
+    };
+    runtime.connectionIsCurrent = current;
+    runtime.assertConnectionCurrent = () => {
+      if (!current()) throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'The provider connection changed. Reopen this conversation to reconnect.');
+    };
+    for (const method of ['stream', 'streamSimple', 'complete', 'completeSimple', 'createFreedomSession']) {
+      if (typeof runtime[method] !== 'function') continue;
+      runtime[method] = new Proxy(runtime[method], { apply: (original, _receiver, args) => {
+        runtime.assertConnectionCurrent();
+        if (method === 'createFreedomSession') return Reflect.apply(original, runtime, args);
+        const [model, context, options = {}] = args;
+        return Reflect.apply(original, runtime, [model, context, { ...options,
+          onPayload: (...values) => { runtime.assertConnectionCurrent(); return options.onPayload?.(...values); },
+          fetch: (...values) => { runtime.assertConnectionCurrent(); return (options.fetch || this.fetch)(...values); },
+        }]);
+      } });
+    }
   }
 
   async #createRuntime(connectionId) {

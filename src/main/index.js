@@ -506,6 +506,8 @@ const {
   focusDesktopAutomationPage,
 } = require('./automation/runtime');
 const { createFreedomAgentRuntime } = require('./agent/runtime');
+const { PREVIEW_PARTITION, isolatePreviewNetwork } = require('./agent/workspace-preview-network');
+let agentPreviewNetwork;
 const { getAgentDataDir } = require('./profile-paths');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
 const {
@@ -654,12 +656,14 @@ async function bootstrap() {
       closePage: closeDesktopAutomationPage,
       focusPage: focusDesktopAutomationPage,
     });
+    const previewSession = session.fromPartition(PREVIEW_PARTITION, { cache: false });
+    agentPreviewNetwork = await isolatePreviewNetwork(previewSession);
     agentRuntime = createFreedomAgentRuntime({
       BrowserWindow,
       ipcMain,
       safeStorage,
       profile: activeProfile,
-      protocolSession: defaultSession,
+      protocolSession: previewSession,
       dataDir: getAgentDataDir(),
       workspaceRuntimeOptions: {
         packaged: app.isPackaged === true,
@@ -1016,6 +1020,7 @@ async function windDown() {
   if (agentRuntime) {
     shutdownDiagnostics.phase('agent_dispose_started');
     await agentRuntime.dispose();
+    await agentPreviewNetwork?.dispose();
     shutdownDiagnostics.phase('agent_dispose_finished');
     agentRuntime = null;
     automationController.setPageLifecycle(null);

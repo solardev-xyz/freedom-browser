@@ -8,6 +8,16 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// CSP connect-src does not cover WebRTC/TURN. Apply this in the main world
+// before page scripts, including inherited blank/srcdoc preview frames.
+let isolatedPreview = globalThis.location?.protocol === 'freedom-preview:';
+try { isolatedPreview ||= globalThis.window?.top?.location?.protocol === 'freedom-preview:'; } catch { /* Cross-origin frames do not inherit a preview's authority. */ }
+if (isolatedPreview) contextBridge.executeInMainWorld({ func: () => {
+  for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection']) {
+    Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });
+  }
+} });
+
 // ============================================
 // Ad blocking — scriptlets (document start, main world)
 // ============================================

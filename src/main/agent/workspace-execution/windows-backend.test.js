@@ -62,6 +62,10 @@ describe('Windows sandbox policy boundary', () => {
     const onStdin = jest.fn();
     run.mockImplementation(async (_runtime, request, options) => {
       if (request.operation === 'probe') return { terminal: { type: 'capabilities', setupComplete: true } };
+      if (request.operation === 'remove-tree') {
+        await fs.promises.rm(request.cleanupPath, { recursive: true, force: true });
+        return { terminal: { type: 'removed' } };
+      }
       scriptPath = request.command.at(-1);
       expect(request.command.join(' ').length).toBeLessThan(24000);
       expect(request.command.slice(-4, -1)).toEqual(['-ExecutionPolicy', 'Bypass', '-File']);
@@ -74,6 +78,7 @@ describe('Windows sandbox policy boundary', () => {
     expect((await executor.execute(policy, { command: path.resolve('/powershell.exe'),
       args: ['-NoProfile', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], onStdin })).state).toBe('completed');
     expect(fs.existsSync(scriptPath)).toBe(false);
+    expect(run.mock.calls.some(([, input]) => input.operation === 'remove-tree')).toBe(true);
   });
 
   test('a helper failure after launch cannot certify that no side effects occurred', async () => {

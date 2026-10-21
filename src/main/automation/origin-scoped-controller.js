@@ -191,7 +191,6 @@ class OriginScopedAutomationController {
     if (tabId) this.controller.markPageControlled?.(tabId);
     this.activeTabId = tabId;
     this.ownedTabs = tabId ? new Map([[tabId, { created: false }]]) : new Map();
-    this.workspaceEstablished = Boolean(originScopeForUrl(initialState?.result?.tab?.url));
     this.approvalMode = approvalMode;
     this.lastState = initialState;
     this.requestApproval = requestApproval;
@@ -585,7 +584,7 @@ class OriginScopedAutomationController {
       }
       return result;
     }
-    if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+    if (!this.#acceptCurrentOrigin(state) && !(operation === OPERATIONS.NAVIGATE && this.#acceptRequestedOrigin(input.url))) return this.#originDenied(state);
     // Fresh observations are always permitted. Only references from before a
     // user turn or ownership handoff need refreshing, independently for each tab.
     const fresh = this.freshReferences.get(input.tabId);
@@ -929,12 +928,9 @@ class OriginScopedAutomationController {
   }
 
   #acceptCurrentOrigin(state) {
-    const currentOrigin = originScopeForUrl(state?.result?.tab?.url);
-    if (currentOrigin) {
-      this.workspaceEstablished = true;
-      return true;
-    }
-    return !this.workspaceEstablished;
+    // A newly created task is not authority to interact with browser-owned
+    // interstitials. Trust decisions remain with the user from the first page.
+    return Boolean(originScopeForUrl(state?.result?.tab?.url));
   }
 
   #notifyWorkspaceTabCreated(tabId) {

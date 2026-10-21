@@ -123,6 +123,15 @@ class AgentManagedWorkspaceStore {
     this.statements = null;
     this.gitInitializations = new Map();
     this.projectAccess = new ExternalProjectAccess({ userDataDir: this.userDataDir });
+    this.removeDirectory = options.removeDirectory || (async directory => {
+      if (process.platform === 'darwin') {
+        await require('./workspace-execution/seatbelt-backend').removeSandboxTree(directory);
+      } else if (process.platform === 'win32') {
+        await new (require('./workspace-execution/windows-backend').WindowsWorkspaceExecutor)().removeTree(directory);
+      } else {
+        await fs.promises.rm(directory, { recursive: true, force: false });
+      }
+    });
   }
 
   getDb() {
@@ -528,7 +537,7 @@ class AgentManagedWorkspaceStore {
     // An ambiguous external commit can leave a repository index lock. Preserve
     // its reconciliation evidence even when the conversation itself is deleted.
     const pendingCommit = workspace.project && fs.existsSync(path.join(workspacePath, 'git-commit-pending.json'));
-    if (!pendingCommit) await fs.promises.rm(workspacePath, { recursive: true, force: false });
+    if (!pendingCommit) await this.removeDirectory(workspacePath);
     return this.#getStatements().deleteWorkspace.run(workspace.workspaceId, ownerId).changes > 0;
   }
 }

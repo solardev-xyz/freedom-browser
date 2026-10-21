@@ -30,6 +30,7 @@ const {
   consumeConfirmation,
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
+const { isAgentPage } = require('./agent-tab-custody');
 const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
@@ -140,7 +141,7 @@ async function requesterBelongsTo(sender, webContentsId, permissionKey) {
     return false;
   }
   const guestKey = () => {
-    if (!contents || contents.isDestroyed?.()) return null;
+    if (!contents || contents.isDestroyed?.() || isAgentPage(contents)) return null;
     if (!Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id) return null;
     try {
       return normalizeOrigin(contents.getURL()) || null;

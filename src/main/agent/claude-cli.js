@@ -12,6 +12,19 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const MAX_BRIDGE_REQUEST_BYTES = 8 * 1024 * 1024;
 
+async function createClaudeDirectory(prefix) {
+  const parent = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  try {
+    await fs.promises.chmod(parent, 0o700);
+    const directory = path.join(parent, 'work');
+    await fs.promises.mkdir(directory, { mode: 0o700 });
+    return directory;
+  } catch (error) {
+    await fs.promises.rm(parent, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function claudeEnvironment(source = process.env) {
   // Do not accidentally bill an inherited API key or load injected providers,
   // hooks, Node options, Electron flags, or a parent Claude session's settings.
@@ -201,6 +214,7 @@ async function assertUnmanagedClaude({ platform = process.platform, home = os.ho
   const root = platform === 'darwin' ? '/Library/Application Support/ClaudeCode'
     : platform === 'win32' ? 'C:\\Program Files\\ClaudeCode' : '/etc/claude-code';
   const paths = ['managed-settings.json', 'managed-settings.d', 'managed-mcp.json', 'CLAUDE.md'].map(name => path.join(root, name));
+  if (platform === 'win32') for (const name of ['managed-settings.json', 'managed-settings.d', 'managed-mcp.json', 'CLAUDE.md']) paths.push(path.win32.join(process.env.ProgramData || 'C:\\ProgramData', 'ClaudeCode', name));
   paths.push(path.join(home, '.claude', 'remote-settings.json'));
   if (platform === 'darwin') paths.push('/Library/Managed Preferences/com.anthropic.claudecode.plist');
   const refused = () => Object.assign(new Error('Managed Claude installations are not supported by this connection. Use the Anthropic API connection instead.'), { code: 'AGENT_CLAUDE_MANAGED' });
@@ -220,7 +234,7 @@ async function assertUnmanagedClaude({ platform = process.platform, home = os.ho
 async function checkClaudeLogin({ signal, executable, run = execFileAsync, checkPolicy = assertUnmanagedClaude } = {}) {
   await checkPolicy();
   executable ||= await findClaudeExecutable();
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-claude-auth-'));
+  const directory = await createClaudeDirectory('freedom-claude-auth-');
   let status;
   try {
     await fs.promises.chmod(directory, 0o700);
@@ -239,7 +253,7 @@ async function checkClaudeLogin({ signal, executable, run = execFileAsync, check
     if (error.code === 'AGENT_CLAUDE_VERSION') throw error;
     throw cliError('Claude Code could not confirm its login. Run claude auth login in a terminal, then try again.');
   } finally {
-    await fs.promises.rm(directory, { recursive: true, force: true });
+    await fs.promises.rm(path.dirname(directory), { recursive: true, force: true });
   }
   if (status.loggedIn !== true || status.authMethod !== 'claude.ai' || status.apiProvider !== 'firstParty') {
     throw cliError('Sign in to Claude Code with your Claude subscription using claude auth login, then try again. API billing is not used by this connection.');
@@ -257,14 +271,14 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
   await checkLogin({ executable, signal: ownerSignal });
   const localAbort = new AbortController();
   const signal = AbortSignal.any([ownerSignal, localAbort.signal]);
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-claude-'));
+  const directory = await createClaudeDirectory('freedom-claude-');
   let ready = false, child, bridge, killTimer, closed = false;
   const config = path.join(directory, 'mcp.json');
   const promptFile = path.join(directory, 'system.txt');
   const revoke = async () => {
     await Promise.allSettled([fs.promises.writeFile(config, '{}', { mode: 0o600 }),
       fs.promises.writeFile(promptFile, '', { mode: 0o600 })]);
-    await fs.promises.rm(directory, { recursive: true, force: true });
+    await fs.promises.rm(path.dirname(directory), { recursive: true, force: true });
   };
   try {
     await fs.promises.chmod(directory, 0o700);
@@ -274,7 +288,7 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
     await fs.promises.writeFile(promptFile, systemPrompt, { mode: 0o600 });
     signal.throwIfAborted();
     const args = ['-p', '--restricted', '--tools', '', '--setting-sources', '',
-      '--settings', JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false, claudeMdExcludes: ['/**'] }),
+      '--settings', JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false, claudeMdExcludes: ['/**', '**'] }),
       '--strict-mcp-config', '--mcp-config', config, '--no-session-persistence', '--no-chrome',
       '--disable-slash-commands', '--permission-mode', 'dontAsk', '--input-format', 'stream-json',
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',

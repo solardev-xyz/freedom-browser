@@ -101,6 +101,17 @@ function createResolver(selection = null, options = {}) {
 }
 
 describe('AgentProviderResolver', () => {
+  test.each(['removal', 'rotation'])('cached runtimes cannot use credentials after %s', async change => {
+    const selection = { kind: 'hosted', providerId: 'openai', modelId: 'model-b', apiKey: 'fixture-old-key' };
+    const ctx = createResolver(selection);
+    ctx.runtime.completeSimple = jest.fn(async () => ({ content: [] }));
+    const { modelRuntime, model } = await ctx.resolver.resolveModel({ providerId: 'openai' });
+    await modelRuntime.completeSimple(model, {});
+    ctx.store.getSelection.mockReturnValue(change === 'rotation' ? { ...selection, apiKey: 'fixture-new-key' } : null);
+    expect(modelRuntime.connectionIsCurrent()).toBe(false);
+    expect(() => modelRuntime.completeSimple(model, {})).toThrow('provider connection changed');
+    expect(ctx.runtime.completeSimple).toHaveBeenCalledTimes(1);
+  });
   test('custom discovery preserves URL paths and manual models avoid requiring discovery', async () => {
     const fetch = jest.fn(async () => new Response(JSON.stringify({ data: [{ id: 'fast' }, { id: 'smart' }] })));
     const { resolver, store } = createResolver(null, { fetch });

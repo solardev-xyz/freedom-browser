@@ -131,7 +131,8 @@ function createFreedomAgentRuntime(options = {}) {
   options.controller.setDiagnosticsController(diagnosticsController);
   options.controller.setPublicationController(publicationController);
   const mcpConnections = new McpConnectionManager({ dataDir: options.dataDir,
-    safeStorage: options.safeStorage, openExternal: options.openExternal, fetch: guardedFetch });
+    safeStorage: options.safeStorage, openExternal: options.openExternal, fetch: guardedFetch,
+    assertEnabled, featureSignal: () => featureController.signal });
   const service = new FreedomAgentService({
     mcpConnections,
     controller: options.controller,
@@ -158,8 +159,9 @@ function createFreedomAgentRuntime(options = {}) {
     isTrustedSender: options.isTrustedSender,
     isEnabled,
     isProviderSettingsSender,
-    onProviderChanged: () => {
+    onProviderChanged: async () => {
       dictation.connectionsChanged();
+      await service.connectionsChanged();
       broadcastToAllWebContents('agent:provider:changed', {});
     },
     onEnabledChanged: listener => onSettingsChanged((next, previous) => {

@@ -251,6 +251,22 @@ describe('ManagedWorkspaceProcessManager', () => {
     expect(onTerminal).toHaveBeenCalledTimes(1);
   });
 
+  test('conversation deletion waits for workload completion after aborting it', async () => {
+    const completion = deferred();
+    let request;
+    const manager = new ManagedWorkspaceProcessManager({ execute: (_owner, value) => { request = value; return completion.promise; } });
+    await manager.start('conversation_one', { command: 'node server.js', yieldMs: 1 });
+    let deleted = false;
+    const pending = manager.deleteConversation('conversation_one').then(() => { deleted = true; });
+    expect(request.signal.aborted).toBe(true);
+    await Promise.resolve();
+    expect(deleted).toBe(false);
+    completion.resolve(receipt({ state: 'cancelled' }));
+    await pending;
+    expect(deleted).toBe(true);
+    expect(manager.entries.size).toBe(0);
+  });
+
   test('bounds shutdown and suppresses callbacks from a backend that settles after the deadline', async () => {
     jest.useFakeTimers();
     try {

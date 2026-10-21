@@ -2,10 +2,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { openedFilePath, readWindowsWorkspaceFile } = require('./workspace-execution/opened-file-path');
 const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
 
 function excludedPublicationPath(value) {
-  return historyPathReason(value, true) || value.split('/').some(part => part.startsWith('.') && part !== '.well-known');
+  if (value === '.') return false;
+  return historyPathReason(value, true) || value.split('/').some(part => part.startsWith('.') && !['.', '.well-known'].includes(part));
 }
 
 const MAX_WORKSPACE_PUBLICATION_BYTES = 50 * 1024 * 1024;
@@ -106,12 +108,16 @@ async function checkedEntry(root, relativePath) {
 
 async function readRegularFile(root, relativePath, remainingBytes) {
   const checked = await checkedEntry(root, relativePath);
+  if (process.platform === 'win32') return readWindowsWorkspaceFile(checked.rootReal, relativePath, remainingBytes);
   const handle = await fs.promises.open(
     checked.candidate,
     fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
   );
   try {
     const stats = await handle.stat();
+    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
+      throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'The opened file escaped its managed workspace');
+    }
     if (!stats.isFile() || stats.nlink !== 1) {
       throw sourceError(
         'WORKSPACE_PUBLICATION_UNSAFE',
@@ -230,9 +236,9 @@ class ManagedWorkspaceSourceReader {
         'The managed workspace is unavailable for publication'
       );
     }
+    if (excludedPublicationPath(descriptor.workspacePath)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This path is private or contains credentials. Select public build output instead.');
     if (descriptor.kind === 'file') {
       try {
-        if (excludedPublicationPath(descriptor.workspacePath)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This file is private or contains credentials. Select public build output instead.');
         const bytes = await readRegularFile(
           workspaceRoot,
           descriptor.workspacePath,
@@ -280,7 +286,7 @@ class ManagedWorkspaceSourceReader {
       const names = await fs.promises.readdir(checked.candidate);
       names.sort((left, right) => left.localeCompare(right));
       for (const name of names) {
-        if (excludedPublicationPath(name)) { excludedCount++; continue; }
+        if (excludedPublicationPath(relativeDirectory === '.' ? name : `${relativeDirectory}/${name}`)) { excludedCount++; continue; }
         entriesSeen += 1;
         if (entriesSeen > MAX_WORKSPACE_PUBLICATION_ENTRIES) {
           throw sourceError(

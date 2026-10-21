@@ -79,9 +79,6 @@ async function pageToolsBridge(action, input = {}) {
       return null;
     }
     if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) return null;
-    const form = Array.from(document.forms)
-      .slice(0, 256)
-      .find((candidate) => candidate.getAttribute('toolname') === tool.name);
     return {
       name: tool.name,
       description: tool.description,
@@ -90,8 +87,10 @@ async function pageToolsBridge(action, input = {}) {
         readOnlyHint: tool.annotations?.readOnlyHint === true,
         consequentialHint: tool.annotations?.consequentialHint === true,
       },
-      manualSubmit: Boolean(form && !form.hasAttribute('toolautosubmit')),
-      ...(form && { formAction: form.action, formMethod: form.method }),
+      // Same-named DOM forms do not establish how a registered tool executes.
+      // Until the browser API supplies registration-bound metadata, make no
+      // promise about manual submission or a form destination.
+      manualSubmit: false,
     };
   };
   const topLevelTools = nativeTools.slice(0, 1024).filter((tool) => tool.window === window);
@@ -134,7 +133,7 @@ async function pageToolsBridge(action, input = {}) {
     result: {
       executionRef: input.executionRef,
       name: tool.name,
-      status: entry.descriptor.manualSubmit ? 'awaiting_user' : 'running',
+      status: 'running',
       mayHaveChanged: true,
     },
   };
@@ -151,7 +150,7 @@ async function pageToolsBridge(action, input = {}) {
       job.finish({ status: 'timed_out' });
       controller.abort();
     },
-    entry.descriptor.manualSubmit ? 300_000 : 30_000
+    300_000
   );
   // Electron 44's native API takes JSON text. Never retry with another calling
   // convention: the first invocation might already have produced side effects.
@@ -347,12 +346,13 @@ class PageTools {
         if (!result?.executionRef) throw this.stale();
         execution.result = { ...result, untrusted: true };
         if (!['running', 'awaiting_user'].includes(result.status)) return execution.result;
-        if (result.status === 'awaiting_user' && Date.now() - started >= 300)
-          return execution.result;
         if (Date.now() - started >= this.timeoutMs) {
           this.cancel('timed_out');
           return (execution.result = { ...execution.result, status: 'timed_out' });
         }
+        // Native tools may await a real form submission. Return a pollable job
+        // without asserting that an unrelated DOM form controls this tool.
+        if (Date.now() - started >= 300) return execution.result;
         await new Promise((resolve) => setTimeout(resolve, 50));
         result = await this.bridge('status');
       }

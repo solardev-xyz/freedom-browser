@@ -1,5 +1,9 @@
 'use strict';
 
+test.each(['http://example.com/v1', 'http://8.8.8.8/v1', 'http://[2606:4700:4700::1111]/v1'])('public HTTP providers are refused: %s', url => {
+  expect(() => require('./compatible-provider').normalizeCompatibleUrl(url)).toThrow();
+});
+
 const { normalizeCompatibleUrl, normalizeCompatibleModels, compatibleFetch, discoverCompatibleModels, resolveCompatible, testCompatibleConnection } = require('./compatible-provider');
 
 test('runtime uses rotated keys, preserves request observation, and blocks removed connections/models', async () => {

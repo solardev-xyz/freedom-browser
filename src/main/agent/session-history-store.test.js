@@ -11,6 +11,19 @@ jest.mock('better-sqlite3', () =>
 
 const { AgentSessionHistoryStore, DB_FILE, normalizeActivity } = require('./session-history-store');
 
+test('long routine loops retain later approval, effect and error evidence in chronological order', () => {
+  const activity = Array.from({ length: 2500 }, (_, i) => ({ toolCallId: `read-${i}`, operation: 'read', status: 'succeeded' }));
+  const consequential = [
+    { toolCallId: 'approval', operation: 'request_permissions', status: 'succeeded', approval: 'approved' },
+    { toolCallId: 'effect', operation: 'mcp_request', status: 'succeeded' },
+    { toolCallId: 'error', operation: 'write', status: 'failed' },
+  ];
+  const result = normalizeActivity([...activity, ...consequential]);
+  expect(result).toHaveLength(2003);
+  expect(result.slice(-3).map(item => item.toolCallId)).toEqual(['approval', 'effect', 'error']);
+  expect(result[0].toolCallId).toBe('read-500');
+});
+
 test('retains complete helper text without runtime objects or extra fields', () => {
   const [item] = normalizeActivity([{ operation: 'delegate_task', status: 'succeeded', subagent: {
     taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3, toolScripts: 2,

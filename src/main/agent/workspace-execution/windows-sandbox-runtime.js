@@ -34,7 +34,8 @@ async function resolveWindowsSandbox(options = {}) {
       throw new Error('Windows sandbox binary does not match its manifest');
     }
   }
-  return Object.freeze({ directory, executablePath: path.join(directory, BINARIES[0]), backend: 'elevated', revision: REVISION });
+  return Object.freeze({ directory, executablePath: path.join(directory, BINARIES[0]), backend: 'elevated', revision: REVISION,
+    binaries: Object.freeze({ ...manifest.binaries }) });
 }
 
 function assertWindowsRuntimeOutsideWrites(runtime, home, writableRoots) {

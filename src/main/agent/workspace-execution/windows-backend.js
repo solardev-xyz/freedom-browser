@@ -39,11 +39,18 @@ class WindowsWorkspaceExecutor {
 
   async setup(request = {}) {
     const runtime = await this.resolveRuntime(this.options);
-    const result = await this.run(runtime, { version: 1, operation: 'setup-interactive', backend: 'elevated', home: this.home },
+    const result = await this.run(runtime, { version: 1, operation: 'setup-interactive', backend: 'elevated', home: this.home, binaryHashes: runtime.binaries },
       { timeoutMs: 180000, signal: request.signal });
     if (result.terminal?.type !== 'setup' || result.terminal.complete !== true) {
       throw new Error('Windows project protection was not set up. An administrator must approve the Windows setup prompt.');
     }
+  }
+
+  async removeTree(directory) {
+    const runtime = this.runtime || await this.resolveRuntime(this.options);
+    const result = await this.run(runtime, { version: 1, operation: 'remove-tree', backend: 'elevated', home: this.home,
+      cleanupPath: directory, cleanupParent: path.dirname(directory) }, { timeoutMs: 20000 });
+    if (result.terminal?.type !== 'removed') throw new Error('Project cleanup failed; files were preserved');
   }
 
   async execute(policy, rawRequest) {
@@ -107,7 +114,14 @@ class WindowsWorkspaceExecutor {
     } catch (error) {
       result = { failure: error.message };
     } finally {
-      if (privateDirectory) await fs.promises.rm(privateDirectory, { recursive: true, force: true }).catch(() => {});
+      if (privateDirectory) {
+        try {
+          if (attempted) await this.removeTree(privateDirectory);
+          else await fs.promises.rm(privateDirectory, { recursive: true, force: true });
+        } catch {
+          result = { ...result, privateDirectoryCleanupFailed: true };
+        }
+      }
     }
     return this.receipt(startedAt, { ...result, attempted });
   }
@@ -126,6 +140,7 @@ class WindowsWorkspaceExecutor {
       terminationGuarantee: result.attempted ? 'best_effort' : 'not_applicable',
       terminationScope: result.attempted ? 'unknown' : 'not_applicable', survivorsPossible: result.attempted === true,
       completeDescendantTermination: false, sideEffects: result.attempted ? 'unknown' : 'none',
+      ...(result.privateDirectoryCleanupFailed && { privateDirectoryCleanupFailed: true }),
       error: failure ? { code: 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
   }
 }

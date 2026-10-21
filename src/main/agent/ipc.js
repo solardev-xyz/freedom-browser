@@ -1107,7 +1107,7 @@ function registerFreedomAgentIpc(options = {}) {
       providerMutationPending = true;
       try {
         const result = await action();
-        options.onProviderChanged?.();
+        await options.onProviderChanged?.();
         return result;
       } finally {
         providerMutationPending = false;

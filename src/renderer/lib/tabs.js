@@ -642,6 +642,8 @@ const createWebview = (tabId, initialUrl) => {
   const privatePartition = getPrivatePartition();
   if (privatePartition) {
     webview.setAttribute('partition', privatePartition);
+  } else if (initialUrl?.startsWith('freedom-preview://')) {
+    webview.setAttribute('partition', 'freedom-workspace-preview');
   }
   webview.setAttribute('allowpopups', '');
   webview.setAttribute('allowfullscreen', '');

@@ -263,6 +263,16 @@ describe('webcontents-setup', () => {
     expect(boot).not.toHaveProperty('ethereum');
   });
 
+  test('preview sessions are forced by main without replacing a private partition', () => {
+    const src = `freedom-preview://${'a'.repeat(40)}/index.html`;
+    const normal = attach(loadWebContentsSetupModule(), { src }, { preload: '/app/webview-preload.js', partition: 'persist:untrusted' });
+    expect(normal.webPreferences.partition).toBe('freedom-workspace-preview');
+    const privateContext = loadWebContentsSetupModule({ isPrivatePartition: value => value === 'private-abc' });
+    const isolated = attach(privateContext, { src }, { preload: '/app/webview-preload.js', partition: 'private-abc' });
+    expect(isolated.webPreferences.partition).toBe('private-abc');
+    expect(bootOf(isolated.webPreferences).isPrivate).toBe(true);
+  });
+
   test("a private window's webview is private whatever its partition says", () => {
     const isPrivateWebContents = jest.fn((contents) => contents.id === 3);
     const { webPreferences } = attach(loadWebContentsSetupModule({ isPrivateWebContents }), {

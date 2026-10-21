@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-21
-Status: New whole-feature security audit requires triage/repairs; AI settings, onboarding, examples and dictation integrated; domain research complete; implementation planned
+Status: Whole-feature security repairs implemented locally, native/review gates remain; AI settings, onboarding, examples and dictation integrated; domain research complete; implementation planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-21
@@ -31,18 +31,24 @@ mechanisms from unrun platform hypotheses. Do not treat older passing tests or
 the dictation sign-off as clearance of these new findings.
 
 The [security audit intake](../docs/audits/agent-security-audit-triage-2026-10.md)
-indexes every item as S1–S8 and L1–L12, with current source checks and evidence
-limits. **Next:** address S1's unsandboxed scratch-cleanup race; then publication
-root exclusions (S2), executable-root grants (S4), internal-page authority (S5)
-and misleading WebMCP submission metadata (S6). Validate S3/S7/S8 on the affected
-platforms and address the remaining privacy, revocation, approval-history,
-networking and supply-chain work in L1–L12. These take priority over new domain
-capabilities and broad beta/release claims. No repair is claimed by this intake.
+indexes every item as S1–S8 and L1–L12. **Repair implementation is underway:**
+confined cleanup and drained deletion, opened-handle file validation, publication
+exclusions, narrow toolchain grants, internal-page protection, truthful WebMCP
+metadata, credential revocation, in-memory codemode output, retained effect
+records, isolated preview networking, guarded MCP authentication, wallet fee and
+custody checks, and Windows build/setup isolation. The audit record separates
+passing regressions from remaining native qualification; it is the current
+per-finding status source. S7 did not reproduce on the tested macOS filesystem;
+S8 still needs the actual Windows resolver result. The Windows desktop currently
+times out over SSH; new CI checks cover DNS and native junction/read/cleanup
+paths. Claude's model stopped its review session, so final independent clearance
+is still outstanding. These gates precede new domain capabilities or broad
+beta/release clearance.
 
-Main is verified through `8a671891`, already included by `fdd2e729`; no further
-main merge was needed at this check. This includes wallet-attribution PR #765
-closing #764. The separate suggestion to disallow automatic wallet approval for
-Agent-owned tabs after control ends still requires its own disposition.
+Main is verified through `8a671891`, already included by `fdd2e729`. Wallet
+attribution PR #765 is present; the additional Agent-custody auto-approval guard
+is now implemented and covered by regressions, with explicit takeover restoring
+normal user custody.
 
 ### Current baseline and qualification
 

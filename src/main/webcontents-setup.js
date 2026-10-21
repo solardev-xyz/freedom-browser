@@ -207,6 +207,17 @@ function lockChromeWindow(contents, tag, isManagedPage) {
 
 function registerWebContentsHandlers({ isManagedPage } = {}) {
   app.on('web-contents-created', (_event, contents) => {
+    let previousRtcPolicy;
+    contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      if (url.startsWith('freedom-preview://')) {
+        previousRtcPolicy ??= contents.getWebRTCIPHandlingPolicy?.() || 'default';
+        contents.setWebRTCIPHandlingPolicy?.('disable_non_proxied_udp');
+      } else if (previousRtcPolicy !== undefined) {
+        contents.setWebRTCIPHandlingPolicy?.(previousRtcPolicy);
+        previousRtcPolicy = undefined;
+      }
+    });
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
       cleanupX402WebContents(contents.id);
@@ -233,6 +244,8 @@ function registerWebContentsHandlers({ isManagedPage } = {}) {
     // inject into every frame too (uBlock Origin's `all_frames`, Brave).
     contents.on('will-attach-webview', (_event, webPreferences, params) => {
       hardenWebviewPreferences(webPreferences);
+      if (params?.src?.startsWith('freedom-preview://') && !isPrivateWebContents(contents) &&
+          !isPrivatePartition(webPreferences.partition ?? params?.partition)) webPreferences.partition = 'freedom-workspace-preview';
       webPreferences.nodeIntegrationInSubFrames = true;
       if (webPreferences.preload) attachWebviewBoot(contents, webPreferences, params);
     });

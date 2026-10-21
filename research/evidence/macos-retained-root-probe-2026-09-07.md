@@ -108,8 +108,8 @@ Identity/status
   ],
   "repos": [
     {
-      "path": "/Users/flobot/Git/freedom-dev/freedom-browser",
-      "root": "/Users/flobot/Git/freedom-dev/freedom-browser\n",
+      "path": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser",
+      "root": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser\n",
       "root_rc": 0,
       "branch": "codex/agent-workspace-macos-qualification\n",
       "branch_rc": 0,
@@ -119,8 +119,8 @@ Identity/status
       "status_short_rc": 0
     },
     {
-      "path": "/Users/flobot/Git/freedom-browser",
-      "root": "/Users/flobot/Git/freedom-browser\n",
+      "path": "/Users/<qualification-user>/Git/freedom-browser",
+      "root": "/Users/<qualification-user>/Git/freedom-browser\n",
       "root_rc": 0,
       "branch": "feature/swarm-publishing-updated\n",
       "branch_rc": 0,

@@ -10,6 +10,45 @@ function createFreedomCodemode(sdk, sessionManager, getSession) {
     appendEntry: (type, data) => sessionManager.appendCustomEntry(type, data),
     getAllTools: () => getSession()?.getAllTools() || [],
   });
+  const execute = tool.execute.bind(tool);
+  tool.execute = async (id, input, signal, onUpdate, ctx) => {
+    const { parseCodemodeSource } = await import('@earendil-works/pi-codemode/source');
+    const parsed = parseCodemodeSource(input.code);
+    // Pi's output limiter spills to shared OS temp. Keep that path unreachable
+    // and apply Freedom's bounded presentation limit entirely in memory.
+    const code = `// @options: ${JSON.stringify({ max_output_tokens: Number.MAX_SAFE_INTEGER,
+      ...(parsed.options.timeoutMs && { timeout_ms: parsed.options.timeoutMs }) })}\n${parsed.code}`;
+    const result = await execute(id, { ...input, code }, signal, onUpdate, ctx);
+    let remaining = Math.min(parsed.options.maxOutputTokens ?? 10000, 10000) * 4;
+    let shortened = false;
+    const content = [];
+    let parts = [];
+    const flush = () => {
+      if (parts.length) content.push({ type: 'text', text: parts.join('\n') });
+      parts = [];
+    };
+    const diagnostic = result.isError && result.content.at(-1)?.type === 'text'
+      ? result.content.at(-1).text.slice(0, 2048) : '';
+    remaining = Math.max(0, remaining - diagnostic.length);
+    for (const item of result.content) {
+      if (item.type !== 'text') {
+        flush();
+        if (content.length < 128) content.push(item);
+        else shortened = true;
+        continue;
+      }
+      if (diagnostic && item === result.content.at(-1)) continue;
+      const separator = parts.length && remaining > 0 ? 1 : 0;
+      const text = item.text.slice(0, Math.max(0, remaining - separator));
+      shortened ||= text.length !== item.text.length;
+      remaining -= text.length + separator;
+      if (text) parts.push(text);
+    }
+    flush();
+    if (diagnostic) content.push({ type: 'text', text: diagnostic });
+    if (shortened) content.push({ type: 'text', text: '[Output limit reached; shortened in memory. No full output file was saved; print a smaller selection or read the scoped source again.]' });
+    return { ...result, content };
+  };
   return tool;
 }
 

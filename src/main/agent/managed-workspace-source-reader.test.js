@@ -73,6 +73,12 @@ describe('ManagedWorkspaceSourceReader', () => {
     expect(JSON.stringify(source)).not.toContain(workspaceRoot);
   });
 
+  test.each(['.private', '.ssh', '.aws', 'config/secrets'])('refuses selecting excluded publication folder %s', async folder => {
+    await fs.promises.mkdir(path.join(workspaceRoot, folder), { recursive: true });
+    await fs.promises.writeFile(path.join(workspaceRoot, folder, 'notes.txt'), 'private ordinary text without a key signature');
+    await expect(reader.read('conversation_test', folder)).rejects.toMatchObject({ code: 'WORKSPACE_PUBLICATION_UNSAFE' });
+  });
+
   test('reads one workspace file without turning it into model-visible text', async () => {
     await fs.promises.writeFile(path.join(workspaceRoot, 'index.html'), '<p>Exact bytes</p>');
 

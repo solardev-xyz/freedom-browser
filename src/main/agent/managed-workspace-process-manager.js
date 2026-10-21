@@ -491,9 +491,12 @@ class ManagedWorkspaceProcessManager {
     return count;
   }
 
-  deleteConversation(conversationId) {
+  async deleteConversation(conversationId) {
     const owner = validConversationId(conversationId);
     this.cancelConversation(owner);
+    const drained = await waitForWorkspaceShutdown([...this.entries.values()]
+      .filter(entry => entry.conversationId === owner).map(entry => entry.completion), this.setTimer, this.clearTimer);
+    if (!drained) throw new Error('Project processes have not stopped; project files were preserved');
     for (const [key, entry] of this.entries) {
       if (entry.conversationId !== owner) continue;
       if (entry.retentionTimer) this.clearTimer(entry.retentionTimer);

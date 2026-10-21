@@ -19,7 +19,7 @@ import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl, applyDnsNameIdentity } from './url-utils.js';
 import { state } from './state.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
-import { getDisplayUrlForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, isTabAgentOwned } from './tabs.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -305,7 +305,7 @@ async function handleProviderRequest(webview, request) {
       // Auto-approve only for contract calls with a matching rule (never
       // plain ETH transfers, never Safes — their sends are a multi-step
       // signature ceremony, not a background signature)
-      if (!isSafeAccount(permission.walletIndex) && selector && txParams?.to
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && !isSafeAccount(permission.walletIndex) && selector && txParams?.to
         && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId)
       ) {
         const vaultStatus = await window.identity?.getStatus?.();
@@ -326,7 +326,7 @@ async function handleProviderRequest(webview, request) {
         parseInt(await getCurrentChainId(webview), 16);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
-      if (permission.autoApprove?.signing) {
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && permission.autoApprove?.signing) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);

@@ -207,6 +207,30 @@ function capabilityProbeProfile() {
   return lines.join('');
 }
 
+async function removeSandboxTree(directory, options = {}) {
+  if (!path.isAbsolute(directory) || path.normalize(directory) !== directory || directory === path.parse(directory).root) {
+    throw new Error('Invalid cleanup directory');
+  }
+  // A subpath rule can canonicalize a substituted root symlink while compiling
+  // the profile. Match the originally authorized pathname instead, so the
+  // resolved target of any swapped link cannot acquire delete authority.
+  const expression = `^${directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|$)`;
+  const profile = `${capabilityProbeProfile()}(allow file-read* file-write* (regex ${JSON.stringify(expression)}))`;
+  await new Promise((resolve, reject) => {
+    (options.execFile || execFile)(DEFAULT_SEATBELT_PATH,
+      ['-p', profile, '/bin/rm', '-rf', '--', directory],
+      { env: { PATH: '/usr/bin:/bin' }, cwd: '/', timeout: 15000, killSignal: 'SIGKILL' },
+      error => error ? reject(error) : resolve());
+  });
+  try {
+    await fs.promises.lstat(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error('Cleanup directory remains');
+}
+
 function discoverRuntimeReadPaths(runtimeRoots) {
   const paths = new Set();
   for (const runtimeRoot of runtimeRoots) {
@@ -232,6 +256,12 @@ function discoverRuntimeReadPaths(runtimeRoots) {
         }
         const homebrewMatch = /^(\/opt\/homebrew\/opt\/[^/]+)/.exec(dependency);
         const exposedPath = homebrewMatch?.[1] || dependency;
+        if (!homebrewMatch && !runtimeRoots.some(root => insidePath(root.sourcePath, exposedPath))) continue;
+        if (homebrewMatch) {
+          try {
+            if (!fs.realpathSync(exposedPath).startsWith('/opt/homebrew/Cellar/')) continue;
+          } catch { continue; }
+        }
         paths.add(exposedPath);
         if (homebrewMatch) {
           const configurationPath = path.join('/opt/homebrew/etc', path.basename(homebrewMatch[1]));
@@ -529,7 +559,7 @@ class SeatbeltExecutor {
     this.clearTimeout = options.clearTimeout || clearTimeout;
     this.removePrivateDirectory =
       options.removePrivateDirectory ||
-      ((directory) => fs.promises.rm(directory, { recursive: true, force: true }));
+      removeSandboxTree;
     this.capabilityOptions = options.capabilityOptions || {};
     this.capabilities = null;
   }
@@ -761,6 +791,7 @@ class SeatbeltExecutor {
 }
 
 module.exports = {
+  removeSandboxTree,
   DEFAULT_SEATBELT_PATH,
   OPTIONAL_SYSTEM_READ_PATHS,
   PRIVATE_DIRECTORY_PREFIX,

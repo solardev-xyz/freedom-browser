@@ -6,9 +6,9 @@ The two authorized native discriminants are complete. Probe A confirms NOTE_TRAC
 
 Host/repositories
 - Mac.fritz.box, uid 501, Darwin arm64; macOS 15.6 (24G84). clang 17.0.0 (clang-1700.0.13.5), installed SDK 15.5 via /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk.
-- Working directory /Users/flobot/Git/freedom-dev is not a Git repository.
-- /Users/flobot/Git/freedom-dev/freedom-browser: codex/agent-workspace-macos-qualification, HEAD 11a863ecad4c02ed139040243d0ed657b7a1443b, git status --short empty before and after.
-- /Users/flobot/Git/freedom-browser: feature/swarm-publishing-updated, HEAD 38b07f33bae548f167114ea615770e4871525ea4, git status --short empty before and after.
+- Working directory /Users/<qualification-user>/Git/freedom-dev is not a Git repository.
+- /Users/<qualification-user>/Git/freedom-dev/freedom-browser: codex/agent-workspace-macos-qualification, HEAD 11a863ecad4c02ed139040243d0ed657b7a1443b, git status --short empty before and after.
+- /Users/<qualification-user>/Git/freedom-browser: feature/swarm-publishing-updated, HEAD 38b07f33bae548f167114ea615770e4871525ea4, git status --short empty before and after.
 Both checkouts were untouched. No product implementation, lint/full qualification, packaging, network fixtures, root, entitlements, services, OS limits/configuration changes, detached grandchildren, external software or other-machine work occurred. Native runs used approved removal of the outer automation sandbox, still uid 501; no privilege/API fallback was required.
 
 Retained evidence directory

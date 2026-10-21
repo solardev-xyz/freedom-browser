@@ -12,6 +12,43 @@ run platform exploits, contact model providers or perform wallet/publication
 actions. Evidence labels below belong to the reviewer's report, unless explicitly
 described as a local source check. Existing passing tests do not close these items.
 
+## Repair status — 2026-10-21
+
+The intake below is retained as the historical baseline. The following record
+supersedes its descriptions of code that was still unchanged. Implementation is
+not blanket audit clearance: native Windows qualification and independent
+re-review remain gates.
+
+| IDs | Implemented repair / present evidence | Still open |
+| --- | --- | --- |
+| S1, additional conversation-deletion race | macOS cleanup runs under a write-confined Seatbelt profile using the originally authorized pathname, including when the root is replaced. Windows cleanup uses Rust's handle-relative `remove_dir_all`. Conversation deletion aborts and drains commands/processes before deleting; timeouts preserve the tree. Native macOS link/root-substitution sentinels and shutdown regressions pass. | Windows rebuild/junction qualification; stress qualification with surviving writers. No unrestricted recursive fallback after a workload has run. |
+| S2 | Publication rejects the selected root and full child paths for hidden/credential directories. Root `.` and public `.well-known` remain usable. Regression fixtures cover `.private`, `.ssh`, `.aws` and nested `config/secrets`. | None identified in this bounded repair. |
+| S3 | Validate the opened object, rather than repeatedly trusting its pathname: Linux `/proc/self/fd`, macOS `F_GETPATH` through the pinned native helper, Windows `GetFinalPathNameByHandleW` before reading. A deterministic swap-back fixture proves an outside descriptor retains its outside identity. Existing ordinary-file/hard-link and size restrictions remain. | Native Windows read/junction qualification; applicable platform race qualification. |
+| S4, L9 | Home-level hidden toolchain/package directories no longer become implicit grants; approvals/classification receive the exact executable and read-root paths. `otool` dependencies cannot widen reads beyond approved runtime material or bounded Homebrew packages. | Broader installed toolchain compatibility remains subject to its normal platform matrix. |
+| S5 | Internal start/interstitial pages cannot be read or clicked, even before the first supported page. Navigation away to a supported URL remains permitted. Both paths have regressions. | None identified in this bounded repair. |
+| S6 | Removed same-name DOM form inference and its manual-submit/destination assurances. Native pending jobs remain pollable without claiming that a decoy form controls them. Actual automatic/manual WebMCP behavior passes Electron qualification. | None identified in this bounded repair. |
+| S7 | No boundary change: the macOS hypothesis did not reproduce. A permanent native regression applies the production absent-`.git` rule and tests `.git`, `.GIT`, `.Git`, `.gIT` with a successful ordinary-write control. | Do not extrapolate the macOS result to another filesystem/platform. |
+| S8 | Added a disposable Windows CI resolver test: a temporary namespace-only NRPT rule routes host/control and sandbox `dns.lookup` to an owned local listener. It must observe the control and no offline query. The rule is removed in `finally`. | Actual Windows result; a source hypothesis is not closed by adding a test. |
+| L1 | Credential removal/rotation invalidates cached runtimes before requests; affected live sessions are stopped/disposed and transcript restoration is preserved. Disposal is awaited, including an earlier detached session. Regression tests cover old-key refusal and asynchronous disposal. | Native Windows Claude process lifecycle is not inferred from these unit tests. |
+| L2 | Codemode prevents Pi's shared-temp spill path through its integration, then bounds/coalesces output in memory and preserves failure diagnostics. A native SDK regression forces `max_output_tokens:0`, verifies no spill file appears and checks partial effects/cancellation. | No dependency or vendor patch was made. |
+| L3 | Keep the latest 2,000 routine activity entries while retaining approvals, failures and effect receipts in chronological order; saved-history regression covers late evidence after a large read loop. | Consequential records remain proportional to actual effects, rather than silently discarded. |
+| L4 | Previews use a separate non-persistent Chromium session with a rejecting local proxy and `disable_non_proxied_udp`; all device/permission requests and downloads are denied. The normal browsing session is unchanged. Constructor removal is only defense in depth. Live Electron control: 24 UDP packets / 3 TCP connections; isolated preview: 0 / 0. Real app modules, local storage and interactions pass. | Windows/Linux live network qualification of this new session boundary. |
+| L5 | Flatten approval-reason control/bidi/separator characters and reject those characters in MCP tool names. Reasons remain explicitly labelled as Agent requests. Regression checks the actual approval projection. | None identified in this bounded repair. |
+| L6 | MCP OAuth discovery and refresh use guarded fetches. Same-origin access remains available for deliberately connected local services; foreign authentication endpoints must resolve publicly, are pinned to those addresses for TLS and cannot redirect. AI-disable cancellation remains applied; response size is bounded. | Separate private authentication origins require an explicit future connection policy; no implicit private-host access. |
+| L7 | Public custom-provider HTTP endpoints are refused; HTTPS plus localhost/private-IP HTTP remain supported. | LAN DNS names require HTTPS or their private IP address. |
+| L8 | Claude runs inside a private scratch parent and work directory, excludes both rooted and Windows-compatible instruction patterns, and rejects legacy `ProgramData\ClaudeCode` managed configuration. | Native Windows CLI exclusion/ACL qualification; do not claim it from macOS tests. |
+| L10 | Freedom owns all 14 WFP GUIDs and names; build validation fails if originals remain or expected replacements disappear. Rust is explicitly pinned to upstream 1.95.0. Interactive setup rechecks hashes after acquiring write/delete-denying handles on the runtime directory and helpers, retaining those handles through elevation. | Native compilation, setup-lock and installed WFP qualification. Old shared Codex identifiers are deliberately not removed, as they may belong to Codex. |
+| L11, wallet authority follow-up | Missing/zero transaction fee quotes are refused before approval/dispatch. Main refuses site auto-approval for Agent-owned guests even after Stop/runtime disposal; only explicit user takeover releases custody. Renderer routes these requests to normal explicit confirmation. Regressions exercise quote refusal and custody release. | Native signing/provider matrix remains its existing qualification scope. |
+| L12 | Current production audit: 406 production packages, 10 Low advisories, no Moderate/High/Critical. DCAP uses elliptic only for public-signature verification; the other installed chain is Ledger's ethers-v5 transaction dependency. No patched elliptic release is reported; the audit's suggested DCAP major change is not a demonstrated remediation. Pi model network refresh remains explicitly disabled; the embedded session uses no CLI discovery/update startup. Personally identifying home-directory portions in tracked research evidence are redacted; hashes/revisions are unchanged. | Keep the dependency advisory tracked; no unsupported upgrade/downgrade or cryptographic rewrite is asserted as a fix. |
+
+Verification so far: lint; full unit suite (10,811 passed / 129 skipped), plus 40 targeted
+web-contents tests after the private-preview regression; 13 Electron preview/WebMCP cases; controlled
+UDP/TCP fixture above. New E2E coverage is wired into general CI. Windows CI
+also exercises read/cleanup junctions and the shared DNS service. The supplied
+Windows desktop timed out over SSH. Claude provided the initial S1/L10 design
+review and a non-reproduction report for S7, but its model stopped the subsequent
+review; no final independent clearance is claimed.
+
 ## Priority and disposition
 
 1. Address S1 before broad beta/release: sandbox-writable scratch must not let
@@ -75,5 +112,6 @@ they do not independently re-score severity or establish exploitability.
 - The R1/R2 layout, hard-link-message and test-stability repairs are present
   through `17d08d34e`. They are not fixes for S1–S8 or L1–L12.
 
-Status: intake and initial source triage complete; security repairs and applicable
-qualification remain open. No source change was made by this intake.
+Status: repair implementation and local verification are in progress as recorded
+above. Remaining native and independent-review gates are explicit; the historical
+intake itself made no source changes.

@@ -13,6 +13,7 @@ const { parseArgs } = require('node:util');
 const { WindowsWorkspaceExecutor } = require('../src/main/agent/workspace-execution/windows-backend');
 const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('../src/main/agent/workspace-execution/execution-policy');
 const { resolveExecutableAccess } = require('../src/main/agent/workspace-execution/executable-access');
+const { readWindowsWorkspaceFile } = require('../src/main/agent/workspace-execution/opened-file-path');
 const { values } = parseArgs({ options: { root: { type: 'string' }, home: { type: 'string' } } });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -114,6 +115,20 @@ await new WindowsWorkspaceExecutor(${JSON.stringify(values.home ? { home: values
   fs.symlinkSync(outsideDirectory, path.join(workspace, 'outside-junction'), 'junction');
   const junction = await executor.execute(junctionPolicy, { command: process.execPath, args: ['-e', "try { require('fs').writeFileSync('outside-junction/sentinel.txt','tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }"] });
   record('junction-write', junction.state === 'completed' && /EPERM|EACCES/.test(junction.stdout) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched', junction);
+  const ordinary = await readWindowsWorkspaceFile(workspace, 'hello.txt', 1024);
+  record('opened-handle-read', ordinary.toString() === 'hello');
+  let refusedOutsideRead = false;
+  try { await readWindowsWorkspaceFile(workspace, 'outside-junction/sentinel.txt', 1024); }
+  catch { refusedOutsideRead = true; }
+  record('opened-handle-junction-read', refusedOutsideRead);
+  const cleanup = fs.mkdtempSync(path.join(directory, 'freedom-win-workspace-'));
+  fs.symlinkSync(outsideDirectory, path.join(cleanup, 'link'), 'junction');
+  await executor.removeTree(cleanup);
+  record('handle-relative-cleanup', !fs.existsSync(cleanup) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched');
+  const substitutedRoot = path.join(directory, 'freedom-win-workspace-root-link');
+  fs.symlinkSync(outsideDirectory, substitutedRoot, 'junction');
+  await executor.removeTree(substitutedRoot);
+  record('handle-relative-root-cleanup', !fs.existsSync(substitutedRoot) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched');
   record('sentinels', fs.readFileSync(outside, 'utf8') === 'untouched' && fs.readFileSync(gitSentinel, 'utf8') === 'untouched');
   if (results.some(result => !result.passed)) process.exitCode = 1;
 }

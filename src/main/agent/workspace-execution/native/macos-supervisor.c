@@ -637,6 +637,12 @@ static bool valid_build_id(void) {
     return true;
 }
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--file-path")) {
+        char pathname[PATH_MAX];
+        if (fcntl(3, F_GETPATH, pathname) < 0) return 125;
+        size_t length = strlen(pathname);
+        return write(1, pathname, length) == (ssize_t)length ? 0 : 125;
+    }
     if (mach_timebase_info(&timebase) != KERN_SUCCESS || !timebase.denom) return 125;
     uint64_t start = system_now(NULL);
     if (argc == 2 && !strcmp(argv[1], "--version")) {

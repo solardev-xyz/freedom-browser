@@ -389,6 +389,19 @@ describe('AgentWalletController', () => {
     );
   });
 
+  test.each([{}, { type: 'legacy', gasPrice: '0' }])('refuses missing or zero fee quotes before transaction approval: %j', async gasPrices => {
+    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+    harness.dependencies.getGasPrices.mockResolvedValue(gasPrices);
+    const approval = jest.fn(async () => 'approved');
+    const result = await harness.controller.handleRequest(context(approval), request('eth_sendTransaction', [{
+      from: '0x1111111111111111111111111111111111111111',
+      to: '0x3333333333333333333333333333333333333333', value: '0x1', data: '0xabcdef12',
+    }]));
+    expect(result.errorCode).toBe('POLICY_DENIED');
+    expect(approval).not.toHaveBeenCalled();
+    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+  });
+
   test.each(['eth_sendTransaction', 'eth_signTypedData_v4'])('refuses a conflicting explicit chain before %s approval', async method => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const approve = jest.fn(async () => 'approved');

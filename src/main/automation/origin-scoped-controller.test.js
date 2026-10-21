@@ -799,6 +799,16 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true });
   });
 
+  test.each(['freedom://newtab/', 'file:///internal/ens-interstitial.html'])('internal page %s cannot be read or clicked even before the first navigation', async url => {
+    const controller = createController(url);
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+    for (const operation of [OPERATIONS.SNAPSHOT, OPERATIONS.CLICK]) {
+      const result = await scoped.execute(operation, { tabId: 'tab_assigned', ref: 'continue_once' });
+      expect(result).toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    }
+    expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CLICK)).toBe(false);
+  });
+
   test('does not lock a browser-owned start page to a failed first navigation', async () => {
     const controller = createController('freedom://newtab/');
     const scoped = await createOriginScopedAutomationController({

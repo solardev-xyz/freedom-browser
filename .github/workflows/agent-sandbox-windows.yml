@@ -66,6 +66,10 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = '1'
           node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-windows-controller.js','--root','C:/freedom-agent-tests'],{stdio:'inherit',timeout:300000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
           if ($LASTEXITCODE) { throw 'Controller qualification failed' }
+      - name: Qualify offline DNS through the shared Windows resolver
+        run: |
+          node scripts/qualify-windows-dns.js
+          if ($LASTEXITCODE) { throw 'Offline DNS qualification failed' }
       - name: Qualify app startup and delegated project edits
         env:
           TEMP: C:\freedom-agent-tests

@@ -187,6 +187,11 @@ test('native Pi codemode and MCP preserve approval, OAuth, cancellation, ordered
     const failed = await run('await tools.probe({}); throw new Error("after write");');
     assert.equal(failed.isError, true); assert.equal(writes, 3);
     assert.equal(failed.details.calls[0].status, 'ok');
+    const spillsBefore = fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('pi-codemode-'));
+    const shortened = await run('// @options: {"max_output_tokens":0}\ntext("private fixture output".repeat(10000));');
+    assert.match(JSON.stringify(shortened), /shortened in memory/);
+    assert(!shortened.details.fullOutputPath);
+    assert.deepEqual(fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('pi-codemode-')), spillsBefore);
     const flooded = await run('for (let i = 0; i < 100001; i++) text("x");');
     assert.equal(flooded.isError, true);
     assert.match(JSON.stringify(flooded), /output.*limit|too many.*output|output.*exceed/i);

@@ -76,7 +76,7 @@ Exact manifest and source records:
   ],
   "repositoriesAfter": [
     {
-      "path": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "path": "/Users/<qualification-user>/Git/freedom-dev/freedom-browser",
       "branch": "codex/agent-workspace-macos-qualification",
       "branchQueryRc": 0,
       "head": "11a863ecad4c02ed139040243d0ed657b7a1443b",
@@ -85,7 +85,7 @@ Exact manifest and source records:
       "statusShortQueryRc": 0
     },
     {
-      "path": "/Users/flobot/Git/freedom-browser",
+      "path": "/Users/<qualification-user>/Git/freedom-browser",
       "branch": "feature/swarm-publishing-updated",
       "branchQueryRc": 0,
       "head": "38b07f33bae548f167114ea615770e4871525ea4",
@@ -1207,8 +1207,8 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { spawn } = require('child_process');
-const { createWorkspaceExecutionPolicy } = require('/Users/flobot/Git/freedom-dev/freedom-browser/src/main/agent/workspace-execution/execution-policy');
-const { buildSeatbeltProfile, createPrivateDirectory } = require('/Users/flobot/Git/freedom-dev/freedom-browser/src/main/agent/workspace-execution/seatbelt-backend');
+const { createWorkspaceExecutionPolicy } = require('/Users/<qualification-user>/Git/freedom-dev/freedom-browser/src/main/agent/workspace-execution/execution-policy');
+const { buildSeatbeltProfile, createPrivateDirectory } = require('/Users/<qualification-user>/Git/freedom-dev/freedom-browser/src/main/agent/workspace-execution/seatbelt-backend');
 const root = __dirname;
 const mode = process.argv[2];
 const token = process.argv[3];
@@ -1384,7 +1384,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-ELECTRON = '/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
+ELECTRON = '/Users/<qualification-user>/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
 CASES = ['exec', 'before', 'missing', 'running']
 lib = c.CDLL('/usr/lib/libproc.dylib', use_errno=True)
 sys = c.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
@@ -1572,7 +1572,7 @@ Reply to `req-1ab5fad881d75a9e014e813817ad94ae`. Read-only on the primary Mac. N
 
 ## Baseline
 
-Repo `/Users/florian/Git/freedom-dev/freedom-browser`, branch `feature/freedom-automation-kernel`, HEAD `717a637a1a262b2c32f5287791aa9a511d22730c` plus uncommitted work. Hashes at review time:
+Repo `/Users/<user>/Git/freedom-dev/freedom-browser`, branch `feature/freedom-automation-kernel`, HEAD `717a637a1a262b2c32f5287791aa9a511d22730c` plus uncommitted work. Hashes at review time:
 
 | File | SHA-256 |
 |---|---|

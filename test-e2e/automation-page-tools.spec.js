@@ -225,7 +225,7 @@ test('declarative automatic and manual submission retain native behavior', async
   });
   expect(result, JSON.stringify(result)).toMatchObject({
     ok: true,
-    result: { status: 'awaiting_user' },
+    result: { status: 'running' },
   });
   expect(await script(electronApp, 'document.forms[1].elements.value.value')).toBe('Manual');
   expect(await script(electronApp, "document.querySelector('#receipt').textContent")).toBe(

@@ -22,6 +22,11 @@ send any IPC message its process can reach — can make the main process do.
 Line numbers are for the tree this PR produces. For the open items, they are
 for the unchanged files.
 
+The later Freedom Agent audit and its preview-network, wallet-custody and
+internal-page repairs are tracked separately in the [October Agent security
+record](audits/agent-security-audit-triage-2026-10.md). Its open native/review gates
+are not clearance of this document or vice versa.
+
 ## Summary
 
 | ID | Severity | Area | Status |

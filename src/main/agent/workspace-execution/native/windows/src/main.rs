@@ -14,6 +14,74 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::fs::OpenOptionsExt;
+use std::io::Read;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetFinalPathNameByHandleW(handle: *mut std::ffi::c_void, path: *mut u16, length: u32, flags: u32) -> u32;
+    fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, information: *mut u32) -> i32;
+}
+#[link(name = "crypt32")]
+unsafe extern "system" {
+    fn CryptHashCertificate2(algorithm: *const u16, flags: u32, reserved: *mut std::ffi::c_void,
+        input: *const u8, length: u32, output: *mut u8, output_length: *mut u32) -> i32;
+}
+
+fn sha256(bytes: &[u8]) -> Result<String> {
+    let algorithm: Vec<u16> = "SHA256\0".encode_utf16().collect();
+    let mut output = [0u8; 32];
+    let mut length = 32u32;
+    if unsafe { CryptHashCertificate2(algorithm.as_ptr(), 0, std::ptr::null_mut(), bytes.as_ptr(),
+        bytes.len().try_into()?, output.as_mut_ptr(), &mut length) } == 0 || length != 32 {
+        bail!("Cannot verify sandbox artifact");
+    }
+    Ok(output.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn lock_runtime(expected: &HashMap<String, String>) -> Result<Vec<std::fs::File>> {
+    let executable = std::env::current_exe()?;
+    let directory = executable.parent().context("Missing runtime directory")?;
+    // Deny write and delete sharing through elevation. This pins both the
+    // verified bytes and their containing directory until setup returns.
+    let mut locks = vec![std::fs::OpenOptions::new().read(true).share_mode(1)
+        .custom_flags(0x02000000).open(directory)?];
+    for name in ["freedom-windows-workspace.exe", "freedom-windows-sandbox-setup.exe", "freedom-workspace-runner.exe"] {
+        let mut file = std::fs::OpenOptions::new().read(true).share_mode(1).open(directory.join(name))?;
+        if file.metadata()?.len() > 128 * 1024 * 1024 { bail!("Oversized sandbox artifact"); }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        if expected.get(name) != Some(&sha256(&bytes)?) { bail!("Sandbox artifact changed before elevation"); }
+        locks.push(file);
+    }
+    Ok(locks)
+}
+
+fn read_workspace_file(root: &std::path::Path, relative: &std::path::Path, maximum: u64) -> Result<Vec<u8>> {
+    if !root.is_absolute() || relative.is_absolute() || maximum > 50 * 1024 * 1024 ||
+        relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        bail!("Invalid workspace read");
+    }
+    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(0x00200000).open(root.join(relative))?;
+    let mut pathname = vec![0u16; 32768];
+    let length = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), pathname.as_mut_ptr(), pathname.len() as u32, 0) };
+    let mut information = [0u32; 13];
+    if length == 0 || length as usize >= pathname.len() ||
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) } == 0 ||
+        information[0] & (0x10 | 0x400) != 0 || information[10] != 1 {
+        bail!("Unsafe workspace file");
+    }
+    let final_path = String::from_utf16(&pathname[..length as usize])?.trim_start_matches("\\\\?\\").to_lowercase();
+    let root_path = root.to_string_lossy().trim_start_matches("\\\\?\\").trim_end_matches(['\\', '/']).to_lowercase();
+    if !final_path.starts_with(&(root_path + "\\")) || file.metadata()?.len() > maximum {
+        bail!("Opened file escaped its workspace or exceeded its size limit");
+    }
+    let mut bytes = Vec::new();
+    file.take(maximum + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > maximum { bail!("Workspace file grew beyond its size limit"); }
+    Ok(bytes)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -22,6 +90,16 @@ struct Request {
     operation: String,
     backend: String,
     home: PathBuf,
+    #[serde(default)]
+    cleanup_path: PathBuf,
+    #[serde(default)]
+    cleanup_parent: PathBuf,
+    #[serde(default)]
+    binary_hashes: HashMap<String, String>,
+    #[serde(default)]
+    read_path: PathBuf,
+    #[serde(default)]
+    max_read_bytes: u64,
     #[serde(default)]
     user: String,
     #[serde(default)]
@@ -72,6 +150,33 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
         bail!("Unsupported sandbox request");
     }
     match request.operation.as_str() {
+        "read-file" => {
+            let bytes = read_workspace_file(&request.workspace, &request.read_path, request.max_read_bytes)?;
+            let encoded = STANDARD.encode(bytes);
+            emit(json!({"type":"ready"}))?;
+            for part in encoded.as_bytes().chunks(65536) {
+                emit(json!({"type":"stdout", "data":STANDARD.encode(part)}))?;
+            }
+            return emit(json!({"type":"exit", "exitCode":0, "reason":"exited"}));
+        }
+        "remove-tree" => {
+            let target = &request.cleanup_path;
+            let name = target.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if !target.is_absolute() || !request.cleanup_parent.is_absolute()
+                || target.parent() != Some(request.cleanup_parent.as_path())
+                || !(name.starts_with("freedom-win-workspace-") || name.starts_with("workspace_"))
+                || target.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+                bail!("Invalid cleanup directory");
+            }
+            // Rust's Windows implementation opens children relative to parent
+            // handles and removes reparse points as links (CVE-2022-21658 fix).
+            match std::fs::remove_dir_all(target) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error.into()),
+            }
+            return emit(json!({"type":"removed"}));
+        }
         "probe" => return emit(json!({"type":"capabilities", "version":1, "backend":"elevated",
             "setupComplete":codex_windows_sandbox::sandbox_setup_is_complete(&request.home)})),
         "setup" => {
@@ -81,6 +186,7 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
             return emit(json!({"type":"setup", "complete":true}));
         }
         "setup-interactive" => {
+            let _runtime_locks = lock_runtime(&request.binary_hashes)?;
             std::fs::create_dir_all(&request.home)?;
             let permissions = codex_windows_sandbox::ResolvedWindowsSandboxPermissions::try_from_permission_profile(&PermissionProfile::read_only())?;
             codex_windows_sandbox::run_elevated_setup(codex_windows_sandbox::SandboxSetupRequest {

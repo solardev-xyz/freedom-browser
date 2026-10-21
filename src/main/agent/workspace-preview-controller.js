@@ -1,4 +1,5 @@
 'use strict';
+const { openedFilePath, readWindowsWorkspaceFile } = require('./workspace-execution/opened-file-path');
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -263,12 +264,16 @@ async function checkedPath(root, relativePath) {
 
 async function readRegularFile(root, relativePath) {
   const checked = await checkedPath(root, relativePath);
+  if (process.platform === 'win32') return readWindowsWorkspaceFile(checked.rootReal, relativePath, MAX_PREVIEW_FILE_BYTES);
   const handle = await fs.promises.open(
     checked.candidate,
     fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
   );
   try {
     const stats = await handle.stat();
+    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
+      throw new WorkspacePreviewError('WORKSPACE_PREVIEW_UNSAFE', 'The opened file escaped its managed workspace');
+    }
     if (!stats.isFile() || stats.nlink !== 1) {
       throw new WorkspacePreviewError(
         'WORKSPACE_PREVIEW_UNSAFE',

@@ -62,9 +62,14 @@ function safeJsonParse(value, fallback) {
 
 function normalizeActivity(activity) {
   if (!Array.isArray(activity)) return [];
-  return activity
-    .filter((item) => item && typeof item === 'object')
-    .slice(0, 2_000)
+  const items = activity.filter((item) => item && typeof item === 'object');
+  const important = item => item.status === 'failed' || ACTIVITY_APPROVALS.has(item.approval) ||
+    ['wallet', 'publication', 'nodeRequest', 'nodeLifecycle', 'workspace', 'upload', 'download', 'mcp'].some(key => item[key]) ||
+    item.operation === 'mcp_request';
+  const routine = new Set(items.filter(item => !important(item)).slice(-2_000));
+  // Routine loops may be shortened; approval/effect/error evidence is never
+  // discarded simply because it occurred after the routine-entry limit.
+  return items.filter(item => important(item) || routine.has(item))
     .map((item) => {
       const label = optionalString(item.label, 240);
       const intent = optionalString(item.intent, 240);

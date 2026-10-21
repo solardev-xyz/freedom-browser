@@ -169,15 +169,15 @@ Workspace contents remain hostile after execution. Trusted preview, publication,
 
 The standalone qualification supplies its canonical Node runtime root explicitly. A second development harness runs inside the actual Electron main process for Freedom `0.8.1-dev`, Electron `43.0.0`, embedded Node `24.17.0`, Chromium `150.0.7871.46`, with `app.isPackaged === false`. The same corpus now also runs from the unpacked packaged app with `app.isPackaged === true`:
 
-- application: `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
-- executable: `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app/Contents/MacOS/Freedom`
+- application: `/Users/<qualification-user>/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
+- executable: `/Users/<qualification-user>/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app/Contents/MacOS/Freedom`
 - entry: `Contents/Resources/app.asar/src/main/agent/workspace-execution/electron-qualification-main.js`
 - packaged versions: Freedom `0.8.1-dev`, Electron `43.0.0`, embedded/helper Node `24.17.0`, Chromium `150.0.7871.46`
 
 The Electron harness discovers and probes the active application executable, then uses Electron's `ELECTRON_RUN_AS_NODE=1` helper mode for JavaScript workloads. The only additional runtime authority is the exact active bundle for the current mode:
 
-- `/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app` — read-only, required for the active Electron executable, frameworks and resources.
-- `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app` — read-only, required for the packaged executable, frameworks, resources and `app.asar`.
+- `/Users/<qualification-user>/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app` — read-only, required for the active Electron executable, frameworks and resources.
+- `/Users/<qualification-user>/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app` — read-only, required for the packaged executable, frameworks, resources and `app.asar`.
 
 The policy explicitly disables standalone-Node inference. It adds neither Homebrew nor a host Node root, uses only the declared system-toolchain directories in `PATH`, explicitly denies `/usr/local`, and invokes the exact active Electron executable by canonical path. The packaged corpus directly attempts the launcher's `/opt/homebrew/Cellar/node@22/22.22.0/bin/node`; Seatbelt terminates it with `SIGABRT` rather than allowing a host-runtime fallback. The exact packaged app happens to live below the user's home on this throwaway checkout and is deliberately exposed read-only; no other home subtree is granted.
 
@@ -193,7 +193,7 @@ Exact commands:
 
 - build: `npm run build:agent-sandbox:macos:packaged` (expands to `CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir --config config/electron-builder.agent-sandbox-macos.js`)
 - qualification: `npm run test:agent-sandbox:macos:packaged`
-- fuse inspection: `node_modules/.bin/electron-fuses read --app /Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
+- fuse inspection: `node_modules/.bin/electron-fuses read --app /Users/<qualification-user>/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
 
 The packaged launcher creates a fresh, canonical, mode-0700 direct child of the system temporary directory, requires it to be empty, sets it as Electron `userData` before `app.whenReady()`, and removes it after exit. It never resolves or opens an existing Freedom profile.
 

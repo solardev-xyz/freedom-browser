@@ -59,7 +59,7 @@ function runWindowsSandbox(runtime, payload, options = {}) {
           if (bytes.length > 128 * 1024) return false;
           return send({ type: 'stdin', data: bytes.toString('base64') });
         } }); } catch { /* Observers cannot change execution. */ }
-      } else if (['exit', 'error', 'capabilities', 'setup'].includes(frame.type) && !terminal) {
+      } else if (['exit', 'error', 'capabilities', 'setup', 'removed'].includes(frame.type) && !terminal) {
         terminal = frame;
       } else throw new Error('Unexpected sandbox protocol frame');
     };

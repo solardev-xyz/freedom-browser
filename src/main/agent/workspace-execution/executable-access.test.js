@@ -15,6 +15,20 @@ const {
 describe('approved executable access', () => {
   const fixtureRoots = [];
 
+  test.each(['.cargo', '.local'])('a command does not expose credentials beside %s/bin', async name => {
+    const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-home-scope-'));
+    fixtureRoots.push(home);
+    const directory = path.join(home, name, 'bin');
+    await fs.promises.mkdir(directory, { recursive: true });
+    await fs.promises.writeFile(path.join(directory, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    const homedir = jest.spyOn(os, 'homedir').mockReturnValue(await fs.promises.realpath(home));
+    try {
+      const access = await resolveExecutableAccess(['tool'], { hostEnvironment: { PATH: directory } });
+      expect(access.runtimeRoots[0].sourcePath).toBe(await fs.promises.realpath(directory));
+      expect(access.commands[0].rootPath).toBe(await fs.promises.realpath(directory));
+    } finally { homedir.mockRestore(); }
+  });
+
   async function scriptFixture(files) {
     const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-interpreters-'));
     fixtureRoots.push(fixture);

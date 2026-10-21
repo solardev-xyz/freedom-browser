@@ -2470,9 +2470,12 @@ Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''"
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
     await this.historySettlements.get(conversationId);
+    const processes = this.processManager.deleteConversation(conversationId);
+    const drained = await waitForWorkspaceShutdown([...this.pendingOperations, processes]);
+    if (!drained) throw new Error('Project operations have not stopped; project files were preserved');
+    await processes;
     this.collaborativeConversations.delete(conversationId);
     this.servers.deleteConversation(conversationId);
-    this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace) return false;
     this.leases.delete(workspace.workspaceId);

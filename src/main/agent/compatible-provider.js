@@ -1,6 +1,11 @@
 'use strict';
 
 const { randomUUID } = require('crypto');
+const { isIP, BlockList } = require('net');
+const localAddresses = new BlockList();
+for (const [address, prefix] of [['127.0.0.0', 8], ['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16]]) localAddresses.addSubnet(address, prefix);
+localAddresses.addAddress('::1', 'ipv6');
+localAddresses.addSubnet('fc00::', 7, 'ipv6');
 const isCompatibleId = id => /^custom-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id || '');
 const failure = (code = 'AGENT_PROVIDER_INVALID') => Object.assign(new Error('Check the custom connection URL, models and credentials.'), { code });
 function cleanText(value, max = 200) {
@@ -10,6 +15,9 @@ function normalizeCompatibleUrl(value) {
   let url;
   try { url = new URL(value); } catch { throw failure(); }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.href.length > 2048) throw failure();
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (url.protocol === 'http:' && hostname !== 'localhost' && !hostname.endsWith('.localhost') &&
+      !(isIP(hostname) && localAddresses.check(hostname, isIP(hostname) === 6 ? 'ipv6' : 'ipv4'))) throw failure();
   return url.href.replace(/\/+$/, '');
 }
 function normalizeCompatibleModels(input) {
