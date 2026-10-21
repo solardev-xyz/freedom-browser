@@ -12,12 +12,16 @@ jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true })
 
 const { app } = require('electron');
 const {
+  IpfsdClient,
+  ephemeralArgs,
   getIpfsdBinaryPath,
   ipfsdService,
   persistentArgs,
   validHello,
   HANG_GRACE_MS,
   SHUTDOWN_GRACE_MS,
+  START_DEADLINE_MS,
+  STOP_DEADLINE_MS,
   STATS_WATCHDOG_MS,
 } = require('./ipfsd-client');
 
@@ -79,6 +83,39 @@ test("the persistent process: serve, the profile's data directory, the lock dire
     '42',
   ]);
   expect(persistentArgs({ dataDir: 'd', lockDir: 'l' }).at(-1)).toBe(String(process.pid));
+});
+
+test("the ephemeral process: serve --ephemeral and main's PID, with no data or lock directory", () => {
+  expect(ephemeralArgs({ parentPid: 42 })).toEqual(['serve', '--ephemeral', '--parent-pid', '42']);
+  expect(ephemeralArgs().at(-1)).toBe(String(process.pid));
+});
+
+test("ipfs.start and ipfs.stop: their params, their hang watchdogs, and a start's fence", () => {
+  const client = new IpfsdClient({ kind: 'ephemeral', spawn: jest.fn(), command: 'x', args: [] });
+  const requestTo = jest.spyOn(client, 'requestTo').mockResolvedValue({});
+  const gen = {};
+  const fence = () => true;
+  client.startInstance(gen, { instance: 'e-1' }, { fence });
+  client.stopInstance(gen, 'e-1');
+  expect(requestTo.mock.calls).toEqual([
+    [
+      gen,
+      'ipfs.start',
+      { instance: 'e-1' },
+      { caller: 'shell' },
+      { watchdogMs: START_DEADLINE_MS + HANG_GRACE_MS, fence },
+    ],
+    [
+      gen,
+      'ipfs.stop',
+      { instance: 'e-1' },
+      { caller: 'shell' },
+      { watchdogMs: STOP_DEADLINE_MS + HANG_GRACE_MS },
+    ],
+  ]);
+  // The service's own bounds (0007, Methods): 10 s to start, 5 s to stop.
+  expect(START_DEADLINE_MS).toBe(10_000);
+  expect(STOP_DEADLINE_MS).toBe(5_000);
 });
 
 test('the handshake asks for stream frames, and grants them', () => {
