@@ -4,6 +4,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { FreedomIpfsNativeNode } = require('../src/main/ipfs/freedom-ipfs-native-node');
+const { FreedomIpfsdNode } = require('../src/main/ipfs/freedom-ipfsd-node');
+
+// The node under test: today's add-on, or with FREEDOM_IPFS_BACKEND=service
+// (the app's own switch) the freedom-ipfsd service process, through the
+// production FreedomIpfsdNode and the binary at FREEDOM_IPFSD_PATH or
+// freedom-ipfsd-bin/<os>-<arch>/ (freedom-core design 0007, step 6). The
+// checks and expectations are the same for both.
+const BACKEND = process.env.FREEDOM_IPFS_BACKEND === 'service' ? 'service' : 'addon';
 
 const DEFAULT_LIVE_PATH = '/ipns/ipfs.tech/';
 const DEFAULT_LIVE_EXPECT = 'ipfs';
@@ -83,6 +91,43 @@ function discoverIpfsSubresources(html, baseGatewayPath) {
   }
 
   return [...resources];
+}
+
+/**
+ * The backend behind one surface: `request(init)`, the node's
+ * `request()` on what it serves now; `stats()`, its gateway counters as of
+ * now. The service's come in `ipfs.stats` replies, so a fresh one is asked
+ * for.
+ */
+function smokeBackend(dataDir) {
+  if (BACKEND === 'service') {
+    const node = new FreedomIpfsdNode({
+      // As the app lays it out: the store's directory, and a lock directory
+      // outside it.
+      dataDir: path.join(dataDir, 'freedom-ipfs'),
+      lockDir: path.join(dataDir, 'locks'),
+      shellVersion: 'smoke',
+    });
+    return {
+      node,
+      label: 'freedom-ipfsd service',
+      available: () => FreedomIpfsdNode.isAvailable(),
+      request: (init) => node.request(node.capture(), init),
+      async stats(label) {
+        await node.statsFlight;
+        await node.refreshStats();
+        return parseJson(label, node.nativeGatewayStatsJson());
+      },
+    };
+  }
+  const node = new FreedomIpfsNativeNode({ dataDir });
+  return {
+    node,
+    label: 'freedom-ipfs native addon',
+    available: () => FreedomIpfsNativeNode.isAvailable(),
+    request: (init) => node.request(init),
+    stats: async (label) => parseJson(label, node.nativeGatewayStatsJson()),
+  };
 }
 
 async function requestText(node, gatewayPath, { signal } = {}) {
@@ -170,10 +215,7 @@ async function loadIssue102Fanout(node) {
   const assets = discoverIpfsSubresources(root.body, ISSUE_102_PATH).slice(0, ISSUE_102_MAX_ASSETS);
   assert(assets.length >= 40, `issue #102 expected many subresources, discovered ${assets.length}`);
 
-  const beforeStats = parseJson(
-    'native stats before issue #102 fanout',
-    node.nativeGatewayStatsJson()
-  );
+  const beforeStats = await node.stats('native stats before issue #102 fanout');
   const results = [];
   let next = 0;
 
@@ -212,10 +254,7 @@ async function loadIssue102Fanout(node) {
     Array.from({ length: Math.min(ISSUE_102_CONCURRENCY, assets.length) }, () => worker())
   );
 
-  const afterStats = parseJson(
-    'native stats after issue #102 fanout',
-    node.nativeGatewayStatsJson()
-  );
+  const afterStats = await node.stats('native stats after issue #102 fanout');
   const gatewayBusy = results.filter(
     (result) => result.status === 503 && result.errorCode === 'gateway_busy'
   );
@@ -249,25 +288,26 @@ async function main() {
     );
   }
 
-  assert(FreedomIpfsNativeNode.isAvailable(), 'freedom-ipfs native addon is not available');
-
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ipfs-native-smoke-'));
-  const node = new FreedomIpfsNativeNode({ dataDir });
+  const backend = smokeBackend(dataDir);
+  const { node } = backend;
+  assert(backend.available(), `${backend.label} is not available`);
   let started = false;
 
   try {
+    started = await node.start();
+    assert(started, 'native node failed to start');
+    assert(node.isHealthy(), 'native node did not become healthy after start');
+    // The service names its build in its handshake, so both are read once
+    // the node has started.
     const version = node.version;
     assert(typeof version === 'string' && version.length > 0, 'native version is empty');
     const buildInfo = parseJson('native build info', node.buildInfoJson());
 
-    started = await node.start();
-    assert(started, 'native node failed to start');
-    assert(node.isHealthy(), 'native node did not become healthy after start');
-
     const progress = parseJson('progress snapshot', node.progressSnapshotJson());
-    const stats = parseJson('native gateway stats', node.nativeGatewayStatsJson());
-    const livePage = await loadLivePage(node);
-    const issue102Fanout = await loadIssue102Fanout(node);
+    const stats = await backend.stats('native gateway stats');
+    const livePage = await loadLivePage(backend);
+    const issue102Fanout = await loadIssue102Fanout(backend);
 
     assert(progress && Array.isArray(progress.active), 'progress snapshot missing active list');
     assert(stats && typeof stats === 'object' && !Array.isArray(stats), 'stats must be an object');
@@ -276,6 +316,7 @@ async function main() {
       JSON.stringify(
         {
           target: actualTarget,
+          backend: BACKEND,
           version,
           buildInfo,
           dataDir,

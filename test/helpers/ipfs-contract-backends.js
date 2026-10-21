@@ -130,6 +130,11 @@ async function loadAddonBackend({ router }) {
   };
 
   const managerPath = path.join(SRC, 'ipfs-manager.js');
+  // A backend loaded before this one in the same process (the cost
+  // measurement loads both) left its manager registered as ipfs-manager.js
+  // (below), and a registration outlives resetModules: this one loads
+  // production's own.
+  jest.dontMock(managerPath);
   const { mod: manager } = loadMainModule(managerPath, {
     extraMocks: {
       [bindingPath]: () => {
@@ -275,8 +280,10 @@ function afterFreshStats(body, fresh) {
  * replies, a round trip behind. So they are asked for back to back while
  * the suite runs, and each request's end waits for one asked after it: a
  * read is never older than the suite's last wait, or its last request's end.
+ * A timing run (`freshStats: false`, the cost measurement) does without
+ * both, so the service is measured as production runs it.
  */
-async function loadIpfsdBackend({ router }) {
+async function loadIpfsdBackend({ router, freshStats = true }) {
   const clientPath = path.join(SRC, 'ipfs', 'ipfsd-client.js');
   const nodePath = path.join(SRC, 'ipfs', 'freedom-ipfsd-node.js');
   const binary = jest.requireActual(clientPath).getIpfsdBinaryPath();
@@ -295,6 +302,11 @@ async function loadIpfsdBackend({ router }) {
   process.env.FREEDOM_IPFS_BACKEND = 'service';
 
   const managerPath = path.join(SRC, 'ipfs-manager.js');
+  // A backend loaded before this one in the same process (the cost
+  // measurement loads both) left its manager registered as ipfs-manager.js
+  // (below), and a registration outlives resetModules: this one loads
+  // production's own.
+  jest.dontMock(managerPath);
   const { mod: manager } = loadMainModule(managerPath, {
     app: { isPackaged: false, getVersion: () => '0.0.0-contract', getPath: () => root },
     extraMocks: {
@@ -330,6 +342,7 @@ async function loadIpfsdBackend({ router }) {
           }
 
           request(pair, init) {
+            if (!freshStats) return super.request(pair, init);
             return super.request(pair, init).then(
               async (res) => {
                 if (!res.body) {
@@ -383,7 +396,7 @@ async function loadIpfsdBackend({ router }) {
   // Stats, back to back, from whichever node is the manager's now.
   let closed = false;
   const polling = (async () => {
-    while (!closed) {
+    while (freshStats && !closed) {
       await nodes.at(-1)?.refreshStats();
       await new Promise((resolve) => setTimeout(resolve, 2));
     }

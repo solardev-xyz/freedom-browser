@@ -634,7 +634,10 @@ describe('copyleft', () => {
   // are recorded per pin: a bump fails here until the new release's list is
   // re-read and its crates are recorded.
   const MPL_CRATES = {
-    'freedom-ipfsd-bin/${os}-${arch}/': { 'ipfsd-v0.1.0': [['attohttpc', '0.30.1']] },
+    'freedom-ipfsd-bin/${os}-${arch}/': {
+      'ipfsd-v0.1.0': [['attohttpc', '0.30.1']],
+      'ipfsd-v0.1.1': [['attohttpc', '0.30.1']],
+    },
   };
 
   it.each(Object.entries(MPL_CRATES))(

@@ -344,6 +344,9 @@ describe('the triggers', () => {
 describe('the path filters', () => {
   /** The `if echo "$changed" | grep …` line of each filter step. */
   const filterLines = () => withoutComments.match(/^.*\| grep .*$/gm) || [];
+  /** One filter per gate: a job that publishes an `outputs:` block. */
+  const gateCount = () =>
+    [...jobs()].filter(([, block]) => /^ {4}outputs:[ \t]*$/m.test(block)).length;
 
   it('drain their input instead of exiting at the first hit', () => {
     // `grep -q` exits as soon as it has an answer; with `set -o pipefail` the
@@ -352,7 +355,7 @@ describe('the path filters', () => {
     // a pull request full of code. Reproduced with the step's own line: 1 500
     // paths (46 KB) answer `true`, 2 500 (79 KB) answer `false`. It is the one
     // shape the fail-open `if` below cannot cover, because the gate concluded.
-    expect(filterLines()).toHaveLength(2);
+    expect(filterLines()).toHaveLength(gateCount());
     expect(filterLines().filter((line) => /grep -[A-Za-z]*q/.test(line))).toEqual([]);
   });
 
@@ -361,7 +364,7 @@ describe('the path filters', () => {
     // destination, so `git mv src/x.js docs/x.js` reads as a prose-only pull
     // request that deleted nothing.
     const diffs = withoutComments.match(/^.*git diff .*--name-only.*$/gm) || [];
-    expect(diffs).toHaveLength(2);
+    expect(diffs).toHaveLength(gateCount());
     expect(diffs.filter((line) => !line.includes('--no-renames'))).toEqual([]);
   });
 });
