@@ -883,7 +883,7 @@ describe('profile catalog', () => {
     };
     const heldGate = async (_dir, fn) => fn({ gated: true, held: () => true });
 
-    test('a held gate with ipfs-data behind a link: the link goes, its target stays', async () => {
+    test('a held gate with ipfs-data behind a link: refused, and nothing changes', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
       const options = devOptions(appRoot);
@@ -892,14 +892,16 @@ describe('profile catalog', () => {
       const shared = sharedIpfs(tempRoot);
       linkDir(shared, path.join(record.dir, 'ipfs-data'));
 
-      await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow('is reached through a link');
 
       expectSharedUntouched(shared);
-      expect(fs.existsSync(record.dir)).toBe(false);
-      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+      expect(fs.existsSync(path.join(record.dir, 'ipfs-data'))).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 
-    test('packaged layout: a held gate with ipfs-data behind a link leaves its target', async () => {
+    test('packaged layout: a held gate with ipfs-data behind a link is refused too', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'app');
       fs.mkdirSync(appRoot);
@@ -908,13 +910,15 @@ describe('profile catalog', () => {
       const shared = sharedIpfs(tempRoot);
       linkDir(shared, path.join(appRoot, 'ipfs-data'));
 
-      await deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate: heldGate });
+      await expect(
+        deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate: heldGate })
+      ).rejects.toThrow('is reached through a link');
 
       expectSharedUntouched(shared);
-      expect(fs.existsSync(path.join(appRoot, 'ipfs-data'))).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 
-    test('a held gate with the IPFS directory itself a link: the link goes, its target stays', async () => {
+    test('a held gate with the IPFS directory itself a link: refused', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
       const options = devOptions(appRoot);
@@ -927,10 +931,53 @@ describe('profile catalog', () => {
         path.join(record.dir, 'ipfs-data', 'freedom-ipfs')
       );
 
-      await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow('is reached through a link');
 
       expectSharedUntouched(shared);
-      expect(fs.existsSync(record.dir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a held gate with the IPFS directory an alias of the profile itself: refused', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data'));
+      linkDir(path.resolve(record.dir), path.join(record.dir, 'ipfs-data', 'freedom-ipfs'));
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow('is reached through a link');
+
+      expect(fs.readFileSync(path.join(record.dir, 'history.db'), 'utf-8')).toBe('h');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a held gate with the Radicle home inside the IPFS directory: refused', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      fs.mkdirSync(path.join(ipfsDir, String(record.slot)), { recursive: true });
+      fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
+      // The checkout's Radicle root is a link into the IPFS directory, so the
+      // profile's Radicle home is a directory inside it.
+      const radicleParent = path.join(tempRoot, 'Freedom Dev', 'R');
+      fs.mkdirSync(radicleParent, { recursive: true });
+      linkDir(ipfsDir, path.join(radicleParent, 'abcdef12'));
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow('overlaps other data this delete removes');
+
+      expect(fs.readFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'utf-8')).toBe('blocks');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 
     test('a link that appears after the check is removed as a link, never walked into', async () => {
@@ -962,31 +1009,26 @@ describe('profile catalog', () => {
       expect(fs.existsSync(path.join(record.dir, 'ipfs-data'))).toBe(false);
     });
 
-    test('an alias inside the profile: the gated directory is spared under its own name too', async () => {
+    test('an alias inside the profile (a link to a profile directory): refused', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
       const options = devOptions(appRoot);
       ensureProfile(appRoot, 'default', options);
       const { record } = ensureProfile(appRoot, 'work', options);
-      // ipfs-data is a link to a real directory in the profile: the gate's
-      // canonical directory is cache-volume/freedom-ipfs.
-      const volume = path.join(path.resolve(record.dir), 'cache-volume');
+      // ipfs-data is a link to a real directory in the profile, under a name
+      // that also starts with '..'.
+      const volume = path.join(path.resolve(record.dir), '..cache');
       const ipfsDir = path.join(volume, 'freedom-ipfs');
       fs.mkdirSync(ipfsDir, { recursive: true });
       fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
       linkDir(volume, path.join(record.dir, 'ipfs-data'));
-      const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
 
-      try {
-        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate });
-      } finally {
-        rmSpy.mockRestore();
-      }
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow('is reached through a link');
 
-      expect(fs.readdirSync(ipfsDir)).toEqual(['new-owner']);
-      expect(fs.readdirSync(volume)).toEqual(['freedom-ipfs']);
-      expect(fs.readdirSync(record.dir)).toEqual(['cache-volume']);
-      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+      expect(fs.readFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'utf-8')).toBe('blocks');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 
     test('a directory on the way created after the delete began is spared, not removed', async () => {

@@ -829,57 +829,90 @@ function sameEntryName(entry, name) {
   return entry.normalize('NFC').toLowerCase() === name.normalize('NFC').toLowerCase();
 }
 
-// `target` resolved through every link: realpath for what exists, the rest
-// appended as written.
-async function canonicalPath(target) {
-  try {
-    return await fs.promises.realpath(target);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-    const parent = path.dirname(target);
-    if (parent === target) return target;
-    return path.join(await canonicalPath(parent), path.basename(target));
+// A gated delete's refusal of an IPFS layout it can't vouch for, thrown
+// before anything has changed.
+function ipfsLayoutRefused(detail) {
+  return new Error(
+    `The profile's IPFS data ${detail}, so it can't be deleted safely while its lock is held. ` +
+      'Nothing was deleted: replace the link with the directory itself, or remove it, and ' +
+      'delete the profile again.'
+  );
+}
+
+// The identities of `target` and of every directory above it: what it is
+// inside, whatever each is called. Missing ones are skipped.
+async function identitiesUp(target) {
+  const ids = new Set();
+  let current = target;
+  for (;;) {
+    try {
+      ids.add(identityOf(await fs.promises.stat(current, { bigint: true })));
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return ids;
+    current = parent;
   }
 }
 
 /**
- * Where the gated IPFS directory is in the tree a delete removes, by
- * filesystem identity rather than spelling (freedom-core design 0007,
- * "Lifetime lock"). The gate covers the directory's canonical path, which
- * the profile's path can reach through a link, another case or an alias
- * inside the profile. Null when that path isn't inside the data root's own
- * tree (a link out of the profile, or a data root that is itself a link):
- * the data is elsewhere, and the delete's plain removal, which follows no
- * link, leaves it alone.
+ * Where the gated IPFS directory is, for a delete that holds its gate
+ * (freedom-core design 0007, "Lifetime lock"), or a refusal. The gate covers
+ * the directory's canonical path, and a later owner's data can only be shown
+ * safe from a removal that finds that directory where the profile names it.
+ * So the layout must be the app's own:
+ * - the data root, `ipfs-data` and `freedom-ipfs` each a real directory, or
+ *   not there yet: no link or junction at any step;
+ * - the canonical path the one named, not another spelling of it;
+ * - nothing else this delete removes (`otherRoots`: the Radicle home and its
+ *   staging siblings) inside the gated directory or around it, by identity.
+ * Anything else is refused before anything changes. Null when the data root
+ * isn't there: nothing to remove, and nothing to spare.
  *
- * `gated` is the canonical path, which the fence moves. `steps` are the
- * directories from the data root down to it: each one's name, and its
- * identity if it exists; the last is the gated directory itself.
+ * `gated` is the canonical path, which the fence moves; `steps` the
+ * directories from the data root down to it, each one's name and identity
+ * if it exists, the last the gated directory itself.
  */
-async function gatedPlace(dataRoot, ipfsDataDir) {
-  let rootStat;
-  try {
-    rootStat = await fs.promises.lstat(dataRoot, { bigint: true });
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  }
-  if (!rootStat.isDirectory()) return null;
-  const root = await fs.promises.realpath(dataRoot);
-  const gated = await canonicalPath(ipfsDataDir);
-  const relative = path.relative(root, gated);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  const steps = [{ name: null, id: identityOf(rootStat) }];
-  let current = root;
-  for (const name of relative.split(path.sep)) {
-    current = path.join(current, name);
-    let id = null;
+async function gatedPlace(dataRoot, ipfsDataDir, otherRoots = []) {
+  const names = [null, ...path.relative(dataRoot, ipfsDataDir).split(path.sep)];
+  const steps = [];
+  let current = dataRoot;
+  for (const name of names) {
+    if (name !== null) current = path.join(current, name);
+    let stat = null;
     try {
-      id = identityOf(await fs.promises.stat(current, { bigint: true }));
+      stat = await fs.promises.lstat(current, { bigint: true });
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
     }
-    steps.push({ name, id });
+    if (stat && !stat.isDirectory()) {
+      throw ipfsLayoutRefused(`is reached through a link (${current})`);
+    }
+    if (!stat && name === null) return null;
+    steps.push({ name, id: stat ? identityOf(stat) : null });
+  }
+  const gated = path.join(await fs.promises.realpath(dataRoot), ...names.slice(1));
+  const exists = steps.at(-1).id !== null;
+  if (exists && (await fs.promises.realpath(ipfsDataDir)) !== gated) {
+    throw ipfsLayoutRefused(`is reached under another name (${ipfsDataDir})`);
+  }
+  const gatedId = steps.at(-1).id;
+  const around = await identitiesUp(gated);
+  for (const root of otherRoots) {
+    let stat;
+    try {
+      stat = await fs.promises.lstat(root, { bigint: true });
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    // A link is removed as a link, its target untouched.
+    if (!stat.isDirectory()) continue;
+    const within = exists && (await identitiesUp(await fs.promises.realpath(root))).has(gatedId);
+    if (around.has(identityOf(stat)) || within) {
+      throw ipfsLayoutRefused(`overlaps other data this delete removes (${root})`);
+    }
   }
   return { gated, steps };
 }
@@ -999,18 +1032,24 @@ function validateProfileDeletion(appRoot, profileId, expectedDisplayName) {
 // module pulls in electron).
 const RADICLE_STAGING_INFIX = '.migrating-';
 
-async function removeRadicleStagingSiblings(radicleDir, radicleRoot) {
+// The staging copies an interrupted legacy `radicle-data/` carry-over left
+// next to a Radicle home (profile-paths.js, `<slot>.migrating-<pid>-<ts>`).
+async function radicleStagingSiblings(radicleDir, radicleRoot) {
   const parent = path.dirname(radicleDir);
   const prefix = `${path.basename(radicleDir)}${RADICLE_STAGING_INFIX}`;
   let names;
   try {
     names = await fs.promises.readdir(parent);
   } catch {
-    return;
+    return [];
   }
-  for (const name of names) {
-    if (!name.startsWith(prefix)) continue;
-    const target = assertPathInside(radicleRoot, path.join(parent, name), 'Radicle data');
+  return names
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => assertPathInside(radicleRoot, path.join(parent, name), 'Radicle data'));
+}
+
+async function removeRadicleStagingSiblings(radicleDir, radicleRoot) {
+  for (const target of await radicleStagingSiblings(radicleDir, radicleRoot)) {
     await fsOffload.removePath(target, { recursive: true, force: true });
   }
 }
@@ -1045,14 +1084,23 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
     // rather than having its directory removed under it.
     const dataRoot = sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir;
     const ipfsDataDir = path.join(dataRoot, 'ipfs-data', 'freedom-ipfs');
+    const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
+    const radicleRoot = options.dev
+      ? path.join(path.dirname(appRoot), RADICLE_SHORT_HOME_DIR)
+      : path.join(appRoot, RADICLE_SHORT_HOME_DIR);
+    const resolvedRadicleDir = radicleDir
+      ? assertPathInside(radicleRoot, radicleDir, 'Radicle data')
+      : null;
     const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
     return withIpfsGate(ipfsDataDir, async (gate = UNGATED) => {
-      // Held, with the gated directory inside the profile's own tree
-      // (gatedPlace): it moves aside first, and the removal never touches
-      // it again under any name (fenceIpfsData, removeSparing). Without a
-      // gate, or with the IPFS data elsewhere behind a link, today's
-      // removal, which follows no link, unchanged.
-      const place = gate.gated ? await gatedPlace(dataRoot, ipfsDataDir) : null;
+      // Held: the layout must be the app's own (gatedPlace refuses anything
+      // else, before any change), the gated directory moves aside first, and
+      // the removal never touches it again under any name (fenceIpfsData,
+      // removeSparing). Without a gate, today's removal, unchanged.
+      const otherRoots = resolvedRadicleDir
+        ? [resolvedRadicleDir, ...(await radicleStagingSiblings(resolvedRadicleDir, radicleRoot))]
+        : [];
+      const place = gate.gated ? await gatedPlace(dataRoot, ipfsDataDir, otherRoots) : null;
       if (place) await fenceIpfsData(place.gated, gate);
       catalog.profiles.splice(recordIndex, 1);
       saveCatalog(appRoot, catalog);
@@ -1075,12 +1123,7 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
        * otherwise a later profile that reuses the freed slot could inherit the old
        * Radicle identity, node database, and seeded repository state.
        */
-      const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
-      if (radicleDir) {
-        const radicleRoot = options.dev
-          ? path.join(path.dirname(appRoot), RADICLE_SHORT_HOME_DIR)
-          : path.join(appRoot, RADICLE_SHORT_HOME_DIR);
-        const resolvedRadicleDir = assertPathInside(radicleRoot, radicleDir, 'Radicle data');
+      if (resolvedRadicleDir) {
         await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
         // Also any staging copy an interrupted legacy `radicle-data/` carry-over
         // left next to it (profile-paths.js, `<slot>.migrating-<pid>-<ts>`) —
