@@ -2382,7 +2382,7 @@ function approvalOriginSummary(request) {
 
 function workspaceEnablementDetails(workspace) {
   if (workspace?.backend === 'windows-elevated') {
-    return `${workspace.setupRequired ? 'One-time setup creates dedicated Windows sandbox accounts and firewall rules. Windows will ask for administrator approval. Freedom and Agent commands continue running without administrator privileges.\n\n' : ''}Commands can read files accessible to the sandbox accounts, including files outside the project. Writes are limited to the project and private temporary storage; the project root’s Git metadata stays read-only. Nested repositories are not recursively protected. Internet, localhost and LAN access require separate permission. Stopping commands is best-effort; Freedom does not yet guarantee that every detached process has stopped.`;
+    return `${workspace.setupRequired ? 'One-time setup creates dedicated Windows sandbox accounts and firewall rules. Windows will ask for administrator approval. Freedom and Agent commands continue running without administrator privileges.\n\n' : ''}Commands can read files accessible to the sandbox accounts, including files outside the project. Writes are limited to the project and private temporary storage; the project root’s Git metadata stays read-only. Nested repositories are not recursively protected. Strictly offline shell commands are unavailable on Windows. Each command needs direct-network permission, covering internet, localhost and LAN; built-in file tools remain available without that grant. Stopping commands is best-effort; Freedom does not yet guarantee that every detached process has stopped.`;
   }
   const lifecycle =
     workspace?.backend === 'macos-seatbelt'
@@ -2799,6 +2799,7 @@ function formatToolError(code, operation) {
     EXECUTABLE_ACCESS_DECLINED: 'Executable access was declined',
     EXECUTABLE_INTERPRETER_UNAVAILABLE: 'A required script interpreter is unavailable',
     EXECUTABLE_INTERPRETER_UNSUPPORTED: 'The script launcher could not be resolved safely',
+    WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED: 'Command needs network permission on Windows',
     WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
     WORKSPACE_AUDIT_FINDINGS: 'Dependency audit found vulnerabilities',
     COMMAND_REVIEW_STALE: 'Project files changed; command access needs a fresh review',

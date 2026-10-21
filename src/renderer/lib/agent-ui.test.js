@@ -4416,6 +4416,18 @@ describe('Agent UI', () => {
     expect(summaryText).not.toContain('/Users/');
   });
 
+  test('Windows workspace disclosure explains required networking without implying offline execution', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'windows-workspace',
+      action: 'workspace_execution', operation: 'write', workspace: {
+        available: true, backend: 'windows-elevated', network: 'approval_required',
+        offlineCommandsAvailable: false, filesystem: 'windows_broad_reads_scoped_writes',
+      } });
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Strictly offline shell commands are unavailable on Windows');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('built-in file tools remain available');
+  });
+
   test('renders managed workspace enablement as one Agent-native disclosure', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });

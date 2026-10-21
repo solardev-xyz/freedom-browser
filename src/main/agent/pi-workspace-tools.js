@@ -699,6 +699,11 @@ function failedWorkspaceReceipt(
   errorCode
 ) {
   if (existing) return existing;
+  if (errorCode === 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED') {
+    const { networkPosture: _unavailableNetwork, ...receipt } = fileWorkspaceReceipt(
+      controller, conversationId, operation, params, 'sandbox_denied', { backend: 'windows-elevated' });
+    return Object.freeze({ ...receipt, sideEffects: 'none' });
+  }
   if (errorCode === 'WORKSPACE_OPERATION_CANCELLED') {
     return fileWorkspaceReceipt(controller, conversationId, operation, params, 'cancelled');
   }

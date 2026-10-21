@@ -327,16 +327,18 @@ describe('independent command access review', () => {
     await stop(ctx);
   });
 
-  test.each(['every_interaction', 'allow_website_interactions', 'external', 'network', 'filesystem', 'browser'])(
+  test.each(['every_interaction', 'allow_website_interactions', 'external', 'network', 'filesystem', 'browser', 'windows'])(
     'workspace automatic approval does not apply to %s', async scenario => {
       const ctx = await setup(['every_interaction', 'allow_website_interactions'].includes(scenario) ? scenario : 'sensitive_actions');
       ctx.workspaceController.getWorkspace.mockReturnValue(scenario === 'external' ? { project: { connected: true } } : null);
       const request = workspaceRequest();
       if (scenario === 'network') request.workspace.network = 'full';
+      if (scenario === 'windows') request.workspace.backend = 'windows-elevated';
       if (scenario === 'filesystem') request.workspace.filesystem = 'external_project';
       const pending = scenario === 'browser'
         ? ctx.dependencies.createControllerScope.mock.calls[0][0].requestApproval(request) : ctx.request(request);
       expect(ctx.events.at(-1).type).toBe('approval_requested');
+      if (scenario === 'windows') expect(ctx.events.at(-1).workspace).toMatchObject({ network: 'approval_required', offlineCommandsAvailable: false });
       expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
       await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
       expect(await pending).toBe('declined'); await stop(ctx);

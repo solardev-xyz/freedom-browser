@@ -580,7 +580,8 @@ function normalizeWorkspaceApproval(value) {
     available: true,
     backend: value.backend,
     ...(value.backend === 'windows-elevated' && value.setupRequired === true && { setupRequired: true }),
-    network: 'disabled',
+    network: value.backend === 'windows-elevated' ? 'approval_required' : 'disabled',
+    ...(value.backend === 'windows-elevated' && { offlineCommandsAvailable: false }),
     filesystem: value.backend === 'windows-elevated' ? 'windows_broad_reads_scoped_writes' : 'managed_workspace_only',
     cancellationGuarantee:
       value.cancellationGuarantee === 'namespace_scoped' ? 'namespace_scoped' : 'best_effort',
@@ -3076,6 +3077,7 @@ class FreedomAgentService {
         request.action === 'workspace_execution' && publicRequest.action === 'workspace_execution' &&
         WORKSPACE_TOOL_NAME_SET.has(publicRequest.operation) && publicRequest.workspace &&
         request.workspace.network === 'disabled' && request.workspace.filesystem === 'managed_workspace_only' &&
+        publicRequest.workspace.network === 'disabled' && publicRequest.workspace.filesystem === 'managed_workspace_only' &&
         !publicRequest.wallet && !publicRequest.publication && !publicRequest.nodeRequest &&
         !publicRequest.nodeLifecycle && !publicRequest.diagnostic && !publicRequest.pageTool &&
         !this.workspaceController.getWorkspace(run.conversationId)?.project) {

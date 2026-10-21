@@ -1421,3 +1421,15 @@ test('Windows offline refusal keeps its network permission recovery code', () =>
   expect(error.message).toContain('request_permissions');
   expect(error.message).toContain('network: full');
 });
+
+test('a refused Windows command is reported as unstarted rather than an offline run', async () => {
+  const controller = createController();
+  controller.execute.mockRejectedValue(Object.assign(new Error('Network permission required'), { code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' }));
+  const onToolOutcome = jest.fn();
+  const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'conversation_one', requestApproval: jest.fn(), onToolOutcome });
+  await expect(tools.find(tool => tool.name === 'bash').execute('windows-denied', { command: 'pwd' }))
+    .rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+  const receipt = onToolOutcome.mock.calls.at(-1)[0].workspace;
+  expect(receipt).toMatchObject({ state: 'sandbox_denied', backend: 'windows-elevated', sideEffects: 'none' });
+  expect(receipt).not.toHaveProperty('networkPosture');
+});
