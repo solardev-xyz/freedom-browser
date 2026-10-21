@@ -17,6 +17,7 @@ const execute = promisify(execFile);
 async function main() {
   assert(process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true', 'Use only disposable Windows CI');
   const helper = path.resolve(process.argv[2]);
+  const container = path.resolve(process.argv[3]);
   const workspace = fs.mkdtempSync('C:/freedom-agent-tests/freedom-dns-rpc-');
   await execute('git', ['init', '--quiet', workspace]);
   const snapshot = path.join(workspace, 'adapter-dns.json');
@@ -129,8 +130,21 @@ async function main() {
       filter = null;
       assert(result.host > 0 && result.full > 0, 'Host and approved-network DNS must remain usable');
     }
-    assert.equal(results.find(result => result.mode === 'both')?.offline, 0,
-      'Both DNS interfaces must block offline DNS without contradicting individual results');
+    // RPC results remain recorded even when they fail. This separate prototype
+    // tests actual no-network AppContainer tokens, not production integration.
+    const containerPackets = await count(async source => {
+      const probe = `try{require('fs').writeFileSync(${JSON.stringify(path.join(workspace, 'appcontainer-probe.txt'))},'owned fixture');console.log('appcontainer-write:ok')}catch(e){console.log('appcontainer-write:'+e.code)};${source}`;
+      const result = await execute(container, [process.execPath, workspace, probe], { timeout: 20000 });
+      console.log(result.stdout.trim());
+      assert.match(result.stdout, /Verified AppContainer process, zero network capabilities/);
+      assert.match(result.stdout, /lookup-complete/);
+      assert.match(result.stdout, /appcontainer-write:ok/, 'Node must still write the selected project');
+    });
+    const candidate = { mode: 'appcontainer', offline: containerPackets,
+      host: await count(host), full: await count(source => sandbox('full', source)) };
+    console.log(JSON.stringify({ rpcResults: results, candidate }));
+    assert(candidate.host > 0 && candidate.full > 0, 'Normal and approved-network DNS must remain available');
+    assert.equal(candidate.offline, 0, 'An actual no-network container must not emit DNS');
   } catch (error) {
     console.error('Owned DNS fixture failed before cleanup:', error);
     throw error;
