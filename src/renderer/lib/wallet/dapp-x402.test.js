@@ -335,6 +335,9 @@ async function loadDappX402(options = {}) {
     showX402Permissions: updatePermissionSubscreen,
   }));
   jest.doMock('./balance-display.js', () => ({ refreshBalances }));
+  jest.doMock('../dapp-provider.js', () => ({
+    getActivePageUrl: jest.fn(() => ''),
+  }));
   jest.doMock('./vault-unlock.js', () => ({
     showVaultUnlock: jest.fn().mockResolvedValue(undefined),
   }));
@@ -814,5 +817,43 @@ describe('dapp-x402 approval card lifecycle', () => {
 
     expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({ webContentsId: 7 });
     expect(paying.goBack).not.toHaveBeenCalled();
+  });
+});
+
+describe('disconnectX402', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.HTMLInputElement = originalHtmlInputElement;
+    jest.restoreAllMocks();
+  });
+
+  // A key from the permissions list can name an origin in another tab:
+  // revoking it must leave the visible origin's auto-pay banner alone.
+  test('hides the banner only when the revoked origin is the one it shows', async () => {
+    const ctx = await loadDappX402();
+    const provider = await import('../dapp-provider.js');
+    provider.getActivePageUrl.mockReturnValue('https://visible.example/page');
+    ctx.electronAPI.x402GetAllPermissions.mockResolvedValue({
+      success: true,
+      permissions: [{
+        origin: 'https://visible.example',
+        asset: '0xUSDC',
+        chainId: 8453,
+        capAmount: '10000000',
+        spentAmount: '0',
+      }],
+    });
+    const banner = ctx.elements['x402-connection-banner'];
+
+    await ctx.mod.updateX402ConnectionBanner();
+    expect(banner.classList.contains('hidden')).toBe(false);
+
+    await ctx.mod.disconnectX402('https://background.example');
+    expect(ctx.electronAPI.x402RevokeAllForOrigin).toHaveBeenCalledWith({ origin: 'https://background.example' });
+    expect(banner.classList.contains('hidden')).toBe(false);
+
+    await ctx.mod.disconnectX402('https://visible.example');
+    expect(banner.classList.contains('hidden')).toBe(true);
   });
 });

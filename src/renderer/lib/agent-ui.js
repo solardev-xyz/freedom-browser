@@ -149,6 +149,9 @@ let scopeNotice = '';
 let sessionSidebarOpen = true;
 let compactAgentLayout = false;
 let compactWorkspaceOpen = false;
+// Whether the sessions column was open when the compact layout closed it, so
+// widening back past the breakpoint can restore it (null = nothing to restore).
+let sessionSidebarOpenBeforeCompact = null;
 let taskPagesHome = null;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
@@ -1281,7 +1284,11 @@ function syncCompactAgentLayout() {
   }
   if (compact) {
     compactWorkspaceOpen = false;
+    sessionSidebarOpenBeforeCompact = sessionSidebarOpen;
     setSessionSidebarOpen(false);
+  } else if (sessionSidebarOpenBeforeCompact !== null) {
+    setSessionSidebarOpen(sessionSidebarOpenBeforeCompact);
+    sessionSidebarOpenBeforeCompact = null;
   }
   syncWorkspaceSidebar();
 }
@@ -4514,9 +4521,13 @@ export function initAgentUi(options = {}) {
       next.focus();
     }
   });
-  elements.sessionSidebarToggle.addEventListener('click', () =>
-    setSessionSidebarOpen(!sessionSidebarOpen)
-  );
+  elements.sessionSidebarToggle.addEventListener('click', () => {
+    const nextOpen = !sessionSidebarOpen;
+    // An explicit toggle while compact is the user's newest choice, so it is
+    // what the column returns to once the window widens again.
+    if (compactAgentLayout) sessionSidebarOpenBeforeCompact = nextOpen;
+    setSessionSidebarOpen(nextOpen);
+  });
   elements.workspaceSidebarToggle.addEventListener('click', () => {
     if (!elements.workspaceSidebarToggle.disabled) setWorkspaceSidebarOpen(!workspaceSidebarOpen);
   });

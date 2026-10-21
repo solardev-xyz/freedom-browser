@@ -591,10 +591,17 @@ class ConversationAttachmentStore {
         expected.isSymbolicLink() || current.isSymbolicLink() ||
         expected.dev !== stat.dev || expected.ino !== stat.ino ||
         current.dev !== stat.dev || current.ino !== stat.ino ||
-        (resource.kind === 'folder' &&
-          (!pathInside(resource.sourcePath, resolved) || stat.nlink !== 1))
+        (resource.kind === 'folder' && !pathInside(resource.sourcePath, resolved))
       ) {
         throw new Error('The attachment changed while it was being opened; try again');
+      }
+      // A hard link can point at a file outside the grant, so folder grants
+      // refuse it. That is a lasting property of the file, not a race, so say
+      // so rather than inviting a retry that can never succeed.
+      if (resource.kind === 'folder' && stat.nlink !== 1) {
+        throw new Error(
+          'This file has more than one hard link, so it cannot be read through a folder attachment; attach the file on its own instead'
+        );
       }
       return { handle, stat };
     } catch (error) {

@@ -51,12 +51,15 @@ run-name: >-
 #   APPLE_TEAM_ID               team id (46XPHRBLH5 for Solar Dev Ltd)
 #   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
 #
-# electron-builder imports CSC_LINK into a temporary keychain on CI and
-# `build.mac.notarize: true` in package.json submits + staples the
-# notarization inline, exactly like the maintainer flow in
-# docs/agent-playbooks/release-process.md §5. That inline pass covers
+# electron-builder imports CSC_LINK into a temporary keychain on CI, and its
+# afterSign hook (scripts/after-sign.js) notarizes `Freedom.app` and staples
+# the ticket before the disk image is made, exactly like the maintainer flow
+# in docs/agent-playbooks/release-process.md Appendix A. That pass covers
 # `Freedom.app` only — the disk image dmg-builder wraps around it is
-# notarized and stapled by a separate step below.
+# notarized and stapled by a separate step below. Every staple and stapler
+# validate goes through scripts/staple-with-retry.sh, which retries with
+# growing pauses: GitHub's macOS runners drop the connection to Apple's
+# ticket service now and then (#757, actions/runner-images#14924).
 
 on:
   push:
@@ -384,7 +387,12 @@ jobs:
           fi
           npm run tor:download
 
-      - name: Build, sign and notarize
+      # scripts/after-sign.js notarizes Freedom.app and staples it with
+      # scripts/staple-with-retry.sh before the .dmg and .zip are built from
+      # it, so both wrap a stapled app. `build.mac.notarize` stays false:
+      # electron-builder's own pass staples with three 1-4 s retries only,
+      # which a ticket-service drop outlasts (#757).
+      - name: Build, sign, notarize and staple
         if: env.SIGNED == 'true'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -398,7 +406,7 @@ jobs:
         if: env.SIGNED != 'true'
         run: npm run dist -- --mac --arm64 --unsigned --no-notarize
 
-      # `build.mac.notarize: true` submits and staples `Freedom.app` and stops
+      # The afterSign hook notarizes and staples `Freedom.app` and stops
       # there: dmg-builder wraps that already-stapled app in a disk image but
       # never notarizes the image itself, so the `.dmg` carries no ticket of
       # its own — Gatekeeper has to check it online when a user opens it, and
@@ -425,7 +433,7 @@ jobs:
               --team-id "$APPLE_TEAM_ID" \
               --password "$APPLE_APP_SPECIFIC_PASSWORD" \
               --wait --timeout 30m
-            xcrun stapler staple "$dmg"
+            bash scripts/staple-with-retry.sh staple "$dmg"
           done
 
       # Stapling rewrites the disk image, so the sha512/size electron-builder
@@ -462,14 +470,22 @@ jobs:
           fs.writeFileSync(ymlPath, yml);
           NODE
 
+      # `stapler validate` asks Apple's ticket service too, so it retries
+      # the same way the staples do (#757); it still fails the job once the
+      # last attempt fails, and every path must pass.
       - name: Verify signature, notarization and staple
         if: env.SIGNED == 'true'
         run: |
           set -x
           codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Freedom.app
           spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app
-          xcrun stapler validate dist/mac-arm64/Freedom.app
-          for dmg in dist/*.dmg; do xcrun stapler validate "$dmg"; done
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No .dmg in dist/ to validate." >&2
+            exit 1
+          fi
+          bash scripts/staple-with-retry.sh validate dist/mac-arm64/Freedom.app "${dmgs[@]}"
 
       - name: List distributables
         run: ls -la dist

@@ -352,7 +352,7 @@ describe('ConversationAttachmentStore', () => {
     const [resource] = await store.consume('window_1', [selection.selectionId], conversationId);
     await expect(store.read(conversationId, resource.resourceId, {
       path: 'notes.txt',
-    })).rejects.toThrow('changed while it was being opened');
+    })).rejects.toThrow('more than one hard link');
   });
 
   test('restores file snapshots but requires folders to be explicitly re-added', async () => {
