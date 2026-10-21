@@ -1,6 +1,8 @@
 // Owned hosted-runner compatibility experiment, not a production backend.
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
+#include <initguid.h>
+#include <fwpmu.h>
 #include <userenv.h>
 #include <aclapi.h>
 #include <rpc.h>
@@ -23,6 +25,51 @@ static void checked(bool success, const char* name) {
 struct Handle {
     HANDLE value = nullptr;
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+};
+struct PackageFilter {
+    HANDLE engine = nullptr;
+    ~PackageFilter() { if (engine) FwpmEngineClose0(engine); }
+    void install(PSID sid) {
+        FWPM_SESSION0 session = {};
+        session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+        DWORD status = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_DEFAULT, nullptr, &session, &engine);
+        if (status) { std::printf("Package filter engine error: %lu\n", status); throw std::runtime_error("Package filter engine"); }
+        FWPM_SUBLAYER0 sublayer = {};
+        checked(UuidCreate(&sublayer.subLayerKey) == RPC_S_OK, "Package sublayer UUID");
+        sublayer.displayData.name = const_cast<wchar_t*>(L"Freedom owned package DNS fixture");
+        sublayer.weight = 0xffff;
+        status = FwpmSubLayerAdd0(engine, &sublayer, nullptr);
+        if (status) throw std::runtime_error("Package filter sublayer");
+        for (const auto& layer : {FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6}) {
+            FWPM_FILTER_CONDITION0 condition = {};
+            condition.fieldKey = FWPM_CONDITION_ALE_PACKAGE_ID;
+            condition.matchType = FWP_MATCH_EQUAL;
+            condition.conditionValue.type = FWP_SID;
+            condition.conditionValue.sid = sid;
+            FWPM_FILTER0 filter = {};
+            checked(UuidCreate(&filter.filterKey) == RPC_S_OK, "Package filter UUID");
+            filter.displayData.name = const_cast<wchar_t*>(L"Freedom owned offline package filter");
+            filter.layerKey = layer;
+            filter.subLayerKey = sublayer.subLayerKey;
+            filter.action.type = FWP_ACTION_BLOCK;
+            filter.numFilterConditions = 1;
+            filter.filterCondition = &condition;
+            UINT64 id = 0;
+            status = FwpmFilterAdd0(engine, &filter, nullptr, &id);
+            if (status) { std::printf("Package filter add error: %lu\n", status); throw std::runtime_error("Package filter add"); }
+            FWPM_FILTER0* actual = nullptr;
+            status = FwpmFilterGetById0(engine, id, &actual);
+            if (status) throw std::runtime_error("Package filter readback");
+            const bool valid = actual->numFilterConditions == 1 && actual->action.type == FWP_ACTION_BLOCK &&
+                IsEqualGUID(actual->layerKey, layer) && IsEqualGUID(actual->subLayerKey, sublayer.subLayerKey) &&
+                IsEqualGUID(actual->filterCondition[0].fieldKey, FWPM_CONDITION_ALE_PACKAGE_ID) &&
+                actual->filterCondition[0].conditionValue.type == FWP_SID &&
+                EqualSid(actual->filterCondition[0].conditionValue.sid, sid);
+            FwpmFreeMemory0(reinterpret_cast<void**>(&actual));
+            if (!valid) throw std::runtime_error("Package filter readback mismatch");
+        }
+        std::puts("Verified exact package SID socket filters for IPv4 and IPv6");
+    }
 };
 struct Profile {
     std::wstring name;
@@ -106,7 +153,8 @@ int wmain(int argc, wchar_t** argv) {
     try {
         wchar_t github[8] = {};
         checked(GetEnvironmentVariableW(L"GITHUB_ACTIONS", github, 8) != 0 && !wcscmp(github, L"true"), "Disposable CI guard");
-        if (argc != 4) throw std::runtime_error("Expected node path, owned workspace and fixed probe source");
+        if (argc != 4 && !(argc == 5 && !wcscmp(argv[4], L"package-filter")))
+            throw std::runtime_error("Expected node path, owned workspace and fixed probe source");
         const auto node = std::filesystem::canonical(argv[1]);
         const auto workspace = std::filesystem::canonical(argv[2]);
         auto owned = workspace.parent_path().wstring();
@@ -125,6 +173,8 @@ int wmain(int argc, wchar_t** argv) {
         const HRESULT created = CreateAppContainerProfile(profile.name.c_str(), L"Freedom owned DNS fixture",
             L"Disposable CI-only network isolation probe", nullptr, 0, &profile.sid);
         if (FAILED(created)) { std::printf("CreateAppContainerProfile: 0x%08lx\n", static_cast<unsigned long>(created)); throw std::runtime_error("AppContainer profile"); }
+        PackageFilter package_filter;
+        if (argc == 5) package_filter.install(profile.sid);
 
         std::vector<std::unique_ptr<AclGrant>> grants;
         // Never modify C:\ or the hosted Node installation. An inability to

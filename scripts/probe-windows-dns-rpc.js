@@ -139,15 +139,19 @@ async function main() {
     if (!appcontainerOnly) assert.equal(results.find(result => result.mode === 'both')?.offline, 0, 'RPC-only experiment did not block DNS');
     // RPC results remain recorded even when they fail. This separate prototype
     // tests actual no-network AppContainer tokens, not production integration.
-    const containerPackets = await count(async source => {
+    const measureContainer = async packageFilter => count(async source => {
       const probe = `try{require('fs').writeFileSync(${JSON.stringify(path.join(workspace, 'appcontainer-probe.txt'))},'owned fixture');console.log('appcontainer-write:ok')}catch(e){console.log('appcontainer-write:'+e.code)};${source}`;
-      const result = await execute(container, [ownedNode, workspace, probe], { timeout: 45000 });
+      const result = await execute(container, [ownedNode, workspace, probe, ...(packageFilter ? ['package-filter'] : [])], { timeout: 45000 });
       console.log(result.stdout.trim());
       assert.match(result.stdout, /Verified AppContainer process, zero network capabilities/);
       assert.match(result.stdout, /lookup-complete/);
       assert.match(result.stdout, /appcontainer-write:ok/, 'Node must still write the selected project');
+      if (packageFilter) assert.match(result.stdout, /Verified exact package SID socket filters for IPv4 and IPv6/);
     });
-    const candidate = { mode: 'appcontainer', offline: containerPackets,
+    const bare = await measureContainer(false);
+    console.log(JSON.stringify({ mode: 'appcontainer-bare', offline: bare }));
+    const containerPackets = await measureContainer(true);
+    const candidate = { mode: 'appcontainer-package-filter', offline: containerPackets,
       host: await count(host), full: await count(source => sandbox('full', source)) };
     console.log(JSON.stringify({ rpcResults: results, candidate }));
     assert(candidate.host > 0 && candidate.full > 0, 'Normal and approved-network DNS must remain available');
