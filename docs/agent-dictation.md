@@ -105,10 +105,14 @@ users. Model downloads never happen at app startup or while AI is off.
 The engine is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5, built
 from source revision `d1be6fde11ac6e0407606b4e42fe72d34add8037`, with a separately
 pinned source-archive SHA-256. `scripts/build-dictation-runtime.js` builds the
-statically linked offline CLI and bundles it under `resources/dictation-runtime/`.
+offline CLI and bundles it under `resources/dictation-runtime/`.
 It does not download executables on the user's machine. Builds disable CURL,
-server examples, dynamically loaded backends, and host-specific CPU instructions;
-this first integration uses CPU inference (Accelerate on macOS). No new npm
+server examples and host-specific CPU instructions. On x64, upstream CPU feature
+detection selects a bundled SIMD backend (including AVX2) with a baseline fallback;
+ARM64 uses a single linked CPU backend. Only those source-built libraries ship.
+The child receives no backend/library-path environment overrides and runs from
+a private audio directory, away from user project files. This integration uses
+CPU inference (Accelerate on macOS). No new npm
 dependency was added. MIT/MIT-0 notices for the engine, utilities, and Whisper
 ship beside the helper and the downloaded model.
 
@@ -232,3 +236,7 @@ cleanup pass on macOS arm64 and Linux arm64 (Docker). macOS x64 compiles; this
 Mac lacks Rosetta, so its executable was not run here. Five-target CI results
 are recorded separately after completion. Real microphone and signed-package
 checks remain distinct from the synthetic/audio-file checks.
+
+The first five-target workflow passed functionally, but exposed slow scalar x64
+inference. That build is superseded by upstream CPU dispatch with bundled baseline
+and SIMD backends. Qualification and timings for the corrected build follow.

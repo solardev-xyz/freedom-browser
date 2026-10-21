@@ -25,7 +25,7 @@ whisper.cpp
   License: MIT; bundled miniaudio: MIT-0; stb_vorbis: MIT
   https://github.com/ggml-org/whisper.cpp
   Freedom builds version 1.9.5 from checksum-pinned source. The offline CLI,
-  ggml, and decoder utilities are statically linked. Full license texts ship
+  ggml, and decoder utilities are built together. Full license texts ship
   in resources/dictation-runtime/NOTICES.txt. No Python runtime is bundled.
 
 Codex Windows sandbox

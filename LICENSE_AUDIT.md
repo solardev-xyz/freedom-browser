@@ -20,7 +20,7 @@
 ## Local dictation runtime and model (2026-10-21)
 
 The **whisper.cpp** 1.9.5 CLI is compiled from checksum-pinned upstream source
-and bundled under `resources/dictation-runtime/`. Its statically linked ggml
+and bundled under `resources/dictation-runtime/`. Its ggml
 engine is MIT; included decoder utilities use MIT (stb_vorbis) and MIT-0
 (miniaudio). No Python, server, CURL downloader, or ONNX Runtime is included.
 The **optional local dictation notices** in

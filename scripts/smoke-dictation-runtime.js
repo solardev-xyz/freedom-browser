@@ -26,6 +26,7 @@ async function smoke() {
     const audio = fs.readFileSync(sample);
     const started = Date.now();
     const text = await local.transcribe(audio, 'en', new AbortController().signal);
+    const transcriptionMs = Date.now() - started;
     assert.match(text, /ask not what your country can do for you/i);
     assert.deepEqual(fs.readdirSync(local.scratchRoot), []);
     const cancel = new AbortController(); cancel.abort();
@@ -34,7 +35,7 @@ async function smoke() {
     await assert.rejects(local.transcribe(Buffer.from('invalid audio'), 'auto', new AbortController().signal));
     assert.deepEqual(fs.readdirSync(local.scratchRoot), []);
     console.log(JSON.stringify({ platform: process.platform, arch: process.arch, revision: WHISPER_REVISION,
-      install: true, transcription: true, cancellation: true, failureCleanup: true, elapsedMs: Date.now() - started }));
+      install: true, transcription: true, cancellation: true, failureCleanup: true, transcriptionMs, elapsedMs: Date.now() - started }));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

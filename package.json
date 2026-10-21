@@ -392,6 +392,9 @@
         "filter": [
           "whisper-cli",
           "whisper-cli.exe",
+          "*.dll",
+          "*.dylib",
+          "*.so*",
           "manifest.json",
           "NOTICES.txt"
         ]

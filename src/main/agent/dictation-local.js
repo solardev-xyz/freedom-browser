@@ -11,7 +11,7 @@ const { WHISPER_VERSION, WHISPER_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL,
 function run(executable, args, { signal, cwd } = {}) {
   // Do not pass provider credentials, Node preload flags or dynamic-library
   // search overrides from the browser environment to downloaded executables.
-  const env = { PATH: process.env.PATH, ...(process.platform === 'win32'
+  const env = { PATH: process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32') : '/usr/bin:/bin', ...(process.platform === 'win32'
     ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: os.tmpdir() }
     : { HOME: cwd, TMPDIR: cwd, LANG: 'en_US.UTF-8' }) };
   return new Promise((resolve, reject) => {
@@ -60,7 +60,13 @@ class LocalDictation {
       const manifest = JSON.parse(fs.readFileSync(path.join(this.runtimeDir, 'manifest.json'), 'utf8'));
       return binary.isFile() && !binary.isSymbolicLink() && binary.size > 0 &&
         manifest.version === WHISPER_VERSION && manifest.revision === WHISPER_REVISION &&
-        manifest.platform === this.platform && manifest.arch === this.arch;
+        manifest.platform === this.platform && manifest.arch === this.arch && Array.isArray(manifest.libraries) &&
+        (this.arch !== 'x64' || manifest.libraries.some(file => file.name.includes('ggml-cpu-haswell'))) &&
+        manifest.libraries.every(file => {
+          if (!/^[A-Za-z0-9_.-]+$/.test(file.name)) return false;
+          const stat = fs.lstatSync(path.join(this.runtimeDir, file.name));
+          return stat.isFile() && !stat.isSymbolicLink() && stat.size > 0;
+        });
     } catch { return false; }
   }
 

@@ -11,8 +11,10 @@ function fixture(root, options = {}) {
   const runtimeDir = path.join(root, 'runtime'); fs.mkdirSync(runtimeDir, { recursive: true });
   const local = new LocalDictation({ dataDir: root, runtimeDir, ...options });
   fs.writeFileSync(local.executable, 'fixture executable');
+  const libraries = local.arch === 'x64' ? [{ name: 'libggml-cpu-haswell.so' }] : [];
+  for (const file of libraries) fs.writeFileSync(path.join(runtimeDir, file.name), 'fixture library');
   fs.writeFileSync(path.join(runtimeDir, 'manifest.json'), JSON.stringify({
-    version: WHISPER_VERSION, revision: WHISPER_REVISION, platform: local.platform, arch: local.arch,
+    version: WHISPER_VERSION, revision: WHISPER_REVISION, platform: local.platform, arch: local.arch, libraries,
   }));
   return local;
 }

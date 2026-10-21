@@ -33,7 +33,7 @@
       "license": { "spdx": ["MIT", "MIT-0"], "raw": "MIT (whisper.cpp, ggml, stb_vorbis); MIT-0 (miniaudio)", "license_files": ["NOTICES.txt"], "notice_required": true },
       "version_pin": "src/shared/dictation-runtime.js WHISPER_VERSION",
       "bundled_with_app": true,
-      "linking_or_integration": "statically linked native CLI process, built from checksum-pinned upstream source",
+      "linking_or_integration": "native CLI and CPU libraries built from checksum-pinned upstream source",
       "risk": "green",
       "issues": []
     },
