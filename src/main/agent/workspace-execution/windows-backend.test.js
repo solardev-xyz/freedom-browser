@@ -25,18 +25,65 @@ describe('Windows sandbox policy boundary', () => {
   });
   afterEach(async () => { await fs.promises.rm(directory, { recursive: true, force: true }); });
 
-  test('read-only policy never grants the workspace as a write root', async () => {
+  test('strict offline commands are unavailable and fail before probing or creating files', async () => {
+    expect(await executor.detectCapabilities()).toMatchObject({ enforcement: { networkNone: false, networkFull: true } });
+    run.mockClear();
+    const before = await fs.promises.readdir(directory);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'none' });
+    expect(await executor.execute(policy, { command: 'runtime.exe', operation: 'execute-file-helper', trusted: true })).toMatchObject({
+      state: 'sandbox_denied', sideEffects: 'none', exitCode: null, terminationGuarantee: 'not_applicable',
+      error: { code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' },
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(await fs.promises.readdir(directory)).toEqual(before);
+  });
+
+  test('fixed file helper owns its executable, program and stdin frame', async () => {
+    const { detectElectronJavaScriptRuntime, ELECTRON_RUNTIME_PROBE_MARKER } = require('./electron-runtime');
+    const { WORKSPACE_FILE_HELPER, WINDOWS_FILE_HELPER_BOOTSTRAP } = require('../workspace-file-helper');
+    const root = path.join(directory, 'electron');
+    const resourcesPath = path.join(root, 'resources');
+    const executable = path.join(root, 'electron.exe');
+    await fs.promises.mkdir(resourcesPath, { recursive: true });
+    await fs.promises.writeFile(executable, 'fixture');
+    const runtime = await detectElectronJavaScriptRuntime({ platform: 'win32', execPath: executable, resourcesPath,
+      versions: { electron: '44.0.0', node: '24.0.0' },
+      run: async () => ({ exitCode: 0, stdout: JSON.stringify({ marker: ELECTRON_RUNTIME_PROBE_MARKER, electron: '44.0.0', node: '24.0.0' }) }) });
+    const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: workspace, electronRuntime: runtime });
+    run.mockImplementation(async (_runtime, request, options) => {
+      if (request.operation === 'probe') return { terminal: { type: 'capabilities', setupComplete: true } };
+      if (request.operation === 'remove-tree') return { terminal: { type: 'removed' } };
+      expect(request.operation).toBe('execute-file-helper');
+      expect(request.network).toBe(false);
+      expect(request.writableRoots).toHaveLength(1);
+      expect(request.writableRoots).not.toContain(workspace);
+      expect(request.command).toEqual([executable, '-e', WINDOWS_FILE_HELPER_BOOTSTRAP]);
+      const chunks = [];
+      options.onStdin({ write: chunk => chunks.push(chunk) });
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ script: WORKSPACE_FILE_HELPER, args: ['write', 'a.txt', 'eA==', '', ''] });
+      return { ready: true, terminal: { type: 'exit', exitCode: 0 } };
+    });
+    const request = { args: ['write', 'a.txt', 'eA==', '', ''], command: 'malicious.exe', onStdin: jest.fn() };
+    expect((await executor.executeTrustedFileHelper(policy, request)).state).toBe('completed');
+    expect(request.onStdin).not.toHaveBeenCalled();
+    run.mockClear();
+    for (const args of [['bash', '.', '', '', ''], ['read'], ['read', '.', {}, '', '']]) {
+      expect((await executor.executeTrustedFileHelper(policy, { args })).state).toBe('sandbox_denied');
+    }
+    const full = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, electronRuntime: runtime, network: 'full' });
+    expect((await executor.executeTrustedFileHelper(full, request)).state).toBe('sandbox_denied');
+    expect((await executor.executeTrustedFileHelper({}, request)).state).toBe('sandbox_denied');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('a read-only policy cannot be used to run an arbitrary offline program', async () => {
     const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: workspace });
-    expect((await executor.execute(policy, { command: 'runtime.exe' })).state).toBe('completed');
-    const request = run.mock.calls.find(([, input]) => input.operation === 'execute')[1];
-    expect(request.writableRoots).toHaveLength(1);
-    expect(request.writableRoots).not.toContain(workspace);
-    expect(request.network).toBe(false);
-    expect(request.environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect((await executor.execute(policy, { command: 'runtime.exe' })).state).toBe('sandbox_denied');
+    expect(run).not.toHaveBeenCalled();
   });
 
   test('protects Git metadata and keeps sandbox control files outside project write grants', async () => {
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'full' });
     expect((await executor.execute(policy, { command: 'runtime.exe' })).state).toBe('completed');
     const request = run.mock.calls.find(([, input]) => input.operation === 'execute')[1];
     expect(request.writableRoots).toContain(workspace);
@@ -51,7 +98,7 @@ describe('Windows sandbox policy boundary', () => {
   test('missing setup is disclosed and cannot silently fall back or trigger elevation during execution', async () => {
     run.mockResolvedValue({ terminal: { type: 'capabilities', setupComplete: false } });
     expect(await executor.detectCapabilities()).toMatchObject({ available: true, setupRequired: true });
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'full' });
     expect((await executor.execute(policy, { command: 'runtime.exe' })).state).toBe('sandbox_denied');
     expect(run.mock.calls.every(([, input]) => input.operation === 'probe')).toBe(true);
   });
@@ -74,7 +121,7 @@ describe('Windows sandbox policy boundary', () => {
       expect(options.onStdin).toBe(onStdin);
       return { ready: true, terminal: { type: 'exit', exitCode: 0 } };
     });
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'full' });
     expect((await executor.execute(policy, { command: path.resolve('/powershell.exe'),
       args: ['-NoProfile', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], onStdin })).state).toBe('completed');
     expect(fs.existsSync(scriptPath)).toBe(false);
@@ -85,7 +132,7 @@ describe('Windows sandbox policy boundary', () => {
     run.mockImplementation(async (_runtime, request) => request.operation === 'probe'
       ? { terminal: { type: 'capabilities', setupComplete: true } }
       : { failure: 'Helper disconnected', ready: false });
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'full' });
     expect(await executor.execute(policy, { command: 'runtime.exe' })).toMatchObject({
       sideEffects: 'unknown', survivorsPossible: true, terminationGuarantee: 'best_effort', terminationScope: 'unknown',
     });

@@ -224,9 +224,12 @@ and purchases keep their normal approval steps.
   See [dictation setup and draft limitations](agent-dictation.md).
 - **Windows projects:** First use requires administrator setup of restricted execution
   accounts and network rules. Subsequent commands run without administrator rights.
-  Windows restricts writes and network access but allows broader file reads than the
-  macOS and Linux backends; the approval explains this difference. Windows commands
-  use PowerShell, including `npm.cmd` and `npx.cmd`.
+  Windows confines writes but allows broader file reads than the macOS and Linux
+  backends. Strictly offline shell commands are unavailable: commands require the
+  existing direct-network approval, once for the exact command and directory or
+  for the conversation if that scope is chosen. Built-in read, write, search and
+  history tools remain available. Commands use PowerShell, including `npm.cmd`
+  and `npx.cmd`. Browser networking is independent of command permissions.
 
 ## Bookmarks
 

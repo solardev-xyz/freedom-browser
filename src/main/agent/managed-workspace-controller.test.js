@@ -1144,6 +1144,38 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
+  test('Windows commands require explicit networking while fixed file tools keep their own path', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.detectCapabilities.mockResolvedValue({ available: true, backend: 'windows-elevated',
+      enforcement: { networkNone: false, networkFull: true } });
+    dependencies.executor.executeTrustedFileHelper = jest.fn(async () => completedExecution('file contents'));
+    const onStarted = jest.fn();
+    await expect(controller.disclosure('conversation_one')).resolves.toMatchObject({
+      network: 'approval_required', offlineCommandsAvailable: false, fullNetworkAvailable: true,
+    });
+    for (const request of [{ command: 'Write-Output ok' }, { command: 'Write-Output ok', trusted: true, operation: 'read' }]) {
+      await expect(controller.execute('conversation_one', { ...request, onStarted })).rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    }
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.executor.executeTrustedFileHelper).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+    expect(onStarted).not.toHaveBeenCalled();
+    const command = 'Write-Output ok';
+    const permission = await controller.prepareCommandPermissions('conversation_one', { network: 'full' }, { command });
+    controller.grantCommandPermissions('conversation_one', permission.prepared, 'once');
+    await expect(controller.execute('conversation_one', { command: 'Write-Output other' })).rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    await expect(controller.execute('conversation_one', { command, workingDirectory: 'sub' })).rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(await controller.execute('conversation_one', { command })).toMatchObject({ networkPosture: 'full' });
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    await expect(controller.execute('conversation_one', { command })).rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    await controller.readFile('conversation_one', 'README.md');
+    expect(dependencies.executor.executeTrustedFileHelper).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ args: ['read', 'README.md', '', '', ''] }));
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    await expect(controller.startProcess('conversation_one', { command: 'Write-Output background', yieldMs: 10 }))
+      .rejects.toMatchObject({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+  });
+
   test('Windows setup cancellation leaves the workspace disabled and can be retried', async () => {
     const { controller, dependencies } = createController();
     let setupRequired = true;

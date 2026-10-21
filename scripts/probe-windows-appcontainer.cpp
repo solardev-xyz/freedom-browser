@@ -360,7 +360,9 @@ int wmain(int argc, wchar_t** argv) {
         if (lpac) std::puts("Verified less-privileged AppContainer access semantics");
         std::puts("Verified AppContainer process, zero network capabilities"); std::fflush(stdout);
         checked(ResumeThread(thread.value) != static_cast<DWORD>(-1), "ResumeThread");
-        const bool timed_out = WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0;
+        const DWORD wait = WaitForSingleObject(child.value, 10000);
+        checked(wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT, "Wait for AppContainer process");
+        const bool timed_out = wait == WAIT_TIMEOUT;
         if (timed_out) {
             checked(TerminateJobObject(job.value, 1) != 0, "Terminate timed-out probe job");
             checked(WaitForSingleObject(child.value, 5000) == WAIT_OBJECT_0, "Drain timed-out process");

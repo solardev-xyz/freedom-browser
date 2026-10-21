@@ -60,6 +60,7 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
+  WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED: 'Windows commands require explicit full-network permission. Call request_permissions with network: full, the exact command and workingDirectory; built-in file tools remain available.',
   WORKSPACE_WRITER_BUSY: 'A helper owns a conflicting file or a file operation is still running. Edit a different unassigned file, or wait and re-read before editing. Commands and history operations must wait for all editing helpers and pending writes.',
   DELEGATED_PATH_DENIED: 'This file is outside the delegated file list. Return to the parent to revise the assignment; do not work around it.',
   UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is incompatible with the workspace sandbox. Additional editing permission does not resolve this.',
@@ -183,6 +184,7 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_PREVIEW_UNSAFE',
     'WORKSPACE_PREVIEW_TOO_LARGE',
     'WORKSPACE_PREVIEW_NETWORK_REQUIRED',
+    'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED',
     'WORKSPACE_PROTECTED_PATH',
     'WORKSPACE_RUNTIME_UNAVAILABLE',
     'WORKSPACE_SANDBOX_DENIED',
@@ -1105,7 +1107,7 @@ function createRequestPermissionsTool(sdk, options) {
       'For software acquisition, the reason must identify the dependency/artifact, chosen version and source, and project destination. Keep the exact command reviewable. A stopped or declined request does not authorize an alternative acquisition route.',
       ...(networkPermissionsEnabled
         ? [
-            'Request network: full only when the exact command needs direct networking. It is one combined public-internet, host-localhost, and private/LAN grant.',
+            'Request network: full when the exact command needs direct networking, or when Windows reports WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED because offline command isolation is unavailable. It is one combined public-internet, host-localhost, and private/LAN grant.',
           ]
         : []),
     ],

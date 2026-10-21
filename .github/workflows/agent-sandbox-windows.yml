@@ -16,52 +16,16 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  dns-rpc-probe:
-    # Reuse only this branch's already-qualified, integrity-checked helper.
-    # No Rust source changed in this diagnostic; production compilation below
-    # remains independent. The runner and all temporary RPC filters are owned.
+  sandbox:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2022, windows-2025]
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: agent-windows-dns-${{ github.ref }}-${{ github.sha }}-${{ matrix.os }}
-      cancel-in-progress: true
-    timeout-minutes: 8
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: agent-windows-sandbox
-          run-id: 39651868825
-          github-token: ${{ github.token }}
-          path: .
-      - name: Validate and provision the owned DNS probe
-        run: |
-          node -e "require('./src/main/agent/workspace-execution/windows-sandbox-runtime').resolveWindowsSandbox().catch(e=>{console.error(e);process.exitCode=1})"
-          if ($LASTEXITCODE) { throw 'Native artifact integrity failed' }
-          $request = @{version=1;operation='setup';backend='elevated';home="$env:LOCALAPPDATA\FreedomBrowser\Sandbox";user=(& whoami).Trim()} | ConvertTo-Json -Compress
-          $request | & .\out\windows-workspace\x64\freedom-windows-workspace.exe
-          if ($LASTEXITCODE) { throw 'Sandbox provisioning failed' }
-          New-Item -ItemType Directory -Force C:\freedom-agent-tests | Out-Null
-      - name: Probe caller-scoped DNS RPC enforcement
-        run: ./scripts/probe-windows-dns-rpc.ps1
-  sandbox:
-    runs-on: windows-latest
-    concurrency:
-      group: agent-windows-native-${{ github.ref }}
+      group: agent-windows-native-${{ github.ref }}-${{ matrix.os }}
       cancel-in-progress: true
     timeout-minutes: 60
     defaults:
@@ -120,7 +84,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: agent-windows-sandbox
+          name: agent-windows-sandbox-${{ matrix.os }}
           path: |
             out/windows-workspace/x64/
             test-results/
@@ -129,6 +93,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: agent-windows-receipts
+          name: agent-windows-receipts-${{ matrix.os }}
           path: C:/freedom-agent-tests/**/results.jsonl
           retention-days: 14

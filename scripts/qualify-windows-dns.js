@@ -42,17 +42,27 @@ async function main() {
     assert(control > 0, 'The host control must reach the owned DNS listener');
     packets = 0;
     const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'none', limits: { timeoutMs: 6000 } });
-    const receipt = await new WindowsWorkspaceExecutor().execute(policy, { command: process.execPath, args: ['-e', source()] });
+    const executor = new WindowsWorkspaceExecutor();
+    assert.equal((await executor.detectCapabilities()).enforcement.networkNone, false);
+    const receipt = await executor.execute(policy, { command: process.execPath, args: ['-e', source()] });
     await new Promise(resolve => setTimeout(resolve, 2000));
     console.log(JSON.stringify({ control, offlinePackets: packets, state: receipt.state }));
-    assert.equal(receipt.state, 'completed');
-    if (process.argv.includes('--expect-existing-leak')) {
-      // Explicit diagnostic control only. Normal CI qualification still
-      // requires zero packets; a setup/execution failure cannot be a baseline.
-      assert(packets > 0, 'The diagnostic baseline must reproduce the existing DNS leak');
-    } else {
-      assert.equal(packets, 0, 'An offline workload must not send DNS through the shared service');
-    }
+    assert.equal(receipt.state, 'sandbox_denied');
+    assert.equal(receipt.sideEffects, 'none');
+    assert.equal(receipt.error?.code, 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED');
+    assert.equal(packets, 0, 'An unapproved command must never start or emit DNS');
+    const approved = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'full', limits: { timeoutMs: 6000 } });
+    const full = await executor.execute(approved, { command: process.execPath, args: ['-e', source()] });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    assert.equal(full.state, 'completed');
+    assert(packets > 0, 'An approved full-network command must still reach the owned listener');
+    console.log(JSON.stringify({ fullNetworkPackets: packets, state: full.state }));
+    // Exercise the native boundary directly too: an internal caller cannot
+    // reinterpret an ordinary offline execution request as a file operation.
+    const native = await executor.run(executor.runtime, { version: 1, operation: 'execute', backend: 'elevated', home: executor.home, network: false });
+    assert.equal(native.terminal?.type, 'error');
+    assert.match(native.terminal.message, /WINDOWS_OFFLINE_COMMAND_UNAVAILABLE/);
+
   } finally {
     if (rule) await ps(`Remove-DnsClientNrptRule -Name '${rule}' -Force`);
     await new Promise(resolve => dns.close(resolve));

@@ -37,7 +37,19 @@ async function main() {
     await controller.writeFile('windows-qualification', 'large.txt', 'x'.repeat(65536));
     assert.equal((await controller.readFile('windows-qualification', 'large.txt')).length, 65536);
     record('maximum-file-round-trip', { passed: true });
+    const exactCommand = "Write-Output 'approved-network'";
+    const onStarted = () => { throw new Error('An unapproved command started'); };
+    await assert.rejects(controller.execute('windows-qualification', { command: exactCommand, onStarted }), { code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    const exact = await controller.prepareCommandPermissions('windows-qualification', { network: 'full' }, { command: exactCommand });
+    controller.grantCommandPermissions('windows-qualification', exact.prepared, 'once');
+    await assert.rejects(controller.execute('windows-qualification', { command: "Write-Output 'different'" }), { code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    const exactResult = await controller.execute('windows-qualification', { command: exactCommand });
+    assert.equal(exactResult.state, 'completed'); assert.equal(exactResult.networkPosture, 'full');
+    await assert.rejects(controller.execute('windows-qualification', { command: exactCommand }), { code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+    record('exact-network-permission', { passed: true });
     const longCommand = "Write-Output 'Grüße'\n#" + 'x'.repeat(30000);
+    const longPermission = await controller.prepareCommandPermissions('windows-qualification', { network: 'full' }, { command: longCommand.slice(0, longCommand.indexOf('\n#')) });
+    controller.grantCommandPermissions('windows-qualification', longPermission.prepared, 'conversation');
     const longResult = await controller.execute('windows-qualification', { command: longCommand });
     assert.equal(longResult.state, 'completed');
     assert.match(longResult.stdout, /Grüße/);
@@ -45,7 +57,7 @@ async function main() {
     await controller.writeFile('windows-qualification', 'package.json', JSON.stringify({ name: 'freedom-windows-test', private: true, scripts: { build: 'node build.cjs' } }));
     await controller.writeFile('windows-qualification', 'build.cjs', "require('fs').writeFileSync('built.txt', 'built'); console.log('build-ok')");
     const command = 'npm.cmd run build';
-    const permission = await controller.prepareCommandPermissions('windows-qualification', { executables: ['node', 'npm'] }, { command });
+    const permission = await controller.prepareCommandPermissions('windows-qualification', { executables: ['node', 'npm'], network: 'full' }, { command });
     controller.grantCommandPermissions('windows-qualification', permission.prepared);
     const build = await controller.execute('windows-qualification', { command });
     record('powershell-build', build);

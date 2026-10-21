@@ -28,11 +28,11 @@ re-review remain gates.
 | S5 | Internal start/interstitial pages cannot be read or clicked, even before the first supported page. Navigation away to a supported URL remains permitted. Both paths have regressions. | None identified in this bounded repair. |
 | S6 | Removed same-name DOM form inference and its manual-submit/destination assurances. Native pending jobs remain pollable without claiming that a decoy form controls them. Actual automatic/manual WebMCP behavior passes Electron qualification. | None identified in this bounded repair. |
 | S7 | No boundary change: the macOS hypothesis did not reproduce. A permanent native regression applies the production absent-`.git` rule and tests `.git`, `.GIT`, `.Git`, `.gIT` with a successful ordinary-write control. | Do not extrapolate the macOS result to another filesystem/platform. |
-| S8 | **Confirmed on Windows CI:** the owned DNS listener received one host-control query and one offline-workload query (`control:1, offlinePackets:1`). Direct sockets remained blocked. The namespace-only NRPT rule was removed in `finally`. | **Open security boundary:** the shared Windows DNS service bypasses the account-scoped socket restrictions. Investigate caller-scoped DNS/RPC enforcement; do not claim strict offline execution or turn this failing test into a passing skip. |
+| S8 | **Confirmed on Windows CI:** the owned DNS listener received one host-control query and one offline-workload query (`control:1, offlinePackets:1`). Direct sockets remained blocked. The namespace-only NRPT rule was removed in `finally`. | **Production repair implemented; native qualification pending:** remove the unsupported offline-command capability. Windows shell commands require the existing explicit full-network grant (exact command/directory for allow-once; existing broader conversation scope when selected). Controller, executor and native protocol reject an ordinary offline command before launch. Fixed built-in file operations have a separate controller-owned entry point and retain filesystem restrictions. Strong offline execution is deferred; no silent network promotion. |
 | L1 | Credential removal/rotation invalidates cached runtimes before requests, including separately stored subscription OAuth ciphertext revisions; affected live sessions are stopped/disposed and transcript restoration is preserved. Disposal is awaited, including an earlier detached session. Regression tests cover old-key refusal and asynchronous disposal, plus real-store OAuth replacement during an active run. A runtime can advance its own revision only through its successful serialized refresh; stale runtimes cannot modify/delete replacement credentials. | Native Windows Claude process lifecycle is not inferred from these unit tests. |
 | L2 | Codemode prevents Pi's shared-temp spill path through its integration, then bounds/coalesces output in memory and preserves failure diagnostics. A native SDK regression forces `max_output_tokens:0`, verifies no spill file appears and checks partial effects/cancellation. | No dependency or vendor patch was made. |
 | L3 | Keep the latest 2,000 routine activity entries while retaining approvals, failures and effect receipts in chronological order; saved-history regression covers late evidence after a large read loop. | Consequential records remain proportional to actual effects, rather than silently discarded. |
-| L4 | Previews use a separate non-persistent Chromium session with a rejecting local proxy and `disable_non_proxied_udp`; all device/permission requests and downloads are denied. The normal browsing session is unchanged. Constructor removal is only defense in depth. Live Electron loopback-enabled control: 40 UDP packets / 4 TCP connections; isolated preview: 0 / 0. Real app modules, local storage and interactions pass. | Independent macOS/Linux/Windows CI jobs now qualify owned listeners. The first Windows attempt lacked a usable positive control and proved neither a pass nor an escape; the corrected loopback-enabled fixture and Linux sandbox-helper setup await CI. |
+| L4 | Previews use a separate non-persistent Chromium session with a rejecting local proxy and `disable_non_proxied_udp`; all device/permission requests and downloads are denied. The normal browsing session is unchanged. Constructor removal is only defense in depth. Live Electron loopback-enabled control: 40 UDP packets / 4 TCP connections; isolated preview: 0 / 0. Real app modules, local storage and interactions pass. | Independent macOS/Linux/Windows owned-listener jobs passed in [CI run 39651868810](https://github.com/solardev-xyz/freedom-browser/actions/runs/39651868810), using positive UDP/TCP controls and zero isolated observations. Hostname/DNS qualification remains separate. |
 | L5 | Flatten approval-reason control/bidi/separator characters and reject those characters in MCP tool names. Reasons remain explicitly labelled as Agent requests. Regression checks the actual approval projection. | None identified in this bounded repair. |
 | L6 | MCP OAuth discovery and refresh use guarded fetches. Same-origin access remains available for deliberately connected local services; foreign authentication endpoints must resolve publicly, are pinned to those addresses for TLS and cannot redirect. IPv6 destinations must be allocated global unicast (2000::/3) outside the denied special/documentation ranges; mixed public/non-public DNS answers are refused. AI-disable cancellation remains applied; response size is bounded. | Separate private authentication origins require an explicit future connection policy; no implicit private-host access. |
 | L7 | Public custom-provider HTTP endpoints are refused; HTTPS plus localhost/private-IP HTTP remain supported. | LAN DNS names require HTTPS or their private IP address. |
@@ -44,8 +44,7 @@ re-review remain gates.
 Verification so far: lint; full unit suite (10,832 passed / 129 skipped);
 13 Electron preview/WebMCP cases; controlled
 UDP/TCP fixture above. The zoom E2E fixture now waits for layout/paint after changing scale (3 repeated local passes); its security target checks are unchanged. New E2E coverage is wired into general CI. Windows CI
-also exercises read/cleanup junctions and the shared DNS service. The supplied
-Windows desktop timed out over SSH. Claude provided the initial S1/L10 design
+also exercises read/cleanup junctions and the shared DNS service. The physical Windows desktop is powered off; these native checks use disposable GitHub-hosted Windows runners. Claude provided the initial S1/L10 design
 review and a non-reproduction report for S7, but its model stopped the subsequent
 review. The user-selected Daybreak Blue Codex reviewer completed the source repair review
 and accepted the root-identity, bounded CLI-revocation, IPv6 and OAuth-generation
@@ -53,7 +52,51 @@ follow-ups. It found no further concrete source repair outside S8. Remaining
 qualification gaps are the non-atomic CLI-policy reload interval, Linux cleanup
 after uncertain namespace termination, hostname-based preview DNS/ICE, installed
 WFP object enumeration. The new native lock test has since passed on Windows CI. This is not release clearance:
-S8 remains a confirmed open boundary and native evidence remains incomplete.
+S8 originally reproduced a confirmed DNS boundary failure. The bounded repair removes arbitrary offline execution from the Windows product contract; its new native qualification is pending. Earlier passing file/network probes do not qualify the new operation split.
+
+S8 enforcement research: [run 39658881966](https://github.com/solardev-xyz/freedom-browser/actions/runs/39658881966)
+installed and read back an offline-caller-scoped `RPC_UM` filter on the observed
+DNS resolver UUID `45776b01-5956-4485-9f80-f428f7d60129`, with version and local
+RPC conditions, under a uniquely keyed dynamic sublayer. Windows Server 2022
+still sent the offline lookup (`host:1, offline:1`). Removing the optional
+version/protocol conditions in [run 39659535496](https://github.com/solardev-xyz/freedom-browser/actions/runs/39659535496)
+also failed to block that path. Server 2025 timed out during the second NRPT
+setup in those runs, so no enforcement result is inferred there. Dynamic test
+filters close with their helper process. Neither experiment changed production
+network policy or constitutes a fix. The owned dual-stack default-resolver
+fixture removed NRPT from attribution in [run 39664666767](https://github.com/solardev-xyz/freedom-browser/actions/runs/39664666767):
+on both Windows Server versions, query-only, policy-only and combined RPC filters
+still produced two offline DNS packets, with positive host/full controls. Earlier
+fixture-restoration defects were in disposable CI setup, not production changes;
+the later PowerShell-5 array handling repair now restores addresses and source
+modes successfully.
+
+An isolated zero-capability AppContainer prototype in [run 39667871740](https://github.com/solardev-xyz/freedom-browser/actions/runs/39667871740)
+verified the actual package SID and capability list and successfully ran Node and
+wrote an ordinary medium-labelled project file on both versions, with all ACL
+changes confined to an owned copied runtime/project fixture. DNS observations
+were `offline:0, host:2, full:2` on Server 2025, but `offline:2, host:2, full:2` on
+Server 2022. Both restored their DNS configuration. **This is a prototype, not a
+production repair; the AppContainer flag alone is not a verified offline
+boundary.** An explicit package-identity WFP experiment and service/profile
+readiness evidence are pending. Production networking remains unchanged.
+
+The exact-package filter experiment [39671944140](https://github.com/solardev-xyz/freedom-browser/actions/runs/39671944140)
+proved a narrower mechanism on Server 2022: bare DNS 2, package-filtered DNS 0,
+14 drop events attributed to the two owned filters, while host and approved-full
+controls both remained 2 with the rule still installed. Server 2025 had a bare
+baseline of 0, so its extra filter efficacy is inconclusive; normal/full controls
+remained positive. Workload timeout was reported as timeout, not completion.
+Both restored original DNS configuration. The attempted combined-token follow-up
+stopped at its CI environment guard and provides no compatibility evidence.
+
+Daybreak recommends the smaller capability-removal repair for this PR. A new
+AppContainer overlay remains a future work item: combined restricted-token and
+package ACL compatibility, persistent filters/profile setup, readiness, crash
+ordering, upgrades and uninstall all need qualification. The historical prototype
+scripts are research fixtures; the automatic PR workflow no longer downloads an
+expiring old artifact or treats a prototype as product qualification. The product
+workflow builds current native sources and checks both Windows Server 2022/2025.
 
 ## Priority and disposition
 

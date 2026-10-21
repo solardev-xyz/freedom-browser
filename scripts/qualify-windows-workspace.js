@@ -41,7 +41,7 @@ async function main() {
   record('capabilities', capabilities.available && !capabilities.setupRequired, { capabilities, directory });
   assert.ok(capabilities.available && !capabilities.setupRequired, 'Complete administrator setup first');
   const access = await resolveExecutableAccess(['node', 'npm'], { hostEnvironment: { PATH: `${path.dirname(process.execPath)};${process.env.PATH}` } });
-  const policy = (network = 'none') => createWorkspaceExecutionPolicy({ workspaceRoot: workspace, runtimeRoots: access.runtimeRoots, network, limits: { timeoutMs: 30000 } });
+  const policy = (network = 'full') => createWorkspaceExecutionPolicy({ workspaceRoot: workspace, runtimeRoots: access.runtimeRoots, network, limits: { timeoutMs: 30000 } });
   const execute = async (source, options = {}) => executor.execute(await policy(options.network), { command: process.execPath, args: ['-e', source], ...options });
   const check = async (name, source, verify, options) => {
     const result = await execute(source, options);
@@ -55,16 +55,19 @@ async function main() {
   }
   const readPolicy = await createWorkspaceFileReadPolicy({ workspaceRoot: workspace });
   const readOnly = await executor.execute(readPolicy, { command: process.execPath, args: ['-e', "try { require('fs').writeFileSync('hello.txt','tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }"] });
-  record('read-only-after-writer', readOnly.state === 'completed' && /EPERM|EACCES/.test(readOnly.stdout) && fs.readFileSync(path.join(workspace, 'hello.txt'), 'utf8') === 'hello', readOnly);
+  record('offline-write-not-launched', readOnly.state === 'sandbox_denied' && readOnly.sideEffects === 'none' && fs.readFileSync(path.join(workspace, 'hello.txt'), 'utf8') === 'hello', readOnly);
   fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: 'freedom-probe', private: true, scripts: { build: 'node build.cjs' } }));
   fs.writeFileSync(path.join(workspace, 'build.cjs'), "require('fs').writeFileSync('index.html', '<h1>built</h1>'); console.log('built');");
   const npm = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
   const build = await executor.execute(await policy(), { command: process.execPath, args: [npm, 'run', 'build'] });
   record('npm-build', build.state === 'completed' && fs.existsSync(path.join(workspace, 'index.html')), build);
-  const socketSource = "const s=require('net').connect(443,'1.1.1.1'); s.setTimeout(3000); s.on('connect',()=>{console.log('connected');s.destroy()});s.on('error',e=>console.log(e.code));s.on('timeout',()=>{console.log('timeout');s.destroy()});";
-  for (const network of ['full', 'none']) {
-    await check(`network-${network}`, socketSource, r => r.state === 'completed' && (network === 'full' ? r.stdout.trim() === 'connected' : /EACCES|EPERM/.test(r.stdout)), { network });
-  }
+  const listener = http.createServer((_request, response) => response.end('owned network fixture'));
+  await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
+  try {
+    const socketSource = `const s=require('net').connect(${listener.address().port},'127.0.0.1'); s.on('connect',()=>{console.log('connected');s.destroy()});s.on('error',e=>console.log(e.code));`;
+    await check('network-full', socketSource, r => r.state === 'completed' && r.stdout.trim() === 'connected', { network: 'full' });
+    await check('network-none-refused', socketSource, r => r.state === 'sandbox_denied' && r.sideEffects === 'none' && r.error?.code === 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED', { network: 'none' });
+  } finally { await new Promise(resolve => listener.close(resolve)); }
   const controller = new AbortController();
   let output = '';
   const server = execute("const fs=require('fs');fs.writeFileSync('heartbeat','started');const h=require('http').createServer((q,r)=>r.end('preview-ok'));h.listen(0,'127.0.0.1',()=>console.log('PORT='+h.address().port));setInterval(()=>fs.writeFileSync('heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),20000);", {

@@ -47,6 +47,8 @@ function recoveryForToolError(code, operation) {
     'Check the current project association. A changed or expired permission request needs a fresh request for the same user-authorized task; never reuse an old approval.');
   if (code === 'WORKSPACE_COMMAND_NOT_FOUND') return step('request_permission',
     'Call request_permissions with the exact executable names, intended command and workingDirectory before retrying. Exit 127 does not prove software is absent. Do not substitute an installer or download method.', { tool: 'request_permissions' });
+  if (code === 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED') return step('request_permission',
+    'Windows cannot enforce strictly offline commands. Call request_permissions with network: "full", the exact command and workingDirectory, then retry only that approved call. Built-in file tools remain available. A declined request stops this command.', { tool: 'request_permissions' });
   if (code === 'WORKSPACE_PREVIEW_NETWORK_REQUIRED') return step('request_permission',
     'Request network: "full" through request_permissions for the exact server launch command and workingDirectory. Only launch after approval; then preview its returned processId.', { tool: 'request_permissions' });
   if (code === 'WORKSPACE_DIFF_UNAVAILABLE') return step('inspect_state',

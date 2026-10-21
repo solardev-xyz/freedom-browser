@@ -1413,3 +1413,11 @@ test('npm audit findings preserve advisory output and do not disguise execution 
   expect(safeWorkspaceError({}, { ...options, receipt: { ...options.receipt, command: 'npm audit fix' } }).code).toBe('WORKSPACE_COMMAND_FAILED');
   expect(safeWorkspaceError({ code: 'COMMAND_REVIEW_STALE' }).message).toContain('request_permissions');
 });
+
+
+test('Windows offline refusal keeps its network permission recovery code', () => {
+  const error = safeWorkspaceError({ code: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+  expect(error.code).toBe('WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED');
+  expect(error.message).toContain('request_permissions');
+  expect(error.message).toContain('network: full');
+});

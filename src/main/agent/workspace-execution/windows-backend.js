@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EXECUTION_STATES, NETWORK_POSTURES, isValidatedWorkspaceExecutionPolicy, validateExecutionRequest } = require('./execution-policy');
 const { resolveWindowsSandbox, assertWindowsRuntimeOutsideWrites } = require('./windows-sandbox-runtime');
+const { WORKSPACE_FILE_HELPER, WINDOWS_FILE_HELPER_BOOTSTRAP } = require('../workspace-file-helper');
 const { runWindowsSandbox } = require('./windows-sandbox-process');
 
 class WindowsWorkspaceExecutor {
@@ -26,7 +27,7 @@ class WindowsWorkspaceExecutor {
       const ready = result.terminal?.type === 'capabilities' && result.terminal.setupComplete === true;
       return Object.freeze({ backend: 'windows-elevated', available: true, setupRequired: !ready,
         enforcement: Object.freeze({ filesystem: true, filesystemReadScope: 'windows_user_readable',
-          networkNone: true, networkFull: true, loopbackNetworking: true, descendantInheritance: true,
+          networkNone: false, networkFull: true, loopbackNetworking: true, descendantInheritance: true,
           privateTemporaryStorage: true, closedFileDescriptors: true, executableRootsScoped: false,
           wallTimeout: true, outputLimits: true, cancellation: true, cancellationGuarantee: 'best_effort',
           survivorsPossible: true, completeDescendantTermination: false, aggregateResourceLimits: false }),
@@ -54,12 +55,39 @@ class WindowsWorkspaceExecutor {
   }
 
   async execute(policy, rawRequest) {
+    return this.#execute(policy, rawRequest, 'execute');
+  }
+
+  async executeTrustedFileHelper(policy, request) {
+    const runtime = policy?.filesystem?.runtimeRoots?.find(root => root.id === 'electron');
+    const operations = new Set(['access', 'read', 'read_version', 'list', 'find', 'grep', 'workspace_inspect',
+      'history_snapshot', 'history_validate', 'history_restore', 'write', 'mkdir']);
+    if (!isValidatedWorkspaceExecutionPolicy(policy) || policy.network !== NETWORK_POSTURES.NONE ||
+        !runtime?.executablePath || !Array.isArray(request?.args) || request.args.length !== 5 ||
+        request.args.some(value => typeof value !== 'string') || !operations.has(request.args[0])) {
+      return this.receipt(Date.now(), { failure: 'Invalid fixed file-helper request' });
+    }
+    // Own both the program and its private stdin frame. A caller can supply only
+    // fixed filesystem-operation arguments, never a script or a command line.
+    const packet = Buffer.from(JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: request.args }) + '\n');
+    if (packet.length > 256 * 1024) return this.receipt(Date.now(), { failure: 'File-helper input is too large' });
+    return this.#execute(policy, { command: runtime.executablePath, args: ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP],
+      signal: request.signal, onStdin: input => {
+        for (let offset = 0; offset < packet.length; offset += 64 * 1024) input.write(packet.subarray(offset, offset + 64 * 1024));
+      } }, 'execute-file-helper');
+  }
+
+  async #execute(policy, rawRequest, operation) {
     const startedAt = Date.now();
     let privateDirectory;
     let result;
     let attempted = false;
     try {
       if (!isValidatedWorkspaceExecutionPolicy(policy)) throw new Error('Execution requires a validated workspace policy');
+      if (operation === 'execute' && policy.network === NETWORK_POSTURES.NONE) {
+        return this.receipt(startedAt, { failure: 'Windows commands require explicit full-network permission',
+          failureCode: 'WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED' });
+      }
       // Validate the decoded script against the ordinary argument limit: UTF-16
       // base64 expands a supported 32K-character command beyond that limit.
       const encoded = Array.isArray(rawRequest?.args) && rawRequest.args.at(-2) === '-EncodedCommand'
@@ -106,7 +134,7 @@ class WindowsWorkspaceExecutor {
         command = [request.command, ...request.args.slice(0, -2), '-ExecutionPolicy', 'Bypass', '-File', script];
       }
       attempted = true;
-      result = await this.run(this.runtime, { version: 1, operation: 'execute', backend: 'elevated', home: this.home,
+      result = await this.run(this.runtime, { version: 1, operation, backend: 'elevated', home: this.home,
         command, workspace, cwd, writableRoots,
         protectedPaths: policy.filesystem.protectedPaths.map(entry => entry.sourcePath),
         environment, network: policy.network === NETWORK_POSTURES.FULL, timeoutMs: policy.limits.timeoutMs },
@@ -141,7 +169,7 @@ class WindowsWorkspaceExecutor {
       terminationScope: result.attempted ? 'unknown' : 'not_applicable', survivorsPossible: result.attempted === true,
       completeDescendantTermination: false, sideEffects: result.attempted ? 'unknown' : 'none',
       ...(result.privateDirectoryCleanupFailed && { privateDirectoryCleanupFailed: true }),
-      error: failure ? { code: 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
+      error: failure ? { code: result.failureCode || 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
   }
 }
 

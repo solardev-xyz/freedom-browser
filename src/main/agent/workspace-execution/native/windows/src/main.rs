@@ -149,6 +149,14 @@ fn read_line(reader: &mut impl BufRead, limit: usize) -> Result<Option<Vec<u8>>>
     }
 }
 
+fn validate_execution_network(operation: &str, network: bool) -> Result<()> {
+    match (operation, network) {
+        ("execute", true) | ("execute-file-helper", false) => Ok(()),
+        ("execute", false) => bail!("WINDOWS_OFFLINE_COMMAND_UNAVAILABLE"),
+        _ => bail!("Invalid execution operation and network policy"),
+    }
+}
+
 async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Result<()> {
     if request.version != 1 || request.backend != "elevated" || !request.home.is_absolute() {
         bail!("Unsupported sandbox request");
@@ -199,7 +207,7 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
             })?;
             return emit(json!({"type":"setup", "complete":true}));
         }
-        "execute" => {}
+        "execute" | "execute-file-helper" => validate_execution_network(&request.operation, request.network)?,
         _ => bail!("Unsupported operation"),
     }
     // Provisioning is a separate explicit action, never an execution side effect.
@@ -328,6 +336,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_classes_do_not_promote_offline_commands() {
+        assert!(validate_execution_network("execute", true).is_ok());
+        assert!(validate_execution_network("execute", false).is_err());
+        assert!(validate_execution_network("execute-file-helper", false).is_ok());
+        assert!(validate_execution_network("execute-file-helper", true).is_err());
+        assert!(validate_execution_network("unknown", false).is_err());
+    }
 
     #[test]
     fn elevation_locks_reject_changed_bytes_and_pin_files_and_directory() -> Result<()> {
