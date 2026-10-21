@@ -101,6 +101,42 @@ function createResolver(selection = null, options = {}) {
 }
 
 describe('AgentProviderResolver', () => {
+  test('subscription runtimes accept their own refresh but reject external credential replacement', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const { AgentProviderStore } = require('./provider-store');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-oauth-revision-'));
+    try {
+      const store = new AgentProviderStore({ dataDir: directory, userDataDir: directory, profileId: 'owned-fixture', safeStorage: {
+        isEncryptionAvailable: () => true, encryptString: value => Buffer.from(value), decryptString: value => value.toString(),
+      } });
+      const credentials = store.createCredentialStore();
+      const initial = { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 60000 };
+      await credentials.modify('openai-codex', async () => initial);
+      store.saveSubscription({ providerId: 'openai-codex', modelId: 'codex-model' });
+      const runtime = createRuntime();
+      runtime.completeSimple = jest.fn(async () => ({ content: [] }));
+      const create = jest.fn(async () => runtime);
+      const resolver = new AgentProviderResolver({ store, dataDir: directory, loadSdk: async () => ({ ModelRuntime: { create } }) });
+      const resolved = await resolver.resolveModel({ providerId: 'openai-codex' });
+      const boundCredentials = create.mock.calls[0][0].credentials;
+      const revision = store.getCredentialRevision('openai-codex');
+      expect(revision).toMatch(/^[a-f0-9]{64}$/);
+      await boundCredentials.modify('openai-codex', async value => ({ ...value, access: 'fixture-own-refresh' }));
+      expect(store.getCredentialRevision('openai-codex')).not.toBe(revision);
+      expect(resolved.modelRuntime.connectionIsCurrent()).toBe(true);
+      await resolved.modelRuntime.completeSimple(resolved.model, {});
+      await credentials.modify('openai-codex', async value => ({ ...value, access: 'fixture-new-login' }));
+      expect(resolved.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(() => resolved.modelRuntime.completeSimple(resolved.model, {})).toThrow('provider connection changed');
+      const staleUpdate = jest.fn(async () => initial);
+      await expect(boundCredentials.modify('openai-codex', staleUpdate)).rejects.toThrow('provider connection changed');
+      await expect(boundCredentials.delete('openai-codex')).rejects.toThrow('provider connection changed');
+      expect(staleUpdate).not.toHaveBeenCalled();
+      expect((await credentials.read('openai-codex')).access).toBe('fixture-new-login');
+      expect(runtime.completeSimple).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test.each(['removal', 'rotation'])('cached runtimes cannot use credentials after %s', async change => {
     const selection = { kind: 'hosted', providerId: 'openai', modelId: 'model-b', apiKey: 'fixture-old-key' };
     const ctx = createResolver(selection);

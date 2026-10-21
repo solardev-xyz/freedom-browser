@@ -50,3 +50,17 @@ test('feature shutdown prevents authentication traffic', async () => {
   await expect(guarded('https://service.test/token')).rejects.toThrow('AI is disabled');
   expect(fetch).not.toHaveBeenCalled();
 });
+
+test.each(['64:ff9b:1::1', 'fec0::1', '100:0:0:1::1', '3fff::1', '5f00::1', '3ffe::1', '4000::1'])('rejects non-global IPv6 %s before connecting, including mixed answers', async address => {
+  expect(publicAddress(address)).toBe(false);
+  for (const answers of [[{ address, family: 6 }], [{ address: '2606:4700:4700::1111', family: 6 }, { address, family: 6 }]]) {
+    const request = jest.fn();
+    const guarded = createMcpEndpointFetch('https://service.test/mcp', { fetch: jest.fn(), request, lookup: async () => answers });
+    await expect(guarded('https://authentication.test/token')).rejects.toThrow('private authentication endpoint');
+    expect(request).not.toHaveBeenCalled();
+  }
+});
+
+test.each(['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111', '2001:4860:4860::8888'])('retains public IPv4 and IPv6 destination %s', address => {
+  expect(publicAddress(address)).toBe(true);
+});

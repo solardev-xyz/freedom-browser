@@ -107,6 +107,7 @@ class AgentProviderResolver {
       throw new TypeError('AgentProviderResolver requires an app-owned credential store');
     }
     this.credentials = this.store.createCredentialStore();
+    this.credentialBindings = new WeakMap();
     this.assertEnabled = options.assertEnabled || (() => {});
     this.featureSignal = options.featureSignal || (() => undefined);
   }
@@ -722,10 +723,12 @@ class AgentProviderResolver {
   }
 
   bindConnection(runtime, selection) {
+    const binding = this.credentialBindings.get(runtime);
     const current = () => {
       try {
         const saved = this.store.getSelection(selection.providerId);
-        return Boolean(saved && saved.kind === selection.kind && saved.apiKey === selection.apiKey && saved.baseUrl === selection.baseUrl);
+        return Boolean(saved && saved.kind === selection.kind && saved.apiKey === selection.apiKey && saved.baseUrl === selection.baseUrl &&
+          (selection.kind !== 'subscription' || !binding || binding.current()));
       } catch { return false; }
     };
     runtime.connectionIsCurrent = current;
@@ -749,12 +752,24 @@ class AgentProviderResolver {
   async #createRuntime(connectionId) {
     // Keep subscription credentials separate while retaining native Pi transport identities.
     const nativeId = runtimeProviderId(connectionId);
-    const credentials = nativeId !== connectionId ? {
-      read: (id, options) => this.credentials.read(id === nativeId ? connectionId : id, options),
+    let revision = this.store.getCredentialRevision?.(connectionId);
+    let revoked = false;
+    const current = () => !revoked && this.store.getCredentialRevision?.(connectionId) === revision;
+    const assertCurrent = () => {
+      if (!current()) {
+        revoked = true;
+        throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'The provider connection changed. Reopen this conversation to reconnect.');
+      }
+    };
+    const mapped = id => id === nativeId ? connectionId : id;
+    const guardedOptions = (id, options) => mapped(id) === connectionId
+      ? { ...options, assertCurrent, onChanged: value => { revision = value; } } : options;
+    const credentials = connectionId ? {
+      read: (id, options) => { if (mapped(id) === connectionId) assertCurrent(); return this.credentials.read(mapped(id), options); },
       list: async options => (await this.credentials.list(options)).map(entry =>
         ({ ...entry, providerId: entry.providerId === connectionId ? nativeId : entry.providerId })),
-      modify: (id, update, options) => this.credentials.modify(id === nativeId ? connectionId : id, update, options),
-      delete: (id, options) => this.credentials.delete(id === nativeId ? connectionId : id, options),
+      modify: (id, update, options) => this.credentials.modify(mapped(id), update, guardedOptions(id, options)),
+      delete: (id, options) => this.credentials.delete(mapped(id), guardedOptions(id, options)),
     } : this.credentials;
     const sdk = await this.loadSdk();
     const runtime = await sdk.ModelRuntime.create({
@@ -764,6 +779,7 @@ class AgentProviderResolver {
       allowModelNetwork: false,
       refreshOnCreate: false,
     });
+    if (connectionId) this.credentialBindings.set(runtime, { current });
     for (const [providerId, definition] of Object.entries(PROVIDER_DEFINITIONS)) {
       const models = this.catalog.get(providerId).models;
       if (!models.length || (!CUSTOM_PROVIDERS.has(providerId) && !['openrouter', 'openai', 'openai-codex'].includes(providerId)))

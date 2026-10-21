@@ -395,6 +395,11 @@ class AgentProviderStore {
     return this.credentialStore;
   }
 
+  getCredentialRevision(providerId) {
+    const ciphertext = this.#read().credentials[providerId];
+    return ciphertext ? crypto.createHash('sha256').update(ciphertext).digest('hex') : null;
+  }
+
   clear() {
     this.#write({ connections: {}, activeProviderId: null, credentials: {} });
   }
@@ -561,14 +566,16 @@ class AgentProviderStore {
       );
     }
     const payload = this.#read();
+    const ciphertext = this.safeStorage.encryptString(serialized).toString('base64');
     this.#write({
       connections: payload.connections,
       activeProviderId: payload.activeProviderId,
       credentials: {
         ...payload.credentials,
-        [providerId]: this.safeStorage.encryptString(serialized).toString('base64'),
+        [providerId]: ciphertext,
       },
     });
+    return crypto.createHash('sha256').update(ciphertext).digest('hex');
   }
 
   #deleteOAuthCredential(providerId) {
@@ -619,6 +626,7 @@ class AgentProviderStore {
         this.#enqueueCredentialOperation(providerId, async () => {
           options.signal?.throwIfAborted();
           const expectedCiphertext = this.#read().credentials[providerId];
+          options.assertCurrent?.();
           const current = this.#readOAuthCredential(providerId);
           const next = await modify(current);
           options.signal?.throwIfAborted();
@@ -630,14 +638,17 @@ class AgentProviderStore {
                 'The provider credential changed during an update'
               );
             }
-            this.#writeOAuthCredential(providerId, next);
+            const revision = this.#writeOAuthCredential(providerId, next);
+            options.onChanged?.(revision);
           }
           return next === undefined ? current : structuredClone(next);
         }),
       delete: (providerId, options = {}) =>
         this.#enqueueCredentialOperation(providerId, async () => {
           options.signal?.throwIfAborted();
+          options.assertCurrent?.();
           this.#deleteOAuthCredential(providerId);
+          options.onChanged?.(null);
         }),
     });
   }

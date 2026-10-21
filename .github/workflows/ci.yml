@@ -1355,7 +1355,12 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Qualify preview network isolation against owned listeners
-        run: xvfb-run -a node_modules/.bin/electron scripts/qualify-agent-preview-network.js
+        run: |
+          # The standalone fixture retains Chromium's process sandbox. Configure
+          # its downloaded helper on this disposable runner before launching it.
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          xvfb-run -a node_modules/.bin/electron scripts/qualify-agent-preview-network.js
 
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |

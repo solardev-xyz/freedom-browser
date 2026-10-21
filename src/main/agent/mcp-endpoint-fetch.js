@@ -11,11 +11,16 @@ for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0',
   ['192.0.2.0', 24], ['198.51.100.0', 24], ['203.0.113.0', 24],
   ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]]) excluded.addSubnet(address, prefix);
 for (const [address, prefix] of [['::', 96], ['64:ff9b::', 96], ['100::', 64],
-  ['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]]) excluded.addSubnet(address, prefix, 'ipv6');
+  ['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3ffe::', 16], ['3fff::', 20],
+  ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]]) excluded.addSubnet(address, prefix, 'ipv6');
+// IANA currently allocates global IPv6 unicast only from 2000::/3.
+const globalV6 = new BlockList();
+globalV6.addSubnet('2000::', 3, 'ipv6');
 
 function publicAddress(address) {
   const family = isIP(address);
   if (family === 6 && new URL(`https://[${address}]/`).hostname.startsWith('[::ffff:')) return false;
+  if (family === 6 && !globalV6.check(address, 'ipv6')) return false;
   return Boolean(family && !excluded.check(address, family === 6 ? 'ipv6' : 'ipv4'));
 }
 

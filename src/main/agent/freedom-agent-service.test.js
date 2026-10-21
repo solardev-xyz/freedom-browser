@@ -2115,6 +2115,42 @@ describe('FreedomAgentService', () => {
     expect(service.conversations.get('conversation_test')).toMatchObject({ session: null, restored: true });
   });
 
+  test('OAuth replacement stops an active subscription run and awaits real connection invalidation', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const { AgentProviderStore } = require('./provider-store');
+    const { AgentProviderResolver } = require('./provider-resolver');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-oauth-service-'));
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const disposalEntered = createDeferred(), release = createDeferred();
+    fake.session.dispose.mockImplementation(async () => { disposalEntered.resolve(); await release.promise; });
+    try {
+      const store = new AgentProviderStore({ dataDir: directory, userDataDir: directory, profileId: 'owned-fixture', safeStorage: {
+        isEncryptionAvailable: () => true, encryptString: value => Buffer.from(value), decryptString: value => value.toString(),
+      } });
+      const credentials = store.createCredentialStore();
+      await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 60000 }));
+      store.saveSubscription({ providerId: 'openai-codex', modelId: 'fixture-model' });
+      const model = { provider: 'openai-codex', id: 'fixture-model' };
+      const runtime = { getModel: () => model, refresh: async () => {}, hasConfiguredAuth: () => true,
+        completeSimple: jest.fn(async () => ({ content: [] })) };
+      const resolver = new AgentProviderResolver({ store, dataDir: directory, catalog: { get: () => ({ models: [] }) },
+        loadSdk: async () => ({ ModelRuntime: { create: async () => runtime } }) });
+      const resolved = await resolver.resolveModel({ providerId: 'openai-codex' });
+      await service.start(startOptions(resolved));
+      await credentials.modify('openai-codex', async value => ({ ...value, access: 'fixture-new-login' }));
+      let finished = false;
+      const changed = service.connectionsChanged().then(() => { finished = true; });
+      await disposalEntered.promise;
+      expect(fake.session.abort).toHaveBeenCalled();
+      expect(finished).toBe(false);
+      expect(() => resolved.modelRuntime.completeSimple(model, {})).toThrow('provider connection changed');
+      release.resolve();
+      await changed;
+      expect(service.conversations.get('conversation_test')).toMatchObject({ session: null, restored: true });
+    } finally { release.resolve(); await service.dispose(); fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test('shows a project-editing approval with bounded metadata and explicit user decision', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

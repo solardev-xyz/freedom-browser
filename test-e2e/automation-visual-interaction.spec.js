@@ -42,6 +42,9 @@ for (const scenario of [
         const { createOriginScopedAutomationController } = req('origin-scoped-controller');
         const owner = webContents.getAllWebContents().find((w) => w.getURL() === url);
         owner.setZoomFactor(scenario === 'zoom' ? 1.5 : 1);
+        // setZoomFactor returns before Chromium's compositor applies the new
+        // scale. Capture only after layout/paint settle, as a real user would.
+        await owner.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         const adapter = new WebContentsPageAdapter(owner);
         const controller = new AutomationController({
           policyController: createInitialAutomationPolicy(),
