@@ -78,8 +78,12 @@ experimental hook currently requires a native Windows host.
 
 First use requires one-time administrator provisioning of Freedom's restricted
 accounts and network rules. Workloads subsequently run without administrator
-rights. Windows permits broad reads while restricting writes and network access;
-the workspace approval explains that difference from macOS/Linux. Missing helpers
+rights. Windows confines writes but permits broad reads. Strictly offline shell
+commands are unavailable: ordinary commands require the existing direct-network
+grant, exact command/directory for allow-once or broader conversation scope when
+selected. Fixed built-in file operations use a separate internal helper path and
+do not acquire an implicit network grant. The workspace approval explains these
+differences from macOS/Linux. Missing helpers
 or incomplete setup fail closed. MXC is not currently selected.
 
 After setup, use a standard-user desktop session (or an existing interactive task

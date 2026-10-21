@@ -39,8 +39,28 @@ records, isolated preview networking, guarded MCP authentication, wallet fee and
 custody checks, and Windows build/setup isolation. The audit record separates
 passing regressions from remaining native qualification; it is the current
 per-finding status source. S7 did not reproduce on the tested macOS filesystem;
-**S8 reproduced on Windows CI:** the shared DNS service sent an offline-workload lookup despite direct-socket blocking. The bounded repair removes the unsupported Windows offline-command capability: ordinary shell/background commands require existing explicit full-network approval, while fixed built-in file tools keep a dedicated trusted route. Controller, executor and native protocol reject unapproved ordinary offline commands before launch. Allow-once remains exact command/directory; explicitly selected conversation grants retain their existing scope. Native qualification of this repair is pending. Earlier native Windows compilation, file/junction read checks, confined cleanup and controller qualification passed. The Windows desktop is powered off; native security qualification is running on disposable GitHub-hosted Windows runners. The user-selected Daybreak Blue Codex reviewer completed its source review after Claude's model stopped its session. Its additional root-identity, live CLI-policy, IPv6 and OAuth-generation findings are repaired and re-reviewed; it found no further concrete source repair outside S8. Native/qualification gaps remain recorded in the audit registry, and the new Windows S8 qualification still blocks release clearance. Strong offline Windows execution via an AppContainer/package-filter overlay is deferred: the owned Server 2022 prototype blocked DNS with causal WFP drops and positive host/full controls, but combined-token compatibility, persistent filter/profile setup, readiness, ACL composition and upgrade/uninstall behavior remain unqualified (see the audit registry). These gates precede new domain capabilities or broad
-beta/release clearance.
+**S8 bounded repair qualified on Windows CI:** the shared DNS service had sent an offline-workload
+lookup despite direct-socket blocking. The repair removes the unsupported Windows offline-command
+capability: ordinary shell/background commands require existing explicit full-network approval,
+while fixed built-in file tools keep a dedicated trusted route. Controller, executor and native
+protocol reject ordinary offline commands before launch. Allow-once remains exact command/directory;
+explicitly selected conversation grants retain their existing scope.
+
+Current-source native qualification passed on Server 2022 and Server 2025 in [run
+39675000994](https://github.com/solardev-xyz/freedom-browser/actions/runs/39675000994): actual
+file/history/npm workflows, exact-once command authority, outside/Git/junction write controls,
+cancellation/EOF controls, unapproved DNS zero plus approved-full DNS positive, two Rust tests and
+five Agent E2E cases per runner. The physical Windows desktop was powered off; these checks used
+disposable hosted runners. Daybreak Blue reviewed the final source and both native logs and accepted
+closing S8 for this bounded claim. Its additional root-identity, live CLI-policy, IPv6 and
+OAuth-generation findings are also repaired and re-reviewed. Separate qualification follow-ups
+remain in the audit registry; this is not blanket beta/release clearance.
+
+**Deferred extension:** strong offline Windows execution via an AppContainer/package-filter overlay.
+The owned Server 2022 prototype blocked DNS with causal WFP drops and positive host/full controls,
+but combined-token compatibility, persistent filter/profile setup, readiness, ACL composition and
+upgrade/uninstall behavior remain unqualified. This is future capability work, not part of the
+current Windows support claim.
 
 Main is verified through `8a671891`, already included by `fdd2e729`. Wallet
 attribution PR #765 is present; the additional Agent-custody auto-approval guard
