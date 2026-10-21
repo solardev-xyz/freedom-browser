@@ -95,7 +95,9 @@ int wmain() {
 
             FWP_BYTE_ARRAY16 uuid_bytes = {};
             std::memcpy(uuid_bytes.byteArray16, &entry.Uuid, sizeof(UUID));
-            FWPM_FILTER_CONDITION0 conditions[4] = {};
+            // Deny this caller access to the DNS query interface on every
+            // transport/version; leave every unrelated RPC interface alone.
+            FWPM_FILTER_CONDITION0 conditions[2] = {};
             for (auto& condition : conditions) condition.matchType = FWP_MATCH_EQUAL;
             conditions[0].fieldKey = FWPM_CONDITION_REMOTE_USER_TOKEN;
             conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
@@ -103,25 +105,19 @@ int wmain() {
             conditions[1].fieldKey = FWPM_CONDITION_RPC_IF_UUID;
             conditions[1].conditionValue.type = FWP_BYTE_ARRAY16_TYPE;
             conditions[1].conditionValue.byteArray16 = &uuid_bytes;
-            conditions[2].fieldKey = FWPM_CONDITION_RPC_IF_VERSION;
-            conditions[2].conditionValue.type = FWP_UINT16;
-            conditions[2].conditionValue.uint16 = entry.VersMajor;
-            conditions[3].fieldKey = FWPM_CONDITION_RPC_PROTOCOL;
-            conditions[3].conditionValue.type = FWP_UINT8;
-            conditions[3].conditionValue.uint8 = 3; // RPC_PROTSEQ_LRPC, Windows SDK rpcdcep.h.
             FWPM_FILTER0 filter = {};
             checked(UuidCreate(&filter.filterKey), "UuidCreate");
             filter.displayData.name = const_cast<wchar_t*>(L"Freedom owned DNS RPC probe");
             filter.layerKey = FWPM_LAYER_RPC_UM;
             filter.subLayerKey = sublayer.subLayerKey;
             filter.action.type = FWP_ACTION_BLOCK;
-            filter.numFilterConditions = 4;
+            filter.numFilterConditions = 2;
             filter.filterCondition = conditions;
             UINT64 id = 0;
             checked(FwpmFilterAdd0(engine.handle, &filter, nullptr, &id), "FwpmFilterAdd0(DNS RPC)");
             FWPM_FILTER0* actual = nullptr;
             checked(FwpmFilterGetById0(engine.handle, id, &actual), "FwpmFilterGetById0");
-            bool matches = actual->numFilterConditions == 4 && actual->action.type == FWP_ACTION_BLOCK &&
+            bool matches = actual->numFilterConditions == 2 && actual->action.type == FWP_ACTION_BLOCK &&
                 IsEqualGUID(actual->layerKey, FWPM_LAYER_RPC_UM) &&
                 IsEqualGUID(actual->subLayerKey, sublayer.subLayerKey);
             // WFP may reorder conditions. Verify every typed field survived.
@@ -135,16 +131,13 @@ int wmain() {
                         found = got.conditionValue.sd->size == user.size && !std::memcmp(got.conditionValue.sd->data, user.data, user.size);
                     else if (IsEqualGUID(got.fieldKey, FWPM_CONDITION_RPC_IF_UUID))
                         found = !std::memcmp(got.conditionValue.byteArray16, &uuid_bytes, sizeof(uuid_bytes));
-                    else if (IsEqualGUID(got.fieldKey, FWPM_CONDITION_RPC_IF_VERSION))
-                        found = got.conditionValue.uint16 == entry.VersMajor;
-                    else found = got.conditionValue.uint8 == 3;
                 }
                 matches = matches && found;
             }
             FwpmFreeMemory0(reinterpret_cast<void**>(&actual));
             if (!matches) throw std::runtime_error("Installed filter differs from requested boundary");
             installed++;
-            std::printf("Verified DNS filter %llu: offline SID + observed interface/version + local RPC\n", id);
+            std::printf("Verified DNS filter %llu: offline SID + observed DNS query interface\n", id);
         }
         if (!installed) throw std::runtime_error("No DNS-specific interfaces found");
         const int result = _wsystem(L"node scripts/qualify-windows-dns.js");
