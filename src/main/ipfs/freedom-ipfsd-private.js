@@ -51,6 +51,10 @@
  *   protocol mismatch). The shared client restarts on its own; this stops
  *   it from within its exit instead ("stopping is sticky"), and starts it
  *   again on demand.
+ * - **A start the service refuses** for anything but memory (`storage`: a
+ *   store that won't open, or a fault) fails the private instances as the
+ *   persistent node gives up (0007: an error, not a crash; no restart until
+ *   the user's).
  * - **Requests** are the persistent node's (`freedom-ipfsd-node.js`):
  *   today's texts, `BackendBusy` for the service's `busy`, and the
  *   pull-driven body. A start the service refuses for memory (`busy`) is
@@ -87,6 +91,11 @@ const MAX_INSTANCES = 8;
 const MEMORY_STORE_BYTES = 32 * 1024 * 1024;
 /** The handler's answer when every instance is pinned (0007, "Main's side"). */
 const CAPACITY = 'Too many private windows are loading IPFS content';
+
+/** What an `ipfs.start` may fail with and still be tried again: memory
+ * (`busy`), main's own retirement (`stopped`, `fenced`), or the process's
+ * end, which the crash rules cover. */
+const RETRYABLE_START = new Set(['busy', 'stopped', 'fenced', 'ipfs_unavailable']);
 
 const notRunning = () => failure(NOT_RUNNING, 'stopped');
 
@@ -399,12 +408,16 @@ class PrivateInstances {
         fence: () => instance.state === 'starting',
       });
     } catch (err) {
-      // Refused for memory, or its process gone: expected. Anything else
-      // the service refused or failed is logged by its code.
-      if (!['busy', 'stopped', 'fenced', 'ipfs_unavailable'].includes(err?.code)) {
+      // Refused for memory, retired by main, or its process gone: the next
+      // request tries again. Anything else the service refused or failed is
+      // no crash: no restart until the user's.
+      if (!RETRYABLE_START.has(err?.code)) {
         this.log.warn('[IPFS] private freedom-ipfs instance failed to start', {
           code: err?.code || 'error',
         });
+        // Its waiters hear why, before every instance goes with the rest.
+        this.retire(instance, { stop: false, error: requestError(err) });
+        this.fail('an instance failed to start');
       }
       throw err;
     }

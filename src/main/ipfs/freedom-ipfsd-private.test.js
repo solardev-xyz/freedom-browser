@@ -573,6 +573,24 @@ describe('the process', () => {
     expect(service.spawned).toHaveLength(1);
   });
 
+  test('a start the service refuses on its storage fails the private instances: no restart until a new manager', async () => {
+    newInstances({
+      start: (message, c) => c.error(message.id, 'storage', 'the memory store cannot open'),
+    });
+    const first = instances.lease('private-a');
+    await expect(first.request(init())).rejects.toThrow('freedom-ipfs native gateway error');
+    first.release();
+    await settle();
+
+    expect(instances.up).toBe(false);
+    const second = instances.lease('private-a');
+    await expect(second.request(init())).rejects.toThrow('freedom-ipfs native node is not running');
+    second.release();
+    expect(sent('ipfs.start')).toHaveLength(1);
+    expect(service.spawned).toHaveLength(1);
+    expect(child().sent('ipfs.shutdown')).toHaveLength(1);
+  });
+
   test.each([
     ['its last lease', (lease) => lease.release()],
     ["its partition's close", () => instances.close('private-b')],
