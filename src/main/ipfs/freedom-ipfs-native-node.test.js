@@ -946,6 +946,27 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
     expect(node.gate).toBeNull();
   });
 
+  test("a start whose event worker can't start frees the node and its gate", async () => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { Worker } = require('worker_threads');
+    Worker.mockImplementationOnce(() => {
+      throw Object.assign(new Error('worker init failed'), { code: 'ERR_WORKER_INIT_FAILED' });
+    });
+    const release = jest.fn(async () => {});
+    const node = new FreedomIpfsNativeNode({
+      dataDir: '/tmp/freedom-ipfs-test',
+      takeGate: jest.fn(async () => ({ release })),
+    });
+
+    await expect(node.start()).rejects.toMatchObject({ code: 'ERR_WORKER_INIT_FAILED' });
+    expect(node.nodeHandle).toBe('0');
+    expect(binding.nodeStopGatewayAsync).toHaveBeenCalledTimes(1);
+    expect(binding.nodeFreeAsync).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(node.gate).toBeNull();
+  });
+
   // A gate wait honours its signal as holdIpfsGate does: one already aborted
   // rejects at once, without a holder.
   const cancellableGate = () =>

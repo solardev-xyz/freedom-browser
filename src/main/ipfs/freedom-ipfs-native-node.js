@@ -453,7 +453,22 @@ class FreedomIpfsNativeNode {
       throw new Error(GATE_LOST);
     }
     this.nodeHandle = handle;
-    this.startDispatcher();
+    try {
+      this.startDispatcher();
+    } catch (err) {
+      // The event worker never started (say, ERR_WORKER_INIT_FAILED): tear
+      // the started node down as a stop does, its gate last, so a failed
+      // start holds neither the store nor the gate.
+      this.nodeHandle = '0';
+      try {
+        await asyncLifecycleExport(addon, 'nodeStopGatewayAsync')(handle);
+      } catch (stopErr) {
+        log.warn('[IPFS] native gateway stop failed:', stopErr.message);
+      }
+      await freeNativeHandle(addon, handle);
+      await this.releaseGate();
+      throw err;
+    }
     log.info(`[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`);
     return true;
   }
