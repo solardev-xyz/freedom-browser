@@ -305,6 +305,21 @@ describe('requests', () => {
   });
 
   test.each([
+    ['a 204 with a body', { status: 204, body: true }],
+    ['a status out of range', { status: 99, body: true }],
+  ])('%s is a gateway error, and its body is cancelled', async (_label, head) => {
+    await started({
+      request: (msg, c) => {
+        c.head(msg.id, head);
+        c.body(msg.id, bytes(1024 * 1024));
+      },
+    });
+    await expect(request()).rejects.toThrow('freedom-ipfs native gateway error');
+    await settle();
+    expect(child().cancels).toEqual([child().sent('ipfs.request')[0].id]);
+  });
+
+  test.each([
     ['invalid_argument', 'freedom-ipfs native request could not be started'],
     ['stopped', 'freedom-ipfs native node is not running'],
     ['deadline', 'freedom-ipfs native request timeout'],

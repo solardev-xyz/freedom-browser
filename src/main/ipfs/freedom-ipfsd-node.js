@@ -150,6 +150,7 @@ const isHeader = (pair) =>
 
 /** The head's `Response`: its status and headers, and the body if it has one. */
 function headResponse(result, body) {
+  let stream = null;
   try {
     if (
       !isObject(result) ||
@@ -161,9 +162,12 @@ function headResponse(result, body) {
     }
     const headers = new Headers();
     for (const [name, value] of result.headers) headers.append(name, value);
-    return new Response(body ? nativeBody(body) : null, { status: result.status, headers });
+    stream = body ? nativeBody(body) : null;
+    return new Response(stream, { status: result.status, headers });
   } catch {
-    body?.cancel().catch(() => {});
+    // Once nativeBody() holds the body's reader, only its wrapper can cancel
+    // it (a 204 with a body, say, which Response refuses).
+    (stream ?? body)?.cancel().catch(() => {});
     throw failure(GATEWAY_ERROR, 'internal');
   }
 }
