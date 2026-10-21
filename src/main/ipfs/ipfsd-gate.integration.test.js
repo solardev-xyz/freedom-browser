@@ -183,7 +183,7 @@ describeIfBinary('the IPFS data directory gate with the real freedom-ipfsd', () 
     REFUSAL_MS
   );
 
-  test(
+  testIfAddon(
     'a stop in the same turn as the add-on start never waits out the gate',
     async () => {
       const dataDir = path.join(root, 'ipfs-data', 'freedom-ipfs');

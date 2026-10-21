@@ -1015,13 +1015,18 @@ describe('profile catalog', () => {
       const shared = sharedIpfs(tempRoot);
       // Once the fence has moved the directory, ipfs-data becomes a link.
       const realRename = fs.renameSync;
-      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      // The fence moves the canonical path: the temp directory's own can
+      // differ from the one named (/private/var on macOS, long names on
+      // Windows).
+      const ipfsDir = path.join(fs.realpathSync(record.dir), 'ipfs-data', 'freedom-ipfs');
+      let planted = false;
       const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
         realRename(from, to);
         if (from !== ipfsDir) return;
         const ipfsData = path.dirname(ipfsDir);
         realRename(ipfsData, path.join(tempRoot, 'moved-ipfs-data'));
         linkDir(shared, ipfsData);
+        planted = true;
       });
 
       try {
@@ -1030,6 +1035,7 @@ describe('profile catalog', () => {
         renameSpy.mockRestore();
       }
 
+      expect(planted).toBe(true);
       expectSharedUntouched(shared);
       expect(fs.existsSync(path.join(record.dir, 'ipfs-data'))).toBe(false);
     });
@@ -1065,7 +1071,9 @@ describe('profile catalog', () => {
       fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
       // No ipfs-data yet: a writer creates it, store and all, as the fence
       // finds nothing to move.
-      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      // The fence moves the canonical path (see above).
+      const ipfsDir = path.join(fs.realpathSync(record.dir), 'ipfs-data', 'freedom-ipfs');
+      let planted = false;
       const realRename = fs.renameSync;
       const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
         try {
@@ -1074,6 +1082,7 @@ describe('profile catalog', () => {
           if (from === ipfsDir) {
             fs.mkdirSync(ipfsDir, { recursive: true });
             fs.writeFileSync(path.join(ipfsDir, 'new-owner'), 'theirs');
+            planted = true;
           }
         }
       });
@@ -1084,6 +1093,7 @@ describe('profile catalog', () => {
         renameSpy.mockRestore();
       }
 
+      expect(planted).toBe(true);
       expect(fs.readFileSync(path.join(ipfsDir, 'new-owner'), 'utf-8')).toBe('theirs');
       expect(fs.readdirSync(record.dir)).toEqual(['ipfs-data']);
     });
