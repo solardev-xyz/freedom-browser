@@ -410,6 +410,28 @@ describe('fences', () => {
 });
 
 describe('a start against what can end it', () => {
+  test('a close in the turns between the start reply and the instance going live keeps it retired', async () => {
+    newInstances();
+    await load('private-b'); // The process lives on after private-a closes.
+    const { client } = instances;
+    const startInstance = client.startInstance.bind(client);
+    client.startInstance = (...args) =>
+      startInstance(...args).then((value) => {
+        queueMicrotask(() => queueMicrotask(() => instances.close('private-a')));
+        return value;
+      });
+    const lease = instances.lease('private-a');
+    await expect(lease.request(init())).rejects.toThrow('freedom-ipfs native node is not running');
+    await settle();
+    const requests = sent('ipfs.request').length;
+
+    // Its captured lease sends nothing to the retired ID.
+    await expect(lease.request(init())).rejects.toThrow('freedom-ipfs native node is not running');
+    expect(sent('ipfs.request')).toHaveLength(requests);
+    expect(sent('ipfs.stop').map((m) => m.params)).toEqual([{ instance: 'e-2' }]);
+    lease.release();
+  });
+
   test("a process crash fails a cold start waiting for an evicted instance's teardown", async () => {
     const stops = holding();
     newInstances({ stop: stops.handler });

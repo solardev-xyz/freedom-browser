@@ -374,6 +374,11 @@ class PrivateInstances {
     instance.state = 'starting';
     try {
       await this.startInstance(instance);
+      // Retired while the service started it (its stop has gone already),
+      // or its process ended: checked in the turn that makes it live.
+      if (instance.state !== 'starting' || !this.client.serves(instance.gen)) {
+        throw notRunning();
+      }
     } catch (err) {
       const error = requestError(err);
       if (instance.state === 'starting') this.retire(instance, { stop: false, error });
@@ -421,8 +426,6 @@ class PrivateInstances {
       }
       throw err;
     }
-    // Retired while the service started it: its stop has gone already.
-    if (instance.state !== 'starting') throw notRunning();
   }
 
   /** `promise`, or this waiter's abort or deadline, whichever is first. */
