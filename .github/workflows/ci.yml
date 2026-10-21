@@ -1411,9 +1411,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download freedom-ipfsd binaries
-        # Nothing starts it yet, but release packaging requires it: this is
-        # the pull-request run of its real download and verification on all
-        # three OSes. Same bounded watchdog as the Ant download.
+        # Packaged builds don't start it yet, but release packaging requires
+        # it: this is the pull-request run of its real download and
+        # verification on all three OSes. Same bounded watchdog as the Ant
+        # download.
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
