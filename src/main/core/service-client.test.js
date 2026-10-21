@@ -203,6 +203,27 @@ describe('what a service configures, and what it shares', () => {
     }
   });
 
+  // freedom-ipfsd's ephemeral process comes back only when a private window
+  // needs it (design 0007, "Private windows"): its owner stops the client
+  // from within the crash's 'exit', which no restart outlives, and starts it
+  // again on demand.
+  test("a stop from within a crash's exit: no restart, and start() runs it again", async () => {
+    const { client, children, timers } = timedClient(TEST_SERVICE, answering());
+    await client.start();
+    client.on('exit', () => client.stop());
+    children[0].exit(1);
+    await tick();
+    await tick();
+    expect(client.state).toBe('stopped');
+    expect(timers.filter((timer) => !timer.cleared && timer.ms === 500)).toHaveLength(0);
+    expect(children).toHaveLength(1);
+
+    await expect(client.start()).resolves.toEqual({ protocol: 3, capabilities: [] });
+    expect(children).toHaveLength(2);
+    client.removeAllListeners('exit');
+    await client.stop();
+  });
+
   test('a service that closes stdout as it stops is no connection failure', async () => {
     const { client, log } = timedClient(TEST_SERVICE, (message, child) => {
       if (message.method === 'test.hello') {

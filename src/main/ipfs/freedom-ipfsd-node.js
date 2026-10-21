@@ -142,6 +142,31 @@ function nativeBody(body) {
   );
 }
 
+/**
+ * `ipfs.start`'s params for `instance` on `store` (0007, Methods): today's
+ * configuration, sent explicitly (0007, Parity), the same for the profile's
+ * instance and a private window's: automatic routing over the two delegated
+ * routers, a 3 s DHT query timeout and 32 providers, 8 header permits and
+ * the gateway's queue.
+ */
+function instanceParams(instance, store, requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS) {
+  return {
+    instance,
+    store,
+    routing: {
+      mode: 'auto',
+      delegated_routers: DELEGATED_ROUTERS.split(','),
+      dht_query_timeout_s: DHT_QUERY_TIMEOUT_S,
+      dht_max_providers: DHT_MAX_PROVIDERS,
+    },
+    gateway: {
+      max_concurrent_requests: MAX_CONCURRENT_REQUESTS,
+      request_queue_timeout_ms: requestQueueTimeoutMs,
+    },
+    network: { mode: 'direct' },
+  };
+}
+
 const isHeader = (pair) =>
   Array.isArray(pair) &&
   pair.length === 2 &&
@@ -438,21 +463,11 @@ class FreedomIpfsdNode {
   }
 
   startParams(instance) {
-    return {
+    return instanceParams(
       instance,
-      store: { kind: 'disk', max_bytes: this.maxCacheBytes },
-      routing: {
-        mode: 'auto',
-        delegated_routers: DELEGATED_ROUTERS.split(','),
-        dht_query_timeout_s: DHT_QUERY_TIMEOUT_S,
-        dht_max_providers: DHT_MAX_PROVIDERS,
-      },
-      gateway: {
-        max_concurrent_requests: MAX_CONCURRENT_REQUESTS,
-        request_queue_timeout_ms: this.requestQueueTimeoutMs,
-      },
-      network: { mode: 'direct' },
-    };
+      { kind: 'disk', max_bytes: this.maxCacheBytes },
+      this.requestQueueTimeoutMs
+    );
   }
 
   /** `ipfs.start` for a new instance on `gen`, if it still serves. */
@@ -620,6 +635,14 @@ class FreedomIpfsdNode {
 module.exports = {
   FreedomIpfsdNode,
   BackendBusy,
+  instanceParams,
+  headResponse,
+  requestError,
+  failure,
+  NOT_RUNNING,
+  ABORTED,
+  TIMEOUT,
+  EXITED,
   HEALTH_INTERVAL_MS,
   STATS_FRESH_MS,
 };
