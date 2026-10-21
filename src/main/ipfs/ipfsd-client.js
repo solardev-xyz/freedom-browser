@@ -55,13 +55,16 @@ const SHUTDOWN_GRACE_MS = 5_000;
 /** Requests outstanding per process, retiring ones included (0007, Bounds). */
 const MAX_OUTSTANDING = 512;
 
-/** Dev overrides or downloaded binaries; packaged builds always use resources. */
+/** Dev overrides or downloaded binaries; packaged builds always use resources.
+ * Outside Electron (a script such as the native smoke), `app` is undefined,
+ * and the build isn't packaged. */
 function getIpfsdBinaryPath() {
-  if (!app.isPackaged && process.env.FREEDOM_IPFSD_PATH) {
+  const packaged = Boolean(app?.isPackaged);
+  if (!packaged && process.env.FREEDOM_IPFSD_PATH) {
     return process.env.FREEDOM_IPFSD_PATH;
   }
   const name = process.platform === 'win32' ? 'freedom-ipfsd.exe' : 'freedom-ipfsd';
-  if (!app.isPackaged) {
+  if (!packaged) {
     const os =
       { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform] || process.platform;
     return path.join(
