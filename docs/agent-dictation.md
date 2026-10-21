@@ -232,7 +232,7 @@ historical draft, not this replacement. The cloud dictation paths are unchanged.
 
 Replacement validation at `68a48038`: lint and all 10,673 unit tests pass; all
 10 dictation Electron scenarios pass (UI flow coverage, synthetic audio/providers).
-The real installer, transcription, cancellation and invalid-audio cleanup passed
+The real installer, transcription, pre-aborted cancellation and invalid-audio cleanup passed
 on all five native targets in [GitHub run 39598486244](https://github.com/solardev-xyz/freedom-browser/actions/runs/39598486244).
 A disposable Electron ASAR smoke on macOS arm64 also passed packaged-helper lookup,
 model installation, transcription and cleanup. Normal development startup reuses
@@ -254,3 +254,16 @@ seconds for this sample. It was superseded by upstream CPU dispatch with bundled
 baseline and SIMD backends before qualification. Real microphone quality and
 permissions, signed-release packaging, older distro/CPU coverage, a private warm
 worker, GPU tuning and OS-enforced process isolation remain separate follow-ups.
+
+## 2026-10-21 pre-merge review
+
+Claude's [local dictation review](audits/agent-local-dictation-review-2026-10.md)
+found and re-reviewed repairs for non-speech annotations, Windows Unicode profile
+paths, native cancellation/cleanup and unsupported build targets. At `b8f345c6`,
+lint and all 10,685 unit tests pass; the final source verdict is no remaining
+actionable defects; the native qualification condition has passed. Running-child cancellation
+passes all five targets at `16e8e752` in
+[run 39610853742](https://github.com/solardev-xyz/freedom-browser/actions/runs/39610853742).
+The expanded Unicode-profile/noise checks at `b8f345c6` pass all five targets in
+[run 39612841790](https://github.com/solardev-xyz/freedom-browser/actions/runs/39612841790).
+The audit records release qualification and optional follow-ups separately.

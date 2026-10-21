@@ -593,6 +593,19 @@ x64 runners and 6.6 s on Intel Mac. Packaged resource lookup also passes a
 disposable Electron ASAR test on macOS arm64. Lint, 10,673 unit tests and all ten
 dictation UI scenarios pass. These are not physical-microphone or signed-release
 qualification claims.
+
+**2026-10-21 local pre-merge review:** Claude reviewed the dictation branch and
+re-reviewed fixes for noise annotations entering drafts, Windows non-ASCII paths,
+native cancellation/cleanup and unsupported-target startup/build failures. Final
+source verdict at `b8f345c6`: no remaining actionable defects; lint and **10,685
+unit tests pass / 129 skipped**. Running-child cancellation passes all five targets
+in [run 39610853742](https://github.com/solardev-xyz/freedom-browser/actions/runs/39610853742);
+the expanded Unicode-profile/noise matrix passes all five targets in
+[run 39612841790](https://github.com/solardev-xyz/freedom-browser/actions/runs/39612841790).
+The earlier `68a48038` run covered a pre-aborted signal only. Keep physical-mic,
+signed-installation and performance/isolation qualification separate.
+Findings, fixes and smaller deferred follow-ups are recorded in the
+[local review](../docs/audits/agent-local-dictation-review-2026-10.md).
 Details and exact pins: [dictation](../docs/agent-dictation.md#on-this-device).
 
 **2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
