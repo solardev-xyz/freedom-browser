@@ -122,7 +122,8 @@ async function main() {
       filter = null;
       assert(result.host > 0 && result.full > 0, 'Host and approved-network DNS must remain usable');
     }
-    assert(results.some(result => result.offline === 0), 'No tested RPC boundary blocked offline DNS');
+    assert.equal(results.find(result => result.mode === 'both')?.offline, 0,
+      'Both DNS interfaces must block offline DNS without contradicting individual results');
   } finally {
     try {
       if (filter) {

@@ -7,13 +7,15 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT') {
 if ($Operation -eq 'Begin') {
     $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object Status -eq Up)
     if (!$adapters.Count) { throw 'No active adapters' }
+    $allDns = @(Get-DnsClientServerAddress)
     $entries = @(foreach ($adapter in $adapters) {
-        foreach ($dns in @(Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex)) {
+        # Hidden non-IP adapters can be Up but have no DNS CIM object.
+        foreach ($dns in @($allDns | Where-Object InterfaceIndex -eq $adapter.ifIndex)) {
             $service = if ($dns.AddressFamily -eq 2) { 'Tcpip' } elseif ($dns.AddressFamily -eq 23) { 'Tcpip6' } else { throw 'Unknown address family' }
             $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters\Interfaces\$(([guid]$adapter.InterfaceGuid).ToString('B'))"
             if (!(Test-Path $key)) { throw 'Cannot determine automatic/static DNS configuration' }
             $static = (Get-ItemProperty $key).NameServer
-            [pscustomobject]@{Index=$adapter.ifIndex;Family=$dns.AddressFamily;Servers=@($dns.ServerAddresses);Static=[bool]$static}
+            [pscustomobject]@{Index=$adapter.ifIndex;Family=$dns.AddressFamily;Servers=@($dns.ServerAddresses);Static=[bool]$static;Key=$key}
         }
     })
     if (!$entries.Count) { throw 'No DNS configuration found' }
@@ -52,6 +54,7 @@ if ($Operation -eq 'Begin') {
     foreach ($entry in $entries) {
         $actual = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
         if (($actual.ServerAddresses -join ',') -ne ($entry.Servers -join ',')) { $failures += 'Final restored DNS addresses differ' }
+        if ([bool](Get-ItemProperty $entry.Key).NameServer -ne $entry.Static) { $failures += 'Restored automatic/static DNS mode differs' }
     }
     if ($failures.Count) { throw ($failures -join '; ') }
     Write-Host 'Original adapter DNS configuration restored and checked'

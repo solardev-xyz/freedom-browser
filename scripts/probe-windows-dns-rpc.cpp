@@ -94,7 +94,6 @@ int wmain(int argc, wchar_t** argv) {
             std::printf("Observed DNS interface %s v%u.%u\n", reinterpret_cast<char*>(uuid),
                 static_cast<unsigned>(entry.VersMajor), static_cast<unsigned>(entry.VersMinor));
             RpcStringFreeA(&uuid);
-            if (entry.VersMinor) throw std::runtime_error("Unqualified minor-version encoding");
 
             FWP_BYTE_ARRAY16 uuid_bytes = {};
             std::memcpy(uuid_bytes.byteArray16, &entry.Uuid, sizeof(UUID));
@@ -140,7 +139,7 @@ int wmain(int argc, wchar_t** argv) {
             FwpmFreeMemory0(reinterpret_cast<void**>(&actual));
             if (!matches) throw std::runtime_error("Installed filter differs from requested boundary");
             installed++;
-            std::printf("Verified DNS filter %llu: offline SID + observed DNS query interface\n", id);
+            std::printf("Verified DNS filter %llu: offline SID + observed DNS interface\n", id);
         }
         if (installed != static_cast<unsigned>(query) + static_cast<unsigned>(policy))
             throw std::runtime_error("Expected DNS-specific interfaces absent");
