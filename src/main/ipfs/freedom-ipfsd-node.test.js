@@ -357,6 +357,22 @@ describe('requests', () => {
     expect(error?.message).toBe(message);
   });
 
+  test('an abort reaches a body nobody reads, at once', async () => {
+    await started({
+      request: (msg, c) => {
+        c.head(msg.id);
+        c.body(msg.id, bytes(200 * 1024), { abort: { at: 1000, code: 'body_stream_error' } });
+      },
+    });
+    const res = await request();
+    const reader = res.body.getReader();
+    let failed = null;
+    reader.closed.catch((err) => (failed = err));
+    await settle();
+    // Nothing was read: the abort still failed the body, with today's text.
+    expect(failed?.message).toBe('freedom-ipfs native read failed');
+  });
+
   test('an aborted signal rejects at once, and nothing is sent', async () => {
     await started();
     const controller = new AbortController();

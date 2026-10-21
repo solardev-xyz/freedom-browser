@@ -114,7 +114,12 @@ async function dialWithRetry({ retry, attempt, signal, onRetry }) {
  * The body as Chromium reads it: pulled only when a consumer asks, failed as
  * truncated when a pending read waits `idleMs` for bytes, or when `stop`
  * aborts (the session closed). `onEnd` runs once, on every terminal path:
- * the end, an error, a cancel, the idle bound or the stop.
+ * the end, an error, a cancel, the idle bound or the stop. An upstream that
+ * fails ends it at once, read or not, and so does the page's abort, which
+ * every backend's `request()` turns into its body's failure with its own
+ * text: whatever `onEnd` frees (the slot, the backend's lease) isn't held by
+ * a body nobody reads. A body merely paused stays held, its bytes still
+ * pulled only on demand.
  */
 function idleBoundBody(body, idleMs, stop, onEnd) {
   const reader = body.getReader();
@@ -143,6 +148,13 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
         controller = streamController;
         if (stop?.aborted) onStop();
         else stop?.addEventListener('abort', onStop, { once: true });
+        // The upstream's failure, as it happens rather than at the next
+        // pull. Its normal close needs no watching: only a pull reaches it.
+        reader.closed.catch((err) => {
+          if (ended) return;
+          controller.error(err);
+          end();
+        });
       },
       pull() {
         return new Promise((resolve) => {

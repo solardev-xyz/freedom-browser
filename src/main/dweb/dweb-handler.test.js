@@ -463,6 +463,68 @@ describe("the backend's lease", () => {
     expect(backend.release).toHaveBeenCalledTimes(1);
   });
 
+  // Read or not: a body whose upstream fails, or whose page aborts (every
+  // backend's request() fails its body on its signal), ends at once and
+  // gives the lease and the slot back. A body merely paused keeps them.
+  test('released once when an unread body fails upstream', async () => {
+    const { body, source } = streaming();
+    const backend = leasedBackend(() => new Response(body));
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    expect(res.status).toBe(200);
+    expect(mockAdmission.stats().active).toBe(1);
+
+    source().error(new Error('cut'));
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+    expect(mockAdmission.stats().active).toBe(0);
+  });
+
+  test('released once when the page aborts an unread body', async () => {
+    const backend = leasedBackend(
+      ({ signal }) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('first'));
+              signal.addEventListener('abort', () => controller.error(signal.reason));
+            },
+          })
+        )
+    );
+    const page = new AbortController();
+    const res = await handle(
+      new Request(`bzz://${HASH}/index.html`, { signal: page.signal }),
+      backend
+    );
+    expect(res.status).toBe(200);
+
+    page.abort();
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+    expect(mockAdmission.stats().active).toBe(0);
+  });
+
+  test('a paused body keeps its lease', async () => {
+    const { body } = streaming();
+    const backend = leasedBackend(() => new Response(body));
+    await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(backend.release).not.toHaveBeenCalled();
+    expect(mockAdmission.stats().active).toBe(1);
+  });
+
+  test('released once on a throw after the fence, answered, not thrown', async () => {
+    // A signal that isn't one: combining it with the fence's throws.
+    const backend = leasedBackend();
+    const res = await handleDwebRequest(
+      { url: `bzz://${HASH}/index.html`, headers: [], signal: {} },
+      { backend, partition: PRIVATE, tag: '[test]' }
+    );
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
+  });
+
   test('a backend without a lease is served as before', async () => {
     const res = await handle(new Request(`bzz://${HASH}/index.html`), antBackend());
     await expect(res.text()).resolves.toBe('content');

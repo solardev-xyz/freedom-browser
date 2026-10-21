@@ -186,7 +186,6 @@ async function handle(request, { backend, partition = null, tag }, release) {
     // Its session has closed: nothing is planned or dialled for it.
     return refuse(502, 'Cancelled');
   }
-  const scope = signal ? AbortSignal.any([signal, fence.signal]) : fence.signal;
   let slot = null;
   let over = false;
   // Every terminal path ends here, once: a fetch's when its body is over.
@@ -251,6 +250,9 @@ async function handle(request, { backend, partition = null, tag }, release) {
     });
   };
   try {
+    // In the try, as everything after the fence is: a throw here still
+    // disposes the fence and frees the slot and the lease (finish).
+    const scope = signal ? AbortSignal.any([signal, fence.signal]) : fence.signal;
     return await driver.open(
       { url, method, headers, backend: backend.ref },
       { signal: scope, ready, use }
