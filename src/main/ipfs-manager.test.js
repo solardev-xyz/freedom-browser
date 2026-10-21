@@ -3206,6 +3206,55 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       expect(first.stop).toHaveBeenCalledTimes(1);
     });
 
+    test('a start and a stop in one turn: the start is cancelled, and no process is spawned', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.registerIpfsIpc();
+
+      const starting = ctx.mod.startIpfs();
+      const stopping = ctx.mod.stopIpfs();
+      await Promise.all([starting, stopping]);
+
+      expect(ctx.serviceInstances).toHaveLength(0);
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+        error: null,
+      });
+    });
+
+    test('stop, start, stop during the first shutdown: the queued start is cancelled', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const first = ctx.serviceInstances[0];
+      const shutdown = deferred();
+      first.shutdown = shutdown.promise;
+
+      const stopped = ctx.mod.stopIpfs();
+      await flush();
+      ctx.mod.startIpfs();
+      // In a later turn, as a user's clicks are.
+      await flush();
+      const stoppedAgain = ctx.mod.stopIpfs();
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(1);
+      shutdown.resolve();
+      await Promise.all([stopped, stoppedAgain]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      expect(first.stop).toHaveBeenCalledTimes(1);
+      expect(ctx.mod.checkHealth()).toBe(false);
+    });
+
+    test("the add-on's start and stop in one turn still both run", async () => {
+      process.env.FREEDOM_IPFS_BACKEND = 'addon';
+      const ctx = loadIpfsManagerModule();
+
+      await Promise.all([ctx.mod.startIpfs(), ctx.mod.stopIpfs()]);
+
+      expect(ctx.nativeInstances).toHaveLength(1);
+      expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    });
+
     test('a second stop meanwhile stops the node once', async () => {
       const ctx = loadIpfsManagerModule({ serviceStartPending: true });
       ctx.mod.startIpfs();

@@ -41,6 +41,9 @@ let activeNode = null;
 // service's replies, so a stop takes it over at once rather than queueing
 // behind it (freedom-core design 0007, "Startup and shutdown").
 let startingNode = null;
+// Counts stopIpfs() calls: a service start requested before the latest stop
+// is cancelled by it, whether or not its node exists yet.
+let stopsRequested = 0;
 let healthCheckInterval = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
@@ -701,7 +704,7 @@ async function startExternalIpfs(config) {
   activateExternalGateway(url);
 }
 
-async function doStartIpfs() {
+async function doStartIpfs(requestedAt = stopsRequested) {
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
     log.info(`[IPFS] Ignoring start request, current state: ${currentState}`);
     return;
@@ -728,6 +731,14 @@ async function doStartIpfs() {
   clearExternalGatewayState();
 
   const NodeClass = nativeNodeClass();
+  // A stop requested after this start would otherwise wait behind it: the
+  // service's start can't be bounded, and that stop has already taken over
+  // whatever was starting. Its own op, queued after this one, publishes
+  // STOPPED. The add-on's start is bounded, and runs as it always has.
+  if (NodeClass === FreedomIpfsdNode && requestedAt !== stopsRequested) {
+    log.info('[IPFS] A stop requested meanwhile cancels the freedom-ipfsd start');
+    return;
+  }
   if (!NodeClass.isAvailable()) {
     updateState(
       STATUS.ERROR,
@@ -920,13 +931,16 @@ async function doStopIpfs(takeover = null) {
 // Public entry points. Each returns a promise that resolves once the transition
 // has fully settled, so awaiting start()/stop() yields the final node status.
 function startIpfs() {
-  return enqueueOp(doStartIpfs);
+  const requestedAt = stopsRequested;
+  return enqueueOp(() => doStartIpfs(requestedAt));
 }
 
 function stopIpfs() {
   // A service node still starting is stopped now, not after its start
-  // settles (doStartIpfs): its shutdown is bounded at 5 s, and so quit and a
-  // mode change are. A start queued after this one waits for that shutdown.
+  // settles (doStartIpfs), and a service start queued before this stop is
+  // cancelled: the shutdown is bounded at 5 s, and so quit and a mode change
+  // are. A start requested after this stop waits for that shutdown.
+  stopsRequested += 1;
   const starting = startingNode;
   startingNode = null;
   const takeover = starting
