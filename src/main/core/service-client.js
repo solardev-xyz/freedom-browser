@@ -1607,8 +1607,13 @@ class ServiceClient extends EventEmitter {
     }
     const body = gen.bodies.get(delivery.id);
     if (!body) return; // retiring: dropped
+    if (delivery.type === 'abort') {
+      // At once, read or not (freedom-core design 0007, "End of a body"): its
+      // bytes are dropped, and whatever its consumer holds goes with it.
+      this.endBody(gen, delivery.id, body, new CoreError(delivery.code, delivery.message));
+      return;
+    }
     if (delivery.type === 'end') body.ended = true;
-    if (delivery.type === 'abort') body.error = new CoreError(delivery.code, delivery.message);
     this.wakeBody(body);
   }
 
@@ -1618,7 +1623,6 @@ class ServiceClient extends EventEmitter {
       controller: null,
       waiter: null,
       ended: false,
-      error: null,
       done: false,
       signal,
       onAbort: null,
@@ -1640,11 +1644,10 @@ class ServiceClient extends EventEmitter {
     );
   }
 
-  /** A consumer's read: the next bytes of the ring, the end, the error, or
-   * a wait for the next frame of the stream. */
+  /** A consumer's read: the next bytes of the ring, the end, or a wait for
+   * the next frame of the stream. (An abort ends the body as it comes.) */
   pullBody(gen, id, body) {
     if (body.done) return undefined;
-    if (body.error) return this.endBody(gen, id, body, body.error);
     const pulled = gen.streams.pull(id, MAX_PULL);
     if (pulled) {
       if (pulled.credit !== null) {

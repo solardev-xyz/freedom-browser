@@ -1105,16 +1105,23 @@ async function requestExternalGateway(
  * answered leaves the manager standing by, which answers as the native
  * node's absence, as today.
  *
+ * It is captured for the request's partition, and carries a lease the
+ * handler releases on every exit (freedom-core design 0007, "Main's side"):
+ * idempotent, and holding nothing while every partition is served by the
+ * profile's node, until private windows get instances of their own (step 7).
+ *
+ * @param {{partition?: string|null}} [_options] - the request's partition
  * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean}, url: string|null,
- *   request: Function}}
+ *   request: Function, release: Function}}
  */
-function ipfsBackend() {
+function ipfsBackend(_options = {}) {
   if (currentMode === MODE.EXTERNAL) {
     const url = currentState === STATUS.RUNNING && externalGatewayUrl ? externalGatewayUrl : null;
     return {
       ref: { ipfs: 'gateway', up: Boolean(url) },
       url,
       request: (init) => requestExternalGateway(url, init),
+      release() {},
     };
   }
   // The native node pulls with real backpressure, and runs the plan's
@@ -1126,6 +1133,7 @@ function ipfsBackend() {
     url: null,
     request: ({ path: gatewayPath, method, headers, signal, headersTimeoutMs }) =>
       node.request({ method, path: gatewayPath, headers, signal, headersTimeoutMs }),
+    release() {},
   };
 }
 

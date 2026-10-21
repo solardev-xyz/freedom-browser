@@ -23,8 +23,16 @@
  * session's close. Every wait in its life observes it (`dweb.open`, its
  * re-plans, the configuration waits, admission, the dial and the body), so a
  * closing private window stops its requests wherever they are, and a closed
- * one starts none. The fence and the slot are released once, whichever way
- * the request ends.
+ * one starts none. The fence, the slot and the backend's lease are released
+ * once, whichever way the request ends.
+ *
+ * **The lease** (freedom-core design 0007, "Main's side"): the backend
+ * captured at admission may pin what serves it (a private partition's
+ * instance), and its `release()` gives the pin back. It is called exactly
+ * once, on every exit: a bound's refusal, a closed session, a failed lookup
+ * or an unavailable core, an error or redirect plan, admission's 503, a
+ * refused plan, and a fetch's end, when its body ends, errors or is
+ * cancelled, or it had none. While a body is handed on, the lease is held.
  *
  * Local failures map to HTTP: `busy` is a 503, `deadline` a 504, a full
  * admission queue a 503, and a refused plan a 502. A `dweb.open` error the
@@ -128,41 +136,65 @@ function openFailure(err, url, tag) {
  * @param {object} options
  * @param {object} options.backend - the backend captured at admission:
  *   `ref` (`{ ant | ipfs: mode, up }`, what `dweb.open` is told), `url` and
- *   `request()` (see `plan-executor.js`)
+ *   `request()` (see `plan-executor.js`), and its lease's `release()`, if it
+ *   has one
  * @param {string|null} [options.partition] - a private session's partition
  * @param {string} options.tag - the handler's log prefix
  * @returns {Promise<Response>}
  */
-async function handleDwebRequest(request, { backend, partition = null, tag }) {
+async function handleDwebRequest(request, options) {
+  // The lease is this request's from its first line: released once, by an
+  // answer, a fetch's end, or a throw from anywhere in the handling (a
+  // malformed in-process request, say). Only a body handed on keeps it.
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    options.backend.release?.();
+  };
+  try {
+    return await handle(request, options, release);
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+async function handle(request, { backend, partition = null, tag }, release) {
+  // An answer before the request is fenced: its lease goes with it.
+  const refuse = (status, message) => {
+    release();
+    return jsonErrorResponse(status, message);
+  };
   const { url, signal } = request;
-  if (url.length > MAX_URL_UNITS) return jsonErrorResponse(414, 'request URL too long');
+  if (url.length > MAX_URL_UNITS) return refuse(414, 'request URL too long');
   // A Request's headers, or an in-process caller's plain object.
   const headers = [...new Headers(request.headers || {})];
   if (headerUnits(headers) > MAX_HEADER_UNITS) {
-    return jsonErrorResponse(431, 'request headers too large');
+    return refuse(431, 'request headers too large');
   }
   // Sent as it came, the core reading it as `(method || 'GET').toUpperCase()`.
   const method = typeof request.method === 'string' ? request.method : '';
   const admitted = { url, method, backend: backend.ref };
 
   const driver = naming.namingDriver();
-  if (!driver) return jsonErrorResponse(503, CORE_UNAVAILABLE);
+  if (!driver) return refuse(503, CORE_UNAVAILABLE);
   let fence;
   try {
     fence = fenceDwebSession(partition);
   } catch {
     // Its session has closed: nothing is planned or dialled for it.
-    return jsonErrorResponse(502, 'Cancelled');
+    return refuse(502, 'Cancelled');
   }
-  const scope = signal ? AbortSignal.any([signal, fence.signal]) : fence.signal;
   let slot = null;
   let over = false;
-  // Every terminal path ends here, once.
+  // Every terminal path ends here, once: a fetch's when its body is over.
   const finish = () => {
     if (over) return;
     over = true;
     slot?.release();
     fence.dispose();
+    release();
   };
   // A fetch plan waits for its slot here, before it is used, so the driver
   // judges it once more after any wait. `life` aborts with the request.
@@ -218,6 +250,9 @@ async function handleDwebRequest(request, { backend, partition = null, tag }) {
     });
   };
   try {
+    // In the try, as everything after the fence is: a throw here still
+    // disposes the fence and frees the slot and the lease (finish).
+    const scope = signal ? AbortSignal.any([signal, fence.signal]) : fence.signal;
     return await driver.open(
       { url, method, headers, backend: backend.ref },
       { signal: scope, ready, use }

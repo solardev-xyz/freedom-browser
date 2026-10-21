@@ -114,13 +114,27 @@ async function dialWithRetry({ retry, attempt, signal, onRetry }) {
  * The body as Chromium reads it: pulled only when a consumer asks, failed as
  * truncated when a pending read waits `idleMs` for bytes, or when `stop`
  * aborts (the session closed). `onEnd` runs once, on every terminal path:
- * the end, an error, a cancel, the idle bound or the stop.
+ * the end, an error, a cancel, the idle bound or the stop. An upstream that
+ * fails ends it at once, read or not, and so does the page's abort, which
+ * every backend's `request()` turns into its body's failure with its own
+ * text: whatever `onEnd` frees (the slot, the backend's lease) isn't held by
+ * a body nobody reads. A body merely paused stays held, its bytes still
+ * pulled only on demand.
  */
 function idleBoundBody(body, idleMs, stop, onEnd) {
   const reader = body.getReader();
   let controller = null;
   let ended = false;
   let timer = null;
+  // A pull in flight, and an upstream that has closed: the pull that took its
+  // last bytes closes the body once it has passed them on.
+  let pulling = false;
+  let upstreamClosed = false;
+  const closeBody = () => {
+    if (ended) return;
+    controller.close();
+    end();
+  };
   // Fails the body: the consumer sees `err`, the upstream is cancelled.
   const fail = (err) => {
     if (ended) return;
@@ -143,16 +157,35 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
         controller = streamController;
         if (stop?.aborted) onStop();
         else stop?.addEventListener('abort', onStop, { once: true });
+        // The upstream's end, as it happens rather than at the next pull:
+        // its failure, or its close once nothing is left in it (an empty
+        // body, say), read or not. Bytes still queued keep it open, and so
+        // keep a paused body held; a chunk already passed on stays readable
+        // after the close.
+        reader.closed.then(
+          () => {
+            upstreamClosed = true;
+            if (!pulling) closeBody();
+          },
+          (err) => {
+            if (ended) return;
+            controller.error(err);
+            end();
+          }
+        );
       },
       pull() {
+        pulling = true;
         return new Promise((resolve) => {
           let settled = false;
           const settle = (fn) => {
             if (settled) return;
             settled = true;
+            pulling = false;
             clearTimeout(timer);
             timer = null;
             if (!ended) fn();
+            if (upstreamClosed) closeBody();
             resolve();
           };
           timer = setTimeout(() => settle(() => fail(new BodyIdleError(idleMs))), idleMs);

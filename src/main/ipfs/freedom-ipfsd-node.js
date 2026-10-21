@@ -118,11 +118,18 @@ function bodyError(err) {
   return failure(READ_FAILED, err?.code || 'internal');
 }
 
-/** The service's body, its errors in today's texts, pulled only on demand. */
+/** The service's body, its errors in today's texts, pulled only on demand.
+ * An abort or the process's end reaches it at once, read or not. */
 function nativeBody(body) {
   const reader = body.getReader();
   return new ReadableStream(
     {
+      start(controller) {
+        // The service body's failure, read or not: a no-op once this stream
+        // is over. Its normal close needs no watching: ServiceClient closes
+        // it only within a pull of this stream, which closes this one too.
+        reader.closed.catch((err) => controller.error(bodyError(err)));
+      },
       async pull(controller) {
         let chunk;
         try {

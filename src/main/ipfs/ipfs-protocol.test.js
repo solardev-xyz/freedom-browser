@@ -29,6 +29,14 @@ const mockDriver = createFakeDwebDriver({
 });
 jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
 
+// The backend each request captures: the manager's own, unless a test
+// stands in for it.
+let mockIpfsBackend = null;
+jest.mock('../ipfs-manager', () => {
+  const actual = jest.requireActual('../ipfs-manager');
+  return { ...actual, ipfsBackend: (options) => (mockIpfsBackend ?? actual.ipfsBackend)(options) };
+});
+
 const { handleRequest } = require('./ipfs-protocol');
 
 const CIDV0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
@@ -530,5 +538,81 @@ describe('extensionless IPFS text navigation', () => {
     expect(result.headers.get('content-type')).toBe('application/octet-stream');
     expect(result.headers.get('x-content-type-options')).toBeNull();
     expect(await result.text()).toBe(fixture);
+  });
+});
+
+// freedom-core design 0007, "Main's side" and "Private windows": the backend
+// is captured for the request's partition, its lease released by the
+// handler, and a capture refused for capacity is a 503 before any plan.
+describe("the backend's capture", () => {
+  const { registerIpfsProtocol } = require('./ipfs-protocol');
+
+  function fakeSession() {
+    const handlers = new Map();
+    return { handlers, protocol: { handle: (scheme, fn) => handlers.set(scheme, fn) } };
+  }
+  const request = (url) => ({ url, method: 'GET', headers: {}, signal: null });
+
+  afterEach(() => {
+    mockIpfsBackend = null;
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['a private session', 'private-capture', 'private-capture'],
+    ['the default session', null, null],
+  ])(
+    "%s captures its own partition's backend, and releases its lease once",
+    async (_label, privatePartition, partition) => {
+      const release = jest.fn();
+      mockIpfsBackend = jest.fn(() => ({
+        ref: { ipfs: 'native', up: false },
+        url: null,
+        request: jest.fn(),
+        release,
+      }));
+      const session = fakeSession();
+      registerIpfsProtocol(session, { privatePartition });
+
+      const res = await session.handlers.get('ipfs')(request(`ipfs://${CIDV1_BASE32}/`));
+
+      expect(mockIpfsBackend).toHaveBeenCalledWith({ partition });
+      expect(res.status).toBe(503);
+      expect(release).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('BackendBusy: a 503 with its message, and nothing planned', async () => {
+    const open = jest.spyOn(mockDriver, 'open');
+    const { BackendBusy } = require('./freedom-ipfsd-node');
+    mockIpfsBackend = () => {
+      throw new BackendBusy('Too many private windows are loading IPFS content');
+    };
+    const res = await handleRequest('ipfs', request(`ipfs://${CIDV1_BASE32}/`), {
+      partition: 'private-full',
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      code: 503,
+      message: 'Too many private windows are loading IPFS content',
+    });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test('a fault merely named BackendBusy is thrown, not answered as one', () => {
+    mockIpfsBackend = () => {
+      throw Object.assign(new TypeError('corrupt capture state'), { name: 'BackendBusy' });
+    };
+    expect(() => handleRequest('ipfs', request(`ipfs://${CIDV1_BASE32}/`))).toThrow(
+      'corrupt capture state'
+    );
+  });
+
+  test('any other failure to capture is thrown, not answered', () => {
+    mockIpfsBackend = () => {
+      throw new Error('unexpected');
+    };
+    expect(() => handleRequest('ipfs', request(`ipfs://${CIDV1_BASE32}/`))).toThrow('unexpected');
   });
 });
