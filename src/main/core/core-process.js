@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
+const { getLockDir } = require('../service-locks');
 const { CoreClient } = require('./core-client');
 const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
@@ -48,14 +49,6 @@ function getCoredBinaryPath() {
     );
   }
   return path.join(process.resourcesPath, 'freedom-cored', name);
-}
-
-/**
- * The per-user lock directory every Freedom build shares (design 0001,
- * "Lifetime lock"). It is never deleted.
- */
-function getLockDir() {
-  return path.join(app.getPath('appData'), 'Freedom', 'locks');
 }
 
 async function startCore() {

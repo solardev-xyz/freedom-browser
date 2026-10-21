@@ -135,3 +135,86 @@ describe('ServiceClient for a service other than the core', () => {
     await tick();
   });
 });
+
+describe('what a service configures, and what it shares', () => {
+  /** A client whose timers are recorded and run by hand. */
+  function timedClient(service, handler, now = () => 0) {
+    const children = [];
+    const timers = [];
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const client = new ServiceClient({
+      service,
+      spawn: jest.fn(() => {
+        const child = new FakeService(handler);
+        children.push(child);
+        return child;
+      }),
+      command: '/bin/test-service',
+      args: ['serve'],
+      log,
+      now,
+      setTimer: (fn, ms) => {
+        const timer = { fn, ms, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimer: (timer) => {
+        if (timer) timer.cleared = true;
+      },
+    });
+    return { client, children, timers, log };
+  }
+
+  test("the kill after a stop waits the service's grace, 3 s by default", async () => {
+    for (const [service, grace] of [
+      [TEST_SERVICE, 3_000],
+      [{ ...TEST_SERVICE, shutdownGraceMs: 5_000 }, 5_000],
+    ]) {
+      // A service that never exits on its own.
+      const { client, timers } = timedClient(service, (message, child) => {
+        if (message.method === 'test.hello') {
+          child.reply({ type: 'response', id: message.id, result: { protocol: 3 } });
+        }
+      });
+      await client.start();
+      const armed = timers.length;
+      const stopped = client.stop();
+      const kill = timers.slice(armed).find((timer) => !timer.cleared);
+      expect(kill.ms).toBe(grace);
+      kill.fn();
+      await stopped;
+    }
+  });
+
+  test('a crash counts toward the back-off: 0.5 s, 2 s, then none for the third within 60 s', () => {
+    let now = 0;
+    const { client } = timedClient(TEST_SERVICE, answering(), () => now);
+    expect(client.recordCrash()).toBe(500);
+    now = 1_000;
+    expect(client.recordCrash()).toBe(2_000);
+    now = 59_999;
+    expect(client.recordCrash()).toBeNull();
+
+    // The window slides: one crash a minute is never three.
+    const { client: steady } = timedClient(TEST_SERVICE, answering(), () => now);
+    for (let i = 0; i < 5; i++) {
+      now = i * 60_000;
+      expect(steady.recordCrash()).toBe(500);
+    }
+  });
+
+  test('a service that closes stdout as it stops is no connection failure', async () => {
+    const { client, log } = timedClient(TEST_SERVICE, (message, child) => {
+      if (message.method === 'test.hello') {
+        child.reply({ type: 'response', id: message.id, result: { protocol: 3 } });
+      } else if (message.method === 'test.shutdown') {
+        // Its output closes before its exit is seen.
+        child.stdout.end();
+        setImmediate(() => child.exit(0));
+      }
+    });
+    await client.start();
+    await client.stop();
+    expect(log.error).not.toHaveBeenCalledWith('[Test] connection failed', expect.anything());
+  });
+});
