@@ -532,7 +532,13 @@ class PrivateInstances {
     for (const slot of this.slots) {
       // Its teardowns ended with it.
       slot.draining = null;
-      if (slot.occupant?.gen) this.retire(slot.occupant, { stop: false, error: exited });
+      // A crash retires every instance, pending ones too, waiting for a
+      // teardown it ended or the process it took. An idle shutdown's end
+      // leaves the ones reserved since to start in the next process.
+      const occupant = slot.occupant;
+      if (occupant && (occupant.gen || !asked)) {
+        this.retire(occupant, { stop: false, error: exited });
+      }
     }
     if (asked || this.stopped) return;
     if (cause === 'mismatch' || NO_RESTART_EXIT_CODES.has(code)) {

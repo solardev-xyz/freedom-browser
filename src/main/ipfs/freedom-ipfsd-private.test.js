@@ -409,6 +409,46 @@ describe('fences', () => {
   });
 });
 
+describe('a start against what can end it', () => {
+  test("a process crash fails a cold start waiting for an evicted instance's teardown", async () => {
+    const stops = holding();
+    newInstances({ stop: stops.handler });
+    for (let i = 0; i < MAX_INSTANCES; i++) await load(`private-${i}`);
+    const lease = instances.lease('private-ninth');
+    let outcome = 'pending';
+    const pending = lease.request(init()).then(
+      () => (outcome = 'served'),
+      (err) => (outcome = err.message)
+    );
+    await settle();
+    expect(stops.held).toHaveLength(1);
+
+    child().exit(70);
+    await settle();
+    expect(outcome).toBe('freedom-ipfs service exited');
+    await clock.advance(500);
+    await pending;
+    expect(outcome).toBe('freedom-ipfs service exited');
+    expect(service.spawned).toHaveLength(1);
+    lease.release();
+  });
+
+  test('a start waiting for an idle shutdown to end goes on in the next process', async () => {
+    const shutdowns = holding();
+    newInstances({ shutdown: shutdowns.handler });
+    await load('private-a');
+    instances.close('private-a');
+    await settle();
+    expect(shutdowns.held).toHaveLength(1);
+
+    const next = load('private-b');
+    await settle();
+    shutdowns.held[0].child.exit(0);
+    expect(await next).toBe('private e-1');
+    expect(service.spawned).toHaveLength(2);
+  });
+});
+
 describe('the process', () => {
   test('goes once its last instance has, and is spawned again on the next private load', async () => {
     newInstances();
