@@ -1112,7 +1112,7 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     .evaluate((element) => element.getBoundingClientRect().width);
   expect(modelMenuWidth).toBeLessThan(broadAttachmentMenu.menuWidth);
   await window.locator('#agent-model-menu-button').click();
-  await expect(window.locator('[data-test="agent-dictation"]')).toBeDisabled();
+  await expect(window.locator('[data-test="agent-dictation"]')).toBeEnabled();
   const composerLayout = await window.evaluate(() => {
     const rect = (selector) => {
       const { left, right, width, height } = document

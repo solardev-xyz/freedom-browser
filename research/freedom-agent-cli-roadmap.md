@@ -55,7 +55,7 @@ Delivered product inventory:
 
 | Area | Implemented baseline |
 | --- | --- |
-| Conversation UX | Floating composer/chat, Agent-first mode, streaming, steering, Stop/takeover, saved conversations, attachments including drag/drop, file/diff/history viewers. The microphone is currently a disabled “coming soon” placeholder. |
+| Conversation UX | Floating composer/chat, Agent-first mode, streaming, steering, Stop/takeover, saved conversations, attachments including drag/drop, file/diff/history viewers. Composer dictation supports connected speech services and optional on-device Whisper. |
 | Providers | Pi 1.0.2; connected hosted/local providers; ChatGPT sign-in; installed Claude CLI session adapter; custom OpenAI-compatible endpoints and optional model compatibility checks. |
 | Creation and browser work | Semantic browser tools, managed projects, external read-only/edit grants, builds, previews, reviewed history/checkpoints and conversational Git recovery. |
 | Delegation and services | Foreground/background helpers, scoped editing/browser work, individual Stop, saved reports, autonomous orchestration, codemode and profile-owned connected MCP services. |
@@ -372,11 +372,10 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
-| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Initial microphone smoke passed; incremental text implemented on experiment/agent-dictation for next smoke |
+| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Integrated into feature branch; maintainer cloud/local smokes and Claude review complete; five-target native CI passes |
 | 5 | AI5 — Domain skills | Give a published site a name and update it later | Read-only contract research complete; typed wallet adapter/skills implementation next |
 
-AI3 can ship before dictation while AI4's transcription backend is evaluated.
-AI5 starts with binding an already-owned name, then purchases and renewals, so
+AI4 is integrated. AI5 starts with binding an already-owned name, then purchases and renewals, so
 registration complexity does not block the first useful named-site workflow.
 
 ### AI1 — A dedicated, opt-in AI section in Settings
@@ -507,6 +506,15 @@ attachment flow; opening a managed/external project is a separate conversation f
   model quality and public publication are separate from deterministic UI checks.
 
 ### AI4 — Voice dictation in the composer
+
+**2026-10-21 integration:** dictation merged into `feature/freedom-automation-kernel`
+as `e3593523`, followed by current remote feature updates in `fdd2e729`. The
+combined production tree passes lint and **10,773 unit tests / 129 skipped**.
+All ten dictation and 26 sidebar Electron cases pass across the integration run
+and focused recheck; the recheck updates the old disabled-microphone assertion
+for the now-functional control. Local native qualification and Claude's final
+review remain pinned to `b8f345c6` below; no signed-installation or new physical
+microphone qualification is implied by this merge.
 
 **2026-10-21 approved privacy scope redesign (current behavior):** connections
 share credentials/billing, while chat routing policies and audio privacy are
