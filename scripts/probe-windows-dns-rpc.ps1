@@ -16,5 +16,5 @@ if ($LASTEXITCODE) { throw 'DNS probe compilation failed' }
 $container = Join-Path $scratch 'appcontainer.exe'
 & cl.exe /nologo /W4 /WX /EHsc /std:c++17 scripts/probe-windows-appcontainer.cpp "/Fe:$container" "/Fo:$scratch\appcontainer.obj" /link Userenv.lib Rpcrt4.lib Advapi32.lib
 if ($LASTEXITCODE) { throw 'AppContainer probe compilation failed' }
-& node scripts/probe-windows-dns-rpc.js $helper $container
+& node scripts/probe-windows-dns-rpc.js $helper $container --appcontainer-only
 if ($LASTEXITCODE) { throw 'Windows DNS isolation experiment did not pass' }

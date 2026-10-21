@@ -17,7 +17,9 @@ function Read-StaticMode($entry) {
 }
 function Write-Dns {
     param($Entry, [AllowEmptyCollection()][string[]]$Servers, [bool]$Automatic)
+    $Servers = @($Servers | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
     $family = if ($Entry.Family -eq 2) { 'ipv4' } else { 'ipv6' }
+    Write-Host "DNS fixture: index=$($Entry.Index) family=$family automatic=$Automatic servers=$($Servers -join ',')"
     if ($Automatic) {
         & netsh interface $family set dnsservers "name=$($Entry.Index)" source=dhcp
         if ($LASTEXITCODE) { throw 'Could not restore automatic DNS' }

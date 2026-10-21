@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cwctype>
 
 static void checked(bool success, const char* name) {
     if (!success) {
@@ -95,31 +97,30 @@ int wmain(int argc, wchar_t** argv) {
         wchar_t github[8] = {};
         checked(GetEnvironmentVariableW(L"GITHUB_ACTIONS", github, 8) != 0 && !wcscmp(github, L"true"), "Disposable CI guard");
         if (argc != 4) throw std::runtime_error("Expected node path, owned workspace and fixed probe source");
-        const std::filesystem::path node(argv[1]), workspace(argv[2]);
-        if (!node.is_absolute() || !workspace.is_absolute() || workspace.wstring().find(L"C:\\freedom-agent-tests\\freedom-dns-rpc-") != 0)
+        const auto node = std::filesystem::canonical(argv[1]);
+        const auto workspace = std::filesystem::canonical(argv[2]);
+        auto owned = workspace.parent_path().wstring();
+        std::transform(owned.begin(), owned.end(), owned.begin(), [](wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+        if (owned.find(L"c:\\freedom-agent-tests\\freedom-dns-rpc-") != 0 ||
+            node.parent_path().parent_path() != workspace.parent_path() || node.filename() != L"node.exe")
             throw std::runtime_error("Expected owned fixture paths");
         Profile profile;
         UUID uuid;
-        checked(UuidCreate(&uuid) == RPC_S_OK, "UuidCreate");
+        const auto uuid_status = UuidCreate(&uuid);
+        checked(uuid_status == RPC_S_OK || uuid_status == RPC_S_UUID_LOCAL_ONLY, "UuidCreate");
         RPC_WSTR uuid_text = nullptr;
         checked(UuidToStringW(&uuid, &uuid_text) == RPC_S_OK, "UuidToStringW");
         profile.name = L"freedom-dns-probe-" + std::wstring(reinterpret_cast<wchar_t*>(uuid_text));
         RpcStringFreeW(&uuid_text);
         const HRESULT created = CreateAppContainerProfile(profile.name.c_str(), L"Freedom owned DNS fixture",
             L"Disposable CI-only network isolation probe", nullptr, 0, &profile.sid);
-        if (FAILED(created)) { std::printf("CreateAppContainerProfile: 0x%08lx\n", created); throw std::runtime_error("AppContainer profile"); }
+        if (FAILED(created)) { std::printf("CreateAppContainerProfile: 0x%08lx\n", static_cast<unsigned long>(created)); throw std::runtime_error("AppContainer profile"); }
 
         std::vector<std::unique_ptr<AclGrant>> grants;
-        std::set<std::wstring> parents;
-        for (const auto& target : {node.parent_path(), workspace}) {
-            for (auto parent = target.parent_path(); !parent.empty();) {
-                if (parents.insert(parent.wstring()).second) grants.push_back(std::make_unique<AclGrant>(parent.wstring(), profile.sid,
-                    FILE_READ_ATTRIBUTES | FILE_TRAVERSE | READ_CONTROL | SYNCHRONIZE, NO_INHERITANCE));
-                const auto next = parent.parent_path();
-                if (next == parent) break;
-                parent = next;
-            }
-        }
+        // Never modify C:\ or the hosted Node installation. An inability to
+        // traverse those defaults is a compatibility result, not an ACL grant.
+        grants.push_back(std::make_unique<AclGrant>(workspace.parent_path().wstring(), profile.sid,
+            FILE_READ_ATTRIBUTES | FILE_TRAVERSE | READ_CONTROL | SYNCHRONIZE, NO_INHERITANCE));
         grants.push_back(std::make_unique<AclGrant>(node.parent_path().wstring(), profile.sid,
             GENERIC_READ | GENERIC_EXECUTE, SUB_CONTAINERS_AND_OBJECTS_INHERIT));
         grants.push_back(std::make_unique<AclGrant>(workspace.wstring(), profile.sid,
@@ -154,8 +155,8 @@ int wmain(int argc, wchar_t** argv) {
         wchar_t system_root[MAX_PATH] = {};
         checked(GetEnvironmentVariableW(L"SystemRoot", system_root, MAX_PATH) != 0, "SystemRoot");
         std::wstring environment;
-        for (const auto& entry : {L"SystemRoot=" + std::wstring(system_root), L"TEMP=" + workspace.wstring(),
-            L"TMP=" + workspace.wstring(), L"USERPROFILE=" + workspace.wstring(), L"HOME=" + workspace.wstring()}) {
+        for (const auto& entry : {L"HOME=" + workspace.wstring(), L"SystemRoot=" + std::wstring(system_root),
+            L"TEMP=" + workspace.wstring(), L"TMP=" + workspace.wstring(), L"USERPROFILE=" + workspace.wstring()}) {
             environment += entry; environment.push_back(0);
         }
         environment.push_back(0);
@@ -179,6 +180,12 @@ int wmain(int argc, wchar_t** argv) {
             "Read actual token capabilities");
         if (reinterpret_cast<TOKEN_GROUPS*>(token_bytes.data())->GroupCount != 0)
             throw std::runtime_error("AppContainer inherited capabilities");
+        GetTokenInformation(token.value, TokenAppContainerSid, nullptr, 0, &token_size);
+        if (token_size < sizeof(TOKEN_APPCONTAINER_INFORMATION) || token_size > 65536) throw std::runtime_error("Unexpected package SID length");
+        token_bytes.resize(token_size);
+        checked(GetTokenInformation(token.value, TokenAppContainerSid, token_bytes.data(), token_size, &returned) != 0 &&
+            EqualSid(profile.sid, reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(token_bytes.data())->TokenAppContainer) != 0,
+            "Verify expected AppContainer SID");
         std::puts("Verified AppContainer process, zero network capabilities"); std::fflush(stdout);
         checked(ResumeThread(thread.value) != static_cast<DWORD>(-1), "ResumeThread");
         if (WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0) {
@@ -188,6 +195,16 @@ int wmain(int argc, wchar_t** argv) {
         DWORD exit_code = 1;
         checked(GetExitCodeProcess(child.value, &exit_code) != 0, "GetExitCodeProcess");
         std::printf("AppContainer workload exit: %lu\n", exit_code);
+        checked(TerminateJobObject(job.value, 0) != 0, "Terminate completed probe job");
+        bool drained = false;
+        for (unsigned i = 0; i < 500; i++) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting = {};
+            checked(QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &accounting,
+                sizeof(accounting), nullptr) != 0, "Query probe job");
+            if (!accounting.ActiveProcesses) { drained = true; break; }
+            Sleep(10);
+        }
+        if (!drained) throw std::runtime_error("Owned probe descendants did not drain");
         bool restored = true;
         while (!grants.empty()) { restored = grants.back()->restore() && restored; grants.pop_back(); }
         return exit_code == 0 && restored ? 0 : 1;

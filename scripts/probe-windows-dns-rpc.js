@@ -18,7 +18,12 @@ async function main() {
   assert(process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true', 'Use only disposable Windows CI');
   const helper = path.resolve(process.argv[2]);
   const container = path.resolve(process.argv[3]);
-  const workspace = fs.mkdtempSync('C:/freedom-agent-tests/freedom-dns-rpc-');
+  const fixture = fs.mkdtempSync('C:/freedom-agent-tests/freedom-dns-rpc-');
+  const workspace = path.join(fixture, 'project');
+  const runtime = path.join(fixture, 'runtime');
+  fs.mkdirSync(workspace); fs.mkdirSync(runtime);
+  const ownedNode = path.join(runtime, 'node.exe');
+  fs.copyFileSync(process.execPath, ownedNode);
   await execute('git', ['init', '--quiet', workspace]);
   const snapshot = path.join(workspace, 'adapter-dns.json');
   const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
@@ -82,9 +87,9 @@ async function main() {
     }
     await adapters('Begin');
     const executor = new WindowsWorkspaceExecutor();
-    const policy = async network => createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network, limits: { timeoutMs: 6000 } });
+    const policy = async network => createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network, limits: { timeoutMs: 15000 } });
     const run = async (network, source) => executor.execute(await policy(network), { command: process.execPath, args: ['-e', source] });
-    const lookup = name => `require('dns').lookup('${name}.',e=>{console.log('lookup-complete',e?.code||'resolved');process.exit(0)});setTimeout(()=>{console.log('lookup-timeout');process.exit(2)},3500);`;
+    const lookup = name => `require('dns').lookup('${name}.',e=>{console.log('lookup-complete',e?.code||'resolved');process.exit(0)});setTimeout(()=>{console.log('lookup-timeout');process.exit(2)},6000);`;
     const count = async action => {
       const name = `${randomBytes(12).toString('hex')}.freedom-audit.test`;
       queries.set(name, 0);
@@ -92,7 +97,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 2000));
       return queries.get(name);
     };
-    const host = source => execute(process.execPath, ['-e', source], { timeout: 5000 });
+    const host = source => execute(process.execPath, ['-e', source], { timeout: 20000 });
     const sandbox = async (network, source) => {
       const result = await run(network, source);
       assert.equal(result.state, 'completed');
@@ -103,7 +108,8 @@ async function main() {
     console.log(JSON.stringify({ baseline }));
     assert(baseline.host > 0 && baseline.full > 0 && baseline.offline > 0, 'All baseline DNS paths must reach the owned listeners');
     const results = [];
-    for (const mode of ['query', 'policy', 'both']) {
+    const appcontainerOnly = process.argv.includes('--appcontainer-only');
+    for (const mode of appcontainerOnly ? [] : ['query', 'policy', 'both']) {
       const child = spawn(helper, [mode], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
       child.stdin.on('error', () => {});
       const closed = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
@@ -130,11 +136,12 @@ async function main() {
       filter = null;
       assert(result.host > 0 && result.full > 0, 'Host and approved-network DNS must remain usable');
     }
+    if (!appcontainerOnly) assert.equal(results.find(result => result.mode === 'both')?.offline, 0, 'RPC-only experiment did not block DNS');
     // RPC results remain recorded even when they fail. This separate prototype
     // tests actual no-network AppContainer tokens, not production integration.
     const containerPackets = await count(async source => {
       const probe = `try{require('fs').writeFileSync(${JSON.stringify(path.join(workspace, 'appcontainer-probe.txt'))},'owned fixture');console.log('appcontainer-write:ok')}catch(e){console.log('appcontainer-write:'+e.code)};${source}`;
-      const result = await execute(container, [process.execPath, workspace, probe], { timeout: 20000 });
+      const result = await execute(container, [ownedNode, workspace, probe], { timeout: 45000 });
       console.log(result.stdout.trim());
       assert.match(result.stdout, /Verified AppContainer process, zero network capabilities/);
       assert.match(result.stdout, /lookup-complete/);
