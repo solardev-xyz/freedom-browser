@@ -246,12 +246,24 @@ async function takeIpfsGate(dataDir, { onLost = null, log = defaultLog, ...optio
   return holdIpfsGate({ dataDir, onLost, log, ...options });
 }
 
-/** Runs `fn` holding the gate of `dataDir` (`takeIpfsGate`'s rules), and
- * releases it once `fn` has settled. */
-async function withIpfsGate(dataDir, fn, options = {}) {
-  const hold = await takeIpfsGate(dataDir, options);
+/**
+ * Runs `fn(gate)` holding the gate of `dataDir` (`takeIpfsGate`'s rules), and
+ * releases it once `fn` has settled. `gate.gated` says whether a gate is
+ * held at all; `gate.held()` whether it still is: false once its holder has
+ * ended unreleased, which a destructive `fn` checks, with nothing awaited,
+ * right before each step that must not run ungated.
+ */
+async function withIpfsGate(dataDir, fn, { onLost = null, ...options } = {}) {
+  let lost = false;
+  const hold = await takeIpfsGate(dataDir, {
+    ...options,
+    onLost: (exit) => {
+      lost = true;
+      onLost?.(exit);
+    },
+  });
   try {
-    return await fn();
+    return await fn({ gated: hold !== null, held: () => hold !== null && !lost });
   } finally {
     await hold?.release();
   }

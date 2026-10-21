@@ -801,13 +801,77 @@ function isAppRootSharedEntry(name) {
 
 // Delete a packaged default profile whose data lives directly in the app data
 // root: remove every top-level entry except the app-wide ones above. The root
-// itself (and so every other profile) survives.
-async function removeDefaultProfileDataFromAppRoot(appRoot) {
+// itself (and so every other profile) survives. `keep` (removeKeeping) is a
+// path inside it that is left alone.
+async function removeDefaultProfileDataFromAppRoot(appRoot, { keep = null } = {}) {
   const resolvedAppRoot = path.resolve(appRoot);
   for (const name of await fs.promises.readdir(resolvedAppRoot)) {
     if (isAppRootSharedEntry(name)) continue;
     const target = assertPathInside(resolvedAppRoot, path.join(resolvedAppRoot, name), 'profile data');
+    await removeKeeping(target, keep);
+  }
+}
+
+// Removes `target` recursively, except `keep` (and the directories leading to
+// it), which is left exactly as it is: a directory on the way to it is only
+// removed if it ends up empty. With no `keep` inside it, a plain removal.
+async function removeKeeping(target, keep) {
+  if (target === keep) return;
+  if (!keep || !keep.startsWith(`${target}${path.sep}`)) {
     await fsOffload.removePath(target, { recursive: true, force: true });
+    return;
+  }
+  let names;
+  try {
+    names = await fs.promises.readdir(target);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const name of names) await removeKeeping(path.join(target, name), keep);
+  try {
+    await fs.promises.rmdir(target);
+  } catch (err) {
+    if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST') throw err;
+  }
+}
+
+// What a delete's callback gets where no IPFS gate is held (a packaged build
+// until the default switch, or a development build without freedom-ipfsd).
+const UNGATED = Object.freeze({ gated: false, held: () => false });
+// Windows refuses a rename while a scanner or indexer has a file open; those
+// clear in a moment.
+const FENCE_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const FENCE_ATTEMPTS = 10;
+const FENCE_RETRY_MS = 100;
+
+// Under freedom-ipfsd's gate, the gated IPFS directory is moved aside before
+// anything else changes (freedom-core design 0007, "Lifetime lock"), to
+// `<ipfs-data>/.freedom-ipfs.deleting-<pid>-<ts>`, which the removal then
+// takes with the rest. Nothing after this touches the gated path itself: if
+// the gate's holder ends mid-delete (killed) and another writer takes the
+// gate and recreates the directory, the removal still running leaves that
+// writer's data alone. The gate is checked with nothing awaited before each
+// rename, and a gate lost before the move fails the delete with nothing
+// changed. What remains is the moment between a holder ending and main
+// hearing of it; on Windows a writer's open files refuse the rename too.
+async function fenceIpfsData(ipfsDataDir, gate) {
+  const fence = path.join(
+    path.dirname(ipfsDataDir),
+    `.${path.basename(ipfsDataDir)}.deleting-${process.pid}-${Date.now()}`
+  );
+  for (let attempt = 1; ; attempt += 1) {
+    if (!gate.held()) {
+      throw new Error("The IPFS data directory's lock was lost; nothing was deleted");
+    }
+    try {
+      fs.renameSync(ipfsDataDir, fence);
+      return;
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      if (!FENCE_RETRY_CODES.has(err.code) || attempt >= FENCE_ATTEMPTS) throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FENCE_RETRY_MS));
   }
 }
 
@@ -882,14 +946,19 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       'ipfs-data',
       'freedom-ipfs'
     );
-    const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn());
-    return withIpfsGate(ipfsDataDir, async () => {
+    const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
+    return withIpfsGate(ipfsDataDir, async (gate = UNGATED) => {
+      // Held: the gated directory moves aside first, and the removal never
+      // touches its path again (fenceIpfsData). Without a gate, today's
+      // removal, unchanged.
+      if (gate.gated) await fenceIpfsData(ipfsDataDir, gate);
+      const keep = gate.gated ? ipfsDataDir : null;
       catalog.profiles.splice(recordIndex, 1);
       saveCatalog(appRoot, catalog);
       if (sharesAppRoot) {
-        await removeDefaultProfileDataFromAppRoot(appRoot);
+        await removeDefaultProfileDataFromAppRoot(appRoot, { keep });
       } else {
-        await fsOffload.removePath(resolvedProfileDir, { recursive: true, force: true });
+        await removeKeeping(resolvedProfileDir, keep);
       }
 
       /*

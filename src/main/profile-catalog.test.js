@@ -744,6 +744,124 @@ describe('profile catalog', () => {
       expect(isCatalogLockHeld(appRoot)).toBe(false);
     });
 
+    // The gate's holder can end mid-delete (killed); another writer may then
+    // take the gate and recreate the directory. The gated directory is moved
+    // aside first, so the removal still running never reaches its path.
+    const gateLostOnFirstRemoval = (ipfsDir) => {
+      let lost = false;
+      const realRemovePath = fsOffload.removePath;
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation((target, opts) => {
+        if (!lost) {
+          lost = true;
+          fs.mkdirSync(ipfsDir, { recursive: true });
+          fs.writeFileSync(path.join(ipfsDir, 'new-owner'), 'theirs');
+        }
+        return realRemovePath(target, opts);
+      });
+      const withIpfsGate = async (_dir, fn) => fn({ gated: true, held: () => !lost });
+      return { rmSpy, withIpfsGate };
+    };
+
+    test('a gate lost mid-delete: a writer that recreates the directory keeps its data', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      fs.mkdirSync(ipfsDir, { recursive: true });
+      fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
+      fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
+      const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(ipfsDir, 'new-owner'), 'utf-8')).toBe('theirs');
+      // The old store went with the fenced directory.
+      expect(fs.readdirSync(ipfsDir)).toEqual(['new-owner']);
+      expect(fs.readdirSync(record.dir)).toEqual(['ipfs-data']);
+      expect(fs.readdirSync(path.dirname(ipfsDir))).toEqual(['freedom-ipfs']);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('packaged layout: a gate lost mid-delete leaves the app root writer its data too', async () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+      const ipfsDir = path.join(path.resolve(appRoot), 'ipfs-data', 'freedom-ipfs');
+      fs.mkdirSync(ipfsDir, { recursive: true });
+      fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
+      fs.mkdirSync(path.join(appRoot, 'ant-data'));
+      const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
+
+      try {
+        await deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(ipfsDir, 'new-owner'), 'utf-8')).toBe('theirs');
+      // The old store went with the fenced directory.
+      expect(fs.readdirSync(ipfsDir)).toEqual(['new-owner']);
+      expect(fs.readdirSync(path.dirname(ipfsDir))).toEqual(['freedom-ipfs']);
+      expect(fs.existsSync(path.join(appRoot, 'ant-data'))).toBe(false);
+    });
+
+    test('a gate already lost fails the delete before the move, and changes nothing', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const store = path.join(record.dir, 'ipfs-data', 'freedom-ipfs', 'freedom-ipfs.sqlite3');
+      fs.mkdirSync(path.dirname(store), { recursive: true });
+      fs.writeFileSync(store, 'blocks');
+      const rmSpy = jest.spyOn(fsOffload, 'removePath');
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', {
+            ...options,
+            withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => false }),
+          })
+        ).rejects.toThrow("The IPFS data directory's lock was lost; nothing was deleted");
+        expect(rmSpy).not.toHaveBeenCalled();
+      } finally {
+        rmSpy.mockRestore();
+      }
+      expect(fs.readFileSync(store, 'utf-8')).toBe('blocks');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a held gate: the move retries a transient Windows refusal, then the delete completes', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+      const realRename = fs.renameSync;
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      });
+      renameSpy.mockImplementation((...args) => realRename(...args));
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+      expect(fs.existsSync(record.dir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
     test("packaged layout: the default profile's gate is the app data root's ipfs-data/freedom-ipfs", async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
