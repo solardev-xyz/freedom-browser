@@ -148,3 +148,20 @@ test('the module-wide admission tells its listeners of closeDwebSession', () => 
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
+
+test('a close listener that throws null is a failure too, rethrown after the rest run', () => {
+  const admission = createFetchAdmission();
+  const later = jest.fn();
+  admission.onSessionClosed(() => {
+    throw null;
+  });
+  admission.onSessionClosed(later);
+  let caught = Symbol('none');
+  try {
+    admission.closeSession('p');
+  } catch (err) {
+    caught = err;
+  }
+  expect(later).toHaveBeenCalledTimes(1);
+  expect(caught).toBeNull();
+});

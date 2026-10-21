@@ -584,10 +584,9 @@ describe("the backend's capture", () => {
 
   test('BackendBusy: a 503 with its message, and nothing planned', async () => {
     const open = jest.spyOn(mockDriver, 'open');
+    const { BackendBusy } = require('./freedom-ipfsd-node');
     mockIpfsBackend = () => {
-      const err = new Error('Too many private windows are loading IPFS content');
-      err.name = 'BackendBusy';
-      throw err;
+      throw new BackendBusy('Too many private windows are loading IPFS content');
     };
     const res = await handleRequest('ipfs', request(`ipfs://${CIDV1_BASE32}/`), {
       partition: 'private-full',
@@ -599,6 +598,15 @@ describe("the backend's capture", () => {
       message: 'Too many private windows are loading IPFS content',
     });
     expect(open).not.toHaveBeenCalled();
+  });
+
+  test('a fault merely named BackendBusy is thrown, not answered as one', () => {
+    mockIpfsBackend = () => {
+      throw Object.assign(new TypeError('corrupt capture state'), { name: 'BackendBusy' });
+    };
+    expect(() => handleRequest('ipfs', request(`ipfs://${CIDV1_BASE32}/`))).toThrow(
+      'corrupt capture state'
+    );
   });
 
   test('any other failure to capture is thrown, not answered', () => {

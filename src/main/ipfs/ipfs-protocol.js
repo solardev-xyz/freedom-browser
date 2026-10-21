@@ -40,6 +40,7 @@ const log = require('../logger');
 const { ipfsBackend } = require('../ipfs-manager');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
 const { jsonErrorResponse } = require('../dweb/plan-executor');
+const { BackendBusy } = require('./freedom-ipfsd-node');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 
 /**
@@ -64,7 +65,8 @@ function handleRequest(
       ? { ref: { ipfs: 'native', up: true }, url: null, request: requestImpl }
       : ipfsBackend({ partition });
   } catch (err) {
-    if (err?.name !== 'BackendBusy') throw err;
+    // The type itself, not its name: any other fault surfaces.
+    if (!(err instanceof BackendBusy)) throw err;
     return Promise.resolve(jsonErrorResponse(503, err.message));
   }
   return runWithPrivateLogContext(isPrivate, () =>

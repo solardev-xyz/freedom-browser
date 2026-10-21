@@ -278,6 +278,19 @@ describe("the backend's lease", () => {
     return backend;
   }
   const PRIVATE = 'private-lease';
+
+  test('released once on a throw before the request is fenced', async () => {
+    // An in-process caller's plain object with a header Headers refuses:
+    // the throw escapes the handler, and the lease goes with it.
+    const backend = leasedBackend();
+    await expect(
+      handleDwebRequest(
+        { url: `bzz://${HASH}/`, headers: [['bad\nname', 'x']] },
+        { backend, tag: '[test]' }
+      )
+    ).rejects.toThrow();
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
   const bzz = (path, init) => new Request(`bzz://${HASH}/${path}`, init);
   const coreError = (code, message) => Object.assign(new Error(message), { code });
 

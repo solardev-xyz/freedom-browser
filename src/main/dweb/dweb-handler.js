@@ -142,10 +142,28 @@ function openFailure(err, url, tag) {
  * @param {string} options.tag - the handler's log prefix
  * @returns {Promise<Response>}
  */
-async function handleDwebRequest(request, { backend, partition = null, tag }) {
+async function handleDwebRequest(request, options) {
+  // The lease is this request's from its first line: released once, by an
+  // answer, a fetch's end, or a throw from anywhere in the handling (a
+  // malformed in-process request, say). Only a body handed on keeps it.
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    options.backend.release?.();
+  };
+  try {
+    return await handle(request, options, release);
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+async function handle(request, { backend, partition = null, tag }, release) {
   // An answer before the request is fenced: its lease goes with it.
   const refuse = (status, message) => {
-    backend.release?.();
+    release();
     return jsonErrorResponse(status, message);
   };
   const { url, signal } = request;
@@ -177,7 +195,7 @@ async function handleDwebRequest(request, { backend, partition = null, tag }) {
     over = true;
     slot?.release();
     fence.dispose();
-    backend.release?.();
+    release();
   };
   // A fetch plan waits for its slot here, before it is used, so the driver
   // judges it once more after any wait. `life` aborts with the request.

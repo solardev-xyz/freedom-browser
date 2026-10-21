@@ -167,15 +167,20 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
     for (const stop of sessions.get(partition) || []) {
       stop.abort(abortError('The session closed'));
     }
-    let failure = null;
+    // Whatever the first failure is, even a thrown `null`, it is rethrown.
+    let failed = false;
+    let failure;
     for (const listener of [...closeListeners]) {
       try {
         listener(partition);
       } catch (err) {
-        failure ??= err;
+        if (!failed) {
+          failed = true;
+          failure = err;
+        }
       }
     }
-    if (failure) throw failure;
+    if (failed) throw failure;
   }
 
   /** Calls `listener(partition)` on each session's close; returns its
