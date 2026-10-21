@@ -25,7 +25,7 @@ function setup({ localReady = false } = {}) {
     breadcrumbs = element('nav');
   let state = {
     ok: true,
-    preferences: { providerId: 'openai', language: 'auto', requireZeroRetention: true },
+    preferences: { providerId: 'openai', language: 'auto', openrouterAudioConsent: false },
     suggestedProviderId: 'openai',
     languages: ['auto', 'de'],
     options: [
@@ -45,6 +45,8 @@ function setup({ localReady = false } = {}) {
         model: 'whisper',
         ready: true,
         available: true,
+        consentRequired: true,
+        consentDisclosure: 'Audio uses standard routing. Zero data retention is unavailable for dictation. Chat settings do not apply.',
       },
     ],
   };
@@ -53,7 +55,10 @@ function setup({ localReady = false } = {}) {
   const api = {
     getAgentDictationState: jest.fn(async () => state),
     chooseAgentDictation: jest.fn(async (preferences) => {
-      state = { ...state, preferences: { ...state.preferences, ...preferences } };
+      state = { ...state, preferences: { ...state.preferences, ...preferences, openrouterAudioConsent: state.preferences.openrouterAudioConsent || preferences.acceptOpenRouterAudio === true } };
+      delete state.preferences.acceptOpenRouterAudio;
+      const option = state.options.find(item => item.providerId === 'openrouter');
+      option.consentRequired = !state.preferences.openrouterAudioConsent;
       return state;
     }),
     installAgentDictation: jest.fn(),
@@ -97,40 +102,24 @@ test('lists services and their active state without selecting or downloading any
   expect(ctx.heading.textContent).toBe('OpenRouter');
   expect(text(ctx.breadcrumbs)).toContain('Voice dictation');
   expect(ctx.api.chooseAgentDictation).not.toHaveBeenCalled();
-  find(ctx.host, 'Use for dictation').dispatch('click');
+  find(ctx.host, 'Use with standard routing').dispatch('click');
   await flush();
   expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({
     providerId: 'openrouter',
     language: 'auto',
-    requireZeroRetention: true,
+    acceptOpenRouterAudio: true,
   });
   expect(find(ctx.host, 'Used for dictation').disabled).toBe(true);
 });
 
-test('language and non-active service privacy changes preserve the selected service', async () => {
-  const ctx = setup();
-  await ctx.view.refresh();
-  let language = tree(ctx.host).find(
-    (el) => el.getAttribute('aria-label') === 'Dictation language'
-  );
-  language.value = 'de';
-  language.dispatch('change');
-  await flush();
+test('language changes preserve service and OpenRouter audio privacy is factual, not a toggle', async () => {
+  const ctx = setup(); await ctx.view.refresh();
+  const language = tree(ctx.host).find(el => el.getAttribute('aria-label') === 'Dictation language');
+  language.value = 'de'; language.dispatch('change'); await flush();
   ctx.view.setPage('openrouter');
-  const zero = tree(ctx.host).find(
-    (el) => el.getAttribute('aria-label') === 'Require zero data retention'
-  );
-  zero.checked = false;
-  zero.dispatch('change');
-  await flush();
-  expect(ctx.getState().preferences).toEqual({
-    providerId: 'openai',
-    language: 'de',
-    requireZeroRetention: false,
-  });
-  ctx.view.setPage();
-  language = tree(ctx.host).find((el) => el.getAttribute('aria-label') === 'Dictation language');
-  expect(language.value).toBe('de');
+  expect(text(ctx.host)).toContain('Zero data retention is unavailable');
+  expect(tree(ctx.host).some(el => el.type === 'checkbox')).toBe(false);
+  expect(ctx.getState().preferences).toEqual({ providerId: 'openai', language: 'de', openrouterAudioConsent: false });
 });
 
 test('failed preference changes restore the saved value and allow retry', async () => {
@@ -214,27 +203,6 @@ test('unconnected services lead to connection setup and unknown routes return to
   expect(ctx.navigate).toHaveBeenCalledWith(null, true);
   expect(ctx.heading.textContent).toBe('Voice dictation');
 });
-
-test('connection-enforced zero retention stays locked and is preserved when selecting the service', async () => {
-  const ctx = setup();
-  const state = ctx.getState();
-  state.preferences.requireZeroRetention = false;
-  state.options.find((option) => option.providerId === 'openrouter').requireZeroRetention = true;
-  await ctx.view.refresh();
-  ctx.view.setPage('openrouter');
-  const zero = tree(ctx.host).find(
-    (el) => el.getAttribute('aria-label') === 'Require zero data retention'
-  );
-  expect(zero.checked).toBe(true);
-  expect(zero.disabled).toBe(true);
-  find(ctx.host, 'Use for dictation').dispatch('click');
-  await flush();
-  expect(ctx.getState().preferences).toMatchObject({
-    providerId: 'openrouter',
-    requireZeroRetention: true,
-  });
-});
-
 
 test('changing language does not replace a disconnected remembered service with a suggestion', async () => {
   const ctx = setup(); await ctx.view.refresh();

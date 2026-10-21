@@ -508,6 +508,20 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-21 approved privacy scope redesign (current behavior):** connections
+share credentials/billing, while chat routing policies and audio privacy are
+separate. OpenRouter dictation remains available with standard routing even when
+chat requires ZDR. Its first microphone use explains audio privacy and requires
+an explicit audio acknowledgement before capture; that choice is remembered.
+Cancel/choose-another capture nothing. Voice settings replace the disabled ZDR
+switch with factual Audio privacy information and an explicit “Use with standard
+routing” action. Neither that action nor chevron selection starts recording.
+Chat private/TEE/ZDR settings no longer filter or interrupt the separate voice
+service. Actual credential removal/change still revokes audio. The chat shield
+explicitly excludes audio. This supersedes the inherited-policy blocks recorded
+in the earlier dated review/smoke entries below.
+
+
 **2026-10-21 smoke regression:** the overnight gate incorrectly blocked all
 Private/TEE speech without checking the actual speech model classification.
 Corrected against current primary provider documentation: Venice Whisper is

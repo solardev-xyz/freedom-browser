@@ -35,8 +35,6 @@ dialog.agent-dictation-panel::backdrop { background: color-mix(in srgb, var(--bg
   border-radius: 8px;
   font: inherit;
 }
-.agent-dictation-panel .agent-dictation-retention { display: flex; align-items: center; gap: 8px; }
-.agent-dictation-retention[hidden] { display: none; }
 .agent-dictation-help { margin: 0; color: var(--muted); line-height: 1.5; }
 a.agent-dictation-help { color: var(--accent); text-decoration: underline; }
 .agent-dictation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

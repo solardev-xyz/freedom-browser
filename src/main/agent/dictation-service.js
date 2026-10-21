@@ -65,13 +65,15 @@ class DictationService {
     this.sessions = new Map();
     this.operations = new Set();
     this.installations = new Map();
-    this.preferences = { providerId: null, language: 'auto', requireZeroRetention: true };
+    this.preferences = { providerId: null, language: 'auto', openrouterAudioConsent: false };
     try {
       const stat = fs.lstatSync(this.file);
       if (stat.isFile() && !stat.isSymbolicLink() && stat.size < 4096) {
         const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
         if ((saved.providerId === null || saved.providerId === 'local' || Object.hasOwn(CLOUD, saved.providerId)) && LANGUAGES.includes(saved.language))
-          this.preferences = { providerId: saved.providerId, language: saved.language, requireZeroRetention: saved.requireZeroRetention !== false };
+          this.preferences = { providerId: saved.providerId, language: saved.language, openrouterAudioConsent: saved.openrouterAudioConsent === true };
+        // Legacy retention flags describe the former coupled policy, not consent
+        // to send audio. Require a dedicated acknowledgement after migration.
       }
     } catch { /* First use, or an invalid preference: ask for a fresh choice. */ }
   }
@@ -85,26 +87,15 @@ class DictationService {
     for (const connection of status.connections) {
       const provider = CLOUD[connection.providerId];
       if (!provider || connection.kind !== 'hosted') continue;
-      const unsupportedRetention = connection.providerId === 'openrouter' &&
-        (preferences.requireZeroRetention || connection.privacyPolicy === 'zdr');
-      const unsupportedPrivacy = connection.privacyPolicy === 'tee' ? provider.privacy !== 'tee'
-        : connection.privacyPolicy === 'private' && !['private', 'tee'].includes(provider.privacy);
-      const allowed = !unsupportedPrivacy && !unsupportedRetention;
-      const blockedReason = unsupportedRetention ? 'retention' : unsupportedPrivacy ? 'privacy' : null;
-      const blockedLabel = unsupportedRetention ? 'Blocked by retention setting' : unsupportedPrivacy ? 'Blocked by privacy setting' : null;
       const privacyDetail = provider.privacy === 'tee'
         ? 'NEAR AI reports that this speech model runs in a TEE. Freedom has not independently verified audio requests.'
         : provider.privacy === 'private' ? 'Venice classifies this speech model as Private. This is a provider claim.' : '';
       options.push({ providerId: connection.providerId, name: provider.name, model: connection.providerId === 'openai' ? 'gpt-live-transcribe' : provider.model,
-        available: allowed, ready: true, price: provider.price,
-        blockedReason, blockedLabel, privacyClassification: provider.privacy || null,
-        requireZeroRetention: connection.privacyPolicy === 'zdr',
-        detail: unsupportedRetention
-          ? connection.privacyPolicy === 'zdr'
-            ? 'Your OpenRouter connection requires zero data retention. Its transcription endpoint cannot enforce it. Choose another dictation service or review the connection policy.'
-            : 'OpenRouter cannot enforce per-request zero data retention for dictation. Turn it off in Voice dictation settings to use this service.'
-          : unsupportedPrivacy ? 'This speech model does not meet the connection’s privacy setting. Choose another dictation service.'
-            : `Audio is sent to ${provider.name} while you speak. ${privacyDetail ? `${privacyDetail} ` : ''}Chat end-to-end encryption does not cover dictation.` });
+        available: true, ready: true, price: provider.price,
+        privacyClassification: provider.privacy || null,
+        consentRequired: connection.providerId === 'openrouter' && preferences.openrouterAudioConsent !== true,
+        ...(connection.providerId === 'openrouter' && { consentDisclosure: 'Audio is sent to OpenRouter using standard routing. Zero data retention is unavailable for dictation. Your chat privacy settings do not apply to audio. Usage is billed to OpenRouter.' }),
+        detail: `Audio is sent to ${provider.name} while you speak. ${privacyDetail ? `${privacyDetail} ` : ''}Chat end-to-end encryption does not cover dictation.` });
     }
     const connected = options.filter(option => option.providerId !== 'local' && option.available && option.ready);
     return { preferences: { ...this.preferences }, options, languages: [...LANGUAGES],
@@ -115,10 +106,11 @@ class DictationService {
     this.assertEnabled();
     const next = { ...this.preferences, ...input };
     const selecting = input && Object.hasOwn(input, 'providerId');
-    if (!input || !LANGUAGES.includes(next.language) || typeof next.requireZeroRetention !== 'boolean' ||
+    if (!input || !LANGUAGES.includes(next.language) || (input.acceptOpenRouterAudio !== undefined && (input.acceptOpenRouterAudio !== true || input.providerId !== 'openrouter')) ||
         (selecting && !this.state(next).options.some(option => option.providerId === next.providerId && option.available)))
       throw dictationError('DICTATION_CHOICE', 'Choose an available dictation service and language.');
-    const preferences = { providerId: next.providerId, language: next.language, requireZeroRetention: next.requireZeroRetention };
+    const preferences = { providerId: next.providerId, language: next.language,
+      openrouterAudioConsent: this.preferences.openrouterAudioConsent || input.acceptOpenRouterAudio === true };
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const temporary = `${this.file}.${randomUUID()}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(preferences), { mode: 0o600, flag: 'wx' });
@@ -128,8 +120,7 @@ class DictationService {
     // no-op first-use save must not interrupt another window's recording.
     for (const [sender, session] of this.sessions) {
       if (session.preferences.providerId !== preferences.providerId ||
-          session.preferences.language !== preferences.language ||
-          (session.preferences.providerId === 'openrouter' && session.preferences.requireZeroRetention !== preferences.requireZeroRetention))
+          session.preferences.language !== preferences.language)
         this.failSession(sender, session, dictationError('DICTATION_CHANGED', 'Dictation settings changed.'));
     }
     return this.state();
@@ -159,6 +150,7 @@ class DictationService {
     const providerId = this.preferences.providerId || state.suggestedProviderId;
     const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
     if (!option) throw dictationError('DICTATION_SETUP', 'Choose a dictation service or download the local model first.');
+    if (option.consentRequired) throw dictationError('DICTATION_CONSENT', 'Review OpenRouter audio privacy before recording.');
     if (!this.preferences.providerId) this.choose({ ...this.preferences, providerId });
     const id = randomUUID();
     const controller = new AbortController();
@@ -217,6 +209,8 @@ class DictationService {
   }
 
   connection(providerId) {
+    if (providerId === 'openrouter' && !this.preferences.openrouterAudioConsent)
+      throw dictationError('DICTATION_CONSENT', 'Review OpenRouter audio privacy before recording.');
     const connection = this.providerStore.getSelection(providerId);
     if (connection?.kind !== 'hosted' || !connection.apiKey ||
         !this.state().options.some(option => option.providerId === providerId && option.available))
@@ -226,7 +220,7 @@ class DictationService {
 
   connectionFingerprint(providerId) {
     const connection = this.connection(providerId);
-    return createHash('sha256').update(JSON.stringify([connection.kind, connection.apiKey, connection.privacyPolicy || 'standard'])).digest('hex');
+    return createHash('sha256').update(JSON.stringify([connection.kind, connection.apiKey])).digest('hex');
   }
 
   failSession(sender, session, error) {

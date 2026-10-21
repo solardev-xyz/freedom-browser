@@ -81,13 +81,15 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
           : option?.model || 'Connect an API account'
       )
     );
-    const active = (state.preferences.providerId || state.suggestedProviderId) === id && option?.ready && option?.available;
+    const active = (state.preferences.providerId || state.suggestedProviderId) === id && option?.ready && option?.available && !option?.consentRequired;
     let label = active
       ? 'In use'
       : !option
         ? 'Connect'
         : !option.available
           ? option.blockedLabel || 'Unavailable'
+          : option.consentRequired
+            ? 'Review audio privacy'
           : option.ready
             ? 'Connected'
             : 'Download needed';
@@ -195,42 +197,21 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     if (option?.price) card.appendChild(preferenceRow('Billing', option.price));
     const children = [summary, card];
     if (page === 'openrouter' && option) {
-      const toggle = node('label', '', 'toggle');
-      const zero = node('input');
-      zero.type = 'checkbox';
-      zero.id = 'voice-zero-retention';
-      zero.checked =
-        option.requireZeroRetention || state.preferences.requireZeroRetention !== false;
-      zero.disabled = busy || option.requireZeroRetention;
-      zero.setAttribute('aria-label', 'Require zero data retention');
-      const slider = node('span', '', 'slider');
-      toggle.append(zero, slider);
       const privacy = node('div', '', 'card');
-      const row = preferenceRow(
-        'Require zero data retention',
-        option.requireZeroRetention
-          ? 'Required by this connection. OpenRouter dictation is unavailable because its audio endpoint cannot enforce this policy.'
-          : 'OpenRouter cannot enforce this policy for dictation. Keep it on to block audio uploads, or turn it off to use standard routing.'
-      );
-      const holder = node('div', '', 'row-control');
-      holder.appendChild(toggle);
-      row.appendChild(holder);
-      privacy.appendChild(row);
-      zero.addEventListener(
-        'change',
-        () => void savePreferences({ requireZeroRetention: zero.checked })
-      );
+      privacy.appendChild(preferenceRow('Audio privacy', option.consentDisclosure));
       children.push(section('Privacy', [privacy]));
     }
     const actions = node('div', '', 'agent-config-actions');
     if (option?.available) {
-      const active = (state.preferences.providerId || state.suggestedProviderId) === page && option.ready;
+      const active = (state.preferences.providerId || state.suggestedProviderId) === page && option.ready && !option.consentRequired;
       const use = node(
         'button',
         installing && local
           ? 'Downloading…'
           : active
             ? 'Used for dictation'
+            : option.consentRequired
+              ? 'Use with standard routing'
             : local && !option.ready
               ? 'Download & use on this device'
               : 'Use for dictation',
@@ -327,11 +308,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     }
   };
   const save = async (preferences) => {
-    const response = await api.chooseAgentDictation({
-      ...preferences,
-      ...(optionFor(preferences.providerId || state.preferences.providerId)?.requireZeroRetention
-        ? { requireZeroRetention: true } : {}),
-    });
+    const response = await api.chooseAgentDictation(preferences);
     if (!response?.ok)
       throw new Error(response?.error?.message || 'Could not change dictation settings.');
     return response;
@@ -354,7 +331,8 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
           throw new Error(result?.error?.message || 'The local download did not complete.');
       }
       if (current !== operation) return;
-      const response = await save({ ...state.preferences, providerId: option.providerId });
+      const response = await save({ providerId: option.providerId, language: state.preferences.language,
+        ...(option.consentRequired ? { acceptOpenRouterAudio: true } : {}) });
       if (current !== operation) return;
       state = response;
       message('Dictation is ready.');

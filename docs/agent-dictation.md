@@ -48,24 +48,38 @@ edited or sent manually, and drops any unfinished provisional tail. An approval 
 
 The selected chat model's end-to-end encryption and hardware checks do not cover
 these audio uploads. The microphone tooltip/accessibility label, chooser and recording indicator name
-its actual audio destination. Connection policies are checked against the exact
-speech model/endpoint, not the selected chat model. As checked on 2026-10-21,
+its actual audio destination. Connections supply credentials and billing; their
+chat routing/model policies do not filter or change this separate audio service.
+As checked on 2026-10-21,
 [Venice classifies Whisper Large V3 as Private](https://docs.venice.ai/models/speech-to-text),
 and [NEAR documents its Whisper endpoint as TEE-hosted](https://docs.near.ai/cloud/guides/specialized-endpoints).
-Therefore Venice's Private setting and NEAR's TEE setting allow these speech
-models. These are provider claims, not independent attestation of audio requests.
-Venice's TEE-only setting still blocks its non-TEE Whisper model. A generic
-“not independently verified” label is not a reason to reject a model that meets
-the same provider-classification policy used for chat.
+These are provider claims, not independent verification of audio requests. The
+conversation privacy shield explicitly excludes dictation audio.
 
-**OpenRouter's transcription endpoint does not enforce per-request retention
-routing**, unlike its chat API. With the default “Require zero data retention”
-preference, OpenRouter dictation is unavailable and no audio is uploaded. Users
-can explicitly turn that preference off on its Voice detail page to use standard
-routing. A connection-level ZDR requirement remains locked and cannot be weakened
-there. Merely adding `zdr`, `data_collection` or `require_parameters` to an audio
-request would not establish retention protection. See OpenRouter's explicit
-[transcription routing limitation](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/).
+### OpenRouter's first-use audio choice
+
+OpenRouter is available for dictation even when chat requires zero retention.
+Its transcription endpoint uses standard routing and cannot apply the
+[per-request data policies supported by chat](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/).
+Voice settings therefore show **Audio privacy** as factual information, without a
+retention toggle. Chat zero-retention requirements remain unchanged.
+
+Before OpenRouter's first recording, the microphone displays **Use OpenRouter for
+dictation?** with its audio destination, standard-routing limitation and billing.
+**Use OpenRouter** records a profile-local audio acknowledgement, then starts
+capture. **Choose another service**, **Cancel** and Escape capture/upload nothing.
+After acceptance, future microphone clicks start directly. The Voice detail page
+can also record this acknowledgement with **Use with standard routing**, without
+starting capture. Switching through the chevron alone never records acceptance or
+starts the microphone.
+
+Main enforces the acknowledgement before granting capture and before uploads;
+renderer state or a stale dialog cannot bypass it. Acknowledgement survives
+restart in `dictation.json`, independently from chat connection/session policy.
+Legacy `requireZeroRetention` values are not treated as audio consent; existing
+users receive the one-time explanation. Merely selecting OpenRouter or returning
+its public preference state to `choose` cannot grant consent. Chat privacy/model
+changes do not interrupt audio; removing/changing the actual credential does.
 
 The composer models are `gpt-live-transcribe` for OpenAI and
 `openai/whisper-large-v3` for the other three services. These are separate from
@@ -119,8 +133,8 @@ signed-package behavior still need qualification before release.
 - Microphone denial and no-speech recordings leave the draft unchanged. A provider
   failure preserves completed phrases. No other service is selected after failure
 - A remembered service that becomes unavailable opens the compact menu rather than
-  silently switching the audio destination. Each blocked service explains the setting
-  responsible; its menu row opens that service’s Voice settings
+  silently switching the audio destination. Each service presents its own audio capability/disclosure; chat privacy
+  settings are not used as audio availability restrictions
 - Chromium capture uses an AudioWorklet, with resampling outside the renderer
   thread. Native inference runs in a separate process
 
@@ -165,3 +179,19 @@ retention requirement, with “Blocked by retention setting” instead of a gene
 service failure. The mixed three-provider combination is covered by service tests
 and disposable-profile Electron tests, including explicit alternative selection,
 record/finish, both themes and preserved connection policies.
+
+## 2026-10-21 approved privacy scope redesign
+
+Following maintainer discussion, the provider-wide privacy inheritance described
+in the earlier review is superseded. Chat policy belongs to chat requests; audio
+has its own capability/disclosure and a first-use acknowledgement where needed.
+OpenRouter is available with standard audio routing even for a ZDR chat connection.
+No chat policy is weakened and no audio is uploaded before its separate choice.
+The former disabled Voice retention switch and chooser checkbox are removed.
+
+Validation: lint passes; the full unit suite passes (10,661 tests), and all 10
+dictation Electron scenarios pass. Disposable-profile checks cover consent before
+capture, cancel/alternative selection, remembered consent, Settings acknowledgement
+without capture, and unchanged chat policies. The consent and Audio privacy screens
+were visually checked in both themes. Audio and provider responses in these tests
+are synthetic; live-provider and physical-microphone qualification remains separate.

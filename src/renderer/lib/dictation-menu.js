@@ -59,14 +59,14 @@ export function createDictationMenu({ host, button, api, canOpen, onOpening = ()
       host.replaceChildren(); rows = [];
       const selected = state.preferences.providerId || state.suggestedProviderId;
       for (const option of state.options) {
-        row(option.name, !option.available ? `${option.blockedLabel || 'Unavailable with this connection'} · Review in Settings` : !option.ready ? 'Download local model in Settings' : option.model,
+        row(option.name, !option.available ? `${option.blockedLabel || 'Unavailable with this connection'} · Review in Settings` : !option.ready ? 'Download local model in Settings' : option.consentRequired ? 'Review audio privacy before first use' : option.model,
           { checked: option.providerId === selected, disabled: !option.available && option.providerId === 'local', providerId: option.providerId, action: async () => {
             if (!option.available) { settings(option.providerId); return; }
             if (!option.ready) { settings(); return; }
-            if (state.preferences.providerId === option.providerId) { close(true); return; }
+            if (state.preferences.providerId === option.providerId) { close(true); onChosen(state, { recordAfterChoice }); return; }
             saving = true; rows.forEach(item => { item.disabled = true; });
             try {
-              const response = await api.chooseAgentDictation({ ...state.preferences, providerId: option.providerId });
+              const response = await api.chooseAgentDictation({ providerId: option.providerId, language: state.preferences.language });
               if (current !== revision) return;
               if (!response?.ok) throw new Error(response?.error?.message || 'Could not change dictation service.');
               close(true); onChosen(response, { recordAfterChoice });

@@ -282,11 +282,11 @@ describe('buildSettingsSearchIndex', () => {
 
   test('keeps the service detail route for a preference revealed from another section', () => {
     const content = parseFragment(
-      '<section class="section" id="voice"><h2 class="section-title">Voice dictation</h2><div class="row" data-settings-route="ai/voice/openrouter"><p class="row-label">Require zero data retention</p></div></section>'
+      '<section class="section" id="voice"><h2 class="section-title">Voice dictation</h2><div class="row" data-settings-route="ai/voice/openrouter"><p class="row-label">Audio privacy</p></div></section>'
     );
     expect(
       buildSettingsSearchIndex(content).find(
-        (entry) => entry.label === 'Require zero data retention'
+        (entry) => entry.label === 'Audio privacy'
       )
     ).toMatchObject({ sectionId: 'voice', route: 'ai/voice/openrouter' });
   });

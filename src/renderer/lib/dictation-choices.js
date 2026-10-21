@@ -9,7 +9,7 @@ const element = (tag, text, className) => {
 };
 
 // The first-use chooser and Settings → AI share the same choices and wording.
-export function createDictationChoices(host, api, { onChosen = () => {}, onCancel = () => {}, autoSave = false } = {}) {
+export function createDictationChoices(host, api, { onChosen = () => {}, onCancel = () => {}, onAlternative = () => {}, autoSave = false } = {}) {
   let state;
   let busy = false;
   let generation = 0;
@@ -29,9 +29,6 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
       state?.options.find(option => !option.available && option.providerId !== 'local');
     host.dispatchEvent(new CustomEvent('dictation-settings', { bubbles: true, detail: { providerId: blocked?.providerId } }));
   });
-  const zeroLabel = element('label', '', 'agent-dictation-retention');
-  const zero = element('input'); zero.type = 'checkbox';
-  zeroLabel.append(zero, document.createTextNode('Require zero data retention on OpenRouter'));
   const status = element('p', '', 'agent-dictation-help'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const actions = element('div', '', 'agent-dictation-actions');
   const use = element('button', 'Use for dictation', 'agent-button primary'); use.type = 'button';
@@ -43,16 +40,15 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     host.dispatchEvent(new CustomEvent('dictation-connect', { bubbles: true }));
   });
   actions.append(use, cancel);
-  host.replaceChildren(...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, unavailable, manage, zeroLabel, status, actions, connect);
+  const form = [...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, unavailable, manage, status, actions, connect];
+  host.replaceChildren(...form);
   const renderSelection = () => {
     const option = state?.options.find(option => option.providerId === service.value);
     detail.textContent = option ? `${option.detail} ${option.price}.` : 'Connect an API-key provider in Settings → AI, or choose local dictation.';
-    zeroLabel.hidden = service.value !== 'openrouter';
-    if (option?.requireZeroRetention) zero.checked = true;
     use.textContent = service.value === 'local' && !option?.ready ? 'Download & use on this device' : 'Use for dictation';
     use.hidden = autoSave && (option?.ready || !option?.available);
     use.disabled = busy || !option?.available;
-    service.disabled = busy; language.disabled = busy; zero.disabled = busy || option?.requireZeroRetention === true;
+    service.disabled = busy; language.disabled = busy;
     cancel.hidden = autoSave && !busy;
   };
   const render = response => {
@@ -69,10 +65,10 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     service.value = selected;
     for (const id of state.languages) { const node = element('option', LANGUAGE_NAMES[id] || id); node.value = id; language.appendChild(node); }
     language.value = state.preferences.language;
-    zero.checked = state.preferences.requireZeroRetention !== false;
     renderSelection();
   };
   const refresh = async () => {
+    host.replaceChildren(...form);
     const current = ++generation;
     status.textContent = 'Loading dictation options…';
     try {
@@ -99,7 +95,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
         if (!response?.ok) throw new Error(response?.error?.message || 'The local download did not complete.');
       }
       if (current !== generation) return;
-      const response = await api.chooseAgentDictation({ providerId: option.providerId, language: language.value, requireZeroRetention: zero.checked });
+      const response = await api.chooseAgentDictation({ providerId: option.providerId, language: language.value });
       if (current !== generation) return;
       if (!response?.ok) throw new Error(response?.error?.message || 'Could not select dictation.');
       render(response); status.textContent = 'Dictation is ready.';
@@ -107,7 +103,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     } catch (error) { if (current === generation) status.textContent = error.message; }
     finally { if (current === generation) { busy = false; renderSelection(); } }
   };
-  for (const control of [service, language, zero]) control.addEventListener('change', () => {
+  for (const control of [service, language]) control.addEventListener('change', () => {
     renderSelection();
     if (autoSave) void choose();
   });
@@ -125,5 +121,35 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     if (!busy || event.type !== 'download') return;
     status.textContent = `${event.label}${event.bytes ? ` · ${Math.round(event.bytes / 1000000)} MB${event.total ? ` of ${Math.round(event.total / 1000000)} MB` : ''}` : '…'}`;
   });
-  return { refresh, cancel: cancelWork, dispose() { cancelWork(); unsubscribe?.(); } };
+  const reviewConsent = response => {
+    generation += 1;
+    busy = false;
+    state = response;
+    const option = state.options.find(item => item.providerId === 'openrouter');
+    const title = element('strong', 'Use OpenRouter for dictation?');
+    const disclosure = element('p', option.consentDisclosure, 'agent-dictation-help');
+    const note = element('p', 'Freedom remembers this choice. Your microphone stays off until you continue.', 'agent-dictation-help');
+    const accept = element('button', 'Use OpenRouter', 'agent-button primary'); accept.type = 'button';
+    const alternative = element('button', 'Choose another service', 'agent-button secondary'); alternative.type = 'button';
+    const dismiss = element('button', 'Cancel', 'agent-text-button'); dismiss.type = 'button';
+    const controls = element('div', '', 'agent-dictation-actions'); controls.append(accept, alternative, dismiss);
+    status.textContent = '';
+    host.replaceChildren(title, disclosure, note, status, controls);
+    accept.addEventListener('click', async () => {
+      if (busy) return;
+      const current = ++generation;
+      busy = true; accept.disabled = true; alternative.disabled = true;
+      try {
+        const chosen = await api.chooseAgentDictation({ providerId: 'openrouter', acceptOpenRouterAudio: true });
+        if (current !== generation) return;
+        if (!chosen?.ok) throw new Error(chosen?.error?.message || 'Could not save the audio privacy choice.');
+        onChosen(chosen);
+      } catch (error) { if (current === generation) status.textContent = error.message; }
+      finally { if (current === generation) { busy = false; accept.disabled = false; alternative.disabled = false; } }
+    });
+    alternative.addEventListener('click', () => { generation += 1; onAlternative(); });
+    dismiss.addEventListener('click', () => { cancelWork(); onCancel(); });
+    accept.focus();
+  };
+  return { refresh, reviewConsent, cancel: cancelWork, dispose() { cancelWork(); unsubscribe?.(); } };
 }

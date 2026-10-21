@@ -44,7 +44,7 @@ describe('dictation service', () => {
   });
   afterEach(() => { service.cancelAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
-  const choose = providerId => service.choose({ providerId, language: 'de', requireZeroRetention: providerId !== 'openrouter' });
+  const choose = providerId => service.choose({ providerId, language: 'de', ...(providerId === 'openrouter' && { acceptOpenRouterAudio: true }) });
 
   test('offers only supported connected API services and an explicit local option', () => {
     expect(service.state().options.map(option => option.providerId)).toEqual(['local', 'openai', 'venice', 'near-ai', 'openrouter']);
@@ -59,20 +59,20 @@ describe('dictation service', () => {
   test('first microphone use remembers the active supported provider without requiring setup', async () => {
     expect(service.state().suggestedProviderId).toBe('venice');
     await transcribe(service, owner, { id: service.begin(owner).id, audio: recording() });
-    expect(service.state().preferences).toEqual({ providerId: 'venice', language: 'auto', requireZeroRetention: true });
+    expect(service.state().preferences).toEqual({ providerId: 'venice', language: 'auto', openrouterAudioConsent: false });
     expect(fetchImpl.mock.calls[0][0]).toContain('api.venice.ai');
     const reopened = new DictationService({ dataDir: root, providerStore: store, local, assertEnabled: () => {} });
     expect(reopened.state().preferences.providerId).toBe('venice');
   });
 
-  test('an unsupported chat subscription cannot auto-select a service unable to honor retention', async () => {
+  test('a suggested OpenRouter service requires an explicit audio choice before capture', async () => {
     store.getPublicStatus.mockReturnValue({ providerId: 'anthropic-claude', connections: [
       { kind: 'subscription', providerId: 'anthropic-claude' },
       { kind: 'hosted', providerId: 'openrouter' },
       { kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' },
     ] });
-    expect(service.state().suggestedProviderId).toBe(null);
-    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(service.state().suggestedProviderId).toBe('openrouter');
+    expect(() => service.begin(owner)).toThrow('Review OpenRouter audio privacy');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -91,7 +91,6 @@ describe('dictation service', () => {
   test('without a suitable cloud connection first use requires setup rather than downloading or selecting local', () => {
     store.getPublicStatus.mockReturnValue({ providerId: 'openai-chatgpt', connections: [
       { kind: 'subscription', providerId: 'openai-chatgpt' },
-      { kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' },
     ] });
     expect(service.state().suggestedProviderId).toBe(null);
     expect(() => service.begin(owner)).toThrow('Choose a dictation service');
@@ -124,10 +123,12 @@ describe('dictation service', () => {
     expect(Object.keys(request).sort()).toEqual(['model', 'input_audio', 'language', 'response_format'].sort());
   });
 
-  test('a ZDR-only connection remains enforced even when dictation preferences request standard routing', async () => {
+  test('a chat ZDR requirement does not override an explicit OpenRouter audio choice', async () => {
     store.getPublicStatus.mockReturnValue({ connections: [{ providerId: 'openrouter', kind: 'hosted', privacyPolicy: 'zdr' }] });
-    expect(() => service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false })).toThrow();
-    expect(fetchImpl).not.toHaveBeenCalled();
+    choose('openrouter');
+    await transcribe(service, owner, { id: service.begin(owner).id, audio: recording() });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).provider).toBeUndefined();
+    expect(store.getPublicStatus().connections[0].privacyPolicy).toBe('zdr');
   });
 
   test('the owning recording is single-use and cannot be consumed by another sender', async () => {
@@ -193,7 +194,7 @@ describe('dictation service', () => {
     append(owner, 0);
     expect(() => append(owner, 0)).toThrow('could not be read');
     expect(() => append(owner, 1, new Uint8Array(100000))).toThrow('could not be read');
-    store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' }] });
+    store.getPublicStatus.mockReturnValue({ connections: [] });
     service.connectionsChanged();
     expect(() => append(owner, 1)).toThrow('recording has ended');
     expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
@@ -236,20 +237,34 @@ describe('dictation service', () => {
     await expect(transcribe(service, owner, { id: service.begin(owner).id, audio: recording() })).rejects.toThrow('usable transcript');
   });
 
-  test('OpenRouter dictation refuses zero retention instead of sending ignored routing flags', () => {
-    expect(() => service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: true })).toThrow();
-    expect(service.state().options.find(option => option.providerId === 'openrouter')).toMatchObject({ available: false });
+  test('OpenRouter is available but recording and uploads require a dedicated persisted audio consent', async () => {
     service.choose({ providerId: 'openrouter', language: 'auto', requireZeroRetention: false });
-    service.choose({ requireZeroRetention: true });
-    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(service.state().options.find(option => option.providerId === 'openrouter')).toMatchObject({ available: true, consentRequired: true });
+    expect(() => service.begin(owner)).toThrow('Review OpenRouter audio privacy');
+    await expect(service.transcribeAudio(recording(), { providerId: 'openrouter', language: 'auto' }, new AbortController().signal)).rejects.toMatchObject({ code: 'DICTATION_CONSENT' });
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(permitsDictationCapture(owner, { mediaTypes: ['audio'] })).toBe(false);
+    service.choose({ providerId: 'openrouter', openrouterAudioConsent: true });
+    expect(() => service.begin(owner)).toThrow('Review OpenRouter audio privacy');
+    choose('openrouter');
+    const reopened = new DictationService({ dataDir: root, providerStore: store, local, assertEnabled() {} });
+    expect(reopened.state().preferences.openrouterAudioConsent).toBe(true);
+    expect(reopened.state().options.find(option => option.providerId === 'openrouter').consentRequired).toBe(false);
+    reopened.cancelAll();
+  });
+
+  test.each([true, false])('legacy retention preference %s is never mistaken for audio consent', (requireZeroRetention) => {
+    fs.writeFileSync(path.join(root, 'dictation.json'), JSON.stringify({ providerId: 'openrouter', language: 'de', requireZeroRetention }));
+    const reopened = new DictationService({ dataDir: root, providerStore: store, local, assertEnabled() {} });
+    expect(reopened.state().preferences).toEqual({ providerId: 'openrouter', language: 'de', openrouterAudioConsent: false });
+    expect(() => reopened.begin(owner)).toThrow('Review OpenRouter audio privacy');
   });
 
   test('language-only changes preserve an unavailable remembered destination', () => {
     choose('near-ai');
     store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'openrouter' }] });
     service.choose({ language: 'fr' });
-    expect(service.state().preferences).toEqual({ providerId: 'near-ai', language: 'fr', requireZeroRetention: true });
+    expect(service.state().preferences).toEqual({ providerId: 'near-ai', language: 'fr', openrouterAudioConsent: false });
     expect(() => service.begin(owner)).toThrow('Choose a dictation service');
   });
 
@@ -290,17 +305,18 @@ describe('dictation service', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1); expect(events.some(event => event.type === 'transcript')).toBe(false);
   });
 
-  test('a TEE-only connection cannot silently downgrade audio requests', () => {
+  test('chat model policy does not change the separate speech model capability or classification', () => {
     store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' }] });
-    expect(service.state().options.find(option => option.providerId === 'venice').available).toBe(false);
-    expect(() => choose('venice')).toThrow();
+    expect(service.state().options.find(option => option.providerId === 'venice')).toMatchObject({ available: true, privacyClassification: 'private' });
+    choose('venice');
+    expect(service.begin(owner).name).toBe('Venice');
   });
 
   test.each([['near-ai', 'tee'], ['near-ai', 'private'], ['venice', 'private']])(
     '%s speech meets its documented %s classification without claiming independent verification', async (providerId, privacyPolicy) => {
       store.getPublicStatus.mockReturnValue({ providerId, connections: [{ kind: 'hosted', providerId, privacyPolicy }] });
       const option = service.state().options.find(item => item.providerId === providerId);
-      expect(option).toMatchObject({ available: true, blockedReason: null, privacyClassification: providerId === 'near-ai' ? 'tee' : 'private' });
+      expect(option).toMatchObject({ available: true, privacyClassification: providerId === 'near-ai' ? 'tee' : 'private' });
       expect(option.detail).toContain(providerId === 'near-ai' ? 'not independently verified' : 'provider claim');
       const capture = service.begin(owner);
       await expect(transcribe(service, owner, { id: capture.id, audio: recording() })).resolves.toMatchObject({ providerId });
@@ -308,7 +324,7 @@ describe('dictation service', () => {
     }
   );
 
-  test('OpenRouter retention does not disable connected private Venice or TEE NEAR speech', () => {
+  test('chat retention remains separate from all three speech services', () => {
     choose('openrouter');
     store.getPublicStatus.mockReturnValue({ providerId: 'openrouter', connections: [
       { kind: 'hosted', providerId: 'openrouter', privacyPolicy: 'zdr' },
@@ -316,10 +332,10 @@ describe('dictation service', () => {
       { kind: 'hosted', providerId: 'venice', privacyPolicy: 'private' },
     ] });
     const options = service.state().options;
-    expect(options.find(item => item.providerId === 'openrouter')).toMatchObject({ available: false, blockedReason: 'retention', blockedLabel: 'Blocked by retention setting' });
+    expect(options.find(item => item.providerId === 'openrouter')).toMatchObject({ available: true, consentRequired: false });
     expect(options.find(item => item.providerId === 'near-ai').available).toBe(true);
     expect(options.find(item => item.providerId === 'venice').available).toBe(true);
-    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(service.begin(owner).name).toBe('OpenRouter');
     expect(service.state().preferences.providerId).toBe('openrouter');
     choose('venice');
     expect(service.begin(owner).name).toBe('Venice');
@@ -337,8 +353,8 @@ test('chat-only mutations and unrelated retention preferences keep an active spe
   const service = new DictationService({ dataDir: root, providerStore: store, local: { supported: true, ready: () => true }, assertEnabled() {} });
   try {
     const capture = service.begin(owner);
-    service.choose({ requireZeroRetention: false });
-    store.getSelection.mockReturnValue({ kind: 'hosted', apiKey: 'fixture-key', modelId: 'second', favoriteModelIds: ['other'] });
+    service.choose({ language: 'auto' });
+    store.getSelection.mockReturnValue({ kind: 'hosted', apiKey: 'fixture-key', modelId: 'second', favoriteModelIds: ['other'], privacyPolicy: 'tee' });
     service.connectionsChanged();
     expect(service.sessions.get(owner).id).toBe(capture.id);
     store.getSelection.mockReturnValue({ kind: 'hosted', apiKey: 'new-fixture-key' });

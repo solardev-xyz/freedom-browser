@@ -17,12 +17,19 @@ function setup() {
   const nodes = Object.fromEntries(['button', 'optionsButton', 'panel', 'menu', 'feedback', 'cancelButton'].map(name => [name, createElement()]));
   nodes.panel.hidden = true;
   nodes.menu.hidden = true;
-  const state = { ok: true, preferences: { providerId: 'venice', language: 'auto', requireZeroRetention: true },
+  const state = { ok: true, preferences: { providerId: 'venice', language: 'auto', openrouterAudioConsent: false },
     options: [{ providerId: 'venice', name: 'Venice', available: true, ready: true, detail: 'Audio goes to Venice.', price: 'Usage charges' }], languages: ['auto', 'de'] };
   let event;
   const api = { getAgentDictationState: jest.fn(async () => state), beginAgentDictation: jest.fn(async () => ({ ok: true, id: 'capture', name: 'Venice' })),
     finishAgentDictation: jest.fn(async () => ({ ok: true, text: 'a game' })), appendAgentDictation: jest.fn(async () => ({ ok: true })),
-    cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(async () => ({ ok: true })),
+    cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(async input => {
+      if (input.providerId) state.preferences.providerId = input.providerId;
+      if (input.language) state.preferences.language = input.language;
+      if (input.acceptOpenRouterAudio) state.preferences.openrouterAudioConsent = true;
+      const option = state.options.find(item => item.providerId === 'openrouter');
+      if (option) option.consentRequired = !state.preferences.openrouterAudioConsent;
+      return state;
+    }),
     onAgentDictationEvent: jest.fn(handler => { event = handler; return jest.fn(); }) };
   const stream = { getTracks: () => [{ stop: jest.fn() }] };
   Object.defineProperty(global, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: jest.fn(async () => stream) } } });
@@ -98,7 +105,7 @@ test('provider selection preserves language and retention preferences and never 
   ctx.state.options.push({ providerId: 'openrouter', name: 'OpenRouter', available: true, ready: true });
   ctx.optionsButton.dispatch('click'); await flush();
   ctx.menu.querySelector('[data-provider-id="openrouter"]').dispatch('click'); await flush();
-  expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({ providerId: 'openrouter', language: 'de', requireZeroRetention: true });
+  expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({ providerId: 'openrouter', language: 'de' });
   expect(ctx.menu.hidden).toBe(true); expect(ctx.panel.hidden).toBe(true);
   expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
 });
@@ -258,4 +265,54 @@ test('hover and microphone clicks refresh a changed audio destination', async ()
   ctx.ui.cancel();
   expect(ctx.button.title).toContain('Venice');
   expect(ctx.button.title).toContain('audio sent to this service');
+});
+
+
+const descendants = root => [root, ...root.children.flatMap(descendants)];
+const action = (root, text) => descendants(root).find(el => el.textContent === text);
+function addOpenRouter(ctx) {
+  ctx.state.preferences.providerId = 'openrouter';
+  ctx.state.options.push({ providerId: 'openrouter', name: 'OpenRouter', available: true, ready: true, consentRequired: true,
+    consentDisclosure: 'Audio uses standard routing. Zero data retention is unavailable. Chat privacy settings do not apply.' });
+}
+
+test('OpenRouter audio disclosure precedes capture; accepting is remembered without changing chat policy', async () => {
+  const ctx = setup(); addOpenRouter(ctx);
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.panel.hidden).toBe(false);
+  expect(action(ctx.panel, 'Use OpenRouter for dictation?')).toBeTruthy();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  action(ctx.panel, 'Use OpenRouter').dispatch('click'); await flush();
+  expect(ctx.api.chooseAgentDictation).toHaveBeenCalledWith({ providerId: 'openrouter', acceptOpenRouterAudio: true });
+  expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+  ctx.button.dispatch('click'); await flush();
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.panel.hidden).toBe(true);
+  expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(2);
+});
+
+test('choosing another service or cancelling OpenRouter consent never captures audio or accepts it', async () => {
+  const ctx = setup(); addOpenRouter(ctx);
+  ctx.button.dispatch('click'); await flush();
+  action(ctx.panel, 'Choose another service').dispatch('click'); await flush();
+  expect(ctx.menu.hidden).toBe(false); expect(ctx.panel.hidden).toBe(true);
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  ctx.ui.escape();
+  ctx.button.dispatch('click'); await flush();
+  action(ctx.panel, 'Cancel').dispatch('click'); await flush();
+  expect(ctx.api.chooseAgentDictation).not.toHaveBeenCalled();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  expect(ctx.state.preferences.openrouterAudioConsent).toBe(false);
+});
+
+test('a late acknowledgement cannot start the microphone after Escape or a conversation change', async () => {
+  const ctx = setup(); addOpenRouter(ctx); let resolve;
+  ctx.api.chooseAgentDictation.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  ctx.button.dispatch('click'); await flush();
+  action(ctx.panel, 'Use OpenRouter').dispatch('click'); await flush();
+  ctx.ui.cancel();
+  resolve({ ...ctx.state, preferences: { ...ctx.state.preferences, openrouterAudioConsent: true } }); await flush();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
 });

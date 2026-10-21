@@ -45,20 +45,25 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     onChosen(_state, { downloaded } = {}) {
       hideChoices();
       void refreshDestination();
-      if (chooserStart && !downloaded) void start();
+      if (chooserStart && !downloaded) void requestStart();
       else {
         if (downloaded) status('Local dictation is ready. Click the microphone to start.');
         button.focus();
       }
     },
     onCancel() { hideChoices(); button.focus(); },
+    onAlternative() {
+      hideChoices();
+      if (servicesMenu) void servicesMenu.show({ recordAfterChoice: chooserStart });
+      else void openChoices(chooserStart);
+    },
   });
   const servicesMenu = menu ? createDictationMenu({ host: menu, button: optionsButton, api,
     canOpen: () => !busy && canRecord(), onOpening: onMenuOpening,
     openSettings, onChosen: (_state, { recordAfterChoice } = {}) => {
       status('');
       void refreshDestination();
-      if (recordAfterChoice) void start();
+      if (recordAfterChoice) void requestStart();
     }, onError: message => status(message, true) }) : null;
   panel.addEventListener('dictation-connect', () => { cancel(); connectProvider(); });
   panel.addEventListener('dictation-settings', event => { cancel(); openSettings(event.detail?.providerId); });
@@ -192,8 +197,7 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     await choices.refresh();
     if (!panel.hidden) panel.querySelector('select')?.focus();
   };
-  button.addEventListener('click', async () => {
-    if (busy) { void finish(); return; }
+  async function requestStart() {
     if (!canRecord()) return;
     const current = ++generation;
     button.disabled = true;
@@ -204,7 +208,12 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
       const providerId = state.preferences.providerId || state.suggestedProviderId;
       const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
       updateDestination(state);
-      if (option) void start();
+      if (option?.consentRequired) {
+        chooserStart = true;
+        panel.hidden = false; panel.showModal?.();
+        optionsButton.setAttribute('aria-expanded', 'true');
+        choices.reviewConsent(state);
+      } else if (option) void start();
       else if (state.preferences.providerId && servicesMenu) {
         const saved = state.options.find(item => item.providerId === state.preferences.providerId);
         status(saved?.detail || 'Your saved dictation service is no longer connected. Choose a service.');
@@ -212,6 +221,9 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
       } else await openChoices(true);
     } catch (error) { if (current === generation) status(error.message, true); }
     finally { button.disabled = false; }
+  }
+  button.addEventListener('click', () => {
+    if (busy) void finish(); else void requestStart();
   });
   panel.addEventListener('cancel', event => { event.preventDefault(); cancel(); prompt.focus(); });
   cancelButton.addEventListener('click', () => { cancel(); prompt.focus(); });

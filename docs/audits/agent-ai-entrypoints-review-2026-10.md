@@ -130,3 +130,18 @@ tests passed; all 10 dictation Electron tests passed with fake providers and
 generated audio. The mixed-policy case preserves all three connection policies,
 requires explicit alternative selection, completes a phrase, and checks both
 themes and narrow layout. No live-provider inference was used for this regression.
+
+
+## 2026-10-21 approved separation of chat and audio privacy
+
+The maintainer subsequently approved replacing provider-wide policy inheritance:
+chat policy remains attached to chat requests, while dictation reuses credentials
+and discloses its own audio behavior. OpenRouter is available even for a ZDR chat
+connection. A dedicated, persisted audio acknowledgement gates first capture and
+uploads; legacy flags and selection alone do not grant it. Voice settings use
+factual Audio privacy information and an explicit first-choice action rather than
+a locked retention control. Cancel, another service or late async completion
+cannot start capture. Chat-policy changes do not interrupt an audio session;
+credential removal/change still does. The chat shield excludes audio explicitly.
+This user-approved behavior supersedes the earlier policy-block dispositions;
+it does not claim that standard audio routing provides zero retention or E2EE.
