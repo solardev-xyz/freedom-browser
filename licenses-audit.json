@@ -53,7 +53,7 @@
     },
     {
       "name": "freedom-ipfsd",
-      "version": "ipfsd-v0.1.0",
+      "version": "ipfsd-v0.1.1",
       "type": "binary",
       "scope": "runtime",
       "source": {
@@ -78,8 +78,13 @@
         },
         {
           "kind": "copyleft",
-          "details": "Statically links attohttpc 0.30.1 (MPL-2.0), unmodified: the one weak-copyleft crate in ipfsd-v0.1.0's THIRD-PARTY-NOTICES, which lists no GPL or LGPL crate. MPL-2.0 is file-level copyleft, so it reaches no other code, but the binary distributes it in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The audit's 'unmodified, no obligation beyond notice' reading for the npm MPL-2.0 packages does not cover this binary. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9, the checksum freedom-ipfsd's Cargo.lock records at ipfsd-v0.1.0), and the repository https://github.com/sbstp/attohttpc. ipfsd-v0.1.0's own THIRD-PARTY-NOTICES carries the license text but no source location; freedom-core is adding these source lines to its generated THIRD-PARTY-NOTICES for later releases.",
-          "recommended_fix": "Keep the NOTICES source pointer. On every ipfsd pin bump, re-read the release's crate list for MPL-2.0 crates and point NOTICES at the exact versions it links (or at the release's own notices once they carry the source lines)."
+          "details": "Statically links attohttpc 0.30.1 (MPL-2.0), unmodified: the one weak-copyleft crate in ipfsd-v0.1.1's THIRD-PARTY-NOTICES, as in ipfsd-v0.1.0's, which list no GPL or LGPL crate. MPL-2.0 is file-level copyleft, so it reaches no other code, but the binary distributes it in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The audit's 'unmodified, no obligation beyond notice' reading for the npm MPL-2.0 packages does not cover this binary. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9, the checksum freedom-ipfsd's Cargo.lock records at ipfsd-v0.1.0 and ipfsd-v0.1.1), and the repository https://github.com/sbstp/attohttpc. Since ipfsd-v0.1.1 the release's own THIRD-PARTY-NOTICES names the same source (freedom-core #145); NOTICES keeps its pointer as Freedom's own attribution.",
+          "recommended_fix": "Keep the NOTICES source pointer. On every ipfsd pin bump, re-read the release's crate list for MPL-2.0 crates and point NOTICES at the exact versions it links."
+        },
+        {
+          "kind": "copyleft",
+          "details": "Since ipfsd-v0.1.1 the Linux binaries (x86_64, aarch64) are dynamically linked against the system's glibc (GLIBC_2.17 at most; libc, libm, libpthread, libdl, ld-linux), built with cargo-zigbuild, and statically carry glibc's startup and libc_nonshared objects as Zig 0.15.2 builds them for glibc 2.17 (Scrt1.o, __libc_csu_init/__libc_csu_fini, stat64/fstat64/lstat64, and __pthread_atfork on aarch64; LGPL-2.1-or-later), and LLVM libunwind (Zig's copy; Apache-2.0 WITH LLVM-exception). musl is gone. Each glibc file carries the GNU C Library's exception, which gives unlimited permission to link its compiled form with other programs and to distribute those programs without any restriction coming from the use of the file: the LGPL puts no relinking or source obligation on freedom-ipfsd, and applies only to the files themselves, modified or distributed unlinked, which Freedom does not do. glibc itself is the user's system library and is not distributed.",
+          "recommended_fix": "Attribution only: the release's THIRD-PARTY-NOTICES carries the license text and the exception, and NOTICES names the objects. Re-check on a pin bump that the Linux build still links only the startup objects under the exception."
         }
       ]
     },
