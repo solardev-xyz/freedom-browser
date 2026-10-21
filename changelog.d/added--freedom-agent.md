@@ -1,7 +1,7 @@
 - Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
   - Opt-in AI features and dedicated provider and voice pages under Settings > AI, with a dismissible start-page invitation
   - One-click starting prompts for games, websites, source comparisons and project reviews
-  - Composer dictation with live text or phrase updates through connected transcription services or an optional local Whisper model
+  - Composer dictation with live text or phrase updates through connected transcription services or an optional local Whisper model using [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5
   - ChatGPT, Meta Muse and installed Claude Code subscriptions; provider API keys, custom OpenAI-compatible servers, and local Ollama models
   - Website actions, parallel helpers, connected MCP services, and permission controls
   - Sandboxed tool scripts for multi-step tasks

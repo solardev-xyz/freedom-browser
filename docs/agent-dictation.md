@@ -230,13 +230,27 @@ superseded by a bundled, source-built whisper.cpp CLI and separately downloaded
 Whisper Base model. Earlier sherpa timings and qualification apply only to the
 historical draft, not this replacement. The cloud dictation paths are unchanged.
 
-Replacement validation: lint and all 10,672 unit tests pass; all 10 dictation
-Electron scenarios pass. Native installer/transcription/cancellation/invalid-audio
-cleanup pass on macOS arm64 and Linux arm64 (Docker). macOS x64 compiles; this
-Mac lacks Rosetta, so its executable was not run here. Five-target CI results
-are recorded separately after completion. Real microphone and signed-package
-checks remain distinct from the synthetic/audio-file checks.
+Replacement validation at `68a48038`: lint and all 10,673 unit tests pass; all
+10 dictation Electron scenarios pass (UI flow coverage, synthetic audio/providers).
+The real installer, transcription, cancellation and invalid-audio cleanup passed
+on all five native targets in [GitHub run 39598486244](https://github.com/solardev-xyz/freedom-browser/actions/runs/39598486244).
+A disposable Electron ASAR smoke on macOS arm64 also passed packaged-helper lookup,
+model installation, transcription and cleanup. Normal development startup reuses
+the verified build without CMake or another source download.
 
-The first five-target workflow passed functionally, but exposed slow scalar x64
-inference. That build is superseded by upstream CPU dispatch with bundled baseline
-and SIMD backends. Qualification and timings for the corrected build follow.
+Cold transcription times for the same upstream 11-second `jfk.wav` sample on
+GitHub-hosted runners (including model loading; not accuracy or device guarantees):
+
+| Target | Transcription |
+| --- | ---: |
+| macOS arm64 | 2.53 s |
+| macOS x64 | 6.60 s |
+| Linux arm64 | 7.34 s |
+| Linux x64 | 2.23 s |
+| Windows x64 | 2.48 s |
+
+The initial scalar x64 build passed functionally but took approximately 26–42
+seconds for this sample. It was superseded by upstream CPU dispatch with bundled
+baseline and SIMD backends before qualification. Real microphone quality and
+permissions, signed-release packaging, older distro/CPU coverage, a private warm
+worker, GPU tuning and OS-enforced process isolation remain separate follow-ups.

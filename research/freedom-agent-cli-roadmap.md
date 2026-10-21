@@ -585,9 +585,14 @@ only the separately pinned multilingual Whisper Base GGML model (~150 MB) on
 explicit request. The installer preserves earlier draft files. No Python/Ollama
 or user-side compiler is required. CPU inference; private warm-worker/GPU tuning,
 OS sandbox enforcement, physical-microphone quality and signed-package validation
-remain follow-ups. Native macOS arm64 install/transcription/cancel/failure cleanup
-passes using public audio. Five-target native CI covers the remaining native
-platform combinations; results must be recorded before expanding qualification.
+remain follow-ups. Real installer/transcription/cancel/failure cleanup passes on all five targets
+at `68a48038` in [native CI run 39598486244](https://github.com/solardev-xyz/freedom-browser/actions/runs/39598486244).
+The initial slow scalar x64 build was replaced with upstream CPU dispatch and
+bundled SIMD libraries; the same 11-second sample takes 2.2–2.5 s on Linux/Windows
+x64 runners and 6.6 s on Intel Mac. Packaged resource lookup also passes a
+disposable Electron ASAR test on macOS arm64. Lint, 10,673 unit tests and all ten
+dictation UI scenarios pass. These are not physical-microphone or signed-release
+qualification claims.
 Details and exact pins: [dictation](../docs/agent-dictation.md#on-this-device).
 
 **2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
