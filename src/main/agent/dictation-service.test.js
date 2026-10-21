@@ -69,7 +69,7 @@ describe('dictation service', () => {
     store.getPublicStatus.mockReturnValue({ providerId: 'anthropic-claude', connections: [
       { kind: 'subscription', providerId: 'anthropic-claude' },
       { kind: 'hosted', providerId: 'openrouter' },
-      { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
+      { kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' },
     ] });
     expect(service.state().suggestedProviderId).toBe(null);
     expect(() => service.begin(owner)).toThrow('Choose a dictation service');
@@ -91,7 +91,7 @@ describe('dictation service', () => {
   test('without a suitable cloud connection first use requires setup rather than downloading or selecting local', () => {
     store.getPublicStatus.mockReturnValue({ providerId: 'openai-chatgpt', connections: [
       { kind: 'subscription', providerId: 'openai-chatgpt' },
-      { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
+      { kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' },
     ] });
     expect(service.state().suggestedProviderId).toBe(null);
     expect(() => service.begin(owner)).toThrow('Choose a dictation service');
@@ -294,6 +294,35 @@ describe('dictation service', () => {
     store.getPublicStatus.mockReturnValue({ connections: [{ kind: 'hosted', providerId: 'venice', privacyPolicy: 'tee' }] });
     expect(service.state().options.find(option => option.providerId === 'venice').available).toBe(false);
     expect(() => choose('venice')).toThrow();
+  });
+
+  test.each([['near-ai', 'tee'], ['near-ai', 'private'], ['venice', 'private']])(
+    '%s speech meets its documented %s classification without claiming independent verification', async (providerId, privacyPolicy) => {
+      store.getPublicStatus.mockReturnValue({ providerId, connections: [{ kind: 'hosted', providerId, privacyPolicy }] });
+      const option = service.state().options.find(item => item.providerId === providerId);
+      expect(option).toMatchObject({ available: true, blockedReason: null, privacyClassification: providerId === 'near-ai' ? 'tee' : 'private' });
+      expect(option.detail).toContain(providerId === 'near-ai' ? 'not independently verified' : 'provider claim');
+      const capture = service.begin(owner);
+      await expect(transcribe(service, owner, { id: capture.id, audio: recording() })).resolves.toMatchObject({ providerId });
+      expect(fetchImpl.mock.calls[0][0]).toContain(providerId === 'near-ai' ? 'cloud-api.near.ai' : 'api.venice.ai');
+    }
+  );
+
+  test('OpenRouter retention does not disable connected private Venice or TEE NEAR speech', () => {
+    choose('openrouter');
+    store.getPublicStatus.mockReturnValue({ providerId: 'openrouter', connections: [
+      { kind: 'hosted', providerId: 'openrouter', privacyPolicy: 'zdr' },
+      { kind: 'hosted', providerId: 'near-ai', privacyPolicy: 'tee' },
+      { kind: 'hosted', providerId: 'venice', privacyPolicy: 'private' },
+    ] });
+    const options = service.state().options;
+    expect(options.find(item => item.providerId === 'openrouter')).toMatchObject({ available: false, blockedReason: 'retention', blockedLabel: 'Blocked by retention setting' });
+    expect(options.find(item => item.providerId === 'near-ai').available).toBe(true);
+    expect(options.find(item => item.providerId === 'venice').available).toBe(true);
+    expect(() => service.begin(owner)).toThrow('Choose a dictation service');
+    expect(service.state().preferences.providerId).toBe('openrouter');
+    choose('venice');
+    expect(service.begin(owner).name).toBe('Venice');
   });
 });
 

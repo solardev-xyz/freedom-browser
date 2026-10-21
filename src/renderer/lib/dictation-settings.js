@@ -87,7 +87,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
       : !option
         ? 'Connect'
         : !option.available
-          ? 'Unavailable'
+          ? option.blockedLabel || 'Unavailable'
           : option.ready
             ? 'Connected'
             : 'Download needed';

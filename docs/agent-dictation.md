@@ -8,8 +8,11 @@ Agent task.
 The microphone starts immediately with a remembered dictation service. On first
 use it selects the active provider when supported, otherwise the first suitable
 connected API-key service, and remembers that choice. OpenAI, OpenRouter, Venice
-and NEAR AI are supported. With no suitable connection it opens setup, including
-the optional local download. The arrow beside the microphone opens a compact
+and NEAR AI are supported. With no saved choice or suitable ready connection it opens setup, including
+the optional local download. If a saved service is blocked or disconnected, the
+microphone instead opens the compact service menu with an explanation. Selecting
+a ready alternative there starts dictation; selecting from the chevron alone
+only changes the saved service. The arrow beside the microphone opens a compact
 service menu with the active choice checked; switching service does not start
 recording. **Voice dictation settings…** opens Settings → AI → Voice dictation
 directly for language, retention preferences and local downloads. AI settings
@@ -45,8 +48,15 @@ edited or sent manually, and drops any unfinished provisional tail. An approval 
 
 The selected chat model's end-to-end encryption and hardware checks do not cover
 these audio uploads. The microphone tooltip/accessibility label, chooser and recording indicator name
-its actual audio destination. Private/TEE-only connections are unavailable unless
-that policy can be established for the separate audio endpoint.
+its actual audio destination. Connection policies are checked against the exact
+speech model/endpoint, not the selected chat model. As checked on 2026-10-21,
+[Venice classifies Whisper Large V3 as Private](https://docs.venice.ai/models/speech-to-text),
+and [NEAR documents its Whisper endpoint as TEE-hosted](https://docs.near.ai/cloud/guides/specialized-endpoints).
+Therefore Venice's Private setting and NEAR's TEE setting allow these speech
+models. These are provider claims, not independent attestation of audio requests.
+Venice's TEE-only setting still blocks its non-TEE Whisper model. A generic
+“not independently verified” label is not a reason to reject a model that meets
+the same provider-classification policy used for chat.
 
 **OpenRouter's transcription endpoint does not enforce per-request retention
 routing**, unlike its chat API. With the default “Require zero data retention”
@@ -108,8 +118,9 @@ signed-package behavior still need qualification before release.
   microphone releases capture and prevents a late transcript entering another draft
 - Microphone denial and no-speech recordings leave the draft unchanged. A provider
   failure preserves completed phrases. No other service is selected after failure
-- A remembered service that becomes unavailable opens setup rather than silently
-  switching the audio destination. TEE-only connections are excluded from automatic selection
+- A remembered service that becomes unavailable opens the compact menu rather than
+  silently switching the audio destination. Each blocked service explains the setting
+  responsible; its menu row opens that service’s Voice settings
 - Chromium capture uses an AudioWorklet, with resampling outside the renderer
   thread. Native inference runs in a separate process
 
@@ -141,3 +152,16 @@ Venice/NEAR live audio, packaged local runtimes outside macOS arm64, real microp
 permission denial/device loss, and the Linux Settings screenshot-tour update remain
 explicit qualification work. No paid-provider queries or real capture were run
 while the maintainer was away.
+
+## 2026-10-21 availability regression correction
+
+The overnight review introduced an overbroad private/TEE gate. It incorrectly
+marked documented Private Venice speech and TEE NEAR speech unavailable, alongside
+the separately valid OpenRouter retention block. The adapter now evaluates the
+speech model's documented classification and keeps the distinction between a
+provider claim and independent verification explicit. No chat privacy settings or
+saved audio destinations are changed by this fix. OpenRouter retains its existing
+retention requirement, with “Blocked by retention setting” instead of a generic
+service failure. The mixed three-provider combination is covered by service tests
+and disposable-profile Electron tests, including explicit alternative selection,
+record/finish, both themes and preserved connection policies.

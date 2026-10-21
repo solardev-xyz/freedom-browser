@@ -360,3 +360,66 @@ test('blocked first-use setup explains the policy and links directly to its Voic
   expect(recordings.length).toBe(before);
   expect(await window.evaluate(() => Boolean(window.dictationTestStream))).toBe(false);
 });
+
+test('private Venice and TEE NEAR remain usable beside retention-blocked OpenRouter', async ({ window, electronApp }, testInfo) => {
+  await prepare(window, electronApp);
+  // Everything below uses fake catalogs, keys and audio in the disposable
+  // profile. Never send a request to these live provider hosts from this test.
+  await electronApp.evaluate((_electron, endpoint) => {
+    const fetch = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+      const address = String(url);
+      if (address.startsWith('https://api.venice.ai/api/v1/models')) return Promise.resolve(new Response(JSON.stringify({ data: [{
+        id: 'dictation-venice-fixture', type: 'text', model_spec: { name: 'Fixture', privacy: 'private', capabilities: { supportsFunctionCalling: true } },
+      }] })));
+      if (address.startsWith('https://cloud-api.near.ai/v1/model/list')) return Promise.resolve(new Response(JSON.stringify({ models: [{
+        modelId: 'dictation-near-fixture', metadata: { providerType: 'vllm', verifiable: true, attestationSupported: true, supportedFeatures: ['tools'] },
+      }] })));
+      if (['https://api.venice.ai/api/v1/audio/transcriptions', 'https://cloud-api.near.ai/v1/audio/transcriptions'].includes(address)) return fetch(endpoint, options);
+      if (address.includes('api.venice.ai') || address.includes('cloud-api.near.ai')) throw new Error('Unexpected provider request in fixture');
+      return fetch(url, options);
+    };
+  }, endpoint);
+  const responses = await window.evaluate(async () => {
+    const results = [];
+    await window.electronAPI.chooseAgentDictation({ providerId: 'openrouter', language: 'de', requireZeroRetention: false });
+    for (const [providerId, modelId, policy] of [['near-ai', 'dictation-near-fixture', 'tee'], ['venice', 'dictation-venice-fixture', 'private']]) {
+      results.push(await window.electronAPI.refreshAgentProviderModels(providerId, 'dictation-fixture-key'));
+      results.push(await window.electronAPI.configureHostedAgentProvider(providerId, modelId, 'dictation-fixture-key', policy));
+    }
+    results.push(await window.electronAPI.setAgentProviderPreferences('openrouter', { privacyPolicy: 'zdr' }));
+    return results.map(result => ({ ok: result.ok, error: result.error }));
+  });
+  expect(responses.every(result => result.ok)).toBe(true);
+  await window.locator('#agent-dictation').click();
+  const menu = window.locator('#agent-dictation-menu');
+  await expect(window.locator('#agent-dictation-panel')).toBeHidden();
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitemradio', { name: /OpenRouter/ })).toContainText('Blocked by retention setting');
+  await expect(menu.getByRole('menuitemradio', { name: /NEAR AI/ })).toBeEnabled();
+  await expect(menu.getByRole('menuitemradio', { name: /Venice/ })).toBeEnabled();
+  expect(await window.evaluate(() => Boolean(window.dictationTestStream))).toBe(false);
+  await menu.getByRole('menuitemradio', { name: /Venice/ }).click();
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening · Venice');
+  await window.waitForTimeout(650);
+  await window.locator('#agent-dictation').click();
+  await expect(window.locator('#agent-prompt')).toHaveValue('a small browser game');
+  const settings = await openProviderSettings(window);
+  await settings.evaluate(() => { location.hash = 'ai/voice'; });
+  const voice = settings.locator('#ai-dictation-settings');
+  await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('Blocked by retention setting');
+  await expect(voice.getByRole('link', { name: /NEAR AI/ })).toContainText('Connected');
+  await expect(voice.getByRole('link', { name: /Venice/ })).toContainText('In use');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(settings.locator('html')).toHaveAttribute('data-theme', theme);
+    await settings.screenshot({ path: testInfo.outputPath(`voice-availability-${theme}.png`) });
+  }
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => win.isVisible());
+    win.setMinimumSize(320, 300); win.setContentSize(640, 760);
+  });
+  expect(await settings.locator('main.content').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const policies = await window.evaluate(async () => (await window.electronAPI.getAgentProviderStatus()).status.connections.map(item => [item.providerId, item.privacyPolicy]));
+  expect(policies).toEqual(expect.arrayContaining([['openrouter', 'zdr'], ['near-ai', 'tee'], ['venice', 'private']]));
+});

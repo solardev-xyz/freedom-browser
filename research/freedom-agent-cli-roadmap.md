@@ -1,7 +1,7 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain research complete; implementation planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
@@ -507,6 +507,18 @@ attachment flow; opening a managed/external project is a separate conversation f
   model quality and public publication are separate from deterministic UI checks.
 
 ### AI4 — Voice dictation in the composer
+
+**2026-10-21 smoke regression:** the overnight gate incorrectly blocked all
+Private/TEE speech without checking the actual speech model classification.
+Corrected against current primary provider documentation: Venice Whisper is
+Private (provider claim), NEAR Whisper is TEE-hosted (provider claim). Their
+matching policies now permit dictation; independent audio attestation is not
+claimed. OpenRouter's unsupported retention requirement still blocks its audio
+endpoint, labeled “Blocked by retention setting.” A saved blocked service now
+opens the compact menu with explicit alternatives instead of repeating onboarding;
+no silent destination/policy changes. Lint, 473 unit suites / 10,657 tests and
+all 10 dictation Electron checks passed; mixed provider cards inspected in both themes.
+
 
 **2026-10-20 overnight review:** Claude independently reviewed AI1–AI4 through
 Herdr. Three medium and nine low findings were investigated and repaired; second

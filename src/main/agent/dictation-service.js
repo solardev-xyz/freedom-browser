@@ -11,8 +11,12 @@ const LANGUAGES = Object.freeze(['auto', 'en', 'de', 'es', 'fr', 'it', 'pt', 'nl
 const CLOUD = Object.freeze({
   openai: { name: 'OpenAI', price: 'Live dictation: about $0.017 per minute' },
   openrouter: { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'Usage billed to OpenRouter' },
-  venice: { name: 'Venice', url: 'https://api.venice.ai/api/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'About $0.006 per minute' },
-  'near-ai': { name: 'NEAR AI', url: 'https://cloud-api.near.ai/v1/audio/transcriptions', model: 'openai/whisper-large-v3', price: 'Usage billed to NEAR AI' },
+  // Classification of these exact speech models/endpoints, not inherited from
+  // the selected chat model. Provider claims, not independent audio attestation.
+  // Checked 2026-10-21: docs.venice.ai/models/speech-to-text and
+  // docs.near.ai/cloud/guides/specialized-endpoints.
+  venice: { name: 'Venice', url: 'https://api.venice.ai/api/v1/audio/transcriptions', model: 'openai/whisper-large-v3', privacy: 'private', price: 'About $0.006 per minute' },
+  'near-ai': { name: 'NEAR AI', url: 'https://cloud-api.near.ai/v1/audio/transcriptions', model: 'openai/whisper-large-v3', privacy: 'tee', price: 'Usage billed to NEAR AI' },
 });
 const MAX_TEXT = 32000;
 
@@ -83,12 +87,24 @@ class DictationService {
       if (!provider || connection.kind !== 'hosted') continue;
       const unsupportedRetention = connection.providerId === 'openrouter' &&
         (preferences.requireZeroRetention || connection.privacyPolicy === 'zdr');
-      const allowed = !['private', 'tee'].includes(connection.privacyPolicy) && !unsupportedRetention;
+      const unsupportedPrivacy = connection.privacyPolicy === 'tee' ? provider.privacy !== 'tee'
+        : connection.privacyPolicy === 'private' && !['private', 'tee'].includes(provider.privacy);
+      const allowed = !unsupportedPrivacy && !unsupportedRetention;
+      const blockedReason = unsupportedRetention ? 'retention' : unsupportedPrivacy ? 'privacy' : null;
+      const blockedLabel = unsupportedRetention ? 'Blocked by retention setting' : unsupportedPrivacy ? 'Blocked by privacy setting' : null;
+      const privacyDetail = provider.privacy === 'tee'
+        ? 'NEAR AI reports that this speech model runs in a TEE. Freedom has not independently verified audio requests.'
+        : provider.privacy === 'private' ? 'Venice classifies this speech model as Private. This is a provider claim.' : '';
       options.push({ providerId: connection.providerId, name: provider.name, model: connection.providerId === 'openai' ? 'gpt-live-transcribe' : provider.model,
         available: allowed, ready: true, price: provider.price,
+        blockedReason, blockedLabel, privacyClassification: provider.privacy || null,
         requireZeroRetention: connection.privacyPolicy === 'zdr',
-        detail: unsupportedRetention ? 'OpenRouter cannot enforce per-request zero data retention for dictation. Turn it off in Voice dictation settings to use this service.' : allowed ? `Audio is sent to ${provider.name} while you speak. Chat end-to-end encryption does not cover dictation.`
-          : 'Dictation is not verified to meet this connection’s privacy policy.' });
+        detail: unsupportedRetention
+          ? connection.privacyPolicy === 'zdr'
+            ? 'Your OpenRouter connection requires zero data retention. Its transcription endpoint cannot enforce it. Choose another dictation service or review the connection policy.'
+            : 'OpenRouter cannot enforce per-request zero data retention for dictation. Turn it off in Voice dictation settings to use this service.'
+          : unsupportedPrivacy ? 'This speech model does not meet the connection’s privacy setting. Choose another dictation service.'
+            : `Audio is sent to ${provider.name} while you speak. ${privacyDetail ? `${privacyDetail} ` : ''}Chat end-to-end encryption does not cover dictation.` });
     }
     const connected = options.filter(option => option.providerId !== 'local' && option.available && option.ready);
     return { preferences: { ...this.preferences }, options, languages: [...LANGUAGES],

@@ -130,10 +130,28 @@ test('without a suitable connection first use shows setup before starting the mi
   ctx.ui.escape(); expect(ctx.panel.hidden).toBe(true);
 });
 
-test('a saved unavailable service opens setup instead of silently choosing another connection', async () => {
+test('a saved unavailable service offers the compact menu without silently choosing another connection', async () => {
   const ctx = setup(); ctx.state.preferences.providerId = 'near-ai'; ctx.state.suggestedProviderId = 'venice';
   ctx.button.dispatch('click'); await flush();
-  expect(ctx.panel.hidden).toBe(false); expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  expect(ctx.panel.hidden).toBe(true); expect(ctx.menu.hidden).toBe(false);
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  ctx.menu.querySelector('[data-provider-id="venice"]').dispatch('click'); await flush();
+  expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+});
+
+test('a blocked saved service links to its settings and a later chevron choice never starts capture', async () => {
+  const ctx = setup();
+  ctx.state.preferences.providerId = 'openrouter';
+  ctx.state.options.push({ providerId: 'openrouter', name: 'OpenRouter', available: false, ready: true,
+    blockedLabel: 'Blocked by retention setting', detail: 'Zero data retention is required.' });
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.feedback.textContent).toContain('Zero data retention');
+  ctx.menu.querySelector('[data-provider-id="openrouter"]').dispatch('click'); await flush();
+  expect(ctx.openSettings).toHaveBeenCalledWith('openrouter');
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  ctx.optionsButton.dispatch('click'); await flush();
+  ctx.menu.querySelector('[data-provider-id="venice"]').dispatch('click'); await flush();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
 });
 
 test('main-process cancellation releases the recorder and ignores any late finish', async () => {

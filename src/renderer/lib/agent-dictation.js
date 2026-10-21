@@ -55,7 +55,11 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   });
   const servicesMenu = menu ? createDictationMenu({ host: menu, button: optionsButton, api,
     canOpen: () => !busy && canRecord(), onOpening: onMenuOpening,
-    openSettings, onChosen: () => void refreshDestination(), onError: message => status(message, true) }) : null;
+    openSettings, onChosen: (_state, { recordAfterChoice } = {}) => {
+      status('');
+      void refreshDestination();
+      if (recordAfterChoice) void start();
+    }, onError: message => status(message, true) }) : null;
   panel.addEventListener('dictation-connect', () => { cancel(); connectProvider(); });
   panel.addEventListener('dictation-settings', event => { cancel(); openSettings(event.detail?.providerId); });
 
@@ -200,7 +204,12 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
       const providerId = state.preferences.providerId || state.suggestedProviderId;
       const option = state.options.find(option => option.providerId === providerId && option.available && option.ready);
       updateDestination(state);
-      if (option) void start(); else await openChoices(true);
+      if (option) void start();
+      else if (state.preferences.providerId && servicesMenu) {
+        const saved = state.options.find(item => item.providerId === state.preferences.providerId);
+        status(saved?.detail || 'Your saved dictation service is no longer connected. Choose a service.');
+        await servicesMenu.show({ recordAfterChoice: true });
+      } else await openChoices(true);
     } catch (error) { if (current === generation) status(error.message, true); }
     finally { button.disabled = false; }
   });
@@ -220,7 +229,8 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   function updateDestination(state) {
     const id = state.preferences.providerId || state.suggestedProviderId;
     const option = state.options.find(item => item.providerId === id && item.available && item.ready);
-    destination = option ? `Dictate with ${option.name} · ${id === 'local' ? 'audio stays on this device' : 'audio sent to this service'}` : 'Set up voice dictation';
+    destination = option ? `Dictate with ${option.name} · ${id === 'local' ? 'audio stays on this device' : 'audio sent to this service'}`
+      : state.preferences.providerId ? 'Choose a dictation service' : 'Set up voice dictation';
     if (!busy) { button.title = destination; button.setAttribute('aria-label', destination); }
   }
   async function refreshDestination() {

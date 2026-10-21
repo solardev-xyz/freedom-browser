@@ -109,3 +109,24 @@ Claude also checked the domain research plan: considered its typed wallet bounda
 private commit-secret handling, uncertain-dispatch reconciliation and fork-only
 qualification sound. Its documentation nits were applied: dated handoff and an
 explicit requirement for host-rendered semantic wallet approvals.
+
+
+## 2026-10-21 maintainer-smoke follow-up
+
+The private/TEE gate accepted in the overnight review was overly broad: it
+rejected every private/TEE connection without checking its transcription model.
+Primary documentation lists Venice Whisper as Private and NEAR Whisper as
+TEE-hosted. The 2026-10-21 correction permits those matching provider-classification
+policies, explicitly retaining the distinction from independently verified audio.
+Venice Whisper still cannot satisfy TEE-only; OpenRouter still cannot satisfy
+its retention requirement. “Unavailable” was replaced by the specific policy
+block label. A remembered blocked service opens the compact menu rather than
+repeating onboarding, and changing its audio destination requires explicit choice.
+The first-pass acceptance above is historical and does not establish that the
+former blanket gate was justified.
+
+Validation of this correction: lint clean; full unit suite 473 suites / 10,657
+tests passed; all 10 dictation Electron tests passed with fake providers and
+generated audio. The mixed-policy case preserves all three connection policies,
+requires explicit alternative selection, completes a phrase, and checks both
+themes and narrow layout. No live-provider inference was used for this regression.
