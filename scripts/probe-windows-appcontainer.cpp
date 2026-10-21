@@ -6,6 +6,7 @@
 #include <userenv.h>
 #include <aclapi.h>
 #include <rpc.h>
+#include <sddl.h>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -26,6 +27,26 @@ struct Handle {
     HANDLE value = nullptr;
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
+
+static bool package_access(HANDLE token, const std::wstring& sid) {
+    // AccessCheck measures the documented LPAC distinction without relying on
+    // TokenIsLessPrivilegedAppContainer, which some user-mode kernels reject.
+    Handle impersonation;
+    checked(DuplicateToken(token, SecurityImpersonation, &impersonation.value) != 0, "DuplicateToken for package access");
+    const std::wstring sddl = L"O:SYG:SYD:(A;;CC;;;WD)(A;;CC;;;" + sid + L")";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    checked(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) != 0,
+        "Package access descriptor");
+    GENERIC_MAPPING mapping = {FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS};
+    std::vector<BYTE> privileges(1024);
+    DWORD length = static_cast<DWORD>(privileges.size()), granted = 0;
+    BOOL allowed = FALSE;
+    const BOOL queried = AccessCheck(descriptor, impersonation.value, 1, &mapping,
+        reinterpret_cast<PRIVILEGE_SET*>(privileges.data()), &length, &granted, &allowed);
+    LocalFree(descriptor);
+    checked(queried != 0, "Measure package access");
+    return allowed != FALSE;
+}
 struct PackageFilter {
     HANDLE engine = nullptr;
     ~PackageFilter() { if (engine) FwpmEngineClose0(engine); }
@@ -35,7 +56,8 @@ struct PackageFilter {
         DWORD status = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_DEFAULT, nullptr, &session, &engine);
         if (status) { std::printf("Package filter engine error: %lu\n", status); throw std::runtime_error("Package filter engine"); }
         FWPM_SUBLAYER0 sublayer = {};
-        checked(UuidCreate(&sublayer.subLayerKey) == RPC_S_OK, "Package sublayer UUID");
+        const auto sublayer_uuid = UuidCreate(&sublayer.subLayerKey);
+        checked(sublayer_uuid == RPC_S_OK || sublayer_uuid == RPC_S_UUID_LOCAL_ONLY, "Package sublayer UUID");
         sublayer.displayData.name = const_cast<wchar_t*>(L"Freedom owned package DNS fixture");
         sublayer.weight = 0xffff;
         status = FwpmSubLayerAdd0(engine, &sublayer, nullptr);
@@ -45,9 +67,10 @@ struct PackageFilter {
             condition.fieldKey = FWPM_CONDITION_ALE_PACKAGE_ID;
             condition.matchType = FWP_MATCH_EQUAL;
             condition.conditionValue.type = FWP_SID;
-            condition.conditionValue.sid = sid;
+            condition.conditionValue.sid = static_cast<SID*>(sid);
             FWPM_FILTER0 filter = {};
-            checked(UuidCreate(&filter.filterKey) == RPC_S_OK, "Package filter UUID");
+            const auto filter_uuid = UuidCreate(&filter.filterKey);
+            checked(filter_uuid == RPC_S_OK || filter_uuid == RPC_S_UUID_LOCAL_ONLY, "Package filter UUID");
             filter.displayData.name = const_cast<wchar_t*>(L"Freedom owned offline package filter");
             filter.layerKey = layer;
             filter.subLayerKey = sublayer.subLayerKey;
@@ -63,6 +86,7 @@ struct PackageFilter {
             const bool valid = actual->numFilterConditions == 1 && actual->action.type == FWP_ACTION_BLOCK &&
                 IsEqualGUID(actual->layerKey, layer) && IsEqualGUID(actual->subLayerKey, sublayer.subLayerKey) &&
                 IsEqualGUID(actual->filterCondition[0].fieldKey, FWPM_CONDITION_ALE_PACKAGE_ID) &&
+                actual->filterCondition[0].matchType == FWP_MATCH_EQUAL &&
                 actual->filterCondition[0].conditionValue.type == FWP_SID &&
                 EqualSid(actual->filterCondition[0].conditionValue.sid, sid);
             FwpmFreeMemory0(reinterpret_cast<void**>(&actual));
@@ -125,12 +149,12 @@ struct AclGrant {
 struct Attributes {
     std::vector<BYTE> bytes;
     LPPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
-    Attributes() {
+    explicit Attributes(DWORD count) {
         SIZE_T size = 0;
-        InitializeProcThreadAttributeList(nullptr, 2, 0, &size);
+        InitializeProcThreadAttributeList(nullptr, count, 0, &size);
         bytes.resize(size);
         value = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(bytes.data());
-        checked(InitializeProcThreadAttributeList(value, 2, 0, &size) != 0, "InitializeProcThreadAttributeList");
+        checked(InitializeProcThreadAttributeList(value, count, 0, &size) != 0, "InitializeProcThreadAttributeList");
     }
     ~Attributes() { if (value) DeleteProcThreadAttributeList(value); }
 };
@@ -153,8 +177,9 @@ int wmain(int argc, wchar_t** argv) {
     try {
         wchar_t github[8] = {};
         checked(GetEnvironmentVariableW(L"GITHUB_ACTIONS", github, 8) != 0 && !wcscmp(github, L"true"), "Disposable CI guard");
-        if (argc != 4 && !(argc == 5 && !wcscmp(argv[4], L"package-filter")))
+        if (argc != 4 && !(argc == 5 && (!wcscmp(argv[4], L"package-filter") || !wcscmp(argv[4], L"lpac"))))
             throw std::runtime_error("Expected node path, owned workspace and fixed probe source");
+        const bool lpac = argc == 5 && !wcscmp(argv[4], L"lpac");
         const auto node = std::filesystem::canonical(argv[1]);
         const auto workspace = std::filesystem::canonical(argv[2]);
         auto owned = workspace.parent_path().wstring();
@@ -174,7 +199,7 @@ int wmain(int argc, wchar_t** argv) {
             L"Disposable CI-only network isolation probe", nullptr, 0, &profile.sid);
         if (FAILED(created)) { std::printf("CreateAppContainerProfile: 0x%08lx\n", static_cast<unsigned long>(created)); throw std::runtime_error("AppContainer profile"); }
         PackageFilter package_filter;
-        if (argc == 5) package_filter.install(profile.sid);
+        if (argc == 5 && !lpac) package_filter.install(profile.sid);
 
         std::vector<std::unique_ptr<AclGrant>> grants;
         // Never modify C:\ or the hosted Node installation. An inability to
@@ -198,12 +223,15 @@ int wmain(int argc, wchar_t** argv) {
         checked(input.value != INVALID_HANDLE_VALUE, "Open NUL");
         HANDLE inherited[] = {input.value, GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
         for (const auto handle : inherited) checked(SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != 0, "SetHandleInformation");
-        Attributes attributes;
+        Attributes attributes(lpac ? 3 : 2);
         SECURITY_CAPABILITIES capabilities = {profile.sid, nullptr, 0, 0};
         checked(UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
             &capabilities, sizeof(capabilities), nullptr, nullptr) != 0, "Set AppContainer capabilities");
         checked(UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             inherited, sizeof(inherited), nullptr, nullptr) != 0, "Set inherited handles");
+        DWORD package_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
+        if (lpac) checked(UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+            &package_policy, sizeof(package_policy), nullptr, nullptr) != 0, "Set LPAC policy");
         STARTUPINFOEXW startup = {};
         startup.StartupInfo.cb = static_cast<DWORD>(sizeof(startup));
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -234,7 +262,7 @@ int wmain(int argc, wchar_t** argv) {
         Handle thread; thread.value = process.hThread;
         if (!AssignProcessToJobObject(job.value, child.value)) { TerminateProcess(child.value, 1); throw std::runtime_error("AssignProcessToJobObject"); }
         Handle token;
-        checked(OpenProcessToken(child.value, TOKEN_QUERY, &token.value) != 0, "OpenProcessToken");
+        checked(OpenProcessToken(child.value, TOKEN_QUERY | TOKEN_DUPLICATE, &token.value) != 0, "OpenProcessToken");
         DWORD appcontainer = 0, returned = 0;
         checked(GetTokenInformation(token.value, TokenIsAppContainer, &appcontainer, sizeof(appcontainer), &returned) != 0 && appcontainer == 1,
             "Verify actual AppContainer token");
@@ -252,6 +280,12 @@ int wmain(int argc, wchar_t** argv) {
         checked(GetTokenInformation(token.value, TokenAppContainerSid, token_bytes.data(), token_size, &returned) != 0 &&
             EqualSid(profile.sid, reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(token_bytes.data())->TokenAppContainer) != 0,
             "Verify expected AppContainer SID");
+        LPWSTR package_sid_text = nullptr;
+        checked(ConvertSidToStringSidW(profile.sid, &package_sid_text) != 0, "Package SID text");
+        const bool explicit_access = package_access(token.value, package_sid_text);
+        LocalFree(package_sid_text);
+        checked(explicit_access && package_access(token.value, L"S-1-15-2-1") == !lpac, "Verify package access semantics");
+        if (lpac) std::puts("Verified less-privileged AppContainer access semantics");
         std::puts("Verified AppContainer process, zero network capabilities"); std::fflush(stdout);
         checked(ResumeThread(thread.value) != static_cast<DWORD>(-1), "ResumeThread");
         if (WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0) {

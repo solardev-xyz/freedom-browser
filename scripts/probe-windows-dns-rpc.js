@@ -22,6 +22,8 @@ async function main() {
   const workspace = path.join(fixture, 'project');
   const runtime = path.join(fixture, 'runtime');
   fs.mkdirSync(workspace); fs.mkdirSync(runtime);
+  const existingFile = path.join(workspace, 'existing-project.txt');
+  fs.writeFileSync(existingFile, 'original fixture');
   const ownedNode = path.join(runtime, 'node.exe');
   fs.copyFileSync(process.execPath, ownedNode);
   await execute('git', ['init', '--quiet', workspace]);
@@ -139,19 +141,26 @@ async function main() {
     if (!appcontainerOnly) assert.equal(results.find(result => result.mode === 'both')?.offline, 0, 'RPC-only experiment did not block DNS');
     // RPC results remain recorded even when they fail. This separate prototype
     // tests actual no-network AppContainer tokens, not production integration.
-    const measureContainer = async packageFilter => count(async source => {
-      const probe = `try{require('fs').writeFileSync(${JSON.stringify(path.join(workspace, 'appcontainer-probe.txt'))},'owned fixture');console.log('appcontainer-write:ok')}catch(e){console.log('appcontainer-write:'+e.code)};${source}`;
-      const result = await execute(container, [ownedNode, workspace, probe, ...(packageFilter ? ['package-filter'] : [])], { timeout: 45000 });
+    const measureContainer = async mode => count(async source => {
+      const target = path.join(workspace, `appcontainer-${randomBytes(8).toString('hex')}.txt`);
+      const probe = `try{const f=require('fs');f.writeFileSync(${JSON.stringify(target)},'owned fixture');f.writeFileSync(${JSON.stringify(existingFile)},'edited fixture');console.log('appcontainer-write:ok')}catch(e){console.log('appcontainer-write:'+e.code)};${source}`;
+      const result = await execute(container, [ownedNode, workspace, probe, ...(mode ? [mode] : [])], { timeout: 45000 });
       console.log(result.stdout.trim());
       assert.match(result.stdout, /Verified AppContainer process, zero network capabilities/);
       assert.match(result.stdout, /lookup-complete/);
       assert.match(result.stdout, /appcontainer-write:ok/, 'Node must still write the selected project');
-      if (packageFilter) assert.match(result.stdout, /Verified exact package SID socket filters for IPv4 and IPv6/);
+      if (mode === 'package-filter') assert.match(result.stdout, /Verified exact package SID socket filters for IPv4 and IPv6/);
+      if (mode === 'lpac') assert.match(result.stdout, /Verified less-privileged AppContainer access semantics/);
+      assert.equal(fs.readFileSync(target, 'utf8'), 'owned fixture');
+      assert.equal(fs.readFileSync(existingFile, 'utf8'), 'edited fixture');
     });
-    const bare = await measureContainer(false);
+    const bare = await measureContainer(null);
     console.log(JSON.stringify({ mode: 'appcontainer-bare', offline: bare }));
-    const containerPackets = await measureContainer(true);
-    const candidate = { mode: 'appcontainer-package-filter', offline: containerPackets,
+    const filtered = await measureContainer('package-filter');
+    console.log(JSON.stringify({ mode: 'appcontainer-package-filter', offline: filtered,
+      efficacy: bare > 0 ? (filtered === 0 ? 'blocked previously leaking path' : 'not enforced') : 'inconclusive: bare policy already blocks DNS' }));
+    const containerPackets = await measureContainer('lpac');
+    const candidate = { mode: 'lpac', offline: containerPackets,
       host: await count(host), full: await count(source => sandbox('full', source)) };
     console.log(JSON.stringify({ rpcResults: results, candidate }));
     assert(candidate.host > 0 && candidate.full > 0, 'Normal and approved-network DNS must remain available');
