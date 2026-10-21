@@ -234,3 +234,14 @@ ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.a
 ```
 
 Surrounding whitespace in the value is ignored. `0`, `false`, `no`, `off` (any case) or an empty value read the same as leaving the variable unset: the dev updater stays off. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
+
+### Local dictation runtime
+
+Development startup and packaging build the offline whisper.cpp CLI from pinned
+source. Install CMake 3.16+ and a C++ toolchain (Xcode command-line tools on macOS,
+MSVC Build Tools on Windows, or a C++ compiler and Make on Linux). Run
+`npm run build:dictation` to prepare it explicitly; set `CMAKE` to an executable
+path if needed. The cached artifact is checked before requiring the compiler.
+Users of packaged Freedom download only the optional speech model, and need none
+of these tools. See [local dictation](agent-dictation.md#on-this-device) for pins,
+privacy boundaries, and qualification.

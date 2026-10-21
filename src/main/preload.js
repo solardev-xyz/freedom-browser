@@ -207,6 +207,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   handleAgentWalletRequest: (rendererTabId, request) =>
     ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  getAgentDictationState: () => ipcRenderer.invoke('agent:dictation:state'),
+  chooseAgentDictation: choice => ipcRenderer.invoke('agent:dictation:choose', choice),
+  installAgentDictation: () => ipcRenderer.invoke('agent:dictation:install'),
+  beginAgentDictation: () => ipcRenderer.invoke('agent:dictation:begin'),
+  appendAgentDictation: (id, sequence, audio) => ipcRenderer.invoke('agent:dictation:append', { id, sequence, audio }),
+  finishAgentDictation: id => ipcRenderer.invoke('agent:dictation:finish', { id }),
+  cancelAgentDictation: () => ipcRenderer.invoke('agent:dictation:cancel'),
+  onAgentDictationEvent: callback => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('agent:dictation:event', handler);
+    return () => ipcRenderer.removeListener('agent:dictation:event', handler);
+  },
   getAgentPageActions: (rendererTabId) => ipcRenderer.invoke('agent:page-actions', { rendererTabId }),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
   readAgentHelperReport: (conversationId, reportId, offset = 0) =>

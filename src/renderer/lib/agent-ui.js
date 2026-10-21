@@ -1,5 +1,6 @@
 import { createAgentPrivacy } from './agent-privacy.js';
 import { createAgentProviderUi } from './agent-provider-ui.js';
+import { createAgentDictation } from './agent-dictation.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -21,6 +22,8 @@ const loadProviderCatalog = (...args) => providerUi.loadProviderCatalog(...args)
 const handleProviderAuthEvent = (...args) => providerUi.handleProviderAuthEvent(...args);
 
 let sessionPrivacy;
+let dictation = null;
+let dictationBusy = false;
 
 const APPROVAL_MODES = Object.freeze({
   EVERY_INTERACTION: 'every_interaction',
@@ -593,6 +596,7 @@ async function revokeConversationFolder(resource) {
 }
 
 function closeComposerPopovers() {
+  dictation?.closeMenu();
   workspaceInspector?.dismissPopover();
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
@@ -671,6 +675,7 @@ async function selectApprovalMode(nextMode) {
 }
 
 function setAgentView(nextView) {
+  if (nextView !== 'workspace') dictation?.cancel();
   sessionPrivacy?.close();
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
@@ -1442,10 +1447,11 @@ function showProviderSetup() {
   setScopeHelpOpen(false);
   closeComposerPopovers();
   closePanel();
-  openAiSettings();
+  openAiSettings('ai/providers');
 }
 
 function setPanelOpen(nextOpen) {
+  if (!nextOpen) dictation?.cancel();
   if (!nextOpen) sessionPrivacy?.close();
   if (!nextOpen) {
     setModeMenuOpen(false);
@@ -1756,7 +1762,7 @@ function updateSendAvailability() {
   if (elements.examples) {
     elements.examples.hidden = !aiEnabled || Boolean(currentConversationId) || !elements.transcript.hidden;
     elements.examples.querySelectorAll('[data-agent-example]').forEach(button => {
-      button.disabled = Boolean(elements.prompt.value) || currentRunStatus !== 'idle' || Boolean(pendingApproval) ||
+      button.disabled = dictationBusy || Boolean(elements.prompt.value) || currentRunStatus !== 'idle' || Boolean(pendingApproval) ||
         !providerStatus?.configured || approvalModeMutationPending || attachmentSelectionPending;
     });
   }
@@ -1775,12 +1781,13 @@ function updateSendAvailability() {
     disabled = !currentRunId;
   }
   elements.run.dataset.action = action;
-  elements.run.disabled = disabled || !aiEnabled;
+  elements.run.disabled = disabled || !aiEnabled || (action === 'send' && dictationBusy);
   elements.run.setAttribute('aria-label', label);
   elements.run.title = label;
 }
 
 function resetConversationUi() {
+  dictation?.cancel();
   sessionPrivacy?.update(null);
   attachmentSelectionGeneration += 1;
   resetComposerDrop();
@@ -2437,6 +2444,7 @@ function workspaceCommandPermissionDetails(permission, reason) {
 }
 
 function renderApproval(request) {
+  dictation?.interrupt('Dictation stopped for an approval request.');
   approvalReadyAt = Math.max(Date.now(), lastApprovalDecisionAt + 600, lastDisplayedApprovalId && lastDisplayedApprovalId !== request?.approvalId ? Date.now() + 600 : 0);
   lastDisplayedApprovalId = request?.approvalId || lastDisplayedApprovalId;
   if (!request || typeof request.approvalId !== 'string') return;
@@ -3449,6 +3457,7 @@ async function changeProjectAccess(action) {
 }
 
 async function openSavedSession(conversationId) {
+  dictation?.cancel();
   if (currentRunStatus !== 'idle' || conversationId === currentConversationId) return;
   setMessage(elements.runMessage, 'Opening saved session…');
   try {
@@ -3882,6 +3891,8 @@ function applyAgentEvent(event) {
 }
 
 async function startRun(options = {}) {
+  if (dictationBusy) return false;
+  dictation?.cancel();
   if (attachmentSelectionPending) return false;
   const explicitPrompt =
     typeof options.prompt === 'string' && options.prompt.trim() ? options.prompt.trim() : null;
@@ -3890,7 +3901,7 @@ async function startRun(options = {}) {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return false;
   }
-  const sharedPage = currentConversationId ? null : pageContextTab();
+  const sharedPage = currentConversationId || options.sharePage === false ? null : pageContextTab();
   const rendererTabId = currentConversationId
     ? conversationRendererTabId
     : Number.isSafeInteger(sharedPage?.id)
@@ -4008,7 +4019,12 @@ async function steerRun() {
   }
 }
 
-function submitComposer({ allowStop = false } = {}) {
+function submitComposer({ allowStop = false, sharePage = true } = {}) {
+  if (dictationBusy) {
+    if (elements.run.dataset.action === 'stop' && allowStop) { dictation?.interrupt('Dictation stopped with Agent.'); void stopRun(); }
+    else if (elements.run.dataset.action === 'resume') { dictation?.interrupt('Dictation stopped before resuming Agent.'); void resumeRun(); }
+    return;
+  }
   if (currentRunStatus === 'running') {
     if (elements.prompt.value.trim()) {
       void steerRun();
@@ -4018,11 +4034,12 @@ function submitComposer({ allowStop = false } = {}) {
   } else if (currentRunStatus === 'paused') {
     void resumeRun(elements.prompt.value.trim());
   } else if (currentRunStatus === 'idle') {
-    void startRun();
+    void startRun({ sharePage });
   }
 }
 
 async function clearConversation() {
+  dictation?.cancel();
   if (!currentConversationId || currentRunStatus !== 'idle') return;
   elements.newChat.disabled = true;
   setMessage(elements.runMessage, 'Starting a new chat…');
@@ -4209,6 +4226,7 @@ function applyAiSettings(settings) {
   elements.toggle.hidden = !aiEnabled;
   updateSendAvailability();
   if (!aiEnabled) {
+    dictation?.cancel();
     closePanel();
     providerReady = false;
     providerUi.invalidateCatalog();
@@ -4377,6 +4395,18 @@ export function initAgentUi(options = {}) {
     setScopeHelpOpen(scopeHelpText?.hidden !== false)
   );
   openAiSettings = typeof options.openSettings === 'function' ? options.openSettings : () => {};
+  dictation?.dispose();
+  dictationBusy = false;
+  dictation = createAgentDictation({ button: byId('agent-dictation'), optionsButton: byId('agent-dictation-options'),
+    panel: byId('agent-dictation-panel'), feedback: byId('agent-dictation-feedback'), cancelButton: byId('agent-dictation-cancel'),
+    menu: byId('agent-dictation-menu'),
+    prompt: elements.prompt, api: window.electronAPI,
+    canRecord: () => aiEnabled && panelOpen && agentView === 'workspace' && !pendingApproval &&
+      ['idle', 'running', 'paused'].includes(currentRunStatus),
+    onBusy: value => { dictationBusy = value; updateSendAvailability(); },
+    onInput: updateSendAvailability, connectProvider: showProviderSetup,
+    openSettings: providerId => { setAgentFirstMode(false); closePanel(); openAiSettings(providerId ? `ai/voice/${providerId}` : 'ai/voice'); },
+    onMenuOpening: () => { closeComposerPopovers(); options.onMenuOpening?.(); } });
   byId('agent-open-ai-settings')?.addEventListener('click', showProviderSetup);
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
@@ -4550,7 +4580,7 @@ export function initAgentUi(options = {}) {
       elements.prompt.value = button.dataset.agentExample;
       updateSendAvailability();
       focusComposer();
-      submitComposer();
+      submitComposer({ sharePage: false });
     });
   });
   elements.prompt.addEventListener('keydown', (event) => {
@@ -4653,6 +4683,7 @@ export function initAgentUi(options = {}) {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
+    if (dictation?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
     if (!elements.modeMenu.hidden) {
       event.preventDefault();
       setModeMenuOpen(false, true);
@@ -4721,6 +4752,7 @@ export function initAgentUi(options = {}) {
     providerUi.invalidateCatalog();
     void loadProviderCatalog();
     void refreshProvider();
+    void dictation?.refreshDestination();
   });
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {

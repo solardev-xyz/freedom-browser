@@ -32,6 +32,7 @@ test('renders evidence as text, supports Escape and clears when switching conver
   expect(text(panel)).toContain('Responses are not independently verified.');
   expect(text(panel)).toContain('End-to-end encryption is off');
   expect(text(panel)).toContain('Permission checks · 2 request attempts');
+  expect(text(panel)).toContain('this shield does not cover audio');
   expect(view.escape()).toBe(true);
   expect(panel.hidden).toBe(true);
   view.update(null);

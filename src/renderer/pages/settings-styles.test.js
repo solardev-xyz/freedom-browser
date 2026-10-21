@@ -305,10 +305,16 @@ describe('settings.html inline stylesheet', () => {
     expect(styled).toContain('.row-help a');
     expect(styled).toContain('a.row-help');
 
-    // And every anchor the page actually ships is one of those two shapes.
+    // Navigation rows and breadcrumbs have dedicated styles; prose links
+    // still use the two help-text shapes above.
+    const aiStyles = fs.readFileSync(path.join(__dirname, 'styles/ai.css'), 'utf8');
+    expect(aiStyles).toMatch(/\.ai-breadcrumbs a\s*\{[^}]*color: var\(--accent\)/);
+    expect(extractStyle(SOURCE)).toMatch(/\.net-row\s*\{[^}]*color: var\(--text\)/);
     const anchors = [...SOURCE.matchAll(/<a\s+([^>]*)>/g)].map(([, attrs]) => attrs);
     expect(anchors.length).toBeGreaterThan(0);
-    const unstyled = anchors.filter((attrs) => !/class="[^"]*\brow-help\b/.test(attrs));
+    const unstyled = anchors.filter(
+      (attrs) => !/class="[^"]*\b(row-help|net-row|ai-breadcrumb-link)\b/.test(attrs)
+    );
     for (const attrs of unstyled) {
       // A bare <a> is fine as long as it sits inside a `.row-help` paragraph;
       // the ones that do are all written inline in such a paragraph.

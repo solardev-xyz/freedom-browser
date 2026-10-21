@@ -65,6 +65,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   }
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await expect(page.locator('#agent-provider-add')).toBeVisible();
   await page.locator('#agent-provider-add').click();
   await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
@@ -72,6 +73,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#agent-ollama-url').fill(baseUrl);
   await page.locator('#agent-provider-save').click();
   await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
+  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
@@ -129,4 +131,61 @@ test('AI Settings is discoverable through navigation and search at narrow width'
   });
   expect(bounds).toBe(true);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('ai-narrow.png') });
+});
+
+
+test('AI subpages have breadcrumbs, history and deep links without mixing their content', async ({ electronApp, window }, testInfo) => {
+  let page = await settings(electronApp, window);
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-links')).toBeVisible();
+  await expect(page.locator('#agent-provider-add')).toBeHidden();
+  await expect(page.locator('#voice')).toBeHidden();
+  await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
+  await expect(page).toHaveURL(/#ai\/providers$/);
+  await expect(page.locator('#enable-ai')).toBeHidden();
+  await page.locator('#agent-provider-add').click();
+  await expect(page).toHaveURL(/#ai\/providers\/add$/);
+  await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await expect(page).toHaveURL(/#ai\/providers\/ollama$/);
+  await expect(page.locator('#ai-provider-breadcrumbs')).toHaveText('AI›Models & providers›Ollama');
+  await expect(page.locator('#agent-provider-choices')).toBeHidden();
+  await page.locator('#agent-provider-advanced > summary').click();
+  await page.locator('#agent-ollama-url').fill(baseUrl);
+  // Theme/settings broadcasts must not clear an edited connection form.
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(page.locator('#agent-ollama-url')).toHaveValue(baseUrl);
+    await expect(page.locator('#agent-provider-message')).not.toContainText('Loading providers');
+    await page.screenshot({ path: testInfo.outputPath(`ai-provider-detail-${theme}.png`) });
+  }
+  await page.goBack();
+  await expect(page).toHaveURL(/#ai\/providers\/add$/);
+  await expect(page.locator('#agent-provider-search')).toBeVisible();
+  await page.goForward();
+  await expect(page.locator('#agent-ollama-url')).toHaveValue('http://127.0.0.1:11434/v1');
+  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+  await page.getByRole('link', { name: /Voice dictation.*Choose where/ }).click();
+  await expect(page).toHaveURL(/#ai\/voice$/);
+  await expect(page.locator('#providers')).toBeHidden();
+  await expect(page.locator('#enable-ai')).toBeHidden();
+  await page.evaluate(() => { window.settingsBeforeReload = true; });
+  await window.locator('#reload-btn').click();
+  await expect.poll(async () => {
+    page = await guest(electronApp, 'settings');
+    try { return await page.evaluate(() => !window.settingsBeforeReload); }
+    catch { return false; }
+  }).toBe(true);
+  await expect(page.locator('#ai-dictation-settings')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await page.screenshot({ path: testInfo.outputPath(`ai-voice-page-${theme}.png`) });
+  }
+  await page.evaluate(() => { location.hash = 'ai/providers/not-a-provider'; });
+  await expect(page).toHaveURL(/#ai\/providers$/);
+  await expect(page.locator('#agent-provider-add')).toBeVisible();
+  await page.evaluate(() => { location.hash = 'ai/voice'; });
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+  await expect(page).toHaveURL(/#ai$/);
+  await expect(page.locator('#enable-ai')).not.toBeChecked();
+  await expect(page.locator('#voice')).toBeHidden();
 });

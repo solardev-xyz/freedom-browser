@@ -60,6 +60,11 @@ const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs
  * licenses-audit.json's `dependencies`; `pin` says where the version lives.
  */
 const EXTRA_RESOURCES = {
+  'out/dictation-runtime/${os}-${arch}/': {
+    thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
+    noticeMatch: /^whisper\.cpp$/m,
+    pin: { file: 'src/shared/dictation-runtime.js', re: /WHISPER_VERSION = '([^']+)'/ },
+  },
   'out/windows-workspace/${arch}/': {
     thirdParty: true, label: 'Codex Windows sandbox', auditName: 'codex-windows-sandbox',
     noticeMatch: /^Codex Windows sandbox$/m,
@@ -191,6 +196,13 @@ const VENDOR_FILES = {
  * every `auditName` in licenses-audit.json.
  */
 const SRC_ASSETS = {
+  'src/main/agent/': {
+    thirdParty: true,
+    label: 'optional local dictation notices',
+    auditName: 'optional local dictation notices',
+    noticeMatch: /^Optional local dictation downloads$/m,
+    files: ['dictation-local-notices.txt'],
+  },
   'src/main/agent/workspace-execution/native/windows/': {
     thirdParty: false, label: "Freedom's Windows sandbox adapter manifest",
   },
@@ -361,7 +373,9 @@ describe('bundled-component inventory', () => {
   it('classifies every non-source file the src/**/* pattern ships', () => {
     for (const file of shippedSrcAssets()) {
       const dir = `${path.dirname(file)}/`;
-      expect({ file, classified: dir in SRC_ASSETS }).toEqual({ file, classified: true });
+      const meta = SRC_ASSETS[dir];
+      const classified = Boolean(meta && (!meta.files || meta.files.includes(path.basename(file))));
+      expect({ file, classified }).toEqual({ file, classified: true });
     }
   });
 

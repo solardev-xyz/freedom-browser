@@ -1107,6 +1107,12 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 
   // Model connections are managed only by the trusted Settings page.
   getAgentProviderStatus: guardSettingsPage('getAgentProviderStatus', () => ipcRenderer.invoke('agent:provider:get-status')),
+  getAgentDictationState: guardSettingsPage('getAgentDictationState', () => ipcRenderer.invoke('agent:dictation:state')),
+  chooseAgentDictation: guardSettingsPage('chooseAgentDictation', choice => ipcRenderer.invoke('agent:dictation:choose', choice)),
+  installAgentDictation: guardSettingsPage('installAgentDictation', () => ipcRenderer.invoke('agent:dictation:install')),
+  cancelAgentDictation: guardSettingsPage('cancelAgentDictation', () => ipcRenderer.invoke('agent:dictation:cancel')),
+  onAgentDictationEvent: guardSettingsPage('onAgentDictationEvent',
+    guardInternalSubscription('onAgentDictationEvent', 'agent:dictation:event')),
   getAgentProviderCatalog: guardSettingsPage('getAgentProviderCatalog', () => ipcRenderer.invoke('agent:provider:get-catalog')),
   refreshAgentProviderModels: guardSettingsPage('refreshAgentProviderModels', (providerId, apiKey) =>
     ipcRenderer.invoke('agent:provider:refresh-models', { providerId, apiKey })),

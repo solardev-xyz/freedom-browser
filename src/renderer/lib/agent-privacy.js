@@ -261,7 +261,7 @@ export function createAgentPrivacy(button, panel, saveSettings = async () => {})
       panel.append(section);
     }
     const scope = el('details', '', 'agent-privacy-detail-note');
-    scope.append(el('summary', 'What this covers'), el('p', 'Model requests, including helpers and permission checks. Browser actions and connected services can share data separately. Chat history and attachments are stored on this device.'),
+    scope.append(el('summary', 'What this covers'), el('p', 'Chat model requests, including helpers and permission checks. Dictation audio uses its own service and privacy policy; this shield does not cover audio. Browser actions and connected services can share data separately. Chat history and attachments are stored on this device.'),
       el('p', 'CPU checks obtain public Intel verification data through Phala. No chat content is sent there. Encryption requires an authenticated model key. Failed key checks block encrypted requests. Hardware update warnings remain visible.'));
     panel.append(scope);
     if (!panel.hidden) place();

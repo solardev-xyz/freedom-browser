@@ -8,6 +8,16 @@ profiles without a saved choice. Connect providers, manage favourite models and
 choose the model for new chats on that page; existing chats keep their model.
 Connected MCP services remain in the Agent composer's **+ → Connections** menu.
 
+**Voice dictation** in Settings → AI selects a separate transcription service
+and language. The microphone starts with a remembered choice or suitable connected
+API service; its options arrow opens a compact service selector. Choose **Voice
+dictation settings…** for language, audio privacy information and the optional local
+Whisper download in Settings → AI → Voice dictation. Dictation inserts editable text and never
+sends a prompt automatically. See [dictation setup](agent-dictation.md) for audio
+privacy, provider support and current experimental limitations.
+OpenRouter asks once before first recording to acknowledge standard audio routing;
+chat zero-retention settings remain separate and unchanged.
+
 Turning AI off cancels current Agent work and sign-in, closes pending approvals,
 hides Agent entry points and blocks new model requests. Chats, provider
 credentials, attachments and projects remain on this device; preview servers

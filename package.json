@@ -78,8 +78,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential cmake xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential cmake xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -116,7 +116,8 @@
     "prestart": "node scripts/prepare-native-supervisors.js",
     "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js",
     "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js",
-    "build:windows-workspace": "node scripts/build-windows-workspace.js"
+    "build:windows-workspace": "node scripts/build-windows-workspace.js",
+    "build:dictation": "node scripts/build-dictation-runtime.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -148,12 +149,15 @@
       "icon": "assets/icon.png",
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
-      "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
+      "binaries": [
+        "Contents/Resources/myotis-node/myotis-supervisor",
+        "Contents/Resources/dictation-runtime/whisper-cli"
+      ],
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSMultipleInstancesProhibited": false,
         "NSCameraUsageDescription": "Freedom needs camera access so websites you allow can use it for video calls.",
-        "NSMicrophoneUsageDescription": "Freedom needs microphone access so websites you allow can use it for video calls."
+        "NSMicrophoneUsageDescription": "Freedom uses your microphone for Agent dictation and for websites you allow to use it."
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
@@ -381,6 +385,19 @@
       {
         "from": "NOTICES",
         "to": "NOTICES"
+      },
+      {
+        "from": "out/dictation-runtime/${os}-${arch}/",
+        "to": "dictation-runtime",
+        "filter": [
+          "whisper-cli",
+          "whisper-cli.exe",
+          "*.dll",
+          "*.dylib",
+          "*.so*",
+          "manifest.json",
+          "NOTICES.txt"
+        ]
       }
     ],
     "beforePack": "./scripts/prepare-native-supervisors.js"

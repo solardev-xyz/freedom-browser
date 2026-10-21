@@ -116,6 +116,7 @@ export function createAgentProviderUi(options = {}) {
   let compatibilityCheck = null;
   let compatibilityCheckPending = false;
   let providerLoginPending = false;
+  let providerLoginGeneration = 0;
   let choosingProviderMethod = false;
   const expandedModelProviders = new Set();
   const responseMessage = (response, fallback) => response?.error?.message || fallback;
@@ -438,12 +439,16 @@ export function createAgentProviderUi(options = {}) {
     );
   }
 
+  let providerScreen = 'home';
+  let applyingSettingsRoute = false;
   function showProviderScreen(screen) {
+    providerScreen = screen;
     elements.providerHome.hidden = screen !== 'home';
     elements.providerBrowser.hidden = screen !== 'browser';
     elements.providerDetail.hidden = screen !== 'detail';
     setMessage(elements.providerMessage, '');
     if (screen === 'browser') elements.providerSearch.focus();
+    if (!applyingSettingsRoute) options.onScreenChange?.(screen, elements.provider.value);
   }
 
   function openProviderDetail(providerId, chooseMethod = false) {
@@ -1286,6 +1291,7 @@ export function createAgentProviderUi(options = {}) {
       return;
     }
     providerLoginPending = true;
+    const loginGeneration = ++providerLoginGeneration;
     elements.authCallback.hidden = true;
     elements.authCallback.open = false;
     elements.authCallbackInput.value = '';
@@ -1306,6 +1312,7 @@ export function createAgentProviderUi(options = {}) {
     renderProviderFields();
     try {
       const response = await api.loginSubscriptionAgentProvider(providerId, modelId);
+      if (loginGeneration !== providerLoginGeneration) return;
       if (!response?.ok) {
         setMessage(
           elements.providerMessage,
@@ -1318,7 +1325,8 @@ export function createAgentProviderUi(options = {}) {
       openProviderDetail(providerId);
       setMessage(elements.providerMessage, `${accountName} connected`);
     } catch {
-      setMessage(elements.providerMessage, `Could not sign in with ${accountName}`, true);
+      if (loginGeneration === providerLoginGeneration)
+        setMessage(elements.providerMessage, `Could not sign in with ${accountName}`, true);
     } finally {
       providerLoginPending = false;
       elements.authCallback.hidden = true;
@@ -1329,7 +1337,8 @@ export function createAgentProviderUi(options = {}) {
   }
 
   async function cancelProviderLogin() {
-    if (!providerLoginPending) return;
+    if (!providerLoginPending || elements.cancelProviderLogin.disabled) return;
+    providerLoginGeneration += 1;
     elements.cancelProviderLogin.disabled = true;
     setMessage(elements.providerMessage, 'Cancelling sign-in…');
     try {
@@ -1338,11 +1347,15 @@ export function createAgentProviderUi(options = {}) {
       setMessage(elements.providerMessage, 'Could not cancel sign-in', true);
     } finally {
       elements.cancelProviderLogin.disabled = false;
+      if (elements.providerMessage.textContent === 'Cancelling sign-in…')
+        setMessage(elements.providerMessage, 'Sign-in cancelled.');
     }
   }
 
   if (elements.provider) {
+    applyingSettingsRoute = true;
     showProviderScreen('home');
+    applyingSettingsRoute = false;
     elements.provider.addEventListener('change', () => {
       elements.apiKey.value = '';
       elements.model.value = providerConnection(elements.provider.value)?.modelId || '';
@@ -1431,8 +1444,34 @@ export function createAgentProviderUi(options = {}) {
     });
     elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   }
+  // Settings owns URL/history; replaying a route must not push another one or
+  // clear a partially edited form on catalogue/status updates.
+  function showSettingsPage(screen, providerId) {
+    if (
+      providerScreen === screen &&
+      (screen !== 'detail' || elements.provider.value === providerId)
+    )
+      return;
+    if (providerLoginPending) void cancelProviderLogin();
+    applyingSettingsRoute = true;
+    try {
+      if (screen === 'detail')
+        openProviderDetail(
+          providerId,
+          !providerConnection(providerId) && ['openai', 'anthropic', 'meta'].includes(providerId)
+        );
+      else {
+        if (screen === 'browser') renderProviderOptions();
+        showProviderScreen(screen);
+      }
+    } finally {
+      applyingSettingsRoute = false;
+    }
+  }
   return {
     state,
+    showSettingsPage,
+    providerName,
     invalidateCatalog,
     providerPrivacyMessage,
     renderProviderFields,

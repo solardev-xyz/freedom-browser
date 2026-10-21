@@ -17,6 +17,17 @@
 
 ---
 
+## Local dictation runtime and model (2026-10-21)
+
+The **whisper.cpp** 1.9.5 CLI is compiled from checksum-pinned upstream source
+and bundled under `resources/dictation-runtime/`. Its ggml
+engine is MIT; included decoder utilities use MIT (stb_vorbis) and MIT-0
+(miniaudio). No Python, server, CURL downloader, or ONNX Runtime is included.
+The **optional local dictation notices** in
+`src/main/agent/dictation-local-notices.txt` ship in `app.asar` and alongside the
+CLI. Selecting local dictation downloads only the checksum-pinned multilingual
+Whisper Base model (MIT), with the same notices. No npm dependency was added.
+
 ## Executive Summary
 
 **VERDICT: OK TO SHIP UNDER MPL-2.0**, with the notice obligations in `NOTICES` met as written.
@@ -27,7 +38,7 @@
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
 | Production npm packages (unique name@version)               | 273         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
-| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
+| External binaries / native addons shipped in `resources/`   | 7           | Ant, freedom-ipfs, libradicle, Myotis, Arti, Codex Windows sandbox, whisper.cpp                        |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |

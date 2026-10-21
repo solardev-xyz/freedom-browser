@@ -911,6 +911,7 @@ describe('Agent UI', () => {
     prompt.dispatch('keydown', { key: 'Enter', repeat: true, preventDefault: jest.fn() });
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.electronAPI.startAgent.mock.calls[0][1]).toBe('Build a small browser game');
+    expect(ctx.electronAPI.startAgent.mock.calls[0][0]).toBe(null);
     expect(prompt.value).toBe('');
     await flush();
     expect(ctx.elements['agent-examples'].hidden).toBe(true);
@@ -928,7 +929,7 @@ describe('Agent UI', () => {
     await flush();
     ctx.elements['agent-examples'].children[0].dispatch('click');
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
-      7, 'Build a small browser game', 'sensitive_actions', [selectionId]
+      null, 'Build a small browser game', 'sensitive_actions', [selectionId]
     );
   });
 

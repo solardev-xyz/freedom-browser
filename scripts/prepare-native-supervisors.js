@@ -2,8 +2,10 @@ const workspace = require('./build-macos-workspace-supervisor');
 const linuxWorkspace = require('./build-linux-workspace-supervisor');
 const myotis = require('./build-myotis-supervisor');
 const windowsWorkspace = require('./build-windows-workspace');
+const { buildDictationRuntime } = require('./build-dictation-runtime');
 
-function prepareDevelopment(platform = process.platform) {
+async function prepareDevelopment(platform = process.platform) {
+  await buildDictationRuntime(process.arch, platform);
   if (platform === 'linux') { linuxWorkspace.buildLinuxWorkspaceSupervisor(process.arch, { development: true }); return; }
   if (platform !== 'darwin') return;
   workspace.buildMacosWorkspaceSupervisor();
@@ -15,6 +17,7 @@ async function beforePack(context) {
   await linuxWorkspace.default(context);
   const { Arch } = require('electron-builder');
   const arch = typeof context.arch === 'string' ? context.arch : Arch[context.arch];
+  await buildDictationRuntime(arch, context.electronPlatformName);
   if (context.electronPlatformName === 'win32') await windowsWorkspace.buildWindowsWorkspace(arch);
   const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[context.electronPlatformName];
   myotis.buildForTargets(platform, [arch]);
@@ -22,4 +25,4 @@ async function beforePack(context) {
 
 exports.default = beforePack;
 exports.prepareDevelopment = prepareDevelopment;
-if (require.main === module) prepareDevelopment();
+if (require.main === module) prepareDevelopment().catch(error => { console.error(error.message); process.exitCode = 1; });

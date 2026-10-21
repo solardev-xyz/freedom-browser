@@ -1,8 +1,8 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-20
-Status: Review fixes and AI settings/onboarding integrated; examples implemented for smoke testing; dictation and domain skills planned
+Last updated: 2026-10-21
+Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain research complete; implementation planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-20
@@ -11,8 +11,10 @@ The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
-AI3 example prompts are implemented for maintainer smoke testing; AI4/AI5 remain
-planned. Ordinary browsing remains a complete experience with AI off.
+AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation has an experimental first
+draft with incremental text and service-management pages; maintainer OpenRouter smoke passed.
+AI1–AI4 received a further Claude review with repairs tracked below. AI5 domain
+research is complete; implementation has not started. Ordinary browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -370,8 +372,8 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 1 | AI1 — AI settings and default-off control | One canonical place to enable AI and manage providers | Integrated into feature branch; maintainer smoke passed |
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
-| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Transcription feasibility/privacy decision first; not started |
-| 5 | AI5 — Domain skills | Give a published site a name and update it later | Reuse wallet/publication; qualify each namespace separately; not started |
+| 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Initial microphone smoke passed; incremental text implemented on experiment/agent-dictation for next smoke |
+| 5 | AI5 — Domain skills | Give a published site a name and update it later | Read-only contract research complete; typed wallet adapter/skills implementation next |
 
 AI3 can ship before dictation while AI4's transcription backend is evaluated.
 AI5 starts with binding an already-owned name, then purchases and renewals, so
@@ -506,6 +508,134 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-21 approved privacy scope redesign (current behavior):** connections
+share credentials/billing, while chat routing policies and audio privacy are
+separate. OpenRouter dictation remains available with standard routing even when
+chat requires ZDR. Its first microphone use explains audio privacy and requires
+an explicit audio acknowledgement before capture; that choice is remembered.
+Cancel/choose-another capture nothing. Voice settings replace the disabled ZDR
+switch with factual Audio privacy information and an explicit “Use with standard
+routing” action. Neither that action nor chevron selection starts recording.
+Chat private/TEE/ZDR settings no longer filter or interrupt the separate voice
+service. Actual credential removal/change still revokes audio. The chat shield
+explicitly excludes audio. This supersedes the inherited-policy blocks recorded
+in the earlier dated review/smoke entries below.
+
+
+**2026-10-21 smoke regression:** the overnight gate incorrectly blocked all
+Private/TEE speech without checking the actual speech model classification.
+Corrected against current primary provider documentation: Venice Whisper is
+Private (provider claim), NEAR Whisper is TEE-hosted (provider claim). Their
+matching policies now permit dictation; independent audio attestation is not
+claimed. OpenRouter's unsupported retention requirement still blocks its audio
+endpoint, labeled “Blocked by retention setting.” A saved blocked service now
+opens the compact menu with explicit alternatives instead of repeating onboarding;
+no silent destination/policy changes. Lint, 473 unit suites / 10,657 tests and
+all 10 dictation Electron checks passed; mixed provider cards inspected in both themes.
+
+
+**2026-10-20 overnight review:** Claude independently reviewed AI1–AI4 through
+Herdr. Three medium and nine low findings were investigated and repaired; second
+pass and final focused review reported no remaining actionable defects.
+[Review and qualification record](../docs/audits/agent-ai-entrypoints-review-2026-10.md):
+lint clean; 473 unit suites / 10,652 tests; 18 relevant Electron tests passed. Most importantly,
+OpenRouter's audio endpoint does **not** honor the per-request retention routing
+used by chat. The default zero-retention preference now blocks OpenRouter
+dictation; users must explicitly turn it off on the Voice detail page for standard
+routing. Connection-enforced ZDR remains locked. Earlier successful maintainer
+OpenRouter smokes tested transcription, not enforcement of those ignored flags.
+See [dictation qualification](../docs/agent-dictation.md) for privacy/lifecycle
+repairs and remaining live/cross-platform checks.
+
+
+**2026-10-20 Voice settings redesign:** replaced the setup-form layout with
+provider-style service cards, active-service badges, an Add service catalogue,
+and individual service pages with breadcrumbs. Shared language preferences stay
+on the overview; privacy/billing, OpenRouter retention and local download
+controls live on the relevant detail page. Existing provider connections are
+reused; voice selection does not change the chat model. No automatic download,
+recording or transcription request is triggered by browsing settings.
+Validated on macOS: lint; 473 unit suites / 10,638 tests; dictation and
+onboarding Electron checks, both themes, narrow windows, search/deep links and
+Back/Forward. Linux screenshot baseline refresh remains for integration.
+Maintainer smoke pending on `experiment/agent-dictation`.
+
+**2026-10-20 Settings refinement:** AI now has an overview linking to dedicated
+Models & providers and Voice dictation pages. Adding a provider and managing an
+individual connection have their own URLs and breadcrumb navigation. Browser
+Back/Forward and direct voice-menu links use those same routes. Provider
+management describes its purpose as “Connect accounts and manage local models.”
+Validated on macOS: lint; 472 unit suites / 10,627 tests; 12 onboarding,
+dictation and custom-provider Electron checks plus three subscription-sign-in
+checks. Provider/voice pages inspected in both themes; deep-link reload and
+Back/Forward covered. Linux screenshot baselines remain for integration.
+Maintainer smoke pending on `experiment/agent-dictation`.
+
+**2026-10-20 menu refinement:** OpenRouter incremental dictation passed maintainer
+smoke. The microphone chevron now opens a compact service menu with the active
+choice checked, without starting capture. Language/privacy preferences and local
+installation stay in Settings → AI → Voice dictation, linked directly from the
+menu (`ai/voice`). The full setup dialog remains the microphone's onboarding
+path only when no ready service is available. Compact menu maintainer smoke passed.
+
+**2026-10-21 local engine replacement (current):** maintainer selected
+whisper.cpp instead of sherpa-onnx. Freedom now builds version 1.9.5 from a pinned
+source revision/archive hash, bundles the offline CLI with the app, and downloads
+only the separately pinned multilingual Whisper Base GGML model (~150 MB) on
+explicit request. The installer preserves earlier draft files. No Python/Ollama
+or user-side compiler is required. CPU inference; private warm-worker/GPU tuning,
+OS sandbox enforcement, physical-microphone quality and signed-package validation
+remain follow-ups. Real installer/transcription/cancel/failure cleanup passes on all five targets
+at `68a48038` in [native CI run 39598486244](https://github.com/solardev-xyz/freedom-browser/actions/runs/39598486244).
+The initial slow scalar x64 build was replaced with upstream CPU dispatch and
+bundled SIMD libraries; the same 11-second sample takes 2.2–2.5 s on Linux/Windows
+x64 runners and 6.6 s on Intel Mac. Packaged resource lookup also passes a
+disposable Electron ASAR test on macOS arm64. Lint, 10,673 unit tests and all ten
+dictation UI scenarios pass. These are not physical-microphone or signed-release
+qualification claims.
+
+**2026-10-21 local pre-merge review:** Claude reviewed the dictation branch and
+re-reviewed fixes for noise annotations entering drafts, Windows non-ASCII paths,
+native cancellation/cleanup and unsupported-target startup/build failures. Final
+source verdict at `b8f345c6`: no remaining actionable defects; lint and **10,685
+unit tests pass / 129 skipped**. Running-child cancellation passes all five targets
+in [run 39610853742](https://github.com/solardev-xyz/freedom-browser/actions/runs/39610853742);
+the expanded Unicode-profile/noise matrix passes all five targets in
+[run 39612841790](https://github.com/solardev-xyz/freedom-browser/actions/runs/39612841790).
+The earlier `68a48038` run covered a pre-aborted signal only. Keep physical-mic,
+signed-installation and performance/isolation qualification separate.
+Findings, fixes and smaller deferred follow-ups are recorded in the
+[local review](../docs/audits/agent-local-dictation-review-2026-10.md).
+Details and exact pins: [dictation](../docs/agent-dictation.md#on-this-device).
+
+**2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
+now shows provisional/final text through OpenAI's `gpt-live-transcribe` WebSocket
+API, and phrase updates at pauses or six-second boundaries through OpenRouter,
+Venice, NEAR and local Whisper. Audio is sent during recording; Cancel restores
+the original draft, provider failures retain completed phrases, and results are
+ordered without re-uploading earlier audio. Automated coverage exercises live
+deltas/final reconciliation, pre-Stop phrase delivery and cancellation. Local
+four-second English sample segments took 486/379 ms on the development Mac,
+including native startup. A persistent private local worker remains open: the
+upstream server binds all interfaces without authentication, so this draft keeps
+per-phrase native processes. Live provider access, real microphone latency,
+German/mixed-language accuracy, cross-platform/package qualification and private
+warm local inference remain follow-ups.
+
+**2026-10-20 first draft:** implemented on `experiment/agent-dictation` following
+the maintainer's approval of cloud-plus-local onboarding. OpenAI, OpenRouter,
+Venice and NEAR API connections provide stop-then-transcribe dictation; an optional
+checksum-pinned sherpa-onnx 1.13.8/Whisper Base download provides local inference
+without a new npm dependency. Microphone clicks record immediately with a saved
+choice or a suitable connected API service; setup opens only when neither is
+available. The chevron and Settings → AI hold the same service/language choice.
+No automatic Send, destination fallback or inherited chat-E2EE claim. Native
+installation/inference was exercised on macOS arm64, with generated-audio Electron
+coverage for capture/insert/cancel and responsive themes. Real microphone/TCC,
+English/German quality, live provider access and Windows/Linux/package qualification
+remain open. Meta/xAI/custom transcription adapters remain follow-ons.
+Details: [dictation draft](../docs/agent-dictation.md).
+
 **Product:** make the existing microphone control functional as push-to-talk or
 explicit start/stop recording. Dictation produces editable text in the composer;
 the user sends it normally. It is not a voice assistant or an automatic command
@@ -536,6 +666,24 @@ for approval before adding it.
 
 ### AI5 — Buy/manage dWeb names and bind a published site
 
+**2026-10-20 research complete, implementation not started:** the
+[implementation handoff](../docs/agent-domain-skills-research.md) records pinned
+sources/ABIs, read-only mainnet evidence cross-checked through two RPC services,
+commitment vectors, fees/timing, wrapped ENS renewal, record/transfer/subname
+calls, Swarm contenthash encoding, built-in wallet integration, durable recovery,
+and a qualification matrix. No wallet accessed and no transactions sent.
+
+A concrete gap was found: native `wallet_transfer` cannot encode contract calls,
+and skills/browser UI alone cannot safely retain commit secrets or recover
+uncertain dispatch. Recommendation is a small typed naming adapter behind the
+existing wallet approval/signing boundary, plus progressively loaded skills.
+Implement owned-name binding first, registration/renewal second, standard
+management third. Keep ENSv2 deployment/ABI qualification separate; current docs
+and pinned Sepolia resolver artifacts differ. Live small-value qualification
+requires the maintainer's chosen names/budget. Optional storefront/escrow,
+passport claims, fuses/migration, marketplace buying and bulk work stay extensions.
+
+
 **Product:** teach Agent to connect an existing Swarm publication to a name,
 register a name when requested, and later renew or repoint it. Reuse progressively
 loaded built-in skills, browser automation, the wallet approval boundary, and
@@ -561,8 +709,9 @@ Swarm publication/status receipts. Skills guide work; they do not grant authorit
    from a name that Freedom has actually resolved. Keep immutable publication
    references separate from future feed/mutable-site workflows.
 
-Use existing browser/dApp wallet support for the initial slice; introduce a narrow
-native naming tool only if qualification exposes a concrete missing capability.
+Reuse existing browser/dApp wallet support for integration tests and fallback.
+Research has exposed the missing native preparation/recovery capability above;
+introduce a narrow typed naming tool for deterministic execution.
 No arbitrary signing/raw-transaction shortcut is implied. Support existing owned
 names without forcing a purchase, and allow an unavailable name, declined spend,
 expired quote or interrupted transaction to be handled conversationally.
@@ -571,8 +720,10 @@ expired quote or interrupted transaction to be handled conversationally.
 live small-value flow for each advertised namespace. Cover invalid/unavailable
 names, wrong owner/network, existing record replacement, decline, insufficient
 funds, commit/reveal recovery, renewal, republishing and fresh-name resolution.
-Ordinary test runs must not buy a real domain. Transfers, arbitrary record editing,
-marketplace buying and bulk domain management remain later extensions.
+Ordinary test runs must not buy a real domain. Standard address/text records,
+primary names, transfers and owned-parent subnames follow the core site/purchase
+slice; their call matrix is researched. Arbitrary custom-resolver operations,
+marketplace buying and bulk management remain separate extensions.
 
 Primary references to recheck during implementation:
 [ENS registration](https://docs.ens.domains/registry/eth/),

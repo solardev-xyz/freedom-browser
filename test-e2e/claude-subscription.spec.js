@@ -21,7 +21,7 @@ test('connect installed Claude, chat, remember context, and show privacy in the 
   await expect(models).not.toContainText('CLI default');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-    await providerPage.locator('#ai').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });
+    await providerPage.locator('#providers').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });
   }
   await providerPage.locator('#agent-provider-login').click();
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });

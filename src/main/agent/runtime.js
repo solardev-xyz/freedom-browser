@@ -27,6 +27,9 @@ const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
 const { ManagedWorkspaceController } = require('./managed-workspace-controller');
 const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
 const { WorkspacePreviewController } = require('./workspace-preview-controller');
+const { DictationService } = require('./dictation-service');
+const { LocalDictation } = require('./dictation-local');
+const { registerDictationIpc } = require('./dictation-ipc');
 
 function createFreedomAgentRuntime(options = {}) {
   let featureController = new AbortController();
@@ -75,6 +78,14 @@ function createFreedomAgentRuntime(options = {}) {
     const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender });
     return { unavailable: true, dispose: async () => unregisterIpc() };
   }
+  const dictation = new DictationService({ dataDir: options.dataDir, providerStore,
+    local: new LocalDictation({ dataDir: options.dataDir, fetch: guardedFetch }), fetch: guardedFetch, assertEnabled,
+    onEvent: (sender, event) => {
+      try { if (!sender.isDestroyed?.()) sender.send('agent:dictation:event', event); }
+      catch { /* A closing renderer must not prevent microphone revocation. */ }
+    } });
+  const unregisterDictation = registerDictationIpc({ ipcMain: options.ipcMain, service: dictation,
+    isTrustedSender: options.isTrustedSender, isSettingsSender: isProviderSettingsSender, isEnabled });
   const pdfProcessor = new PdfProcessor({
     BrowserWindow: options.BrowserWindow,
     ipcMain: options.ipcMain,
@@ -147,11 +158,15 @@ function createFreedomAgentRuntime(options = {}) {
     isTrustedSender: options.isTrustedSender,
     isEnabled,
     isProviderSettingsSender,
-    onProviderChanged: () => broadcastToAllWebContents('agent:provider:changed', {}),
+    onProviderChanged: () => {
+      dictation.connectionsChanged();
+      broadcastToAllWebContents('agent:provider:changed', {});
+    },
     onEnabledChanged: listener => onSettingsChanged((next, previous) => {
       if (next.enableAi === previous.enableAi) return;
       featureController.abort();
       featureController = new AbortController();
+      dictation.cancelAll();
       listener(next.enableAi === true);
       if (next.enableAi !== true) {
         // Commands can outlive a model turn, including in other saved chats.
@@ -185,8 +200,11 @@ function createFreedomAgentRuntime(options = {}) {
     diagnosticsController,
     publicationController,
     service,
+    dictation,
     async dispose() {
+      const dictationShutdown = unregisterDictation();
       await unregisterIpc();
+      await dictationShutdown;
       await mcpConnections.dispose();
       await service.dispose();
       await nodeRequestController.dispose();

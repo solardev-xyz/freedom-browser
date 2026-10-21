@@ -21,6 +21,7 @@ jest.mock('./managed-workspace-store');
 jest.mock('./managed-workspace-controller');
 jest.mock('./managed-workspace-source-reader');
 jest.mock('./workspace-preview-controller');
+jest.mock('./dictation-ipc', () => ({ registerDictationIpc: jest.fn(() => jest.fn()) }));
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');

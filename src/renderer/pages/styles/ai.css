@@ -1,9 +1,19 @@
 /* Provider forms share the internal Settings palette, never chrome's glass. */
-#ai [hidden],
-#ai .hidden {
+#ai-dictation-settings {
+  display: grid;
+  --agent-bubble-agent: var(--bg-card);
+  --muted: var(--text-muted);
+  gap: 24px;
+  margin: 24px 0 0;
+  max-height: none;
+}
+#voice[hidden],
+#voice:has(#ai-dictation-settings[hidden]),
+:is(#ai, #providers, #voice) [hidden],
+:is(#ai, #providers, #voice) .hidden {
   display: none !important;
 }
-#ai .section-description {
+:is(#ai, #providers, #voice) .section-description {
   color: var(--text-muted);
   line-height: 1.6;
   margin-bottom: 24px;
@@ -19,26 +29,26 @@
   font-size: 13px;
   margin: 0;
 }
-#ai .agent-setup-intro p,
-#ai .agent-catalog-status,
-#ai .agent-subscription-note,
-#ai .agent-provider-models-empty {
+:is(#ai, #providers, #voice) .agent-setup-intro p,
+:is(#ai, #providers, #voice) .agent-catalog-status,
+:is(#ai, #providers, #voice) .agent-subscription-note,
+:is(#ai, #providers, #voice) .agent-provider-models-empty {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.6;
 }
-#ai .agent-field {
+:is(#ai, #providers, #voice) .agent-field {
   display: grid;
   gap: 8px;
   margin: 18px 0;
   font-size: 13px;
 }
-#ai .agent-field > span {
+:is(#ai, #providers, #voice) .agent-field > span {
   font-weight: 600;
 }
-#ai input:not([type='checkbox']),
-#ai select,
-#ai textarea {
+:is(#ai, #providers, #voice) input:not([type='checkbox']),
+:is(#ai, #providers, #voice) select,
+:is(#ai, #providers, #voice) textarea {
   width: 100%;
   min-width: 0;
   padding: 10px 12px;
@@ -48,21 +58,21 @@
   color: var(--text);
   font: inherit;
 }
-#ai input[type='url'],
-#ai input[type='password'],
-#ai textarea {
+:is(#ai, #providers, #voice) input[type='url'],
+:is(#ai, #providers, #voice) input[type='password'],
+:is(#ai, #providers, #voice) textarea {
   font-family: var(--font-mono);
 }
-#ai input:focus-visible,
-#ai select:focus-visible,
-#ai textarea:focus-visible,
-#ai button:focus-visible,
-#ai summary:focus-visible {
+:is(#ai, #providers, #voice) input:focus-visible,
+:is(#ai, #providers, #voice) select:focus-visible,
+:is(#ai, #providers, #voice) textarea:focus-visible,
+:is(#ai, #providers, #voice) button:focus-visible,
+:is(#ai, #providers, #voice) summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
-#ai .agent-button,
-#ai .agent-text-button {
+:is(#ai, #providers, #voice) .agent-button,
+:is(#ai, #providers, #voice) .agent-text-button {
   padding: 8px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -72,30 +82,30 @@
   font-size: 13px;
   cursor: pointer;
 }
-#ai .agent-button:not(.secondary) {
+:is(#ai, #providers, #voice) .agent-button:not(.secondary) {
   background: var(--accent);
   color: var(--bg);
   border-color: var(--accent);
 }
-#ai .agent-text-button {
+:is(#ai, #providers, #voice) .agent-text-button {
   border-color: transparent;
   color: var(--accent);
 }
-#ai .agent-button:hover,
-#ai .agent-text-button:hover {
+:is(#ai, #providers, #voice) .agent-button:hover,
+:is(#ai, #providers, #voice) .agent-text-button:hover {
   filter: brightness(1.1);
 }
-#ai button:disabled {
+:is(#ai, #providers, #voice) button:disabled {
   opacity: 0.55;
   cursor: default;
 }
-#ai .agent-connected-provider-list {
+:is(#providers, #voice) .agent-connected-provider-list {
   display: grid;
   gap: 10px;
   margin: 18px 0;
 }
-#ai .agent-connected-provider,
-#ai .agent-provider-choice {
+:is(#providers, #voice) .agent-connected-provider,
+#providers .agent-provider-choice {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -110,78 +120,78 @@
   font: inherit;
   cursor: pointer;
 }
-#ai .agent-connected-provider:hover,
-#ai .agent-provider-choice:hover {
+:is(#providers, #voice) .agent-connected-provider:hover,
+#providers .agent-provider-choice:hover {
   background: var(--bg-card-hover);
 }
-#ai .agent-connected-provider-copy,
-#ai .agent-provider-choice-copy {
+:is(#providers, #voice) .agent-connected-provider-copy,
+#providers .agent-provider-choice-copy {
   display: grid;
   gap: 5px;
   flex: 1;
   min-width: 0;
 }
-#ai .agent-connected-provider-copy span,
-#ai .agent-provider-choice-copy > span,
-#ai .agent-provider-method-state {
+:is(#providers, #voice) .agent-connected-provider-copy span,
+#providers .agent-provider-choice-copy > span,
+#providers .agent-provider-method-state {
   color: var(--text-muted);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-#ai .agent-provider-avatar {
+:is(#providers, #voice) .agent-provider-avatar {
   display: grid;
   place-items: center;
   width: 36px;
   height: 36px;
   flex: 0 0 36px;
 }
-#ai .agent-provider-logo {
+:is(#providers, #voice) .agent-provider-logo {
   max-width: 32px;
   max-height: 32px;
   object-fit: contain;
 }
-#ai .agent-provider-logo-light {
+#providers .agent-provider-logo-light {
   display: var(--light-only-display);
 }
-#ai .agent-provider-logo-dark {
+#providers .agent-provider-logo-dark {
   display: var(--dark-only-display);
 }
-#ai .agent-provider-group-label {
+#providers .agent-provider-group-label {
   color: var(--text-muted);
   font-size: 12px;
   margin: 24px 0 10px;
 }
-#ai .agent-provider-group {
+#providers .agent-provider-group {
   display: grid;
   gap: 8px;
 }
-#ai .agent-provider-method {
+#providers .agent-provider-method {
   margin: 12px 0;
 }
-#ai .agent-provider-indicator.active,
-#ai .agent-provider-method-state.active {
+#providers .agent-provider-indicator.active,
+#providers .agent-provider-method-state.active {
   color: var(--accent);
 }
-#ai .agent-card-heading,
-#ai .agent-provider-models-heading {
+#providers .agent-card-heading,
+#providers .agent-provider-models-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-#ai .agent-badge {
+:is(#providers, #voice) .agent-badge {
   color: var(--text-muted);
   font-size: 12px;
   flex-shrink: 0;
 }
-#ai .agent-badge.active {
+:is(#providers, #voice) .agent-badge.active {
   color: var(--success);
 }
-#ai .agent-provider-models {
+#providers .agent-provider-models {
   margin: 24px 0;
 }
-#ai .agent-provider-models-refresh,
-#ai .agent-model-star {
+#providers .agent-provider-models-refresh,
+#providers .agent-model-star {
   display: grid;
   place-items: center;
   width: 32px;
@@ -194,11 +204,11 @@
   color: var(--accent);
   cursor: pointer;
 }
-#ai .agent-provider-models-refresh svg {
+#providers .agent-provider-models-refresh svg {
   width: 18px;
   height: 18px;
 }
-#ai .agent-provider-models-list {
+#providers .agent-provider-models-list {
   list-style: none;
   margin: 12px 0;
   padding: 0;
@@ -207,74 +217,74 @@
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-#ai .agent-provider-models-list li {
+#providers .agent-provider-models-list li {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
-#ai .agent-provider-models-list li:last-child {
+#providers .agent-provider-models-list li:last-child {
   border-bottom: 0;
 }
-#ai .agent-provider-models-list li > span:first-child {
+#providers .agent-provider-models-list li > span:first-child {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }
-#ai .agent-model-privacy {
+#providers .agent-model-privacy {
   display: inline-flex;
   gap: 6px;
   color: var(--text-muted);
   flex-shrink: 0;
 }
-#ai .agent-model-privacy-symbol {
+#providers .agent-model-privacy-symbol {
   display: inline-flex;
   width: 18px;
   height: 18px;
   cursor: help;
 }
-#ai .agent-model-privacy-symbol svg {
+#providers .agent-model-privacy-symbol svg {
   width: 100%;
   height: 100%;
 }
-#ai .agent-model-privacy-detail {
+#providers .agent-model-privacy-detail {
   margin-top: 8px;
 }
-#ai .agent-provider-advanced {
+#providers .agent-provider-advanced {
   border-top: 1px solid var(--border);
   padding: 16px 0;
 }
-#ai summary {
+#providers summary {
   cursor: pointer;
   font-size: 13px;
 }
-#ai .agent-config-actions {
+:is(#providers, #voice) .agent-config-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin: 16px 0;
 }
-#ai .agent-message {
+:is(#providers, #voice) .agent-message {
   font-size: 13px;
   line-height: 1.6;
 }
-#ai .error {
+:is(#providers, #voice) .error {
   color: var(--danger);
 }
-#ai .agent-compatibility,
-#ai .agent-auth-code {
+#providers .agent-compatibility,
+#providers .agent-auth-code {
   border: 1px solid var(--border);
   background: var(--bg-elev);
   border-radius: 10px;
   padding: 16px;
   margin: 16px 0;
 }
-#ai .agent-auth-code {
+#providers .agent-auth-code {
   display: grid;
   gap: 12px;
 }
-#ai .agent-auth-code strong {
+#providers .agent-auth-code strong {
   font-family: var(--font-mono);
   font-size: 24px;
   letter-spacing: 0.1em;
@@ -293,7 +303,7 @@
   min-width: 180px;
 }
 
-#ai .toggle input {
+:is(#ai, #voice) .toggle input {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -301,13 +311,13 @@
   margin: 0;
   z-index: 1;
 }
-#ai .toggle:has(input:focus-visible) {
+:is(#ai, #voice) .toggle:has(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
   border-radius: 20px;
 }
 
-#ai .agent-settings-model-name button {
+#providers .agent-settings-model-name button {
   border: 0;
   padding: 0;
   background: transparent;
@@ -317,7 +327,7 @@
   text-align: left;
   overflow-wrap: anywhere;
 }
-#ai .agent-settings-model-name button[aria-pressed='true'] {
+#providers .agent-settings-model-name button[aria-pressed='true'] {
   color: var(--accent);
   font-weight: 600;
 }
@@ -325,4 +335,110 @@
 /* Keep the new selected entry above AA on its accent-tinted background. */
 .nav-item[data-target='ai'].active {
   color: var(--accent-strong);
+}
+
+/* AI uses the same list-to-detail navigation as Networks. */
+.ai-settings-links .net-row {
+  text-decoration: none;
+}
+.ai-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ai-breadcrumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.ai-breadcrumbs a:hover {
+  text-decoration: underline;
+}
+.ai-breadcrumbs a:focus-visible,
+.ai-settings-links a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#providers #agent-provider-list-back,
+#providers #agent-provider-detail-back,
+#providers #agent-provider-form-heading {
+  display: none;
+}
+
+#voice .section-description,
+#voice .subsection-title,
+#voice .agent-connected-provider-list {
+  margin: 0;
+}
+.voice-settings-group {
+  display: grid;
+  gap: 12px;
+}
+#voice .agent-button {
+  width: fit-content;
+  text-decoration: none;
+}
+#voice .voice-service {
+  text-decoration: none;
+}
+#voice .voice-service .agent-badge {
+  font-size: 12px;
+}
+#voice .voice-service:focus-visible,
+#voice a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#voice .agent-provider-avatar svg {
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+}
+.voice-service-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+}
+.voice-service-summary p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+.voice-service-summary strong {
+  font-size: 14px;
+}
+#voice .agent-message:empty {
+  display: none;
+}
+.voice-download-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.voice-empty {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  #voice .voice-service {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #voice .voice-service .agent-badge {
+    white-space: normal;
+  }
+  #voice .row {
+    flex-wrap: wrap;
+  }
+  #voice .row-control {
+    min-width: 0;
+  }
 }

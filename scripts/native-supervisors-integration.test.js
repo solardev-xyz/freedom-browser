@@ -7,6 +7,7 @@ jest.mock('./build-linux-workspace-supervisor', () => ({
   default: jest.fn(), buildLinuxWorkspaceSupervisor: jest.fn(),
 }));
 jest.mock('./build-myotis-supervisor', () => ({ buildSupervisor: jest.fn(), buildForTargets: jest.fn() }));
+jest.mock('./build-dictation-runtime', () => ({ buildDictationRuntime: jest.fn() }));
 jest.mock('./sign-macos-workspace-supervisor', () => ({ createSupervisorSigner: jest.fn(({ sign }) => sign) }));
 jest.mock('./sign-myotis-helper', () => jest.fn());
 const workspace = require('./build-macos-workspace-supervisor');
@@ -37,8 +38,8 @@ test.each(['arm64', 'x64'])('prepares both packaging helpers for macOS %s', asyn
   expect(myotis.buildForTargets).toHaveBeenCalledWith('mac', [arch]);
 });
 
-test('macOS development preserves workspace preparation alongside Myotis', () => {
-  prepare.prepareDevelopment('darwin');
+test('macOS development preserves workspace preparation alongside Myotis', async () => {
+  await prepare.prepareDevelopment('darwin');
   expect(workspace.buildMacosWorkspaceSupervisor).toHaveBeenCalledTimes(1);
   expect(myotis.buildSupervisor).toHaveBeenCalledTimes(1);
   expect(require('../package.json').scripts.prestart).toBe('node scripts/prepare-native-supervisors.js');
@@ -46,15 +47,15 @@ test('macOS development preserves workspace preparation alongside Myotis', () =>
 });
 
 
-test.each(['linux', 'win32'])('%s prestart invokes neither macOS nor Myotis compiler', (platform) => {
-  prepare.prepareDevelopment(platform);
+test.each(['linux', 'win32'])('%s prestart invokes neither macOS nor Myotis compiler', async (platform) => {
+  await prepare.prepareDevelopment(platform);
   expect(workspace.buildMacosWorkspaceSupervisor).not.toHaveBeenCalled();
   expect(myotis.buildSupervisor).not.toHaveBeenCalled();
 });
 
 test('Linux preparation builds only its workspace owner; package manifest is explicit', async () => {
   const linux = require('./build-linux-workspace-supervisor');
-  prepare.prepareDevelopment('linux');
+  await prepare.prepareDevelopment('linux');
   expect(linux.buildLinuxWorkspaceSupervisor).toHaveBeenCalledTimes(1);
   const context = { electronPlatformName: 'linux', arch: 'x64' };
   await prepare.default(context);

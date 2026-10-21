@@ -1894,6 +1894,9 @@
                   </button>
                   <div id="agent-attachment-contexts" class="agent-attachment-contexts"></div>
                 </div>
+                <dialog id="agent-dictation-panel" class="agent-dictation-panel" aria-label="Set up voice dictation" hidden></dialog>
+                <p id="agent-dictation-feedback" class="agent-dictation-feedback" role="status" aria-live="polite" hidden></p>
+                <button id="agent-dictation-cancel" class="agent-text-button agent-dictation-cancel" type="button" hidden>Cancel dictation</button>
                 <label class="agent-composer-input">
                   <span class="sr-only">Task for the agent</span>
                   <textarea
@@ -1965,13 +1968,15 @@
                         <path d="m6 9 6 6 6-6" />
                       </svg>
                     </button>
+                    <div class="agent-dictation-controls">
                     <button
+                      id="agent-dictation"
                       class="agent-composer-icon-button"
                       type="button"
-                      aria-label="Dictate task (coming soon)"
-                      title="Dictation is coming soon"
+                      aria-label="Dictate task"
+                      aria-pressed="false"
+                      title="Dictate task"
                       data-test="agent-dictation"
-                      disabled
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -1987,6 +1992,8 @@
                         <path d="M12 18v3" />
                       </svg>
                     </button>
+                    <button id="agent-dictation-options" class="agent-composer-icon-button agent-dictation-options" type="button" aria-label="Dictation options" aria-haspopup="menu" aria-expanded="false" aria-controls="agent-dictation-menu" title="Dictation options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button>
+                    </div>
                     <button
                       id="agent-run"
                       class="agent-send-button"
@@ -5761,5 +5768,6 @@
     <script src="./vendor/purify.min.js"></script>
     <script type="module" src="./index.js"></script>
     <section id="agent-session-privacy-panel" class="agent-privacy-panel chrome-popover" popover="manual" role="region" aria-label="Conversation privacy details" tabindex="-1" hidden></section>
+    <div id="agent-dictation-menu" class="agent-attachment-menu agent-dictation-menu chrome-popover" role="menu" aria-label="Dictation service" tabindex="-1" hidden></div>
   </body>
 </html>
