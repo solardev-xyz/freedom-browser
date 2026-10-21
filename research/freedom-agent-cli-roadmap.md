@@ -2,17 +2,16 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-21
-Status: Review fixes and AI settings/onboarding integrated; examples implemented; dictation first draft on experiment/agent-dictation; domain research complete; implementation planned
+Status: New whole-feature security audit requires triage/repairs; AI settings, onboarding, examples and dictation integrated; domain research complete; implementation planned
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
-## Active plan — colleague review follow-up, 2026-10-20
+## Active plan — colleague review follow-up, 2026-10-21
 
 The user reports a positive colleague review of PR #457 and has selected five
 product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
-AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation has an experimental first
-draft with incremental text and service-management pages; maintainer OpenRouter smoke passed.
+AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation is integrated with incremental text, service-management pages and bundled local whisper.cpp; maintainer OpenRouter/local smokes and the scoped Claude review passed.
 AI1–AI4 received a further Claude review with repairs tracked below. AI5 domain
 research is complete; implementation has not started. Ordinary browsing remains a complete experience with AI off.
 
@@ -21,6 +20,29 @@ record preserves previous design decisions, experiments and dated qualification;
 its older “next”, “unsupported” and “remaining” statements do not override this
 plan. Optional extensions remain recorded below and are not prerequisites for
 this iteration.
+
+### New priority — October 21 whole-feature security audit
+
+[Meinhard's new audit](https://github.com/solardev-xyz/freedom-browser/pull/457#issuecomment-6313239088)
+is a six-pass security review of `17d08d34e` against `a9d7e9978`, separate from
+the cleared layout review and local-dictation review. It reports **one High,
+seven Medium and further Low findings**; its evidence distinguishes reproduced
+mechanisms from unrun platform hypotheses. Do not treat older passing tests or
+the dictation sign-off as clearance of these new findings.
+
+The [security audit intake](../docs/audits/agent-security-audit-triage-2026-10.md)
+indexes every item as S1–S8 and L1–L12, with current source checks and evidence
+limits. **Next:** address S1's unsandboxed scratch-cleanup race; then publication
+root exclusions (S2), executable-root grants (S4), internal-page authority (S5)
+and misleading WebMCP submission metadata (S6). Validate S3/S7/S8 on the affected
+platforms and address the remaining privacy, revocation, approval-history,
+networking and supply-chain work in L1–L12. These take priority over new domain
+capabilities and broad beta/release claims. No repair is claimed by this intake.
+
+Main is verified through `8a671891`, already included by `fdd2e729`; no further
+main merge was needed at this check. This includes wallet-attribution PR #765
+closing #764. The separate suggestion to disallow automatic wallet approval for
+Agent-owned tabs after control ends still requires its own disposition.
 
 ### Current baseline and qualification
 
