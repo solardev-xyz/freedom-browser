@@ -238,6 +238,43 @@ jobs:
       - name: Run migration + profile suites
         run: npm run test:migration
 
+  # Independent of the long native sandbox build: prove both a positive
+  # network control and the isolated preview boundary on every desktop OS.
+  e2e-preview-network:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: ./.github/actions/install-linux-native-deps
+        if: runner.os == 'Linux'
+      - uses: ./.github/actions/install-node-deps
+      - uses: ./.github/actions/install-playwright-deps
+        if: runner.os == 'Linux'
+      - name: Qualify preview network isolation against owned listeners
+        shell: bash
+        run: |
+          node -e "require('electron')"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Retain Chromium's process sandbox on this disposable runner.
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+            xvfb-run -a node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          else
+            node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          fi
+
   # freedom-ipfs native addon smoke for every desktop addon target currently
   # published in the pinned prebuilt manifest. This downloads the real release
   # artifact, loads it in Node, starts native freedom-ipfs, serves the identity
@@ -1232,8 +1269,6 @@ jobs:
         uses: ./.github/actions/install-node-deps
       - name: Build macOS workspace supervisor
         run: npm run build:workspace-supervisor
-      - name: Qualify preview network isolation against owned listeners
-        run: node_modules/.bin/electron scripts/qualify-agent-preview-network.js
       - name: Run agent E2E
         run: |
           npm run test:e2e -- \
@@ -1353,14 +1388,6 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
-
-      - name: Qualify preview network isolation against owned listeners
-        run: |
-          # The standalone fixture retains Chromium's process sandbox. Configure
-          # its downloaded helper on this disposable runner before launching it.
-          sudo chown root:root node_modules/electron/dist/chrome-sandbox
-          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-          xvfb-run -a node_modules/.bin/electron scripts/qualify-agent-preview-network.js
 
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |
@@ -2113,6 +2140,7 @@ jobs:
         e2e-ipfs-quit,
         e2e-onboarding-identity,
         e2e-profiles,
+        e2e-preview-network,
         e2e-renderer-screenshots,
         e2e-safe,
         e2e-settings,

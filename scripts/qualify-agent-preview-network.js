@@ -12,6 +12,9 @@ const { PREVIEW_CSP } = require('../src/main/agent/workspace-preview-controller'
 const { isolatePreviewNetwork } = require('../src/main/agent/workspace-preview-network');
 
 app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-preview-network-')));
+// Hosted runners may expose no usable non-loopback WebRTC interface. Enable
+// the owned loopback control explicitly in this fixture, never in the browser.
+app.commandLine.appendSwitch('allow-loopback-in-peer-connection');
 protocol.registerSchemesAsPrivileged([{ scheme: 'freedom-preview', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const deadline = setTimeout(() => app.exit(2), 20000);
 app.on('window-all-closed', () => {});
@@ -42,7 +45,7 @@ app.whenReady().then(async () => {
         ] });
         peer.createDataChannel('fixture');
         await peer.setLocalDescription(await peer.createOffer());
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 4000));
         peer.close();
       })()`);
       return { udpPackets, tcpConnections };
@@ -50,6 +53,7 @@ app.whenReady().then(async () => {
   };
   try {
     const control = await check(false);
+    console.log(JSON.stringify({ phase: 'control', ...control }));
     assert(control.udpPackets > 0 && control.tcpConnections > 0, 'Both owned listeners must observe the control');
     const isolated = await check(true);
     assert.equal(isolated.udpPackets, 0);
