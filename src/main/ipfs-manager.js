@@ -960,27 +960,42 @@ function startIpfs() {
   return enqueueOp(() => doStartIpfs(requestedAt));
 }
 
-function stopIpfs() {
-  // A node still starting is stopped now, not after its start settles
-  // (doStartIpfs): a service's shutdown is bounded at 5 s, and an add-on's
-  // start gives up its gate's wait, so quit and a mode change are bounded. A
-  // native start queued before this stop is cancelled. A start requested
-  // after this stop waits for that stop.
+// A stop's immediate part, before its op waits its turn: a native start
+// queued before it is cancelled (stopsRequested), and a node still starting
+// is stopped now, not after its start settles (doStartIpfs). A service's
+// shutdown is bounded at 5 s, and an add-on's start gives up its gate's wait,
+// so whatever waits on the stop is bounded. Returns that node's stop, which
+// the stop's op awaits before STOPPED.
+function takeOverStart() {
   stopsRequested += 1;
   const starting = startingNode;
   startingNode = null;
-  const takeover = starting
+  return starting
     ? starting.stop().catch((err) => {
         log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
       })
     : null;
+}
+
+function stopIpfs() {
+  // Quit and the nodes menu: a start requested after this stop waits for it.
+  const takeover = takeOverStart();
   return enqueueOp(() => doStopIpfs(takeover));
 }
 
 // Serialized with start/stop so a sync can't interleave with a transition and
-// publish a mode the op that is still running is about to overwrite.
+// publish a mode the op that is still running is about to overwrite. A profile
+// switched to disabled stops its node, and so takes over a start as stopIpfs()
+// does rather than queueing behind it; its op stops first, then syncs, so a
+// start it cancelled never leaves the state STARTING whatever the profile says
+// by then.
 function syncProfileMode() {
-  return enqueueOp(doSyncIpfsProfileMode);
+  if (!isDisabledIpfsConfig()) return enqueueOp(doSyncIpfsProfileMode);
+  const takeover = takeOverStart();
+  return enqueueOp(async () => {
+    await doStopIpfs(takeover);
+    await doSyncIpfsProfileMode();
+  });
 }
 
 // Wrap an upstream body so bytes are tallied as they stream to the caller and

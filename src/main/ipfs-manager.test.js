@@ -3371,6 +3371,60 @@ describe('the freedom-ipfsd backend (the default)', () => {
       });
     });
 
+    // A profile switched to disabled stops its node (syncProfileMode): it
+    // takes a pending start over as stopIpfs() does, not after it.
+    test.each([
+      ['a packaged build', true],
+      ['a development build', false],
+    ])(
+      '%s: a profile switched to disabled takes a pending start over at once',
+      async (_label, isPackaged) => {
+        const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+        const ctx = loadIpfsManagerModule({ serviceStartPending: true, isPackaged, activeProfile });
+        ctx.mod.startIpfs();
+        await flush();
+        const node = ctx.serviceInstances[0];
+        const shutdown = deferred();
+        node.shutdown = shutdown.promise;
+
+        activeProfile.metadata.nodes.ipfs = { mode: 'disabled' };
+        const syncing = ctx.mod.syncProfileMode();
+        expect(node.stop).toHaveBeenCalledTimes(1);
+        shutdown.resolve();
+        await syncing;
+
+        expect(ctx.serviceInstances).toHaveLength(1);
+        expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+          'ipfs',
+          'Node disabled for this profile'
+        );
+        expect(ctx.mod.checkHealth()).toBe(false);
+      }
+    );
+
+    test("a profile switched to disabled while a start waits for a failed node's stop: no new node", async () => {
+      const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+      const ctx = loadIpfsManagerModule({ activeProfile });
+      await ctx.mod.startIpfs();
+      const failed = ctx.serviceInstances[0];
+      const cleanup = deferred();
+      failed.shutdown = cleanup.promise;
+      failed.config.onFailure('freedom-ipfs service exited', failed);
+
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      activeProfile.metadata.nodes.ipfs = { mode: 'disabled' };
+      const syncing = ctx.mod.syncProfileMode();
+      cleanup.resolve();
+      await Promise.all([restarting, syncing]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+        'ipfs',
+        'Node disabled for this profile'
+      );
+    });
+
     test('a second stop meanwhile stops the node once', async () => {
       const ctx = loadIpfsManagerModule({ serviceStartPending: true });
       ctx.mod.startIpfs();
