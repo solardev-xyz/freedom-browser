@@ -265,3 +265,200 @@ describe('the plans', () => {
     held.release();
   });
 });
+
+// freedom-core design 0007, "Main's side": the backend captured at admission
+// carries a lease, which the handler releases exactly once on every exit,
+// and holds while a body it handed on is unfinished.
+describe("the backend's lease", () => {
+  const CIDV0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+  const CIDV0_AS_BASE32 = 'bafybeie5nqv6kd3qnfjupgvz34woh3oksc3iau6abmyajn7qvtf6d2ho34';
+  function leasedBackend(answer) {
+    const backend = antBackend(answer);
+    backend.release = jest.fn();
+    return backend;
+  }
+  const PRIVATE = 'private-lease';
+  const bzz = (path, init) => new Request(`bzz://${HASH}/${path}`, init);
+  const coreError = (code, message) => Object.assign(new Error(message), { code });
+
+  // Each case sets up its exit: the request, and the session, the backend's
+  // reference and the node's body where they differ.
+  test.each([
+    ['a URL over its bound (414)', 414, () => ({ request: bzz('a'.repeat(65_536)) })],
+    [
+      'headers over their bound (431)',
+      431,
+      () => ({ request: bzz('', { headers: { 'x-pad': 'p'.repeat(65_536) } }) }),
+    ],
+    [
+      'no core (503)',
+      503,
+      () => {
+        mockDriver = null;
+        return { request: bzz('') };
+      },
+    ],
+    [
+      'a closed session (502)',
+      502,
+      () => {
+        mockAdmission.closeSession(PRIVATE);
+        return { request: bzz(''), partition: PRIVATE };
+      },
+    ],
+    [
+      'a failed lookup (502)',
+      502,
+      () => {
+        mockDriver = scriptedDriver({ error: coreError('repeated', 'changed') });
+        return { request: new Request('bzz://x.eth/') };
+      },
+    ],
+    [
+      'a busy core (503)',
+      503,
+      () => {
+        mockDriver = scriptedDriver({ error: coreError('busy', 'Too many naming requests') });
+        return { request: bzz('') };
+      },
+    ],
+    [
+      'a refused plan (502)',
+      502,
+      () => {
+        mockDriver = scriptedDriver({ plan: { fetch: { ...FETCH.fetch, path: '/stamps/1/17' } } });
+        return { request: bzz('index.html') };
+      },
+    ],
+    [
+      'an error plan (404)',
+      404,
+      () => {
+        mockDriver = scriptedDriver({ plan: { error: { status: 404, code: 404, message: 'no' } } });
+        return { request: bzz('') };
+      },
+    ],
+    [
+      'a redirect plan (307)',
+      307,
+      () => {
+        const location = `ipfs://${CIDV0_AS_BASE32}/a`;
+        mockDriver = scriptedDriver({
+          plan: {
+            redirect: { status: 307, location, headers: [['access-control-allow-origin', '*']] },
+          },
+        });
+        return {
+          request: new Request(`ipfs://localhost/ipfs/${CIDV0}/a`),
+          ref: { ipfs: 'native', up: false },
+        };
+      },
+    ],
+    [
+      "admission's 503",
+      503,
+      () => {
+        mockAdmission = createFetchAdmission({ maxActive: 0, maxWaiting: 0 });
+        return { request: bzz('index.html') };
+      },
+    ],
+    [
+      'an abort before the fetch (502)',
+      502,
+      () => {
+        const controller = new AbortController();
+        controller.abort();
+        return { request: bzz('index.html', { signal: controller.signal }) };
+      },
+    ],
+    [
+      'a HEAD, whose answer has no body',
+      200,
+      () => ({ request: bzz('index.html', { method: 'HEAD' }), body: null }),
+    ],
+  ])('released once on %s', async (_label, status, setup) => {
+    const { request, partition = null, ref = null, body = 'content' } = setup();
+    const backend = leasedBackend(() => new Response(body));
+    if (ref) backend.ref = ref;
+    const res = await handleDwebRequest(request, { backend, partition, tag: '[bzz-protocol]' });
+    expect(res.status).toBe(status);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['a rejected request() (502)', 502, () => Promise.reject(new Error('read failed'))],
+    [
+      "the node's capacity, BackendBusy (503)",
+      503,
+      () => Promise.reject(Object.assign(new Error('busy'), { name: 'BackendBusy' })),
+    ],
+  ])('released once on %s', async (_label, status, answer) => {
+    const backend = leasedBackend(answer);
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    expect(res.status).toBe(status);
+    expect(backend.request).toHaveBeenCalledTimes(1);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
+
+  // A body handed on holds the lease until it is over.
+  const streaming = () => {
+    let source;
+    const body = new ReadableStream({
+      start(controller) {
+        source = controller;
+        controller.enqueue(new TextEncoder().encode('first'));
+      },
+    });
+    return { body, source: () => source };
+  };
+
+  test.each([
+    ['its end', (reader, source) => (source().close(), reader.read())],
+    [
+      'an error',
+      (reader, source) => (source().error(new Error('cut')), reader.read().catch(() => {})),
+    ],
+    ["its consumer's cancel", (reader) => reader.cancel()],
+  ])('held through a body, then released once on %s', async (_label, finish) => {
+    const { body, source } = streaming();
+    const backend = leasedBackend(() => new Response(body));
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    const reader = res.body.getReader();
+    await reader.read();
+    expect(backend.release).not.toHaveBeenCalled();
+
+    await finish(reader, source);
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
+
+  test("held through a body, then released once when the body's session closes", async () => {
+    const { body } = streaming();
+    const backend = leasedBackend(() => new Response(body));
+    const res = await handleDwebRequest(new Request(`bzz://${HASH}/index.html`), {
+      backend,
+      partition: PRIVATE,
+      tag: '[bzz-protocol]',
+    });
+    const reader = res.body.getReader();
+    await reader.read();
+    expect(backend.release).not.toHaveBeenCalled();
+
+    mockAdmission.closeSession(PRIVATE);
+    await reader.read().catch(() => {});
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
+
+  test('a backend without a lease is served as before', async () => {
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), antBackend());
+    await expect(res.text()).resolves.toBe('content');
+  });
+});
+
+/** Settles once `backend.release` has been called, or after a few turns. */
+async function waitForRelease(backend) {
+  for (let i = 0; i < 20 && backend.release.mock.calls.length === 0; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}

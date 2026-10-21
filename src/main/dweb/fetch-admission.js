@@ -18,6 +18,10 @@
  * fences and admits nothing more. Private partitions are never reused, so
  * the closed ones are remembered for the process's lifetime: one name per
  * private window closed.
+ *
+ * What else a session holds is told of its close (`onSessionClosed`): a
+ * backend releases what the session's leases still pin, the backstop of
+ * freedom-core design 0007's lease ("Main's side").
  */
 
 const MAX_ACTIVE = 256;
@@ -51,6 +55,8 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
   const fences = new Map();
   const closed = new Set();
   const isClosed = (partition) => partition !== null && closed.has(partition);
+  // Told of each session's close, after its requests are stopped.
+  const closeListeners = new Set();
 
   /**
    * Fences one request to its session, from its handler's entry: `signal`
@@ -147,7 +153,8 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
   /** A session has closed: its fenced requests are stopped wherever they
    * are, its waiting fetches refused and its active ones stopped, and it
    * fences and admits nothing more. Each active fetch frees its slot as it
-   * ends. */
+   * ends. Then every close listener is told, each of them however another
+   * fails; the first failure is thrown once all have run. */
   function closeSession(partition) {
     if (partition !== null) closed.add(partition);
     for (const controller of [...(fences.get(partition) || [])]) {
@@ -160,12 +167,29 @@ function createFetchAdmission({ maxActive = MAX_ACTIVE, maxWaiting = MAX_WAITING
     for (const stop of sessions.get(partition) || []) {
       stop.abort(abortError('The session closed'));
     }
+    let failure = null;
+    for (const listener of [...closeListeners]) {
+      try {
+        listener(partition);
+      } catch (err) {
+        failure ??= err;
+      }
+    }
+    if (failure) throw failure;
+  }
+
+  /** Calls `listener(partition)` on each session's close; returns its
+   * removal. */
+  function onSessionClosed(listener) {
+    closeListeners.add(listener);
+    return () => closeListeners.delete(listener);
   }
 
   return {
     fence,
     acquire,
     closeSession,
+    onSessionClosed,
     stats: () => ({ active, waiting: waiting.length }),
   };
 }
@@ -176,6 +200,7 @@ module.exports = {
   fenceDwebSession: (partition) => admission.fence(partition),
   acquireDwebFetch: (request) => admission.acquire(request),
   closeDwebSession: (partition) => admission.closeSession(partition),
+  onDwebSessionClosed: (listener) => admission.onSessionClosed(listener),
   dwebFetchStats: () => admission.stats(),
   createFetchAdmission,
   AdmissionFull,

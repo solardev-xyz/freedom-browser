@@ -705,6 +705,45 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // freedom-core design 0007, "Main's side": every backend carries a lease,
+  // idempotent, and holding nothing until private windows have instances of
+  // their own (step 7): a private partition is served as the profile is.
+  test("the add-on's and the external gateway's backends carry a lease that holds nothing", async () => {
+    const addon = loadIpfsManagerModule();
+    await addon.mod.startIpfs();
+    const native = addon.mod.ipfsBackend({ partition: 'private-lease' });
+    expect(native.ref).toEqual({ ipfs: 'native', up: true });
+    native.release();
+    native.release();
+    await native.request({ path: '/ipfs/bafy', method: 'GET', headers: new Headers() });
+    expect(addon.nativeInstances[0].request).toHaveBeenCalledTimes(1);
+
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch();
+    try {
+      const external = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: { ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' } },
+          },
+        },
+      });
+      await external.mod.startIpfs();
+      const gateway = external.mod.ipfsBackend({ partition: 'private-lease' });
+      expect(gateway.ref).toEqual({ ipfs: 'gateway', up: true });
+      gateway.release();
+      gateway.release();
+      const res = await gateway.request({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+      expect(await res.text()).toBe('external-body');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   test('external mode reports the gateway unreachable when the probe fails', async () => {
     const realFetch = global.fetch;
     global.fetch = jest.fn(async () => new Response('bad gateway', { status: 502 }));

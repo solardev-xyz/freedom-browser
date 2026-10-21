@@ -24,13 +24,22 @@
  * header strip-list, refuses other methods (405), and names the small-text
  * rule for a GET navigation to the native node. Main checks the plan and
  * executes it (`dweb/dweb-handler.js`) against the backend captured when the
- * request is admitted (`ipfs-manager.js` `ipfsBackend`). A single attempt
- * per request: IPFS has no retry contract, and 4xx and 5xx pass through.
+ * request is admitted (`ipfs-manager.js` `ipfsBackend`), for the request's
+ * partition, whose lease the handler releases on every exit. A single
+ * attempt per request: IPFS has no retry contract, and 4xx and 5xx pass
+ * through.
+ *
+ * A capture can be refused for capacity (freedom-core design 0007, "Private
+ * windows"): a private partition that needs an instance of its own when
+ * every one is pinned by another. `ipfsBackend()` then throws `BackendBusy`,
+ * answered 503 before anything is planned, as admission's own is. That is
+ * not the 503 of a node that isn't running: `ref.up` stays readiness.
  */
 
 const log = require('../logger');
 const { ipfsBackend } = require('../ipfs-manager');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
+const { jsonErrorResponse } = require('../dweb/plan-executor');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 
 /**
@@ -49,9 +58,15 @@ function handleRequest(
   request,
   { partition = null, isPrivate = isPrivateLogContext(), requestImpl = null } = {}
 ) {
-  const backend = requestImpl
-    ? { ref: { ipfs: 'native', up: true }, url: null, request: requestImpl }
-    : ipfsBackend();
+  let backend;
+  try {
+    backend = requestImpl
+      ? { ref: { ipfs: 'native', up: true }, url: null, request: requestImpl }
+      : ipfsBackend({ partition });
+  } catch (err) {
+    if (err?.name !== 'BackendBusy') throw err;
+    return Promise.resolve(jsonErrorResponse(503, err.message));
+  }
   return runWithPrivateLogContext(isPrivate, () =>
     handleDwebRequest(request, { backend, partition, tag: `[${namespace}-protocol]` })
   );

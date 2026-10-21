@@ -104,3 +104,47 @@ test("a session's fence aborts on close, and a closed session fences and admits 
   expect(other.signal.aborted).toBe(false);
   ordinary.dispose();
 });
+
+// What else a session holds hears of its close, after its requests are
+// stopped: the backstop of freedom-core design 0007's lease.
+test("a session's close is told to every listener, after its fences abort, whatever one throws", () => {
+  const admission = createFetchAdmission();
+  const fence = admission.fence('private-1');
+  const heard = [];
+  admission.onSessionClosed((partition) => {
+    heard.push(['first', partition, fence.signal.aborted]);
+    throw new Error('first failed');
+  });
+  const removeSecond = admission.onSessionClosed((partition) => {
+    heard.push(['second', partition]);
+    throw new Error('second failed');
+  });
+  admission.onSessionClosed((partition) => heard.push(['third', partition]));
+
+  expect(() => admission.closeSession('private-1')).toThrow('first failed');
+  expect(heard).toEqual([
+    ['first', 'private-1', true],
+    ['second', 'private-1'],
+    ['third', 'private-1'],
+  ]);
+
+  // A removed listener hears nothing more.
+  heard.length = 0;
+  removeSecond();
+  expect(() => admission.closeSession('private-2')).toThrow('first failed');
+  expect(heard.map(([name]) => name)).toEqual(['first', 'third']);
+  fence.dispose();
+});
+
+test('the module-wide admission tells its listeners of closeDwebSession', () => {
+  jest.isolateModules(() => {
+    const { closeDwebSession, onDwebSessionClosed } = require('./fetch-admission');
+    const listener = jest.fn();
+    const remove = onDwebSessionClosed(listener);
+    closeDwebSession('private-module');
+    expect(listener).toHaveBeenCalledWith('private-module');
+    remove();
+    closeDwebSession('private-module-2');
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
