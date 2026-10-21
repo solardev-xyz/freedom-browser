@@ -182,6 +182,19 @@ async function main() {
     assert.equal(fs.readFileSync(target, 'utf8'), 'owned fixture');
     // The package rule remains installed throughout these controls. Existing
     // unrestricted and approved-network identities must remain usable.
+    const profileName = output.match(/FREEDOM_PACKAGE_PROFILE ([a-z0-9-]+)/)?.[1];
+    assert(profileName, 'The rule owner must report its owned profile');
+    let combinedResult;
+    const combinedPackets = await count(async source => {
+      const target = path.join(workspace, 'combined-token-write.txt');
+      const probe = `require('fs').writeFileSync(${JSON.stringify(target)},'combined fixture');console.log('appcontainer-write:ok');${source}`;
+      combinedResult = await executor.execute(await policy('none'), { command: container,
+        args: [ownedNode, workspace, probe, 'borrowed-profile', profileName, process.env.LOCALAPPDATA] });
+      console.log(JSON.stringify({ combinedResult }));
+      assert.match(combinedResult.stdout, /Verified inherited Codex restricted offline account token/);
+      assert.match(combinedResult.stdout, /appcontainer-write:ok/);
+      assert.equal(fs.readFileSync(target, 'utf8'), 'combined fixture');
+    });
     const hostPackets = await count(host);
     const fullPackets = await count(source => sandbox('full', source));
     await new Promise(resolve => setTimeout(resolve, 3000));
@@ -194,10 +207,12 @@ async function main() {
     const drops = Number(dropMatch[1]);
     const candidate = { mode: 'appcontainer-package-filter', bare, offline: filtered, ownFilterDrops: drops,
       hostWhileInstalled: hostPackets, fullWhileInstalled: fullPackets,
+      combinedPackets, combinedState: combinedResult?.state,
       workloadState: output.match(/FREEDOM_PACKAGE_WORKLOAD_READY state=(\w+)/)?.[1] };
     console.log(JSON.stringify({ candidate }));
     assert(hostPackets > 0 && fullPackets > 0, 'Normal and approved-network DNS must remain available while the rule is installed');
     assert.equal(filtered, 0, 'The package-filtered process must not emit DNS');
+    assert.equal(combinedPackets, 0, 'The combined restricted-token process must not emit DNS');
     if (bare > 0) assert(drops > 0, 'A previously leaking path requires causal own-filter drop evidence');
   } catch (error) {
     console.error('Owned DNS fixture failed before cleanup:', error);

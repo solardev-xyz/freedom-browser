@@ -145,9 +145,10 @@ struct PackageFilter {
 struct Profile {
     std::wstring name;
     PSID sid = nullptr;
+    bool owned = true;
     bool remove() {
         if (!sid) return true;
-        const HRESULT status = DeleteAppContainerProfile(name.c_str());
+        const HRESULT status = owned ? DeleteAppContainerProfile(name.c_str()) : S_OK;
         if (FAILED(status)) {
             std::printf("Owned profile deletion failed: 0x%08lx\n", static_cast<unsigned long>(status));
             return false;
@@ -224,7 +225,8 @@ int wmain(int argc, wchar_t** argv) {
     try {
         wchar_t github[8] = {};
         checked(GetEnvironmentVariableW(L"GITHUB_ACTIONS", github, 8) != 0 && !wcscmp(github, L"true"), "Disposable CI guard");
-        if (argc != 4 && !(argc == 5 && (!wcscmp(argv[4], L"package-filter") || !wcscmp(argv[4], L"lpac"))))
+        const bool borrowed = argc == 7 && !wcscmp(argv[4], L"borrowed-profile");
+        if (argc != 4 && !(argc == 5 && (!wcscmp(argv[4], L"package-filter") || !wcscmp(argv[4], L"lpac"))) && !borrowed)
             throw std::runtime_error("Expected node path, owned workspace and fixed probe source");
         const bool lpac = argc == 5 && !wcscmp(argv[4], L"lpac");
         const auto node = std::filesystem::canonical(argv[1]);
@@ -242,8 +244,14 @@ int wmain(int argc, wchar_t** argv) {
         checked(UuidToStringW(&uuid, &uuid_text) == RPC_S_OK, "UuidToStringW");
         profile.name = L"freedom-dns-probe-" + std::wstring(reinterpret_cast<wchar_t*>(uuid_text));
         RpcStringFreeW(&uuid_text);
-        const HRESULT created = CreateAppContainerProfile(profile.name.c_str(), L"Freedom owned DNS fixture",
-            L"Disposable CI-only network isolation probe", nullptr, 0, &profile.sid);
+        if (borrowed) {
+            profile.name = argv[5]; profile.owned = false;
+            if (profile.name.find(L"freedom-dns-probe-") != 0 || profile.name.size() > 64)
+                throw std::runtime_error("Unexpected borrowed fixture profile");
+        }
+        const HRESULT created = borrowed ? DeriveAppContainerSidFromAppContainerName(profile.name.c_str(), &profile.sid) :
+            CreateAppContainerProfile(profile.name.c_str(), L"Freedom owned DNS fixture",
+                L"Disposable CI-only network isolation probe", nullptr, 0, &profile.sid);
         if (FAILED(created)) { std::printf("CreateAppContainerProfile: 0x%08lx\n", static_cast<unsigned long>(created)); throw std::runtime_error("AppContainer profile"); }
         PackageFilter package_filter;
         if (argc == 5 && !lpac) package_filter.install(profile.sid);
@@ -251,11 +259,11 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::unique_ptr<AclGrant>> grants;
         // Never modify C:\ or the hosted Node installation. An inability to
         // traverse those defaults is a compatibility result, not an ACL grant.
-        grants.push_back(std::make_unique<AclGrant>(workspace.parent_path().wstring(), profile.sid,
+        if (!borrowed) grants.push_back(std::make_unique<AclGrant>(workspace.parent_path().wstring(), profile.sid,
             FILE_READ_ATTRIBUTES | FILE_TRAVERSE | READ_CONTROL | SYNCHRONIZE, NO_INHERITANCE));
-        grants.push_back(std::make_unique<AclGrant>(node.parent_path().wstring(), profile.sid,
+        if (!borrowed) grants.push_back(std::make_unique<AclGrant>(node.parent_path().wstring(), profile.sid,
             GENERIC_READ | GENERIC_EXECUTE, SUB_CONTAINERS_AND_OBJECTS_INHERIT));
-        grants.push_back(std::make_unique<AclGrant>(workspace.wstring(), profile.sid,
+        if (!borrowed) grants.push_back(std::make_unique<AclGrant>(workspace.wstring(), profile.sid,
             GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE, SUB_CONTAINERS_AND_OBJECTS_INHERIT));
 
         Handle job;
@@ -292,6 +300,11 @@ int wmain(int argc, wchar_t** argv) {
         wchar_t local_data[32768] = {};
         const DWORD local_data_length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_data, 32768);
         checked(local_data_length != 0 && local_data_length < 32768, "AppContainer profile environment");
+        if (borrowed) {
+            const size_t length = wcslen(argv[6]);
+            checked(length > 0 && length < 32768, "Borrowed profile environment length");
+            wcscpy_s(local_data, 32768, argv[6]);
+        }
         std::wstring environment;
         // Windows resolves the newly registered profile through LOCALAPPDATA
         // during CreateProcess; inherit only that required path, never secrets.
@@ -332,6 +345,18 @@ int wmain(int argc, wchar_t** argv) {
         const bool explicit_access = package_access(token.value, package_sid_text);
         LocalFree(package_sid_text);
         checked(explicit_access && package_access(token.value, L"S-1-15-2-1") == !lpac, "Verify package access semantics");
+        if (borrowed) {
+            checked(IsTokenRestricted(token.value) != 0, "Verify inherited restricted token");
+            BYTE expected[SECURITY_MAX_SID_SIZE] = {}; DWORD expected_length = sizeof(expected), domain_length = 256;
+            wchar_t domain[256] = {}; SID_NAME_USE use;
+            checked(LookupAccountNameW(nullptr, L"FreedomSbxOffline", expected, &expected_length, domain, &domain_length, &use) != 0,
+                "Lookup expected offline account");
+            GetTokenInformation(token.value, TokenUser, nullptr, 0, &token_size);
+            token_bytes.resize(token_size);
+            checked(GetTokenInformation(token.value, TokenUser, token_bytes.data(), token_size, &returned) != 0 &&
+                EqualSid(reinterpret_cast<TOKEN_USER*>(token_bytes.data())->User.Sid, expected), "Verify offline account retained");
+            std::puts("Verified inherited Codex restricted offline account token");
+        }
         if (lpac) std::puts("Verified less-privileged AppContainer access semantics");
         std::puts("Verified AppContainer process, zero network capabilities"); std::fflush(stdout);
         checked(ResumeThread(thread.value) != static_cast<DWORD>(-1), "ResumeThread");
@@ -356,6 +381,7 @@ int wmain(int argc, wchar_t** argv) {
         // Hold the rule across the parent's positive controls and late-retry
         // observation. A timeout is reported honestly, never as a completed job.
         if (package_filter.engine) {
+            std::printf("FREEDOM_PACKAGE_PROFILE %ls\n", profile.name.c_str());
             std::printf("FREEDOM_PACKAGE_WORKLOAD_READY state=%s exit=%lu\n", timed_out ? "timed_out" : "exited", exit_code);
             std::fflush(stdout);
             std::string release;
