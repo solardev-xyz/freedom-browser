@@ -16,7 +16,7 @@ const {
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
-const { ipfsGateRequired, takeIpfsGate } = require('./ipfs/ipfsd-gate');
+const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -38,14 +38,13 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let activeNode = null;
-// A node whose start is still pending and can wait (startCanWait): a
-// freedom-ipfsd node's start waits on the service's replies, and a gated
-// add-on's on its data directory's gate, which another writer may hold
-// (freedom-core design 0007, "Startup and shutdown" and Rollback). A stop
-// takes it over at once rather than queueing behind it.
+// A node whose start is still pending. A freedom-ipfsd node's start waits on
+// the service's replies, and the add-on's on its data directory's gate, which
+// another writer may hold (freedom-core design 0007, "Startup and shutdown"
+// and Rollback): a stop takes it over at once rather than queueing behind it.
 let startingNode = null;
-// Counts stopIpfs() calls: a start that can wait, requested before the latest
-// stop, is cancelled by it, whether or not its node exists yet.
+// Counts stopIpfs() calls: a native start requested before the latest stop is
+// cancelled by it, whether or not its node exists yet.
 let stopsRequested = 0;
 // The stop of a node that failed, which runs on its own (its store closing,
 // its gate's holder exiting): the next start and stop wait for it, so a new
@@ -54,9 +53,9 @@ let failedNodeStop = null;
 let healthCheckInterval = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
-// in-process freedom-ipfs native node; EXTERNAL routes gateway requests to a
-// user-provided HTTP gateway (e.g. a local Kubo / IPFS Desktop on :8080). The
-// external path is the escape hatch when the native addon cannot load
+// bundled freedom-ipfs node (nativeBackendKind); EXTERNAL routes gateway
+// requests to a user-provided HTTP gateway (e.g. a local Kubo / IPFS Desktop on
+// :8080). The external path is the escape hatch when the bundled node cannot run
 let currentMode = MODE.BUNDLED;
 let externalGatewayUrl = null;
 
@@ -547,30 +546,20 @@ function startHealthCheck() {
   healthCheckInterval.unref?.();
 }
 
-// What runs the bundled node (freedom-core design 0007, step 6): today's
-// add-on, or in development builds the freedom-ipfsd service process with
-// FREEDOM_IPFS_BACKEND=service. Packaged builds always run the add-on until
-// the default switches.
+// What runs the bundled node (freedom-core design 0007, step 6): the
+// freedom-ipfsd service process. Packaged builds always run it. Development
+// builds run it by default, and the add-on with FREEDOM_IPFS_BACKEND=addon
+// (Rollback); any other value is a mistake, warned of, and runs the default.
 function nativeBackendKind() {
-  if (app.isPackaged) return 'addon';
-  const kind = process.env.FREEDOM_IPFS_BACKEND || 'addon';
+  if (app.isPackaged) return 'service';
+  const kind = process.env.FREEDOM_IPFS_BACKEND || 'service';
   if (kind === 'service' || kind === 'addon') return kind;
-  log.warn(`[IPFS] Unknown FREEDOM_IPFS_BACKEND=${kind}; using the add-on`);
-  return 'addon';
+  log.warn(`[IPFS] Unknown FREEDOM_IPFS_BACKEND=${kind}; using freedom-ipfsd`);
+  return 'service';
 }
 
 function nativeNodeClass() {
   return nativeBackendKind() === 'service' ? FreedomIpfsdNode : FreedomIpfsNativeNode;
-}
-
-// Whether a start of a `NodeClass` node can wait unbounded, as far as a stop
-// is concerned: the service's waits on its replies, and the add-on's on its
-// data directory's gate wherever it takes one (ipfsGateRequired; freedom-core
-// design 0007, Rollback). A stop takes such a start over, and cancels one
-// still queued before it. A packaged add-on, which takes no gate until the
-// service is the default, starts and stops as it always has.
-function startCanWait(NodeClass) {
-  return NodeClass === FreedomIpfsdNode || ipfsGateRequired();
 }
 
 function checkBinary() {
@@ -758,13 +747,11 @@ async function doStartIpfs(requestedAt = stopsRequested) {
   // bounded, and the new node starts after it.
   await failedNodeStop;
   // A stop requested after this start would otherwise wait behind it: a
-  // start that can wait can't be bounded, and that stop has already taken
-  // over whatever was starting. Its own op, queued after this one, publishes
-  // STOPPED. Any other start is bounded, and runs as it always has. From
-  // here to `startingNode = node` nothing awaits, so no stop can fall
-  // between this check and the takeover.
-  const canWait = startCanWait(NodeClass);
-  if (canWait && requestedAt !== stopsRequested) {
+  // native start can't be bounded, and that stop has already taken over
+  // whatever was starting. Its own op, queued after this one, publishes
+  // STOPPED. From here to `startingNode = node` nothing awaits, so no stop
+  // can fall between this check and the takeover.
+  if (requestedAt !== stopsRequested) {
     log.info('[IPFS] A stop requested meanwhile cancels the IPFS start');
     return;
   }
@@ -795,9 +782,7 @@ async function doStartIpfs(requestedAt = stopsRequested) {
           onFailure,
           // Rollback (freedom-core design 0007): the add-on runs under
           // freedom-ipfsd's hold-lock on its data directory, so it is a
-          // writer the gate excludes, as the service is; wherever the
-          // service can run (ipfsGateRequired: development builds, until it
-          // is the default).
+          // writer the gate excludes, as the service is.
           takeGate: (options) => takeIpfsGate(dataDir, options),
         });
 
@@ -805,13 +790,12 @@ async function doStartIpfs(requestedAt = stopsRequested) {
   // on the libuv thread pool; the main thread keeps serving the UI meanwhile
   // (#503 item 13). The state stays STARTING throughout, and enqueueOp holds
   // any stop/sync requested meanwhile until this settles. The service node's
-  // start lasts until its instance's first stats reply, and a gated add-on's
-  // waits for its gate (startCanWait), so a stop doesn't wait for either:
-  // stopIpfs() stops the node, which settles its start (false, or rejected:
-  // the add-on gives up its gate's wait), and the stop's own op publishes
-  // STOPPED.
-  const takenOver = () => canWait && startingNode !== node;
-  if (canWait) startingNode = node;
+  // start lasts until its instance's first stats reply, and the add-on's
+  // waits for its gate, so a stop doesn't wait for either: stopIpfs() stops
+  // the node, which settles its start (false, or rejected: the add-on gives
+  // up its gate's wait), and the stop's own op publishes STOPPED.
+  const takenOver = () => startingNode !== node;
+  startingNode = node;
   try {
     const started = await node.start();
     if (takenOver()) return;
@@ -976,27 +960,42 @@ function startIpfs() {
   return enqueueOp(() => doStartIpfs(requestedAt));
 }
 
-function stopIpfs() {
-  // A node still starting whose start can wait is stopped now, not after its
-  // start settles (doStartIpfs): a service's shutdown is bounded at 5 s, and
-  // a gated add-on's start gives up its gate's wait, so quit and a mode
-  // change are bounded. Such a start queued before this stop is cancelled. A
-  // start requested after this stop waits for that stop.
+// A stop's immediate part, before its op waits its turn: a native start
+// queued before it is cancelled (stopsRequested), and a node still starting
+// is stopped now, not after its start settles (doStartIpfs). A service's
+// shutdown is bounded at 5 s, and an add-on's start gives up its gate's wait,
+// so whatever waits on the stop is bounded. Returns that node's stop, which
+// the stop's op awaits before STOPPED.
+function takeOverStart() {
   stopsRequested += 1;
   const starting = startingNode;
   startingNode = null;
-  const takeover = starting
+  return starting
     ? starting.stop().catch((err) => {
         log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
       })
     : null;
+}
+
+function stopIpfs() {
+  // Quit and the nodes menu: a start requested after this stop waits for it.
+  const takeover = takeOverStart();
   return enqueueOp(() => doStopIpfs(takeover));
 }
 
 // Serialized with start/stop so a sync can't interleave with a transition and
-// publish a mode the op that is still running is about to overwrite.
+// publish a mode the op that is still running is about to overwrite. A profile
+// switched to disabled stops its node, and so takes over a start as stopIpfs()
+// does rather than queueing behind it; its op stops first, then syncs, so a
+// start it cancelled never leaves the state STARTING whatever the profile says
+// by then.
 function syncProfileMode() {
-  return enqueueOp(doSyncIpfsProfileMode);
+  if (!isDisabledIpfsConfig()) return enqueueOp(doSyncIpfsProfileMode);
+  const takeover = takeOverStart();
+  return enqueueOp(async () => {
+    await doStopIpfs(takeover);
+    await doSyncIpfsProfileMode();
+  });
 }
 
 // Wrap an upstream body so bytes are tallied as they stream to the caller and

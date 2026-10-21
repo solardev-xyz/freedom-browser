@@ -147,8 +147,8 @@ function loadIpfsManagerModule(options = {}) {
     }
   }
 
-  // freedom-ipfsd's node (FREEDOM_IPFS_BACKEND=service): it supervises its
-  // own process, and binds the generation and instance a backend captures.
+  // freedom-ipfsd's node, the default: it supervises its own process, and
+  // binds the generation and instance a backend captures.
   const serviceInstances = [];
   class MockFreedomIpfsdNode {
     constructor(config) {
@@ -220,11 +220,7 @@ function loadIpfsManagerModule(options = {}) {
         FreedomIpfsdNode: MockFreedomIpfsdNode,
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
-      [require.resolve('./ipfs/ipfsd-gate')]: () => ({
-        takeIpfsGate,
-        // As the real one: only where the service can run (dev builds).
-        ipfsGateRequired: () => !app.isPackaged,
-      }),
+      [require.resolve('./ipfs/ipfsd-gate')]: () => ({ takeIpfsGate }),
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
@@ -269,11 +265,26 @@ function loadIpfsManagerModule(options = {}) {
   return context;
 }
 
+// This suite runs the bundled node on the add-on, selected as a development
+// build selects it (FREEDOM_IPFS_BACKEND=addon; freedom-core design 0007,
+// Rollback). The freedom-ipfsd backend, the default, has its own suite at the
+// end.
+const originalBackend = process.env.FREEDOM_IPFS_BACKEND;
+function selectBackend(value) {
+  if (value === undefined) delete process.env.FREEDOM_IPFS_BACKEND;
+  else process.env.FREEDOM_IPFS_BACKEND = value;
+}
+
 describe('ipfs-manager', () => {
+  beforeEach(() => {
+    selectBackend('addon');
+  });
+
   afterEach(async () => {
     for (const ctx of loadedContexts.splice(0)) {
       await ctx.mod.stopIpfs();
     }
+    selectBackend(originalBackend);
     jest.clearAllMocks();
     jest.restoreAllMocks();
   });
@@ -554,33 +565,6 @@ describe('ipfs-manager', () => {
     // The start published nothing: no node is serving, and RUNNING never came.
     expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: false });
     expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.1');
-  });
-
-  // A packaged add-on takes no gate until the service is the default: a stop
-  // mid-start queues behind it, as it always has, rather than tearing down a
-  // node whose handle isn't published yet.
-  test('packaged: a stop requested while the native start is still pending waits for it', async () => {
-    const flush = () => new Promise((resolve) => setImmediate(resolve));
-    let finishStart;
-    const ctx = loadIpfsManagerModule({
-      isPackaged: true,
-      startImpl: () =>
-        new Promise((resolve) => {
-          finishStart = resolve;
-        }),
-    });
-    ctx.mod.registerIpfsIpc();
-
-    const startResult = ctx.ipcMain.invoke(IPC.IPFS_START);
-    await flush();
-    const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
-    await flush();
-    expect(ctx.nativeInstances[0].stop).not.toHaveBeenCalled();
-
-    finishStart(true);
-    expect((await startResult).status).toBe('running');
-    expect((await stopResult).status).toBe('stopped');
-    expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
   });
 
   test("a start after a node's failure waits for that node's stop", async () => {
@@ -3087,20 +3071,18 @@ describe('external gateway transport', () => {
 });
 
 // freedom-core design 0007, step 6: the bundled node on the freedom-ipfsd
-// service process, behind FREEDOM_IPFS_BACKEND=service in development builds.
-describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
-  const originalBackend = process.env.FREEDOM_IPFS_BACKEND;
-
+// service process, the default, as a development build runs it with
+// FREEDOM_IPFS_BACKEND unset.
+describe('the freedom-ipfsd backend (the default)', () => {
   beforeEach(() => {
-    process.env.FREEDOM_IPFS_BACKEND = 'service';
+    selectBackend(undefined);
   });
 
   afterEach(async () => {
     for (const ctx of loadedContexts.splice(0)) {
       await ctx.mod.stopIpfs();
     }
-    if (originalBackend === undefined) delete process.env.FREEDOM_IPFS_BACKEND;
-    else process.env.FREEDOM_IPFS_BACKEND = originalBackend;
+    selectBackend(originalBackend);
     jest.useRealTimers();
   });
 
@@ -3120,22 +3102,29 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
     expect(ctx.mod.checkHealth()).toBe(true);
   });
 
+  // Packaged builds always run the service; development builds run it unless
+  // FREEDOM_IPFS_BACKEND=addon selects the add-on (Rollback).
   test.each([
-    ['a packaged build', { isPackaged: true }, 'service'],
-    ['an unknown value', {}, 'kubo'],
-    ['the add-on, named', {}, 'addon'],
-  ])('%s runs the add-on', async (_label, options, value) => {
-    process.env.FREEDOM_IPFS_BACKEND = value;
-    const ctx = loadIpfsManagerModule(options);
+    ['a development build, by default', 'service', false, undefined],
+    ['a development build, the service named', 'service', false, 'service'],
+    ['a development build, the add-on named', 'addon', false, 'addon'],
+    ['a development build, an unknown value', 'service', false, 'kubo'],
+    ['a packaged build, by default', 'service', true, undefined],
+    ['a packaged build, the add-on named', 'service', true, 'addon'],
+  ])('%s: runs the %s', async (_label, runs, isPackaged, value) => {
+    selectBackend(value);
+    const ctx = loadIpfsManagerModule({ isPackaged });
 
     await ctx.mod.startIpfs();
 
-    expect(ctx.serviceInstances).toHaveLength(0);
-    expect(ctx.nativeInstances).toHaveLength(1);
+    expect(ctx.serviceInstances).toHaveLength(runs === 'service' ? 1 : 0);
+    expect(ctx.nativeInstances).toHaveLength(runs === 'addon' ? 1 : 0);
     if (value === 'kubo') {
       expect(ctx.log.warn).toHaveBeenCalledWith(
-        '[IPFS] Unknown FREEDOM_IPFS_BACKEND=kubo; using the add-on'
+        '[IPFS] Unknown FREEDOM_IPFS_BACKEND=kubo; using freedom-ipfsd'
       );
+    } else {
+      expect(ctx.log.warn).not.toHaveBeenCalled();
     }
   });
 
@@ -3342,10 +3331,10 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       expect(ctx.mod.checkHealth()).toBe(false);
     });
 
-    // The add-on's start can wait too wherever it takes its gate (dev builds,
-    // until the service is the default): the same rule cancels it.
-    test("a gated add-on's start and stop in one turn: the start is cancelled, and no node is made", async () => {
-      process.env.FREEDOM_IPFS_BACKEND = 'addon';
+    // The add-on's start can wait too, on its gate (Rollback): the same rule
+    // cancels it.
+    test("the add-on's start and stop in one turn: the start is cancelled, and no node is made", async () => {
+      selectBackend('addon');
       const ctx = loadIpfsManagerModule();
       ctx.mod.registerIpfsIpc();
 
@@ -3357,18 +3346,6 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
         status: 'stopped',
         error: null,
       });
-    });
-
-    // A packaged add-on takes no gate yet, so its start is bounded, and its
-    // start-then-stop is today's.
-    test("a packaged add-on's start and stop in one turn still both run", async () => {
-      const ctx = loadIpfsManagerModule({ isPackaged: true });
-
-      await Promise.all([ctx.mod.startIpfs(), ctx.mod.stopIpfs()]);
-
-      expect(ctx.serviceInstances).toHaveLength(0);
-      expect(ctx.nativeInstances).toHaveLength(1);
-      expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
     });
 
     test("a stop while a start waits for a failed node's stop cancels that start", async () => {
@@ -3392,6 +3369,60 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
         status: 'stopped',
       });
+    });
+
+    // A profile switched to disabled stops its node (syncProfileMode): it
+    // takes a pending start over as stopIpfs() does, not after it.
+    test.each([
+      ['a packaged build', true],
+      ['a development build', false],
+    ])(
+      '%s: a profile switched to disabled takes a pending start over at once',
+      async (_label, isPackaged) => {
+        const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+        const ctx = loadIpfsManagerModule({ serviceStartPending: true, isPackaged, activeProfile });
+        ctx.mod.startIpfs();
+        await flush();
+        const node = ctx.serviceInstances[0];
+        const shutdown = deferred();
+        node.shutdown = shutdown.promise;
+
+        activeProfile.metadata.nodes.ipfs = { mode: 'disabled' };
+        const syncing = ctx.mod.syncProfileMode();
+        expect(node.stop).toHaveBeenCalledTimes(1);
+        shutdown.resolve();
+        await syncing;
+
+        expect(ctx.serviceInstances).toHaveLength(1);
+        expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+          'ipfs',
+          'Node disabled for this profile'
+        );
+        expect(ctx.mod.checkHealth()).toBe(false);
+      }
+    );
+
+    test("a profile switched to disabled while a start waits for a failed node's stop: no new node", async () => {
+      const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+      const ctx = loadIpfsManagerModule({ activeProfile });
+      await ctx.mod.startIpfs();
+      const failed = ctx.serviceInstances[0];
+      const cleanup = deferred();
+      failed.shutdown = cleanup.promise;
+      failed.config.onFailure('freedom-ipfs service exited', failed);
+
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      activeProfile.metadata.nodes.ipfs = { mode: 'disabled' };
+      const syncing = ctx.mod.syncProfileMode();
+      cleanup.resolve();
+      await Promise.all([restarting, syncing]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+        'ipfs',
+        'Node disabled for this profile'
+      );
     });
 
     test('a second stop meanwhile stops the node once', async () => {

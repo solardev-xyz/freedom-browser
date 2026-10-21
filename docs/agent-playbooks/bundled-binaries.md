@@ -303,7 +303,8 @@ Same shape, different pin location:
   goes through the addon's Promise-returning `*Async` exports
   (`src/main/ipfs/freedom-ipfs-native-node.js`), so an addon without them —
   any release before v0.4.5 — fails the node's start rather than blocking the
-  main thread; `npm run ipfs:native:smoke` exercises a real start/stop.
+  main thread; `FREEDOM_IPFS_BACKEND=addon npm run ipfs:native:smoke`
+  exercises a real start/stop.
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then

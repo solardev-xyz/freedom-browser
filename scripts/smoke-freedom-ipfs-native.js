@@ -6,12 +6,12 @@ const path = require('path');
 const { FreedomIpfsNativeNode } = require('../src/main/ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('../src/main/ipfs/freedom-ipfsd-node');
 
-// The node under test: today's add-on, or with FREEDOM_IPFS_BACKEND=service
-// (the app's own switch) the freedom-ipfsd service process, through the
-// production FreedomIpfsdNode and the binary at FREEDOM_IPFSD_PATH or
-// freedom-ipfsd-bin/<os>-<arch>/ (freedom-core design 0007, step 6). The
-// checks and expectations are the same for both.
-const BACKEND = process.env.FREEDOM_IPFS_BACKEND === 'service' ? 'service' : 'addon';
+// The node under test, chosen as the app chooses it: the freedom-ipfsd
+// service process by default, through the production FreedomIpfsdNode and
+// the binary at FREEDOM_IPFSD_PATH or freedom-ipfsd-bin/<os>-<arch>/
+// (freedom-core design 0007, step 6), or with FREEDOM_IPFS_BACKEND=addon the
+// add-on (Rollback). The checks and expectations are the same for both.
+const BACKEND = process.env.FREEDOM_IPFS_BACKEND === 'addon' ? 'addon' : 'service';
 
 const DEFAULT_LIVE_PATH = '/ipns/ipfs.tech/';
 const DEFAULT_LIVE_EXPECT = 'ipfs';

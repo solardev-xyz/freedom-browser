@@ -5,16 +5,18 @@
  * (`src/main/ipfs/ipfs-backend.contract.test.js`, freedom-core design 0007,
  * "Tests first") runs against, chosen by `FREEDOM_IPFS_CONTRACT_BACKEND`:
  *
- * - `addon`: today's freedom-ipfs N-API add-on (`npm run ipfs:download`),
- *   driven by the production `ipfs-manager.js` and `FreedomIpfsNativeNode`,
- *   its event worker a real worker thread. With freedom-ipfsd downloaded
- *   too, it runs under the binary's `hold-lock` on its data directory, as a
- *   development build does (design 0007, Rollback); without it, ungated,
+ * - `addon`: the freedom-ipfs N-API add-on (`npm run ipfs:download`), the
+ *   rollback (design 0007, Rollback), driven by the production
+ *   `ipfs-manager.js` with `FREEDOM_IPFS_BACKEND=addon` and
+ *   `FreedomIpfsNativeNode`, its event worker a real worker thread. With
+ *   freedom-ipfsd downloaded too, it runs under the binary's `hold-lock` on
+ *   its data directory, as a development build does; without it, ungated,
  *   with the warning such a build logs.
  * - `ipfsd` (design 0007 step 6): the freedom-ipfsd service binary
- *   (`npm run ipfsd:download`), driven by the production `ipfs-manager.js`
- *   with `FREEDOM_IPFS_BACKEND=service` and `FreedomIpfsdNode`, a real
- *   child process on its own temporary data and lock directories.
+ *   (`npm run ipfsd:download`), the default, driven by the production
+ *   `ipfs-manager.js` with `FREEDOM_IPFS_BACKEND=service` and
+ *   `FreedomIpfsdNode`, a real child process on its own temporary data and
+ *   lock directories.
  *
  * Every backend serves the suite's local fixture (`ipfs-fixture.js`) and
  * nothing else: its delegated router is the fixture's, in delegated-only
@@ -135,6 +137,9 @@ async function loadAddonBackend({ router }) {
   // (below), and a registration outlives resetModules: this one loads
   // production's own.
   jest.dontMock(managerPath);
+  // The manager reads it at each start: kept until close().
+  const backendBefore = process.env.FREEDOM_IPFS_BACKEND;
+  process.env.FREEDOM_IPFS_BACKEND = 'addon';
   const { mod: manager } = loadMainModule(managerPath, {
     extraMocks: {
       [bindingPath]: () => {
@@ -227,6 +232,8 @@ async function loadAddonBackend({ router }) {
     async close() {
       await manager.stopIpfs();
       await Promise.all(nodes.map((node) => node.stop()));
+      if (backendBefore === undefined) delete process.env.FREEDOM_IPFS_BACKEND;
+      else process.env.FREEDOM_IPFS_BACKEND = backendBefore;
       // Windows may hold the cache's files a moment after the node frees them.
       fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       fs.rmSync(lockDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

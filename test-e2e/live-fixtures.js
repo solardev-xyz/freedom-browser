@@ -59,11 +59,28 @@ function resolveIpfsNativeAddonPath() {
   );
 }
 
+// The node the app's IPFS runs on, chosen as ipfs-manager.js chooses it
+// (freedom-core design 0007): freedom-ipfsd by default, where
+// ipfsd-client.js's getIpfsdBinaryPath() looks in the dev layout, or the
+// add-on with FREEDOM_IPFS_BACKEND=addon (Rollback). The app inherits this
+// process's environment, so both agree.
+const IPFS_BACKEND = process.env.FREEDOM_IPFS_BACKEND === 'addon' ? 'addon' : 'service';
+function resolveIpfsNodePath() {
+  if (IPFS_BACKEND === 'addon') return resolveIpfsNativeAddonPath();
+  if (process.env.FREEDOM_IPFSD_PATH) return process.env.FREEDOM_IPFSD_PATH;
+  const platformMap = { darwin: 'mac', linux: 'linux', win32: 'win' };
+  const platform = platformMap[process.platform] || process.platform;
+  const binName = process.platform === 'win32' ? 'freedom-ipfsd.exe' : 'freedom-ipfsd';
+  return path.join(repoRoot, 'freedom-ipfsd-bin', `${platform}-${process.arch}`, binName);
+}
+
 const ANT_BINARY_PATH = resolveAntBinaryPath();
 const HAS_ANT_BINARY = fs.existsSync(ANT_BINARY_PATH);
 
-const IPFS_NATIVE_ADDON_PATH = resolveIpfsNativeAddonPath();
-const HAS_IPFS_NATIVE_ADDON = fs.existsSync(IPFS_NATIVE_ADDON_PATH);
+const IPFS_NODE_PATH = resolveIpfsNodePath();
+const HAS_IPFS_NODE = fs.existsSync(IPFS_NODE_PATH);
+const IPFS_NODE_DOWNLOAD =
+  IPFS_BACKEND === 'addon' ? 'npm run ipfs:download' : 'npm run ipfsd:download';
 
 const ARTI_BINARY_PATH = resolveArtiBinaryPath();
 const HAS_ARTI_BINARY = fs.existsSync(ARTI_BINARY_PATH);
@@ -241,8 +258,10 @@ module.exports = {
   watchProcessExit,
   HAS_ANT_BINARY,
   ANT_BINARY_PATH,
-  HAS_IPFS_NATIVE_ADDON,
-  IPFS_NATIVE_ADDON_PATH,
+  IPFS_BACKEND,
+  HAS_IPFS_NODE,
+  IPFS_NODE_PATH,
+  IPFS_NODE_DOWNLOAD,
   HAS_ARTI_BINARY,
   ARTI_BINARY_PATH,
 };

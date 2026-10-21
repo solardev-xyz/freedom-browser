@@ -4,10 +4,10 @@
 // The specs in test-e2e/packaged/ drive the packaged binary with
 // FREEDOM_TEST_MODE, which stubs every node away. These ones go through the
 // live fixtures instead: no test mode, so the artifact's *own* bundled antd,
-// freedom-ipfs addon, libradicle addon and Arti binary are what start. That is
-// the packaging bug this catches — an extraResources rule that only resolves
-// in a source tree, or an addon built for the wrong arch, launches fine and
-// only fails when its manager tries to use it.
+// freedom-ipfsd binary, libradicle addon and Arti binary are what start. That
+// is the packaging bug this catches — an extraResources rule that only
+// resolves in a source tree, or an addon built for the wrong arch, launches
+// fine and only fails when its manager tries to use it.
 //
 // One test per node, each with its own app instance seeded to start only the
 // node under test, so a failure names the culprit and no node pays for
@@ -206,23 +206,28 @@ test.describe('packaged bundled nodes', () => {
       // run is captured. Asserted after the quit at the end of this test.
       const expectCleanExit = watchProcessExit(electronApp, { timeout: QUIT_TIMEOUT_MS });
 
-      await expectNodeRunning(window, 'ipfs', {
+      const status = await expectNodeRunning(window, 'ipfs', {
         label: 'native IPFS',
         timeout: NODE_START_TIMEOUT_MS,
       });
 
       // The native node has no HTTP port (getActivePort() is always null), so
       // the registry entry is the only thing that says which implementation
-      // came up: 'bundled' + the freedom-ipfs backend is the addon shipped in
+      // came up: 'bundled' + the freedom-ipfs backend is the node shipped in
       // this artifact, not an external node the runner happened to have.
       const ipfs = await registryEntry(window, 'ipfs');
       expect(ipfs.mode).toBe('bundled');
       expect(ipfs.backend).toBe('freedom-ipfs');
+      // And it is freedom-ipfsd, from the artifact's resources/freedom-ipfsd/:
+      // a packaged build runs nothing else (freedom-core design 0007).
+      const buildInfo = JSON.parse(status.diagnostics.nativeBuildInfo || 'null');
+      expect(buildInfo?.service?.name).toBe('freedom-ipfsd');
 
       // Teardown is an assertion here, not just cleanup. Issue #345 aborted
-      // the main process (SIGABRT out of the native event dispatcher) on quit
-      // with this node running, and it reproduces in the packaged build — a
-      // stale or wrong-arch freedom-ipfs addon in the artifact can behave
+      // the main process (SIGABRT out of the add-on's native event
+      // dispatcher) on quit with this node running, and it reproduced in the
+      // packaged build. freedom-ipfsd's quit stops a child process instead,
+      // but a stale or wrong-arch binary in the artifact can still behave
       // differently on teardown while every other packaged leg stays green,
       // because live/ipfs-quit.spec.js (source tree) is otherwise the only
       // place exit status is checked at all. The live fixtures' own

@@ -1,0 +1,1 @@
+- IPFS now starts on Linux with glibc older than 2.38, such as Ubuntu 22.04 and Debian 12 ([#350](https://github.com/solardev-xyz/freedom-browser/issues/350))
