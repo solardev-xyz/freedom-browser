@@ -642,4 +642,24 @@ describe('stop', () => {
     await stopping;
     expect(node.state).toBe('stopped');
   });
+
+  test('a start still waiting for its first stats is settled false by a stop, and shut down', async () => {
+    // A service that answers every stats call with an error: the start never
+    // completes on its own, so the manager's stopIpfs() takes the node over.
+    newNode({ stats: (message, c) => c.error(message.id, 'deadline') });
+    let result = null;
+    node.start().then((value) => (result = value));
+    await settle();
+    await clock.advance(30_000);
+    expect(child().sent('ipfs.stats').length).toBeGreaterThan(1);
+    expect(result).toBeNull();
+
+    const stopping = node.stop();
+    await settle();
+    expect(result).toBe(false);
+    expect(child().sent('ipfs.shutdown')).toHaveLength(1);
+    await stopping;
+    expect(node.state).toBe('stopped');
+    expect(failures).toEqual([]);
+  });
 });

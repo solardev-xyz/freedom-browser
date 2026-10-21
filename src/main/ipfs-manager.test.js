@@ -155,8 +155,21 @@ function loadIpfsManagerModule(options = {}) {
       this.config = config;
       this.restartsItself = true;
       this.pair = { instance: 'p-1' };
-      this.start = jest.fn(async () => options.serviceStartOk !== false);
-      this.stop = jest.fn(async () => {});
+      // With serviceStartPending, start() waits as the real node's does for
+      // its instance's first stats reply, and a stop settles it false.
+      this.settleStart = null;
+      this.start = jest.fn(() =>
+        options.serviceStartPending
+          ? new Promise((resolve) => {
+              this.settleStart = resolve;
+            })
+          : Promise.resolve(options.serviceStartOk !== false)
+      );
+      this.shutdown = Promise.resolve();
+      this.stop = jest.fn(() => {
+        this.settleStart?.(false);
+        return this.shutdown;
+      });
       this.capture = jest.fn(() => this.pair);
       this.request = jest.fn(async () => new Response('service-body', { status: 200 }));
       this.isHealthy = jest.fn(() => options.isHealthy !== false);
@@ -3126,6 +3139,82 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       error: 'freedom-ipfs service exited',
     });
     expect(node.stop).toHaveBeenCalled();
+  });
+
+  // 0007, "Startup and shutdown": the start lasts until the first stats
+  // reply, which a wedged service may never give; a stop mustn't queue behind
+  // it, or quit outlasts IPFS's 5 s.
+  describe('a stop while the start is pending', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+
+    test('stops the node at once; STOPPED waits for its shutdown, and RUNNING never comes', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.registerIpfsIpc();
+      const starting = ctx.mod.startIpfs();
+      await flush();
+      const node = ctx.serviceInstances[0];
+      expect(node.start).toHaveBeenCalledTimes(1);
+      const shutdown = deferred();
+      node.shutdown = shutdown.promise;
+
+      const stopping = ctx.mod.stopIpfs();
+      expect(node.stop).toHaveBeenCalledTimes(1);
+      await starting;
+      await flush();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopping',
+      });
+
+      shutdown.resolve();
+      await stopping;
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+        error: null,
+      });
+      expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node failed to start');
+      expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.6');
+      expect(ctx.mod.checkHealth()).toBe(false);
+    });
+
+    test('a start requested after it waits for the shutdown, then starts a new node', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const first = ctx.serviceInstances[0];
+      const shutdown = deferred();
+      first.shutdown = shutdown.promise;
+
+      const stopping = ctx.mod.stopIpfs();
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(1);
+
+      shutdown.resolve();
+      await stopping;
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(2);
+      ctx.serviceInstances[1].settleStart(true);
+      await restarting;
+      expect(ctx.mod.checkHealth()).toBe(true);
+      expect(first.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a second stop meanwhile stops the node once', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const node = ctx.serviceInstances[0];
+
+      await Promise.all([ctx.mod.stopIpfs(), ctx.mod.stopIpfs()]);
+      expect(node.stop).toHaveBeenCalledTimes(1);
+    });
   });
 
   test("a failed start is an error, as the add-on's is", async () => {

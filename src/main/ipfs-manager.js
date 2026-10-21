@@ -37,6 +37,10 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let activeNode = null;
+// A freedom-ipfsd node whose start is still pending. Its start waits on the
+// service's replies, so a stop takes it over at once rather than queueing
+// behind it (freedom-core design 0007, "Startup and shutdown").
+let startingNode = null;
 let healthCheckInterval = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
@@ -751,18 +755,28 @@ async function doStartIpfs() {
   // start() resolves once the addon has opened the cache and bound the gateway
   // on the libuv thread pool; the main thread keeps serving the UI meanwhile
   // (#503 item 13). The state stays STARTING throughout, and enqueueOp holds
-  // any stop/sync requested meanwhile until this settles.
+  // any stop/sync requested meanwhile until this settles. The service node's
+  // start lasts until its instance's first stats reply, so a stop doesn't
+  // wait for it: stopIpfs() stops the node, which settles start() false, and
+  // the stop's own op publishes STOPPED.
+  const takenOver = () => node.restartsItself && startingNode !== node;
+  if (node.restartsItself) startingNode = node;
   try {
-    if (!(await node.start())) {
+    const started = await node.start();
+    if (takenOver()) return;
+    if (!started) {
       updateState(STATUS.ERROR, 'Failed to start freedom-ipfs native node');
       setStatusMessage('ipfs', 'Node failed to start');
       return;
     }
   } catch (err) {
+    if (takenOver()) return;
     log.error('[IPFS] Failed to start freedom-ipfs native node:', err);
     updateState(STATUS.ERROR, err.message);
     setStatusMessage('ipfs', 'Node failed to start');
     return;
+  } finally {
+    if (startingNode === node) startingNode = null;
   }
 
   activeNode = node;
@@ -875,8 +889,10 @@ async function doSyncIpfsProfileMode() {
   if (hadError) updateState(STATUS.STOPPED);
 }
 
-async function doStopIpfs() {
-  if (currentState === STATUS.STOPPED && !activeNode) {
+// `takeover`: the stop of a service node that was still starting (stopIpfs),
+// which STOPPED waits for, as for the active node's.
+async function doStopIpfs(takeover = null) {
+  if (currentState === STATUS.STOPPED && !activeNode && !takeover) {
     publishStoppedIpfsMode();
     return;
   }
@@ -892,6 +908,7 @@ async function doStopIpfs() {
       log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
     }
   }
+  await takeover;
 
   clearExternalGatewayState();
   clearErrorState('ipfs');
@@ -907,7 +924,17 @@ function startIpfs() {
 }
 
 function stopIpfs() {
-  return enqueueOp(doStopIpfs);
+  // A service node still starting is stopped now, not after its start
+  // settles (doStartIpfs): its shutdown is bounded at 5 s, and so quit and a
+  // mode change are. A start queued after this one waits for that shutdown.
+  const starting = startingNode;
+  startingNode = null;
+  const takeover = starting
+    ? starting.stop().catch((err) => {
+        log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
+      })
+    : null;
+  return enqueueOp(() => doStopIpfs(takeover));
 }
 
 // Serialized with start/stop so a sync can't interleave with a transition and
