@@ -957,26 +957,51 @@ describe('profile catalog', () => {
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 
-    test('a held gate with the Radicle home inside the IPFS directory: refused', async () => {
+    // The Radicle home goes with the profile: its path is held to the same
+    // rule, a link at no step, even where the home itself isn't there yet.
+    const radicleCheckout = (tempRoot) => path.join(tempRoot, 'Freedom Dev', 'R', 'abcdef12');
+
+    test('a held gate with the Radicle path through a link into the IPFS directory: refused', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
       const options = devOptions(appRoot);
       ensureProfile(appRoot, 'default', options);
       const { record } = ensureProfile(appRoot, 'work', options);
       const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
-      fs.mkdirSync(path.join(ipfsDir, String(record.slot)), { recursive: true });
+      fs.mkdirSync(ipfsDir, { recursive: true });
       fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
-      // The checkout's Radicle root is a link into the IPFS directory, so the
-      // profile's Radicle home is a directory inside it.
-      const radicleParent = path.join(tempRoot, 'Freedom Dev', 'R');
-      fs.mkdirSync(radicleParent, { recursive: true });
-      linkDir(ipfsDir, path.join(radicleParent, 'abcdef12'));
+      // The slot isn't there yet: a successor could create it in its store.
+      fs.mkdirSync(path.dirname(radicleCheckout(tempRoot)), { recursive: true });
+      linkDir(ipfsDir, radicleCheckout(tempRoot));
 
       await expect(
         deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
-      ).rejects.toThrow('overlaps other data this delete removes');
+      ).rejects.toThrow("The profile's Radicle data is reached through a link");
 
-      expect(fs.readFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'utf-8')).toBe('blocks');
+      expect(fs.readdirSync(ipfsDir)).toEqual(['freedom-ipfs.sqlite3']);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a held gate with the Radicle path through a link out of the app: refused', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const outside = path.join(tempRoot, 'outside');
+      fs.mkdirSync(path.join(outside, String(record.slot)), { recursive: true });
+      fs.writeFileSync(path.join(outside, String(record.slot), 'unrelated'), 'keep me');
+      fs.mkdirSync(path.dirname(radicleCheckout(tempRoot)), { recursive: true });
+      linkDir(outside, radicleCheckout(tempRoot));
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate })
+      ).rejects.toThrow("The profile's Radicle data is reached through a link");
+
+      expect(fs.readFileSync(path.join(outside, String(record.slot), 'unrelated'), 'utf-8')).toBe(
+        'keep me'
+      );
+      expect(fs.existsSync(record.dir)).toBe(true);
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
 

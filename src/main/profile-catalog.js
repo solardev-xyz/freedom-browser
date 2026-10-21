@@ -839,6 +839,34 @@ function ipfsLayoutRefused(detail) {
   );
 }
 
+// A gated delete's refusal of Radicle data it would remove through a link,
+// thrown before anything has changed.
+function radicleLayoutRefused(link) {
+  return new Error(
+    `The profile's Radicle data is reached through a link (${link}), so the profile can't be ` +
+      "deleted safely while its IPFS lock is held. Nothing was deleted: replace the link with " +
+      'the directory itself, or remove it, and delete the profile again.'
+  );
+}
+
+// Every step below `base` down to `target`, as far as it exists, a real
+// directory: a link at any step would carry a removal of `target` through
+// it, out of the app's tree or into the gated directory.
+async function refuseLinksBelow(base, target) {
+  let current = base;
+  for (const name of path.relative(base, target).split(path.sep)) {
+    current = path.join(current, name);
+    let stat;
+    try {
+      stat = await fs.promises.lstat(current);
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      throw err;
+    }
+    if (!stat.isDirectory()) throw radicleLayoutRefused(current);
+  }
+}
+
 // The identities of `target` and of every directory above it: what it is
 // inside, whatever each is called. Missing ones are skipped.
 async function identitiesUp(target) {
@@ -866,7 +894,10 @@ async function identitiesUp(target) {
  *   not there yet: no link or junction at any step;
  * - the canonical path the one named, not another spelling of it;
  * - nothing else this delete removes (`otherRoots`: the Radicle home and its
- *   staging siblings) inside the gated directory or around it, by identity.
+ *   staging siblings) inside the gated directory or around it, by identity;
+ *   and the Radicle home's path (`radicle`: its app-owned base and the home)
+ *   free of links at every step, as the IPFS path is, so its removal can't
+ *   be carried through one.
  * Anything else is refused before anything changes. Null when the data root
  * isn't there: nothing to remove, and nothing to spare.
  *
@@ -882,7 +913,7 @@ async function identitiesUp(target) {
  * directories from the data root down to it, each one's name and identity
  * if it exists, the last the gated directory itself.
  */
-async function gatedPlace(dataRoot, ipfsDataDir, otherRoots = []) {
+async function gatedPlace(dataRoot, ipfsDataDir, { otherRoots = [], radicle = null } = {}) {
   const names = [null, ...path.relative(dataRoot, ipfsDataDir).split(path.sep)];
   const steps = [];
   let current = dataRoot;
@@ -905,6 +936,7 @@ async function gatedPlace(dataRoot, ipfsDataDir, otherRoots = []) {
   if (exists && (await fs.promises.realpath(ipfsDataDir)) !== gated) {
     throw ipfsLayoutRefused(`is reached under another name (${ipfsDataDir})`);
   }
+  if (radicle) await refuseLinksBelow(radicle.base, radicle.dir);
   const gatedId = steps.at(-1).id;
   const around = await identitiesUp(gated);
   for (const root of otherRoots) {
@@ -1108,7 +1140,12 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       const otherRoots = resolvedRadicleDir
         ? [resolvedRadicleDir, ...(await radicleStagingSiblings(resolvedRadicleDir, radicleRoot))]
         : [];
-      const place = gate.gated ? await gatedPlace(dataRoot, ipfsDataDir, otherRoots) : null;
+      const radicle = resolvedRadicleDir
+        ? { base: path.dirname(radicleRoot), dir: resolvedRadicleDir }
+        : null;
+      const place = gate.gated
+        ? await gatedPlace(dataRoot, ipfsDataDir, { otherRoots, radicle })
+        : null;
       if (place) await fenceIpfsData(place.gated, gate);
       catalog.profiles.splice(recordIndex, 1);
       saveCatalog(appRoot, catalog);
