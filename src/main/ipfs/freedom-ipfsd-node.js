@@ -125,7 +125,9 @@ function nativeBody(body) {
   return new ReadableStream(
     {
       start(controller) {
-        // A no-op once the stream has closed or errored.
+        // The service body's failure, read or not: a no-op once this stream
+        // is over. Its normal close needs no watching: ServiceClient closes
+        // it only within a pull of this stream, which closes this one too.
         reader.closed.catch((err) => controller.error(bodyError(err)));
       },
       async pull(controller) {

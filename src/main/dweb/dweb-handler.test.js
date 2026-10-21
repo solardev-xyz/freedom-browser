@@ -479,6 +479,39 @@ describe("the backend's lease", () => {
     expect(mockAdmission.stats().active).toBe(0);
   });
 
+  test('released once when an unread body ends empty upstream', async () => {
+    let source;
+    const body = new ReadableStream({
+      start(controller) {
+        source = controller;
+      },
+    });
+    const backend = leasedBackend(() => new Response(body));
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    expect(res.status).toBe(200);
+    expect(backend.release).not.toHaveBeenCalled();
+
+    source.close();
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
+    // The consumer still sees the end.
+    await expect(res.text()).resolves.toBe('');
+  });
+
+  test('a body ended upstream with bytes unread stays held until they are read', async () => {
+    const { body, source } = streaming();
+    const backend = leasedBackend(() => new Response(body));
+    const res = await handle(new Request(`bzz://${HASH}/index.html`), backend);
+    source().close();
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(backend.release).not.toHaveBeenCalled();
+
+    await expect(res.text()).resolves.toBe('first');
+    await waitForRelease(backend);
+    expect(backend.release).toHaveBeenCalledTimes(1);
+  });
+
   test('released once when the page aborts an unread body', async () => {
     const backend = leasedBackend(
       ({ signal }) =>

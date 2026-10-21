@@ -126,6 +126,15 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
   let controller = null;
   let ended = false;
   let timer = null;
+  // A pull in flight, and an upstream that has closed: the pull that took its
+  // last bytes closes the body once it has passed them on.
+  let pulling = false;
+  let upstreamClosed = false;
+  const closeBody = () => {
+    if (ended) return;
+    controller.close();
+    end();
+  };
   // Fails the body: the consumer sees `err`, the upstream is cancelled.
   const fail = (err) => {
     if (ended) return;
@@ -148,23 +157,35 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
         controller = streamController;
         if (stop?.aborted) onStop();
         else stop?.addEventListener('abort', onStop, { once: true });
-        // The upstream's failure, as it happens rather than at the next
-        // pull. Its normal close needs no watching: only a pull reaches it.
-        reader.closed.catch((err) => {
-          if (ended) return;
-          controller.error(err);
-          end();
-        });
+        // The upstream's end, as it happens rather than at the next pull:
+        // its failure, or its close once nothing is left in it (an empty
+        // body, say), read or not. Bytes still queued keep it open, and so
+        // keep a paused body held; a chunk already passed on stays readable
+        // after the close.
+        reader.closed.then(
+          () => {
+            upstreamClosed = true;
+            if (!pulling) closeBody();
+          },
+          (err) => {
+            if (ended) return;
+            controller.error(err);
+            end();
+          }
+        );
       },
       pull() {
+        pulling = true;
         return new Promise((resolve) => {
           let settled = false;
           const settle = (fn) => {
             if (settled) return;
             settled = true;
+            pulling = false;
             clearTimeout(timer);
             timer = null;
             if (!ended) fn();
+            if (upstreamClosed) closeBody();
             resolve();
           };
           timer = setTimeout(() => settle(() => fail(new BodyIdleError(idleMs))), idleMs);
