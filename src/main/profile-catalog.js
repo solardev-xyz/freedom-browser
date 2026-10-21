@@ -801,36 +801,137 @@ function isAppRootSharedEntry(name) {
 
 // Delete a packaged default profile whose data lives directly in the app data
 // root: remove every top-level entry except the app-wide ones above. The root
-// itself (and so every other profile) survives. `keep` (removeKeeping) is a
-// path inside it that is left alone.
-async function removeDefaultProfileDataFromAppRoot(appRoot, { keep = null } = {}) {
+// itself (and so every other profile) survives. `place` (gatedPlace) is the
+// gated IPFS directory's, which the removal spares.
+async function removeDefaultProfileDataFromAppRoot(appRoot, { place = null } = {}) {
   const resolvedAppRoot = path.resolve(appRoot);
+  if (place) {
+    await removeSparing(resolvedAppRoot, place, 0, { skip: isAppRootSharedEntry, keepRoot: true });
+    return;
+  }
   for (const name of await fs.promises.readdir(resolvedAppRoot)) {
     if (isAppRootSharedEntry(name)) continue;
     const target = assertPathInside(resolvedAppRoot, path.join(resolvedAppRoot, name), 'profile data');
-    await removeKeeping(target, keep);
+    await fsOffload.removePath(target, { recursive: true, force: true });
   }
 }
 
-// Removes `target` recursively, except `keep` (and the directories leading to
-// it), which is left exactly as it is: a directory on the way to it is only
-// removed if it ends up empty. With no `keep` inside it, a plain removal.
-async function removeKeeping(target, keep) {
-  if (target === keep) return;
-  if (!keep || !keep.startsWith(`${target}${path.sep}`)) {
-    await fsOffload.removePath(target, { recursive: true, force: true });
-    return;
+// A directory's filesystem identity: the same directory under any name.
+function identityOf(stat) {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+// Whether a directory entry has a name the removal must treat as `name`:
+// compared without case or Unicode form, so another spelling on a
+// case-insensitive filesystem is treated the same. Matching too much only
+// spares a directory.
+function sameEntryName(entry, name) {
+  return entry.normalize('NFC').toLowerCase() === name.normalize('NFC').toLowerCase();
+}
+
+// `target` resolved through every link: realpath for what exists, the rest
+// appended as written.
+async function canonicalPath(target) {
+  try {
+    return await fs.promises.realpath(target);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    const parent = path.dirname(target);
+    if (parent === target) return target;
+    return path.join(await canonicalPath(parent), path.basename(target));
   }
+}
+
+/**
+ * Where the gated IPFS directory is in the tree a delete removes, by
+ * filesystem identity rather than spelling (freedom-core design 0007,
+ * "Lifetime lock"). The gate covers the directory's canonical path, which
+ * the profile's path can reach through a link, another case or an alias
+ * inside the profile. Null when that path isn't inside the data root's own
+ * tree (a link out of the profile, or a data root that is itself a link):
+ * the data is elsewhere, and the delete's plain removal, which follows no
+ * link, leaves it alone.
+ *
+ * `gated` is the canonical path, which the fence moves. `steps` are the
+ * directories from the data root down to it: each one's name, and its
+ * identity if it exists; the last is the gated directory itself.
+ */
+async function gatedPlace(dataRoot, ipfsDataDir) {
+  let rootStat;
+  try {
+    rootStat = await fs.promises.lstat(dataRoot, { bigint: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (!rootStat.isDirectory()) return null;
+  const root = await fs.promises.realpath(dataRoot);
+  const gated = await canonicalPath(ipfsDataDir);
+  const relative = path.relative(root, gated);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  const steps = [{ name: null, id: identityOf(rootStat) }];
+  let current = root;
+  for (const name of relative.split(path.sep)) {
+    current = path.join(current, name);
+    let id = null;
+    try {
+      id = identityOf(await fs.promises.stat(current, { bigint: true }));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+    steps.push({ name, id });
+  }
+  return { gated, steps };
+}
+
+// Which of `place`'s steps a directory is, by identity (-1 for none): the
+// data root's is 0. The gated directory itself is never walked into.
+function stepOf(place, stat) {
+  const id = identityOf(stat);
+  const { steps } = place;
+  return steps.findIndex((step, i) => i < steps.length - 1 && step.id === id);
+}
+
+// Removes the directory `dir`, step `index` of `place`'s path to the gated
+// directory, sparing that directory: it walks only into the directories on
+// the path (by identity, under any name), never through a link, and removes
+// everything else as the plain removal would. Inside a step, a directory
+// named as the next step is never removed whole: the next step's own is
+// walked into, and any other (the gated directory, or one created or
+// replaced since) is spared.
+// Directories on the path are only removed if they end up empty.
+async function removeSparing(dir, place, index, { skip = null, keepRoot = false } = {}) {
+  const next = place.steps[index + 1];
   let names;
   try {
-    names = await fs.promises.readdir(target);
+    names = await fs.promises.readdir(dir);
   } catch (err) {
     if (err.code === 'ENOENT') return;
     throw err;
   }
-  for (const name of names) await removeKeeping(path.join(target, name), keep);
+  for (const name of names) {
+    if (skip?.(name)) continue;
+    const target = path.join(dir, name);
+    let stat;
+    try {
+      stat = await fs.promises.lstat(target, { bigint: true });
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    const step = stat.isDirectory() ? stepOf(place, stat) : -1;
+    if (step > index) {
+      await removeSparing(target, place, step);
+    } else if (step >= 0 || (stat.isDirectory() && sameEntryName(name, next.name))) {
+      // A directory of the path met again (a mount that loops back), or one
+      // named as the next step but not that directory: spared.
+    } else {
+      await fsOffload.removePath(target, { recursive: true, force: true });
+    }
+  }
+  if (keepRoot) return;
   try {
-    await fs.promises.rmdir(target);
+    await fs.promises.rmdir(dir);
   } catch (err) {
     if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST') throw err;
   }
@@ -845,10 +946,11 @@ const FENCE_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const FENCE_ATTEMPTS = 10;
 const FENCE_RETRY_MS = 100;
 
-// Under freedom-ipfsd's gate, the gated IPFS directory is moved aside before
-// anything else changes (freedom-core design 0007, "Lifetime lock"), to
-// `<ipfs-data>/.freedom-ipfs.deleting-<pid>-<ts>`, which the removal then
-// takes with the rest. Nothing after this touches the gated path itself: if
+// Under freedom-ipfsd's gate, the gated IPFS directory (its canonical path,
+// gatedPlace) is moved aside before anything else changes (freedom-core
+// design 0007, "Lifetime lock"), to `.freedom-ipfs.deleting-<pid>-<ts>`
+// beside it, which the removal then takes with the rest. Nothing after this
+// touches the gated directory itself (removeSparing): if
 // the gate's holder ends mid-delete (killed) and another writer takes the
 // gate and recreates the directory, the removal still running leaves that
 // writer's data alone. The gate is checked with nothing awaited before each
@@ -941,24 +1043,25 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
     // it while `fn` runs, so a writer that holds it (the service, or the
     // add-on under hold-lock) fails the delete before anything is changed,
     // rather than having its directory removed under it.
-    const ipfsDataDir = path.join(
-      sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir,
-      'ipfs-data',
-      'freedom-ipfs'
-    );
+    const dataRoot = sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir;
+    const ipfsDataDir = path.join(dataRoot, 'ipfs-data', 'freedom-ipfs');
     const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
     return withIpfsGate(ipfsDataDir, async (gate = UNGATED) => {
-      // Held: the gated directory moves aside first, and the removal never
-      // touches its path again (fenceIpfsData). Without a gate, today's
-      // removal, unchanged.
-      if (gate.gated) await fenceIpfsData(ipfsDataDir, gate);
-      const keep = gate.gated ? ipfsDataDir : null;
+      // Held, with the gated directory inside the profile's own tree
+      // (gatedPlace): it moves aside first, and the removal never touches
+      // it again under any name (fenceIpfsData, removeSparing). Without a
+      // gate, or with the IPFS data elsewhere behind a link, today's
+      // removal, which follows no link, unchanged.
+      const place = gate.gated ? await gatedPlace(dataRoot, ipfsDataDir) : null;
+      if (place) await fenceIpfsData(place.gated, gate);
       catalog.profiles.splice(recordIndex, 1);
       saveCatalog(appRoot, catalog);
       if (sharesAppRoot) {
-        await removeDefaultProfileDataFromAppRoot(appRoot, { keep });
+        await removeDefaultProfileDataFromAppRoot(appRoot, { place });
+      } else if (place) {
+        await removeSparing(resolvedProfileDir, place, 0);
       } else {
-        await removeKeeping(resolvedProfileDir, keep);
+        await fsOffload.removePath(resolvedProfileDir, { recursive: true, force: true });
       }
 
       /*

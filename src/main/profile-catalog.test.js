@@ -862,6 +862,165 @@ describe('profile catalog', () => {
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
     });
 
+    // IPFS data behind a symlink or junction is data elsewhere: a gated
+    // delete removes the link, as the plain removal does, and neither moves
+    // nor walks into what it points at.
+    const linkDir = (target, link) =>
+      fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    const sharedIpfs = (tempRoot) => {
+      const shared = path.join(tempRoot, 'shared');
+      fs.mkdirSync(path.join(shared, 'freedom-ipfs'), { recursive: true });
+      fs.writeFileSync(path.join(shared, 'freedom-ipfs', 'freedom-ipfs.sqlite3'), 'blocks');
+      fs.writeFileSync(path.join(shared, 'unrelated'), 'keep me');
+      return shared;
+    };
+    const expectSharedUntouched = (shared) => {
+      expect(fs.readFileSync(path.join(shared, 'unrelated'), 'utf-8')).toBe('keep me');
+      expect(
+        fs.readFileSync(path.join(shared, 'freedom-ipfs', 'freedom-ipfs.sqlite3'), 'utf-8')
+      ).toBe('blocks');
+      expect(fs.readdirSync(shared).sort()).toEqual(['freedom-ipfs', 'unrelated']);
+    };
+    const heldGate = async (_dir, fn) => fn({ gated: true, held: () => true });
+
+    test('a held gate with ipfs-data behind a link: the link goes, its target stays', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const shared = sharedIpfs(tempRoot);
+      linkDir(shared, path.join(record.dir, 'ipfs-data'));
+
+      await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+
+      expectSharedUntouched(shared);
+      expect(fs.existsSync(record.dir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('packaged layout: a held gate with ipfs-data behind a link leaves its target', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'app');
+      fs.mkdirSync(appRoot);
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+      const shared = sharedIpfs(tempRoot);
+      linkDir(shared, path.join(appRoot, 'ipfs-data'));
+
+      await deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate: heldGate });
+
+      expectSharedUntouched(shared);
+      expect(fs.existsSync(path.join(appRoot, 'ipfs-data'))).toBe(false);
+    });
+
+    test('a held gate with the IPFS directory itself a link: the link goes, its target stays', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const shared = sharedIpfs(tempRoot);
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data'));
+      linkDir(
+        path.join(shared, 'freedom-ipfs'),
+        path.join(record.dir, 'ipfs-data', 'freedom-ipfs')
+      );
+
+      await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+
+      expectSharedUntouched(shared);
+      expect(fs.existsSync(record.dir)).toBe(false);
+    });
+
+    test('a link that appears after the check is removed as a link, never walked into', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+      const shared = sharedIpfs(tempRoot);
+      // Once the fence has moved the directory, ipfs-data becomes a link.
+      const realRename = fs.renameSync;
+      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        realRename(from, to);
+        if (from !== ipfsDir) return;
+        const ipfsData = path.dirname(ipfsDir);
+        realRename(ipfsData, path.join(tempRoot, 'moved-ipfs-data'));
+        linkDir(shared, ipfsData);
+      });
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expectSharedUntouched(shared);
+      expect(fs.existsSync(path.join(record.dir, 'ipfs-data'))).toBe(false);
+    });
+
+    test('an alias inside the profile: the gated directory is spared under its own name too', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      // ipfs-data is a link to a real directory in the profile: the gate's
+      // canonical directory is cache-volume/freedom-ipfs.
+      const volume = path.join(path.resolve(record.dir), 'cache-volume');
+      const ipfsDir = path.join(volume, 'freedom-ipfs');
+      fs.mkdirSync(ipfsDir, { recursive: true });
+      fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
+      linkDir(volume, path.join(record.dir, 'ipfs-data'));
+      const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(fs.readdirSync(ipfsDir)).toEqual(['new-owner']);
+      expect(fs.readdirSync(volume)).toEqual(['freedom-ipfs']);
+      expect(fs.readdirSync(record.dir)).toEqual(['cache-volume']);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('a directory on the way created after the delete began is spared, not removed', async () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = devOptions(appRoot);
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
+      // No ipfs-data yet: a writer creates it, store and all, as the fence
+      // finds nothing to move.
+      const ipfsDir = path.join(path.resolve(record.dir), 'ipfs-data', 'freedom-ipfs');
+      const realRename = fs.renameSync;
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        try {
+          realRename(from, to);
+        } finally {
+          if (from === ipfsDir) {
+            fs.mkdirSync(ipfsDir, { recursive: true });
+            fs.writeFileSync(path.join(ipfsDir, 'new-owner'), 'theirs');
+          }
+        }
+      });
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate: heldGate });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(fs.readFileSync(path.join(ipfsDir, 'new-owner'), 'utf-8')).toBe('theirs');
+      expect(fs.readdirSync(record.dir)).toEqual(['ipfs-data']);
+    });
+
     test("packaged layout: the default profile's gate is the app data root's ipfs-data/freedom-ipfs", async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
