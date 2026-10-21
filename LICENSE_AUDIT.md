@@ -32,6 +32,7 @@
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                         |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410)        |
 | Weak copyleft (MPL-2.0)                                     | 10 packages | Compatible; MPL-2.0 is our own license                                    |
+| Weak copyleft (MPL-2.0) in the freedom-ipfsd binary         | 1 crate     | Source pointer in `NOTICES`, as §3.2(a) requires — see below              |
 | Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                                 |
 | Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)               |
 
@@ -99,6 +100,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Integration:** a separate binary under `resources/freedom-ipfsd/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Nothing starts it yet; a later step of freedom-core design 0007 points `ipfs-manager.js` at it.
 - **License:** freedom-core's, which is not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, freedom-ipfs's among them, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, musl and LLVM's libunwind and crt objects) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). `scripts/fetch-freedom-ipfsd.js` installs both next to the binary, `package.json` ships them in `resources/freedom-ipfsd/`, and `scripts/check-binaries.js` requires them.
+- **Copyleft — MPL-2.0 `attohttpc` 0.30.1:** the one weak-copyleft crate in `ipfsd-v0.1.0`'s `THIRD-PARTY-NOTICES` (no GPL or LGPL crate is listed), statically linked and unmodified. MPL-2.0 is file-level copyleft, so it reaches no other code. But Freedom distributes it in executable form, so §3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The "unmodified, no obligation beyond notice" reading below does not cover this binary. **Fulfilled by `NOTICES`**, which names the exact source: the crates.io archive <https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate> (sha256 `16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9`, the `checksum` freedom-ipfsd's `Cargo.lock` records at `ipfsd-v0.1.0`) and the repository <https://github.com/sbstp/attohttpc>. `ipfsd-v0.1.0`'s own `THIRD-PARTY-NOTICES` carries the license text but no source location; freedom-core is adding these source lines to its generated `THIRD-PARTY-NOTICES` for later releases, and for `ipfsd-v0.1.0` the pointer in `NOTICES` is what meets §3.2(a). On every pin bump, re-read the release's crate list for MPL-2.0 crates and keep the pointer on the versions it links.
 - **Source:** <https://github.com/solardev-xyz/freedom-core>.
 
 ### Ant (antd, Swarm Node)
@@ -321,7 +323,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 15. **AppImage runtime** (Linux `.AppImage` only) — MIT runtime with statically linked LGPL-2.1 libfuse, BSD squashfuse/zstd, MIT musl/mimalloc and Zlib zlib; not checked by `licenses-audit.test.js`, see _AppImage runtime_
 
-freedom-core's own license, which covers freedom-cored and freedom-ipfsd, is still to be chosen; it must be settled before shipping.
+freedom-core's own license, which covers freedom-cored and freedom-ipfsd, is still to be chosen; it must be settled before shipping. `NOTICES` must also keep the source pointer for freedom-ipfsd's MPL-2.0 crate, `attohttpc` 0.30.1 (§3.2(a); see _freedom-ipfsd_).
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
@@ -346,6 +348,7 @@ The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"
 ### Weak copyleft: present and handled
 
 - **MPL-2.0** (10 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
+- **MPL-2.0 in the freedom-ipfsd binary** (1 crate, `attohttpc` 0.30.1, statically linked, unmodified) — distributed in executable form, so the line above does not apply: §3.2(a) needs its source available and recipients told where, and `NOTICES` names the exact crates.io source archive. See _freedom-ipfsd_ above.
 - **LGPL-3.0** (5 packages: `@openlv/{core,session,signaling,transport}`, `websocket-mqtt`) — shipped as one isolated, regenerable bundle so §4 relinking is possible. See _The LGPL question_ above.
 - **LGPL-2.1** (libfuse, statically linked into the Linux AppImage runtime) — a separate upstream program, attributed in `NOTICES`, whose published upstream source meets §6 (maintainer decision, 2026-10-07). See _AppImage runtime_ above.
 

@@ -31,6 +31,12 @@ freedom-ipfsd (IPFS service)
   musl and LLVM's libunwind). Their notices ship beside the binary:
   resources/freedom-ipfsd/THIRD-PARTY-NOTICES and
   resources/freedom-ipfsd/THIRD-PARTY-NOTICES-rust-std.html.
+  It includes attohttpc 0.30.1, unmodified, under the Mozilla Public
+  License 2.0 (its text is in THIRD-PARTY-NOTICES). Its exact source,
+  the crates.io source archive the binary was built from, is at
+    https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate
+    (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9)
+  and its repository is https://github.com/sbstp/attohttpc.
 
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0

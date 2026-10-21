@@ -627,6 +627,34 @@ describe('copyleft', () => {
     }
   });
 
+  // MPL-2.0 §3.2(a): a binary that statically links an MPL-2.0 crate ships it
+  // in executable form, modified or not, so NOTICES has to tell recipients
+  // where its exact source is. The crate list lives in each pinned release's
+  // THIRD-PARTY-NOTICES, which this suite cannot read, so the MPL-2.0 crates
+  // are recorded per pin: a bump fails here until the new release's list is
+  // re-read and its crates are recorded.
+  const MPL_CRATES = {
+    'freedom-ipfsd-bin/${os}-${arch}/': { 'ipfsd-v0.1.0': [['attohttpc', '0.30.1']] },
+  };
+
+  it.each(Object.entries(MPL_CRATES))(
+    "%s keeps its MPL-2.0 crates' source in NOTICES",
+    (id, byPin) => {
+      const meta = EXTRA_RESOURCES[id];
+      const pin = read(meta.pin.file).match(meta.pin.re)[1];
+      expect({ id, pin, recorded: pin in byPin }).toEqual({ id, pin, recorded: true });
+      const entry = notices.slice(notices.search(meta.noticeMatch)).split(/\n(?=\S)/)[0];
+      for (const [name, version] of byPin[pin]) {
+        const archive = `https://static.crates.io/crates/${name}/${name}-${version}.crate`;
+        expect({ id, archive, stated: entry.includes(archive) }).toEqual({
+          id,
+          archive,
+          stated: true,
+        });
+      }
+    }
+  );
+
   // npm records a package's licence three ways: the current `license` string,
   // the object form `{"type": "...", "url": "..."}`, and the deprecated
   // `licenses` array. Reading only the string form stringifies the object to
