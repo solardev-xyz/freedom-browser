@@ -9,8 +9,8 @@
 
 ## IPFS fails to start
 
-- IPFS uses the embedded `freedom-ipfs` native addon and does not open a loopback API or gateway port.
-- For source builds, rerun `npm run ipfs:download` and confirm the addon target matches the current OS and architecture.
+- IPFS runs in `freedom-ipfsd`, a service process Freedom starts and restarts, and does not open a loopback API or gateway port.
+- For source builds, rerun `npm run ipfsd:download` and confirm `freedom-ipfsd-bin/` holds the binary for the current OS and architecture. With `FREEDOM_IPFS_BACKEND=addon`, a development build runs the `freedom-ipfs` native addon instead: rerun `npm run ipfs:download` for it.
 - Check the Nodes panel and application log for native startup diagnostics.
 
 ## Radicle fails to start

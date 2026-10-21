@@ -73,7 +73,7 @@
       "issues": [
         {
           "kind": "missing-license",
-          "details": "freedom-ipfsd is released from freedom-core, which has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "details": "freedom-ipfsd is released from freedom-core, which has no license yet (the maintainer's decision). Packaged builds ship it and run it as their IPFS node (freedom-core design 0007). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
           "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
         },
         {

@@ -1,0 +1,3 @@
+- IPFS runs in a process of its own instead of inside the browser ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - An IPFS fault no longer takes the browser down, and the node restarts by itself
+  - IPFS doesn't start when its data is on a network drive

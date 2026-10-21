@@ -64,7 +64,7 @@ Freedom Browser is distributed as:
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
   - `freedom-cored` (Rust identity core) — its license is pending; see below
-  - `freedom-ipfsd` (IPFS service) — not started by packaged builds yet; its license is pending; see below
+  - `freedom-ipfsd` (IPFS service) — packaged builds' IPFS node; its license is pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -98,7 +98,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-ipfsd (IPFS Service) — license pending
 
 - **Pin:** `ipfsd-v0.1.1` (an immutable release) in `scripts/fetch-freedom-ipfsd.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
-- **Integration:** a separate binary under `resources/freedom-ipfsd/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Packaged builds don't start it yet: only a development build runs it, as the service with `FREEDOM_IPFS_BACKEND=service` and as `hold-lock`, the IPFS data directory's gate, which the add-on runs under and profile delete holds (freedom-core design 0007, step 6, "Lifetime lock" and "Rollback"), until the default switches.
+- **Integration:** a separate binary under `resources/freedom-ipfsd/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Every build runs it as its IPFS node, the service, and as `hold-lock`, the IPFS data directory's gate, which profile delete holds (freedom-core design 0007, step 6, "Lifetime lock"). A development build can still select the add-on with `FREEDOM_IPFS_BACKEND=addon`, and it then runs under `hold-lock` too ("Rollback").
 - **License:** freedom-core's, which is not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
 - **Linking (Linux):** since `ipfsd-v0.1.1` the Linux binaries (x86_64 and aarch64) are dynamically linked against the system's GNU C Library, needing at most `GLIBC_2.17` (`libc`, `libm`, `libpthread`, `libdl` and the dynamic loader), and built with cargo-zigbuild. They statically carry only glibc's startup and libc_nonshared objects, as Zig 0.15.2 builds them for a glibc 2.17 target, and LLVM's libunwind (Zig's copy); musl is gone. glibc itself is the user's system library and is not distributed. macOS and Windows are unchanged.
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, freedom-ipfs's among them, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, glibc's startup objects and LLVM's libunwind) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). The notices are the same file in every archive. `scripts/fetch-freedom-ipfsd.js` installs both next to the binary, `package.json` ships them in `resources/freedom-ipfsd/`, and `scripts/check-binaries.js` requires them.
@@ -121,7 +121,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Version:** `v0.4.6` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
-- **Integration:** Native addon loaded by the Electron main process
+- **Integration:** Native addon, shipped in `resources/freedom-ipfs-node/`. Packaged builds no longer load it: their IPFS node is freedom-ipfsd. A development build loads it in the Electron main process with `FREEDOM_IPFS_BACKEND=addon`, the rollback, until it is removed one stable release later (freedom-core design 0007, "Rollback", step 9)
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔
 
 ### libradicle (Native Radicle Addon)

@@ -138,13 +138,15 @@ Useful checks:
 
 ```sh
 npm run ipfs:download
-npm run ipfs:native:smoke
+FREEDOM_IPFS_BACKEND=addon npm run ipfs:native:smoke
 npm test
 ```
 
-`npm run ipfs:native:smoke` loads the real native addon, starts it, and retrieves
-`/ipns/ipfs.tech/` through the native request API. Set
-`FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0` for startup/diagnostics-only checks.
+`FREEDOM_IPFS_BACKEND=addon npm run ipfs:native:smoke` loads the real native
+addon, starts it, and retrieves `/ipns/ipfs.tech/` through the native request
+API; without the variable, the smoke runs freedom-ipfsd, the app's default
+(freedom-core design 0007). Set `FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0` for
+startup/diagnostics-only checks.
 
 The backend contract suite (`src/main/ipfs/ipfs-backend.contract.test.js`,
 freedom-core design 0007) drives `ipfsBackend()` and the `ipfs:` handler against
