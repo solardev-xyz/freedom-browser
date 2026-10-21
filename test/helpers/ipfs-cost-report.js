@@ -5,10 +5,9 @@
  * gate's second measurement, whether a miss fails the run, and the step
  * summary's table.
  *
- * 0007's gates guard the default switch, not the measurement: until it
- * switches, CI runs with FREEDOM_IPFS_COST_ENFORCE=0, which reports each
- * gate's verdict without failing on a miss. Unset, or '1', a miss fails, as
- * a local run and the switch want.
+ * 0007's gates guard freedom-ipfsd as the default: unset, or '1',
+ * FREEDOM_IPFS_COST_ENFORCE fails the run on a miss, as CI and a local run
+ * want; '0' reports each gate's verdict without failing on a miss.
  */
 
 /** 0007, Cost: the median first byte at most 5 ms later, the median
@@ -118,11 +117,7 @@ function costTable(results) {
     '',
     ...(results.enforced
       ? []
-      : [
-          "0007's gates are reported, not enforced, until the default switch " +
-            '(FREEDOM_IPFS_COST_ENFORCE=0).',
-          '',
-        ]),
+      : ["0007's gates are reported, not enforced (FREEDOM_IPFS_COST_ENFORCE=0).", '']),
     `${results.cpu}, ${results.cpus} CPUs, Node ${results.node}. Interleaved rounds: ` +
       `${ttfb.rounds} first-byte, ${throughput.rounds} throughput, ${fanout.rounds} fan-out.`,
     '',

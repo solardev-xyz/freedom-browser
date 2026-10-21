@@ -1010,8 +1010,8 @@ async function removeSparing(dir, place, index, { skip = null, keepRoot = false 
   }
 }
 
-// What a delete's callback gets where no IPFS gate is held (a packaged build
-// until the default switch, or a development build without freedom-ipfsd).
+// What a delete's callback gets where no IPFS gate is held (a development
+// build without freedom-ipfsd).
 const UNGATED = Object.freeze({ gated: false, held: () => false });
 // Windows refuses a rename while a scanner or indexer has a file open; those
 // clear in a moment.

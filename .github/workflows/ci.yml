@@ -237,7 +237,9 @@ jobs:
   # freedom-ipfs native addon smoke for every desktop addon target currently
   # published in the pinned prebuilt manifest. This downloads the real release
   # artifact, loads it in Node, starts native freedom-ipfs, and retrieves a real
-  # IPNS page through the native request API.
+  # IPNS page through the native request API. The add-on is the rollback now
+  # (freedom-core design 0007, Rollback): every step selects it with
+  # FREEDOM_IPFS_BACKEND=addon, as a development build does.
   freedom-ipfs-native-addon:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -286,6 +288,7 @@ jobs:
       - name: Smoke test IPFS native addon
         run: npm run ipfs:native:smoke
         env:
+          FREEDOM_IPFS_BACKEND: addon
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
           FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
@@ -303,24 +306,26 @@ jobs:
       # The IPFS backend contract (freedom-core design 0007, "Tests first"):
       # what `ipfsBackend()` and the `ipfs:` handler must do, against this
       # runner's add-on and a loopback fixture (no public network). The
-      # freedom-ipfsd service must later pass the same suite. It needs the
-      # add-on downloaded above, so it runs here and not in `test`, where it
-      # is skipped.
+      # freedom-ipfsd service passes the same suite (freedom-ipfsd-contract).
+      # It needs the add-on downloaded above, so it runs here and not in
+      # `test`, where it is skipped.
       - name: IPFS backend contract suite (add-on)
         run: npx jest src/main/ipfs/ipfs-backend.contract.test.js
         env:
+          FREEDOM_IPFS_BACKEND: addon
           FREEDOM_IPFS_CONTRACT_BACKEND: addon
 
       - name: Smoke test issue #102 high-fanout IPFS page
         if: matrix.target == 'linux-x64'
         run: npm run ipfs:native:smoke
         env:
+          FREEDOM_IPFS_BACKEND: addon
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
-  # The same IPFS backend contract against the freedom-ipfsd service process
-  # (freedom-core design 0007, step 6): `ipfs-manager.js` with
+  # The same IPFS backend contract against the freedom-ipfsd service process,
+  # the default (freedom-core design 0007, step 6): `ipfs-manager.js` with
   # FREEDOM_IPFS_BACKEND=service, driving the pinned release binary against
   # the loopback fixture. It needs the binary, so it runs here and not in
   # `test`, where it is skipped.
@@ -449,10 +454,11 @@ jobs:
         if: matrix.target == 'win-x64'
         run: npm run radicle:download -- --win --arm64
 
-  # The native smoke against the freedom-ipfsd service (freedom-core design
-  # 0007, step 6), as freedom-ipfs-native-addon runs it against the add-on:
-  # the production FreedomIpfsdNode on the pinned release binary, with the
-  # same checks, retrieving a real IPNS page, and on linux #102's fan-out.
+  # The native smoke against the freedom-ipfsd service, the default
+  # (freedom-core design 0007, step 6), as freedom-ipfs-native-addon runs it
+  # against the add-on: the production FreedomIpfsdNode on the pinned release
+  # binary, with the same checks, retrieving a real IPNS page, and on linux
+  # #102's fan-out.
   freedom-ipfsd-smoke:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -552,16 +558,16 @@ jobs:
           fi
 
   # What running IPFS on freedom-ipfsd costs against the add-on (freedom-core
-  # design 0007, "Cost"), on the same runner, before the default switches:
-  # the first byte of a cached 1 KiB file, the throughput of a cached 100 MiB
-  # file, and #102's fan-out on the loopback fixture, with 0007's gates
-  # judged: the median first byte at most 5 ms later than the add-on's, and
-  # the median throughput at least 80 % of it. Until the default switch they
-  # are reported, not enforced (below); any other failure fails the job. The
-  # table goes to the step summary, and the numbers to an artifact. Both
-  # backends' binaries are this runner's: the add-on for darwin-arm64,
-  # linux-x64 and win32-x64, and freedom-ipfsd's mac-arm64, linux-x64 and
-  # win-x64.
+  # design 0007, "Cost"), on the same runner: the first byte of a cached
+  # 1 KiB file, the throughput of a cached 100 MiB file, and #102's fan-out
+  # on the loopback fixture, with 0007's gates enforced: the median first
+  # byte at most 5 ms later than the add-on's, and the median throughput at
+  # least 80 % of it. A gate that misses is measured once more, and judged on
+  # both runs' samples pooled, so a noisy run doesn't fail the job alone,
+  # and a luckier one doesn't pass it alone. The table goes to the step
+  # summary, and the numbers to an artifact. Both backends' binaries are this
+  # runner's: the add-on for darwin-arm64, linux-x64 and win32-x64, and
+  # freedom-ipfsd's mac-arm64, linux-x64 and win-x64.
   ipfs-cost:
     needs: ipfs-changed
     if: ${{ !cancelled() && needs.ipfs-changed.outputs.ipfs != 'false' }}
@@ -616,10 +622,9 @@ jobs:
         run: npx jest src/main/ipfs/ipfs-backend.cost.test.js
         env:
           FREEDOM_IPFS_COST: '1'
-          # 0007's Cost gates guard the default switch, not this measurement:
-          # their verdicts are reported (PASS or FAIL in the summary) and a
-          # miss doesn't fail the job. The default switch sets this to '1'.
-          FREEDOM_IPFS_COST_ENFORCE: '0'
+          # 0007's Cost gates guard freedom-ipfsd as the default: a miss
+          # fails the job.
+          FREEDOM_IPFS_COST_ENFORCE: '1'
           FREEDOM_IPFS_COST_OUT: ipfs-cost-${{ matrix.target }}.json
 
       - name: Upload the cost numbers
@@ -782,7 +787,7 @@ jobs:
             addon: myotis-bin/win-x64/myotis-node.node
     runs-on: ${{ matrix.os }}
     # Spec budget is READY_TIMEOUT * 2 + 10 min = 60 min; the rest covers
-    # npm ci, Playwright deps, and the two addon downloads.
+    # npm ci, Playwright deps, and the downloads.
     timeout-minutes: 75
 
     steps:
@@ -844,8 +849,12 @@ jobs:
           restore-keys: |
             myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-
 
-      - name: Download IPFS native addon
-        run: npm run ipfs:download
+      - name: Download freedom-ipfsd binaries
+        # The app's IPFS runs on it (freedom-core design 0007). Same bounded
+        # watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1661,10 +1670,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download freedom-ipfsd binaries
-        # Packaged builds don't start it yet, but release packaging requires
-        # it: this is the pull-request run of its real download and
-        # verification on all three OSes. Same bounded watchdog as the Ant
-        # download.
+        # The app's IPFS runs on it, though this spec starts no IPFS, and
+        # release packaging requires it: this is the pull-request run of its
+        # real download and verification on all three OSes. Same bounded
+        # watchdog as the Ant download.
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
@@ -1709,8 +1718,11 @@ jobs:
   # most quits. Live, because FREEDOM_TEST_MODE stubs the node managers away:
   # under `harness` or `packaged` no freedom-ipfs event dispatcher worker
   # exists at all, so the quit path this guards is never taken and the bug
-  # would ship green. No network is needed — the spec starts the node, waits
-  # for it to report running, and quits — so this job only downloads the addon.
+  # would ship green. It quits with each node running: freedom-ipfsd, the
+  # default (freedom-core design 0007), and the add-on #345 was found in, the
+  # rollback (FREEDOM_IPFS_BACKEND=addon). No network is needed — the spec
+  # starts the node, waits for it to report running, and quits — so this job
+  # only downloads the two nodes and the identity core.
   e2e-ipfs-quit:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1746,6 +1758,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-ipfsd binaries
+        # The app's IPFS runs on it (freedom-core design 0007). Same bounded
+        # watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Download freedom-cored binaries
         # The identity core owns the vault (migration step 2), so every app
         # launch needs it. Same bounded watchdog as the other downloads.
@@ -1755,8 +1776,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Run the IPFS clean-quit E2E (headless)
+      - name: Run the IPFS clean-quit E2E on freedom-ipfsd (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
+
+      - name: Run the IPFS clean-quit E2E on the add-on (headless)
+        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
+        env:
+          FREEDOM_IPFS_BACKEND: addon
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1824,8 +1850,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Download IPFS binary
-        run: npm run ipfs:download
+      - name: Download freedom-ipfsd binaries
+        # The app's IPFS runs on it (freedom-core design 0007). Same bounded
+        # watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

@@ -22,8 +22,9 @@ const {
   expect,
   HAS_ANT_BINARY,
   ANT_BINARY_PATH,
-  HAS_IPFS_NATIVE_ADDON,
-  IPFS_NATIVE_ADDON_PATH,
+  HAS_IPFS_NODE,
+  IPFS_NODE_PATH,
+  IPFS_NODE_DOWNLOAD,
 } = require('../live-fixtures');
 
 const PEER_TARGET = 20;
@@ -253,8 +254,8 @@ test.describe('live cold-start sites', () => {
     `Live E2E needs the Ant binary at ${ANT_BINARY_PATH}. Run \`npm run ant:download\` to fetch it.`
   );
   test.skip(
-    !HAS_IPFS_NATIVE_ADDON,
-    `Live E2E needs the freedom-ipfs native addon at ${IPFS_NATIVE_ADDON_PATH}. Run \`npm run ipfs:download\` to fetch it.`
+    !HAS_IPFS_NODE,
+    `Live E2E needs the IPFS node at ${IPFS_NODE_PATH}. Run \`${IPFS_NODE_DOWNLOAD}\` to fetch it.`
   );
 
   // afterEach rather than a try/catch in the test body: it also runs when the

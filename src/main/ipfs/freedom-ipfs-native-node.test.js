@@ -1020,19 +1020,14 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  // Until the service is the default, only development builds gate their
-  // IPFS writers (ipfsd-gate.js, ipfsGateRequired).
-  test.each([
-    ['a packaged build starts it with no gate', true, 0],
-    ['a development build starts it under hold-lock', false, 1],
-  ])('through the real gate: %s', async (_label, isPackaged, holders) => {
+  test('through the real gate: a development build starts it under hold-lock', async () => {
     const binding = recordedBinding([]);
     const { FreedomIpfsNativeNode } = loadModule(binding);
     const { app } = require('electron');
     const { takeIpfsGate } = require('./ipfsd-gate');
     const wasPackaged = app.isPackaged;
     const binaryBefore = process.env.FREEDOM_IPFSD_PATH;
-    app.isPackaged = isPackaged;
+    app.isPackaged = false;
     // A binary that is there, wherever the suite runs.
     process.env.FREEDOM_IPFSD_PATH = __filename;
     const spawn = jest.fn(() => {
@@ -1059,7 +1054,7 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
           }),
       });
       await expect(node.start()).resolves.toBe(true);
-      expect(spawn).toHaveBeenCalledTimes(holders);
+      expect(spawn).toHaveBeenCalledTimes(1);
       await stopNode(node);
     } finally {
       app.isPackaged = wasPackaged;

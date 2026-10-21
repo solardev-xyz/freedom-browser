@@ -4,9 +4,11 @@
 // This has to be a live spec. Under FREEDOM_TEST_MODE the node managers are
 // stubbed away, so no freedom-ipfs event dispatcher worker exists and the
 // quit path being guarded here is never taken — `harness` and `packaged`
-// would both pass against the bug. Here the real addon starts, its dispatcher
-// worker polls `gatewayWaitNextEvent` every 100ms, and the quit tears it down
-// for real.
+// would both pass against the bug. It runs the node the app runs
+// (freedom-core design 0007): freedom-ipfsd by default, whose quit stops a
+// child process; or with FREEDOM_IPFS_BACKEND=addon the add-on (Rollback),
+// where #345 lived: the real addon starts, its dispatcher worker polls
+// `gatewayWaitNextEvent` every 100ms, and the quit tears it down for real.
 //
 // What made it abort: the re-entrant `before-quit` that 'window-all-closed'
 // triggers returned without preventDefault(), so Electron tore the process
@@ -19,7 +21,14 @@
 // test-e2e/packaged-live/nodes.spec.js — #345 reproduces there too, and a
 // wrong-arch or stale freedom-ipfs addon can only differ on teardown there.
 
-const { test, expect, watchProcessExit, HAS_IPFS_NATIVE_ADDON } = require('../live-fixtures');
+const {
+  test,
+  expect,
+  watchProcessExit,
+  IPFS_BACKEND,
+  HAS_IPFS_NODE,
+  IPFS_NODE_DOWNLOAD,
+} = require('../live-fixtures');
 
 // Only IPFS. Ant, Radicle and Tor have nothing to do with this quit path and
 // their boot time (and flakiness) would be paid for nothing.
@@ -35,10 +44,7 @@ const NODE_START_TIMEOUT_MS = 120_000;
 const QUIT_TIMEOUT_MS = 60_000;
 
 test.describe('quitting with the native IPFS node running', () => {
-  test.skip(
-    !HAS_IPFS_NATIVE_ADDON,
-    'freedom-ipfs native addon not built — run `npm run ipfs:download`'
-  );
+  test.skip(!HAS_IPFS_NODE, `The IPFS node isn't there — run \`${IPFS_NODE_DOWNLOAD}\``);
 
   test.use({ seedSettings: IPFS_ONLY });
 
@@ -67,6 +73,13 @@ test.describe('quitting with the native IPFS node running', () => {
     );
     expect(ipfs.mode).toBe('bundled');
     expect(ipfs.backend).toBe('freedom-ipfs');
+    // And the node selected: freedom-ipfsd reports itself in its build info,
+    // the add-on doesn't.
+    const status = await window.evaluate(() => window.ipfs.getStatus());
+    const buildInfo = JSON.parse(status.diagnostics.nativeBuildInfo || 'null');
+    expect(buildInfo?.service?.name ?? null).toBe(
+      IPFS_BACKEND === 'service' ? 'freedom-ipfsd' : null
+    );
 
     try {
       await electronApp.close();

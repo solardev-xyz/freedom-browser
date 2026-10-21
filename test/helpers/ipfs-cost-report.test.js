@@ -177,7 +177,7 @@ describe('the step summary', () => {
     const markdown = costTable(results({ enforced: false, ...MISSING }));
     const lines = markdown.split('\n');
     const note = lines.findIndex((line) =>
-      line.startsWith("0007's gates are reported, not enforced, until the default switch")
+      line.startsWith("0007's gates are reported, not enforced (FREEDOM_IPFS_COST_ENFORCE=0).")
     );
     const header = lines.findIndex((line) => line.startsWith('| Measure |'));
     expect(note).toBeGreaterThan(0);

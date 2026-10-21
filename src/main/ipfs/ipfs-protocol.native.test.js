@@ -113,12 +113,19 @@ function endlessBody(request) {
   fake.respond(request, { headers: { 'content-type': 'application/octet-stream' } });
 }
 
+// The add-on, as a development build selects it (FREEDOM_IPFS_BACKEND=addon;
+// freedom-core design 0007, Rollback): freedom-ipfsd is the default.
+const backendBefore = process.env.FREEDOM_IPFS_BACKEND;
+
 beforeAll(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ipfs-native-protocol-'));
+  process.env.FREEDOM_IPFS_BACKEND = 'addon';
 });
 
 afterAll(() => {
   fs.rmSync(dataDir, { recursive: true, force: true });
+  if (backendBefore === undefined) delete process.env.FREEDOM_IPFS_BACKEND;
+  else process.env.FREEDOM_IPFS_BACKEND = backendBefore;
 });
 
 beforeEach(async () => {

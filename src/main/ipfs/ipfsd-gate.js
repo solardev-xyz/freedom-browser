@@ -9,15 +9,15 @@
  *   removes the directory, while it does (profile delete); and the add-on,
  *   from before it opens its store until after it has closed it, so it is a
  *   writer the gate excludes too.
- * - **Where:** only where the service can run, until it is the default
- *   (`ipfsGateRequired`): development builds.
  * - **Its answers** (fc-service's `hold_lock`): `locked`, then exit 0 at
  *   stdin's EOF. 75 when another owner holds the gate after 5 s of retries,
  *   74 for storage it refuses (a network filesystem, a directory that isn't
  *   the user's own, any other locking error), 64 for usage.
  * - **The binary and environment** are the service's (`ipfsd-client.js`):
  *   the same resolution, and the shared client's scrubbed environment.
- * - **Without the binary:** a development build without `npm run
+ * - **Without the binary:** a packaged build ships it (check-binaries
+ *   requires it), so its absence there is a broken installation, and what
+ *   needs the gate fails. A development build without `npm run
  *   ipfsd:download` goes on ungated, with a warning: there, only a service
  *   run from the same checkout could share the directory, and that needs
  *   the binary.
@@ -44,6 +44,7 @@ const MESSAGES = {
   lock_held: 'The IPFS data is in use by another process. Close it and try again.',
   storage: "The IPFS data directory's lock can't be taken on this storage",
   usage: 'freedom-ipfsd refused the hold-lock command',
+  missing: 'freedom-ipfsd is missing from this installation. Reinstall Freedom.',
   cancelled: "Taking the IPFS data directory's lock was cancelled",
   failed: "freedom-ipfsd couldn't hold the IPFS data directory's lock",
 };
@@ -54,7 +55,7 @@ const EXIT_CODES = new Map([
 ]);
 
 /** The gate couldn't be had: `code` is `lock_held` (75), `storage` (74),
- * `usage` (64), `cancelled` (its signal) or `failed`. */
+ * `usage` (64), `missing`, `cancelled` (its signal) or `failed`. */
 class IpfsGateError extends Error {
   constructor(code, message = MESSAGES[code]) {
     super(message);
@@ -215,29 +216,13 @@ function holdIpfsGate({
 }
 
 /**
- * Whether this build's IPFS writers take the gate: only where the service
- * can run, until it is the default (freedom-core design 0007, "Lifetime
- * lock" and Rollback: the gated add-on is the dev add-on fallback, and an
- * older build runs the add-on with no gate). No packaged build runs the
- * service yet, so a packaged gate would exclude nothing, and would bring the
- * service's `network-fs` (74) and `data-dir-lock` deviations to add-on
- * users early. The default switch makes this unconditional; a packaged
- * build then ships the binary (check-binaries), and its absence must fail
- * what needs the gate.
- */
-function ipfsGateRequired() {
-  return !app.isPackaged;
-}
-
-/**
- * The gate of `dataDir` for a caller that must hold it, where this build
- * takes one (`ipfsGateRequired`): a hold; null where it takes none, or in a
- * development build without freedom-ipfsd (logged); an IpfsGateError
- * otherwise.
+ * The gate of `dataDir` for a caller that must hold it, under this build's
+ * rule for a missing binary: a hold, or null in a development build
+ * without freedom-ipfsd (logged); an IpfsGateError otherwise.
  */
 async function takeIpfsGate(dataDir, { onLost = null, log = defaultLog, ...options } = {}) {
-  if (!ipfsGateRequired()) return null;
   if (!isIpfsdAvailable()) {
+    if (app.isPackaged) throw new IpfsGateError('missing');
     log.warn(
       "[IPFS] freedom-ipfsd isn't downloaded (npm run ipfsd:download): going on without the IPFS data directory's gate"
     );
@@ -272,7 +257,6 @@ async function withIpfsGate(dataDir, fn, { onLost = null, ...options } = {}) {
 module.exports = {
   IpfsGateError,
   holdIpfsGate,
-  ipfsGateRequired,
   isIpfsdAvailable,
   takeIpfsGate,
   withIpfsGate,
