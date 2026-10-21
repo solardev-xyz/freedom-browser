@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { createHash } = require('crypto');
+const { EventEmitter } = require('events');
 jest.mock('child_process', () => ({ execFile: jest.fn() }));
 const { execFile } = require('child_process');
 const { LocalDictation } = require('./dictation-local');
@@ -113,20 +114,50 @@ test('Whisper uses discrete arguments, strips credential environment, returns te
     execFile.mockImplementation((_exe, _args, options, callback) => {
       expect(fs.existsSync(path.join(options.cwd, 'recording.wav'))).toBe(true);
       expect(options.env.OPENAI_API_KEY).toBeUndefined();
-      callback(null, ' Hello world. \n');
+      const child = new EventEmitter();
+      queueMicrotask(() => { callback(null, ' Hello world. \n'); child.emit('close', 0); });
+      return child;
     });
     await expect(local.transcribe(Buffer.from('fixture audio'), 'de', signal)).resolves.toBe('Hello world.');
     expect(execFile.mock.calls[0][1]).toEqual(['--model', local.model, '--file', expect.stringContaining('recording.wav'),
       '--language', 'de', '--threads', '2', '--no-timestamps', '--no-prints', '--no-gpu']);
     expect(fs.readdirSync(local.scratchRoot)).toEqual([]);
     const abort = new AbortController(); abort.abort();
-    execFile.mockImplementation((_exe, _args, _options, callback) => callback(new Error('aborted')));
+    execFile.mockImplementation((_exe, _args, _options, callback) => {
+      const child = new EventEmitter();
+      queueMicrotask(() => { callback(new Error('aborted')); child.emit('close', null, 'SIGKILL'); });
+      return child;
+    });
     await expect(local.transcribe(Buffer.from('fixture'), 'auto', abort.signal)).rejects.toMatchObject({ code: 'DICTATION_CANCELLED' });
     expect(fs.readdirSync(local.scratchRoot)).toEqual([]);
   } finally {
     if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('cancellation waits for the native process to close before deleting audio or resolving shutdown work', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-cancel-close-test-'));
+  try {
+    const local = fixture(root);
+    jest.spyOn(local, 'ready').mockReturnValue(true);
+    const controller = new AbortController();
+    const child = new EventEmitter();
+    let callback;
+    execFile.mockImplementation((_exe, _args, _options, done) => { callback = done; return child; });
+    const pending = local.transcribe(Buffer.from('fixture audio'), 'en', controller.signal);
+    let settled = false;
+    const outcome = pending.catch(error => { settled = true; return error; });
+    while (!callback) await new Promise(resolve => setImmediate(resolve));
+    controller.abort();
+    callback(new Error('aborted'));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(fs.readdirSync(local.scratchRoot)).toHaveLength(1);
+    child.emit('close', null, 'SIGKILL');
+    await expect(outcome).resolves.toMatchObject({ code: 'DICTATION_CANCELLED' });
+    expect(fs.readdirSync(local.scratchRoot)).toEqual([]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('an invalid audio scratch directory disables local inference without breaking browser construction', async () => {

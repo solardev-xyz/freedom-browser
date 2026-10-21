@@ -8,7 +8,20 @@ const os = require('os');
 const { Readable } = require('stream');
 const assert = require('assert/strict');
 const { createHash } = require('crypto');
+const childProcess = require('child_process');
+const execFile = childProcess.execFile;
+const nativeProcesses = new Set();
+let onSpawn = () => {};
+// Observe real children without replacing the production spawn/kill behavior.
+childProcess.execFile = (...args) => {
+  const child = execFile(...args);
+  nativeProcesses.add(child);
+  child.once('spawn', () => onSpawn(child));
+  child.once('close', () => nativeProcesses.delete(child));
+  return child;
+};
 const { LocalDictation } = require('../src/main/agent/dictation-local');
+childProcess.execFile = execFile;
 const { MODEL_SHA256, WHISPER_REVISION } = require('../src/shared/dictation-runtime');
 
 async function smoke() {
@@ -29,13 +42,25 @@ async function smoke() {
     const transcriptionMs = Date.now() - started;
     assert.match(text, /ask not what your country can do for you/i);
     assert.deepEqual(fs.readdirSync(local.scratchRoot), []);
-    const cancel = new AbortController(); cancel.abort();
-    await assert.rejects(local.transcribe(audio, 'en', cancel.signal), { code: 'DICTATION_CANCELLED' });
+    const cancel = new AbortController();
+    let cancelTimer;
+    let cancelledRunningProcess = false;
+    onSpawn = child => {
+      cancelTimer = setTimeout(() => {
+        cancelledRunningProcess = child.exitCode === null && child.signalCode === null;
+        cancel.abort();
+      }, 150);
+    };
+    try {
+      await assert.rejects(local.transcribe(audio, 'en', cancel.signal), { code: 'DICTATION_CANCELLED' });
+    } finally { clearTimeout(cancelTimer); onSpawn = () => {}; }
+    assert.equal(cancelledRunningProcess, true);
+    assert.equal(nativeProcesses.size, 0, 'Cancellation must await native process closure');
     assert.deepEqual(fs.readdirSync(local.scratchRoot), []);
     await assert.rejects(local.transcribe(Buffer.from('invalid audio'), 'auto', new AbortController().signal));
     assert.deepEqual(fs.readdirSync(local.scratchRoot), []);
     console.log(JSON.stringify({ platform: process.platform, arch: process.arch, revision: WHISPER_REVISION,
-      install: true, transcription: true, cancellation: true, failureCleanup: true, transcriptionMs, elapsedMs: Date.now() - started }));
+      install: true, transcription: true, cancellation: true, cancelledRunningProcess, failureCleanup: true, transcriptionMs, elapsedMs: Date.now() - started }));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

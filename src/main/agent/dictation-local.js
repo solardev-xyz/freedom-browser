@@ -15,12 +15,22 @@ function run(executable, args, { signal, cwd } = {}) {
     ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: os.tmpdir() }
     : { HOME: cwd, TMPDIR: cwd, LANG: 'en_US.UTF-8' }) };
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { cwd, env, signal, windowsHide: true, timeout: 120000,
-      killSignal: 'SIGKILL', maxBuffer: 256 * 1024, encoding: 'utf8' }, (error, stdout) => {
-      if (error) reject(dictationError(signal?.aborted ? 'DICTATION_CANCELLED' : 'DICTATION_LOCAL',
+    let result;
+    let closed = false;
+    const settle = () => {
+      if (!result || !closed) return;
+      if (result.error) reject(dictationError(signal?.aborted ? 'DICTATION_CANCELLED' : 'DICTATION_LOCAL',
         signal?.aborted ? 'Dictation cancelled.' : 'Local transcription could not run. Try downloading the local files again.'));
-      else resolve(stdout);
+      else resolve(result.stdout);
+    };
+    const child = execFile(executable, args, { cwd, env, signal, windowsHide: true, timeout: 120000,
+      killSignal: 'SIGKILL', maxBuffer: 256 * 1024, encoding: 'utf8' }, (error, stdout) => {
+      result = { error, stdout };
+      settle();
     });
+    // Abort invokes execFile's callback before the process necessarily exits.
+    // Wait for its handles to close before deleting audio or finishing shutdown.
+    child.once('close', () => { closed = true; settle(); });
   });
 }
 
