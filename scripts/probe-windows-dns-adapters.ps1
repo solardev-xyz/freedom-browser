@@ -62,9 +62,12 @@ if ($Operation -eq 'Begin') {
     if ($uncovered.Count) { throw 'An active DNS-capable interface is uncovered' }
     Write-Host 'All connected DNS routes point to owned IPv4/IPv6 listeners'
 } else {
-    $entries = @(Get-Content $Snapshot -Raw | ConvertFrom-Json)
+    # Windows PowerShell 5 returns a root JSON array as one pipeline object;
+    # wrapping that result in @() would produce a nested array and merge fields.
+    $entries = ConvertFrom-Json -InputObject (Get-Content $Snapshot -Raw)
     $failures = @()
     foreach ($entry in $entries) {
+        if ($entry.Index -is [array] -or $entry.Family -is [array]) { throw 'Nested DNS snapshot entry' }
         try { Write-Dns -Entry $entry -Servers @($entry.Servers) -Automatic (!$entry.Static) }
         catch { $failures += $_ }
     }

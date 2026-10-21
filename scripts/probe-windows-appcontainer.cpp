@@ -27,8 +27,18 @@ struct Handle {
 struct Profile {
     std::wstring name;
     PSID sid = nullptr;
+    bool remove() {
+        if (!sid) return true;
+        const HRESULT status = DeleteAppContainerProfile(name.c_str());
+        if (FAILED(status)) {
+            std::printf("Owned profile deletion failed: 0x%08lx\n", static_cast<unsigned long>(status));
+            return false;
+        }
+        FreeSid(sid); sid = nullptr;
+        return true;
+    }
     ~Profile() {
-        if (sid) { DeleteAppContainerProfile(name.c_str()); FreeSid(sid); }
+        if (sid && !remove()) FreeSid(sid);
     }
 };
 struct AclGrant {
@@ -154,8 +164,14 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<wchar_t> command_buffer(command.begin(), command.end()); command_buffer.push_back(0);
         wchar_t system_root[MAX_PATH] = {};
         checked(GetEnvironmentVariableW(L"SystemRoot", system_root, MAX_PATH) != 0, "SystemRoot");
+        wchar_t local_data[32768] = {};
+        const DWORD local_data_length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_data, 32768);
+        checked(local_data_length != 0 && local_data_length < 32768, "AppContainer profile environment");
         std::wstring environment;
-        for (const auto& entry : {L"HOME=" + workspace.wstring(), L"SystemRoot=" + std::wstring(system_root),
+        // Windows resolves the newly registered profile through LOCALAPPDATA
+        // during CreateProcess; inherit only that required path, never secrets.
+        for (const auto& entry : {L"APPDATA=" + workspace.wstring(), L"HOME=" + workspace.wstring(),
+            L"LOCALAPPDATA=" + std::wstring(local_data), L"PATH=" + node.parent_path().wstring(), L"SystemRoot=" + std::wstring(system_root),
             L"TEMP=" + workspace.wstring(), L"TMP=" + workspace.wstring(), L"USERPROFILE=" + workspace.wstring()}) {
             environment += entry; environment.push_back(0);
         }
@@ -207,7 +223,8 @@ int wmain(int argc, wchar_t** argv) {
         if (!drained) throw std::runtime_error("Owned probe descendants did not drain");
         bool restored = true;
         while (!grants.empty()) { restored = grants.back()->restore() && restored; grants.pop_back(); }
-        return exit_code == 0 && restored ? 0 : 1;
+        const bool profile_removed = profile.remove();
+        return exit_code == 0 && restored && profile_removed ? 0 : 1;
     } catch (const std::exception& error) {
         std::printf("AppContainer probe failed: %s\n", error.what());
         return 1;
