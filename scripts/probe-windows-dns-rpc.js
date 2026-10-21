@@ -22,9 +22,14 @@ async function main() {
   const snapshot = path.join(workspace, 'adapter-dns.json');
   const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
   const adapters = async operation => {
-    const result = await execute(powershell, ['-NoProfile', '-NonInteractive', '-File',
-      path.join(__dirname, 'probe-windows-dns-adapters.ps1'), '-Operation', operation, '-Snapshot', snapshot], { timeout: 60000 });
-    console.log(result.stdout.trim());
+    try {
+      const result = await execute(powershell, ['-NoProfile', '-NonInteractive', '-File',
+        path.join(__dirname, 'probe-windows-dns-adapters.ps1'), '-Operation', operation, '-Snapshot', snapshot], { timeout: 60000 });
+      console.log(result.stdout.trim());
+    } catch (error) {
+      console.error('Adapter operation failed:', operation, error.stdout, error.stderr);
+      throw error;
+    }
   };
   const listeners = [];
   const queries = new Map();
@@ -124,6 +129,9 @@ async function main() {
     }
     assert.equal(results.find(result => result.mode === 'both')?.offline, 0,
       'Both DNS interfaces must block offline DNS without contradicting individual results');
+  } catch (error) {
+    console.error('Owned DNS fixture failed before cleanup:', error);
+    throw error;
   } finally {
     try {
       if (filter) {

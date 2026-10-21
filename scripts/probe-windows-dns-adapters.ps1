@@ -4,6 +4,24 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT') {
     throw 'Use only a disposable Windows CI runner'
 }
+function Read-Dns($entry) {
+    Get-DnsClientServerAddress | Where-Object { $_.InterfaceIndex -eq $entry.Index -and $_.AddressFamily -eq $entry.Family }
+}
+function Write-Dns($entry, $servers, $automatic) {
+    $family = if ($entry.Family -eq 2) { 'ipv4' } else { 'ipv6' }
+    if ($automatic) {
+        & netsh interface $family set dnsservers "name=$($entry.Index)" source=dhcp
+        if ($LASTEXITCODE) { throw 'Could not restore automatic DNS' }
+    } else {
+        if (!$servers.Count) { throw 'Empty static DNS configuration' }
+        & netsh interface $family set dnsservers "name=$($entry.Index)" source=static "address=$($servers[0])" validate=no
+        if ($LASTEXITCODE) { throw 'Could not set owned DNS server' }
+        for ($i = 1; $i -lt $servers.Count; $i++) {
+            & netsh interface $family add dnsservers "name=$($entry.Index)" "address=$($servers[$i])" "index=$($i + 1)" validate=no
+            if ($LASTEXITCODE) { throw 'Could not restore additional DNS server' }
+        }
+    }
+}
 if ($Operation -eq 'Begin') {
     $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object Status -eq Up)
     if (!$adapters.Count) { throw 'No active adapters' }
@@ -15,21 +33,23 @@ if ($Operation -eq 'Begin') {
             $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters\Interfaces\$(([guid]$adapter.InterfaceGuid).ToString('B'))"
             if (!(Test-Path $key)) { throw 'Cannot determine automatic/static DNS configuration' }
             $static = (Get-ItemProperty $key).NameServer
-            [pscustomobject]@{Index=$adapter.ifIndex;Family=$dns.AddressFamily;Servers=@($dns.ServerAddresses);Static=[bool]$static;Key=$key}
+            [pscustomobject]@{Index=[uint32]$adapter.ifIndex;Family=[int]$dns.AddressFamily;Servers=@($dns.ServerAddresses);Static=[bool]$static;Key=$key}
         }
     })
     if (!$entries.Count) { throw 'No DNS configuration found' }
     # Persist every original entry before the first mutation, including source.
     $entries | ConvertTo-Json -Depth 4 | Set-Content $Snapshot -Encoding utf8
+    $entries | ConvertTo-Json -Depth 4 -Compress | Write-Host
     foreach ($entry in $entries) {
-        $dns = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
+        $dns = Read-Dns $entry
+        if (!$dns) { throw "DNS object absent: index=$($entry.Index), family=$($entry.Family)" }
         $address = if ($entry.Family -eq 2) { '127.0.0.1' } else { '::1' }
-        Set-DnsClientServerAddress -InputObject $dns -ServerAddresses @($address)
-        $actual = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
+        Write-Dns $entry @($address) $false
+        $actual = Read-Dns $entry
         if (($actual.ServerAddresses -join ',') -ne $address) { throw 'Owned DNS route was not applied' }
     }
     foreach ($entry in $entries) {
-        $actual = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
+        $actual = Read-Dns $entry
         $address = if ($entry.Family -eq 2) { '127.0.0.1' } else { '::1' }
         if (($actual.ServerAddresses -join ',') -ne $address) { throw 'Owned DNS routes changed while applying another family' }
     }
@@ -44,15 +64,13 @@ if ($Operation -eq 'Begin') {
     $failures = @()
     foreach ($entry in $entries) {
         try {
-            $dns = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
-            if ($entry.Static) { Set-DnsClientServerAddress -InputObject $dns -ServerAddresses @($entry.Servers) }
-            else { Set-DnsClientServerAddress -InputObject $dns -ResetServerAddresses }
-            $actual = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
+            Write-Dns $entry @($entry.Servers) (!$entry.Static)
+            $actual = Read-Dns $entry
             if (($actual.ServerAddresses -join ',') -ne ($entry.Servers -join ',')) { throw 'Restored DNS addresses differ' }
         } catch { $failures += $_ }
     }
     foreach ($entry in $entries) {
-        $actual = Get-DnsClientServerAddress -InterfaceIndex $entry.Index | Where-Object AddressFamily -eq $entry.Family
+        $actual = Read-Dns $entry
         if (($actual.ServerAddresses -join ',') -ne ($entry.Servers -join ',')) { $failures += 'Final restored DNS addresses differ' }
         if ([bool](Get-ItemProperty $entry.Key).NameServer -ne $entry.Static) { $failures += 'Restored automatic/static DNS mode differs' }
     }
