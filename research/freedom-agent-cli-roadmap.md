@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-22
-Status: Concrete security repairs implemented and independently re-reviewed; bounded Windows gate passed; AI settings, onboarding, examples and dictation integrated; domain research complete; broader release qualification remains
+Status: Concrete security repairs implemented and independently re-reviewed; bounded Windows gate passed; AI settings, onboarding, examples and dictation integrated; shared domain core on an experimental branch; broader release qualification remains
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-21
@@ -13,7 +13,11 @@ example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
 AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation is integrated with incremental text, service-management pages and bundled local whisper.cpp; maintainer OpenRouter/local smokes and the scoped Claude review passed.
 AI1–AI4 received a further Claude review with repairs tracked below. AI5 domain
-research is complete; implementation has not started. Ordinary browsing remains a complete experience with AI off.
+research is complete; the first implementation is on `experiment/domain-skills`,
+not merged into PR #457. It covers shared profile-owned plans/receipts, bundled
+skills, wallet-approved registration/renewal and website/address/text records.
+Broader management and live paid qualification remain separate slices. Ordinary
+browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
 record preserves previous design decisions, experiments and dated qualification;
@@ -424,7 +428,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Integrated into feature branch; maintainer cloud/local smokes and Claude review complete; five-target native CI passes |
-| 5 | AI5 — Domain skills | Give a published site a name and update it later | Read-only contract research complete; typed wallet adapter/skills implementation next |
+| 5 | AI5 — Domain skills | Give a published site a name and update it later | Shared core and initial skills on `experiment/domain-skills`; fork-tested; user smoke and broader management remain |
 
 AI4 is integrated. AI5 starts with binding an already-owned name, then purchases and renewals, so
 registration complexity does not block the first useful named-site workflow.
@@ -725,7 +729,36 @@ for approval before adding it.
 
 ### AI5 — Buy/manage dWeb names and bind a published site
 
-**2026-10-20 research complete, implementation not started:** the
+**2026-10-22 experimental first slice:** `experiment/domain-skills` implements
+the shared main-process naming service under `src/main/domains/`, a wallet bridge
+using existing signers/approvals/recording, four Agent tools and progressively
+loaded shared/ENS/WNS/GNS procedures. State belongs to the profile independently
+of conversation lifetime, so a future non-Agent UI can reuse it. No new IPC,
+provider, dependency or manual management screen is introduced.
+
+Implemented scope: inspect; top-level registration/renewal; verified Swarm website
+binding/clear; one ETH-address or text record. Each commit/reveal has its own
+exact wallet approval; secrets use protected OS storage. Chain-time waiting,
+restart recovery, changed-state rejection, unknown-dispatch reconciliation,
+canonical receipts and fresh Freedom resolution are explicit. [Implementation
+contract and smoke instructions](../docs/domain-management.md).
+
+Local mainnet-fork qualification passed all three namespaces: registration,
+restart during commitment waiting, reveal, renewal, address/text/website/clear
+and no duplicate send on replay. A distinct wrapped-ENS fixture verified both
+expiry increases and unchanged ownership. This used 22 approved product sends
+on a private Anvil fork plus fixture setup, synthetic publication receipts and
+no real wallet/spend. Local lint and the full **10,882-test suite / 129 skipped**
+pass; **320 focused tests** pass after the final guards/recovery changes, plus the
+real Electron startup/open/close case. Live binding/retrieval, paid operations, wallet devices
+and packaged platforms are still unqualified.
+
+Transfers, primary names, subnames, delegate changes, resolver migration and
+ENSv2 remain researched but not implemented in this first slice. Rechecked ENS
+deployment docs now list v2 mainnet contracts but still state v1 registration
+continues until launch; matching pinned v1 runtime/controller checks gate writes.
+
+**2026-10-20 research handoff:** the
 [implementation handoff](../docs/agent-domain-skills-research.md) records pinned
 sources/ABIs, read-only mainnet evidence cross-checked through two RPC services,
 commitment vectors, fees/timing, wrapped ENS renewal, record/transfer/subname

@@ -273,6 +273,7 @@ async function signAndSendTransaction(params, signer) {
     ? null
     : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
 
+  let broadcastAttempted = false;
   try {
     const from = await signer.getAddress();
 
@@ -282,6 +283,7 @@ async function signAndSendTransaction(params, signer) {
     // own RPC — our gas parameters would be stale guesses by the time the
     // user confirms on the device, so only the intent fields go over.
     if (typeof signer.sendTransaction === 'function') {
+      broadcastAttempted = true;
       const hash = await signer.sendTransaction({ to, value, data, chainId });
       await verifyDeviceBroadcastFrom(hash, from, chainId);
       console.log('[TransactionService] Transaction broadcast by signer:', hash);
@@ -326,6 +328,7 @@ async function signAndSendTransaction(params, signer) {
 
     const signedTransaction = await signer.signTransaction(tx);
     const parsedTransaction = Transaction.from(signedTransaction);
+    broadcastAttempted = true;
     const broadcast = await chainData.broadcastRawTransaction(chainId, signedTransaction);
     if (
       parsedTransaction.hash &&
@@ -350,7 +353,16 @@ async function signAndSendTransaction(params, signer) {
       explorerUrl: getTxExplorerUrl(chainId, broadcast.result),
     };
   } catch (err) {
-    console.error('[TransactionService] Transaction failed:', err);
+    console.error('[TransactionService] Transaction failed:', params.redactErrors ? 'Sensitive transaction details withheld' : err);
+    if (params.redactErrors) {
+      // Domain commitment/reveal preimages must not enter logs or error chains.
+      // The operation journal owns uncertain-dispatch reconciliation.
+      const safe = new Error(broadcastAttempted
+        ? 'The wallet transaction did not return a confirmed broadcast result. Inspect the saved operation before retrying.'
+        : 'The wallet did not broadcast this transaction. A fresh approval is needed to resume.');
+      safe.code = broadcastAttempted ? 'DOMAIN_BROADCAST_UNKNOWN' : 'DOMAIN_NOT_BROADCAST';
+      throw safe;
+    }
 
     // Device-backend errors (LEDGER_*/REMOTE_*) carry a stable code and a
     // user-facing message; rewrapping them here would strip the code and

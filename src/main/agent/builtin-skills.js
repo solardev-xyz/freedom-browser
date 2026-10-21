@@ -21,6 +21,11 @@ const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
       'Publish managed project output, attached files, live folders, static sites, and bounded text to Swarm through Freedom.',
     files: Object.freeze(['SKILL.md']),
   }),
+  Object.freeze({
+    name: 'dweb-domains',
+    description: 'Register or renew .eth, .wei and .gwei names, manage website/address/text records, and connect a verified Swarm publication to an owned name through Freedom’s wallet.',
+    files: Object.freeze(['SKILL.md', 'ens.md', 'wei.md', 'gwei.md']),
+  }),
 ]);
 
 function skillVirtualPath(skillName, relativeFile) {

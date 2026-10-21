@@ -4029,6 +4029,46 @@ describe('provider-aware orchestration guidance', () => {
   );
 });
 
+describe('domain continuation', () => {
+  async function fixture() {
+    const fake = createFakeSession();
+    const waiting = createDeferred();
+    const domainService = {
+      execute: jest.fn(async () => ({ operationId: `domain_${'a'.repeat(24)}`, state: 'waiting_commitment' })),
+      waitForOperations: jest.fn((_ids, { signal }) => {
+        signal.addEventListener('abort', () => waiting.resolve([]), { once: true });
+        return waiting.promise;
+      }),
+    };
+    const { service, dependencies } = createService(fake, { domainService, loadSdk: jest.fn(async () => ({ defineTool: definition => definition })) });
+    await service.start(startOptions());
+    const tools = dependencies.createSession.mock.calls[0][0].customTools;
+    await tools.find(tool => tool.name === 'domain_execute').execute('domain-call', { operationId: `domain_${'a'.repeat(24)}` });
+    fake.prompt.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    return { service, fake, waiting, domainService };
+  }
+  test('waits without model polling then resumes with a ready reveal, not automatic signing', async () => {
+    const { service, fake, waiting, domainService } = await fixture();
+    expect(service.activeRun).not.toBeNull();
+    expect(domainService.waitForOperations).toHaveBeenCalledWith([`domain_${'a'.repeat(24)}`], expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    waiting.resolve([{ operationId: `domain_${'a'.repeat(24)}`, state: 'ready', step: 'reveal' }]);
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_domain_results', content: expect.stringContaining('separate wallet approval') }), { triggerTurn: true });
+    expect(domainService.execute).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+  test('Stop cancels observation and cannot trigger a stale reveal', async () => {
+    const { service, fake, domainService } = await fixture();
+    await service.stop('run_test');
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    expect(domainService.execute).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+});
+
 describe('publication continuation', () => {
   const id = `swarm_pub_${'a'.repeat(24)}`;
   const initial = { publicationId: id, state: 'uploading', applicationState: 'possibly_applied', kind: 'folder', name: 'dist', public: true };

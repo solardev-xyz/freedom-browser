@@ -30,6 +30,8 @@ const { WorkspacePreviewController } = require('./workspace-preview-controller')
 const { DictationService } = require('./dictation-service');
 const { LocalDictation } = require('./dictation-local');
 const { registerDictationIpc } = require('./dictation-ipc');
+const { DomainService } = require('../domains/service');
+const { DomainOperationStore } = require('../domains/operation-store');
 
 function createFreedomAgentRuntime(options = {}) {
   let featureController = new AbortController();
@@ -124,6 +126,19 @@ function createFreedomAgentRuntime(options = {}) {
     postageReadiness: new SwarmPostageReadiness({ operationStore: nodeOperationStore }),
     ...options.swarmPublicationControllerOptions,
   });
+  let domainService;
+  try {
+    domainService = new DomainService({
+      store: new DomainOperationStore({ directory: options.profile?.userDataDir, safeStorage: options.safeStorage }),
+      getPublication: async (publicationId, context) => {
+        if (!publicationId) return null;
+        return (await publicationController.status({ publicationId }, context)).publication;
+      },
+    });
+  } catch {
+    // An unreadable naming journal must not disable browsing or other AI tools.
+    log.warn('[Domains] Domain operations are unavailable; the saved journal was not changed');
+  }
   options.controller.setWalletTransferController(walletController);
   options.controller.setNodeController(nodeController);
   options.controller.setNodeRequestController(nodeRequestController);
@@ -134,6 +149,7 @@ function createFreedomAgentRuntime(options = {}) {
     safeStorage: options.safeStorage, openExternal: options.openExternal, fetch: guardedFetch,
     assertEnabled, featureSignal: () => featureController.signal });
   const service = new FreedomAgentService({
+    domainService,
     mcpConnections,
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -202,6 +218,7 @@ function createFreedomAgentRuntime(options = {}) {
     diagnosticsController,
     publicationController,
     service,
+    domainService,
     dictation,
     async dispose() {
       const dictationShutdown = unregisterDictation();
@@ -209,6 +226,7 @@ function createFreedomAgentRuntime(options = {}) {
       await dictationShutdown;
       await mcpConnections.dispose();
       await service.dispose();
+      domainService?.close();
       await nodeRequestController.dispose();
       publicationController.dispose();
       await workspacePreviewController.dispose();

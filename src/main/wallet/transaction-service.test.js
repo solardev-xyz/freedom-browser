@@ -47,6 +47,32 @@ describe('signAndSendTransaction (signer-based)', () => {
     });
   });
 
+  it('keeps sensitive domain calldata out of transaction errors and logs', async () => {
+    const secret = 'private-registration-preimage-fixture';
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockBroadcastRawTransaction.mockRejectedValue(new Error(secret));
+    try {
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, signer)).rejects.toThrow('saved operation');
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(secret);
+    } finally { errorLog.mockRestore(); }
+  });
+
+  it('distinguishes a local signing refusal from an uncertain broadcast without retaining its cause', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const refusingSigner = { ...signer, signTransaction: async () => { throw new Error('private-device-error-fixture'); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, refusingSigner)).rejects.toMatchObject({ code: 'DOMAIN_NOT_BROADCAST' });
+      expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain('private-device-error-fixture');
+    } finally { errorLog.mockRestore(); }
+  });
+
   it('fetches the nonce for the signer address, signs, and broadcasts', async () => {
     const result = await signAndSendTransaction(
       {

@@ -1,6 +1,11 @@
 # Agent domain skills: implementation research
 
-Date: 2026-10-20. Status: research and implementation plan; **no domain-write feature implemented or paid transaction tested**.
+Date: 2026-10-20. Historical research and implementation plan; **no paid transaction tested**.
+
+October 22 follow-up: the first shared-service/Agent implementation is on
+`experiment/domain-skills`; see [current scope and qualification](domain-management.md).
+This historical call matrix includes later operations that the first slice does
+not expose. Mainnet-fork fixture writes are not live purchases or wallet-device qualification.
 
 This covers buying, renewing and managing `.eth` (ENS), `.wei` (WNS) and `.gwei` (GNS), including pointing a name at a site published through Freedom's Swarm tools. Public contract reads and ABI checks were performed without accessing a user's wallet. Sources and observations are pinned below so that the implementation does not depend on an app screenshot or an outdated registration tutorial.
 

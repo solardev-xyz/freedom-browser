@@ -6,6 +6,7 @@ Freedom's README is the short project overview. Use these guides for detailed se
 
 - [Features](features.md) — browser capabilities, protocols, settings, and built-in pages.
 - [Agent codemode and MCP](agent-codemode-mcp.md) — connected services, browser sign-in, and sandboxed tool scripts.
+- [Experimental domain management](domain-management.md) — registration, renewal and records through the shared wallet-backed naming service.
 - [Configuration](configuration.md) — managed nodes, external endpoints, profiles, command-line flags, and Ethereum RPC configuration.
 - [Troubleshooting](troubleshooting.md) — common node, naming, and content-loading problems.
 - [Swarm content retrieval](protocols/swarm.md) — `bzz://` behavior and site migration guidance.

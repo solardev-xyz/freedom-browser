@@ -222,6 +222,9 @@ and purchases keep their normal approval steps.
   service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
   or the microphone's options. Audio privacy is separate from chat-model privacy.
   See [dictation setup and draft limitations](agent-dictation.md).
+- **Domain skills (experimental):** Inspect and quote .eth/.wei/.gwei names, register
+  or renew through wallet approvals, and manage website/address/text records.
+  [Scope, supported contracts and qualification](domain-management.md).
 - **Windows projects:** First use requires administrator setup of restricted execution
   accounts and network rules. Subsequent commands run without administrator rights.
   Windows confines writes but allows broader file reads than the macOS and Linux

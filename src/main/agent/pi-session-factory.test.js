@@ -217,6 +217,7 @@ describe('isolated Pi session factory', () => {
         expect.objectContaining({ name: 'workspace-history' }),
         expect.objectContaining({ name: 'swarm-postage' }),
         expect.objectContaining({ name: 'swarm-publishing' }),
+        expect.objectContaining({ name: 'dweb-domains' }),
       ],
       diagnostics: [],
     });
@@ -245,7 +246,7 @@ describe('isolated Pi session factory', () => {
       expect.objectContaining({ customTools: [expect.objectContaining({ name: 'read' })], tools: ['read'] })
     );
     expect(sdk.createReadTool).not.toHaveBeenCalled();
-    expect(created.resourceLoader.getSkills().skills).toHaveLength(3);
+    expect(created.resourceLoader.getSkills().skills).toHaveLength(4);
   });
 
   test('rejects built-in, unnamed, and duplicate tool names', () => {
@@ -380,6 +381,7 @@ describe('isolated Pi session factory', () => {
         const { createFreedomBrowserTools } = require('./src/main/agent/pi-browser-tools');
         const { createWorkspaceTools } = require('./src/main/agent/pi-workspace-tools');
         const { createConversationAttachmentTools } = require('./src/main/agent/pi-attachment-tools');
+        const { createDomainTools } = require('./src/main/agent/pi-domain-tools');
         const unexpected = () => { throw new Error('Unexpected real tool execution'); };
         const controller = Object.fromEntries([
           'execute', 'accessFile', 'readFile', 'createDirectory', 'writeFile', 'listDirectory',
@@ -387,6 +389,7 @@ describe('isolated Pi session factory', () => {
           'startProcess', 'interactProcess', 'reviewWorkspaceHistory',
         ].map(name => [name, unexpected]));
         const productionTools = [
+          ...createDomainTools({ sdk, service: {}, conversationId: 'test', requestApproval: unexpected }),
           ...await createFreedomBrowserTools({ sdk, controller, tabId: 'test-tab' }),
           ...await createWorkspaceTools({ sdk, controller, conversationId: 'test', requestApproval: unexpected }),
           ...await createConversationAttachmentTools({ sdk, conversationId: 'test',
@@ -419,7 +422,7 @@ describe('isolated Pi session factory', () => {
             assert.equal(instructions.split('Current time from Freedom').length - 1, 1);
             assert.ok(instructions.includes(index === 0 ? '2026-09-19T12:00:00.000Z' : '2026-09-20T12:00:00.000Z'));
             const names = request.tools.map(tool => tool.function.name);
-            for (const name of ['probe', 'browser_call_page_tool', 'request_permissions', 'workspace_history', 'read', 'write', 'bash', 'attachment_list']) {
+            for (const name of ['probe', 'browser_call_page_tool', 'request_permissions', 'workspace_history', 'read', 'write', 'bash', 'attachment_list', 'domain_inspect', 'domain_prepare', 'domain_execute', 'domain_operation_status']) {
               assert.ok(names.includes(name), name + ' must remain registered');
             }
           }
@@ -511,7 +514,7 @@ describe('isolated Pi session factory', () => {
       ],
       extensions: 0,
       sessionFile: null,
-      skills: 3,
+      skills: 4,
       contextFiles: 0,
     });
     expect(result.prompt).toContain('swarm-postage');

@@ -38,6 +38,10 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  domain_inspect: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Checking domain', completed: 'Checked domain' },
+  domain_prepare: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Preparing domain plan', completed: 'Prepared domain plan' },
+  domain_execute: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Updating domain', completed: 'Checked domain transaction' },
+  domain_operation_status: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Checking domain operation', completed: 'Checked domain operation' },
   codemode: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Running tool script', completed: 'Ran tool script' },
   mcp_discover: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Discovering connected services', completed: 'Discovered connected services' },
   mcp_request: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Using connected service', completed: 'Connected service returned' },

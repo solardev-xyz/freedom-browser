@@ -22,6 +22,8 @@ jest.mock('./managed-workspace-controller');
 jest.mock('./managed-workspace-source-reader');
 jest.mock('./workspace-preview-controller');
 jest.mock('./dictation-ipc', () => ({ registerDictationIpc: jest.fn(() => jest.fn()) }));
+jest.mock('../domains/service');
+jest.mock('../domains/operation-store');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');
@@ -236,6 +238,7 @@ describe('Freedom agent runtime', () => {
     });
     expect(options.controller.setPublicationController).toHaveBeenCalledWith(publicationController);
     expect(FreedomAgentService).toHaveBeenCalledWith({
+      domainService: expect.any(Object),
       mcpConnections: expect.any(Object),
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,

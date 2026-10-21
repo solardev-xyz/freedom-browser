@@ -26,6 +26,7 @@ describe('Freedom built-in Agent skills', () => {
         baseDir: skillVirtualPath('swarm-publishing', ''),
         disableModelInvocation: false,
       }),
+      expect.objectContaining({ name: 'dweb-domains', filePath: skillVirtualPath('dweb-domains', 'SKILL.md'), disableModelInvocation: false }),
     ]);
     expect(getBuiltInSkills()[0].filePath).toContain(VIRTUAL_SKILLS_ROOT);
     expect(getBuiltInSkills()[0].filePath).not.toContain(__dirname);
