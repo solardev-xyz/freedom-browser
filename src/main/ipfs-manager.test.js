@@ -3371,6 +3371,29 @@ describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
       expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
     });
 
+    test("a stop while a start waits for a failed node's stop cancels that start", async () => {
+      const ctx = loadIpfsManagerModule();
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      const failed = ctx.serviceInstances[0];
+      const cleanup = deferred();
+      failed.shutdown = cleanup.promise;
+      failed.config.onFailure('freedom-ipfs service exited', failed);
+      expect(failed.stop).toHaveBeenCalledTimes(1);
+
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      const stopping = ctx.mod.stopIpfs();
+      await flush();
+      cleanup.resolve();
+      await Promise.all([restarting, stopping]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+      });
+    });
+
     test('a second stop meanwhile stops the node once', async () => {
       const ctx = loadIpfsManagerModule({ serviceStartPending: true });
       ctx.mod.startIpfs();

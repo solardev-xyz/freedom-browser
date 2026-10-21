@@ -754,10 +754,15 @@ async function doStartIpfs(requestedAt = stopsRequested) {
   clearExternalGatewayState();
 
   const NodeClass = nativeNodeClass();
+  // A node that failed may still hold the data directory: its stop is
+  // bounded, and the new node starts after it.
+  await failedNodeStop;
   // A stop requested after this start would otherwise wait behind it: a
   // start that can wait can't be bounded, and that stop has already taken
   // over whatever was starting. Its own op, queued after this one, publishes
-  // STOPPED. Any other start is bounded, and runs as it always has.
+  // STOPPED. Any other start is bounded, and runs as it always has. From
+  // here to `startingNode = node` nothing awaits, so no stop can fall
+  // between this check and the takeover.
   const canWait = startCanWait(NodeClass);
   if (canWait && requestedAt !== stopsRequested) {
     log.info('[IPFS] A stop requested meanwhile cancels the IPFS start');
@@ -774,9 +779,6 @@ async function doStartIpfs(requestedAt = stopsRequested) {
     return;
   }
 
-  // A node that failed may still hold the data directory: its stop is
-  // bounded, and the new node starts after it.
-  await failedNodeStop;
   const dataDir = getIpfsDataPath();
   const onFailure = (reason, failedNode) => handleNativeNodeFailure(reason, failedNode);
   const node =
