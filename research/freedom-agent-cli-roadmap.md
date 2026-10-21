@@ -39,10 +39,7 @@ records, isolated preview networking, guarded MCP authentication, wallet fee and
 custody checks, and Windows build/setup isolation. The audit record separates
 passing regressions from remaining native qualification; it is the current
 per-finding status source. S7 did not reproduce on the tested macOS filesystem;
-S8 still needs the actual Windows resolver result. The Windows desktop currently
-times out over SSH; new CI checks cover DNS and native junction/read/cleanup
-paths. Claude's model stopped its review session, so final independent clearance
-is still outstanding. These gates precede new domain capabilities or broad
+**S8 reproduced on Windows CI:** the shared DNS service sent an offline-workload lookup despite direct-socket blocking. Strict offline enforcement remains an open boundary. Native Windows compilation, file/junction read checks, confined cleanup and controller qualification passed. The Windows desktop currently times out over SSH. The user-selected Daybreak Blue Codex reviewer is reviewing the repairs after Claude's model stopped its review session; final independent clearance is still outstanding. These gates precede new domain capabilities or broad
 beta/release clearance.
 
 Main is verified through `8a671891`, already included by `fdd2e729`. Wallet

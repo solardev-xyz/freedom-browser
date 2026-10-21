@@ -63,6 +63,8 @@ test('refuses local or cached managed policies before starting Claude', async ()
   await expect(assertUnmanagedClaude({ platform: 'darwin', exists: async () => false, exec: async () => ({ stdout: '{}' }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
   await expect(assertUnmanagedClaude({ platform: 'linux', exists: async () => { throw new Error('unreadable'); } })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
   await expect(assertUnmanagedClaude({ platform: 'win32', exists: async file => /ClaudeCode[\\/]managed-settings\.json$/i.test(file), exec })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
+  // The required modern CLI no longer reads the legacy ProgramData location.
+  await expect(assertUnmanagedClaude({ platform: 'win32', exists: async file => file.includes('ProgramData'), exec })).resolves.toBeUndefined();
 });
 
 
@@ -102,7 +104,7 @@ test.each([false, true])('retires owned CLI scratch files on shutdown or failed 
   const onClose = jest.fn();
   const starting = startClaudeProcess({
     executable: '/native/claude', model: 'sonnet', systemPrompt: 'Synthetic prompt', tools: [],
-    signal: new AbortController().signal, checkLogin: async () => {}, onEvent: () => {}, onClose,
+    signal: new AbortController().signal, checkLogin: async () => {}, checkPolicy: async () => {}, onEvent: () => {}, onClose,
     spawnProcess: (_executable, _args, options) => {
       directory = options.cwd;
       expect(fs.readFileSync(path.join(directory, 'system.txt'), 'utf8')).toBe('Synthetic prompt');
@@ -137,6 +139,35 @@ test('model discovery validates entries without guessing versions or duplicating
   expect(models[1].resolvedModel).toBeUndefined();
   expect(() => normalizeClaudeModels([])).toThrow('empty model catalogue');
   expect(() => normalizeClaudeModels({})).toThrow('model catalogue');
+});
+
+test.each(['before-spawn', 'after-spawn', 'next-input', 'idle'])('revokes Claude when managed policy appears %s', async phase => {
+  const { EventEmitter } = require('events');
+  const { PassThrough } = require('stream');
+  const { startClaudeProcess } = require('./claude-cli');
+  const child = new EventEmitter();
+  child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const input = jest.fn(); child.stdin.on('data', input);
+  child.kill = jest.fn(() => { queueMicrotask(() => child.emit('close', 0)); return true; });
+  let managed = false;
+  const spawnProcess = jest.fn(() => { if (phase === 'after-spawn') managed = true; return child; });
+  const starting = startClaudeProcess({ executable: '/native/claude', model: 'sonnet', systemPrompt: 'Owned fixture', tools: [],
+    signal: new AbortController().signal, onEvent: () => {}, onClose: () => {}, spawnProcess,
+    checkLogin: async () => { if (phase === 'before-spawn') managed = true; },
+    checkPolicy: async () => { if (managed) throw Object.assign(new Error('Managed policy appeared'), { code: 'AGENT_CLAUDE_MANAGED' }); },
+  });
+  if (phase === 'before-spawn' || phase === 'after-spawn') {
+    await expect(starting).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
+    if (phase === 'before-spawn') expect(spawnProcess).not.toHaveBeenCalled();
+  } else {
+    const connection = await starting;
+    managed = true;
+    if (phase === 'next-input') await expect(connection.write({ type: 'user', message: 'must not send' })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
+    else await new Promise(resolve => child.once('close', resolve));
+    await connection.close();
+    expect(child.kill).toHaveBeenCalled();
+  }
+  expect(input).not.toHaveBeenCalled();
 });
 
 test('discovery sends only initialization, ignores unrelated responses, and closes its child', async () => {

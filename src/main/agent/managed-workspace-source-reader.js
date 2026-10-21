@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { openedFilePath, readWindowsWorkspaceFile } = require('./workspace-execution/opened-file-path');
+const { openedFilePath, readWindowsWorkspaceFile, checkedWorkspaceRoot } = require('./workspace-execution/opened-file-path');
 const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
 
 function excludedPublicationPath(value) {
@@ -76,15 +76,11 @@ function validateWorkspacePublicationPath(value) {
   return segments.join('/');
 }
 
-async function checkedEntry(root, relativePath) {
-  const rootEntry = await fs.promises.lstat(root);
-  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-    throw sourceError(
-      'WORKSPACE_PUBLICATION_UNSAFE',
-      'The managed workspace is unavailable for publication'
-    );
-  }
-  const rootReal = await fs.promises.realpath(root);
+async function checkedEntry(root, relativePath, identity) {
+  let pinned;
+  try { pinned = await checkedWorkspaceRoot(root, identity); }
+  catch { throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'The authorized publication root changed'); }
+  const rootReal = pinned.root;
   let candidate = root;
   for (const segment of relativePath === '.' ? [] : relativePath.split('/')) {
     candidate = path.join(candidate, segment);
@@ -103,12 +99,16 @@ async function checkedEntry(root, relativePath) {
       'The publication source escaped its managed workspace'
     );
   }
-  return { candidate, canonical, rootReal };
+  return { candidate, canonical, rootReal, identity: pinned };
 }
 
-async function readRegularFile(root, relativePath, remainingBytes) {
-  const checked = await checkedEntry(root, relativePath);
-  if (process.platform === 'win32') return readWindowsWorkspaceFile(checked.rootReal, relativePath, remainingBytes);
+async function readRegularFile(root, relativePath, remainingBytes, identity) {
+  const checked = await checkedEntry(root, relativePath, identity);
+  if (process.platform === 'win32') {
+    const bytes = await readWindowsWorkspaceFile(checked.rootReal, relativePath, remainingBytes);
+    await checkedEntry(root, relativePath, checked.identity);
+    return bytes;
+  }
   const handle = await fs.promises.open(
     checked.candidate,
     fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
@@ -156,6 +156,7 @@ async function readRegularFile(root, relativePath, remainingBytes) {
         'A workspace file changed while Freedom was reading it for publication'
       );
     }
+    await checkedEntry(root, relativePath, checked.identity);
     return bytes;
   } finally {
     await handle.close();
@@ -184,9 +185,9 @@ class ManagedWorkspaceSourceReader {
   async describe(conversationId, requestedPath = '.') {
     const relativePath = validateWorkspacePublicationPath(requestedPath || '.');
     try {
-      const { path: workspaceRoot } =
+      const { path: workspaceRoot, identity } =
         await this.workspaceController.resolveWorkspacePath(conversationId);
-      const checked = await checkedEntry(workspaceRoot, relativePath);
+      const checked = await checkedEntry(workspaceRoot, relativePath, identity);
       const stats = await fs.promises.lstat(checked.candidate);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
         return Object.freeze({
@@ -226,9 +227,9 @@ class ManagedWorkspaceSourceReader {
 
   async read(conversationId, requestedPath = '.') {
     const descriptor = await this.describe(conversationId, requestedPath);
-    let workspaceRoot;
+    let workspaceRoot, identity;
     try {
-      ({ path: workspaceRoot } =
+      ({ path: workspaceRoot, identity } =
         await this.workspaceController.resolveWorkspacePath(conversationId));
     } catch {
       throw sourceError(
@@ -236,13 +237,14 @@ class ManagedWorkspaceSourceReader {
         'The managed workspace is unavailable for publication'
       );
     }
+    identity = (await checkedEntry(workspaceRoot, '.', identity)).identity;
     if (excludedPublicationPath(descriptor.workspacePath)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This path is private or contains credentials. Select public build output instead.');
     if (descriptor.kind === 'file') {
       try {
         const bytes = await readRegularFile(
           workspaceRoot,
           descriptor.workspacePath,
-          MAX_WORKSPACE_PUBLICATION_BYTES
+          MAX_WORKSPACE_PUBLICATION_BYTES, identity
         );
         if (historyContainsSecret(bytes)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This file appears to contain credentials. Remove them before publishing.');
         const contentType = contentTypeForPath(descriptor.workspacePath);
@@ -275,7 +277,7 @@ class ManagedWorkspaceSourceReader {
           'The managed workspace publication contains too many entries'
         );
       }
-      const checked = await checkedEntry(workspaceRoot, relativeDirectory);
+      const checked = await checkedEntry(workspaceRoot, relativeDirectory, identity);
       const stats = await fs.promises.lstat(checked.candidate);
       if (!stats.isDirectory() || stats.isSymbolicLink()) {
         throw sourceError(
@@ -295,7 +297,7 @@ class ManagedWorkspaceSourceReader {
           );
         }
         const child = relativeDirectory === '.' ? name : `${relativeDirectory}/${name}`;
-        const childChecked = await checkedEntry(workspaceRoot, child);
+        const childChecked = await checkedEntry(workspaceRoot, child, identity);
         const childStats = await fs.promises.lstat(childChecked.candidate);
         if (childStats.isSymbolicLink()) {
           throw sourceError(
@@ -322,7 +324,7 @@ class ManagedWorkspaceSourceReader {
         const bytes = await readRegularFile(
           workspaceRoot,
           child,
-          MAX_WORKSPACE_PUBLICATION_BYTES - totalBytes
+          MAX_WORKSPACE_PUBLICATION_BYTES - totalBytes, identity
         );
         if (historyContainsSecret(bytes)) { excludedCount++; continue; }
         totalBytes += bytes.byteLength;

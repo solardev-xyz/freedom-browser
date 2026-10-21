@@ -1232,6 +1232,8 @@ jobs:
         uses: ./.github/actions/install-node-deps
       - name: Build macOS workspace supervisor
         run: npm run build:workspace-supervisor
+      - name: Qualify preview network isolation against owned listeners
+        run: node_modules/.bin/electron scripts/qualify-agent-preview-network.js
       - name: Run agent E2E
         run: |
           npm run test:e2e -- \
@@ -1351,6 +1353,9 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Qualify preview network isolation against owned listeners
+        run: xvfb-run -a node_modules/.bin/electron scripts/qualify-agent-preview-network.js
 
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |

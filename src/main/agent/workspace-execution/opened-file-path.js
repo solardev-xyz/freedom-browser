@@ -8,6 +8,21 @@ const { runWindowsSandbox } = require('./windows-sandbox-process');
 const os = require('node:os');
 const path = require('node:path');
 
+async function checkedWorkspaceRoot(root, expected) {
+  const before = await fs.promises.lstat(root);
+  const canonical = await fs.promises.realpath(root);
+  const actual = await fs.promises.stat(canonical);
+  const after = await fs.promises.lstat(root);
+  const matches = entry => entry.isDirectory() && !entry.isSymbolicLink() &&
+    String(entry.dev) === String(before.dev) && String(entry.ino) === String(before.ino);
+  if (!matches(before) || !matches(actual) || !matches(after) ||
+      expected && (String(before.dev) !== String(expected.dev) || String(before.ino) !== String(expected.ino) ||
+        expected.root && canonical !== expected.root)) {
+    throw Object.assign(new Error('The authorized workspace root changed'), { code: 'WORKSPACE_ROOT_CHANGED' });
+  }
+  return Object.freeze({ root: canonical, dev: String(before.dev), ino: String(before.ino) });
+}
+
 // Ask the kernel about the already-open object. Rechecking a pathname is not
 // sufficient: a writer can swap an intermediate directory between checks.
 async function openedFilePath(handle) {
@@ -41,4 +56,4 @@ async function readWindowsWorkspaceFile(root, relative, maximum) {
   return Buffer.from(result.stdout, 'base64');
 }
 
-module.exports = { openedFilePath, readWindowsWorkspaceFile };
+module.exports = { openedFilePath, readWindowsWorkspaceFile, checkedWorkspaceRoot };

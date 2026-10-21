@@ -43,6 +43,10 @@ fn sha256(bytes: &[u8]) -> Result<String> {
 fn lock_runtime(expected: &HashMap<String, String>) -> Result<Vec<std::fs::File>> {
     let executable = std::env::current_exe()?;
     let directory = executable.parent().context("Missing runtime directory")?;
+    lock_runtime_directory(directory, expected)
+}
+
+fn lock_runtime_directory(directory: &std::path::Path, expected: &HashMap<String, String>) -> Result<Vec<std::fs::File>> {
     // Deny write and delete sharing through elevation. This pins both the
     // verified bytes and their containing directory until setup returns.
     let mut locks = vec![std::fs::OpenOptions::new().read(true).share_mode(1)
@@ -318,5 +322,39 @@ fn main() {
     if let Err(error) = result {
         let _ = emit(json!({"type":"error", "message":format!("{error:#}")}));
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elevation_locks_reject_changed_bytes_and_pin_files_and_directory() -> Result<()> {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!("freedom-runtime-lock-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&root)?;
+        let directory = root.join("runtime");
+        std::fs::create_dir(&directory)?;
+        let mut hashes = HashMap::new();
+        for name in ["freedom-windows-workspace.exe", "freedom-windows-sandbox-setup.exe", "freedom-workspace-runner.exe"] {
+            std::fs::write(directory.join(name), name.as_bytes())?;
+            hashes.insert(name.to_owned(), sha256(name.as_bytes())?);
+        }
+        let helper = directory.join("freedom-windows-sandbox-setup.exe");
+        std::fs::write(&helper, b"changed")?;
+        assert!(lock_runtime_directory(&directory, &hashes).is_err());
+        std::fs::write(&helper, b"freedom-windows-sandbox-setup.exe")?;
+        let locks = lock_runtime_directory(&directory, &hashes)?;
+        assert!(std::fs::write(&helper, b"changed").is_err());
+        assert!(std::fs::rename(&helper, directory.join("replaced.exe")).is_err());
+        assert!(std::fs::remove_file(&helper).is_err());
+        assert!(std::fs::rename(&directory, root.join("replaced-runtime")).is_err());
+        assert_eq!(std::fs::read(&helper)?, b"freedom-windows-sandbox-setup.exe");
+        drop(locks);
+        std::fs::write(&helper, b"changed")?;
+        std::fs::rename(&directory, root.join("replaced-runtime"))?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

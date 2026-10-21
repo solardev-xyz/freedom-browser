@@ -115,6 +115,8 @@ async function buildWindowsWorkspace(arch = process.arch) {
   const cargo = process.env.FREEDOM_CARGO || path.join(process.env.USERPROFILE, '.cargo/bin/cargo.exe');
   run(cargo, [`+${RUST_TOOLCHAIN}`, 'build', '--locked', '--release', '-p', 'freedom-windows-workspace', '-p', 'codex-windows-sandbox',
     '--bin', 'freedom-windows-workspace', '--bin', 'freedom-windows-sandbox-setup', '--bin', 'freedom-workspace-runner'], workspace);
+  run(cargo, [`+${RUST_TOOLCHAIN}`, 'test', '--locked', '--release', '-p', 'freedom-windows-workspace',
+    '--bin', 'freedom-windows-workspace'], workspace);
   const output = path.join(ROOT, 'out/windows-workspace', arch);
   fs.mkdirSync(output, { recursive: true });
   const hashes = {};

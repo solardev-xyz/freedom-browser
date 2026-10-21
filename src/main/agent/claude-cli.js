@@ -170,7 +170,7 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
       },
       onClose(error) { reject(error || cliError('Claude closed before returning its model catalogue.')); },
     });
-    child.write({ type: 'control_request', request_id: requestId, request: { subtype: 'initialize', hooks: {} } });
+    await child.write({ type: 'control_request', request_id: requestId, request: { subtype: 'initialize', hooks: {} } });
     return await result;
   } finally {
     clearTimeout(timer);
@@ -214,7 +214,6 @@ async function assertUnmanagedClaude({ platform = process.platform, home = os.ho
   const root = platform === 'darwin' ? '/Library/Application Support/ClaudeCode'
     : platform === 'win32' ? 'C:\\Program Files\\ClaudeCode' : '/etc/claude-code';
   const paths = ['managed-settings.json', 'managed-settings.d', 'managed-mcp.json', 'CLAUDE.md'].map(name => path.join(root, name));
-  if (platform === 'win32') for (const name of ['managed-settings.json', 'managed-settings.d', 'managed-mcp.json', 'CLAUDE.md']) paths.push(path.win32.join(process.env.ProgramData || 'C:\\ProgramData', 'ClaudeCode', name));
   paths.push(path.join(home, '.claude', 'remote-settings.json'));
   if (platform === 'darwin') paths.push('/Library/Managed Preferences/com.anthropic.claudecode.plist');
   const refused = () => Object.assign(new Error('Managed Claude installations are not supported by this connection. Use the Anthropic API connection instead.'), { code: 'AGENT_CLAUDE_MANAGED' });
@@ -267,12 +266,19 @@ async function checkClaudeLogin({ signal, executable, run = execFileAsync, check
 // One child per live session. Stream input keeps Claude's context in memory;
 // --no-session-persistence prevents a second conversation archive in Claude.
 async function startClaudeProcess({ executable, model, systemPrompt, tools, signal: ownerSignal, onEvent, onClose,
-  checkLogin = checkClaudeLogin, spawnProcess = spawn }) {
+  checkLogin = checkClaudeLogin, checkPolicy = assertUnmanagedClaude, spawnProcess = spawn }) {
+  await checkPolicy();
   await checkLogin({ executable, signal: ownerSignal });
   const localAbort = new AbortController();
   const signal = AbortSignal.any([ownerSignal, localAbort.signal]);
   const directory = await createClaudeDirectory('freedom-claude-');
-  let ready = false, child, bridge, killTimer, closed = false;
+  let ready = false, child, bridge, killTimer, closed = false, failure, completion, policyTimer, policyCheck;
+  const verifyPolicy = () => {
+    policyCheck ||= Promise.resolve().then(() => checkPolicy()).catch(error => {
+      failure = error; ready = false; localAbort.abort(); throw error;
+    }).finally(() => { policyCheck = null; });
+    return policyCheck;
+  };
   const config = path.join(directory, 'mcp.json');
   const promptFile = path.join(directory, 'system.txt');
   const revoke = async () => {
@@ -283,7 +289,11 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
   try {
     await fs.promises.chmod(directory, 0o700);
     signal.throwIfAborted();
-    bridge = await createToolBridge(tools, signal, undefined, () => ready);
+    bridge = await createToolBridge(tools.map(tool => ({ ...tool, async execute(...args) {
+      await verifyPolicy();
+      signal.throwIfAborted();
+      return tool.execute(...args);
+    } })), signal, undefined, () => ready);
     await fs.promises.writeFile(config, JSON.stringify(bridge.config), { mode: 0o600 });
     await fs.promises.writeFile(promptFile, systemPrompt, { mode: 0o600 });
     signal.throwIfAborted();
@@ -294,9 +304,11 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--model', model, '--system-prompt-file', promptFile];
     if (tools.length) args.push('--allowedTools', tools.map(t => `mcp__freedom__${t.name}`).join(','));
+    await verifyPolicy();
+    signal.throwIfAborted();
     child = spawnProcess(executable, args, { cwd: directory, env: claudeEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    let buffer = '', failure, stopping = false;
+    let buffer = '', stopping = false;
     const stop = () => {
       if (closed || stopping) return;
       stopping = true; ready = false; localAbort.abort();
@@ -335,9 +347,10 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       }
     });
     child.once('error', () => { failure = cliError('Could not start Claude Code. Update its native installation and reconnect.'); });
-    const completion = new Promise(resolve => child.once('close', async code => {
+    completion = new Promise(resolve => child.once('close', async code => {
       closed = true;
       clearTimeout(killTimer);
+      clearInterval(policyTimer);
       signal.removeEventListener('abort', stop);
       ready = false;
       const unexpected = !signal.aborted;
@@ -347,9 +360,15 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       onClose(failure || (unexpected ? cliError(`Claude Code exited unexpectedly (${code}). Check your CLI login and subscription availability.`) : null));
       resolve();
     }));
+    // Managed policy can reload into an existing CLI. Revoke idle connections
+    // too, and check synchronously with each input/tool dispatch via verifyPolicy.
+    policyTimer = setInterval(() => { void verifyPolicy().catch(() => {}); }, 2000);
+    policyTimer.unref?.();
+    await verifyPolicy();
     return {
       get closed() { return closed; },
-      write(message) {
+      async write(message) {
+        await verifyPolicy();
         signal.throwIfAborted();
         if (closed) throw cliError('The Claude connection is closed.');
         child.stdin.write(JSON.stringify(message) + '\n');
@@ -358,6 +377,8 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
     };
   } catch (error) {
     localAbort.abort();
+    clearInterval(policyTimer);
+    await completion;
     await bridge?.close(); await revoke().catch(() => {}); throw error;
   }
 }

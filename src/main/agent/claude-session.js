@@ -51,7 +51,9 @@ async function createClaudeSession(options) {
           needsRestore = false;
           transcript.push({ role: 'user', content: next });
           const done = new Promise((resolve, reject) => { pending = { resolve, reject }; });
-          try { child.write({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, session_id: '' }); }
+          // Policy revalidation can asynchronously close the child before write returns.
+          done.catch(() => {});
+          try { await child.write({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, session_id: '' }); }
           catch (error) { pending.reject(error); pending = null; }
           await done;
           next = queue.shift();

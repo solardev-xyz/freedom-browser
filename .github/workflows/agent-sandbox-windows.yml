@@ -66,6 +66,10 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = '1'
           node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-windows-controller.js','--root','C:/freedom-agent-tests'],{stdio:'inherit',timeout:300000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
           if ($LASTEXITCODE) { throw 'Controller qualification failed' }
+      - name: Qualify preview network isolation against owned listeners
+        run: |
+          node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          if ($LASTEXITCODE) { throw 'Preview network qualification failed' }
       - name: Qualify offline DNS through the shared Windows resolver
         run: |
           node scripts/qualify-windows-dns.js

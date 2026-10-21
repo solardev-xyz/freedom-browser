@@ -939,10 +939,10 @@ class ManagedWorkspaceController {
         'Managed workspace execution is not enabled for this conversation'
       );
     }
-    return Object.freeze({
-      workspace,
-      path: await this.store.resolvePath(workspace.workspaceId),
-    });
+    const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId) : null;
+    const root = grant?.root || await this.store.resolvePath(workspace.workspaceId);
+    const identity = await require('./workspace-execution/opened-file-path').checkedWorkspaceRoot(root, grant);
+    return Object.freeze({ workspace, path: root, identity });
   }
 
   async disclosure(conversationId, request = {}) {

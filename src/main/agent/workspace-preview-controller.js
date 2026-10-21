@@ -1,5 +1,5 @@
 'use strict';
-const { openedFilePath, readWindowsWorkspaceFile } = require('./workspace-execution/opened-file-path');
+const { openedFilePath, readWindowsWorkspaceFile, checkedWorkspaceRoot } = require('./workspace-execution/opened-file-path');
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -235,12 +235,11 @@ function serverUnavailable(request, status, message) {
   return new Response(message, { status, headers: responseHeaders('text/plain; charset=utf-8', { server: true }) });
 }
 
-async function checkedPath(root, relativePath) {
-  const rootEntry = await fs.promises.lstat(root);
-  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-    throw new WorkspacePreviewError('WORKSPACE_PREVIEW_UNSAFE', 'The preview root is unavailable');
-  }
-  const rootReal = await fs.promises.realpath(root);
+async function checkedPath(root, relativePath, identity) {
+  let pinned;
+  try { pinned = await checkedWorkspaceRoot(root, identity); }
+  catch { throw new WorkspacePreviewError('WORKSPACE_PREVIEW_UNSAFE', 'The authorized preview root changed'); }
+  const rootReal = pinned.root;
   let candidate = root;
   for (const segment of relativePath ? relativePath.split('/') : []) {
     candidate = path.join(candidate, segment);
@@ -259,12 +258,16 @@ async function checkedPath(root, relativePath) {
       'The preview path escaped its root'
     );
   }
-  return { candidate, canonical, rootReal };
+  return { candidate, canonical, rootReal, identity: pinned };
 }
 
-async function readRegularFile(root, relativePath) {
-  const checked = await checkedPath(root, relativePath);
-  if (process.platform === 'win32') return readWindowsWorkspaceFile(checked.rootReal, relativePath, MAX_PREVIEW_FILE_BYTES);
+async function readRegularFile(root, relativePath, identity) {
+  const checked = await checkedPath(root, relativePath, identity);
+  if (process.platform === 'win32') {
+    const bytes = await readWindowsWorkspaceFile(checked.rootReal, relativePath, MAX_PREVIEW_FILE_BYTES);
+    await checkedPath(root, relativePath, checked.identity);
+    return bytes;
+  }
   const handle = await fs.promises.open(
     checked.candidate,
     fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
@@ -306,6 +309,7 @@ async function readRegularFile(root, relativePath) {
       if (!result.bytesRead) break;
       offset += result.bytesRead;
     }
+    await checkedPath(root, relativePath, checked.identity);
     return data.subarray(0, offset);
   } finally {
     await handle.close();
@@ -344,9 +348,9 @@ class WorkspacePreviewController {
 
   async createPreview(conversationId, requestedPath = '.') {
     const relative = safeRelativePath(requestedPath || '.', { allowRoot: true });
-    const { workspace, path: workspaceRoot } =
+    const { workspace, path: workspaceRoot, identity } =
       await this.workspaceController.resolveWorkspacePath(conversationId);
-    const selected = await checkedPath(workspaceRoot, relative === '.' ? '' : relative);
+    const selected = await checkedPath(workspaceRoot, relative === '.' ? '' : relative, identity);
     const selectedEntry = await fs.promises.lstat(selected.candidate);
     let root;
     let entryPath;
@@ -366,7 +370,9 @@ class WorkspacePreviewController {
         'Preview a directory containing index.html or an HTML file'
       );
     }
-    await readRegularFile(root, entryPath);
+    const rootIdentity = await checkedWorkspaceRoot(root);
+    await readRegularFile(root, entryPath, rootIdentity);
+    await checkedPath(workspaceRoot, '', selected.identity);
     for (const [token, preview] of this.previews) {
       if (
         preview.conversationId === conversationId &&
@@ -404,6 +410,9 @@ class WorkspacePreviewController {
         conversationId,
         workspaceId: workspace.workspaceId,
         root,
+        rootIdentity,
+        workspaceRoot,
+        workspaceIdentity: selected.identity,
         entryPath,
       })
     );
@@ -712,8 +721,9 @@ class WorkspacePreviewController {
           headers: responseHeaders('text/plain; charset=utf-8'),
         });
       }
+      await checkedPath(preview.workspaceRoot, '', preview.workspaceIdentity);
       let relative = requestRelativePath(url);
-      const checked = await checkedPath(preview.root, relative);
+      const checked = await checkedPath(preview.root, relative, preview.rootIdentity);
       const entry = await fs.promises.lstat(checked.candidate);
       if (entry.isDirectory()) {
         if (!url.pathname.endsWith('/')) {
@@ -724,7 +734,8 @@ class WorkspacePreviewController {
         }
         relative = relative ? `${relative}/index.html` : 'index.html';
       }
-      const data = await readRegularFile(preview.root, relative);
+      const data = await readRegularFile(preview.root, relative, preview.rootIdentity);
+      await checkedPath(preview.workspaceRoot, '', preview.workspaceIdentity);
       const contentType =
         MIME_TYPES[path.extname(relative).toLowerCase()] || 'application/octet-stream';
       return new Response(request.method === 'HEAD' ? null : data, {
