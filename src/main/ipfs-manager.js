@@ -16,6 +16,7 @@ const {
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
+const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -761,7 +762,16 @@ async function doStartIpfs(requestedAt = stopsRequested) {
           onFailure,
           onChange: (state, changedNode) => handleServiceNodeChange(state, changedNode),
         })
-      : new FreedomIpfsNativeNode({ dataDir, onFailure });
+      : new FreedomIpfsNativeNode({
+          dataDir,
+          onFailure,
+          // Rollback (freedom-core design 0007): the add-on runs under
+          // freedom-ipfsd's hold-lock on its data directory, so it is a
+          // writer the gate excludes, as the service is. Packaged builds too:
+          // they ship the binary, and a gate that one writer skips excludes
+          // nothing.
+          takeGate: (options) => takeIpfsGate(dataDir, options),
+        });
 
   // start() resolves once the addon has opened the cache and bound the gateway
   // on the libuv thread pool; the main thread keeps serving the UI meanwhile

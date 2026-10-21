@@ -189,6 +189,8 @@ function loadIpfsManagerModule(options = {}) {
     }
   }
   app.getVersion = () => '0.9.0-test';
+  // freedom-ipfsd's gate, which the add-on takes (design 0007, Rollback).
+  const takeIpfsGate = jest.fn(async () => ({ release: jest.fn(async () => {}) }));
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
     app,
@@ -218,6 +220,7 @@ function loadIpfsManagerModule(options = {}) {
         FreedomIpfsdNode: MockFreedomIpfsdNode,
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
+      [require.resolve('./ipfs/ipfsd-gate')]: () => ({ takeIpfsGate }),
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
@@ -251,6 +254,7 @@ function loadIpfsManagerModule(options = {}) {
     mod,
     nativeInstances,
     serviceInstances,
+    takeIpfsGate,
     setStatusMessage,
     setErrorState,
     clearErrorState,
@@ -296,6 +300,35 @@ describe('ipfs-manager', () => {
     });
   });
 
+  // freedom-core design 0007, Rollback: the add-on is a writer that takes
+  // freedom-ipfsd's gate on its data directory, the one the service would use.
+  test('the add-on takes the gate on its own data directory', async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const onLost = jest.fn();
+
+    await ctx.nativeInstances[0].config.takeGate({ onLost });
+
+    expect(ctx.takeIpfsGate).toHaveBeenCalledWith(NATIVE_IPFS_DATA_DIR, { onLost });
+  });
+
+  test("a gate another writer holds fails the add-on's start, with its reason", async () => {
+    const held = Object.assign(
+      new Error('The IPFS data is in use by another process. Close it and try again.'),
+      { name: 'IpfsGateError', code: 'lock_held' }
+    );
+    const ctx = loadIpfsManagerModule({ startError: held });
+    ctx.mod.registerIpfsIpc();
+
+    await ctx.mod.startIpfs();
+
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+      error: held.message,
+    });
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node failed to start');
+  });
+
   test('starts the bundled freedom-ipfs native node', async () => {
     const window = createWindowMock();
     const ctx = loadIpfsManagerModule({ windows: [window] });
@@ -307,6 +340,7 @@ describe('ipfs-manager', () => {
     expect(ctx.nativeInstances[0].config).toEqual({
       dataDir: NATIVE_IPFS_DATA_DIR,
       onFailure: expect.any(Function),
+      takeGate: expect.any(Function),
     });
     expect(ctx.nativeInstances[0].start).toHaveBeenCalled();
     expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {

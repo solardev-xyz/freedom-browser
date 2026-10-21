@@ -25,6 +25,9 @@ const DELEGATED_ROUTERS = 'https://delegated-ipfs.dev/routing/v1,https://cid.con
 // gatewayWaitNextEvent is in flight, so the exit after it is a formality.
 const DISPATCHER_STOP_TIMEOUT_MS = 2000;
 const DISPATCHER_EXIT_GRACE_MS = 500;
+// The failure a node reports when the holder of its data directory's gate
+// ends under it (freedom-core design 0007, Rollback).
+const GATE_LOST = 'freedom-ipfsd hold-lock exited';
 
 let native = null;
 
@@ -296,11 +299,19 @@ class FreedomIpfsNativeNode {
     maxCacheBytes = 256 * 1024 * 1024,
     requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
     onFailure = null,
+    takeGate = null,
   } = {}) {
     this.dataDir = dataDir;
     this.maxCacheBytes = maxCacheBytes;
     this.requestQueueTimeoutMs = requestQueueTimeoutMs;
     this.onFailure = onFailure;
+    // Rollback (freedom-core design 0007): the add-on is a writer that takes
+    // its data directory's gate, held from before its store opens until
+    // after it is closed. `takeGate({ onLost })` resolves to the hold (null
+    // where there is none to take), or rejects, which fails the start.
+    this.takeGate = takeGate;
+    this.gate = null;
+    this.gateLost = false;
     this.nodeHandle = '0';
     this.dispatcher = null;
     this.requests = new Map();
@@ -386,10 +397,23 @@ class FreedomIpfsNativeNode {
     this.failed = false;
     this.failureError = null;
     const addon = binding();
-    const handle = normalizeNativeHandle(
-      await asyncLifecycleExport(addon, 'nodeNewWithDataDirAsync')(this.dataDir, this.maxCacheBytes)
-    );
-    if (!handle) return false;
+    await this.holdGate();
+    let handle;
+    try {
+      handle = normalizeNativeHandle(
+        await asyncLifecycleExport(addon, 'nodeNewWithDataDirAsync')(
+          this.dataDir,
+          this.maxCacheBytes
+        )
+      );
+    } catch (err) {
+      await this.releaseGate();
+      throw err;
+    }
+    if (!handle) {
+      await this.releaseGate();
+      return false;
+    }
 
     let ok;
     try {
@@ -404,11 +428,19 @@ class FreedomIpfsNativeNode {
       );
     } catch (err) {
       await freeNativeHandle(addon, handle);
+      await this.releaseGate();
       throw err;
     }
     if (!ok) {
       await freeNativeHandle(addon, handle);
+      await this.releaseGate();
       return false;
+    }
+    // The gate went while the node started: it never serves ungated.
+    if (this.gateLost) {
+      await freeNativeHandle(addon, handle);
+      await this.releaseGate();
+      throw new Error(GATE_LOST);
     }
     this.nodeHandle = handle;
     this.startDispatcher();
@@ -425,20 +457,52 @@ class FreedomIpfsNativeNode {
     this.requests.clear();
     const handle = normalizeNativeHandle(this.nodeHandle);
     this.nodeHandle = '0';
-    if (handle) {
-      const addon = binding();
-      try {
-        await asyncLifecycleExport(addon, 'nodeStopGatewayAsync')(handle);
-      } catch (err) {
-        log.warn('[IPFS] native gateway stop failed:', err.message);
+    try {
+      if (handle) {
+        const addon = binding();
+        try {
+          await asyncLifecycleExport(addon, 'nodeStopGatewayAsync')(handle);
+        } catch (err) {
+          log.warn('[IPFS] native gateway stop failed:', err.message);
+        }
+        // Queued behind the stop above by the addon itself; awaited so the cache
+        // database is closed (or its bounded close has given up) before a
+        // restart reopens the same data dir.
+        await asyncLifecycleExport(addon, 'nodeFreeAsync')(handle);
       }
-      // Queued behind the stop above by the addon itself; awaited so the cache
-      // database is closed (or its bounded close has given up) before a
-      // restart reopens the same data dir.
-      await asyncLifecycleExport(addon, 'nodeFreeAsync')(handle);
+    } finally {
+      // After the store is closed, or its close gave up: the gate goes last.
+      await this.releaseGate();
     }
     this.failed = false;
     this.failureError = null;
+  }
+
+  /** Takes the data directory's gate, if the node has one to take. */
+  async holdGate() {
+    if (!this.takeGate) return;
+    this.gateLost = false;
+    const hold = await this.takeGate({ onLost: () => this.onGateLost(hold) });
+    this.gate = hold;
+  }
+
+  async releaseGate() {
+    const hold = this.gate;
+    this.gate = null;
+    this.gateLost = false;
+    await hold?.release();
+  }
+
+  /**
+   * The gate's holder ended under the node: another gated writer (the
+   * service, a profile delete) could now take the directory while the
+   * add-on writes to it. The node fails, so its store is closed and the user
+   * restarts it, which takes the gate again; a start in progress gives up.
+   */
+  onGateLost(hold) {
+    if (this.gate !== hold) return;
+    this.gateLost = true;
+    if (normalizeNativeHandle(this.nodeHandle)) this.markFailed(GATE_LOST);
   }
 
   startDispatcher() {
@@ -642,4 +706,5 @@ module.exports = {
   DELEGATED_ROUTERS,
   DISPATCHER_STOP_TIMEOUT_MS,
   DISPATCHER_EXIT_GRACE_MS,
+  GATE_LOST,
 };
