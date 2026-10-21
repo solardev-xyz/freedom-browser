@@ -116,6 +116,7 @@ test('an uninstalled local choice opens Settings rather than downloading or show
   ctx.optionsButton.dispatch('click'); await flush();
   ctx.menu.querySelector('[data-provider-id="local"]').dispatch('click'); await flush();
   expect(ctx.openSettings).toHaveBeenCalledTimes(1); expect(ctx.panel.hidden).toBe(true);
+  expect(ctx.openSettings).toHaveBeenCalledWith('local');
   expect(ctx.api.chooseAgentDictation).not.toHaveBeenCalled();
 });
 

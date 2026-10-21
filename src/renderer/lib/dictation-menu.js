@@ -62,7 +62,7 @@ export function createDictationMenu({ host, button, api, canOpen, onOpening = ()
         row(option.name, !option.available ? `${option.blockedLabel || 'Unavailable with this connection'} · Review in Settings` : !option.ready ? 'Download local model in Settings' : option.consentRequired ? 'Review audio privacy before first use' : option.model,
           { checked: option.providerId === selected, disabled: !option.available && option.providerId === 'local', providerId: option.providerId, action: async () => {
             if (!option.available) { settings(option.providerId); return; }
-            if (!option.ready) { settings(); return; }
+            if (!option.ready) { settings(option.providerId); return; }
             if (state.preferences.providerId === option.providerId) { close(true); onChosen(state, { recordAfterChoice }); return; }
             saving = true; rows.forEach(item => { item.disabled = true; });
             try {
