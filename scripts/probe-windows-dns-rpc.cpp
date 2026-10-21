@@ -10,6 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <iostream>
 
 static void checked(DWORD status, const char* operation) {
     if (status) {
@@ -35,12 +36,16 @@ struct Descriptor {
     ~Descriptor() { if (value) LocalFree(value); }
 };
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     try {
         wchar_t github[8] = {};
         if (!GetEnvironmentVariableW(L"GITHUB_ACTIONS", github, 8) || wcscmp(github, L"true")) {
             throw std::runtime_error("Use only a disposable Windows CI runner");
         }
+        if (argc != 2 || (wcscmp(argv[1], L"query") && wcscmp(argv[1], L"policy") && wcscmp(argv[1], L"both")))
+            throw std::runtime_error("Expected query, policy or both");
+        const bool query = wcscmp(argv[1], L"policy") != 0;
+        const bool policy = wcscmp(argv[1], L"query") != 0;
         Binding binding;
         checked(RpcBindingFromStringBindingW(reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc:[DNSResolver]")),
             &binding.handle), "RpcBindingFromStringBindingW");
@@ -66,10 +71,6 @@ int wmain() {
         }
         FWP_BYTE_BLOB user = { GetSecurityDescriptorLength(descriptor.value), static_cast<UINT8*>(descriptor.value) };
 
-        // Succeeds only for a positively controlled completed workload that
-        // reproduces the known leak, never for an unrelated fixture failure.
-        if (_wsystem(L"node scripts/qualify-windows-dns.js --expect-existing-leak") != 0)
-            throw std::runtime_error("Expected baseline leak absent");
         Engine engine;
         FWPM_SESSION0 session = {};
         session.flags = FWPM_SESSION_FLAG_DYNAMIC;
@@ -80,12 +81,14 @@ int wmain() {
         sublayer.weight = 0xffff;
         checked(FwpmSubLayerAdd0(engine.handle, &sublayer, nullptr), "FwpmSubLayerAdd0");
         unsigned installed = 0;
-        // Observed on both CI versions. Do not block the separate NRP/policy
-        // interface: disabling policy could invalidate the NRPT test route.
+        // Observed on both CI versions. The controller uses an owned default
+        // resolver, without NRPT, to distinguish policy and query interfaces.
         const UUID resolver = {0x45776b01,0x5956,0x4485,{0x9f,0x80,0xf4,0x28,0xf7,0xd6,0x01,0x29}};
+        const UUID nrp = {0x30adc50c,0x5cbc,0x46ce,{0x9a,0x0e,0x91,0x91,0x47,0x89,0xe2,0x3c}};
         for (unsigned i = 0; i < interfaces.value->Count; i++) {
             const RPC_IF_ID& entry = *interfaces.value->IfId[i];
-            if (std::memcmp(&entry.Uuid, &resolver, sizeof(UUID))) continue;
+            if (!(query && !std::memcmp(&entry.Uuid, &resolver, sizeof(UUID))) &&
+                !(policy && !std::memcmp(&entry.Uuid, &nrp, sizeof(UUID)))) continue;
             RPC_CSTR uuid = nullptr;
             checked(UuidToStringA(&entry.Uuid, &uuid), "UuidToStringA");
             std::printf("Observed DNS interface %s v%u.%u\n", reinterpret_cast<char*>(uuid),
@@ -139,10 +142,13 @@ int wmain() {
             installed++;
             std::printf("Verified DNS filter %llu: offline SID + observed DNS query interface\n", id);
         }
-        if (!installed) throw std::runtime_error("No DNS-specific interfaces found");
-        const int result = _wsystem(L"node scripts/qualify-windows-dns.js");
-        std::printf("Targeted RPC probe exit: %d; dynamic session now closes\n", result);
-        return result == 0 ? 0 : 1;
+        if (installed != static_cast<unsigned>(query) + static_cast<unsigned>(policy))
+            throw std::runtime_error("Expected DNS-specific interfaces absent");
+        std::puts("FREEDOM_DNS_FILTERS_READY");
+        std::fflush(stdout);
+        std::string release;
+        std::getline(std::cin, release); // Parent exit/EOF also closes the session.
+        return release == "release" ? 0 : 1;
     } catch (const std::exception& error) {
         std::printf("DNS RPC probe failed: %s\n", error.what());
         return 1;

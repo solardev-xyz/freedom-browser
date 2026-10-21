@@ -13,5 +13,5 @@ New-Item -ItemType Directory $scratch | Out-Null
 $helper = Join-Path $scratch 'probe.exe'
 & cl.exe /nologo /W4 /WX /EHsc /std:c++17 scripts/probe-windows-dns-rpc.cpp "/Fe:$helper" "/Fo:$scratch\probe.obj" /link Fwpuclnt.lib Rpcrt4.lib Advapi32.lib
 if ($LASTEXITCODE) { throw 'DNS probe compilation failed' }
-& $helper
+& node scripts/probe-windows-dns-rpc.js $helper
 if ($LASTEXITCODE) { throw 'Targeted RPC enforcement did not close the DNS boundary' }
