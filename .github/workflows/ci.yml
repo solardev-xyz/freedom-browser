@@ -383,6 +383,15 @@ jobs:
         env:
           FREEDOM_IPFSD_PATH: ${{ github.workspace }}/freedom-ipfsd-bin/${{ matrix.binary }}
 
+      # Private windows' instances in the ephemeral process (design 0007,
+      # "Private windows"), on the loopback fixture: one per partition, a
+      # ninth evicting only after the service has proven the teardown, and
+      # the process exiting after its last instance.
+      - name: freedom-ipfsd private instances (real binary)
+        run: npx jest src/main/ipfs/freedom-ipfsd-private.integration.test.js
+        env:
+          FREEDOM_IPFSD_PATH: ${{ github.workspace }}/freedom-ipfsd-bin/${{ matrix.binary }}
+
   # libradicle is the ONLY Radicle runtime — there is no executable fallback —
   # so every release asset has to download, verify against the in-repo pinned
   # checksums, load, and answer a native call on the platform it ships for.
