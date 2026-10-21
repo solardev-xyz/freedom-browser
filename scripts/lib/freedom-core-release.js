@@ -2,11 +2,12 @@
 
 /**
  * Fetches and verifies one of the binaries solardev-xyz/freedom-core
- * releases, such as `freedom-cored` (scripts/fetch-freedom-cored.js). Each is
- * released on tags of its own by the same kind of workflow, which publishes
- * one archive per platform, named with the same os/arch keywords as Ant's,
- * plus SHA256SUMS. Each archive holds the executable and the notices of the
- * third-party code it statically links.
+ * releases: `freedom-cored` (scripts/fetch-freedom-cored.js) and
+ * `freedom-ipfsd` (scripts/fetch-freedom-ipfsd.js). Each is released on tags
+ * of its own by the same kind of workflow, which publishes one archive per
+ * platform, named with the same os/arch keywords as Ant's, plus SHA256SUMS.
+ * Each archive holds the executable and the notices of the third-party code
+ * it statically links.
  *
  * Each fetch script owns what differs: the binary's name, its pinned tag and
  * the pinned digest of that release's SHA256SUMS (the in-repo trust root),

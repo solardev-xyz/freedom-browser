@@ -159,6 +159,50 @@ describe('freedom-cored build inputs', () => {
   });
 });
 
+describe('freedom-ipfsd build inputs', () => {
+  test.each([
+    ['mac', 'x64'],
+    ['mac', 'arm64'],
+    ['linux', 'x64'],
+    ['linux', 'arm64'],
+    ['win', 'x64'],
+    ['win', 'arm64'],
+  ])('requires the service binary and its notices for %s-%s', (os, arch) => {
+    fs.existsSync.mockImplementation((target) => !target.includes('freedom-ipfsd-bin'));
+    expect(checkBinaries([{ os, arch }])).toEqual([
+      expect.stringContaining(`freedom-ipfsd binary for ${os}-${arch}`),
+      expect.stringContaining(`freedom-ipfsd THIRD-PARTY-NOTICES for ${os}-${arch}`),
+      expect.stringContaining(`freedom-ipfsd THIRD-PARTY-NOTICES-rust-std.html for ${os}-${arch}`),
+    ]);
+    expect(fs.existsSync).toHaveBeenCalledWith(
+      path.join(
+        __dirname,
+        '..',
+        'freedom-ipfsd-bin',
+        `${os}-${arch}`,
+        `freedom-ipfsd${os === 'win' ? '.exe' : ''}`
+      )
+    );
+  });
+
+  test('packages the executable with its notices and explicitly signs it on macOS', () => {
+    expect(packageJson.build.extraResources.find(({ to }) => to === 'freedom-ipfsd')).toEqual({
+      from: 'freedom-ipfsd-bin/${os}-${arch}/',
+      to: 'freedom-ipfsd',
+      filter: [
+        'freedom-ipfsd',
+        'freedom-ipfsd.exe',
+        'THIRD-PARTY-NOTICES',
+        'THIRD-PARTY-NOTICES-rust-std.html',
+      ],
+    });
+    expect(packageJson.build.mac.binaries).toContain(
+      'Contents/Resources/freedom-ipfsd/freedom-ipfsd'
+    );
+    expect(packageJson.scripts['ipfsd:download']).toBe('node scripts/fetch-freedom-ipfsd.js');
+  });
+});
+
 // Arti is optional everywhere (it is compiled, not downloaded), but every
 // target we ship packages it the same way — including Windows since #337.
 describe('Arti (Tor) build inputs', () => {

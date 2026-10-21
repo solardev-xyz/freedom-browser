@@ -23,6 +23,15 @@ freedom-cored (Rust identity core)
   binary: resources/freedom-cored/THIRD-PARTY-NOTICES and
   resources/freedom-cored/THIRD-PARTY-NOTICES-rust-std.html.
 
+freedom-ipfsd (IPFS service)
+  https://github.com/solardev-xyz/freedom-core
+  License: not chosen yet (pending the maintainer's decision).
+  Statically links third-party Rust crates, among them freedom-ipfs's
+  (MIT OR Apache-2.0), and the Rust toolchain's runtime (on Linux also
+  musl and LLVM's libunwind). Their notices ship beside the binary:
+  resources/freedom-ipfsd/THIRD-PARTY-NOTICES and
+  resources/freedom-ipfsd/THIRD-PARTY-NOTICES-rust-std.html.
+
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors

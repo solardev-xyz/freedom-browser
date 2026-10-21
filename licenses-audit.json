@@ -52,6 +52,33 @@
       ]
     },
     {
+      "name": "freedom-ipfsd",
+      "version": "ipfsd-v0.1.0",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/solardev-xyz/freedom-core"
+      },
+      "license": {
+        "spdx": [],
+        "raw": "Not selected yet",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-ipfsd.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "missing-license",
+          "details": "freedom-ipfsd is released from freedom-core, which has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
+        }
+      ]
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "type": "direct",

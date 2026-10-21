@@ -67,6 +67,13 @@ const EXTRA_RESOURCES = {
     noticeMatch: /^freedom-cored \(Rust identity core\)$/m,
     pin: { file: 'scripts/fetch-freedom-cored.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
   },
+  'freedom-ipfsd-bin/${os}-${arch}/': {
+    thirdParty: true,
+    label: 'freedom-ipfsd',
+    auditName: 'freedom-ipfsd',
+    noticeMatch: /^freedom-ipfsd \(IPFS service\)$/m,
+    pin: { file: 'scripts/fetch-freedom-ipfsd.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
+  },
   'ant-bin/${os}-${arch}/': {
     thirdParty: true,
     label: 'Ant',
