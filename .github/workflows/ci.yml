@@ -1060,7 +1060,10 @@ jobs:
   # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
   # Publishing button opening it, identity or not.
   # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
-  # text publish. The anvil-backed Safe specs run in `e2e-safe` below.
+  # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
+  # tab's wallet requests attributed to its own site, with a real vault and
+  # the real main-side signing check. The anvil-backed Safe specs run in
+  # `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1092,6 +1095,7 @@ jobs:
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
+            test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \

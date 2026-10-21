@@ -37,6 +37,7 @@ import {
   signingButtonLabel,
 } from './wallet-utils.js';
 import { getPermissionKey } from '../origin-utils.js';
+import { getActivePageUrl } from '../dapp-provider.js';
 import { goBackInHistory } from '../history-traversal.js';
 import { refreshBalances } from './balance-display.js';
 import { showX402Permissions } from './permission-manage.js';
@@ -1022,18 +1023,18 @@ function hideUnlockError() {
 }
 
 /**
- * Refresh the auto-pay banner for the current address bar URL (or the
- * supplied origin key). Shows the banner iff there's at least one
- * active cap for that origin.
+ * Refresh the auto-pay banner for the visible tab's committed page. Shows
+ * the banner iff there's at least one active cap for that origin. A
+ * supplied `originKey` is only a refresh hint, ignored unless it is the
+ * visible tab's own key — the banner never paints a site that is not on
+ * screen (#764).
  */
 export async function updateX402ConnectionBanner(originKey = null) {
   if (!bannerEl) return;
 
-  let key = originKey;
-  if (!key) {
-    const displayUrl = document.getElementById('address-input')?.value || '';
-    key = getPermissionKey(displayUrl);
-  }
+  const activeKey = getPermissionKey(getActivePageUrl());
+  if (originKey && originKey !== activeKey) return;
+  const key = activeKey;
 
   if (!key) {
     bannerEl.classList.add('hidden');
@@ -1108,8 +1109,12 @@ export async function disconnectX402(originKey) {
   if (!key) return;
   try {
     await window.electronAPI.x402RevokeAllForOrigin({ origin: key });
-    bannerEl?.classList.add('hidden');
-    currentBannerKey = null;
+    // Only the banner of the origin that was revoked: a key from the
+    // permissions list can name a site in another tab.
+    if (key === currentBannerKey) {
+      bannerEl?.classList.add('hidden');
+      currentBannerKey = null;
+    }
   } catch (err) {
     console.error('[x402] revoke-all failed:', err);
   }

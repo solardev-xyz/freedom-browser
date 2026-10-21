@@ -11,6 +11,7 @@ import {
   deriveIpfsBaseFromUrl,
   formatIpfsUrl,
   applyEnsNamePreservation,
+  applyDnsNameIdentity,
   buildEnsDisplayUri,
   isEnsBackedDisplay,
   isIpfsGatewayFormUrl,
@@ -1483,5 +1484,33 @@ describe('url-utils', () => {
       expect(deriveRadicleDisplayValue(null, RAD_PREFIX)).toBe(null);
       expect(deriveRadicleDisplayValue(undefined, RAD_PREFIX)).toBe(undefined);
     });
+  });
+});
+
+describe('applyDnsNameIdentity', () => {
+  const B58 = '12D3KooWAsDaZWCkCEUN3myg49NoCMmrYYivmJVwjg7DVJBvWdaX';
+  const B36 = 'k51qzi5uqu5dgkkr5wjh0m796f9u3tou74wn2q2u3shgh6yn52ce4hitig3if4';
+
+  // A DNS-named ENS site over IPNS commits as ipns://<key>; the dApp keys it on
+  // the name its address bar shows (`ens://example.com`), as before #764.
+  test('maps a DNS-named site\'s IPNS key back to ens://<name>, keeping the path', () => {
+    const names = new Map([[B58, 'example.com']]);
+    expect(applyDnsNameIdentity(`ipns://${B58}/app?x=1#y`, names)).toBe('ens://example.com/app?x=1#y');
+    // the base36 form formatIpfsUrl canonicalises the key to before loading
+    expect(applyDnsNameIdentity(`ipns://${B36}/`, names)).toBe('ens://example.com/');
+    expect(applyDnsNameIdentity(`ipns://${B36}`, new Map([[B36, 'example.com']]))).toBe('ens://example.com');
+  });
+
+  test('leaves everything else alone', () => {
+    const names = new Map([[B58, 'example.com'], ['abc', 'name.eth']]);
+    // a case-folded base58 key is a different key
+    expect(applyDnsNameIdentity(`ipns://${B58.toLowerCase()}/`, names)).toBe(`ipns://${B58.toLowerCase()}/`);
+    // ENS-host names load under their own name already
+    expect(applyDnsNameIdentity('ipns://abc/', names)).toBe('ipns://abc/');
+    expect(applyDnsNameIdentity('ipns://unknownkey/', names)).toBe('ipns://unknownkey/');
+    expect(applyDnsNameIdentity(`ipfs://${B58}/`, names)).toBe(`ipfs://${B58}/`);
+    expect(applyDnsNameIdentity('https://example.com/', names)).toBe('https://example.com/');
+    expect(applyDnsNameIdentity(`ipns://${B58}/`, new Map())).toBe(`ipns://${B58}/`);
+    expect(applyDnsNameIdentity('', names)).toBe('');
   });
 });

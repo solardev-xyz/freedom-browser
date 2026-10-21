@@ -783,8 +783,9 @@ contextBridge.exposeInMainWorld('wallet', {
 
   // dApp-specific operations (use specific wallet index)
   // `authorization` is `{ confirmation }` (see confirmSigning) or
-  // `{ autoApprove: permissionKey }`, which main checks against the site's
-  // stored auto-approve policy itself.
+  // `{ autoApprove: permissionKey, webContentsId }`, which main honours only
+  // when that requesting guest's own page belongs to `permissionKey` and the
+  // site's stored auto-approve policy covers the request (#764).
   dappSendTransaction: (params, walletIndex, context, authorization) =>
     ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context, authorization),
   signMessage: (message, walletIndex, authorization) =>
