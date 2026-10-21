@@ -22,8 +22,8 @@ function Write-Dns {
         & netsh interface $family set dnsservers "name=$($Entry.Index)" source=dhcp
         if ($LASTEXITCODE) { throw 'Could not restore automatic DNS' }
     } else {
-        if (!$Servers.Count) { throw 'Empty static DNS configuration' }
-        & netsh interface $family set dnsservers "name=$($Entry.Index)" source=static "address=$($Servers[0])" validate=no
+        $first = if ($Servers.Count) { $Servers[0] } else { 'none' }
+        & netsh interface $family set dnsservers "name=$($Entry.Index)" source=static "address=$first" validate=no
         if ($LASTEXITCODE) { throw 'Could not set owned DNS server' }
         for ($i = 1; $i -lt $Servers.Count; $i++) {
             & netsh interface $family add dnsservers "name=$($Entry.Index)" "address=$($Servers[$i])" "index=$($i + 1)" validate=no
@@ -73,6 +73,7 @@ if ($Operation -eq 'Begin') {
             if ((Read-StaticMode $entry) -ne $entry.Static) { throw 'Restored automatic/static DNS mode differs' }
         } catch { $failures += $_ }
     }
+    Clear-DnsClientCache
     if ($failures.Count) { throw ($failures -join '; ') }
     Write-Host 'Original DNS configuration restored and checked'
 }

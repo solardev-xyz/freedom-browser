@@ -44,7 +44,9 @@ async function main() {
       offset += length;
     }
     const name = labels.join('.').toLowerCase();
-    if (queries.has(name)) queries.set(name, queries.get(name) + 1);
+    // Do not return/cache NXDOMAIN for unrelated runner infrastructure names.
+    if (!queries.has(name)) return null;
+    queries.set(name, queries.get(name) + 1);
     const bytes = Buffer.from(query);
     bytes.writeUInt16BE(0x8183, 2); // NXDOMAIN; never send upstream.
     return bytes;

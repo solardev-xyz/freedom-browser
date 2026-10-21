@@ -29,9 +29,9 @@ jobs:
         os: [windows-2022, windows-2025]
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: agent-windows-dns-${{ github.ref }}-${{ matrix.os }}
+      group: agent-windows-dns-${{ github.ref }}-${{ github.sha }}-${{ matrix.os }}
       cancel-in-progress: true
-    timeout-minutes: 15
+    timeout-minutes: 8
     defaults:
       run:
         shell: pwsh
@@ -42,7 +42,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: agent-windows-sandbox
