@@ -224,6 +224,9 @@ async function executeFetch(
       `${tag} fetch failed for ${redactUrl(requestUrl)}: ${err?.message || err}` +
         (code ? ` (${code})` : '')
     );
+    // The native node's capacity, not its failure (design 0007, "Main's
+    // side": the service's `busy`): a 503, as admission's own.
+    if (err?.name === 'BackendBusy') return jsonErrorResponse(503, err.message);
     const { status, message } = failure(kind, err);
     return jsonErrorResponse(status, message);
   };

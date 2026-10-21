@@ -203,6 +203,18 @@ describe('after the dial', () => {
     expect(onEnd).toHaveBeenCalledTimes(1);
     expect(log.warn).toHaveBeenCalled();
   });
+
+  // Design 0007, "Main's side": the executor's one change. The service's
+  // `busy` is capacity, not a failed node: a 503, as admission's own, while
+  // every other rejection stays the 502 above.
+  test("the native node's BackendBusy is a 503 with its message", async () => {
+    const { BackendBusy } = require('../ipfs/freedom-ipfsd-node');
+    const { response, onEnd } = run(NATIVE_FETCH, 'native', [new BackendBusy()]);
+    const res = await response;
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ code: 503, message: 'freedom-ipfs native node is busy' });
+    expect(onEnd).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the response operations', () => {

@@ -398,6 +398,7 @@ class ServiceClient extends EventEmitter {
    *   and `helloParams(client)` (its handshake), `validHello(result)` (the
    *   public part of a valid hello result, or null), `protocol` (its
    *   protocol version, to tell a mismatch), `shutdownMethod`,
+   *   `shutdownGraceMs` (how long after it the process is killed; 3 s),
    *   `fragments(hello)` (whether it takes main's fragmented replies), and
    *   for a stream service `streams(hello)` (whether the handshake granted
    *   `stream`), `initialKinds` (the frame kinds before it: `JSON_KINDS`;
@@ -580,7 +581,8 @@ class ServiceClient extends EventEmitter {
 
   /**
    * Graceful shutdown: the shutdown method (if the handshake completed), close
-   * stdin, SIGKILL after 3 s. Resolves once the child is gone.
+   * stdin, SIGKILL after the service's grace (3 s). Resolves once the child
+   * is gone.
    */
   stop() {
     this.stopRequested = true;
@@ -614,7 +616,7 @@ class ServiceClient extends EventEmitter {
         );
       }
       this.endStdin(gen);
-      this.timer(gen, () => this.kill(gen), SHUTDOWN_GRACE_MS);
+      this.timer(gen, () => this.kill(gen), this.service.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
     }
     return stopped;
   }
@@ -818,14 +820,11 @@ class ServiceClient extends EventEmitter {
       this.fail(`exit code ${code}`);
       return;
     }
-    const now = this.now();
-    this.crashTimes = this.crashTimes.filter((t) => now - t < CRASH_WINDOW_MS).concat(now);
-    if (this.crashTimes.length >= MAX_CRASHES_IN_WINDOW) {
+    const delay = this.recordCrash();
+    if (delay === null) {
       this.fail('three crashes within a minute');
       return;
     }
-    const delay =
-      RESTART_DELAYS_MS[Math.min(this.crashTimes.length - 1, RESTART_DELAYS_MS.length - 1)];
     this.log.warn(`${this.label} exited; restarting`, {
       code,
       signal: gen.exitSignal,
@@ -837,6 +836,19 @@ class ServiceClient extends EventEmitter {
       this.restartTimer = null;
       if (!this.stopRequested) this.spawnGeneration();
     }, delay);
+  }
+
+  /**
+   * Counts a crash now: the back-off before the next try (0.5 s, 2 s, then
+   * 10 s), or null for the third within 60 s, when the restarts stop. A
+   * process's exit counts, and so does whatever its service counts as one
+   * (design 0007: an instance retired after a request panic).
+   */
+  recordCrash() {
+    const now = this.now();
+    this.crashTimes = this.crashTimes.filter((t) => now - t < CRASH_WINDOW_MS).concat(now);
+    if (this.crashTimes.length >= MAX_CRASHES_IN_WINDOW) return null;
+    return RESTART_DELAYS_MS[Math.min(this.crashTimes.length - 1, RESTART_DELAYS_MS.length - 1)];
   }
 
   fail(reason) {
@@ -1159,8 +1171,9 @@ class ServiceClient extends EventEmitter {
     if (gen.reassembler.inProgress()) {
       this.log.warn(`${this.label} stdout closed in the middle of a fragmented response`);
     }
-    // A live child that closes stdout can't answer any more.
-    if (!gen.exited) this.connectionFailed(gen, 'stdout_closed');
+    // A live child that closes stdout can't answer any more; one main asked
+    // to stop closes it as it exits, and the grace kill bounds the rest.
+    if (!gen.exited && !gen.stopping) this.connectionFailed(gen, 'stdout_closed');
   }
 
   onMessage(gen, message) {

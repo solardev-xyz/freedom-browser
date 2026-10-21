@@ -147,6 +147,49 @@ function loadIpfsManagerModule(options = {}) {
     }
   }
 
+  // freedom-ipfsd's node (FREEDOM_IPFS_BACKEND=service): it supervises its
+  // own process, and binds the generation and instance a backend captures.
+  const serviceInstances = [];
+  class MockFreedomIpfsdNode {
+    constructor(config) {
+      this.config = config;
+      this.restartsItself = true;
+      this.pair = { instance: 'p-1' };
+      // With serviceStartPending, start() waits as the real node's does for
+      // its instance's first stats reply, and a stop settles it false.
+      this.settleStart = null;
+      this.start = jest.fn(() =>
+        options.serviceStartPending
+          ? new Promise((resolve) => {
+              this.settleStart = resolve;
+            })
+          : Promise.resolve(options.serviceStartOk !== false)
+      );
+      this.shutdown = Promise.resolve();
+      this.stop = jest.fn(() => {
+        this.settleStart?.(false);
+        return this.shutdown;
+      });
+      this.capture = jest.fn(() => this.pair);
+      this.request = jest.fn(async () => new Response('service-body', { status: 200 }));
+      this.isHealthy = jest.fn(() => options.isHealthy !== false);
+      this.refreshStats = jest.fn(async () => {});
+      this.version = '0.4.6';
+      this.buildInfoJson = jest.fn(() =>
+        JSON.stringify({ name: 'freedom-ipfs', version: '0.4.6', service: { version: '0.1.0' } })
+      );
+      this.progressSnapshotJson = jest.fn(() => '{"active":[],"events":[]}');
+      this.nativeGatewayStatsJson = jest.fn(() => '{"active_native_handles":2}');
+      this.serviceStatsJson = jest.fn(() => '{"store":{"block_count":3},"budget":{}}');
+      serviceInstances.push(this);
+    }
+
+    static isAvailable() {
+      return options.serviceAvailable !== false;
+    }
+  }
+  app.getVersion = () => '0.9.0-test';
+
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
     app,
     ipcMain,
@@ -171,6 +214,10 @@ function loadIpfsManagerModule(options = {}) {
       [require.resolve('./ipfs/freedom-ipfs-native-node')]: () => ({
         FreedomIpfsNativeNode: MockFreedomIpfsNativeNode,
       }),
+      [require.resolve('./ipfs/freedom-ipfsd-node')]: () => ({
+        FreedomIpfsdNode: MockFreedomIpfsdNode,
+      }),
+      [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
@@ -203,6 +250,7 @@ function loadIpfsManagerModule(options = {}) {
     log,
     mod,
     nativeInstances,
+    serviceInstances,
     setStatusMessage,
     setErrorState,
     clearErrorState,
@@ -2938,5 +2986,313 @@ describe('external gateway transport', () => {
       global.fetch = realFetch;
       jest.useRealTimers();
     }
+  });
+});
+
+// freedom-core design 0007, step 6: the bundled node on the freedom-ipfsd
+// service process, behind FREEDOM_IPFS_BACKEND=service in development builds.
+describe('the freedom-ipfsd backend (FREEDOM_IPFS_BACKEND=service)', () => {
+  const originalBackend = process.env.FREEDOM_IPFS_BACKEND;
+
+  beforeEach(() => {
+    process.env.FREEDOM_IPFS_BACKEND = 'service';
+  });
+
+  afterEach(async () => {
+    for (const ctx of loadedContexts.splice(0)) {
+      await ctx.mod.stopIpfs();
+    }
+    if (originalBackend === undefined) delete process.env.FREEDOM_IPFS_BACKEND;
+    else process.env.FREEDOM_IPFS_BACKEND = originalBackend;
+    jest.useRealTimers();
+  });
+
+  test('a development build runs the node on freedom-ipfsd, in its data and lock directories', async () => {
+    const ctx = loadIpfsManagerModule();
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.nativeInstances).toHaveLength(0);
+    expect(ctx.serviceInstances).toHaveLength(1);
+    expect(ctx.serviceInstances[0].config).toMatchObject({
+      dataDir: NATIVE_IPFS_DATA_DIR,
+      lockDir: '/tmp/freedom-locks',
+      shellVersion: '0.9.0-test',
+    });
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node: freedom-ipfs 0.4.6');
+    expect(ctx.mod.checkHealth()).toBe(true);
+  });
+
+  test.each([
+    ['a packaged build', { isPackaged: true }, 'service'],
+    ['an unknown value', {}, 'kubo'],
+    ['the add-on, named', {}, 'addon'],
+  ])('%s runs the add-on', async (_label, options, value) => {
+    process.env.FREEDOM_IPFS_BACKEND = value;
+    const ctx = loadIpfsManagerModule(options);
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.serviceInstances).toHaveLength(0);
+    expect(ctx.nativeInstances).toHaveLength(1);
+    if (value === 'kubo') {
+      expect(ctx.log.warn).toHaveBeenCalledWith(
+        '[IPFS] Unknown FREEDOM_IPFS_BACKEND=kubo; using the add-on'
+      );
+    }
+  });
+
+  test('no binary: an error, and nothing spawned', async () => {
+    const ctx = loadIpfsManagerModule({ serviceAvailable: false });
+    ctx.mod.registerIpfsIpc();
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.serviceInstances).toHaveLength(0);
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+      error: 'freedom-ipfsd binary not found',
+    });
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY)).resolves.toEqual({
+      available: false,
+    });
+  });
+
+  test('ipfsBackend() binds the pair serving at admission; its lease holds nothing', async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const node = ctx.serviceInstances[0];
+    const captured = node.pair;
+
+    const backend = ctx.mod.ipfsBackend({ partition: null });
+    expect(backend.ref).toEqual({ ipfs: 'native', up: true });
+    expect(backend.url).toBeNull();
+    expect(() => backend.release()).not.toThrow();
+    // A later pair (a restart) doesn't redirect the captured backend.
+    node.pair = { instance: 'p-2' };
+    const init = { path: '/ipfs/bafy', method: 'GET', headers: new Headers() };
+    await backend.request(init);
+    expect(node.request).toHaveBeenCalledWith(captured, init);
+  });
+
+  test("a node that isn't healthy: down, and a request rejects as not running", async () => {
+    const ctx = loadIpfsManagerModule({ isHealthy: false });
+    await ctx.mod.startIpfs();
+
+    const backend = ctx.mod.ipfsBackend();
+    expect(backend.ref).toEqual({ ipfs: 'native', up: false });
+    await expect(backend.request({ path: '/ipfs/bafy' })).rejects.toThrow(
+      'freedom-ipfs native node is not running'
+    );
+    expect(ctx.serviceInstances[0].request).not.toHaveBeenCalled();
+  });
+
+  test('the service supervises itself: no manager check fails it, however long it is down', async () => {
+    jest.useFakeTimers();
+    const ctx = loadIpfsManagerModule({ isHealthy: false });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+
+    jest.advanceTimersByTime(30_000);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'running',
+    });
+    expect(ctx.serviceInstances[0].stop).not.toHaveBeenCalled();
+  });
+
+  test('a restart: STARTING while the service is down, RUNNING once it is back', async () => {
+    const window = createWindowMock();
+    const ctx = loadIpfsManagerModule({ windows: [window] });
+    await ctx.mod.startIpfs();
+    const { onChange } = ctx.serviceInstances[0].config;
+
+    onChange('restarting', ctx.serviceInstances[0]);
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node restarting');
+    expect(window.webContents.send).toHaveBeenLastCalledWith(IPC.IPFS_STATUS_UPDATE, {
+      status: 'starting',
+      error: null,
+    });
+    onChange('running', ctx.serviceInstances[0]);
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node: freedom-ipfs 0.4.6');
+    expect(window.webContents.send).toHaveBeenLastCalledWith(IPC.IPFS_STATUS_UPDATE, {
+      status: 'running',
+      error: null,
+    });
+  });
+
+  test("giving up shows today's text, and the node is stopped", async () => {
+    const ctx = loadIpfsManagerModule();
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    const node = ctx.serviceInstances[0];
+
+    node.config.onFailure('freedom-ipfs service exited', node);
+
+    expect(ctx.setErrorState).toHaveBeenLastCalledWith(
+      'ipfs',
+      'Node unavailable. Restart IPFS from the nodes menu.'
+    );
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+      error: 'freedom-ipfs service exited',
+    });
+    expect(node.stop).toHaveBeenCalled();
+  });
+
+  // 0007, "Startup and shutdown": the start lasts until the first stats
+  // reply, which a wedged service may never give; a stop mustn't queue behind
+  // it, or quit outlasts IPFS's 5 s.
+  describe('a stop while the start is pending', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+
+    test('stops the node at once; STOPPED waits for its shutdown, and RUNNING never comes', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.registerIpfsIpc();
+      const starting = ctx.mod.startIpfs();
+      await flush();
+      const node = ctx.serviceInstances[0];
+      expect(node.start).toHaveBeenCalledTimes(1);
+      const shutdown = deferred();
+      node.shutdown = shutdown.promise;
+
+      const stopping = ctx.mod.stopIpfs();
+      expect(node.stop).toHaveBeenCalledTimes(1);
+      await starting;
+      await flush();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopping',
+      });
+
+      shutdown.resolve();
+      await stopping;
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+        error: null,
+      });
+      expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node failed to start');
+      expect(ctx.setStatusMessage).not.toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.6');
+      expect(ctx.mod.checkHealth()).toBe(false);
+    });
+
+    test('a start requested after it waits for the shutdown, then starts a new node', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const first = ctx.serviceInstances[0];
+      const shutdown = deferred();
+      first.shutdown = shutdown.promise;
+
+      const stopping = ctx.mod.stopIpfs();
+      const restarting = ctx.mod.startIpfs();
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(1);
+
+      shutdown.resolve();
+      await stopping;
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(2);
+      ctx.serviceInstances[1].settleStart(true);
+      await restarting;
+      expect(ctx.mod.checkHealth()).toBe(true);
+      expect(first.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a start and a stop in one turn: the start is cancelled, and no process is spawned', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.registerIpfsIpc();
+
+      const starting = ctx.mod.startIpfs();
+      const stopping = ctx.mod.stopIpfs();
+      await Promise.all([starting, stopping]);
+
+      expect(ctx.serviceInstances).toHaveLength(0);
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'stopped',
+        error: null,
+      });
+    });
+
+    test('stop, start, stop during the first shutdown: the queued start is cancelled', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const first = ctx.serviceInstances[0];
+      const shutdown = deferred();
+      first.shutdown = shutdown.promise;
+
+      const stopped = ctx.mod.stopIpfs();
+      await flush();
+      ctx.mod.startIpfs();
+      // In a later turn, as a user's clicks are.
+      await flush();
+      const stoppedAgain = ctx.mod.stopIpfs();
+      await flush();
+      expect(ctx.serviceInstances).toHaveLength(1);
+      shutdown.resolve();
+      await Promise.all([stopped, stoppedAgain]);
+
+      expect(ctx.serviceInstances).toHaveLength(1);
+      expect(first.stop).toHaveBeenCalledTimes(1);
+      expect(ctx.mod.checkHealth()).toBe(false);
+    });
+
+    test("the add-on's start and stop in one turn still both run", async () => {
+      process.env.FREEDOM_IPFS_BACKEND = 'addon';
+      const ctx = loadIpfsManagerModule();
+
+      await Promise.all([ctx.mod.startIpfs(), ctx.mod.stopIpfs()]);
+
+      expect(ctx.nativeInstances).toHaveLength(1);
+      expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a second stop meanwhile stops the node once', async () => {
+      const ctx = loadIpfsManagerModule({ serviceStartPending: true });
+      ctx.mod.startIpfs();
+      await flush();
+      const node = ctx.serviceInstances[0];
+
+      await Promise.all([ctx.mod.stopIpfs(), ctx.mod.stopIpfs()]);
+      expect(node.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test("a failed start is an error, as the add-on's is", async () => {
+    const ctx = loadIpfsManagerModule({ serviceStartOk: false });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+      error: 'Failed to start freedom-ipfs native node',
+    });
+  });
+
+  test("the diagnostics are the service's stats, store and budgets with them, asked again", async () => {
+    const ctx = loadIpfsManagerModule();
+    await ctx.mod.startIpfs();
+    const node = ctx.serviceInstances[0];
+    node.refreshStats.mockClear();
+
+    expect(ctx.mod.getNativeDiagnostics()).toEqual({
+      progress: '{"active":[],"events":[]}',
+      nativeGatewayStats: '{"active_native_handles":2}',
+      nativeVersion: '0.4.6',
+      nativeBuildInfo: JSON.stringify({
+        name: 'freedom-ipfs',
+        version: '0.4.6',
+        service: { version: '0.1.0' },
+      }),
+      nativeServiceStats: '{"store":{"block_count":3},"budget":{}}',
+    });
+    expect(node.refreshStats).toHaveBeenCalledTimes(1);
   });
 });

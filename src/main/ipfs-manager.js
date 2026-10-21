@@ -1,10 +1,11 @@
 const log = require('./logger');
-const { ipcMain } = require('electron');
+const { app, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const IPC = require('../shared/ipc-channels');
 const { getIpfsDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
+const { getLockDir } = require('./service-locks');
 const {
   MODE,
   updateService,
@@ -14,6 +15,7 @@ const {
   clearService,
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
+const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -35,6 +37,13 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let activeNode = null;
+// A freedom-ipfsd node whose start is still pending. Its start waits on the
+// service's replies, so a stop takes it over at once rather than queueing
+// behind it (freedom-core design 0007, "Startup and shutdown").
+let startingNode = null;
+// Counts stopIpfs() calls: a service start requested before the latest stop
+// is cancelled by it, whether or not its node exists yet.
+let stopsRequested = 0;
 let healthCheckInterval = null;
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
@@ -525,8 +534,24 @@ function startHealthCheck() {
   healthCheckInterval.unref?.();
 }
 
+// What runs the bundled node (freedom-core design 0007, step 6): today's
+// add-on, or in development builds the freedom-ipfsd service process with
+// FREEDOM_IPFS_BACKEND=service. Packaged builds always run the add-on until
+// the default switches.
+function nativeBackendKind() {
+  if (app.isPackaged) return 'addon';
+  const kind = process.env.FREEDOM_IPFS_BACKEND || 'addon';
+  if (kind === 'service' || kind === 'addon') return kind;
+  log.warn(`[IPFS] Unknown FREEDOM_IPFS_BACKEND=${kind}; using the add-on`);
+  return 'addon';
+}
+
+function nativeNodeClass() {
+  return nativeBackendKind() === 'service' ? FreedomIpfsdNode : FreedomIpfsNativeNode;
+}
+
 function checkBinary() {
-  return FreedomIpfsNativeNode.isAvailable();
+  return nativeNodeClass().isAvailable();
 }
 
 function startDisabledIpfs() {
@@ -679,7 +704,7 @@ async function startExternalIpfs(config) {
   activateExternalGateway(url);
 }
 
-async function doStartIpfs() {
+async function doStartIpfs(requestedAt = stopsRequested) {
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
     log.info(`[IPFS] Ignoring start request, current state: ${currentState}`);
     return;
@@ -705,33 +730,64 @@ async function doStartIpfs() {
   // probing the old gateway behind a managed node.
   clearExternalGatewayState();
 
-  if (!checkBinary()) {
-    updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
+  const NodeClass = nativeNodeClass();
+  // A stop requested after this start would otherwise wait behind it: the
+  // service's start can't be bounded, and that stop has already taken over
+  // whatever was starting. Its own op, queued after this one, publishes
+  // STOPPED. The add-on's start is bounded, and runs as it always has.
+  if (NodeClass === FreedomIpfsdNode && requestedAt !== stopsRequested) {
+    log.info('[IPFS] A stop requested meanwhile cancels the freedom-ipfsd start');
+    return;
+  }
+  if (!NodeClass.isAvailable()) {
+    updateState(
+      STATUS.ERROR,
+      NodeClass === FreedomIpfsdNode
+        ? 'freedom-ipfsd binary not found'
+        : 'freedom-ipfs native addon not built'
+    );
     setStatusMessage('ipfs', 'Native node unavailable');
     return;
   }
 
   const dataDir = getIpfsDataPath();
-  const node = new FreedomIpfsNativeNode({
-    dataDir,
-    onFailure: (reason, failedNode) => handleNativeNodeFailure(reason, failedNode),
-  });
+  const onFailure = (reason, failedNode) => handleNativeNodeFailure(reason, failedNode);
+  const node =
+    NodeClass === FreedomIpfsdNode
+      ? new FreedomIpfsdNode({
+          dataDir,
+          lockDir: getLockDir(),
+          shellVersion: app.getVersion(),
+          onFailure,
+          onChange: (state, changedNode) => handleServiceNodeChange(state, changedNode),
+        })
+      : new FreedomIpfsNativeNode({ dataDir, onFailure });
 
   // start() resolves once the addon has opened the cache and bound the gateway
   // on the libuv thread pool; the main thread keeps serving the UI meanwhile
   // (#503 item 13). The state stays STARTING throughout, and enqueueOp holds
-  // any stop/sync requested meanwhile until this settles.
+  // any stop/sync requested meanwhile until this settles. The service node's
+  // start lasts until its instance's first stats reply, so a stop doesn't
+  // wait for it: stopIpfs() stops the node, which settles start() false, and
+  // the stop's own op publishes STOPPED.
+  const takenOver = () => node.restartsItself && startingNode !== node;
+  if (node.restartsItself) startingNode = node;
   try {
-    if (!(await node.start())) {
+    const started = await node.start();
+    if (takenOver()) return;
+    if (!started) {
       updateState(STATUS.ERROR, 'Failed to start freedom-ipfs native node');
       setStatusMessage('ipfs', 'Node failed to start');
       return;
     }
   } catch (err) {
+    if (takenOver()) return;
     log.error('[IPFS] Failed to start freedom-ipfs native node:', err);
     updateState(STATUS.ERROR, err.message);
     setStatusMessage('ipfs', 'Node failed to start');
     return;
+  } finally {
+    if (startingNode === node) startingNode = null;
   }
 
   activeNode = node;
@@ -744,8 +800,25 @@ async function doStartIpfs() {
   });
   setStatusMessage('ipfs', `Node: ${nodeLabel}`);
   updateState(STATUS.RUNNING);
-  startHealthCheck();
+  // The service node runs its own 5 s check (`ipfs.stats`) and restarts
+  // itself; the add-on is checked from here.
+  if (!node.restartsItself) startHealthCheck();
   log.info(`[IPFS] ${nodeLabel} native node started at ${dataDir}`);
+}
+
+// The service node went down for a restart, or came back (freedom-core
+// design 0007, "Crashes, hangs and restarts"): STARTING meanwhile, so plans
+// get the 503 of a node that isn't up, as at launch. Giving up is a failure
+// (handleNativeNodeFailure).
+function handleServiceNodeChange(state, node) {
+  if (node !== activeNode) return;
+  if (state === 'restarting' && currentState === STATUS.RUNNING) {
+    setStatusMessage('ipfs', 'Node restarting');
+    updateState(STATUS.STARTING);
+  } else if (state === 'running' && currentState === STATUS.STARTING) {
+    setStatusMessage('ipfs', `Node: ${nativeNodeLabel(node)}`);
+    updateState(STATUS.RUNNING);
+  }
 }
 
 // After a stop, keep the registry reflecting the profile's configured mode so
@@ -827,8 +900,10 @@ async function doSyncIpfsProfileMode() {
   if (hadError) updateState(STATUS.STOPPED);
 }
 
-async function doStopIpfs() {
-  if (currentState === STATUS.STOPPED && !activeNode) {
+// `takeover`: the stop of a service node that was still starting (stopIpfs),
+// which STOPPED waits for, as for the active node's.
+async function doStopIpfs(takeover = null) {
+  if (currentState === STATUS.STOPPED && !activeNode && !takeover) {
     publishStoppedIpfsMode();
     return;
   }
@@ -844,6 +919,7 @@ async function doStopIpfs() {
       log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
     }
   }
+  await takeover;
 
   clearExternalGatewayState();
   clearErrorState('ipfs');
@@ -855,11 +931,24 @@ async function doStopIpfs() {
 // Public entry points. Each returns a promise that resolves once the transition
 // has fully settled, so awaiting start()/stop() yields the final node status.
 function startIpfs() {
-  return enqueueOp(doStartIpfs);
+  const requestedAt = stopsRequested;
+  return enqueueOp(() => doStartIpfs(requestedAt));
 }
 
 function stopIpfs() {
-  return enqueueOp(doStopIpfs);
+  // A service node still starting is stopped now, not after its start
+  // settles (doStartIpfs), and a service start queued before this stop is
+  // cancelled: the shutdown is bounded at 5 s, and so quit and a mode change
+  // are. A start requested after this stop waits for that shutdown.
+  stopsRequested += 1;
+  const starting = startingNode;
+  startingNode = null;
+  const takeover = starting
+    ? starting.stop().catch((err) => {
+        log.warn('[IPFS] Error while stopping freedom-ipfs native node:', err.message);
+      })
+    : null;
+  return enqueueOp(() => doStopIpfs(takeover));
 }
 
 // Serialized with start/stop so a sync can't interleave with a transition and
@@ -990,11 +1079,33 @@ function ipfsBackend() {
   // The native node pulls with real backpressure, and runs the plan's
   // headers deadline itself; its queue bound is the one it was started with.
   const node = checkHealth() ? activeNode : null;
+  if (activeNode?.restartsItself) return serviceBackend(node);
   return {
     ref: { ipfs: 'native', up: Boolean(node) },
     url: null,
     request: ({ path: gatewayPath, method, headers, signal, headersTimeoutMs }) =>
       node.request({ method, path: gatewayPath, headers, signal, headersTimeoutMs }),
+  };
+}
+
+/**
+ * The freedom-ipfsd node's backend (freedom-core design 0007, "Main's side"):
+ * the generation and instance serving now, captured at admission, so a
+ * request that goes on past a stop, a restart or an instance the service
+ * retired fails before anything is sent instead of reaching their
+ * replacement. Every partition is served by the profile's instance until
+ * private windows get their own (step 7), so its lease holds nothing.
+ */
+function serviceBackend(node) {
+  const captured = node ? node.capture() : null;
+  return {
+    ref: { ipfs: 'native', up: Boolean(captured) },
+    url: null,
+    request: (init) =>
+      captured
+        ? node.request(captured, init)
+        : Promise.reject(new Error('freedom-ipfs native node is not running')),
+    release() {},
   };
 }
 
@@ -1030,6 +1141,13 @@ function getNativeDiagnostics() {
 
   diagnostics.nativeVersion = readNativeVersion(activeNode);
   diagnostics.nativeBuildInfo = readNativeBuildInfoJson(activeNode);
+  if (activeNode.restartsItself) {
+    // The service's last `ipfs.stats` reply, with its store and budgets
+    // (freedom-core design 0007, Stats). Asked again now, so a panel or a
+    // load polling these reads them fresh, not at the 5 s check's pace.
+    diagnostics.nativeServiceStats = activeNode.serviceStatsJson();
+    activeNode.refreshStats();
+  }
   return diagnostics;
 }
 
