@@ -590,9 +590,9 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
       );
     }
 
-    // Its IPFS data is removed under the data directory's gate: a writer
-    // that holds it fails the delete (freedom-core design 0007, "Lifetime
-    // lock").
+    // Its IPFS data is removed under the data directory's gate, where this
+    // build takes one: a writer that holds it fails the delete (freedom-core
+    // design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js).
     const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName, {
       withIpfsGate,
     });

@@ -290,10 +290,9 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
           FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
 
-      # The add-on runs under freedom-ipfsd's hold-lock on its data directory
-      # wherever the binary ships (design 0007, Rollback), as it does in
-      # packaged builds: with it here, the contract suite below runs the
-      # add-on under the real gate.
+      # A development build runs the add-on under freedom-ipfsd's hold-lock
+      # on its data directory (design 0007, Rollback): with the binary here,
+      # the contract suite below runs the add-on under the real gate.
       - name: Download freedom-ipfsd binaries
         timeout-minutes: 7
         shell: bash
@@ -1481,10 +1480,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download freedom-ipfsd binaries
-        # Packaged builds run its hold-lock (the IPFS data directory's gate)
-        # and release packaging requires it: this is the pull-request run of
-        # its real download and verification on all three OSes. Same bounded
-        # watchdog as the Ant download.
+        # Packaged builds don't start it yet, but release packaging requires
+        # it: this is the pull-request run of its real download and
+        # verification on all three OSes. Same bounded watchdog as the Ant
+        # download.
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js

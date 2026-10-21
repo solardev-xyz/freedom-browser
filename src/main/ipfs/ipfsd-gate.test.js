@@ -27,6 +27,7 @@ jest.mock('fs', () => {
 const {
   IpfsGateError,
   holdIpfsGate,
+  ipfsGateRequired,
   takeIpfsGate,
   withIpfsGate,
   LOCK_TIMEOUT_MS,
@@ -263,6 +264,88 @@ describe('holdIpfsGate', () => {
   });
 });
 
+// Until the service is the default, only a build that can run it gates its
+// IPFS writers (freedom-core design 0007, "Lifetime lock" and Rollback): the
+// add-on takes its gate through takeIpfsGate, and profile delete through
+// withIpfsGate.
+describe('where the gate is taken (ipfsGateRequired)', () => {
+  const spawnHolder = () => {
+    const spawn = jest.fn(() => {
+      const child = new FakeHolder();
+      setImmediate(() => child.locked());
+      return child;
+    });
+    return {
+      spawn,
+      options: {
+        log,
+        lockDir: 'locks',
+        spawn,
+        setTimer: timers.setTimer,
+        clearTimer: timers.clearTimer,
+      },
+    };
+  };
+
+  test('a packaged build: the add-on and profile delete take no gate, even with the binary', async () => {
+    app.isPackaged = true;
+    expect(ipfsGateRequired()).toBe(false);
+    const { spawn, options } = spawnHolder();
+
+    // The add-on's.
+    await expect(takeIpfsGate('data', options)).resolves.toBeNull();
+    // Profile delete's.
+    const fn = jest.fn(async () => 'removed');
+    await expect(withIpfsGate('data', fn, options)).resolves.toBe('removed');
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test("a packaged build's profile delete removes the profile's IPFS data with no gate", async () => {
+    app.isPackaged = true;
+    const os = require('os');
+    const fs = require('fs');
+    const { deleteProfile, ensureProfile, loadCatalog } = require('../profile-catalog');
+    const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-gate-delete-'));
+    try {
+      const profiles = { defaultProfileDir: path.join(appRoot, 'Profiles', 'default') };
+      ensureProfile(appRoot, 'default', profiles);
+      const { record } = ensureProfile(appRoot, 'work', profiles);
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+      const { spawn, options } = spawnHolder();
+
+      await deleteProfile(appRoot, 'work', 'Work', {
+        ...profiles,
+        withIpfsGate: (dir, fn) => withIpfsGate(dir, fn, options),
+      });
+
+      expect(spawn).not.toHaveBeenCalled();
+      expect(fs.existsSync(record.dir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    } finally {
+      fs.rmSync(appRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('a development build: both hold it', async () => {
+    expect(ipfsGateRequired()).toBe(true);
+    const { spawn, options } = spawnHolder();
+
+    const hold = await takeIpfsGate('data', options);
+    expect(hold).not.toBeNull();
+    await hold.release();
+    const fn = jest.fn(async () => {
+      expect(spawn).toHaveBeenCalledTimes(2);
+    });
+    await withIpfsGate('data', fn, options);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls.map(([, args]) => args[0])).toEqual(['hold-lock', 'hold-lock']);
+  });
+});
+
 describe("the build's rule for a missing binary", () => {
   test('a development build goes on without the gate, and says so', async () => {
     mockBinaryPresent = false;
@@ -273,16 +356,12 @@ describe("the build's rule for a missing binary", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  test('a packaged build requires it: nothing runs without the gate', async () => {
+  test('a missing binary in a packaged build is no matter yet: it takes no gate', async () => {
     mockBinaryPresent = false;
     app.isPackaged = true;
-    Object.defineProperty(process, 'resourcesPath', { value: 'resources', configurable: true });
-    const fn = jest.fn();
-    await expect(withIpfsGate('data', fn, { log })).rejects.toMatchObject({
-      name: 'IpfsGateError',
-      code: 'missing',
-    });
-    expect(fn).not.toHaveBeenCalled();
+    const fn = jest.fn(async () => 'removed');
+    await expect(withIpfsGate('data', fn, { log })).resolves.toBe('removed');
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   test('withIpfsGate runs `fn` holding the gate, and releases it however `fn` ends', async () => {

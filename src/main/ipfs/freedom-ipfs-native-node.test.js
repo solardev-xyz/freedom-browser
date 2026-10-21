@@ -946,6 +946,54 @@ describe("FreedomIpfsNativeNode under its data directory's gate", () => {
     expect(node.gate).toBeNull();
   });
 
+  // Until the service is the default, only development builds gate their
+  // IPFS writers (ipfsd-gate.js, ipfsGateRequired).
+  test.each([
+    ['a packaged build starts it with no gate', true, 0],
+    ['a development build starts it under hold-lock', false, 1],
+  ])('through the real gate: %s', async (_label, isPackaged, holders) => {
+    const binding = recordedBinding([]);
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const { app } = require('electron');
+    const { takeIpfsGate } = require('./ipfsd-gate');
+    const wasPackaged = app.isPackaged;
+    const binaryBefore = process.env.FREEDOM_IPFSD_PATH;
+    app.isPackaged = isPackaged;
+    // A binary that is there, wherever the suite runs.
+    process.env.FREEDOM_IPFSD_PATH = __filename;
+    const spawn = jest.fn(() => {
+      const { EventEmitter } = require('events');
+      const { PassThrough } = require('stream');
+      const child = Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: jest.fn(),
+      });
+      child.stdin.on('finish', () => setImmediate(() => child.emit('exit', 0, null)));
+      setImmediate(() => child.stdout.write('locked\n'));
+      return child;
+    });
+    try {
+      const node = new FreedomIpfsNativeNode({
+        dataDir: '/tmp/freedom-ipfs-test',
+        takeGate: (options) =>
+          takeIpfsGate('/tmp/freedom-ipfs-test', {
+            ...options,
+            lockDir: '/tmp/freedom-locks',
+            spawn,
+          }),
+      });
+      await expect(node.start()).resolves.toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(holders);
+      await stopNode(node);
+    } finally {
+      app.isPackaged = wasPackaged;
+      if (binaryBefore === undefined) delete process.env.FREEDOM_IPFSD_PATH;
+      else process.env.FREEDOM_IPFSD_PATH = binaryBefore;
+    }
+  });
+
   test('a hold released by its own stop is never lost', async () => {
     const order = [];
     const binding = recordedBinding(order);
