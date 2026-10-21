@@ -16,6 +16,9 @@
 #include <vector>
 #include <algorithm>
 #include <cwctype>
+#include <atomic>
+#include <array>
+#include <iostream>
 
 static void checked(bool success, const char* name) {
     if (!success) {
@@ -49,7 +52,33 @@ static bool package_access(HANDLE token, const std::wstring& sid) {
 }
 struct PackageFilter {
     HANDLE engine = nullptr;
-    ~PackageFilter() { if (engine) FwpmEngineClose0(engine); }
+    HANDLE subscription = nullptr;
+    std::array<UINT64, 2> ids = {};
+    std::atomic<unsigned> drops{0};
+    UINT32 original_collection = 0;
+    bool changed_collection = false;
+    bool cleanup() {
+        bool ok = true;
+        if (subscription) {
+            const DWORD result = FwpmNetEventUnsubscribe0(engine, subscription);
+            if (result) { std::printf("Event unsubscribe error: %lu\n", result); ok = false; }
+            else subscription = nullptr;
+        }
+        if (changed_collection) {
+            FWP_VALUE0 value = {}; value.type = FWP_UINT32; value.uint32 = original_collection;
+            const DWORD result = FwpmEngineSetOption0(engine, FWPM_ENGINE_COLLECT_NET_EVENTS, &value);
+            if (result) { std::printf("Event collection restore error: %lu\n", result); ok = false; }
+            else changed_collection = false;
+        }
+        return ok;
+    }
+    ~PackageFilter() { cleanup(); if (engine) FwpmEngineClose0(engine); }
+    static void CALLBACK observe(void* context, const FWPM_NET_EVENT1* event) {
+        auto* owner = static_cast<PackageFilter*>(context);
+        if (event->type == FWPM_NET_EVENT_TYPE_CLASSIFY_DROP && event->classifyDrop &&
+            (event->classifyDrop->filterId == owner->ids[0] || event->classifyDrop->filterId == owner->ids[1]))
+            owner->drops.fetch_add(1, std::memory_order_relaxed);
+    }
     void install(PSID sid) {
         FWPM_SESSION0 session = {};
         session.flags = FWPM_SESSION_FLAG_DYNAMIC;
@@ -62,6 +91,7 @@ struct PackageFilter {
         sublayer.weight = 0xffff;
         status = FwpmSubLayerAdd0(engine, &sublayer, nullptr);
         if (status) throw std::runtime_error("Package filter sublayer");
+        size_t index = 0;
         for (const auto& layer : {FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6}) {
             FWPM_FILTER_CONDITION0 condition = {};
             condition.fieldKey = FWPM_CONDITION_ALE_PACKAGE_ID;
@@ -80,6 +110,7 @@ struct PackageFilter {
             UINT64 id = 0;
             status = FwpmFilterAdd0(engine, &filter, nullptr, &id);
             if (status) { std::printf("Package filter add error: %lu\n", status); throw std::runtime_error("Package filter add"); }
+            ids[index++] = id;
             FWPM_FILTER0* actual = nullptr;
             status = FwpmFilterGetById0(engine, id, &actual);
             if (status) throw std::runtime_error("Package filter readback");
@@ -92,6 +123,22 @@ struct PackageFilter {
             FwpmFreeMemory0(reinterpret_cast<void**>(&actual));
             if (!valid) throw std::runtime_error("Package filter readback mismatch");
         }
+        FWP_VALUE0* collection = nullptr;
+        status = FwpmEngineGetOption0(engine, FWPM_ENGINE_COLLECT_NET_EVENTS, &collection);
+        if (status) throw std::runtime_error("Read event collection option");
+        const bool valid_collection = collection && collection->type == FWP_UINT32;
+        if (valid_collection) original_collection = collection->uint32;
+        FwpmFreeMemory0(reinterpret_cast<void**>(&collection));
+        if (!valid_collection) throw std::runtime_error("Unexpected event collection option");
+        if (!original_collection) {
+            FWP_VALUE0 enabled = {}; enabled.type = FWP_UINT32; enabled.uint32 = 1;
+            status = FwpmEngineSetOption0(engine, FWPM_ENGINE_COLLECT_NET_EVENTS, &enabled);
+            if (status) throw std::runtime_error("Enable disposable event collection");
+            changed_collection = true;
+        }
+        FWPM_NET_EVENT_SUBSCRIPTION0 settings = {};
+        status = FwpmNetEventSubscribe0(engine, &settings, observe, this, &subscription);
+        if (status) { std::printf("Event subscribe error: %lu\n", status); throw std::runtime_error("Subscribe own filter counters"); }
         std::puts("Verified exact package SID socket filters for IPv4 and IPv6");
     }
 };
@@ -288,9 +335,10 @@ int wmain(int argc, wchar_t** argv) {
         if (lpac) std::puts("Verified less-privileged AppContainer access semantics");
         std::puts("Verified AppContainer process, zero network capabilities"); std::fflush(stdout);
         checked(ResumeThread(thread.value) != static_cast<DWORD>(-1), "ResumeThread");
-        if (WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0) {
-            TerminateJobObject(job.value, 1); WaitForSingleObject(child.value, 5000);
-            throw std::runtime_error("AppContainer probe timeout");
+        const bool timed_out = WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0;
+        if (timed_out) {
+            checked(TerminateJobObject(job.value, 1) != 0, "Terminate timed-out probe job");
+            checked(WaitForSingleObject(child.value, 5000) == WAIT_OBJECT_0, "Drain timed-out process");
         }
         DWORD exit_code = 1;
         checked(GetExitCodeProcess(child.value, &exit_code) != 0, "GetExitCodeProcess");
@@ -305,10 +353,22 @@ int wmain(int argc, wchar_t** argv) {
             Sleep(10);
         }
         if (!drained) throw std::runtime_error("Owned probe descendants did not drain");
+        // Hold the rule across the parent's positive controls and late-retry
+        // observation. A timeout is reported honestly, never as a completed job.
+        if (package_filter.engine) {
+            std::printf("FREEDOM_PACKAGE_WORKLOAD_READY state=%s exit=%lu\n", timed_out ? "timed_out" : "exited", exit_code);
+            std::fflush(stdout);
+            std::string release;
+            if (!std::getline(std::cin, release) || release != "release")
+                throw std::runtime_error("Package fixture controller disconnected");
+            checked(package_filter.cleanup(), "Restore event subscription/options");
+            std::printf("FREEDOM_PACKAGE_DROPS %u\n", package_filter.drops.load(std::memory_order_relaxed));
+            std::fflush(stdout);
+        }
         bool restored = true;
         while (!grants.empty()) { restored = grants.back()->restore() && restored; grants.pop_back(); }
         const bool profile_removed = profile.remove();
-        return exit_code == 0 && restored && profile_removed ? 0 : 1;
+        return (package_filter.engine || (!timed_out && exit_code == 0)) && restored && profile_removed ? 0 : 1;
     } catch (const std::exception& error) {
         std::printf("AppContainer probe failed: %s\n", error.what());
         return 1;

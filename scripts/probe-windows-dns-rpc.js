@@ -156,15 +156,49 @@ async function main() {
     });
     const bare = await measureContainer(null);
     console.log(JSON.stringify({ mode: 'appcontainer-bare', offline: bare }));
-    const filtered = await measureContainer('package-filter');
-    console.log(JSON.stringify({ mode: 'appcontainer-package-filter', offline: filtered,
-      efficacy: bare > 0 ? (filtered === 0 ? 'blocked previously leaking path' : 'not enforced') : 'inconclusive: bare policy already blocks DNS' }));
-    const containerPackets = await measureContainer('lpac');
-    const candidate = { mode: 'lpac', offline: containerPackets,
-      host: await count(host), full: await count(source => sandbox('full', source)) };
-    console.log(JSON.stringify({ rpcResults: results, candidate }));
-    assert(candidate.host > 0 && candidate.full > 0, 'Normal and approved-network DNS must remain available');
-    assert.equal(candidate.offline, 0, 'An actual no-network container must not emit DNS');
+    const name = `${randomBytes(12).toString('hex')}.freedom-audit.test`;
+    queries.set(name, 0);
+    const target = path.join(workspace, 'package-filter-write.txt');
+    const source = `require('fs').writeFileSync(${JSON.stringify(target)},'owned fixture');console.log('appcontainer-write:ok');${lookup(name)}`;
+    const child = spawn(container, [ownedNode, workspace, source, 'package-filter'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+    child.stdin.on('error', () => {});
+    let output = '';
+    const closed = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    closed.catch(() => {});
+    const timer = setTimeout(() => child.kill(), 90000);
+    filter = { child, closed, timer };
+    await new Promise((resolve, reject) => {
+      child.stdout.on('data', bytes => {
+        process.stdout.write(bytes); output += bytes;
+        if (output.length > 65536) reject(new Error('Oversized package filter output'));
+        if (output.includes('FREEDOM_PACKAGE_WORKLOAD_READY')) resolve();
+      });
+      child.once('error', reject);
+      child.once('close', () => reject(new Error('Package fixture exited before workload drain')));
+    });
+    assert.match(output, /Verified exact package SID socket filters for IPv4 and IPv6/);
+    assert.match(output, /Verified AppContainer process, zero network capabilities/);
+    assert.match(output, /appcontainer-write:ok/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'owned fixture');
+    // The package rule remains installed throughout these controls. Existing
+    // unrestricted and approved-network identities must remain usable.
+    const hostPackets = await count(host);
+    const fullPackets = await count(source => sandbox('full', source));
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const filtered = queries.get(name);
+    child.stdin.end('release\n');
+    assert.equal(await closed, 0, 'Package rule and owned fixture cleanup must succeed');
+    clearTimeout(timer); filter = null;
+    const dropMatch = output.match(/FREEDOM_PACKAGE_DROPS (\d+)/);
+    assert(dropMatch, 'Own filter event counters must be returned');
+    const drops = Number(dropMatch[1]);
+    const candidate = { mode: 'appcontainer-package-filter', bare, offline: filtered, ownFilterDrops: drops,
+      hostWhileInstalled: hostPackets, fullWhileInstalled: fullPackets,
+      workloadState: output.match(/FREEDOM_PACKAGE_WORKLOAD_READY state=(\w+)/)?.[1] };
+    console.log(JSON.stringify({ candidate }));
+    assert(hostPackets > 0 && fullPackets > 0, 'Normal and approved-network DNS must remain available while the rule is installed');
+    assert.equal(filtered, 0, 'The package-filtered process must not emit DNS');
+    if (bare > 0) assert(drops > 0, 'A previously leaking path requires causal own-filter drop evidence');
   } catch (error) {
     console.error('Owned DNS fixture failed before cleanup:', error);
     throw error;
