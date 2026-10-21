@@ -6,30 +6,17 @@ const os = require('os');
 const { createHash, randomUUID } = require('crypto');
 const { execFile } = require('child_process');
 const { dictationError } = require('./dictation-service');
+const { WHISPER_VERSION, WHISPER_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, SUPPORTED_TARGETS } = require('../../shared/dictation-runtime');
 
-// Optional user-requested downloads, never part of ordinary browser startup.
-// Runtime digests are the upstream GitHub release digests. The multilingual
-// model archive was independently SHA-256 hashed before pinning it here.
-const RELEASE = 'https://github.com/k2-fsa/sherpa-onnx/releases/download';
-const RUNTIMES = Object.freeze({
-  'darwin-arm64': ['osx-arm64-shared', 'b10e5c7e2c30ea03de9c442655d14860d9edc475c6251d58a8f5f06e913a1d56'],
-  'darwin-x64': ['osx-x64-shared', '54aad64acee9d2d596535a6080d6f22602a720af5460e1d50461b1e1b06bee40'],
-  'linux-x64': ['linux-x64-shared-no-tts', 'd0f96c8b65c6cd0974fada22737e337de81bc8cd2abbec2e39caf358b1eec5fc'],
-  'linux-arm64': ['linux-aarch64-shared-cpu', '4e3734f82bc1379fd91f219f5869c7e9d03b7a4f7561907d8abca4849c51a789'],
-  'win32-x64': ['win-x64-shared-MT-Release-no-tts', '4b0a94f7b5c606b1b64a19a831c2127559e4b3d34e195465ebc7be73d9ed4783'],
-});
-const MODEL_HASH = '911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de';
-const MODEL_FILES = ['base-encoder.int8.onnx', 'base-decoder.int8.onnx', 'base-tokens.txt'];
-
-function run(executable, args, { signal, cwd, maxBuffer = 256 * 1024, binary = false } = {}) {
+function run(executable, args, { signal, cwd } = {}) {
   // Do not pass provider credentials, Node preload flags or dynamic-library
   // search overrides from the browser environment to downloaded executables.
   const env = { PATH: process.env.PATH, ...(process.platform === 'win32'
     ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: os.tmpdir() }
-    : { HOME: os.tmpdir(), TMPDIR: os.tmpdir(), LANG: 'en_US.UTF-8' }) };
+    : { HOME: cwd, TMPDIR: cwd, LANG: 'en_US.UTF-8' }) };
   return new Promise((resolve, reject) => {
     execFile(executable, args, { cwd, env, signal, windowsHide: true, timeout: 120000,
-      killSignal: 'SIGKILL', maxBuffer, encoding: binary ? 'buffer' : 'utf8' }, (error, stdout) => {
+      killSignal: 'SIGKILL', maxBuffer: 256 * 1024, encoding: 'utf8' }, (error, stdout) => {
       if (error) reject(dictationError(signal?.aborted ? 'DICTATION_CANCELLED' : 'DICTATION_LOCAL',
         signal?.aborted ? 'Dictation cancelled.' : 'Local transcription could not run. Try downloading the local files again.'));
       else resolve(stdout);
@@ -38,12 +25,17 @@ function run(executable, args, { signal, cwd, maxBuffer = 256 * 1024, binary = f
 }
 
 class LocalDictation {
-  constructor({ dataDir, fetch: fetchImpl = globalThis.fetch, platform = process.platform, arch = process.arch } = {}) {
-    this.asset = RUNTIMES[`${platform}-${arch}`];
-    this.supported = Boolean(this.asset);
+  constructor({ dataDir, fetch: fetchImpl = globalThis.fetch, platform = process.platform, arch = process.arch,
+    packaged = __dirname.split(path.sep).includes('app.asar'), resourcesPath = process.resourcesPath, runtimeDir } = {}) {
+    this.supported = SUPPORTED_TARGETS.includes(`${platform}-${arch}`);
     this.platform = platform;
-    this.root = path.join(dataDir, 'dictation-local', `sherpa-1.13.8-whisper-base-${platform}-${arch}`);
-    this.executable = path.join(this.root, 'runtime', 'bin', `sherpa-onnx-offline${platform === 'win32' ? '.exe' : ''}`);
+    this.arch = arch;
+    // No fallback to an unrelated dev binary when a packaged helper is absent.
+    this.runtimeDir = runtimeDir || (packaged ? path.join(resourcesPath || '', 'dictation-runtime')
+      : path.resolve(__dirname, '../../../out/dictation-runtime', `${{ darwin: 'mac', win32: 'win', linux: 'linux' }[platform]}-${arch}`));
+    this.root = path.join(dataDir, 'dictation-local', `whisper-base-${MODEL_SHA256.slice(0, 12)}`);
+    this.model = path.join(this.root, 'ggml-base.bin');
+    this.executable = path.join(this.runtimeDir, `whisper-cli${platform === 'win32' ? '.exe' : ''}`);
     this.fetch = fetchImpl;
     this.scratchRoot = path.join(dataDir, 'dictation-audio');
     // Only our generated phrase directories live here. Recover interrupted
@@ -60,14 +52,24 @@ class LocalDictation {
       // Cleanup failure disables local recording, never ordinary browser startup.
       this.scratchCleanupFailed = error.code !== 'ENOENT';
     }
-    this.tar = platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
+  }
+
+  runtimeReady() {
+    try {
+      const binary = fs.lstatSync(this.executable);
+      const manifest = JSON.parse(fs.readFileSync(path.join(this.runtimeDir, 'manifest.json'), 'utf8'));
+      return binary.isFile() && !binary.isSymbolicLink() && binary.size > 0 &&
+        manifest.version === WHISPER_VERSION && manifest.revision === WHISPER_REVISION &&
+        manifest.platform === this.platform && manifest.arch === this.arch;
+    } catch { return false; }
   }
 
   ready() {
-    if (!this.supported) return false;
+    if (!this.supported || !this.runtimeReady()) return false;
     try {
-      return [this.executable, ...MODEL_FILES.map(file => path.join(this.root, 'model', file)), path.join(this.root, 'installed.json'), path.join(this.root, 'NOTICES.txt')]
-        .every(file => { const stat = fs.lstatSync(file); return stat.isFile() && !stat.isSymbolicLink() && stat.size > 0; });
+      const model = fs.lstatSync(this.model);
+      const marker = JSON.parse(fs.readFileSync(path.join(this.root, 'installed.json'), 'utf8'));
+      return model.isFile() && !model.isSymbolicLink() && model.size === MODEL_BYTES && marker.modelSha256 === MODEL_SHA256;
     } catch { return false; }
   }
 
@@ -103,65 +105,20 @@ class LocalDictation {
     if (digest.digest('hex') !== hash) throw dictationError('DICTATION_INTEGRITY', 'The local download did not pass its integrity check. Please try again.');
   }
 
-  async extract(archive, entry, destination, signal) {
-    const bytes = await run(this.tar, ['-xOf', archive, entry], { signal, binary: true, maxBuffer: 160 * 1024 * 1024 });
-    if (!bytes.length) return false; // Archive symlinks are not extracted.
-    await fs.promises.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-    await fs.promises.writeFile(destination, bytes, { mode: 0o600, flag: 'wx' });
-    return true;
-  }
-
   async install(signal, progress = () => {}) {
     if (!this.supported) throw dictationError('DICTATION_LOCAL', 'Local dictation is not available on this architecture yet.');
+    if (!this.runtimeReady()) throw dictationError('DICTATION_LOCAL', 'The local speech engine is missing. Reinstall Freedom or rebuild the development runtime.');
     if (this.ready()) return;
     const parent = path.dirname(this.root);
     await fs.promises.mkdir(parent, { recursive: true, mode: 0o700 });
     const stage = await fs.promises.mkdtemp(path.join(parent, '.install-'));
     try {
-      const stem = `sherpa-onnx-v1.13.8-${this.asset[0]}`;
-      const runtimeArchive = path.join(stage, 'runtime.tar.bz2');
-      const modelArchive = path.join(stage, 'model.tar.bz2');
-      await this.download(`${RELEASE}/v1.13.8/${stem}.tar.bz2`, this.asset[1], runtimeArchive, signal, progress, 'Downloading speech engine');
-      const listing = await run(this.tar, ['-tjf', runtimeArchive], { signal });
-      const executable = `sherpa-onnx-offline${this.platform === 'win32' ? '.exe' : ''}`;
-      const entries = listing.split(/\r?\n/).filter(entry => entry === `${stem}/bin/${executable}` ||
-        new RegExp(`^${stem}/(?:lib|bin)/[A-Za-z0-9_.+-]+\\.(?:dylib|dll|so(?:\\.[0-9.]+)?)$`).test(entry));
-      if (!entries.includes(`${stem}/bin/${executable}`)) throw dictationError('DICTATION_DOWNLOAD', 'The downloaded speech engine was incomplete.');
-      progress({ label: 'Preparing speech engine' });
-      for (const entry of entries) {
-        const relative = entry.slice(stem.length + 1);
-        await this.extract(runtimeArchive, entry, path.join(stage, 'ready', 'runtime', relative), signal);
-      }
-      // Linux distributions load the versioned SONAME. Some upstream archives
-      // carry aliases as tar symlinks; create only these fixed local aliases.
-      const libDir = path.join(stage, 'ready', 'runtime', 'lib');
-      if (this.platform === 'win32') {
-        // Windows searches beside the executable for its dependent DLLs.
-        const libraries = await fs.promises.readdir(libDir).catch(error => {
-          if (error.code === 'ENOENT') return [];
-          throw error;
-        });
-        for (const file of libraries.filter(file => /^[A-Za-z0-9_.+-]+\.dll$/i.test(file))) {
-          try { await fs.promises.copyFile(path.join(libDir, file), path.join(stage, 'ready', 'runtime', 'bin', file), fs.constants.COPYFILE_EXCL); }
-          catch (error) { if (error.code !== 'EEXIST') throw error; }
-        }
-      }
-      if (this.platform === 'linux') {
-        const libraries = await fs.promises.readdir(libDir);
-        for (const file of libraries.filter(file => /^libonnxruntime\.so\.[0-9.]+$/.test(file))) {
-          for (const alias of ['libonnxruntime.so', 'libonnxruntime.so.1']) {
-            try { await fs.promises.copyFile(path.join(libDir, file), path.join(libDir, alias), fs.constants.COPYFILE_EXCL); }
-            catch (error) { if (error.code !== 'EEXIST') throw error; }
-          }
-        }
-      }
-      await this.download(`${RELEASE}/asr-models/sherpa-onnx-whisper-base.tar.bz2`, MODEL_HASH, modelArchive, signal, progress, 'Downloading multilingual Whisper');
-      progress({ label: 'Preparing multilingual Whisper' });
-      for (const file of MODEL_FILES) await this.extract(modelArchive, `sherpa-onnx-whisper-base/${file}`, path.join(stage, 'ready', 'model', file), signal);
-      await fs.promises.chmod(path.join(stage, 'ready', 'runtime', 'bin', executable), 0o700);
-      await fs.promises.copyFile(path.join(__dirname, 'dictation-local-notices.txt'), path.join(stage, 'ready', 'NOTICES.txt'));
+      const ready = path.join(stage, 'ready');
+      await fs.promises.mkdir(ready, { mode: 0o700 });
+      await this.download(MODEL_URL, MODEL_SHA256, path.join(ready, 'ggml-base.bin'), signal, progress, 'Downloading multilingual Whisper');
+      await fs.promises.copyFile(path.join(__dirname, 'dictation-local-notices.txt'), path.join(ready, 'NOTICES.txt'));
       signal.throwIfAborted();
-      await fs.promises.writeFile(path.join(stage, 'ready', 'installed.json'), JSON.stringify({ runtime: this.asset[1], model: MODEL_HASH }), { mode: 0o600 });
+      await fs.promises.writeFile(path.join(ready, 'installed.json'), JSON.stringify({ modelSha256: MODEL_SHA256 }), { mode: 0o600 });
       // Preserve any incomplete previous installation for inspection rather
       // than replacing files underneath another process.
       if (fs.existsSync(this.root)) await fs.promises.rename(this.root, `${this.root}.previous-${randomUUID()}`);
@@ -180,18 +137,13 @@ class LocalDictation {
     try {
       const file = path.join(scratch, 'recording.wav');
       await fs.promises.writeFile(file, audio, { mode: 0o600, flag: 'wx' });
-      const model = path.join(this.root, 'model');
-      const output = await run(this.executable, ['--print-args=false', '--model-type=whisper',
-        `--whisper-encoder=${path.join(model, MODEL_FILES[0])}`, `--whisper-decoder=${path.join(model, MODEL_FILES[1])}`,
-        `--tokens=${path.join(model, MODEL_FILES[2])}`, `--whisper-language=${language === 'auto' ? '' : language}`,
-        '--whisper-task=transcribe', '--num-threads=2', file], { signal, cwd: scratch });
-      for (const line of output.split(/\r?\n/).reverse()) {
-        try { const result = JSON.parse(line); if (typeof result.text === 'string') return result.text.trim(); }
-        catch { /* Progress and timing lines are not transcripts. */ }
-      }
-      throw dictationError('DICTATION_RESPONSE', 'Local dictation did not return a transcript. Please try again.');
+      const output = await run(this.executable, ['--model', this.model, '--file', file,
+        '--language', language, '--threads', '2', '--no-timestamps', '--no-prints', '--no-gpu'], { signal, cwd: scratch });
+      // Diagnostics go to stderr; stdout contains only decoded speech. Keeping
+      // plain text avoids creating an additional transcript file on disk.
+      return output.trim();
     } finally { await fs.promises.rm(scratch, { recursive: true, force: true }); }
   }
 }
 
-module.exports = { LocalDictation, RUNTIMES, MODEL_HASH };
+module.exports = { LocalDictation };

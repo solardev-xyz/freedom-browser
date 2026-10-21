@@ -60,6 +60,11 @@ const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs
  * licenses-audit.json's `dependencies`; `pin` says where the version lives.
  */
 const EXTRA_RESOURCES = {
+  'out/dictation-runtime/${os}-${arch}/': {
+    thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
+    noticeMatch: /^whisper\.cpp$/m,
+    pin: { file: 'src/shared/dictation-runtime.js', re: /WHISPER_VERSION = '([^']+)'/ },
+  },
   'out/windows-workspace/${arch}/': {
     thirdParty: true, label: 'Codex Windows sandbox', auditName: 'codex-windows-sandbox',
     noticeMatch: /^Codex Windows sandbox$/m,

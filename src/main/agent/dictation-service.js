@@ -83,7 +83,7 @@ class DictationService {
     const status = this.providerStore.getPublicStatus();
     const options = [{ providerId: 'local', name: 'On this device', model: 'Whisper Base',
       available: this.local.supported, ready: this.local.ready(),
-      detail: 'Audio stays on this device. One-time download of about 230 MB.', price: 'No usage charges' }];
+      detail: 'Audio stays on this device. One-time model download of about 150 MB. Powered by whisper.cpp.', price: 'No usage charges' }];
     for (const connection of status.connections) {
       const provider = CLOUD[connection.providerId];
       if (!provider || connection.kind !== 'hosted') continue;

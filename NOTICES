@@ -14,14 +14,19 @@ refuses only one thing, a missing `LICENSES.chromium.html`
 (`scripts/build.js`).
 
 Optional local dictation downloads
-  Downloaded only when the user selects local dictation, not bundled by default.
-  sherpa-onnx 1.13.8: Apache-2.0, https://github.com/k2-fsa/sherpa-onnx
-  ONNX Runtime: MIT, https://github.com/microsoft/onnxruntime
   Whisper model: MIT, https://github.com/openai/whisper
-  Their license texts accompany each installation as NOTICES.txt and are
+  The model downloads only when the user selects local dictation. Its license
+  accompanies the model as NOTICES.txt. Runtime and model license texts are
   included in src/main/agent/dictation-local-notices.txt.
 
 == External binaries and native addons (resources/) ==
+
+whisper.cpp
+  License: MIT; bundled miniaudio: MIT-0; stb_vorbis: MIT
+  https://github.com/ggml-org/whisper.cpp
+  Freedom builds version 1.9.5 from checksum-pinned source. The offline CLI,
+  ggml, and decoder utilities are statically linked. Full license texts ship
+  in resources/dictation-runtime/NOTICES.txt. No Python runtime is bundled.
 
 Codex Windows sandbox
   License: Apache-2.0

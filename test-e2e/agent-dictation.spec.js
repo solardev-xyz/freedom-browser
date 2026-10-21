@@ -244,7 +244,7 @@ test('Voice settings use service cards and detail pages in both themes, preservi
     await settings.locator('#ai-voice-breadcrumbs').getByRole('link', { name: 'Voice dictation', exact: true }).click();
     await voice.getByRole('link', { name: /On this device/ }).click();
     await expect(voice.getByRole('button', { name: 'Download & use on this device' })).toBeVisible();
-    await expect(voice).toContainText('230 MB');
+    await expect(voice).toContainText('150 MB');
     await settings.screenshot({ path: testInfo.outputPath(`voice-local-${theme}.png`) });
     await settings.goBack();
     await voice.getByRole('link', { name: 'Add service', exact: true }).click();

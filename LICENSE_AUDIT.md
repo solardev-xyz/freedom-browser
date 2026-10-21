@@ -17,14 +17,16 @@
 
 ---
 
-## Optional dictation downloads (2026-10-20)
+## Local dictation runtime and model (2026-10-21)
 
+The **whisper.cpp** 1.9.5 CLI is compiled from checksum-pinned upstream source
+and bundled under `resources/dictation-runtime/`. Its statically linked ggml
+engine is MIT; included decoder utilities use MIT (stb_vorbis) and MIT-0
+(miniaudio). No Python, server, CURL downloader, or ONNX Runtime is included.
 The **optional local dictation notices** in
-`src/main/agent/dictation-local-notices.txt` are upstream license texts that ship
-in `app.asar`. The binaries and model are not bundled: choosing local dictation
-downloads checksum-pinned sherpa-onnx 1.13.8 (Apache-2.0), ONNX Runtime (MIT) and
-the multilingual Whisper Base model (MIT). These license texts are copied to
-the installation as `NOTICES.txt`. No npm package was added.
+`src/main/agent/dictation-local-notices.txt` ship in `app.asar` and alongside the
+CLI. Selecting local dictation downloads only the checksum-pinned multilingual
+Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
 ## Executive Summary
 

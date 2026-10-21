@@ -578,6 +578,18 @@ installation stay in Settings → AI → Voice dictation, linked directly from t
 menu (`ai/voice`). The full setup dialog remains the microphone's onboarding
 path only when no ready service is available. Compact menu maintainer smoke passed.
 
+**2026-10-21 local engine replacement (current):** maintainer selected
+whisper.cpp instead of sherpa-onnx. Freedom now builds version 1.9.5 from a pinned
+source revision/archive hash, bundles the offline CLI with the app, and downloads
+only the separately pinned multilingual Whisper Base GGML model (~150 MB) on
+explicit request. The installer preserves earlier draft files. No Python/Ollama
+or user-side compiler is required. CPU inference; private warm-worker/GPU tuning,
+OS sandbox enforcement, physical-microphone quality and signed-package validation
+remain follow-ups. Native macOS arm64 install/transcription/cancel/failure cleanup
+passes using public audio. Five-target native CI covers the remaining native
+platform combinations; results must be recorded before expanding qualification.
+Details and exact pins: [dictation](../docs/agent-dictation.md#on-this-device).
+
 **2026-10-20 incremental update:** microphone-start/stop smoke passed. The composer
 now shows provisional/final text through OpenAI's `gpt-live-transcribe` WebSocket
 API, and phrase updates at pauses or six-second boundaries through OpenRouter,

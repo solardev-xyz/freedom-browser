@@ -15,13 +15,13 @@ a ready alternative there starts dictation; selecting from the chevron alone
 only changes the saved service. The arrow beside the microphone opens a compact
 service menu with the active choice checked; switching service does not start
 recording. **Voice dictation settings…** opens Settings → AI → Voice dictation
-directly for language, retention preferences and local downloads. AI settings
+directly for language, audio privacy information and local downloads. AI settings
 has a separate Models & providers page, with individual connection pages.
 Voice dictation lists local and connected services as cards, marking the service
 in use. Open a service for its model, billing, audio privacy and a “Use for
 dictation” action. “Add service” lists the supported API providers and links to
 their connection settings. Language is shared across services; OpenRouter's
-retention control stays on its detail page. Local download/progress/cancellation
+separate audio disclosure stays on its detail page. Local download/progress/cancellation
 live on the local detail page and require an explicit download action.
 Breadcrumb links and browser Back/Forward navigate between these pages. An
 uninstalled local choice also opens those settings instead of starting a download
@@ -94,33 +94,56 @@ the Agent model catalogue. Reference documentation:
 ## On this device
 
 Choose **On this device**, then **Download & use on this device**. Freedom downloads
-about 230 MB once, verifies pinned SHA-256 hashes and installs files in the active
-profile's Agent data directory. No Ollama, terminal setup or Python installation
-is needed. After a download, click the microphone again to start; completion never automatically enables capture. Downloading never happens on browser startup or while AI is off.
+about 150 MB once: multilingual Whisper Base, in the format published by the
+whisper.cpp project. The model revision and SHA-256 are fixed in
+`src/shared/dictation-runtime.js`, and the installer verifies the hash before
+atomically making it available. Files live in the active profile's Agent data
+directory. After downloading, click the microphone to start: completing a download
+never enables capture automatically. No Ollama, Python, or compiler is needed by
+users. Model downloads never happen at app startup or while AI is off.
 
-The engine is sherpa-onnx 1.13.8 with the multilingual Whisper Base model using
-quantized ONNX weights. This was selected for the draft because upstream provides
-native desktop binaries; it avoids requiring a local whisper.cpp compiler build.
-No npm dependency was added. Apache-2.0/MIT notices accompany the downloaded
-installation. See [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and
-[Whisper](https://github.com/openai/whisper).
+The engine is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5, built
+from source revision `d1be6fde11ac6e0407606b4e42fe72d34add8037`, with a separately
+pinned source-archive SHA-256. `scripts/build-dictation-runtime.js` builds the
+statically linked offline CLI and bundles it under `resources/dictation-runtime/`.
+It does not download executables on the user's machine. Builds disable CURL,
+server examples, dynamically loaded backends, and host-specific CPU instructions;
+this first integration uses CPU inference (Accelerate on macOS). No new npm
+dependency was added. MIT/MIT-0 notices for the engine, utilities, and Whisper
+ship beside the helper and the downloaded model.
 
-Audio stays on this device during local transcription. A private temporary WAV
-lives in the profile-owned scratch directory and is removed on completion or cancellation; abandoned phrase directories are swept on startup; raw audio is not saved in conversation
-history. Sending the resulting prompt subsequently shares its text with the chat
-provider in the ordinary way.
+The model is downloaded from the [ggerganov/whisper.cpp model repository](https://huggingface.co/ggerganov/whisper.cpp),
+which upstream's own model downloader uses, at revision
+`5359861c739e955e79d9a303bcbc70fb988958b1`. It is the project's conversion of
+OpenAI's model, not a direct download of the original OpenAI checkpoint. Existing
+sherpa-onnx draft files are preserved but no longer executed; a new model download
+is required after switching engines. The saved local service/language stays selected.
 
-Local Whisper uses the same pause/six-second segmentation as the file-based cloud
-services. It currently starts native inference for each phrase. On the development
-Mac, two four-second English sample segments completed in 486 ms and 379 ms,
-including startup; this is not a cross-device or accuracy guarantee. A persistent
-private worker remains a follow-up: the upstream prebuilt WebSocket server binds
-all interfaces and provides no authentication, so Freedom does not start it.
+Local inference is designed to need no network service, and Freedom sends no
+local recording to a transcription API. The CLI is currently an ordinary child
+process, not an OS-sandboxed worker; local-only behavior still trusts the built
+source. A private temporary WAV lives in the profile-owned scratch directory and
+is removed on success, failure, or cancellation; abandoned phrase directories are
+swept at startup. Raw audio is not saved in conversation history. Sending the
+resulting prompt shares its text with the chat provider normally.
 
-Runtime downloads are mapped for macOS arm64/x64, Linux x64/arm64 and Windows x64.
-Unsupported architectures are marked unavailable. Native installation and
-inference have been exercised on macOS arm64; Windows/Linux local inference and
-signed-package behavior still need qualification before release.
+Whisper uses pause/six-second segmentation. Freedom starts a CLI process for each
+phrase and reads plain text from stdout; no localhost server is started. Keeping
+the model loaded in a private persistent worker remains a performance follow-up.
+
+Build targets are macOS arm64/x64, Linux arm64/x64 and Windows x64. Other targets
+are unavailable. Native qualification uses public audio through the real model
+installer and CLI adapter, including cancellation, invalid audio and cleanup.
+The workflow `.github/workflows/agent-dictation-native.yml` repeats that check on
+all five targets. Physical microphone quality/permissions and signed-package
+qualification are separate from these finite native checks.
+
+Developers need CMake 3.16+ and a C++ toolchain (MSVC on Windows). Run
+`npm run build:dictation`; `npm start` and packaging prepare the same artifact
+and reuse it when the source/recipe/notices/binary hashes match. `CMAKE` can name
+an explicit CMake executable. Cross-OS builds are refused; macOS can build either
+supported architecture. Artifacts live under `out/dictation-runtime/<os>-<arch>/`;
+packaged apps use only their bundled helper, with no development fallback.
 
 ## Draft behavior and qualification
 
@@ -195,3 +218,17 @@ capture, cancel/alternative selection, remembered consent, Settings acknowledgem
 without capture, and unchanged chat policies. The consent and Audio privacy screens
 were visually checked in both themes. Audio and provider responses in these tests
 are synthetic; live-provider and physical-microphone qualification remains separate.
+
+## 2026-10-21 whisper.cpp replacement
+
+At the maintainer's request, the sherpa-onnx draft runtime and ONNX model are
+superseded by a bundled, source-built whisper.cpp CLI and separately downloaded
+Whisper Base model. Earlier sherpa timings and qualification apply only to the
+historical draft, not this replacement. The cloud dictation paths are unchanged.
+
+Replacement validation: lint and all 10,672 unit tests pass; all 10 dictation
+Electron scenarios pass. Native installer/transcription/cancellation/invalid-audio
+cleanup pass on macOS arm64 and Linux arm64 (Docker). macOS x64 compiles; this
+Mac lacks Rosetta, so its executable was not run here. Five-target CI results
+are recorded separately after completion. Real microphone and signed-package
+checks remain distinct from the synthetic/audio-file checks.

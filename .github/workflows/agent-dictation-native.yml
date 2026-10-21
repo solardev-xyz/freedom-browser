@@ -1,0 +1,54 @@
+name: Local dictation native runtime
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/agent/dictation-local*'
+      - 'src/shared/dictation-runtime.js'
+      - 'scripts/*dictation-runtime*'
+      - 'scripts/prepare-native-supervisors.js'
+      - '.github/workflows/agent-dictation-native.yml'
+  push:
+    branches: ['experiment/agent-dictation']
+    paths:
+      - 'src/main/agent/dictation-local*'
+      - 'src/shared/dictation-runtime.js'
+      - 'scripts/*dictation-runtime*'
+      - '.github/workflows/agent-dictation-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+      - name: Build pinned native CLI
+        run: node scripts/build-dictation-runtime.js
+      - name: Download pinned public model and sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          model_url="$(node -p "require('./src/shared/dictation-runtime').MODEL_URL")"
+          revision="$(node -p "require('./src/shared/dictation-runtime').WHISPER_REVISION")"
+          curl --fail --location --retry 3 "$model_url" --output "$RUNNER_TEMP/ggml-base.bin"
+          curl --fail --location --retry 3 "https://raw.githubusercontent.com/ggml-org/whisper.cpp/$revision/samples/jfk.wav" --output "$RUNNER_TEMP/jfk.wav"
+      - name: Exercise real installer, transcription, cancellation and cleanup
+        shell: bash
+        run: node scripts/smoke-dictation-runtime.js "$RUNNER_TEMP/ggml-base.bin" "$RUNNER_TEMP/jfk.wav"
