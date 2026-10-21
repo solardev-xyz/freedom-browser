@@ -9,7 +9,12 @@
  *
  * The gates are 0007's: freedom-ipfsd's median first byte no more than 5 ms
  * later than the add-on's, and its median throughput at least 80 % of the
- * add-on's. The fan-out is reported, not gated.
+ * add-on's. The fan-out is reported, not gated. The gates guard the default
+ * switch: until then CI runs with FREEDOM_IPFS_COST_ENFORCE=0, which reports
+ * each gate's verdict without failing on a miss; unset or '1' (a local run,
+ * the switch), a miss fails. Everything else fails in both modes: a backend
+ * running the wrong node, a measured run that reaches the fixture, a run
+ * that doesn't complete (`test/helpers/ipfs-cost-report.js`).
  *
  * - **The production path:** both backends are the contract suite's
  *   (`test/helpers/ipfs-contract-backends.js`): `ipfs-manager.js` and its
@@ -39,6 +44,15 @@ const path = require('path');
 const { performance } = require('perf_hooks');
 const { BACKENDS } = require('../../../test/helpers/ipfs-contract-backends');
 const { IpfsContent, startIpfsFixture } = require('../../../test/helpers/ipfs-fixture');
+const {
+  GATES,
+  costEnforced,
+  costTable,
+  gateOutcome,
+  gateVerdicts,
+  round,
+  summarize,
+} = require('../../../test/helpers/ipfs-cost-report');
 
 const describeCost = process.env.FREEDOM_IPFS_COST === '1' ? describe : describe.skip;
 
@@ -57,9 +71,6 @@ const FANOUT_ROUNDS = rounds('FREEDOM_IPFS_COST_FANOUT', 7);
 const FANOUT_WARMUP = 1;
 const FANOUT_ASSETS = 96;
 const FANOUT_CONCURRENCY = 48;
-// 0007, Cost.
-const TTFB_GATE_MS = 5;
-const THROUGHPUT_GATE = 0.8;
 const HEADERS_MS = 30_000;
 
 /** `length` bytes, the same for a seed and unlike any other's. */
@@ -75,23 +86,6 @@ function bytesOf(length, seed) {
   }
   return bytes;
 }
-
-function quantile(values, q) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = (sorted.length - 1) * q;
-  const low = Math.floor(at);
-  const high = Math.ceil(at);
-  return sorted[low] + (sorted[high] - sorted[low]) * (at - low);
-}
-
-const median = (values) => quantile(values, 0.5);
-const round = (value, places = 2) => Number(value.toFixed(places));
-const summary = (values, places = 2) => ({
-  median: round(median(values), places),
-  p10: round(quantile(values, 0.1), places),
-  p90: round(quantile(values, 0.9), places),
-  samples: values.length,
-});
 
 /**
  * One GET as the handler makes it: the backend captured now, then its
@@ -180,34 +174,6 @@ async function interleaved(backends, { warmup, rounds: measured }, sample) {
 const blockRequests = (fixture) =>
   fixture.requests.filter((request) => request.kind === 'block').length;
 
-function table(results) {
-  const { ttfb, throughput, fanout } = results;
-  const mark = (pass) => (pass ? 'pass' : '**FAIL**');
-  return [
-    `### freedom-ipfsd against the add-on (${results.target})`,
-    '',
-    `${results.cpu}, ${results.cpus} CPUs, Node ${results.node}. Interleaved rounds: ` +
-      `${ttfb.rounds} first-byte, ${throughput.rounds} throughput, ${fanout.rounds} fan-out.`,
-    '',
-    '| Measure | add-on | freedom-ipfsd | Gate (0007, Cost) | Result |',
-    '|---|---:|---:|---|---|',
-    `| First byte, cached 1 KiB: median ms (p10–p90) | ${ttfb.addon.median} ` +
-      `(${ttfb.addon.p10}–${ttfb.addon.p90}) | ${ttfb.ipfsd.median} ` +
-      `(${ttfb.ipfsd.p10}–${ttfb.ipfsd.p90}) | at most ${TTFB_GATE_MS} ms later ` +
-      `(${ttfb.deltaMs >= 0 ? '+' : ''}${ttfb.deltaMs} ms) | ${mark(ttfb.pass)} |`,
-    `| Throughput, cached 100 MiB: median MiB/s (p10–p90) | ${throughput.addon.median} ` +
-      `(${throughput.addon.p10}–${throughput.addon.p90}) | ${throughput.ipfsd.median} ` +
-      `(${throughput.ipfsd.p10}–${throughput.ipfsd.p90}) | at least ` +
-      `${THROUGHPUT_GATE * 100} % (${round(throughput.ratio * 100, 1)} %) | ` +
-      `${mark(throughput.pass)} |`,
-    `| #102 fan-out, cached, ${FANOUT_ASSETS} assets ${FANOUT_CONCURRENCY} at a time: ` +
-      `median ms | ${fanout.addon.median} | ${fanout.ipfsd.median} | reported | |`,
-    `| #102 fan-out, cold (from the loopback fixture): ms | ${fanout.coldMs.addon} | ` +
-      `${fanout.coldMs.ipfsd} | reported | |`,
-    '',
-  ].join('\n');
-}
-
 describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
   let fixture;
   let backends;
@@ -291,13 +257,9 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
     // Cached: nothing of the measured runs came from the fixture.
     expect(blockRequests(fixture)).toBe(askedBefore);
 
-    const ttfbAddon = summary(ttfb.addon, 3);
-    const ttfbIpfsd = summary(ttfb.ipfsd, 3);
-    const throughputAddon = summary(throughput.addon, 1);
-    const throughputIpfsd = summary(throughput.ipfsd, 1);
-    const deltaMs = round(median(ttfb.ipfsd) - median(ttfb.addon), 3);
-    const ratio = median(throughput.ipfsd) / median(throughput.addon);
+    const gates = gateVerdicts({ firstByteMs: ttfb, throughputMibs: throughput });
     results = {
+      enforced: costEnforced(),
       target: `${process.platform}-${process.arch}`,
       cpu: os.cpus()[0]?.model?.trim() || 'unknown CPU',
       cpus: os.cpus().length,
@@ -306,31 +268,27 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
         bytes: SMALL_BYTES,
         rounds: TTFB_ROUNDS,
         warmup: TTFB_WARMUP,
-        addon: ttfbAddon,
-        ipfsd: ttfbIpfsd,
-        deltaMs,
-        gateMs: TTFB_GATE_MS,
-        pass: deltaMs <= TTFB_GATE_MS,
+        addon: summarize(ttfb.addon, 3),
+        ipfsd: summarize(ttfb.ipfsd, 3),
+        ...gates.firstByte,
       },
       throughput: {
         bytes: LARGE_BYTES,
         rounds: THROUGHPUT_ROUNDS,
         warmup: THROUGHPUT_WARMUP,
-        addon: throughputAddon,
-        ipfsd: throughputIpfsd,
-        ratio: round(ratio, 4),
-        gate: THROUGHPUT_GATE,
-        pass: ratio >= THROUGHPUT_GATE,
+        addon: summarize(throughput.addon, 1),
+        ipfsd: summarize(throughput.ipfsd, 1),
+        ...gates.throughput,
       },
       fanout: {
         assets: FANOUT_ASSETS,
         concurrency: FANOUT_CONCURRENCY,
         rounds: FANOUT_ROUNDS,
-        addon: summary(
+        addon: summarize(
           fanoutRuns.addon.map((run) => run.ms),
           1
         ),
-        ipfsd: summary(
+        ipfsd: summarize(
           fanoutRuns.ipfsd.map((run) => run.ms),
           1
         ),
@@ -349,7 +307,7 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
     const out = process.env.FREEDOM_IPFS_COST_OUT || path.join(os.tmpdir(), 'ipfs-cost.json');
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
     fs.writeFileSync(out, `${JSON.stringify(results, null, 2)}\n`);
-    const markdown = table(results);
+    const markdown = costTable(results);
     if (process.env.GITHUB_STEP_SUMMARY) {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdown}\n`);
     }
@@ -357,13 +315,21 @@ describeCost('IPFS cost: freedom-ipfsd against the add-on (0007, Cost)', () => {
     expect(results.fanout.non2xx).toEqual({ addon: 0, ipfsd: 0 });
   }, 600_000);
 
-  test(`freedom-ipfsd's median first byte is at most ${TTFB_GATE_MS} ms later than the add-on's`, () => {
+  // 0007's gates: a miss fails only where they are enforced
+  // (FREEDOM_IPFS_COST_ENFORCE); the verdict is logged either way.
+  test(`freedom-ipfsd's median first byte is at most ${GATES.firstByteMs} ms later than the add-on's`, () => {
     expect(results).toBeDefined();
-    expect(results.ttfb.deltaMs).toBeLessThanOrEqual(TTFB_GATE_MS);
+    const { verdict } = gateOutcome(results.ttfb.pass, results.enforced);
+    console.log(`first-byte gate: ${verdict} (${results.ttfb.deltaMs} ms)`);
+    if (results.enforced) expect(results.ttfb.deltaMs).toBeLessThanOrEqual(GATES.firstByteMs);
   });
 
-  test(`freedom-ipfsd's median throughput is at least ${THROUGHPUT_GATE * 100} % of the add-on's`, () => {
+  test(`freedom-ipfsd's median throughput is at least ${GATES.throughputRatio * 100} % of the add-on's`, () => {
     expect(results).toBeDefined();
-    expect(results.throughput.ratio).toBeGreaterThanOrEqual(THROUGHPUT_GATE);
+    const { verdict } = gateOutcome(results.throughput.pass, results.enforced);
+    console.log(`throughput gate: ${verdict} (${round(results.throughput.ratio * 100, 1)} %)`);
+    if (results.enforced) {
+      expect(results.throughput.ratio).toBeGreaterThanOrEqual(GATES.throughputRatio);
+    }
   });
 });

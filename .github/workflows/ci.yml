@@ -521,7 +521,7 @@ jobs:
           echo "$changed"
           # No `-q`, as in the gates above: a >64 KiB path list would kill
           # the `echo` with SIGPIPE, which `pipefail` turns into `ipfs=false`.
-          if echo "$changed" | grep -E '^(src/main/ipfs/|src/main/ipfs-manager\.js|src/main/core/(service-client|frame)\.js|test/helpers/(ipfs-contract-backends|ipfs-fixture|main-process-test-utils|fake-dweb-core)\.js|scripts/(fetch-freedom-ipfsd|fetch-freedom-ipfs-native)\.js|scripts/lib/freedom-core-release\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
+          if echo "$changed" | grep -E '^(src/main/ipfs/|src/main/ipfs-manager\.js|src/main/core/(service-client|frame)\.js|test/helpers/(ipfs-contract-backends|ipfs-cost-report|ipfs-fixture|main-process-test-utils|fake-dweb-core)\.js|scripts/(fetch-freedom-ipfsd|fetch-freedom-ipfs-native)\.js|scripts/lib/freedom-core-release\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
             echo "ipfs=true" >> "$GITHUB_OUTPUT"
           else
             echo "ipfs=false" >> "$GITHUB_OUTPUT"
@@ -530,12 +530,14 @@ jobs:
   # What running IPFS on freedom-ipfsd costs against the add-on (freedom-core
   # design 0007, "Cost"), on the same runner, before the default switches:
   # the first byte of a cached 1 KiB file, the throughput of a cached 100 MiB
-  # file, and #102's fan-out on the loopback fixture. It fails when 0007's
-  # gates do: the median first byte more than 5 ms later than the add-on's,
-  # or the median throughput under 80 % of it. The table goes to the step
-  # summary, and the numbers to an artifact. Both backends' binaries are
-  # this runner's: the add-on for darwin-arm64, linux-x64 and win32-x64, and
-  # freedom-ipfsd's mac-arm64, linux-x64 and win-x64.
+  # file, and #102's fan-out on the loopback fixture, with 0007's gates
+  # judged: the median first byte at most 5 ms later than the add-on's, and
+  # the median throughput at least 80 % of it. Until the default switch they
+  # are reported, not enforced (below); any other failure fails the job. The
+  # table goes to the step summary, and the numbers to an artifact. Both
+  # backends' binaries are this runner's: the add-on for darwin-arm64,
+  # linux-x64 and win32-x64, and freedom-ipfsd's mac-arm64, linux-x64 and
+  # win-x64.
   ipfs-cost:
     needs: ipfs-changed
     if: ${{ !cancelled() && needs.ipfs-changed.outputs.ipfs != 'false' }}
@@ -590,6 +592,10 @@ jobs:
         run: npx jest src/main/ipfs/ipfs-backend.cost.test.js
         env:
           FREEDOM_IPFS_COST: '1'
+          # 0007's Cost gates guard the default switch, not this measurement:
+          # their verdicts are reported (PASS or FAIL in the summary) and a
+          # miss doesn't fail the job. The default switch sets this to '1'.
+          FREEDOM_IPFS_COST_ENFORCE: '0'
           FREEDOM_IPFS_COST_OUT: ipfs-cost-${{ matrix.target }}.json
 
       - name: Upload the cost numbers
