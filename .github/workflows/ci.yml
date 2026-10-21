@@ -309,6 +309,51 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
+  # The same IPFS backend contract against the freedom-ipfsd service process
+  # (freedom-core design 0007, step 6): `ipfs-manager.js` with
+  # FREEDOM_IPFS_BACKEND=service, driving the pinned release binary against
+  # the loopback fixture. It needs the binary, so it runs here and not in
+  # `test`, where it is skipped.
+  freedom-ipfsd-contract:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Download freedom-ipfsd binaries
+        # Same bounded watchdog as the release packaging jobs' download.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: IPFS backend contract suite (freedom-ipfsd)
+        run: npx jest src/main/ipfs/ipfs-backend.contract.test.js
+        env:
+          FREEDOM_IPFS_CONTRACT_BACKEND: ipfsd
+
   # libradicle is the ONLY Radicle runtime — there is no executable fallback —
   # so every release asset has to download, verify against the in-repo pinned
   # checksums, load, and answer a native call on the platform it ships for.
@@ -2157,6 +2202,7 @@ jobs:
         e2e-theme-parity,
         e2e-wallet,
         freedom-ipfs-native-addon,
+        freedom-ipfsd-contract,
         ipfs-gateway-proxy,
         migration-cross-platform,
         myotis-addon-load,
