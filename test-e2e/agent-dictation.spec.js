@@ -133,7 +133,7 @@ test('chevron opens a compact provider menu in both themes; selection does not r
   await expect(window.locator('#agent-dictation-feedback')).toBeHidden();
   await window.locator('#agent-dictation').click();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
-  await expect(prompt).toHaveAttribute('readonly', '');
+  await expect(prompt).not.toHaveAttribute('readonly', '');
   await expect(window.locator('#agent-run')).toBeDisabled();
   // Wait for actual audio frames, not a substituted transcription IPC method.
   await window.waitForTimeout(800);
@@ -150,8 +150,9 @@ test('chevron opens a compact provider menu in both themes; selection does not r
   await window.locator('#agent-dictation').click();
   await expect(menu).toBeHidden();
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await window.waitForTimeout(600);
   await window.keyboard.press('Escape');
-  await expect(prompt).toHaveValue('Build a small browser game');
+  await expect(prompt).toHaveValue('Build a small browser game a small browser game');
   await expect(window.locator('#agent-sidebar')).toBeVisible();
   expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
 });
@@ -300,7 +301,7 @@ test('OpenAI live words appear before Stop and reconcile to the final editable t
   expect(liveEvents.some(event => JSON.stringify(event).includes('Build'))).toBe(false);
 });
 
-test('a phrase appears during a pause while the microphone continues, and Escape restores the draft', async ({ window, electronApp }) => {
+test('a phrase appears during a pause while the microphone continues, and Escape keeps the completed draft', async ({ window, electronApp }) => {
   await prepare(window, electronApp);
   await window.locator('#agent-prompt').fill('Build');
   await window.locator('#agent-dictation').click();
@@ -310,7 +311,7 @@ test('a phrase appears during a pause while the microphone continues, and Escape
   await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
   await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
   await window.keyboard.press('Escape');
-  await expect(window.locator('#agent-prompt')).toHaveValue('Build');
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
   await expect(window.locator('#agent-run')).toBeEnabled();
 });
 
@@ -439,4 +440,76 @@ test('chat privacy policies leave all three audio services available', async ({ 
   expect(await settings.locator('main.content').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   const policies = await window.evaluate(async () => (await window.electronAPI.getAgentProviderStatus()).status.connections.map(item => [item.providerId, item.privacyPolicy]));
   expect(policies).toEqual(expect.arrayContaining([['openrouter', 'zdr'], ['near-ai', 'tee'], ['venice', 'private']]));
+});
+
+test('microphone spectrum responds to audio, quiets during silence and respects reduced motion', async ({ window, electronApp }, testInfo) => {
+  await prepare(window, electronApp);
+  await window.emulateMedia({ reducedMotion: 'no-preference' });
+  await window.locator('#agent-prompt').fill('Build');
+  await window.locator('#agent-dictation').click();
+  const spectrum = window.locator('#agent-dictation-spectrum');
+  await expect(spectrum).toHaveAttribute('data-state', 'listening');
+  const peak = () => spectrum.locator('span').evaluateAll(bars => Math.max(...bars.map(bar => Number(bar.style.transform.match(/scaleY\(([^)]+)/)?.[1] || 0))));
+  await expect.poll(peak).toBeGreaterThan(0.4);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect.poll(() => window.locator('html').getAttribute('data-theme').then(value => value || 'dark')).toBe(theme);
+    await window.waitForTimeout(300); // Let the theme's surface-colour transitions settle for the capture.
+    await window.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await window.screenshot({ path: testInfo.outputPath(`dictation-spectrum-${theme}.png`) });
+  }
+  await window.evaluate(() => { window.dictationTestStream.getAudioTracks()[0].enabled = false; });
+  await expect.poll(peak).toBeLessThan(0.15);
+  await window.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await spectrum.locator('span').first().evaluate(bar => getComputedStyle(bar).transform)).toBe('matrix(1, 0, 0, 0.25, 0, 0)');
+  await window.keyboard.press('Escape');
+  await expect(spectrum).toBeHidden();
+  await expect(window.locator('#agent-prompt')).toHaveValue('Build a small browser game');
+  await expect(window.locator('#agent-transcript')).toBeHidden();
+  expect(await window.evaluate(() => window.dictationTestStream.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
+});
+
+test('Return waits for the final audio and sends the completed prompt once; Escape can keep it instead', async ({ window, electronApp }) => {
+  await prepare(window, electronApp);
+  // Capture only the submission boundary in this disposable profile. Speech
+  // still goes through the real worklet, IPC, queue and transcription fixture.
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.dictationSubmissions = [];
+    ipcMain.removeHandler('agent:start');
+    ipcMain.handle('agent:start', (_event, request) => {
+      globalThis.dictationSubmissions.push(request.prompt);
+      return { ok: false, error: { code: 'FIXTURE', message: 'Submission captured by fixture' } };
+    });
+  });
+  const prompt = window.locator('#agent-prompt');
+  const startShortcut = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter';
+  await prompt.fill('Build');
+  await prompt.press(startShortcut);
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await prompt.press(startShortcut); // Starting again must not finish or submit.
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await prompt.press('Shift+Enter');
+  await expect(prompt).toHaveValue('Build\n');
+  await window.waitForTimeout(600);
+  hold = true;
+  await prompt.press('Enter');
+  await expect.poll(() => Boolean(heldResponse)).toBe(true);
+  await expect(window.locator('#agent-dictation-feedback')).toHaveText('Finishing dictation…');
+  expect(await electronApp.evaluate(() => globalThis.dictationSubmissions)).toEqual([]);
+  await prompt.press('Enter');
+  heldResponse.end(JSON.stringify({ text: 'a final browser game' }));
+  await expect.poll(() => electronApp.evaluate(() => globalThis.dictationSubmissions)).toEqual(['Build\na final browser game']);
+  await expect(window.locator('#agent-run')).toBeEnabled();
+  await prompt.fill('Keep'); hold = false; heldResponse = null;
+  await prompt.press(startShortcut);
+  await expect(window.locator('#agent-dictation-feedback')).toContainText('Listening');
+  await window.waitForTimeout(600); hold = true;
+  await prompt.press('Enter');
+  await expect.poll(() => Boolean(heldResponse)).toBe(true);
+  await prompt.press('Escape');
+  heldResponse.end(JSON.stringify({ text: 'these final words' }));
+  await expect(prompt).toHaveValue('Keep these final words');
+  await expect(window.locator('#agent-run')).toBeEnabled();
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  expect(await electronApp.evaluate(() => globalThis.dictationSubmissions)).toEqual(['Build\na final browser game']);
 });

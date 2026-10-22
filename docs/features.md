@@ -183,6 +183,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
   - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
+  - `Cmd+Enter` / `Ctrl+Enter`: Start dictation (only with the Agent composer focused; does not send the prompt)
   - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
@@ -221,7 +222,8 @@ and purchases keep their normal approval steps.
   Permission controls govern consequential actions and command access. The conversation
   privacy panel reports provider settings and the evidence available for that conversation.
 - **Voice dictation:** The composer microphone shows words or phrases while you
-  speak, then leaves editable text without sending the prompt. It starts immediately with a supported connected API
+  speak, with a microphone-driven spectrum. Escape finishes and keeps the text; Return
+  finishes transcription and sends the complete prompt. It starts immediately with a supported connected API
   service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
   or the microphone's options. Audio privacy is separate from chat-model privacy.
   See [dictation setup and draft limitations](agent-dictation.md).

@@ -12,11 +12,13 @@ export function encodeDictationWav(chunks) {
   return bytes;
 }
 
-export async function createDictationRecorder(stream, onLimit, onLost, { onChunk, sampleRate = 16000 } = {}) {
+export async function createDictationRecorder(stream, onLimit, onLost, { onChunk, onSpectrum, sampleRate = 16000 } = {}) {
   let context;
   let source;
   let node;
   let gain;
+  let analyser;
+  let spectrumFrame;
   let ended = false;
   let flushed;
   let durationTimer;
@@ -27,8 +29,9 @@ export async function createDictationRecorder(stream, onLimit, onLost, { onChunk
   const close = () => {
     ended = true;
     clearTimeout(durationTimer);
+    if (spectrumFrame !== undefined) cancelAnimationFrame(spectrumFrame);
     for (const track of tracks) { track.removeEventListener('ended', lost); track.stop(); }
-    node?.disconnect(); source?.disconnect(); gain?.disconnect();
+    node?.disconnect(); source?.disconnect(); gain?.disconnect(); analyser?.disconnect();
     node?.removeEventListener('processorerror', lost);
     void context?.close().catch(() => {});
   };
@@ -52,6 +55,34 @@ export async function createDictationRecorder(stream, onLimit, onLost, { onChunk
     gain = context.createGain();
     gain.gain.value = 0;
     source.connect(node); node.connect(gain); gain.connect(context.destination);
+    if (onSpectrum) {
+      analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.65;
+      source.connect(analyser);
+      const bins = new Uint8Array(analyser.frequencyBinCount);
+      const levels = new Float32Array(18);
+      let lastFrame = -Infinity;
+      const updateSpectrum = time => {
+        if (ended) return;
+        // The analyser shares the capture graph and samples 18 bands at
+        // 30fps, without another stream, audio upload or canvas repaint.
+        if (time - lastFrame >= 1000 / 30) {
+          lastFrame = time;
+          analyser.getByteFrequencyData(bins);
+          for (let band = 0; band < levels.length; band += 1) {
+            const low = Math.floor(80 * (6000 / 80) ** (band / levels.length) * analyser.fftSize / context.sampleRate);
+            const high = Math.max(low + 1, Math.ceil(80 * (6000 / 80) ** ((band + 1) / levels.length) * analyser.fftSize / context.sampleRate));
+            let peak = 0;
+            for (let bin = low; bin < Math.min(high, bins.length); bin += 1) peak = Math.max(peak, bins[bin]);
+            levels[band] = (peak / 255) ** 1.5;
+          }
+          onSpectrum(levels);
+        }
+        spectrumFrame = requestAnimationFrame(updateSpectrum);
+      };
+      spectrumFrame = requestAnimationFrame(updateSpectrum);
+    }
     for (const track of tracks) track.addEventListener('ended', lost);
     await context.resume();
     durationTimer = setTimeout(onLimit, 120000);

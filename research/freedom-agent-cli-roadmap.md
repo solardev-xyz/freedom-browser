@@ -569,6 +569,16 @@ attachment flow; opening a managed/external project is a separate conversation f
 
 ### AI4 — Voice dictation in the composer
 
+**2026-10-22 composer refinement:** implemented and maintainer smoke-tested a
+full-width microphone-driven spectrum, without a separate Finish button.
+Cmd+Return (macOS) / Ctrl+Enter (Windows/Linux) starts dictation in the composer
+and is remappable under Shortcuts. Return drains captured audio and sends once;
+Escape drains audio and keeps the draft, including revoking a queued send.
+Shift+Return remains multiline. Failures preserve visible text without auto-send.
+Disposable Electron fixtures cover real capture/cleanup, sound/silence, reduced
+motion, both themes, incremental text and keyboard ordering. These UI checks do
+not replace the earlier native-engine and platform qualification below.
+
 **2026-10-21 integration:** dictation merged into `feature/freedom-automation-kernel`
 as `e3593523`, followed by current remote feature updates in `fdd2e729`. The
 combined production tree passes lint and **10,773 unit tests / 129 skipped**.

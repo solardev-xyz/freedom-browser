@@ -319,6 +319,17 @@ export const SHORTCUTS = [
     editable: true,
   },
 
+  // Agent composer only: never intercept this chord in a page or another form.
+  {
+    id: 'agent.startDictation',
+    description: 'Start Dictation',
+    settingsLabel: 'Start dictation',
+    defaultAccelerator: 'CmdOrCtrl+Enter',
+    context: 'renderer',
+    category: 'Agent',
+    editable: true,
+  },
+
   // Developer
   {
     id: 'devtools.toggle',

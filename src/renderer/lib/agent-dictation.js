@@ -1,9 +1,10 @@
 import { createDictationChoices } from './dictation-choices.js';
 import { createDictationRecorder } from './dictation-recorder.js';
 import { createDictationMenu } from './dictation-menu.js';
+import { matchesShortcut } from './shortcuts.js';
 
-export function createAgentDictation({ button, optionsButton, panel, menu, feedback, cancelButton, prompt, api,
-  canRecord, onBusy = () => {}, onInput = () => {}, connectProvider = () => {}, openSettings = connectProvider, onMenuOpening = () => {} }) {
+export function createAgentDictation({ button, optionsButton, panel, menu, feedback, spectrum, prompt, api,
+  canRecord, onBusy = () => {}, onInput = () => {}, connectProvider = () => {}, openSettings = connectProvider, onMenuOpening = () => {}, onSubmit = () => {} }) {
   if (!button || !panel || !api.getAgentDictationState) return null;
   let generation = 0;
   let session = null;
@@ -16,10 +17,14 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   let destination = 'Dictate task';
   let snapshot;
   let renderedValue;
-  let stableText = '';
+  let startup = Promise.resolve();
+  let completion = null;
+  let sendAfterFinish = false;
+  let insertionLength = 0;
   let audioQueue = Promise.resolve();
   let queuedFrames = 0;
   let sequence = 0;
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   const hideChoices = () => {
     if (panel.open) panel.close();
     panel.hidden = true;
@@ -32,13 +37,16 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   };
   const setBusy = value => {
     busy = value;
-    prompt.readOnly = value;
+    prompt.readOnly = value && finishing;
+    if (spectrum) {
+      spectrum.hidden = !value;
+      spectrum.dataset.state = !value ? 'idle' : finishing ? 'finishing' : 'starting';
+    }
     button.setAttribute('aria-pressed', String(value));
     button.dataset.recording = String(value && !finishing);
     button.setAttribute('aria-label', value ? 'Finish dictation' : destination);
     button.title = value ? 'Finish dictation' : destination;
     optionsButton.disabled = value;
-    cancelButton.hidden = !value;
     onBusy(value);
   };
   const choices = createDictationChoices(panel, api, {
@@ -80,6 +88,8 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     inputStream?.getTracks().forEach(track => track.stop()); inputStream = null;
     session = null;
     finishing = false;
+    sendAfterFinish = false;
+    completion = null;
     button.disabled = false;
     choices.cancel(); hideChoices();
     servicesMenu?.close();
@@ -89,103 +99,162 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     if (!keepMessage) status('');
   }
 
+  function reconcileDraft() {
+    if (!snapshot || prompt.value === renderedValue) return;
+    const value = prompt.value;
+    let start = 0;
+    while (start < renderedValue.length && start < value.length && renderedValue[start] === value[start]) start += 1;
+    let oldEnd = renderedValue.length, newEnd = value.length;
+    while (oldEnd > start && newEnd > start && renderedValue[oldEnd - 1] === value[newEnd - 1]) { oldEnd -= 1; newEnd -= 1; }
+    const replacement = value.slice(start, newEnd);
+    if (oldEnd <= snapshot.start) {
+      snapshot.value = snapshot.value.slice(0, start) + replacement + snapshot.value.slice(oldEnd);
+      const shift = replacement.length - (oldEnd - start);
+      snapshot.start += shift; snapshot.end += shift;
+    } else if (start >= snapshot.start + insertionLength) {
+      const shift = (snapshot.end - snapshot.start) - insertionLength;
+      snapshot.value = snapshot.value.slice(0, start + shift) + replacement + snapshot.value.slice(oldEnd + shift);
+    } else {
+      throw new Error('Dictation stopped because you edited the dictated words.');
+    }
+    renderedValue = value;
+  }
+
   function renderTranscript(text) {
-    if (!snapshot || prompt.value !== renderedValue) throw new Error('Your draft changed while dictating. Please record again.');
+    reconcileDraft();
+    if (!snapshot) throw new Error('Dictation is no longer active.');
     const before = snapshot.value.slice(0, snapshot.start);
     const after = snapshot.value.slice(snapshot.end);
     const insertion = text ? `${before && !/\s$/.test(before) ? ' ' : ''}${text}${after && !/^\s/.test(after) ? ' ' : ''}` : '';
     if (before.length + insertion.length + after.length > (prompt.maxLength > 0 ? prompt.maxLength : 32000))
       throw new Error('The transcript would make your prompt too long. Try a shorter recording.');
+    insertionLength = text ? insertion.length : snapshot.end - snapshot.start;
     prompt.value = renderedValue = text ? before + insertion + after : snapshot.value;
     prompt.setSelectionRange(before.length + insertion.length, before.length + insertion.length);
     onInput();
   }
 
   function failed(message) {
-    // Keep completed phrases after a service failure; Escape/Cancel still
-    // restore the pre-dictation draft, including the original selection.
-    let kept = false;
-    if (stableText && snapshot && prompt.value === renderedValue) {
-      try { renderTranscript(stableText); snapshot = null; kept = true; }
-      catch { /* An oversized transcript must not prevent microphone release. */ }
-    }
+    // Service failures and interruptions must never erase visible dictated text
+    // or manual edits. Only lifecycle cancellation restores the original draft.
+    snapshot = null;
     cancel();
-    status(`${message}${kept ? ' Text already transcribed was kept.' : ' Your draft is unchanged.'}`, true);
+    status(`${message} Your draft was kept.`, true);
   }
 
-  async function start() {
+  const draftEdited = () => {
+    if (!busy) return;
+    try { reconcileDraft(); } catch (error) { failed(error.message); }
+  };
+  prompt.addEventListener('input', draftEdited);
+
+  function start() {
     if (busy || !canRecord()) return;
     servicesMenu?.close();
     const current = ++generation;
     snapshot = { value: prompt.value, start: prompt.selectionStart ?? prompt.value.length,
       end: prompt.selectionEnd ?? prompt.value.length };
     renderedValue = snapshot.value;
-    stableText = ''; audioQueue = Promise.resolve(); queuedFrames = 0; sequence = 0;
+    insertionLength = snapshot.end - snapshot.start;
+    audioQueue = Promise.resolve(); queuedFrames = 0; sequence = 0;
+    sendAfterFinish = false; completion = null;
     finishing = false;
     setBusy(true); status('Starting microphone…');
-    try {
-      const response = await api.beginAgentDictation();
-      if (current !== generation) return;
-      if (!response?.ok) throw new Error(response?.error?.message || 'Dictation could not start.');
-      session = response;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
-      if (current !== generation) { stream.getTracks().forEach(track => track.stop()); return; }
-      inputStream = stream;
-      const capture = await createDictationRecorder(stream, () => void finish(), () => {
-        if (current === generation) failed('Recording stopped unexpectedly. Please try again.');
-      }, { sampleRate: response.sampleRate || 16000, onChunk: audio => {
+    prompt.focus();
+    startup = (async () => {
+      try {
+        const response = await api.beginAgentDictation();
         if (current !== generation) return;
-        if (++queuedFrames > 100) { failed('The audio connection cannot keep up. Please try again.'); return; }
-        const index = sequence++;
-        audioQueue = audioQueue.then(async () => {
+        if (!response?.ok) throw new Error(response?.error?.message || 'Dictation could not start.');
+        session = response;
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
+        if (current !== generation) { stream.getTracks().forEach(track => track.stop()); return; }
+        inputStream = stream;
+        const capture = await createDictationRecorder(stream, () => void finish(), () => {
+          if (current === generation) failed('Recording stopped unexpectedly. Please try again.');
+        }, { sampleRate: response.sampleRate || 16000, onChunk: audio => {
           if (current !== generation) return;
-          const result = await api.appendAgentDictation(response.id, index, audio);
-          if (!result?.ok) throw new Error(result?.error?.message || 'Audio could not be transcribed.');
-        }).catch(error => { if (current === generation) failed(error.message); })
-          .finally(() => { if (current === generation) queuedFrames -= 1; });
-      } });
-      if (current !== generation) { capture.cancel(); return; }
-      recorder = capture;
-      status(`Listening · ${response.name}${response.local ? ' · audio stays on this device' : ' · audio sent to this service'}`);
-    } catch (error) {
-      if (current !== generation) return;
-      const message = error.name === 'NotAllowedError' ? 'Microphone access is blocked. Allow Freedom to use your microphone in system settings, then try again.'
-        : error.name === 'NotFoundError' ? 'No microphone found. Connect one and try again.' : error.message || 'Could not start the microphone.';
-      failed(message);
-    }
+          if (++queuedFrames > 100) { failed('The audio connection cannot keep up. Please try again.'); return; }
+          const index = sequence++;
+          audioQueue = audioQueue.then(async () => {
+            if (current !== generation) return;
+            const result = await api.appendAgentDictation(response.id, index, audio);
+            if (!result?.ok) throw new Error(result?.error?.message || 'Audio could not be transcribed.');
+          }).catch(error => { if (current === generation) failed(error.message); })
+            .finally(() => { if (current === generation) queuedFrames -= 1; });
+        }, onSpectrum: levels => {
+          if (current !== generation || finishing || !spectrum || reducedMotion?.matches) return;
+          const bars = spectrum.children;
+          for (let index = 0; index < bars.length; index += 1) {
+            const position = index * (levels.length - 1) / Math.max(1, bars.length - 1);
+            const low = Math.floor(position);
+            const blend = position - low;
+            const level = (levels[low] || 0) * (1 - blend) + (levels[low + 1] || 0) * blend;
+            bars[index].style.transform = `scaleY(${0.08 + 0.92 * level})`;
+          }
+        } });
+        if (current !== generation) { capture.cancel(); return; }
+        recorder = capture;
+        if (!finishing) {
+          if (spectrum) spectrum.dataset.state = 'listening';
+          status(`Listening · ${response.name}${response.local ? ' · audio stays on this device' : ' · audio sent to this service'}`);
+        }
+      } catch (error) {
+        if (current !== generation) return;
+        const message = error.name === 'NotAllowedError' ? 'Microphone access is blocked. Allow Freedom to use your microphone in system settings, then try again.'
+          : error.name === 'NotFoundError' ? 'No microphone found. Connect one and try again.' : error.message || 'Could not start the microphone.';
+        failed(message);
+      }
+    })();
+    return startup;
   }
 
-  async function finish() {
-    if (!busy || finishing) return;
-    if (!recorder || !session) { cancel(); return; }
+  function finish({ send = false } = {}) {
+    if (!busy) return Promise.resolve(false);
+    sendAfterFinish = send;
+    if (finishing) return completion;
     const current = generation;
-    const id = session.id;
-    finishing = true; button.dataset.recording = 'false'; button.disabled = true;
-    status(`Transcribing · ${session.name}…`);
-    try {
-      await recorder.finish();
-      recorder = null;
-      inputStream = null;
-      if (current !== generation) return;
-      await audioQueue;
-      if (current !== generation) return;
-      const response = await api.finishAgentDictation(id);
-      if (current !== generation) return;
-      if (!response?.ok) throw new Error(response?.error?.message || 'Transcription did not complete.');
-      const text = response.text;
-      if (typeof text !== 'string' || !text.trim()) throw new Error('No speech detected. Please try again.');
-      renderTranscript(text);
-      snapshot = null;
-      status('');
-    } catch (error) {
-      if (current === generation) failed(error.message || 'Dictation did not complete.');
-    } finally {
-      if (current === generation) {
-        recorder?.cancel(); recorder = null;
-        inputStream?.getTracks().forEach(track => track.stop()); inputStream = null;
-        session = null; finishing = false; button.disabled = false; setBusy(false); prompt.focus();
+    finishing = true; setBusy(true); button.disabled = true;
+    status('Finishing dictation…');
+    completion = (async () => {
+      let succeeded = false;
+      try {
+        // Return/Escape may arrive while microphone permission or capture is
+        // starting. Finish that same generation once its recorder is ready.
+        await startup;
+        if (current !== generation || !recorder || !session) return false;
+        const id = session.id;
+        await recorder.finish();
+        recorder = null;
+        inputStream = null;
+        if (current !== generation) return false;
+        await audioQueue;
+        if (current !== generation) return false;
+        const response = await api.finishAgentDictation(id);
+        if (current !== generation) return false;
+        if (!response?.ok) throw new Error(response?.error?.message || 'Transcription did not complete.');
+        const text = response.text;
+        if (typeof text !== 'string' || !text.trim()) throw new Error('No speech detected. Please try again.');
+        renderTranscript(text);
+        snapshot = null;
+        status('');
+        succeeded = true;
+      } catch (error) {
+        if (current === generation) failed(error.message || 'Dictation did not complete.');
+      } finally {
+        if (current === generation) {
+          recorder?.cancel(); recorder = null;
+          inputStream?.getTracks().forEach(track => track.stop()); inputStream = null;
+          session = null; finishing = false; button.disabled = false; setBusy(false); prompt.focus();
+          const submit = succeeded && sendAfterFinish && canRecord();
+          sendAfterFinish = false;
+          completion = null;
+          if (submit) onSubmit();
+        }
       }
-    }
+      return succeeded;
+    })();
+    return completion;
   }
 
   const openChoices = async (startAfterChoice = false) => {
@@ -198,7 +267,7 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     if (!panel.hidden) panel.querySelector('select')?.focus();
   };
   async function requestStart() {
-    if (!canRecord()) return;
+    if (busy || button.disabled || !canRecord()) return;
     const current = ++generation;
     button.disabled = true;
     try {
@@ -220,22 +289,27 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
         await servicesMenu.show({ recordAfterChoice: true });
       } else await openChoices(true);
     } catch (error) { if (current === generation) status(error.message, true); }
-    finally { button.disabled = false; }
+    finally { button.disabled = finishing; }
   }
+  const startFromShortcut = event => {
+    if (event.defaultPrevented || event.isComposing || !matchesShortcut(event, 'agent.startDictation')) return;
+    event.preventDefault();
+    if (!event.repeat) void requestStart();
+  };
+  prompt.addEventListener('keydown', startFromShortcut);
   button.addEventListener('click', () => {
     if (busy) void finish(); else void requestStart();
   });
   panel.addEventListener('cancel', event => { event.preventDefault(); cancel(); prompt.focus(); });
-  cancelButton.addEventListener('click', () => { cancel(); prompt.focus(); });
   const unsubscribe = api.onAgentDictationEvent?.(event => {
     if (event.id !== session?.id) return;
     if (event.type === 'transcript') {
-      try { renderTranscript(event.text); stableText = event.stableText; }
+      try { renderTranscript(event.text); }
       catch (error) { failed(error.message); }
     }
-    if (event.type === 'error') { stableText = event.stableText; failed(event.message); }
+    if (event.type === 'error') failed(event.message);
     if (event.type === 'cancelled' && session?.id === event.id) {
-      status('Dictation stopped. Your draft is unchanged.'); cancel({ keepMessage: true });
+      failed('Dictation stopped.');
     }
   });
   function updateDestination(state) {
@@ -260,15 +334,17 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
   const pageHide = () => cancel();
   window.addEventListener('pagehide', pageHide, { once: true });
   return {
-    get busy() { return busy; }, cancel,
+    get busy() { return busy; }, cancel, finish,
     interrupt(message) { if (busy) failed(message); },
     refreshDestination,
-    escape() {
+    escape({ menusOnly = false } = {}) {
       if (servicesMenu?.open) { servicesMenu.close(true); return true; }
+      if (menusOnly) return false;
       if (!busy && panel.hidden) return false;
-      cancel(); prompt.focus(); return true;
+      if (busy) void finish(); else { cancel(); prompt.focus(); }
+      return true;
     },
     closeMenu() { servicesMenu?.close(); },
-    dispose() { destinationRevision += 1; button.removeEventListener('pointerenter', refreshDestination); button.removeEventListener('focus', refreshDestination); window.removeEventListener('focus', refreshDestination); cancel(); choices.dispose(); servicesMenu?.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
+    dispose() { prompt.removeEventListener('keydown', startFromShortcut); prompt.removeEventListener('input', draftEdited); destinationRevision += 1; button.removeEventListener('pointerenter', refreshDestination); button.removeEventListener('focus', refreshDestination); window.removeEventListener('focus', refreshDestination); cancel(); choices.dispose(); servicesMenu?.dispose(); unsubscribe?.(); window.removeEventListener('pagehide', pageHide); },
   };
 }

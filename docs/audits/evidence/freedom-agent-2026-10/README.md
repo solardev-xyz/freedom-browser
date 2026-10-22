@@ -46,3 +46,18 @@ while open at this width; the workspace titlebar toggle returns to the full-widt
 conversation. These are after-state illustrations. Geometry, click-through,
 actual pointer/keyboard routing and restoration are asserted by the tests;
 images alone do not establish those behaviors or cross-platform qualification.
+
+
+## October 22 dictation composer
+
+- [Dark theme](dictation-spectrum-dark.png)
+- [Light theme](dictation-spectrum-light.png)
+
+Source: `test-e2e/agent-dictation.spec.js`, “microphone spectrum responds to audio,
+quiets during silence and respects reduced motion”. Disposable macOS Electron
+profile, synthetic 300Hz audio and local transcription fixtures; no physical
+microphone, live service credentials or user conversation content. The full-width
+spectrum shares the existing capture graph and has no separate Finish button.
+These are current-state illustrations, not historical before images. Keyboard,
+sound/silence, reduced-motion and cleanup behavior is asserted separately by
+unit/Electron tests; these captures do not qualify another platform or provider.

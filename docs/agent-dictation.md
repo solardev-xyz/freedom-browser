@@ -1,8 +1,11 @@
 # Agent dictation (experimental)
 
-The microphone in the composer turns speech into editable text. Click to start,
-click again to finish, then review the text and send it normally. Escape or Cancel
-discards a recording. Dictation also works when composing guidance for a running
+The microphone in the composer turns speech into editable text. Click to start
+or press Cmd+Return (macOS) / Ctrl+Enter (Windows and Linux) with the composer focused;
+click again or press Escape to finish and keep the text. Return finishes any
+pending transcription and sends the completed prompt; Shift+Return adds a newline.
+The start shortcut can be remapped in Settings → Shortcuts and has no effect on
+other text fields. A microphone-driven spectrum shows that audio is being captured. Dictation also works when composing guidance for a running
 Agent task.
 
 The microphone starts immediately with a remembered dictation service. On first
@@ -42,9 +45,10 @@ their delay depends on the provider. Earlier phrases are never re-uploaded.
 Requests contain only audio, speech-model settings and the language hint.
 Chat history, project files and attachments are not included. Usage is billed to
 the selected service. There is no automatic fallback to a different destination.
-Cancel stops further uploads and restores the original draft, but cannot recall
-audio already sent. A service failure keeps completed phrases so they can be
-edited or sent manually, and drops any unfinished provisional tail. An approval request or a service/language change stops dictation while keeping completed text. Unrelated preference saves do not cancel model downloads or unaffected recordings.
+Closing the panel or changing conversations cancels further uploads and restores
+the pre-dictation draft, but cannot recall audio already sent. Escape and the
+microphone finish captured audio instead. A service failure keeps the visible
+text for editing and never sends an incomplete prompt automatically. An approval request or a service/language change stops dictation while keeping visible text. Unrelated preference saves do not cancel model downloads or unaffected recordings.
 
 The selected chat model's end-to-end encryption and hardware checks do not cover
 these audio uploads. The microphone tooltip/accessibility label, chooser and recording indicator name
@@ -153,12 +157,15 @@ packaged apps use only their bundled helper, with no development fallback.
 
 - Recordings are capped at two minutes. Text appears during recording; Stop
   flushes the remaining audio and waits for its final text
-- Recording and transcription block Send. Draft text, cursor selection and
-  attachments are preserved; the transcript replaces the original selection
-- Closing Agent, changing conversation, disabling AI, cancelling or losing the
+- Return finishes transcription before sending; Escape or the microphone finishes
+  without sending. Shift+Return adds a newline. Transcription errors never auto-send
+- The transcript replaces the original selection. Edits outside the dictated
+  phrase are preserved; editing the dictated words stops capture and keeps the
+  edited draft rather than overwriting it
+- Closing Agent, changing conversation, disabling AI or losing the
   microphone releases capture and prevents a late transcript entering another draft
 - Microphone denial and no-speech recordings leave the draft unchanged. A provider
-  failure preserves completed phrases. No other service is selected after failure
+  failure preserves all visible text. No other service is selected after failure
 - A remembered service that becomes unavailable opens the compact menu rather than
   silently switching the audio destination. Each service presents its own audio capability/disclosure; chat privacy
   settings are not used as audio availability restrictions

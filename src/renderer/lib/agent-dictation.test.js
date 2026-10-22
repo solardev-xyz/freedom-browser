@@ -14,7 +14,7 @@ function setup() {
   global.window = { addEventListener: jest.fn() };
   const prompt = createElement(); prompt.value = 'Build this please'; prompt.selectionStart = 6; prompt.selectionEnd = 10;
   prompt.setSelectionRange = jest.fn();
-  const nodes = Object.fromEntries(['button', 'optionsButton', 'panel', 'menu', 'feedback', 'cancelButton'].map(name => [name, createElement()]));
+  const nodes = Object.fromEntries(['button', 'optionsButton', 'panel', 'menu', 'feedback', 'spectrum'].map(name => [name, createElement()]));
   nodes.panel.hidden = true;
   nodes.menu.hidden = true;
   const state = { ok: true, preferences: { providerId: 'venice', language: 'auto', openrouterAudioConsent: false },
@@ -35,10 +35,10 @@ function setup() {
   Object.defineProperty(global, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: jest.fn(async () => stream) } } });
   const recorder = { finish: jest.fn(async () => new Uint8Array(100)), cancel: jest.fn() };
   createDictationRecorder.mockResolvedValue(recorder);
-  const onInput = jest.fn(), onBusy = jest.fn();
+  const onInput = jest.fn(), onBusy = jest.fn(), onSubmit = jest.fn();
   const openSettings = jest.fn();
-  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord: () => true, onInput, onBusy, openSettings });
-  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, openSettings, emit: value => event(value) };
+  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord: () => true, onInput, onBusy, openSettings, onSubmit });
+  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, openSettings, onSubmit, emit: value => event(value) };
 }
 
 afterEach(() => { delete global.document; delete global.window; delete global.navigator; jest.clearAllMocks(); });
@@ -46,7 +46,7 @@ afterEach(() => { delete global.document; delete global.window; delete global.na
 test('record, stop, insert at the selection and keep the draft unsent', async () => {
   const ctx = setup();
   ctx.button.dispatch('click'); await flush();
-  expect(ctx.ui.busy).toBe(true); expect(ctx.prompt.readOnly).toBe(true);
+  expect(ctx.ui.busy).toBe(true); expect(ctx.prompt.readOnly).toBe(false);
   expect(ctx.feedback.textContent).toContain('Listening · Venice');
   ctx.button.dispatch('click'); await flush();
   expect(ctx.api.finishAgentDictation).toHaveBeenCalledWith('capture');
@@ -55,11 +55,12 @@ test('record, stop, insert at the selection and keep the draft unsent', async ()
   expect(ctx.prompt.readOnly).toBe(false);
 });
 
-test('Escape cancels a recording without changing or sending the draft', async () => {
+test('Escape finishes a recording and keeps its final words without sending', async () => {
   const ctx = setup(); ctx.button.dispatch('click'); await flush();
   expect(ctx.ui.escape()).toBe(true); await flush();
-  expect(ctx.recorder.cancel).toHaveBeenCalled(); expect(ctx.prompt.value).toBe('Build this please');
-  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled(); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.recorder.finish).toHaveBeenCalled(); expect(ctx.prompt.value).toBe('Build a game please');
+  expect(ctx.api.finishAgentDictation).toHaveBeenCalledTimes(1); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
 });
 
 test('a cancelled in-flight transcription cannot insert late text into a new conversation', async () => {
@@ -180,21 +181,28 @@ test('live text replaces provisional words without duplicating the final answer 
   expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.prompt.readOnly).toBe(false);
 });
 
-test('Escape restores the original selected text after live transcription and discards late events', async () => {
+test('Escape preserves the live transcript, waits for the final words and ignores events after completion', async () => {
   const ctx = setup(); ctx.button.dispatch('click'); await flush();
   ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: 'a game' });
-  ctx.ui.escape();
-  expect(ctx.prompt.value).toBe('Build this please');
+  let resolve;
+  ctx.api.finishAgentDictation.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  ctx.ui.escape(); await flush();
+  expect(ctx.prompt.value).toBe('Build a game please');
+  expect(ctx.ui.busy).toBe(true);
+  resolve({ ok: true, text: 'a great game' }); await flush();
+  expect(ctx.prompt.value).toBe('Build a great game please');
   ctx.emit({ type: 'transcript', id: 'capture', text: 'late words', stableText: 'late words' });
-  expect(ctx.prompt.value).toBe('Build this please');
+  expect(ctx.prompt.value).toBe('Build a great game please');
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
 });
 
-test('a service failure preserves completed phrases and drops the unfinished tail', async () => {
+test('a service failure preserves all visible text and never sends an incomplete draft', async () => {
   const ctx = setup(); ctx.button.dispatch('click'); await flush();
   ctx.emit({ type: 'transcript', id: 'capture', text: 'a game unfinished', stableText: 'a game' });
   ctx.emit({ type: 'error', id: 'capture', stableText: 'a game', message: 'Connection lost.' });
-  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
-  expect(ctx.feedback.textContent).toContain('Text already transcribed was kept');
+  expect(ctx.prompt.value).toBe('Build a game unfinished please'); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.feedback.textContent).toContain('Your draft was kept');
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
 });
 
 test('captured PCM frames reach main in sequence and Stop waits for the last frame acknowledgement', async () => {
@@ -224,10 +232,10 @@ test('approval interruption keeps completed text, stops capture and ignores late
   const ctx = setup(); ctx.button.dispatch('click'); await flush();
   ctx.emit({ type: 'transcript', id: 'capture', text: 'a game unfinished', stableText: 'a game' });
   ctx.ui.interrupt('Dictation stopped for an approval request.');
-  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.prompt.value).toBe('Build a game unfinished please'); expect(ctx.ui.busy).toBe(false);
   expect(ctx.recorder.cancel).toHaveBeenCalled(); expect(ctx.feedback.textContent).toContain('kept');
   ctx.emit({ type: 'transcript', id: 'capture', text: 'late', stableText: 'late' });
-  expect(ctx.prompt.value).toBe('Build a game please');
+  expect(ctx.prompt.value).toBe('Build a game unfinished please');
 });
 
 test('the microphone names its automatic audio destination before capture', async () => {
@@ -316,4 +324,133 @@ test('a late acknowledgement cannot start the microphone after Escape or a conve
   resolve({ ...ctx.state, preferences: { ...ctx.state.preferences, openrouterAudioConsent: true } }); await flush();
   expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
   expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+});
+
+test('send waits for flushed audio and final transcription, and repeated requests submit only once', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  let flushAudio, transcribe;
+  ctx.recorder.finish.mockImplementationOnce(() => new Promise(resolve => { flushAudio = resolve; }));
+  ctx.api.finishAgentDictation.mockImplementationOnce(() => new Promise(resolve => { transcribe = resolve; }));
+  const finished = ctx.ui.finish({ send: true });
+  ctx.ui.finish({ send: true }); await flush();
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
+  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled();
+  expect(ctx.feedback.textContent).toBe('Finishing dictation…');
+  expect(ctx.spectrum.dataset.state).toBe('finishing');
+  flushAudio(); await flush();
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
+  transcribe({ ok: true, text: 'a finished game' }); await finished;
+  expect(ctx.onSubmit).toHaveBeenCalledTimes(1);
+  expect(ctx.prompt.value).toBe('Build a finished game please');
+  expect(ctx.ui.busy).toBe(false); expect(ctx.spectrum.hidden).toBe(true);
+});
+
+test('Escape during a queued send keeps finishing but revokes the send', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  let resolve;
+  ctx.api.finishAgentDictation.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const finished = ctx.ui.finish({ send: true }); await flush();
+  ctx.ui.escape(); ctx.ui.escape();
+  resolve({ ok: true, text: 'a final game' }); await finished;
+  expect(ctx.prompt.value).toBe('Build a final game please');
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
+  expect(ctx.api.finishAgentDictation).toHaveBeenCalledTimes(1);
+});
+
+test('failed final transcription keeps visible words and does not fulfill a queued send', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a partial game', stableText: '' });
+  ctx.api.finishAgentDictation.mockResolvedValueOnce({ ok: false, error: { message: 'Service disconnected.' } });
+  await ctx.ui.finish({ send: true });
+  expect(ctx.prompt.value).toBe('Build a partial game please');
+  expect(ctx.onSubmit).not.toHaveBeenCalled(); expect(ctx.ui.busy).toBe(false);
+  expect(ctx.feedback.textContent).toContain('Service disconnected');
+});
+
+test('finish requested during microphone startup waits for that recorder instead of discarding it', async () => {
+  const ctx = setup(); let resolve;
+  navigator.mediaDevices.getUserMedia.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  ctx.button.dispatch('click'); await flush();
+  const finished = ctx.ui.finish({ send: true });
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
+  resolve({ getTracks: () => [{ stop: jest.fn() }] }); await finished;
+  expect(ctx.recorder.finish).toHaveBeenCalledTimes(1);
+  expect(ctx.prompt.value).toBe('Build a game please'); expect(ctx.onSubmit).toHaveBeenCalledTimes(1);
+});
+
+test('lifecycle cancellation during a queued send ignores the late result and never submits another conversation', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  let resolve;
+  ctx.api.finishAgentDictation.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const finished = ctx.ui.finish({ send: true }); await flush();
+  ctx.ui.cancel(); ctx.prompt.value = 'Another conversation';
+  resolve({ ok: true, text: 'late' }); await finished;
+  expect(ctx.prompt.value).toBe('Another conversation'); expect(ctx.onSubmit).not.toHaveBeenCalled();
+});
+
+test('an ambiguous edit crossing the dictated phrase stops capture and preserves the edited draft', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: '' });
+  ctx.prompt.value = 'Please Build a game please\n'; ctx.prompt.dispatch('input');
+  // A single edit replacing both sides is ambiguous; test actual separate edits.
+  expect(ctx.prompt.value).toBe('Please Build a game please\n');
+  expect(ctx.ui.busy).toBe(false);
+  expect(ctx.feedback.textContent).toContain('Your draft was kept');
+});
+
+test('independent prefix and suffix edits survive the final transcript', async () => {
+  const ctx = setup(); ctx.button.dispatch('click'); await flush();
+  ctx.emit({ type: 'transcript', id: 'capture', text: 'a game', stableText: '' });
+  ctx.prompt.value = 'Please Build a game please'; ctx.prompt.dispatch('input');
+  ctx.prompt.value += '\n'; ctx.prompt.dispatch('input');
+  ctx.api.finishAgentDictation.mockResolvedValueOnce({ ok: true, text: 'a great game' });
+  await ctx.ui.finish();
+  expect(ctx.prompt.value).toBe('Please Build a great game please\n'); expect(ctx.onSubmit).not.toHaveBeenCalled();
+});
+
+test('spectrum responds to measured levels and stops updating while finishing', async () => {
+  const ctx = setup();
+  for (let i = 0; i < 18; i += 1) ctx.spectrum.appendChild(createElement());
+  ctx.button.dispatch('click'); await flush();
+  expect(ctx.spectrum.hidden).toBe(false); expect(ctx.spectrum.dataset.state).toBe('listening');
+  const { onSpectrum } = createDictationRecorder.mock.calls[0][3];
+  onSpectrum(new Float32Array(18).fill(1));
+  expect(ctx.spectrum.children[0].style.transform).toBe('scaleY(1)');
+  onSpectrum(new Float32Array(18));
+  expect(ctx.spectrum.children[0].style.transform).toBe('scaleY(0.08)');
+  const finished = ctx.ui.finish();
+  onSpectrum(new Float32Array(18).fill(1));
+  expect(ctx.spectrum.children[0].style.transform).toBe('scaleY(0.08)');
+  await finished; expect(ctx.spectrum.hidden).toBe(true);
+});
+
+test.each(['darwin', 'win32', 'linux'])('the composer start shortcut starts dictation on %s without submitting or finishing', async platform => {
+  const { configureShortcuts } = require('./shortcuts');
+  configureShortcuts({ platform, overrides: {} });
+  const ctx = setup();
+  const key = { key: 'Enter', metaKey: platform === 'darwin', ctrlKey: platform !== 'darwin', preventDefault: jest.fn() };
+  ctx.prompt.dispatch('keydown', { ...key, repeat: true }); await flush();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  ctx.prompt.dispatch('keydown', key); await flush();
+  expect(key.preventDefault).toHaveBeenCalled(); expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+  expect(ctx.ui.busy).toBe(true);
+  ctx.prompt.dispatch('keydown', key); await flush();
+  expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+  expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled(); expect(ctx.onSubmit).not.toHaveBeenCalled();
+  configureShortcuts({ platform: 'linux', overrides: {} });
+});
+
+test('the dictation start shortcut respects remapping, composition and prior handlers', async () => {
+  const { configureShortcuts } = require('./shortcuts');
+  configureShortcuts({ platform: 'darwin', overrides: { 'agent.startDictation': 'Cmd+Shift+D' } });
+  const ctx = setup();
+  const remapped = { key: 'D', metaKey: true, shiftKey: true, preventDefault: jest.fn() };
+  ctx.prompt.dispatch('keydown', { key: 'Enter', metaKey: true, preventDefault: jest.fn() });
+  ctx.prompt.dispatch('keydown', { ...remapped, isComposing: true });
+  ctx.prompt.dispatch('keydown', { ...remapped, defaultPrevented: true }); await flush();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
+  ctx.prompt.dispatch('keydown', remapped); await flush();
+  expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
+  expect(ctx.onSubmit).not.toHaveBeenCalled();
+  configureShortcuts({ platform: 'linux', overrides: {} });
 });

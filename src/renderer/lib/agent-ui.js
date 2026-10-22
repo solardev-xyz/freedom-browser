@@ -4402,13 +4402,15 @@ export function initAgentUi(options = {}) {
   dictation?.dispose();
   dictationBusy = false;
   dictation = createAgentDictation({ button: byId('agent-dictation'), optionsButton: byId('agent-dictation-options'),
-    panel: byId('agent-dictation-panel'), feedback: byId('agent-dictation-feedback'), cancelButton: byId('agent-dictation-cancel'),
+    panel: byId('agent-dictation-panel'), feedback: byId('agent-dictation-feedback'),
     menu: byId('agent-dictation-menu'),
+    spectrum: byId('agent-dictation-spectrum'),
     prompt: elements.prompt, api: window.electronAPI,
     canRecord: () => aiEnabled && panelOpen && agentView === 'workspace' && !pendingApproval &&
       ['idle', 'running', 'paused'].includes(currentRunStatus),
     onBusy: value => { dictationBusy = value; updateSendAvailability(); },
     onInput: updateSendAvailability, connectProvider: showProviderSetup,
+    onSubmit: () => { if (!elements.run.disabled) submitComposer(); },
     openSettings: providerId => { setAgentFirstMode(false); closePanel(); openAiSettings(providerId ? `ai/voice/${providerId}` : 'ai/voice'); },
     onMenuOpening: () => { closeComposerPopovers(); options.onMenuOpening?.(); } });
   byId('agent-open-ai-settings')?.addEventListener('click', showProviderSetup);
@@ -4592,9 +4594,11 @@ export function initAgentUi(options = {}) {
     });
   });
   elements.prompt.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    if (event.defaultPrevented || event.key !== 'Enter' || event.shiftKey || event.isComposing ||
+        event.metaKey || event.ctrlKey || event.altKey) return;
     event.preventDefault();
     if (event.repeat) return;
+    if (dictationBusy) { void dictation.finish({ send: true }); return; }
     if (!elements.run.disabled) submitComposer();
   });
   elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
@@ -4691,7 +4695,7 @@ export function initAgentUi(options = {}) {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
-    if (dictation?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
+    if (dictation?.escape({ menusOnly: true })) { event.preventDefault(); event.stopPropagation(); return; }
     if (!elements.modeMenu.hidden) {
       event.preventDefault();
       setModeMenuOpen(false, true);
@@ -4723,6 +4727,7 @@ export function initAgentUi(options = {}) {
       !elements.attachmentMenu.hidden;
     closeComposerPopovers();
     if (popoverWasOpen) event.preventDefault();
+    if (!popoverWasOpen && dictation?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
     if (!elements.takeoverDialog.hidden) {
       event.preventDefault();
       setTakeoverDialogOpen(false);
