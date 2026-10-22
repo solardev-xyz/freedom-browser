@@ -595,6 +595,12 @@ function normalizeWorkspaceApproval(value) {
   });
 }
 
+// Approval text the model or classifier wrote renders in pre-line blocks; one
+// value must stay one line so it cannot forge rows beneath it.
+function approvalLineText(value, maxLength) {
+  return value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
 function normalizeWorkspacePermissionApproval(value) {
   if (
     !value ||
@@ -608,7 +614,9 @@ function normalizeWorkspacePermissionApproval(value) {
     typeof value.workingDirectory !== 'string' ||
     !value.workingDirectory ||
     value.workingDirectory.length > 1_024 ||
-    value.workingDirectory.includes('\0') ||
+    // An exact path the grant is keyed on: refuse line breaks and controls
+    // rather than flatten them, so the card shows the directory that runs.
+    /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value.workingDirectory) ||
     value.workingDirectory.includes('\\') ||
     value.workingDirectory.startsWith('/') ||
     !Array.isArray(value.commands) ||
@@ -758,7 +766,7 @@ function normalizeApprovalRequest(request, recipient) {
     destinationOrigin: wallet
       ? getPermissionKey(request?.destinationOrigin) || origin
       : originScopeForUrl(request?.destinationOrigin) || '',
-    label: typeof request?.label === 'string' ? request.label.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) : '',
+    label: typeof request?.label === 'string' ? approvalLineText(request.label, 160) : '',
     ...(interaction && { interaction }),
     ...(typeof request.pageMessage === 'string' && { pageMessage: request.pageMessage.slice(0, 8192) }),
     ...(typeof request.inputPreview === 'string' && { inputPreview: request.inputPreview }),
@@ -790,9 +798,10 @@ function normalizeInteractionApproval(value) {
     uncertainties: Object.freeze(
       Array.isArray(value.uncertainties)
         ? value.uncertainties
-            .filter((item) => typeof item === 'string' && item.trim())
+            .filter((item) => typeof item === 'string')
+            .map((item) => approvalLineText(item, 240))
+            .filter(Boolean)
             .slice(0, 12)
-            .map((item) => item.trim().slice(0, 240))
         : []
     ),
   });
@@ -837,7 +846,7 @@ function normalizeNodeLifecycleApproval(value, recipient = {}) {
           ? classification.uncertainties
               .filter((item) => typeof item === 'string')
               .slice(0, 12)
-              .map((item) => item.slice(0, 240))
+              .map((item) => approvalLineText(item, 240))
           : []
       ),
     }),
@@ -896,7 +905,7 @@ function normalizeNodeRequestApproval(value, recipient = {}) {
           ? classification.uncertainties
               .filter((item) => typeof item === 'string')
               .slice(0, 12)
-              .map((item) => item.slice(0, 240))
+              .map((item) => approvalLineText(item, 240))
           : []
       ),
     }),
