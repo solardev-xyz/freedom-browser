@@ -8,6 +8,23 @@ const { execFile } = require('child_process');
 const { dictationError } = require('./dictation-service');
 const { WHISPER_VERSION, WHISPER_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, SUPPORTED_TARGETS } = require('../../shared/dictation-runtime');
 
+const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
+// An install's staging directory cannot outlive its download deadline by this
+// much; older ones belong to a killed or crashed process.
+const ABANDONED_INSTALL_MS = 2 * DOWNLOAD_TIMEOUT_MS;
+// Per process: the installed marker and size are cheap to forge, so the model's
+// content is hashed once per app start (and again whenever the file changes).
+const verifiedModels = new Map();
+
+const fileIdentity = stat => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+
+async function fileSha256(file) {
+  // Streamed in 1 MiB reads so the main process keeps serving the UI meanwhile.
+  const digest = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file, { highWaterMark: 1024 * 1024 })) digest.update(chunk);
+  return digest.digest('hex');
+}
+
 function run(executable, args, { signal, cwd } = {}) {
   // Do not pass provider credentials, Node preload flags or dynamic-library
   // search overrides from the browser environment to downloaded executables.
@@ -69,6 +86,15 @@ class LocalDictation {
       // Cleanup failure disables local recording, never ordinary browser startup.
       this.scratchCleanupFailed = error.code !== 'ENOENT';
     }
+    // A killed or crashed model download leaves its ~150 MB staging directory.
+    try {
+      const parent = path.dirname(this.root);
+      for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^\.install-[A-Za-z0-9]+$/.test(entry.name)) continue;
+        const stage = path.join(parent, entry.name);
+        if (Date.now() - fs.lstatSync(stage).mtimeMs > ABANDONED_INSTALL_MS) fs.rmSync(stage, { recursive: true, force: true });
+      }
+    } catch { /* Missing or unreadable: nothing to reclaim, and startup continues. */ }
   }
 
   runtimeReady() {
@@ -87,17 +113,43 @@ class LocalDictation {
     } catch { return false; }
   }
 
-  ready() {
-    if (!this.supported || !this.runtimeReady()) return false;
+  // Identity of an installed-looking model, or null. Cheap and synchronous.
+  installedModel() {
+    if (!this.supported || !this.runtimeReady()) return null;
     try {
       const model = fs.lstatSync(this.model);
       const marker = JSON.parse(fs.readFileSync(path.join(this.root, 'installed.json'), 'utf8'));
-      return model.isFile() && !model.isSymbolicLink() && model.size === MODEL_BYTES && marker.modelSha256 === MODEL_SHA256;
-    } catch { return false; }
+      return model.isFile() && !model.isSymbolicLink() && model.size === MODEL_BYTES && marker.modelSha256 === MODEL_SHA256
+        ? fileIdentity(model) : null;
+    } catch { return null; }
+  }
+
+  ready() {
+    const identity = this.installedModel();
+    if (!identity) return false;
+    this.verifyModel(); // Starts (once per file identity) the check that recording awaits.
+    return verifiedModels.get(this.model)?.valid !== false;
+  }
+
+  // Resolves true only if the installed model's content has the pinned hash.
+  verifyModel() {
+    const identity = this.installedModel();
+    if (!identity) return Promise.resolve(false);
+    const known = verifiedModels.get(this.model);
+    if (known?.identity === identity) return known.result;
+    const entry = { identity };
+    entry.result = fileSha256(this.model).then(digest => digest === MODEL_SHA256, () => false).then(valid => {
+      // A file replaced while hashing proves nothing; its next use hashes again.
+      if (this.installedModel() === identity) return (entry.valid = valid);
+      if (verifiedModels.get(this.model) === entry) verifiedModels.delete(this.model);
+      return false;
+    });
+    verifiedModels.set(this.model, entry);
+    return entry.result;
   }
 
   async download(url, hash, destination, signal, progress, label) {
-    signal = AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]);
+    signal = AbortSignal.any([signal, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)]);
     const response = await this.fetch(url, { signal });
     if (!response.ok || !response.body) throw dictationError('DICTATION_DOWNLOAD', 'The local dictation download failed. Please try again.');
     const reader = response.body.getReader();
@@ -131,7 +183,7 @@ class LocalDictation {
   async install(signal, progress = () => {}) {
     if (!this.supported) throw dictationError('DICTATION_LOCAL', 'Local dictation is not available on this architecture yet.');
     if (!this.runtimeReady()) throw dictationError('DICTATION_LOCAL', 'The local speech engine is missing. Reinstall Freedom or rebuild the development runtime.');
-    if (this.ready()) return;
+    if (await this.verifyModel()) return;
     const parent = path.dirname(this.root);
     await fs.promises.mkdir(parent, { recursive: true, mode: 0o700 });
     const stage = await fs.promises.mkdtemp(path.join(parent, '.install-'));
@@ -146,11 +198,15 @@ class LocalDictation {
       // than replacing files underneath another process.
       if (fs.existsSync(this.root)) await fs.promises.rename(this.root, `${this.root}.previous-${randomUUID()}`);
       await fs.promises.rename(path.join(stage, 'ready'), this.root);
+      // Hashed while downloading; no second read of the file this run.
+      const identity = this.installedModel();
+      if (identity) verifiedModels.set(this.model, { identity, valid: true, result: Promise.resolve(true) });
     } finally { await fs.promises.rm(stage, { recursive: true, force: true }); }
   }
 
   async transcribe(audio, language, signal) {
     if (!this.ready()) throw dictationError('DICTATION_SETUP', 'Download local dictation before recording.');
+    if (!await this.verifyModel()) throw dictationError('DICTATION_INTEGRITY', 'The local model did not pass its integrity check. Download local dictation again.');
     if (this.scratchCleanupFailed) throw dictationError('DICTATION_LOCAL', 'Previous temporary audio could not be cleared. Check profile storage access before using local dictation.');
     await fs.promises.mkdir(this.scratchRoot, { recursive: true, mode: 0o700 });
     const stat = await fs.promises.lstat(this.scratchRoot);

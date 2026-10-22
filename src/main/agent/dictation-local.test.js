@@ -19,6 +19,16 @@ function fixture(root, options = {}) {
   }));
   return local;
 }
+function trustModel(local) {
+  jest.spyOn(local, 'ready').mockReturnValue(true);
+  jest.spyOn(local, 'verifyModel').mockResolvedValue(true);
+}
+function forgeInstall(local, content, modelSha256 = MODEL_SHA256) {
+  fs.mkdirSync(local.root, { recursive: true });
+  fs.writeFileSync(path.join(local.root, 'installed.json'), JSON.stringify({ modelSha256 }));
+  if (content) fs.writeFileSync(local.model, content);
+  else { const fd = fs.openSync(local.model, 'w'); fs.ftruncateSync(fd, MODEL_BYTES); fs.closeSync(fd); }
+}
 afterEach(() => execFile.mockReset());
 
 describe('optional local dictation downloads', () => {
@@ -56,6 +66,75 @@ describe('optional local dictation downloads', () => {
   });
 });
 
+
+test('a forged marker beside a zero-filled model of the right size is refused before Whisper runs', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-forged-test-'));
+  try {
+    const local = fixture(root);
+    forgeInstall(local);
+    execFile.mockImplementation((_exe, _args, _options, callback) => {
+      const child = new EventEmitter();
+      queueMicrotask(() => { callback(null, 'text from a forged model'); child.emit('close', 0); });
+      return child;
+    });
+    await expect(local.transcribe(Buffer.from('fixture audio'), 'en', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'DICTATION_INTEGRITY' });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(fs.existsSync(local.scratchRoot) ? fs.readdirSync(local.scratchRoot) : []).toEqual([]);
+    expect(local.ready()).toBe(false);
+    // Setup offers the download again, and a reinstall replaces the forged files.
+    const download = jest.spyOn(local, 'download').mockImplementation(async (_url, _hash, destination) => {
+      const fd = fs.openSync(destination, 'wx'); fs.ftruncateSync(fd, MODEL_BYTES); fs.closeSync(fd);
+    });
+    await local.install(new AbortController().signal);
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(local.ready()).toBe(true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the model is hashed once per process and again whenever the file changes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-verify-test-'));
+  const model = Buffer.from('pinned fixture model');
+  const sha256 = createHash('sha256').update(model).digest('hex');
+  jest.resetModules();
+  jest.doMock('../../shared/dictation-runtime', () => ({ ...jest.requireActual('../../shared/dictation-runtime'),
+    MODEL_BYTES: model.length, MODEL_SHA256: sha256 }));
+  const reads = jest.spyOn(fs, 'createReadStream');
+  try {
+    const { LocalDictation: Isolated } = require('./dictation-local');
+    const runtimeDir = path.join(root, 'runtime');
+    fixture(root, { runtimeDir });
+    const isolated = new Isolated({ dataDir: root, runtimeDir });
+    forgeInstall(isolated, model, sha256);
+    await expect(isolated.verifyModel()).resolves.toBe(true);
+    expect(isolated.ready()).toBe(true);
+    // A second instance in the same process (e.g. Agent re-enabled) reuses the result.
+    await expect(new Isolated({ dataDir: root, runtimeDir }).verifyModel()).resolves.toBe(true);
+    expect(reads.mock.calls.filter(([file]) => file === isolated.model)).toHaveLength(1);
+    fs.writeFileSync(isolated.model, Buffer.from('tampered fixture model').subarray(0, model.length));
+    await expect(isolated.verifyModel()).resolves.toBe(false);
+    expect(isolated.ready()).toBe(false);
+    expect(reads.mock.calls.filter(([file]) => file === isolated.model)).toHaveLength(2);
+  } finally {
+    reads.mockRestore(); jest.dontMock('../../shared/dictation-runtime'); jest.resetModules();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startup removes model staging directories abandoned by a killed download, not a current one', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-stage-test-'));
+  try {
+    const parent = path.join(root, 'dictation-local');
+    for (const name of ['.install-Old123/ready', '.install-New456/ready', 'whisper-base-keep']) fs.mkdirSync(path.join(parent, name), { recursive: true });
+    fs.writeFileSync(path.join(parent, '.install-Old123', 'ready', 'ggml-base.bin'), 'partial model');
+    fs.writeFileSync(path.join(parent, '.install-file'), 'not a staging directory');
+    const old = (Date.now() - 31 * 60_000) / 1000;
+    fs.utimesSync(path.join(parent, '.install-Old123'), old, old);
+    fs.utimesSync(path.join(parent, 'whisper-base-keep'), old, old);
+    new LocalDictation({ dataDir: root });
+    expect(fs.readdirSync(parent).sort()).toEqual(['.install-New456', '.install-file', 'whisper-base-keep']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('startup removes only abandoned profile-owned phrase directories', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-stale-test-'));
@@ -109,7 +188,7 @@ test('Whisper uses discrete arguments, strips credential environment, returns te
   try {
     process.env.OPENAI_API_KEY = 'not-a-real-key';
     const local = fixture(root);
-    jest.spyOn(local, 'ready').mockReturnValue(true);
+    trustModel(local);
     const signal = new AbortController().signal;
     execFile.mockImplementation((_exe, _args, options, callback) => {
       expect(fs.existsSync(path.join(options.cwd, 'recording.wav'))).toBe(true);
@@ -155,7 +234,7 @@ test.each([
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-tags-test-'));
   try {
     const local = fixture(root);
-    jest.spyOn(local, 'ready').mockReturnValue(true);
+    trustModel(local);
     execFile.mockImplementation((_exe, _args, _options, callback) => {
       const child = new EventEmitter();
       queueMicrotask(() => { callback(null, output); child.emit('close', 0); });
@@ -169,7 +248,7 @@ test('cancellation waits for the native process to close before deleting audio o
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dictation-cancel-close-test-'));
   try {
     const local = fixture(root);
-    jest.spyOn(local, 'ready').mockReturnValue(true);
+    trustModel(local);
     const controller = new AbortController();
     const child = new EventEmitter();
     child.kill = jest.fn();
@@ -196,7 +275,7 @@ test('an invalid audio scratch directory disables local inference without breaki
   try {
     fs.writeFileSync(path.join(root, 'dictation-audio'), 'not a directory');
     const local = new LocalDictation({ dataDir: root });
-    jest.spyOn(local, 'ready').mockReturnValue(true);
+    trustModel(local);
     await expect(local.transcribe(Buffer.alloc(100), 'auto', new AbortController().signal)).rejects.toThrow('could not be cleared');
     expect(fs.readFileSync(path.join(root, 'dictation-audio'), 'utf8')).toBe('not a directory');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
