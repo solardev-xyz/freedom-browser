@@ -22,6 +22,18 @@ use std::io::Read;
 unsafe extern "system" {
     fn GetFinalPathNameByHandleW(handle: *mut std::ffi::c_void, path: *mut u16, length: u32, flags: u32) -> u32;
     fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, information: *mut u32) -> i32;
+    fn SetDefaultDllDirectories(flags: u32) -> i32;
+}
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x800;
+
+/// The helpers live in a user-writable install directory. Static imports are
+/// resolved from System32 by the link-time /DEPENDENTLOADFLAG (see
+/// scripts/build-windows-workspace.js); this covers every later runtime load.
+fn restrict_dll_search() -> Result<()> {
+    if unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) } == 0 {
+        bail!("Cannot restrict the DLL search path");
+    }
+    Ok(())
 }
 #[link(name = "crypt32")]
 unsafe extern "system" {
@@ -316,6 +328,7 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
 
 fn main() {
     let result = (|| -> Result<()> {
+        restrict_dll_search()?;
         let mut reader = std::io::BufReader::new(std::io::stdin());
         let line = read_line(&mut reader, 32 * 1024 * 1024)?.context("Missing request")?;
         let request: Request = serde_json::from_slice(&line)?;
@@ -336,6 +349,90 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *const u8;
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+        fn LoadLibraryExW(name: *const u16, file: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+        fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
+        fn SetErrorMode(mode: u32) -> u32;
+    }
+    const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x200;
+
+    fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain([0]).collect() }
+    fn system32() -> PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32")
+    }
+
+    #[test]
+    fn dll_search_skips_a_library_planted_beside_the_executable() -> Result<()> {
+        let name = format!("freedom-planted-{}.dll", std::process::id());
+        let planted = std::env::current_exe()?.parent().context("Missing executable directory")?.join(&name);
+        std::fs::copy(system32().join("version.dll"), &planted)?;
+        let result = (|| -> Result<()> {
+            restrict_dll_search()?;
+            let module = unsafe { LoadLibraryW(wide(&name).as_ptr()) };
+            if !module.is_null() { unsafe { FreeLibrary(module) }; bail!("A planted DLL loaded from the executable directory"); }
+            // Control: the planted copy itself is loadable when its directory is searched explicitly.
+            let module = unsafe { LoadLibraryExW(wide(&name).as_ptr(), std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) };
+            if module.is_null() { bail!("The planted control DLL is not loadable"); }
+            unsafe { FreeLibrary(module) };
+            Ok(())
+        })();
+        std::fs::remove_file(&planted)?;
+        result
+    }
+
+    fn image_dependent_load_flags(base: *const u8) -> u16 {
+        unsafe {
+            let header = base.add(std::ptr::read_unaligned(base.add(0x3c) as *const u32) as usize);
+            assert_eq!(std::ptr::read_unaligned(header as *const u32), 0x4550);
+            let optional = header.add(24);
+            assert_eq!(std::ptr::read_unaligned(optional as *const u16), 0x20b);
+            let rva = std::ptr::read_unaligned(optional.add(112 + 10 * 8) as *const u32) as usize;
+            assert_ne!(rva, 0, "The image has no load configuration");
+            let config = base.add(rva);
+            assert!(std::ptr::read_unaligned(config as *const u32) >= 0x50);
+            std::ptr::read_unaligned(config.add(0x4e) as *const u16)
+        }
+    }
+
+    #[test]
+    fn static_imports_resolve_from_system32_only() {
+        let base = unsafe { GetModuleHandleW(std::ptr::null()) };
+        assert_eq!(u32::from(image_dependent_load_flags(base)), LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+
+    #[test]
+    fn setup_helper_ignores_planted_static_import_dlls() -> Result<()> {
+        let setup = std::env::current_exe()?.ancestors().skip(1).take(3)
+            .map(|directory| directory.join("freedom-windows-sandbox-setup.exe"))
+            .find(|candidate| candidate.is_file()).context("Build freedom-windows-sandbox-setup.exe first")?;
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!("freedom-dll-plant-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&root)?;
+        let copy = root.join("freedom-windows-sandbox-setup.exe");
+        std::fs::copy(&setup, &copy)?;
+        // Stand-ins without the expected exports: loading either aborts startup.
+        for name in ["netapi32.dll", "fwpuclnt.dll"] { std::fs::copy(system32().join("version.dll"), root.join(name))?; }
+        // Inherited by the child, so a loader failure exits instead of opening a dialog.
+        unsafe { SetErrorMode(0x0001 | 0x0002) };
+        let mut child = std::process::Command::new(&copy).env_remove("CODEX_HOME")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait()? { break Some(status); }
+            if std::time::Instant::now() > deadline { child.kill()?; child.wait()?; break None; }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        std::fs::remove_dir_all(&root)?;
+        // Without arguments the helper starts, rejects the request and exits 1.
+        let code = status.context("The setup helper did not exit")?.code().context("Missing exit code")?;
+        assert_eq!(code, 1, "Setup helper exited with {:#x}", code as u32);
+        Ok(())
+    }
 
     #[test]
     fn execution_classes_do_not_promote_offline_commands() {

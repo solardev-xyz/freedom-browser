@@ -49,6 +49,60 @@ const REPLACEMENTS = [
   ['.join("OpenAI").join("Codex")', '.join("FreedomBrowser").join("Sandbox")'],
 ];
 
+// The setup helper runs elevated from the per-user install directory, so a
+// DLL planted beside it must never load. netapi32.dll and fwpuclnt.dll are not
+// KnownDLLs and windows-sys links them as static (raw-dylib) imports, which the
+// loader resolves before main and searches from the executable directory first.
+// /DEPENDENTLOADFLAG makes the loader resolve every helper's static imports from
+// System32; each main then calls SetDefaultDllDirectories before any runtime load.
+const LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
+const RUST_TARGETS = { x64: 'x86_64-pc-windows-msvc', arm64: 'aarch64-pc-windows-msvc' };
+function cargoConfigArgs(arch) {
+  // Joined with, not replacing, upstream's target rustflags (stack size, static CRT).
+  return ['--config', `target.${RUST_TARGETS[arch]}.rustflags=["-C","link-arg=/DEPENDENTLOADFLAG:0x${LOAD_LIBRARY_SEARCH_SYSTEM32.toString(16)}"]`];
+}
+const RESTRICT_DLL_SEARCH = `    // Freedom: search System32 only for every DLL loaded from here on.
+    if unsafe {
+        windows_sys::Win32::System::LibraryLoader::SetDefaultDllDirectories(
+            windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    } == 0 {
+        anyhow::bail!("Cannot restrict the DLL search path");
+    }
+`;
+const DLL_SEARCH_PATCHES = [
+  ['src/bin/setup_main/main.rs', 'fn main() -> anyhow::Result<()> {\n', '    codex_windows_sandbox::setup_helper_main()\n}'],
+  ['src/bin/command_runner/main.rs', 'fn main() -> anyhow::Result<()> {\n', '    win::main()\n}'],
+];
+function restrictDllSearch(sandbox) {
+  for (const [file, head, body] of DLL_SEARCH_PATCHES) {
+    const filename = path.join(sandbox, file);
+    const original = fs.readFileSync(filename, 'utf8');
+    const text = original.replace(head + body, head + RESTRICT_DLL_SEARCH + body);
+    if (!text.includes(head + RESTRICT_DLL_SEARCH + body)) throw new Error(`Cannot restrict the DLL search path in ${file}`);
+    if (text !== original) fs.writeFileSync(filename, text);
+  }
+}
+// DependentLoadFlags from a PE32+ file's load configuration, 0 when absent.
+function dependentLoadFlags(bytes) {
+  const header = bytes.readUInt32LE(0x3c);
+  if (bytes.toString('ascii', 0, 2) !== 'MZ' || bytes.readUInt32LE(header) !== 0x4550) throw new Error('Not a PE image');
+  const optional = header + 24;
+  if (bytes.readUInt16LE(optional) !== 0x20b) throw new Error('Not a PE32+ image');
+  if (bytes.readUInt32LE(optional + 108) <= 10) return 0;
+  const rva = bytes.readUInt32LE(optional + 112 + 10 * 8);
+  if (!rva) return 0;
+  const sections = optional + bytes.readUInt16LE(header + 20);
+  for (let index = 0; index < bytes.readUInt16LE(header + 6); index++) {
+    const section = sections + index * 40;
+    const address = bytes.readUInt32LE(section + 12);
+    if (rva < address || rva >= address + Math.max(bytes.readUInt32LE(section + 8), bytes.readUInt32LE(section + 16))) continue;
+    const offset = bytes.readUInt32LE(section + 20) + rva - address;
+    return bytes.readUInt32LE(offset) >= 0x50 ? bytes.readUInt16LE(offset + 0x4e) : 0;
+  }
+  throw new Error('PE load configuration is outside every section');
+}
+
 function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', windowsHide: true });
@@ -93,6 +147,7 @@ async function buildWindowsWorkspace(arch = process.arch) {
   }
   const workspace = path.join(source, 'codex-rs');
   patchSandbox(path.join(workspace, 'windows-sandbox-rs'));
+  restrictDllSearch(path.join(workspace, 'windows-sandbox-rs'));
   const wfpSource = ['src/wfp.rs', 'src/wfp/filter_specs.rs'].map(file =>
     fs.readFileSync(path.join(workspace, 'windows-sandbox-rs', file), 'utf8')).join('\n');
   if (WFP_IDENTITIES.some(([before, after]) => wfpSource.includes(before) || !wfpSource.includes(after))) {
@@ -113,15 +168,18 @@ async function buildWindowsWorkspace(arch = process.arch) {
   if (locked.status !== 0) throw new Error('Cannot read the pinned sandbox lockfile');
   fs.writeFileSync(path.join(workspace, 'Cargo.lock'), `${locked.stdout}\n[[package]]\nname = "freedom-windows-workspace"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n "base64 0.22.1",\n "codex-protocol",\n "codex-utils-absolute-path",\n "codex-windows-sandbox",\n "serde",\n "serde_json",\n "tokio",\n]\n`);
   const cargo = process.env.FREEDOM_CARGO || path.join(process.env.USERPROFILE, '.cargo/bin/cargo.exe');
-  run(cargo, [`+${RUST_TOOLCHAIN}`, 'build', '--locked', '--release', '-p', 'freedom-windows-workspace', '-p', 'codex-windows-sandbox',
+  run(cargo, [`+${RUST_TOOLCHAIN}`, 'build', '--locked', '--release', ...cargoConfigArgs(arch), '-p', 'freedom-windows-workspace', '-p', 'codex-windows-sandbox',
     '--bin', 'freedom-windows-workspace', '--bin', 'freedom-windows-sandbox-setup', '--bin', 'freedom-workspace-runner'], workspace);
-  run(cargo, [`+${RUST_TOOLCHAIN}`, 'test', '--locked', '--release', '-p', 'freedom-windows-workspace',
+  run(cargo, [`+${RUST_TOOLCHAIN}`, 'test', '--locked', '--release', ...cargoConfigArgs(arch), '-p', 'freedom-windows-workspace',
     '--bin', 'freedom-windows-workspace'], workspace);
   const output = path.join(ROOT, 'out/windows-workspace', arch);
   fs.mkdirSync(output, { recursive: true });
   const hashes = {};
   for (const filename of BINARIES) {
     fs.copyFileSync(path.join(workspace, 'target/release', filename), path.join(output, filename));
+    if (dependentLoadFlags(fs.readFileSync(path.join(output, filename))) !== LOAD_LIBRARY_SEARCH_SYSTEM32) {
+      throw new Error(`${filename} would resolve its DLL imports outside System32`);
+    }
     hashes[filename] = digest(path.join(output, filename));
   }
   fs.copyFileSync(path.join(source, 'LICENSE'), path.join(output, 'CODEX-LICENSE.txt'));
@@ -133,5 +191,6 @@ async function buildWindowsWorkspace(arch = process.arch) {
   return output;
 }
 
-module.exports = { buildWindowsWorkspace, BINARIES, REVISION, ARCHIVE_SHA256, WFP_IDENTITIES, REPLACEMENTS, RUST_TOOLCHAIN, patchSandbox };
+module.exports = { buildWindowsWorkspace, BINARIES, REVISION, ARCHIVE_SHA256, WFP_IDENTITIES, REPLACEMENTS, RUST_TOOLCHAIN, patchSandbox,
+  cargoConfigArgs, restrictDllSearch, dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32 };
 if (require.main === module) buildWindowsWorkspace().catch(error => { console.error(error.message); process.exitCode = 1; });
