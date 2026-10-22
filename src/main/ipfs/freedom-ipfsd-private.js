@@ -411,38 +411,58 @@ class PrivateInstances {
     if (instance.state !== 'starting') throw notRunning();
     const gen = await this.process();
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
+    const id = this.nextInstanceId(gen);
     // The policy again, after the process came up: it may have changed or
-    // gone meanwhile. The one sent is the one in force at the send, which
-    // the fence checks once more.
-    const network = await this.networkFor(instance);
-    if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
-    instance.gen = gen;
-    instance.id = this.nextInstanceId(gen);
-    this.byId.set(instance.id, instance);
-    const params = instanceParams(
-      instance.id,
-      { kind: 'memory', max_bytes: MEMORY_STORE_BYTES },
-      this.requestQueueTimeoutMs,
-      network
-    );
-    try {
-      await this.client.startInstance(gen, params, {
-        fence: () =>
-          instance.state === 'starting' && samePolicy(this.network.current(), network),
-      });
-    } catch (err) {
-      // Refused for memory, retired by main, or its process gone: the next
-      // request tries again. Anything else the service refused or failed is
-      // no crash: no restart until the user's.
-      if (!RETRYABLE_START.has(err?.code)) {
-        this.log.warn('[IPFS] private freedom-ipfs instance failed to start', {
-          code: err?.code || 'error',
+    // gone meanwhile. The one sent is the one in force at the send: the
+    // fence reads it in the send's turn. A change after the pick sends
+    // nothing, and the start picks again, waiting if there is none now;
+    // only a retirement or the process's end ends it, and each waiter's
+    // own deadline bounds its wait.
+    for (;;) {
+      const network = await this.networkFor(instance);
+      if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
+      instance.gen = gen;
+      instance.id = id;
+      this.byId.set(id, instance);
+      const params = instanceParams(
+        id,
+        { kind: 'memory', max_bytes: MEMORY_STORE_BYTES },
+        this.requestQueueTimeoutMs,
+        network
+      );
+      let moved = false;
+      try {
+        await this.client.startInstance(gen, params, {
+          fence: () => {
+            if (instance.state !== 'starting') return false;
+            moved = !samePolicy(this.network.current(), network);
+            return !moved;
+          },
         });
-        // Its waiters hear why, before every instance goes with the rest.
-        this.retire(instance, { stop: false, error: requestError(err) });
-        this.fail('an instance failed to start');
+        return;
+      } catch (err) {
+        // Fenced on the policy alone, nothing sent: the instance is still
+        // starting on a process that serves, so it picks again, as it was
+        // before this send.
+        if (moved && instance.state === 'starting' && this.client.serves(gen)) {
+          this.byId.delete(id);
+          instance.id = null;
+          instance.gen = null;
+          continue;
+        }
+        // Refused for memory, retired by main, or its process gone: the
+        // next request tries again. Anything else the service refused or
+        // failed is no crash: no restart until the user's.
+        if (!RETRYABLE_START.has(err?.code)) {
+          this.log.warn('[IPFS] private freedom-ipfs instance failed to start', {
+            code: err?.code || 'error',
+          });
+          // Its waiters hear why, before every instance goes with the rest.
+          this.retire(instance, { stop: false, error: requestError(err) });
+          this.fail('an instance failed to start');
+        }
+        throw err;
       }
-      throw err;
     }
   }
 
