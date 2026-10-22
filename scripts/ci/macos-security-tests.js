@@ -25,7 +25,9 @@
 //
 // The other skip in these files, secure-files.test.js's "kernel identity ..."
 // (`process.platform === 'win32' ? test.skip : test`), skips only on Windows,
-// so on macOS it has to run like any other test. The suites that are pure
+// so on macOS it has to run like any other test. It resolves the real
+// workspace supervisor, so the job builds `out/macos-supervisor/<arch>/`
+// (`npm run build:workspace-supervisor`) before running this. The suites that are pure
 // unit tests (seatbelt-backend, seatbelt-environment, macos-supervisor-*,
 // native-supervisors-integration, cleanup-racer) carry no platform gate and
 // are here so the macOS runner exercises the code they cover with macOS's

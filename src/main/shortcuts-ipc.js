@@ -156,7 +156,10 @@ function resetOverride({ id } = {}) {
     const saved = saveSettings({ shortcutOverrides: kept });
     return saved ? { ok: true } : { ok: false, reason: 'save-failed' };
   }
-  if (!getShortcutById(id)) return { ok: false, reason: 'unknown-shortcut' };
+  // Same gate as setOverride: an AI shortcut hidden while AI is off keeps
+  // its remap for when AI is turned back on.
+  const entry = getShortcutById(id);
+  if (!entry || !isShortcutActive(entry, getFeatures())) return { ok: false, reason: 'unknown-shortcut' };
   delete overrides[id];
   const saved = saveSettings({ shortcutOverrides: overrides });
   return saved ? { ok: true } : { ok: false, reason: 'save-failed' };

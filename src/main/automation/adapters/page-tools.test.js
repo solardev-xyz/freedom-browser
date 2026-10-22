@@ -261,7 +261,10 @@ test('no source still emits, renders or prompts about a manual-submission state'
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) { if (entry.name !== 'vendor') visit(file); continue; }
       if (!/\.(js|mjs|html)$/.test(entry.name) || entry.name.endsWith('.test.js')) continue;
-      if (/awaiting_user|manualSubmit/.test(fs.readFileSync(file, 'utf8'))) offenders.push(path.relative(root, file));
+      // The literal tokens, and the prose a model prompt would use for them.
+      if (/awaiting_user|manualSubmit|awaiting manual|manual (?:form )?submission/i.test(fs.readFileSync(file, 'utf8'))) {
+        offenders.push(path.relative(root, file));
+      }
     }
   };
   visit(root);

@@ -445,5 +445,17 @@ describe('shortcuts IPC', () => {
       await ctx.ipcMain.invoke(IPC.SHORTCUTS_RESET, {});
       expect(ctx.getSettings().shortcutOverrides).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
     });
+
+    test('a direct reset of a hidden AI shortcut keeps its remap', async () => {
+      ctx = loadShortcutsIpc({
+        enableAi: false,
+        initialOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y' },
+      });
+      expect(await ctx.ipcMain.invoke(IPC.SHORTCUTS_RESET, { id: 'view.toggleAgent' })).toEqual({
+        ok: false,
+        reason: 'unknown-shortcut',
+      });
+      expect(ctx.getSettings().shortcutOverrides).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
+    });
   });
 });

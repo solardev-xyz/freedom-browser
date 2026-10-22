@@ -92,6 +92,7 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
     'Approved executable access is unavailable on this platform',
   EXECUTABLE_RESOLUTION_FAILED: 'Freedom could not resolve the requested executables',
   EXECUTABLE_SCOPE_TOO_BROAD: 'Freedom refused an executable with an unsafe package boundary',
+  EXECUTABLE_ROOT_WRITABLE: 'This executable lives inside the project folder, which commands can write, so Freedom cannot approve it as a trusted package. Run the script with an interpreter installed outside the project (for example node with the script path), or ask the user to install the tool outside the project.',
   COMMAND_PERMISSION_DECLINED: 'The user did not grant the requested command permissions',
   COMMAND_PERMISSION_PREPARATION_FAILED:
     'Freedom could not prepare the requested command permissions',
@@ -146,6 +147,7 @@ function safeWorkspaceError(error, options = {}) {
     'EXECUTABLE_INTERPRETER_UNAVAILABLE',
     'EXECUTABLE_INTERPRETER_UNSUPPORTED',
     'EXECUTABLE_SCOPE_TOO_BROAD',
+    'EXECUTABLE_ROOT_WRITABLE',
     'COMMAND_PERMISSION_DECLINED',
     'COMMAND_PERMISSION_PREPARATION_FAILED',
     'INVALID_COMMAND_PERMISSION_GRANT',

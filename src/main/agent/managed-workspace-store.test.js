@@ -241,6 +241,35 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(restarted).toHaveBeenCalledTimes(1);
   });
 
+  test('close() during a removal pass does not reopen the database or schedule a retry', async () => {
+    const failing = jest.fn().mockRejectedValue(new Error('cleanup timed out'));
+    store.close();
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, now: () => now,
+      workspaceIdFactory: () => 'workspace_dddddddddddddddddddd', removeDirectory: failing, removalRetryDelaysMs: [] });
+    const workspace = await store.ensureForConversation('conversation_one');
+    await expect(store.deleteConversation('conversation_one')).rejects.toThrow('cleanup timed out');
+    store.close();
+
+    let release;
+    const helper = jest.fn(() => new Promise((resolve) => { release = resolve; }));
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, removeDirectory: helper,
+      removalRetryDelaysMs: [1] });
+    const pass = store.retryPendingRemovals();
+    for (let i = 0; i < 400 && !release; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(helper).toHaveBeenCalledTimes(1);
+    // Quit while the startup pass waits on the cleanup helper.
+    store.close();
+    expect(store.db).toBeNull();
+    release();
+    await expect(pass).resolves.toBe(0);
+    expect(store.db).toBeNull();
+    expect(store.removalTimer).toBeNull();
+    // Still pending for the next start.
+    const restarted = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, removeDirectory: jest.fn() });
+    expect(restarted.get(workspace.workspaceId)).not.toBeNull();
+    restarted.close();
+  });
+
   test('removes only the exact managed workspace when its conversation is deleted', async () => {
     const workspace = await store.ensureForConversation('conversation_one');
     const workspacePath = await store.resolvePath(workspace.workspaceId);

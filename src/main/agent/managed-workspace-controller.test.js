@@ -409,6 +409,28 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
+  test('refuses a package root inside the workspace before offering it for approval', async () => {
+    const workspaceRoot = '/managed/workspace_aaaaaaaaaaaaaaaaaaaa';
+    for (const [sourcePath, refused] of [
+      [`${workspaceRoot}/node_modules/pkg`, true],
+      [workspaceRoot, true],
+      ['/opt/runtime', false],
+    ]) {
+      const { controller } = createController({
+        resolveExecutableAccess: jest.fn(async () => ({
+          commands: [{ name: 'tool', status: 'requires_permission', executablePath: `${sourcePath}/bin/tool`, rootPath: sourcePath }],
+          runtimeRoots: [{ id: 'approved_test', sourcePath }],
+        })),
+      });
+      const prepared = controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --version',
+        workingDirectory: '.',
+      });
+      if (refused) await expect(prepared).rejects.toMatchObject({ code: 'EXECUTABLE_ROOT_WRITABLE' });
+      else await expect(prepared).rejects.not.toMatchObject({ code: 'EXECUTABLE_ROOT_WRITABLE' });
+    }
+  });
+
   test.each([false, true])('binds one-shot executable access and discovered interpreters (%s) to one exact command', async (script) => {
     fs.promises.realpath.mockRestore();
     fs.promises.stat.mockRestore();

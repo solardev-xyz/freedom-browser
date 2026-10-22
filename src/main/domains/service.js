@@ -299,7 +299,10 @@ class DomainService {
       const price = await this.#price(operation, target, snapshot, false);
       previous = { expiry: state.expiry, owner: state.owner, manager: state.manager, wrapped: state.wrapped || false, wrapperExpiry: state.wrapperExpiry };
       if (preparing) operation.quotedWei = price;
-      if (BigInt(price) > BigInt(operation.quotedWei)) refuse('The renewal price increased. Prepare a fresh quote.', 'DOMAIN_STALE');
+      // The renewal sends the disclosed buffer, so a rise the buffered value
+      // still covers (an oracle tick during the approval wait) is paid like
+      // any other; only a rise past it needs a fresh quote.
+      if (BigInt(price) > BigInt(withBuffer(operation.quotedWei))) refuse('The renewal price increased. Prepare a fresh quote.', 'DOMAIN_STALE');
       value = withBuffer(operation.quotedWei);
       label = `Renew ${parsed.name}`;
     } else {
@@ -365,6 +368,14 @@ class DomainService {
         // Requote the reveal before presenting its separate approval, without
         // throwing away an already paid commitment or changing its tuple.
         plan = await this.#build(operation, operation.intent === 'register' && operation.step === 'reveal');
+        // A renewal prepared before payments carried the price buffer has a
+        // plan digest over the unbuffered value. Everything else in it is
+        // unchanged, and the wallet approval shows the buffered value sent,
+        // so adopt the current plan rather than strand the renewal as stale.
+        if (operation.intent === 'renew' && operation.planDigest !== plan.digest &&
+            operation.planDigest === digest({ to: plan.to, data: plan.data, value: operation.quotedWei, account: plan.account.address, previous: operation.before ?? null })) {
+          operation.planDigest = plan.digest;
+        }
         if (operation.step !== 'reveal' && operation.planDigest !== plan.digest) refuse('The prepared transaction changed. Prepare a fresh operation.', 'DOMAIN_STALE');
         const result = await this.wallet.send(plan, {
           signal: context.signal, requestApproval: context.requestApproval,

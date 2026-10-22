@@ -798,6 +798,19 @@ class ManagedWorkspaceController {
           ...this.executableAccessOptions,
           ...(hostEnvironment && { hostEnvironment }),
         });
+        // Policy construction refuses a runtime root the sandbox can write
+        // (EXECUTABLE_ROOT_WRITABLE). Refuse it here too, before the user is
+        // asked to approve a package root no command could then use.
+        let workspaceRoot = lease.workspaceRoot;
+        try { workspaceRoot = await fs.promises.realpath(workspaceRoot); } catch { /* keep the lease form */ }
+        for (const root of executableAccess.runtimeRoots) {
+          if (insidePath(workspaceRoot, root.sourcePath) || insidePath(root.sourcePath, workspaceRoot)) {
+            throw new ManagedWorkspaceError(
+              'EXECUTABLE_ROOT_WRITABLE',
+              'An executable inside the project folder cannot be approved as a trusted package'
+            );
+          }
+        }
       }
       requestedCapabilities = executableAccess.runtimeRoots.map(createExecutableRootCapability);
       if (requestedNetwork) {

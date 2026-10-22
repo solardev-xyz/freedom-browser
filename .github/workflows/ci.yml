@@ -1387,6 +1387,14 @@ jobs:
         with:
           ignore-scripts: 'true'
 
+      # secure-files.test.js's "kernel identity ..." case resolves the real
+      # workspace supervisor through `resolveMacosSupervisor`, which reads
+      # `out/macos-supervisor/<arch>/`. `ignore-scripts` skips `prestart`, so
+      # build it here from the repository-owned source with the runner's
+      # Apple toolchain (no installer is launched).
+      - name: Build the macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+
       - name: Run the macOS-only security suites, refusing any skip
         run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
 

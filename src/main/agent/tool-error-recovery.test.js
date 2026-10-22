@@ -13,6 +13,8 @@ describe('model-facing tool error recovery', () => {
     ['WORKSPACE_VALIDATION_LIMIT', 'find', 'unsupported'],
     ['EXTERNAL_GIT_METADATA_DENIED', 'read', 'unsupported'],
     ['PROTECTED_PATH_MISSING', 'read', 'stop'],
+    ['EXECUTABLE_ROOT_WRITABLE', 'request_permissions', 'stop'],
+    ['EXECUTABLE_SCOPE_TOO_BROAD', 'request_permissions', 'stop'],
     ['INVALID_WORKSPACE', 'read', 'ask_user'],
     ['WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED', 'bash', 'request_permission', 'request_permissions'],
     ['WORKSPACE_COMMAND_NOT_FOUND', 'bash', 'request_permission', 'request_permissions'],

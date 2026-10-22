@@ -76,7 +76,7 @@ function recoveryForToolError(code, operation) {
     'Read browser_get_tab and a fresh browser_snapshot to determine what loaded or changed. Correct the URL or wait condition if needed; do not repeat a potentially completed action.', { tool: 'browser_get_tab' });
   if (code === 'APPROVAL_REQUIRED') return step('ask_user',
     'The action still requires user approval. Use the supported tool approval flow or ask the user to complete it. Do not bypass or assume approval.');
-  if (['UNTRUSTED_CAPABILITY_AUTHORITY', 'EXECUTABLE_SCOPE_TOO_BROAD'].includes(code)) return step('stop',
+  if (['UNTRUSTED_CAPABILITY_AUTHORITY', 'EXECUTABLE_SCOPE_TOO_BROAD', 'EXECUTABLE_ROOT_WRITABLE'].includes(code)) return step('stop',
     'Explain the refused authority or executable scope and stop. Do not broaden the request or select another execution path to bypass this boundary.');
   if (['WORKSPACE_HISTORY_BUSY', 'WORKSPACE_PROCESS_LIMIT_REACHED'].includes(code)) return step('inspect_state',
     'Wait for the active operation to finish or inspect the known process sessions with write_stdin. Do not start duplicate operations or terminate unrelated work.');

@@ -641,6 +641,47 @@ test('a quote that drops after preparation still renews with the approved buffer
   expect(f.wallet.send.mock.calls[0][0].value).toBe('102');
 });
 
+test('a renewal price rise inside the buffer still renews; one past it is stale', async () => {
+  for (const [base, outcome] of [[102n, 'completed'], [103n, 'stale']]) {
+    const f = fixture('eth');
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+    const call = f.chain.call.getMockImplementation();
+    f.chain.call.mockImplementation((role, method, args) => method === 'rentPrice' ? [{ base, premium: 0n }] : call(role, method, args));
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: outcome });
+    if (outcome === 'completed') expect(f.wallet.send.mock.calls[0][0].value).toBe('102');
+    else expect(f.wallet.send).not.toHaveBeenCalled();
+  }
+});
+
+test('a renewal prepared before the price buffer still executes with the buffered value', async () => {
+  const { keccak256, toUtf8Bytes } = require('ethers');
+  const digestOf = value => keccak256(toUtf8Bytes(JSON.stringify(value)));
+  for (const legacy of [true, false]) {
+    const f = fixture('eth');
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+    const saved = f.store.get(operationId);
+    // The renew call itself does not depend on the value, so the plan's
+    // to/data are known from the fixture; the pre-buffer digest covered the
+    // unbuffered quote instead of the buffered value.
+    const sent = [];
+    const send = f.wallet.send.getMockImplementation();
+    f.wallet.send.mockImplementation(async (plan, context) => { sent.push(plan); return send(plan, context); });
+    const forged = legacy ? null : `0x${'00'.repeat(32)}`;
+    f.store.save({ ...saved, planDigest: forged ?? 'pending' });
+    // Compute the legacy digest from the transaction the service builds.
+    if (legacy) {
+      const probe = fixture('eth');
+      const p = await probe.service.prepare({ name: probe.state.name, intent: 'renew' }, probe.context);
+      await probe.service.execute(p.operationId, probe.context);
+      const tx = probe.wallet.send.mock.calls[0][0];
+      f.store.save({ ...f.store.get(operationId), planDigest: digestOf({ to: tx.to, data: tx.data, value: saved.quotedWei, account: tx.account.address, previous: saved.before }) });
+    }
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: legacy ? 'completed' : 'stale' });
+    if (legacy) expect(sent[0].value).toBe('102');
+    else expect(sent).toHaveLength(0);
+  }
+});
+
 test.each([['wei', 61, 'ready'], ['eth', 86400, 'expired']])('%s reverted reveal keeps its paid commitment (%s s after commit: %s)', async (namespace, elapsed, outcome) => {
   const f = fixture(namespace, true);
   const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);

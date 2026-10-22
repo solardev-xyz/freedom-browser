@@ -132,6 +132,9 @@ class AgentManagedWorkspaceStore {
     this.removalRetryCount = 0;
     this.removalTimer = null;
     this.removalPass = null;
+    // Bumped by close(): a removal pass started before it stops at its next
+    // step instead of reopening the database or scheduling another retry.
+    this.closeGeneration = 0;
     this.removeDirectory = options.removeDirectory || (async directory => {
       if (process.platform === 'darwin') {
         await require('./workspace-execution/seatbelt-backend').removeSandboxTree(directory);
@@ -156,6 +159,8 @@ class AgentManagedWorkspaceStore {
   }
 
   close() {
+    this.closeGeneration += 1;
+    this.removalPass = null;
     clearTimeout(this.removalTimer);
     this.removalTimer = null;
     this.projectAccess.clear();
@@ -575,9 +580,14 @@ class AgentManagedWorkspaceStore {
   // number still pending; while any remain, a bounded backoff tries again.
   retryPendingRemovals() {
     if (this.removalPass) return this.removalPass;
-    this.removalPass = (async () => {
+    const generation = this.closeGeneration;
+    const closed = () => this.closeGeneration !== generation;
+    const pass = (async () => {
       let remaining = 0;
       for (const { id } of this.#getStatements().pendingRemovals.all()) {
+        // close() landed while this pass waited on a removal helper: leave the
+        // rest pending for the next start rather than reopen the database.
+        if (closed()) return 0;
         try {
           let directory = null;
           try {
@@ -585,7 +595,9 @@ class AgentManagedWorkspaceStore {
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
           }
+          if (closed()) return 0;
           if (directory) await this.removeDirectory(directory);
+          if (closed()) return 0;
           this.#getStatements().deleteWorkspace.run(id, `${REMOVAL_OWNER_PREFIX}${id}`);
         } catch (error) {
           remaining += 1;
@@ -593,9 +605,10 @@ class AgentManagedWorkspaceStore {
         }
       }
       return remaining;
-    })().finally(() => { this.removalPass = null; });
-    return this.removalPass.then((remaining) => {
-      if (remaining) this.#scheduleRemovalRetry();
+    })().finally(() => { if (this.removalPass === pass) this.removalPass = null; });
+    this.removalPass = pass;
+    return pass.then((remaining) => {
+      if (remaining && !closed()) this.#scheduleRemovalRetry();
       return remaining;
     });
   }

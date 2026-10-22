@@ -788,7 +788,7 @@ function normalizeInteractionApproval(value) {
     ? value.kind
     : 'uncertain';
   const confidence = Number(value.confidence);
-  const summary = typeof value.summary === 'string' ? value.summary.trim().slice(0, 240) : '';
+  const summary = typeof value.summary === 'string' ? approvalLineText(value.summary, 240) : '';
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1 || !summary) return null;
   return Object.freeze({
     kind,
@@ -834,9 +834,9 @@ function normalizeNodeLifecycleApproval(value, recipient = {}) {
       : 'unknown',
     classification: Object.freeze({
       summary:
-        typeof classification?.summary === 'string'
-          ? classification.summary.slice(0, 240)
-          : 'The effect could not be classified reliably.',
+        (typeof classification?.summary === 'string' &&
+          approvalLineText(classification.summary, 240)) ||
+        'The effect could not be classified reliably.',
       confidence: Number.isFinite(classification?.confidence)
         ? Math.max(0, Math.min(1, classification.confidence))
         : 0,
@@ -893,9 +893,9 @@ function normalizeNodeRequestApproval(value, recipient = {}) {
       : 'unknown',
     classification: Object.freeze({
       summary:
-        typeof classification?.summary === 'string'
-          ? classification.summary.slice(0, 240)
-          : 'The effect could not be classified reliably.',
+        (typeof classification?.summary === 'string' &&
+          approvalLineText(classification.summary, 240)) ||
+        'The effect could not be classified reliably.',
       confidence: Number.isFinite(classification?.confidence)
         ? Math.max(0, Math.min(1, classification.confidence))
         : 0,
