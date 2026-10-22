@@ -17,6 +17,7 @@ const { promisify } = require('util');
 const path = require('path');
 
 const execFileAsync = promisify(execFile);
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
@@ -80,6 +81,15 @@ const proxySessions = new Map();
 let appliedSocksEndpoint = null;
 let artiBootstrapped = false;
 let artiOutputBuffer = '';
+// The SOCKS endpoint offered to the IPFS service, for a profile that routes
+// IPFS through Tor (freedom-core design 0007, "Where the proxy comes from"):
+// `{ ip, port }` while Tor is RUNNING at an endpoint it can take, otherwise
+// null, with `ipfsEndpointRefusal` saying why when Tor runs at one it can't.
+// `ipfsEndpointEvents` emits 'change' with getIpfsSocksEndpoint() each time
+// either changes.
+let ipfsEndpoint = null;
+let ipfsEndpointRefusal = null;
+const ipfsEndpointEvents = new EventEmitter();
 // Bumped by every start attempt and by every stop, so a start that is awaiting
 // something (external-candidate prompt, port probe, SOCKS probe) can tell that
 // it has been superseded and must not spawn/commit anything.
@@ -229,6 +239,7 @@ function updateState(newState, error = null) {
   log.info('[Tor] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
+  publishIpfsEndpoint();
   const windows = require('electron').BrowserWindow.getAllWindows();
   for (const win of windows) {
     try {
@@ -789,6 +800,68 @@ function getActivePort() {
   return currentSocksPort;
 }
 
+/**
+ * The SOCKS endpoint `raw` ('host:port') names, as the IPFS service takes it
+ * (design 0007, decision D8): an IP literal and a port, `{ endpoint: { ip,
+ * port } }`. `localhost` is 127.0.0.1. Any other host name is refused,
+ * `{ refused: reason }`: the service would need a resolver outside the proxy
+ * to reach it. The service checks the address itself too (no unspecified,
+ * multicast or broadcast proxy).
+ */
+function ipfsSocksEndpointFor(raw) {
+  const parsed = parseSocksEndpoint(raw);
+  if (!parsed) return { refused: 'Tor has no SOCKS endpoint' };
+  if (parsed.host.toLowerCase() === 'localhost') {
+    return { endpoint: { ip: '127.0.0.1', port: parsed.port } };
+  }
+  if (net.isIP(parsed.host)) {
+    return { endpoint: { ip: parsed.host, port: parsed.port } };
+  }
+  return {
+    refused: `Tor's SOCKS endpoint ${parsed.host} is a host name: IPFS through Tor needs an IP address`,
+  };
+}
+
+/** Recomputes the endpoint offered to the IPFS service; emits a change. */
+function publishIpfsEndpoint() {
+  const { endpoint = null, refused = null } =
+    currentState === STATUS.RUNNING ? ipfsSocksEndpointFor(currentSocksEndpoint) : {};
+  const same =
+    endpoint === ipfsEndpoint ||
+    (endpoint &&
+      ipfsEndpoint &&
+      endpoint.ip === ipfsEndpoint.ip &&
+      endpoint.port === ipfsEndpoint.port);
+  if (same && refused === ipfsEndpointRefusal) return;
+  ipfsEndpoint = endpoint;
+  ipfsEndpointRefusal = refused;
+  if (refused) log.warn('[Tor] Not offered to IPFS:', refused);
+  ipfsEndpointEvents.emit('change', getIpfsSocksEndpoint());
+}
+
+/**
+ * The SOCKS endpoint offered to the IPFS service: `{ endpoint, refused }`,
+ * `endpoint` being `{ ip, port }` while Tor is RUNNING at an endpoint the
+ * service can take, else null; `refused` says why Tor runs at one it can't.
+ * Tor's ERROR state, the external health check's retry included, withdraws
+ * it: the service fails closed anyway, without a proxy that answers.
+ */
+function getIpfsSocksEndpoint() {
+  return {
+    endpoint: ipfsEndpoint && { ...ipfsEndpoint },
+    refused: ipfsEndpointRefusal,
+  };
+}
+
+/**
+ * Calls `listener` with getIpfsSocksEndpoint() each time it changes.
+ * Returns the function that stops it.
+ */
+function onIpfsSocksEndpointChange(listener) {
+  ipfsEndpointEvents.on('change', listener);
+  return () => ipfsEndpointEvents.off('change', listener);
+}
+
 function registerTorIpc() {
   log.info('[Tor] Registering IPC handlers');
   const torDisabledResponse = {
@@ -847,6 +920,8 @@ module.exports = {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
   getActivePort,
+  getIpfsSocksEndpoint,
+  onIpfsSocksEndpointChange,
   getArtiVersion,
   getArtiBinaryPath,
   getTorDataPath,

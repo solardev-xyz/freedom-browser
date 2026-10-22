@@ -673,3 +673,165 @@ describe('tor-manager .onion routing across sessions', () => {
     }
   }, 15_000);
 });
+
+describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
+  const externalAt = (externalSocks, extra = {}) =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: { metadata: { nodes: { tor: { mode: 'external', externalSocks } } } },
+      ...extra,
+    });
+  const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  test('a running Tor offers its endpoint as an IP and a port, and a stop withdraws it', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    const changes = [];
+    mod.onIpfsSocksEndpointChange((change) => changes.push(change));
+    expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    expect(mod.getIpfsSocksEndpoint()).toEqual({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      refused: null,
+    });
+
+    await mod.stopTor();
+    expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+    expect(changes).toEqual([
+      { endpoint: { ip: '127.0.0.1', port: 9150 }, refused: null },
+      { endpoint: null, refused: null },
+    ]);
+  });
+
+  test('localhost is 127.0.0.1, and an IPv6 literal is offered unbracketed', async () => {
+    for (const [externalSocks, ip, port] of [
+      ['socks5://localhost:9150', '127.0.0.1', 9150],
+      ['socks5://LocalHost:9150', '127.0.0.1', 9150],
+      ['socks5h://[::1]:9150', '::1', 9150],
+      ['10.0.0.2:9050', '10.0.0.2', 9050],
+    ]) {
+      const { mod } = externalAt(externalSocks);
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip, port });
+      await mod.stopTor();
+    }
+  });
+
+  test('an external endpoint at a host name is refused for IPFS, and still routes .onion', async () => {
+    for (const externalSocks of [
+      'socks5://tor.lan:9050',
+      'socks5://2130706433:9050',
+      'socks5://127.1:9050',
+    ]) {
+      const targetSession = createSessionMock();
+      const { mod } = externalAt(externalSocks);
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change));
+
+      await mod.startTor({ targetSession });
+      const offered = mod.getIpfsSocksEndpoint();
+      expect(offered.endpoint).toBeNull();
+      expect(offered.refused).toContain('is a host name');
+      expect(changes).toEqual([offered]);
+      // Tor itself runs: .onion still goes through it.
+      expect(targetSession.setProxy).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'pac_script' })
+      );
+
+      await mod.stopTor();
+      expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+    }
+  });
+
+  test('the health check withdraws the endpoint while the proxy is unreachable, and offers it again', async () => {
+    jest.useFakeTimers();
+    let reachable = true;
+    const { mod } = externalAt('socks5://127.0.0.1:9150/', {
+      extraMocks: {
+        [require.resolve('./socks-probe')]: () => ({
+          probeSocks5Endpoint: jest.fn().mockResolvedValue(true),
+          probeTcpEndpoint: jest.fn(async () => reachable),
+        }),
+      },
+    });
+    const changes = [];
+    mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    await jest.advanceTimersByTimeAsync(5000);
+    // Still healthy: no change.
+    expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }]);
+
+    reachable = false;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+    reachable = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(changes).toEqual([
+      { ip: '127.0.0.1', port: 9150 },
+      null,
+      { ip: '127.0.0.1', port: 9150 },
+    ]);
+
+    await mod.stopTor();
+  });
+
+  test('a stopped listener hears nothing more', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    const listener = jest.fn();
+    const stop = mod.onIpfsSocksEndpointChange(listener);
+    stop();
+    await mod.startTor({ targetSession: createSessionMock() });
+    await mod.stopTor();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('managed Arti offers its endpoint once bootstrapped, and withdraws it when it exits', async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-endpoint-'));
+    const artiProcess = createArtiProcessMock();
+    try {
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19151 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn: jest.fn(() => artiProcess), execFile: jest.fn() }),
+        },
+      });
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      // Spawned, not yet bootstrapped: nothing offered.
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      const onStdout = artiProcess.stdout.on.mock.calls[0][1];
+      onStdout('Sufficiently bootstrapped\n');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 19151 });
+
+      artiProcess.emit('close', 1);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 19151 }, null]);
+      await mod.stopTor();
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
