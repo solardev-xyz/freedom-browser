@@ -137,3 +137,69 @@ describe('payments internal page', () => {
     });
   });
 });
+
+// D10: a wallet payment settled at the finalized block shows the wallet's
+// label, and "Taken" says what it means. The page script can't import
+// lib/wallet/intent-texts.js, so these tests hold its copy equal.
+describe('payments settled at the finalized block', () => {
+  const { LABELS, TAKEN_EXPLANATION } = require('../lib/wallet/intent-texts.js');
+
+  const settled = (label, overrides = {}) =>
+    createPayment({
+      kind: 'wallet-send',
+      origin: null,
+      status: { paid: 'confirmed', failed: 'failed', taken: 'taken' }[label] ?? 'pending',
+      metadata: { intentId: 'intent-1', finality: { label, block: 100 } },
+      ...overrides,
+    });
+
+  async function statusOf(payment) {
+    const ctx = await runPaymentsPage({ payments: [payment] });
+    const row = ctx.elements.results.querySelector('tbody').querySelector('tr');
+    const cell = row.querySelectorAll('td')[6];
+    return {
+      pill: cell.querySelector('.status-pill'),
+      note: cell.querySelector('.status-note'),
+    };
+  }
+
+  test.each([
+    ['paid', LABELS.confirmed, 'status-confirmed'],
+    ['failed', LABELS.failed, 'status-failed'],
+  ])('%s shows "%s", with nothing under it', async (label, text, className) => {
+    const { pill, note } = await statusOf(settled(label));
+    expect(pill.textContent).toBe(text);
+    expect(pill.classList.contains(className)).toBe(true);
+    expect(note).toBeNull();
+  });
+
+  test('taken shows "Taken" and the line that explains it', async () => {
+    const { pill, note } = await statusOf(settled('taken'));
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(pill.classList.contains('status-taken')).toBe(true);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  test("the label is main's finality label, even if a later receipt poll rewrote the status", async () => {
+    const { pill, note } = await statusOf(settled('taken', { status: 'no-receipt' }));
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(pill.classList.contains('status-taken')).toBe(true);
+    expect(pill.classList.contains('status-no-receipt')).toBe(false);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  test('a payment not settled at finality keeps its status as before', async () => {
+    for (const payment of [
+      createPayment(),
+      createPayment({ kind: 'wallet-send', status: 'pending', metadata: { intentId: 'i' } }),
+      createPayment({ kind: 'wallet-send', status: 'confirmed', metadata: null }),
+      settled('constructor', { status: 'pending' }),
+      settled(undefined, { status: 'pending' }),
+    ]) {
+      const { pill, note } = await statusOf(payment);
+      expect(pill.textContent).toBe(payment.status);
+      expect(pill.classList.contains(`status-${payment.status}`)).toBe(true);
+      expect(note).toBeNull();
+    }
+  });
+});

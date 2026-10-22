@@ -29,6 +29,26 @@ const KIND_META = {
 };
 const KIND_FALLBACK = { label: '', cls: '', anonLabel: '—' };
 
+// A wallet payment settled at the finalized block, by the label it settled
+// on (`metadata.finality.label`, intent-labels.js): what its status says
+// (D10), the status style, and what is shown with it. Main's own label is
+// used rather than the row's status, which a later receipt poll may
+// rewrite. These texts are copies of LABELS and TAKEN_EXPLANATION in
+// lib/wallet/intent-texts.js, which this classic script can't import;
+// payments.test.js holds them equal. A manual close (pending freedom-core
+// #112) would add its label here.
+const FINALITY_LABELS = {
+  paid: { text: 'Confirmed (final)', status: 'confirmed' },
+  failed: { text: 'Failed on chain', status: 'failed' },
+  taken: {
+    text: 'Taken',
+    status: 'taken',
+    note:
+      "Another transaction from this account used this payment's place in the queue, so this " +
+      'payment will never go through. That transaction may have done the same thing.',
+  },
+};
+
 // Atomic-units → decimal string with `decimals` precision, trailing
 // zeroes stripped. Deliberately NOT the wallet's formatRawTokenBalance:
 // that one caps display at 4 decimals and emits "<0.0001" — wrong for
@@ -135,6 +155,22 @@ function txCell(payment) {
   return el('span', 'addr', short, payment.txHash);
 }
 
+function finalityOf(payment) {
+  const label = payment.metadata?.finality?.label;
+  return typeof label === 'string' && Object.hasOwn(FINALITY_LABELS, label)
+    ? FINALITY_LABELS[label]
+    : null;
+}
+
+// The status pill, and for a taken payment the line that explains it.
+function statusCell(payment) {
+  const finality = finalityOf(payment);
+  const status = finality ? finality.status : payment.status;
+  const pill = el('span', 'status-pill', finality ? finality.text : payment.status);
+  if (/^[\w-]+$/.test(status || '')) pill.classList.add(`status-${status}`);
+  return finality?.note ? [pill, el('p', 'status-note', finality.note)] : [pill];
+}
+
 function cell(className, ...content) {
   const td = el('td', className);
   td.append(...content.flat());
@@ -148,8 +184,6 @@ function renderRow(p) {
   const when = el('td', 'when', formatWhen(p.createdAt), new Date(p.createdAt).toLocaleString());
   const kindBadge = el('span', 'badge', kind.label);
   if (kind.cls) kindBadge.classList.add(kind.cls);
-  const status = el('span', 'status-pill', p.status);
-  if (/^[\w-]+$/.test(p.status || '')) status.classList.add(`status-${p.status}`);
   tr.append(
     when,
     cell('', kindBadge),
@@ -157,7 +191,7 @@ function renderRow(p) {
     cell('amount', amountCell(p)),
     el('td', 'addr', truncateAddress(p.toAddress), p.toAddress || ''),
     cell('', chainCell(p)),
-    cell('', status),
+    cell('', statusCell(p)),
     cell('', txCell(p))
   );
   return tr;
