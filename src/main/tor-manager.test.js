@@ -839,6 +839,141 @@ describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
     }
   }, 15_000);
 
+  describe('managed Arti: readiness and handlers belong to the live child', () => {
+    // A port probe that always finds the port free, so a start never
+    // waits on a real socket under fake timers.
+    class FreePort {
+      constructor() {
+        this.handlers = {};
+      }
+      on(event, handler) {
+        this.handlers[event] = handler;
+        return this;
+      }
+      setTimeout() {
+        return this;
+      }
+      connect() {
+        this.handlers.error(new Error('nothing listens here'));
+        return this;
+      }
+      destroy() {}
+    }
+    let userDataDir;
+    afterEach(() => {
+      if (userDataDir) fs.rmSync(userDataDir, { recursive: true, force: true });
+      userDataDir = null;
+    });
+    // Managed Arti whose spawns return `children` in turn.
+    const managedWith = (...children) => {
+      jest.useFakeTimers();
+      const realExistsSync = fs.existsSync;
+      jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+        if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+        return realExistsSync(target);
+      });
+      userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-child-'));
+      const spawn = jest.fn();
+      for (const child of children) spawn.mockReturnValueOnce(child);
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19153 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn, execFile: jest.fn() }),
+          net: () => ({ ...jest.requireActual('net'), Socket: FreePort }),
+        },
+      });
+      return mod;
+    };
+    const bootstrap = (child) => child.stdout.on.mock.calls[0][1]('Sufficiently bootstrapped\n');
+    const failingSession = () => ({
+      setProxy: jest.fn().mockRejectedValue(new Error('the session closed')),
+    });
+    const endpoint = { ip: '127.0.0.1', port: 19153 };
+
+    test('an exit while the proxy is applied leaves nothing offered, and .onion fail-closed', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      let applied;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (applied = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(child);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(applied).toBeDefined();
+
+      child.emit('close', 1);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      applied();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // Its exit stands: an error, not RUNNING, and the PAC kept.
+      expect(targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'direct')).toEqual(
+        []
+      );
+      await mod.stopTor();
+    });
+
+    test("a retired child's output can't bootstrap its replacement", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      const mod = managedWith(a, b);
+      // A bootstraps, but its proxy fails: an error, A left running.
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      // B replaces it, and A is stopped.
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(a.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // A's marker is A's: B hasn't bootstrapped.
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // B's own marker does.
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+    });
+
+    test("a retired child's exit or error doesn't touch its running replacement", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // A exits late, after its SIGTERM, and reports an error first.
+      a.emit('error', new Error('a late error'));
+      a.emit('close', 1);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // B is still the one a stop ends.
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    });
+  });
+
   describe('a health result from an earlier run', () => {
     // External Tor at `endpoint` (mutable), whose SOCKS check answers
     // `socks.healthy`, and whose health checks wait until a test settles

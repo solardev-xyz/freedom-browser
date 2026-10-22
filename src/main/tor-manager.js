@@ -375,11 +375,22 @@ function unregisterOnionRoutingSession(key) {
   proxySessions.delete(key);
 }
 
-async function applyTorProxy(mode, statusMessage, superseded = () => false) {
+/**
+ * Routes `.onion` through the current endpoint, then reports Tor RUNNING.
+ * `superseded` says a stop or a restart came meanwhile: the routing is
+ * undone. `retired` says the node it was for is gone (managed Arti exited):
+ * its exit has set the state, and the routing stays, failing closed.
+ */
+async function applyTorProxy(
+  mode,
+  statusMessage,
+  superseded = () => false,
+  retired = () => false
+) {
   try {
     await applyOnionRouting(currentSocksEndpoint);
   } catch (err) {
-    if (superseded()) return false;
+    if (superseded() || retired()) return false;
     log.error('[Tor] Failed to apply proxy:', err.message);
     updateState(STATUS.ERROR, 'Failed to apply Tor proxy');
     setStatusMessage('tor', 'Tor failed to start');
@@ -392,6 +403,7 @@ async function applyTorProxy(mode, statusMessage, superseded = () => false) {
     clearOnionRouting().catch(() => {});
     return false;
   }
+  if (retired()) return false;
 
   updateService('tor', {
     socks: currentSocksEndpoint,
@@ -657,8 +669,9 @@ async function startTor(opts = {}) {
   }
 
   log.info(`[Tor] Starting arti: ${artiPath} proxy -c ${configPath} (SOCKS ${socksPort})`);
+  let child;
   try {
-    artiProcess = spawn(artiPath, ['proxy', '-c', configPath], {
+    child = spawn(artiPath, ['proxy', '-c', configPath], {
       env: { ...process.env },
     });
   } catch (err) {
@@ -666,18 +679,40 @@ async function startTor(opts = {}) {
     setStatusMessage('tor', 'Tor failed to start');
     return;
   }
+  // This child is the live one until it exits or a later start replaces
+  // it. Every handler below acts only while it is: a retired child's
+  // output, error or exit never touches its successor. A child an errored
+  // start left running (its proxy failed to apply) is retired and stopped.
+  const previous = artiProcess;
+  artiProcess = child;
+  const live = () => artiProcess === child;
+  if (previous && previous !== child) {
+    log.warn('[Tor] Stopping a previous arti process left running');
+    previous.kill('SIGTERM');
+  }
 
-  artiProcess.stdout.on('data', (data) => handleArtiOutput('stdout', data));
-  artiProcess.stderr.on('data', (data) => handleArtiOutput('stderr', data));
+  child.stdout.on('data', (data) => {
+    if (live()) handleArtiOutput('stdout', data);
+  });
+  child.stderr.on('data', (data) => {
+    if (live()) handleArtiOutput('stderr', data);
+  });
 
-  artiProcess.on('error', (err) => {
+  child.on('error', (err) => {
+    if (!live()) return;
     log.error('[Tor] Failed to start process:', err);
     updateState(STATUS.ERROR, err.message);
     setStatusMessage('tor', 'Tor failed to start');
   });
 
-  artiProcess.on('close', (code) => {
+  child.on('close', (code) => {
+    if (!live()) {
+      log.info(`[Tor] a retired arti process exited with code ${code}`);
+      return;
+    }
     log.info(`[Tor] arti process exited with code ${code}`);
+    // Its exit retires it: a readiness still pending for it (the proxy
+    // being applied) won't report RUNNING.
     artiProcess = null;
     artiBootstrapped = false;
     artiOutputBuffer = '';
@@ -728,14 +763,19 @@ async function startTor(opts = {}) {
       superseded()
       || currentState === STATUS.STOPPED
       || currentState === STATUS.ERROR
-      || !artiProcess
+      || !live()
     ) {
       clearInterval(pollInterval);
       return;
     }
     if (artiBootstrapped) {
       clearInterval(pollInterval);
-      await applyTorProxy(MODE.BUNDLED, `SOCKS: ${currentSocksEndpoint}`, superseded);
+      await applyTorProxy(
+        MODE.BUNDLED,
+        `SOCKS: ${currentSocksEndpoint}`,
+        superseded,
+        () => !live()
+      );
     } else {
       attempts++;
       if (attempts >= maxAttempts) {
