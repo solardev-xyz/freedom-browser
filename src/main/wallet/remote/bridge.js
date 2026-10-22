@@ -42,9 +42,20 @@ function getTargetWindow() {
  * from "the phone may still have broadcast it" (timeout or cancel after
  * the request was already on the phone).
  */
-function markDelivery(err, delivered) {
-  err.requestDelivered = delivered === true;
+function markDelivery(err, deliveredAttempts, answeringAttempt) {
+  const attempts = deliveredAttempts instanceof Set ? deliveredAttempts : new Set();
+  err.requestDelivered = attempts.size > 0;
+  // "New code" re-runs the same job as a fresh attempt, so an earlier
+  // attempt may already be on the phone (and broadcast) when a later one
+  // is refused. A refusal only proves nothing went out when no attempt
+  // other than the one answering was ever delivered; an answer that names
+  // no attempt (timeout, renderer-minted error) counts every delivery.
+  err.otherAttemptDelivered = [...attempts].some((a) => a !== answeringAttempt);
   return err;
+}
+
+function attemptOf(payload) {
+  return Number.isSafeInteger(payload?.attempt) && payload.attempt > 0 ? payload.attempt : undefined;
 }
 
 function settleJob(jobId, settle) {
@@ -66,21 +77,21 @@ function settleJob(jobId, settle) {
 function requestRemoteSignature(job, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const win = getTargetWindow();
   if (!win || win.webContents.isDestroyed()) {
-    return Promise.reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.NO_UI), false));
+    return Promise.reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.NO_UI)));
   }
 
   const jobId = randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      settleJob(jobId, ({ webContents, delivered }) => {
+      settleJob(jobId, ({ webContents, deliveredAttempts }) => {
         if (!webContents.isDestroyed()) {
           webContents.send('remote-signer:abort', { jobId });
         }
-        reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT), delivered));
+        reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT), deliveredAttempts));
       });
     }, timeoutMs);
 
-    pendingJobs.set(jobId, { resolve, reject, timer, webContents: win.webContents, delivered: false });
+    pendingJobs.set(jobId, { resolve, reject, timer, webContents: win.webContents, deliveredAttempts: new Set() });
 
     win.webContents.send('remote-signer:request', { jobId, ...job });
   });
@@ -89,11 +100,13 @@ function requestRemoteSignature(job, timeoutMs = DEFAULT_TIMEOUT_MS) {
 function registerRemoteSignerIpc() {
   // The renderer reports the moment it hands the request to the phone
   // (after QR link and chain switch), so main knows from then on that a
-  // timeout or cancel leaves the outcome uncertain.
+  // timeout or cancel leaves the outcome uncertain. Each attempt (a
+  // "New code" retry is a new one) reports its own number; one without a
+  // number still counts as a delivery.
   ipcMain.on('remote-signer:delivered', (event, payload) => {
     const job = pendingJobs.get(payload?.jobId);
     if (!job || event.sender.id !== job.webContents.id) return;
-    job.delivered = true;
+    job.deliveredAttempts.add(attemptOf(payload) ?? 'unnumbered');
   });
   ipcMain.on('remote-signer:response', (event, payload) => {
     const { jobId, result, error } = payload || {};
@@ -103,7 +116,7 @@ function registerRemoteSignerIpc() {
       console.warn('[RemoteSigner] Ignoring response from unexpected webContents', event.sender.id);
       return;
     }
-    settleJob(jobId, ({ resolve, reject, delivered }) => {
+    settleJob(jobId, ({ resolve, reject, deliveredAttempts }) => {
       if (error) {
         // rpcCode = a JSON-RPC error object straight from the phone wallet
         // (EIP-1193 codes); plain code = a REMOTE_* the renderer minted.
@@ -111,7 +124,8 @@ function registerRemoteSignerIpc() {
           error.rpcCode !== undefined
             ? mapRemoteRpcError({ code: error.rpcCode, message: error.message })
             : createRemoteError(error.code || REMOTE_ERROR_CODES.UNKNOWN, error.message),
-          delivered,
+          deliveredAttempts,
+          attemptOf(payload),
         ));
       } else {
         resolve(result);

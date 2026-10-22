@@ -306,10 +306,15 @@ class DomainService {
           },
           beforeSend: async () => {
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
-            // Any transaction this dispatch produces uses at least the
-            // account's current confirmed nonce. Recording it keeps an older
-            // byte-identical renew/setText/setAddr from being accepted later.
-            const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [operation.account.address, 'latest'])).toString();
+            // Any transaction this dispatch produces takes a nonce past every
+            // one the account already has in flight, so the 'pending' count is
+            // its floor. Recording it keeps an older byte-identical
+            // renew/setText/setAddr — mined, or still pending right now — from
+            // being accepted later as this operation's dispatch. ('latest'
+            // would let a still-pending older copy through.) A floor that
+            // overshoots only refuses a recovery hash, which leaves the
+            // operation at dispatch_unknown for reconciliation, never resent.
+            const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [operation.account.address, 'pending'])).toString();
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
             operation.dispatchNonceFloor = nonceFloor;
             operation.state = 'dispatching';

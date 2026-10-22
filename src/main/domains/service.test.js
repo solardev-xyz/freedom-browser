@@ -352,13 +352,36 @@ test('a recovery hash for an older byte-identical transaction is refused', async
   expect(await f.service.status({ operationId: plan.operationId, transactionHash: hash })).toMatchObject({ state: 'completed' });
 });
 
+test('the nonce floor excludes an older identical transaction still pending at dispatch', async () => {
+  const f = fixture();
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const request = f.chain.request.getMockImplementation();
+  // Confirmed count 5; an older identical renew sits in the mempool at
+  // nonce 5, so the account's pending count is 6.
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionCount'
+    ? (args[1] === 'pending' ? '0x6' : '0x5') : request(method, args));
+  const send = f.wallet.send.getMockImplementation();
+  let olderPending;
+  f.wallet.send.mockImplementation(async (...args) => {
+    await send(...args);
+    olderPending = { ...(await f.chain.request('eth_getTransactionByHash', [hash])), nonce: '0x5' };
+    throw new Error('lost response');
+  });
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
+  expect(f.chain.request).toHaveBeenCalledWith('eth_getTransactionCount', [expect.any(String), 'pending']);
+  expect(f.store.get(plan.operationId).dispatchNonceFloor).toBe('6');
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionByHash' ? olderPending : request(method, args));
+  await expect(f.service.status({ operationId: plan.operationId, transactionHash: hash })).rejects.toThrow('before this domain operation');
+  expect(f.store.get(plan.operationId).state).toBe('dispatch_unknown');
+});
+
 test('a phone wallet rejection through the real wallet path is resumable, not an uncertain dispatch', async () => {
   const f = fixture();
   const { DomainTransactions } = require('../wallet/domain-transactions');
   const { signAndSendTransaction } = require('../wallet/transaction-service');
   const { createRemoteError, REMOTE_ERROR_CODES } = require('../wallet/remote/errors');
   const phone = { getAddress: async () => address, sendTransaction: jest.fn(async () => {
-    throw Object.assign(createRemoteError(REMOTE_ERROR_CODES.USER_REJECTED), { requestDelivered: true });
+    throw Object.assign(createRemoteError(REMOTE_ERROR_CODES.USER_REJECTED), { requestDelivered: true, otherAttemptDelivered: false });
   }) };
   const wallet = new DomainTransactions({
     identityManager: { getActiveWalletIndex: () => 0, getDerivedWallets: async () => [{ index: 0, address, type: 'remote' }] },
@@ -379,6 +402,11 @@ test('a phone wallet rejection through the real wallet path is resumable, not an
     // A timeout after the phone received the request stays uncertain.
     phone.sendTransaction.mockRejectedValueOnce(Object.assign(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT), { requestDelivered: true }));
     expect(await service.execute(fresh.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
+    // A rejection on a "New code" retry, after an earlier attempt already
+    // reached the phone, says nothing about that earlier attempt.
+    const retried = await service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'retried' }, f.context);
+    phone.sendTransaction.mockRejectedValueOnce(Object.assign(createRemoteError(REMOTE_ERROR_CODES.USER_REJECTED), { requestDelivered: true, otherAttemptDelivered: true }));
+    expect(await service.execute(retried.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
   } finally { errorLog.mockRestore(); }
 });
 

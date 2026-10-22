@@ -48,6 +48,53 @@ beforeEach(() => {
   mockAllWindows = [mockWindow];
 });
 
+describe('delivery across "New code" attempts', () => {
+  const delivered = (payload) =>
+    mockIpcMainHandlers['remote-signer:delivered']({ sender: { id: 7 } }, payload);
+  const { isRemoteSendProvablyUnsent } = require('./errors');
+  const SEND = { ...JOB, method: 'eth_sendTransaction', params: [{ to: '0xdef' }] };
+
+  test('a refusal by the only delivered attempt proves nothing was sent', async () => {
+    const promise = requestRemoteSignature(SEND);
+    const jobId = sentJobId();
+    delivered({ jobId, attempt: 1 });
+    respond(7, { jobId, attempt: 1, error: { rpcCode: 4001, message: 'no' } });
+    const err = await promise.catch((e) => e);
+    expect(err).toMatchObject({ code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: false });
+    expect(isRemoteSendProvablyUnsent(err)).toBe(true);
+  });
+
+  test.each([
+    ['the retry rejects the duplicate send', true],
+    ['the retry rejects the chain switch before its own send', false],
+  ])('a refusal on attempt 2 after attempt 1 was delivered stays uncertain: %s', async (_label, secondDelivered) => {
+    const promise = requestRemoteSignature(SEND);
+    const jobId = sentJobId();
+    delivered({ jobId, attempt: 1 }); // phone may sign + broadcast; reply lost
+    if (secondDelivered) delivered({ jobId, attempt: 2 });
+    respond(7, { jobId, attempt: 2, error: { rpcCode: 4001, message: 'no' } });
+    const err = await promise.catch((e) => e);
+    expect(err).toMatchObject({ code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: true });
+    expect(isRemoteSendProvablyUnsent(err)).toBe(false);
+  });
+
+  test('a refusal on a retry whose predecessor never reached the phone is still proof', async () => {
+    const promise = requestRemoteSignature(SEND);
+    const jobId = sentJobId();
+    delivered({ jobId, attempt: 2 });
+    respond(7, { jobId, attempt: 2, error: { rpcCode: 4001, message: 'no' } });
+    expect(isRemoteSendProvablyUnsent(await promise.catch((e) => e))).toBe(true);
+  });
+
+  test('an answer naming no attempt counts every delivery as another attempt', async () => {
+    const promise = requestRemoteSignature(SEND);
+    const jobId = sentJobId();
+    delivered({ jobId });
+    respond(7, { jobId, error: { rpcCode: 4001, message: 'no' } });
+    expect(isRemoteSendProvablyUnsent(await promise.catch((e) => e))).toBe(false);
+  });
+});
+
 describe('requestRemoteSignature', () => {
   test('publishes the job to the renderer and resolves with its result', async () => {
     const promise = requestRemoteSignature(JOB);

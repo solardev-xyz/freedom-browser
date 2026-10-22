@@ -220,7 +220,10 @@ describe('signAndSendTransaction (signer-based)', () => {
   });
 
   it.each([
-    ['a phone rejection', { code: 'REMOTE_USER_REJECTED', requestDelivered: true }, 'DOMAIN_NOT_BROADCAST'],
+    ['a phone rejection', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a phone rejection after an earlier attempt reached the phone', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a wrong-account refusal after an earlier attempt reached the phone', { code: 'REMOTE_WRONG_ACCOUNT', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a phone rejection with no attempt record', { code: 'REMOTE_USER_REJECTED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
     ['no window for the QR', { code: 'REMOTE_NO_UI', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
     ['a timeout before the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
     ['a cancel before the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
