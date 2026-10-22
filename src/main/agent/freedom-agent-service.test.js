@@ -70,6 +70,7 @@ function createService(fakeSession, overrides = {}) {
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
     accessReviewer: { review: jest.fn(async () => ({ decision: 'ask_user' })) },
+    platform: 'linux',
     interactionClassifier: {
       classify: jest.fn(async () => ({
         kind: 'ordinary',
@@ -295,13 +296,13 @@ describe('independent command access review', () => {
     workspacePermission: { kind: 'command_access', command: 'node --version', workingDirectory: '.',
       commands: [{ name: 'node', status: 'requires_permission', executablePath: '/private/tools/node/bin/node', rootPath: '/private/tools/node' }],
       network: { posture: 'full', publicInternet: true, hostLoopback: true, privateLan: true, hostAbstractUnixSockets: 'reachable' } } });
-  async function setup(mode = 'sensitive_actions', review = async () => ({ decision: 'approve_once' }), prompt = 'Check the installed Node version') {
+  async function setup(mode = 'sensitive_actions', review = async () => ({ decision: 'approve_once' }), prompt = 'Check the installed Node version', platform = 'linux') {
     const fake = createFakeSession();
     const workspaceController = { getWorkspace: jest.fn(() => ({ enabled: true })), disclosure: jest.fn(),
       enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
       clearTurnPermissions: jest.fn() };
     const accessReviewer = { review: jest.fn(review) };
-    const ctx = createService(fake, { accessReviewer, workspaceController, createWorkspaceTools: jest.fn(async () => []), historyStore: createHistoryStore() });
+    const ctx = createService(fake, { accessReviewer, workspaceController, platform, createWorkspaceTools: jest.fn(async () => []), historyStore: createHistoryStore() });
     const events = [];
     ctx.service.subscribe(event => events.push(event));
     await ctx.service.start(startOptions({ prompt, approvalMode: mode }));
@@ -389,6 +390,21 @@ describe('independent command access review', () => {
     expect(ctx.dependencies.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({
       activity: expect.arrayContaining([expect.objectContaining({ approval: 'reviewer_approved' })]),
     }));
+  });
+
+  test('Windows network grants always reach a person while executable-only grants stay reviewable', async () => {
+    const ctx = await setup('sensitive_actions', undefined, undefined, 'win32');
+    const pending = ctx.request(permissionRequest());
+    await new Promise(setImmediate);
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'approval_requested', workspacePermission: permissionRequest().workspacePermission });
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, { approved: true, workspacePermissionScope: 'conversation' });
+    expect(await pending).toMatchObject({ status: 'approved', workspacePermissionScope: 'conversation' });
+    const { network: _network, ...offline } = permissionRequest().workspacePermission;
+    const executable = await ctx.request({ ...permissionRequest(), workspacePermission: offline });
+    expect(ctx.accessReviewer.review).toHaveBeenCalledTimes(1);
+    expect(executable).toMatchObject({ status: 'approved', workspacePermissionScope: 'once' });
+    await stop(ctx);
   });
 
   test('main-owned project evidence reaches the reviewer and changed evidence falls back to a sheet', async () => {

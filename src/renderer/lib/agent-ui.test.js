@@ -4548,7 +4548,8 @@ describe('Agent UI', () => {
         offlineCommandsAvailable: false, filesystem: 'windows_broad_reads_scoped_writes',
       } });
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Strictly offline shell commands are unavailable on Windows');
-    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('built-in file tools remain available');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Built-in file tools remain available');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('You approve it once or for the conversation; the automatic reviewer never grants it.');
   });
 
   test('renders managed workspace enablement as one Agent-native disclosure', async () => {

@@ -178,7 +178,7 @@ standard-user execution, packaged-artifact and CI evidence. Linux has earlier
 Bubblewrap qualification recorded in the roadmap; macOS and Windows cancellation
 remain best-effort for detached descendants. Resource containment, same-user
 filesystem races and provider-specific live coverage retain their documented
-limits. Windows ARM64 and MXC are future extensions, not shipped alternatives. Strict offline arbitrary-command execution is unavailable on Windows; every ordinary command requires the existing full-network grant. Built-in file tools use a separate trusted route. Once grants are exact command/directory; an explicitly selected conversation grant retains its broader scope.
+limits. Windows ARM64 and MXC are future extensions, not shipped alternatives. Strict offline arbitrary-command execution is unavailable on Windows; every ordinary command requires the existing full-network grant, which only the person approves; the automatic access reviewer never grants it. Built-in file tools use a separate trusted route. Once grants are exact command/directory; an explicitly selected conversation grant retains its broader scope.
 
 Linked Git worktrees, general external rollback/push workflows, recovery-evidence
 retention and consolidation, broader scripted-download support, expanded WebMCP

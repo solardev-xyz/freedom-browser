@@ -1023,6 +1023,7 @@ class FreedomAgentService {
     if (typeof this.accessReviewer.review !== 'function') {
       throw new TypeError('FreedomAgentService requires a valid access reviewer');
     }
+    this.platform = options.platform || process.platform;
     if (
       options.cancelAgentDownloads !== undefined &&
       typeof options.cancelAgentDownloads !== 'function'
@@ -3193,7 +3194,10 @@ class FreedomAgentService {
     }
     // Only the workspace adapter supplies this runtime. Other approval producers
     // cannot opt themselves into automatic review through request payload fields.
+    // Windows has no offline command route, so every ordinary command asks for
+    // full network there; a person, not the model reviewer, approves each one.
     if (reviewerRuntime && run.approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS &&
+        !(permission?.network && this.platform === 'win32') &&
         publicRequest.action === 'workspace_permission' && publicRequest.operation === 'request_permissions' &&
         !publicRequest.wallet && !publicRequest.publication && !publicRequest.projectAccess &&
         !publicRequest.workspace && !publicRequest.nodeRequest && !publicRequest.nodeLifecycle &&

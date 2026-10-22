@@ -66,6 +66,11 @@ validation, and cancellation checks still run before enabling the workspace.
 It grants no additional executable or network access and never applies to an
 attached external project. The other two modes retain the workspace prompt.
 
+On Windows, any request that includes direct network access goes to the person,
+never the reviewer. Strictly offline commands are unavailable there, so every
+ordinary command needs that grant; a model approving it would make network access
+routine on project evidence alone. Executable-only requests remain reviewable.
+
 Selecting/reconnecting an existing project, granting its
 editing, and broader conversation grants retain their explicit human flows.
 Existing authorized file edits and commands already run within their grants.
