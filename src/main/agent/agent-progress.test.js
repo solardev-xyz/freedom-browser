@@ -135,15 +135,18 @@ describe('Agent progress projection', () => {
     expect(activityProgress('workspace_history', { workspace: legacy }).label).toBe('Checked project history');
   });
 
-  test('page tool results remain website claims, and pending manual submissions stay explicit', () => {
+  test('page tool results remain website claims, and an unconfirmed result needs checking', () => {
     const progress = (operation, result) => activityProgress(operation,
       createToolReceipt(operation, { envelope: { ok: true, tabId: 'tab_page', result } }));
     const entry = (operation, result) => ({ operation, status: 'succeeded', ...progress(operation, result) });
-    const waiting = { executionRef: 'page_execution_example', status: 'awaiting_user' };
-    const completed = { ...waiting, status: 'completed' };
-    const invoked = entry(OPERATIONS.CALL_PAGE_TOOL, waiting);
-    expect(invoked.label).toBe('Waiting for manual form submission');
-    expect(buildAgentOutcome([invoked], 'completed')).toMatchObject({ verification: 'page_tool_unresolved', headline: 'Form waiting for you' });
+    const unknown = { executionRef: 'page_execution_example', status: 'outcome_unknown' };
+    const completed = { ...unknown, status: 'completed' };
+    const invoked = entry(OPERATIONS.CALL_PAGE_TOOL, unknown);
+    expect(invoked.label).toBe('Website tool outcome unknown');
+    expect(buildAgentOutcome([invoked], 'completed')).toMatchObject({ verification: 'page_tool_unresolved', headline: 'Website tool outcome needs checking' });
+    // The removed manual-submission state is not a recognized page-tool status.
+    expect(createToolReceipt(OPERATIONS.CALL_PAGE_TOOL, { envelope: { ok: true, tabId: 'tab_page',
+      result: { ...unknown, status: 'awaiting_user' } } }).pageTool).toBeUndefined();
     const discovery = entry(OPERATIONS.LIST_PAGE_TOOLS, { execution: completed });
     expect(buildAgentOutcome([invoked, discovery], 'completed')).toMatchObject({ verification: 'actions_recorded' });
     expect(progress(OPERATIONS.CALL_PAGE_TOOL, { status: 'failed' }).label).toBe('Website tool failed');

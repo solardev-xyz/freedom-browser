@@ -705,8 +705,7 @@ function normalizeApprovalRequest(request, recipient) {
   const pageTool = request?.operation === 'browser_call_page_tool' &&
     typeof request?.pageTool?.name === 'string' && request.pageTool.name.length <= 128 &&
     typeof request.pageTool.argumentsJSON === 'string' && request.pageTool.argumentsJSON.length <= 8192
-    ? Object.freeze({ name: request.pageTool.name, argumentsJSON: request.pageTool.argumentsJSON,
-      manualSubmit: request.pageTool.manualSubmit === true }) : null;
+    ? Object.freeze({ name: request.pageTool.name, argumentsJSON: request.pageTool.argumentsJSON }) : null;
   if (request?.operation === 'browser_call_page_tool' && !pageTool)
     throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid page tool approval');
   const wallet = normalizeWalletApproval(request?.wallet);

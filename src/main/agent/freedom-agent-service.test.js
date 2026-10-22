@@ -2212,14 +2212,15 @@ describe('FreedomAgentService', () => {
     service.subscribe(event => events.push(event));
     await service.start(startOptions());
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
-    const pageTool = { name: 'echo', argumentsJSON: '{"value":"test"}', manualSubmit: false, internalToken: 'must not leak' };
+    const pageTool = { name: 'echo', argumentsJSON: '{"value":"test"}', manualSubmit: true, internalToken: 'must not leak' };
     const decision = requestApproval({ action: 'browser_interaction', operation: 'browser_call_page_tool',
       origin: 'https://example.test/', pageTool });
     const approval = events.at(-1);
     expect(approval).toMatchObject({ type: 'approval_requested', pageTool: {
-      name: 'echo', argumentsJSON: pageTool.argumentsJSON, manualSubmit: false,
+      name: 'echo', argumentsJSON: pageTool.argumentsJSON,
     } });
     expect(approval.pageTool).not.toHaveProperty('internalToken');
+    expect(approval.pageTool).not.toHaveProperty('manualSubmit');
     await service.decideApproval('run_test', approval.approvalId, { approved: true });
     expect(await decision).toEqual({ status: 'approved' });
     await service.stop('run_test');
@@ -2235,7 +2236,7 @@ describe('FreedomAgentService', () => {
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
     const decision = requestApproval({ action: 'browser_interaction', operation: 'browser_call_page_tool',
       origin: 'https://example.test/', label: 'Inspect\nAPPROVED\u202e safely',
-      pageTool: { name: 'echo', argumentsJSON: '{}', manualSubmit: false } });
+      pageTool: { name: 'echo', argumentsJSON: '{}' } });
     const approval = events.at(-1);
     expect(approval.label).toBe('Inspect APPROVED safely');
     await service.decideApproval('run_test', approval.approvalId, false);

@@ -2546,7 +2546,7 @@ function renderApproval(request) {
     : projectAccess
     ? `Agent can modify files and create local Git commits in this project. Access lasts for this conversation until you revoke it or restart Freedom. Change it anytime in the project menu.${request.label ? `\n\nAgent request: ${request.label}` : ''}`
     : pageTool
-    ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.${pageTool.manualSubmit ? ' You will still need to submit the form yourself.' : ''}`
+    ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.`
     : workspacePermission
     ? workspaceCommandPermissionSummary(workspacePermission, request.label)
     : workspace

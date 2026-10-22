@@ -1635,7 +1635,8 @@ describe('Agent UI', () => {
       pageTool: { name: 'submit_feedback', argumentsJSON, manualSubmit: true } });
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Run website tool “submit_feedback”?');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('not verified');
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain('submit the form yourself');
+    // No adapter reports manual submission; a forged flag adds no claim.
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('submit the form yourself');
     expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
     expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
   });

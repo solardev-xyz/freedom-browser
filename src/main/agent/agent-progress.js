@@ -824,7 +824,7 @@ function activityProgress(operation, receipt = {}) {
   let label = copy.completed;
   if (pageTool && operation === OPERATIONS.CALL_PAGE_TOOL) {
     const outcome = {
-      completed: 'Website tool returned', awaiting_user: 'Waiting for manual form submission',
+      completed: 'Website tool returned',
       failed: 'Website tool failed', cancelled: 'Website tool cancelled; effects may remain',
       timed_out: 'Website tool timed out; outcome unknown', outcome_unknown: 'Website tool outcome unknown',
     }[pageTool.status];
@@ -1112,7 +1112,7 @@ function createToolReceipt(operation, options = {}) {
     : [];
 
   return Object.freeze({
-    ...(['completed', 'awaiting_user', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(pageToolResult?.status) &&
+    ...(['completed', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(pageToolResult?.status) &&
       { pageTool: { status: pageToolResult.status, executionRef: boundedString(pageToolResult.executionRef, 80) } }),
     ...(operation === OPERATIONS.SCROLL &&
       ['moved', 'boundary', 'no_movement'].includes(result?.outcome) && { scrollOutcome: result.outcome }),
@@ -1644,11 +1644,8 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
       .findLast((item) => item.pageTool.status !== 'completed');
     if (unresolvedPageTool) return Object.freeze({
       kind: 'completed', verification: 'page_tool_unresolved', tone: 'caution',
-      headline: unresolvedPageTool.pageTool.status === 'awaiting_user'
-        ? 'Form waiting for you' : 'Website tool outcome needs checking',
-      detail: unresolvedPageTool.pageTool.status === 'awaiting_user'
-        ? 'The website form still requires manual submission. Agent has not submitted it.'
-        : 'The website tool did not return a confirmed result. Effects may remain; inspect the page before retrying.',
+      headline: 'Website tool outcome needs checking',
+      detail: 'The website tool did not return a confirmed result. Effects may remain; inspect the page before retrying.',
       destinations, counts,
     });
     if (resultObserved) {

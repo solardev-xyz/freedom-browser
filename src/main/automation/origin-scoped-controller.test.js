@@ -1602,14 +1602,15 @@ test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions
     const controller = createController();
     const tool = { name: 'looks_safe', url: 'https://trusted.example/start',
       toolRef: 'page_tool_first', documentIdentity: 'doc_one', arguments: { value: 'approved value' },
-      annotations: { readOnlyHint: true } };
+      annotations: { readOnlyHint: true }, manualSubmit: true, formAction: 'https://other.example/post' };
     controller.inspectAction.mockResolvedValue({ ok: true, result: tool });
     const requestApproval = jest.fn(async () => 'approved');
     const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', approvalMode, requestApproval });
     expect((await scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', toolRef: tool.toolRef, arguments: tool.arguments })).ok).toBe(true);
     expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({
-      pageTool: { name: 'looks_safe', argumentsJSON: '{"value":"approved value"}', manualSubmit: undefined },
+      pageTool: { name: 'looks_safe', argumentsJSON: '{"value":"approved value"}' },
     }));
+    expect(requestApproval.mock.calls[0][0]).not.toHaveProperty('destinationOrigin');
     const dispatch = controller.execute.mock.calls.find(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL);
     expect(dispatch[2].expectedPageTool).toBe(JSON.stringify(tool));
   }

@@ -624,8 +624,7 @@ class OriginScopedAutomationController {
       const inspected = await this.controller.inspectAction(operation, input);
       if (!inspected.ok) return inspected;
       const tool = inspected.result;
-      if (!this.#acceptRequestedOrigin(tool.url) ||
-          (tool.formAction && !this.#acceptRequestedOrigin(tool.formAction))) return this.#originDenied(state);
+      if (!this.#acceptRequestedOrigin(tool.url)) return this.#originDenied(state);
       const expectedPageTool = JSON.stringify(tool);
       const { toolRef: _toolRef, ...decisionTool } = tool;
       const key = `${input.tabId}:${JSON.stringify(decisionTool)}`;
@@ -636,9 +635,8 @@ class OriginScopedAutomationController {
         return errorEnvelope(state, ERROR_CODES.CAPABILITY_UNAVAILABLE, 'Handle the pending native dialog before invoking a page tool');
       const decision = await execution.requestApproval({
         action: 'browser_interaction', operation, tabId: input.tabId,
-        origin: originScopeForUrl(tool.url), destinationOrigin: originScopeForUrl(tool.formAction) || '',
-        label: tool.name,
-        pageTool: { name: tool.name, argumentsJSON: JSON.stringify(tool.arguments), manualSubmit: tool.manualSubmit },
+        origin: originScopeForUrl(tool.url), label: tool.name,
+        pageTool: { name: tool.name, argumentsJSON: JSON.stringify(tool.arguments) },
       });
       const decisionStatus = typeof decision === 'object' ? decision?.status : decision;
       if (decisionStatus !== 'approved' && decisionStatus !== true) {

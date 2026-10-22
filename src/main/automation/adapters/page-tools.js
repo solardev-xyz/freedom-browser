@@ -88,9 +88,8 @@ async function pageToolsBridge(action, input = {}) {
         consequentialHint: tool.annotations?.consequentialHint === true,
       },
       // Same-named DOM forms do not establish how a registered tool executes.
-      // Until the browser API supplies registration-bound metadata, make no
-      // promise about manual submission or a form destination.
-      manualSubmit: false,
+      // Until the browser API supplies registration-bound metadata, describe no
+      // manual-submission state or form destination at all.
     };
   };
   const topLevelTools = nativeTools.slice(0, 1024).filter((tool) => tool.window === window);
@@ -302,7 +301,7 @@ class PageTools {
   }
 
   async call(input, { signal, expectedPageTool } = {}) {
-    if (this.callPending || ['running', 'awaiting_user'].includes(this.execution?.result.status))
+    if (this.callPending || this.execution?.result.status === 'running')
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
         'A page tool is still pending. Read browser_list_page_tools for its result or stop it before another invocation.'
@@ -345,7 +344,7 @@ class PageTools {
           );
         if (!result?.executionRef) throw this.stale();
         execution.result = { ...result, untrusted: true };
-        if (!['running', 'awaiting_user'].includes(result.status)) return execution.result;
+        if (result.status !== 'running') return execution.result;
         if (Date.now() - started >= this.timeoutMs) {
           this.cancel('timed_out');
           return (execution.result = { ...execution.result, status: 'timed_out' });
@@ -373,7 +372,7 @@ class PageTools {
   cancel(status = 'cancelled') {
     this.generation += 1;
     this.references.clear();
-    if (this.execution && ['running', 'awaiting_user'].includes(this.execution.result.status)) {
+    if (this.execution?.result.status === 'running') {
       this.execution.result = { ...this.execution.result, status };
       void this.bridge('cancel', { status }).catch(() => {});
     }
@@ -382,7 +381,7 @@ class PageTools {
   invalidate(sameDocument = false) {
     this.generation += 1;
     this.references.clear();
-    if (this.execution && ['running', 'awaiting_user'].includes(this.execution.result.status)) {
+    if (this.execution?.result.status === 'running') {
       if (sameDocument) {
         // The isolated-world job remains in this document after pushState/hash
         // routing. Keep observing its executionRef; never reuse old toolRefs.

@@ -190,7 +190,7 @@ test('a decoy same-name form cannot promise manual submission or a different des
   context.executeTool.mockResolvedValue('{"submitted":true}');
   const { input, execution } = await request(page);
   const metadata = await page.inspect(input);
-  expect(metadata.manualSubmit).toBe(false);
+  expect(metadata).not.toHaveProperty('manualSubmit');
   expect(metadata).not.toHaveProperty('formAction');
   expect(await page.call(input, execution)).toMatchObject({ status: 'completed' });
   expect(await page.list()).toMatchObject({
@@ -247,4 +247,23 @@ test('chrome preview rejects results from a replaced document', async () => {
   navigate();
   finish([]);
   await expect(pending).rejects.toMatchObject({ code: 'STALE_ELEMENT_REFERENCE' });
+});
+
+// Guard: the adapter has no manual-submission state (S6), so no runtime code,
+// approval card or model prompt may describe one.
+test('no source still emits, renders or prompts about a manual-submission state', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.resolve(__dirname, '../../..');
+  const offenders = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== 'vendor') visit(file); continue; }
+      if (!/\.(js|mjs|html)$/.test(entry.name) || entry.name.endsWith('.test.js')) continue;
+      if (/awaiting_user|manualSubmit/.test(fs.readFileSync(file, 'utf8'))) offenders.push(path.relative(root, file));
+    }
+  };
+  visit(root);
+  expect(offenders).toEqual([]);
 });
