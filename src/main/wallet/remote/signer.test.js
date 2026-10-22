@@ -201,14 +201,25 @@ describe('sendTransaction', () => {
     await expect(backend.sendTransaction({ to: TX.to, chainId: 1337 })).resolves.toBe(HASH);
   });
 
-  test('omits value/data defaults and rejects malformed hashes with REMOTE_BAD_RESPONSE', async () => {
+  test('omits value/data defaults', async () => {
     mockRequestRemoteSignature.mockImplementation(async ({ params }) => {
       expect(params[0].value).toBe('0x0');
       expect(params[0].data).toBeUndefined();
-      return 'not-a-hash';
+      return HASH;
     });
-    await expect(backend.sendTransaction({ to: TX.to, chainId: 100 })).rejects.toMatchObject({
-      code: 'REMOTE_BAD_RESPONSE',
-    });
+    await expect(backend.sendTransaction({ to: TX.to, chainId: 100 })).resolves.toBe(HASH);
   });
+
+  // The phone answered, so it may have sent the payment: an answer that is
+  // no hash leaves the outcome unknown, not failed.
+  test.each([['not-a-hash'], [null], [undefined], [{ hash: HASH }], ['0x' + 'ab'.repeat(31)]])(
+    'an unreadable answer (%p) is an unknown outcome',
+    async (answer) => {
+      mockRequestRemoteSignature.mockResolvedValue(answer);
+      await expect(backend.sendTransaction(TX)).rejects.toMatchObject({
+        code: 'REMOTE_OUTCOME_UNKNOWN',
+        message: expect.stringMatching(/couldn't be read.*unknown whether this payment was sent/),
+      });
+    }
+  );
 });

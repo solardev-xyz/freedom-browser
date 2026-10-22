@@ -8,11 +8,16 @@
  * triggered the signature — by that point the user has already
  * confirmed the request there.
  *
+ * Once a payment's request is on the phone, the fresh-QR retry goes: a
+ * new code would ask the phone to pay a second time. Cancel becomes "Stop
+ * waiting", since the browser can't recall what the phone holds; the
+ * approval screen then says the outcome is unknown.
+ *
  * Connect-phone discovery jobs (kind 'connect') have their own screen
  * and are ignored here.
  */
 
-import { getRemoteSessionBroker, PHASE_STATUS_TEXT } from './remote-session.js';
+import { getRemoteSessionBroker, PHASE_STATUS_TEXT, PAYMENT_METHOD } from './remote-session.js';
 import { generateScannableQr } from './wallet-utils.js';
 
 // DOM references
@@ -36,6 +41,10 @@ const REQUEST_LABELS = {
 
 const CLOSING_PHASES = new Set(['done', 'cancelled', 'aborted', 'error']);
 
+const CANCEL_LABEL = 'Cancel';
+// A payment on the phone can't be cancelled from here, only no longer waited for.
+const STOP_WAITING_LABEL = 'Stop waiting';
+
 export function initRemoteSigningPanel() {
   panel = document.getElementById('sidebar-remote-signing');
   requestLabel = document.getElementById('remote-signing-request-label');
@@ -49,9 +58,10 @@ export function initRemoteSigningPanel() {
   });
   newCodeBtn?.addEventListener('click', () => {
     if (!activeJobId) return;
+    // Refused for a payment already on the phone.
+    if (!getRemoteSessionBroker()?.retryJob(activeJobId)) return;
     setStatus('Preparing a new code…');
     if (qrImage) qrImage.src = '';
-    getRemoteSessionBroker()?.retryJob(activeJobId);
   });
 
   getRemoteSessionBroker()?.onJobEvent(handleJobEvent);
@@ -73,9 +83,19 @@ function handleJobEvent(event) {
     return;
   }
 
-  if (event.jobId === activeJobId && PHASE_STATUS_TEXT[event.phase]) {
+  if (event.jobId !== activeJobId) return;
+  if (event.phase === 'awaiting-approval' && event.method === PAYMENT_METHOD) {
+    showPaymentOnPhone();
+  }
+  if (PHASE_STATUS_TEXT[event.phase]) {
     setStatus(PHASE_STATUS_TEXT[event.phase]);
   }
+}
+
+/** The payment's request is on the phone: no new code, and no recall. */
+function showPaymentOnPhone() {
+  newCodeBtn?.classList.add('hidden');
+  if (cancelBtn) cancelBtn.textContent = STOP_WAITING_LABEL;
 }
 
 function showPanel(event) {
@@ -86,6 +106,8 @@ function showPanel(event) {
       'Signature request';
   }
   setStatus('Waiting for your phone…');
+  newCodeBtn?.classList.remove('hidden');
+  if (cancelBtn) cancelBtn.textContent = CANCEL_LABEL;
   // Machine-readable copy of what the QR encodes (E2E tests scan this
   // instead of the pixels; a human can copy it via devtools too).
   if (panel) panel.dataset.bridgeUrl = event.bridgeUrl;

@@ -292,6 +292,10 @@ function toSendError(err) {
  * bytes: no intent record, no reservation (design 0005, "Retrying an
  * intent"). Only the intent fields go over; our gas parameters would be
  * stale guesses by the time the user confirms on the device.
+ *
+ * A lost answer to a payment that reached the phone is
+ * REMOTE_OUTCOME_UNKNOWN (remote/bridge.js), passed through as it is: the
+ * payment may have been sent, and nothing here sends it again.
  */
 async function sendThroughDevice({ to, value, data, chainId }, signer) {
   try {

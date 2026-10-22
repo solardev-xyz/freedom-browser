@@ -33,6 +33,17 @@ describe('remote errors', () => {
     expect(err.message).toBe('intrinsic gas too low');
   });
 
+  test("an unknown outcome says so and asks for a look at the phone's wallet first", () => {
+    const err = createRemoteError(REMOTE_ERROR_CODES.OUTCOME_UNKNOWN);
+    expect(err.code).toBe('REMOTE_OUTCOME_UNKNOWN');
+    expect(err.message).toBe(
+      "No answer came back from your phone, so it's unknown whether this payment was sent. " +
+        "Check your phone's wallet before you try again."
+    );
+    // Never a failure, and never a new code as the next step.
+    expect(err.message).not.toMatch(/fail|QR|new code/i);
+  });
+
   test('malformed RPC errors map to UNKNOWN with the registry message', () => {
     const err = mapRemoteRpcError(undefined);
     expect(err.code).toBe(REMOTE_ERROR_CODES.UNKNOWN);

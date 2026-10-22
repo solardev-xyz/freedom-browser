@@ -12,6 +12,14 @@
  * One session per job (per-request QR): no session secrets outlive the
  * request. UI (WP-R3) subscribes via onJobEvent to render QR / waiting /
  * error states and calls cancelJob when the user closes the dialog.
+ *
+ * A payment (eth_sendTransaction) is signed and broadcast by the phone
+ * itself. Once its request has gone to the phone, no new code is minted
+ * for it: a second session would ask the phone to pay again while the
+ * first request may still be approved. Main is told just before the
+ * request goes (`remoteSigner.requestSent`), so that a lost answer from
+ * then on is reported as unknown, never as failed (freedom-core design
+ * 0005, "Retrying an intent").
  */
 
 // Public signaling relays, in preference order (the spec default
@@ -66,6 +74,12 @@ const BRIDGE_ORIGIN = 'https://bridge.freedom.baby';
 // job actually arrives — keep it off the renderer boot path.
 let vendorPromise = null;
 const loadVendorOpenlv = () => (vendorPromise ??= import('../../vendor/openlv.esm.js'));
+
+/** The one method whose request makes the phone pay: it broadcasts itself. */
+export const PAYMENT_METHOD = 'eth_sendTransaction';
+
+/** A payment whose request may be on the phone: no new code for it. */
+const paymentWithPhone = (entry) => entry.method === PAYMENT_METHOD && entry.requestSent;
 
 /**
  * User-facing status line per job-event phase, shared by the QR UIs
@@ -251,6 +265,7 @@ export function createRemoteSessionBroker({
     const entry = {
       jobId, method, params, chain, kind, respond,
       session: null, settled: false, attempt: 0, unsubscribeStatus: null,
+      requestSent: false,
     };
     jobs.set(jobId, entry);
     await runAttempt(entry);
@@ -335,6 +350,10 @@ export function createRemoteSessionBroker({
         }
       }
 
+      // From here on the phone may hold the request: tell main first, so a
+      // payment's lost answer is unknown rather than failed.
+      entry.requestSent = true;
+      if (kind === 'signing') remoteSigner.requestSent?.(jobId);
       emit({ jobId, kind, phase: 'awaiting-approval', method });
       const { result, error } = unwrapResponse(
         await Promise.race([session.send({ method, params }), aborted]),
@@ -396,11 +415,16 @@ export function createRemoteSessionBroker({
     /**
      * Abandon the current session and mint a fresh QR for the same job
      * (e.g. the phone failed to connect, or the QR sat unscanned too
-     * long for the user's comfort). No-op for settled/unknown jobs.
+     * long for the user's comfort). No-op for settled/unknown jobs, and
+     * for a payment whose request already went to the phone: a new code
+     * would ask the phone to pay a second time.
+     *
+     * @returns {boolean} whether a new code is being minted
      */
     retryJob(jobId) {
       const entry = jobs.get(jobId);
-      if (!entry || entry.settled) return;
+      if (!entry || entry.settled) return false;
+      if (paymentWithPhone(entry)) return false;
       const oldSession = entry.session;
       entry.session = null;
       entry.abortAttempt?.(new Error('Superseded by a new code'));
@@ -410,6 +434,7 @@ export function createRemoteSessionBroker({
         Promise.resolve(oldSession.close()).catch(() => {});
       }
       runAttempt(entry);
+      return true;
     },
 
     /**

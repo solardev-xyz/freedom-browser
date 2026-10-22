@@ -21,7 +21,7 @@
 const { verifyMessage, verifyTypedData, toQuantity } = require('ethers');
 
 const { requestRemoteSignature } = require('./bridge');
-const { REMOTE_ERROR_CODES, createRemoteError } = require('./errors');
+const { REMOTE_ERROR_CODES, UNREADABLE_ANSWER, createRemoteError } = require('./errors');
 const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
 
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -108,6 +108,10 @@ function createRemoteBackend(record) {
      * descriptor rides along so the broker can switch the phone's wallet
      * to the tx's chain first.
      *
+     * An answer that isn't a transaction hash is the phone's answer all the
+     * same: the payment may have been sent, so its outcome is unknown
+     * (REMOTE_OUTCOME_UNKNOWN), not a failure to try again.
+     *
      * @param {{to: string, value?: string|bigint, data?: string, chainId: number}} tx
      * @returns {Promise<string>} Transaction hash reported by the phone.
      */
@@ -122,7 +126,7 @@ function createRemoteBackend(record) {
 
       const hash = await request('eth_sendTransaction', [txParam], buildChainDescriptor(tx.chainId));
       if (typeof hash !== 'string' || !TX_HASH_RE.test(hash)) {
-        throw createRemoteError(REMOTE_ERROR_CODES.BAD_RESPONSE);
+        throw createRemoteError(REMOTE_ERROR_CODES.OUTCOME_UNKNOWN, UNREADABLE_ANSWER);
       }
       return hash;
     },

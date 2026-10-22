@@ -23,7 +23,7 @@ import {
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
-import { outcomeText, ACTIONS } from './intent-texts.js';
+import { outcomeText, ACTIONS, PHONE_OUTCOME_UNKNOWN } from './intent-texts.js';
 import { resendHeldPayment } from './intent-resend.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
@@ -467,6 +467,7 @@ async function approveDappTx() {
           reasonClass: result.reasonClass,
           intentId: result.intentId,
           intent: result.intent,
+          code: result.code,
         },
       });
     }
@@ -499,6 +500,10 @@ async function approveDappTx() {
       request.failedIntent = failure.intent;
     } else if (failure.intentId || failure.intent) {
       // A payment main names but no longer holds: nothing to confirm again.
+      request.paymentClosed = true;
+    } else if (failure.code === PHONE_OUTCOME_UNKNOWN) {
+      // The phone may have sent it: confirming again would ask the phone to
+      // pay a second time. The text asks the user to check the phone first.
       request.paymentClosed = true;
     }
     showDappTxError(

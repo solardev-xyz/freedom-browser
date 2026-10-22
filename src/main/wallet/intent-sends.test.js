@@ -393,6 +393,26 @@ describe('the phone path', () => {
     expect(pendingReads()).toEqual([]);
     expect(mockBroadcast).not.toHaveBeenCalled();
   });
+
+  test('a lost answer stays unknown: its code passes through, and nothing is sent again', async () => {
+    const { tx, store } = start();
+    const lost = Object.assign(new Error('No answer came back from your phone'), {
+      code: 'REMOTE_OUTCOME_UNKNOWN',
+    });
+    const phone = {
+      getAddress: async () => ALICE.address,
+      sendTransaction: jest.fn(async () => {
+        throw lost;
+      }),
+    };
+
+    await expect(tx.signAndSendTransaction(PARAMS, phone)).rejects.toBe(lost);
+    expect(phone.sendTransaction).toHaveBeenCalledTimes(1);
+    await store.ready;
+    expect(store.list()).toEqual([]);
+    expect(pendingReads()).toEqual([]);
+    expect(mockBroadcast).not.toHaveBeenCalled();
+  });
 });
 
 describe('sending again', () => {

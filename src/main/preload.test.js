@@ -252,6 +252,8 @@ describe('preload', () => {
       [exposures.electronAPI, 'resolveExternalNodeCandidates', [{ requestId: 'req-1', choices: { bee: 'managed' } }], IPC.PROFILE_EXTERNAL_CANDIDATES_DECISION, [{ requestId: 'req-1', choices: { bee: 'managed' } }]],
       [exposures.electronAPI, 'restartAndInstallUpdate', [], 'update:restart-and-install', []],
       [exposures.electronAPI, 'checkForUpdates', [], 'update:check', []],
+      [exposures.remoteSigner, 'respond', [{ jobId: 'job-1', result: '0x01' }], 'remote-signer:response', [{ jobId: 'job-1', result: '0x01' }]],
+      [exposures.remoteSigner, 'requestSent', ['job-1'], 'remote-signer:request-sent', [{ jobId: 'job-1' }]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of sendCases) {

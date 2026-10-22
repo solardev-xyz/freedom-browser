@@ -776,6 +776,39 @@ describe('send again after a failed send (5)', () => {
     }
   });
 
+  // D13: a phone signs and broadcasts itself, so a lost answer leaves the
+  // payment possibly sent. Trying again would ask the phone to pay again.
+  test("a phone's lost answer is an unknown outcome: check the phone, then Close, never the form", async () => {
+    const message =
+      "No answer came back from your phone, so it's unknown whether this payment was sent. " +
+      "Check your phone's wallet before you try again.";
+    const { elements } = await failedSend({
+      success: false,
+      code: 'REMOTE_OUTCOME_UNKNOWN',
+      error: message,
+    });
+    expect(title(elements, 'send-error-view').textContent).toBe('Outcome unknown');
+    expect(elements['send-error-text'].textContent).toBe(message);
+    expect(elements['send-retry-btn'].textContent).toBe('Close');
+
+    elements['send-retry-btn'].dispatch('click');
+    await flush();
+    expect(isShown(elements, 'sidebar-send')).toBe(false);
+    expect(formReachable(elements)).toBe(false);
+    expect(window.wallet.intentResend).not.toHaveBeenCalled();
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test("a phone's own refusal is a known outcome and goes back to the form, as before", async () => {
+    const { elements } = await failedSend({
+      success: false,
+      code: 'REMOTE_USER_REJECTED',
+      error: 'Request rejected on your phone.',
+    });
+    expect(title(elements, 'send-error-view').textContent).toBe('Transaction Failed');
+    expect(elements['send-retry-btn'].textContent).toBe('Try Again');
+  });
+
   test('a first send naming a payment main no longer holds closes too', async () => {
     const { elements } = await failedSend({ ...refused, intent: { ...HELD, state: 'voided' } });
     expect(elements['send-retry-btn'].textContent).toBe('Close');

@@ -76,7 +76,17 @@ export const RESULT_TITLES = Object.freeze({
   failed: 'Transaction Failed',
   notSent: 'Not sent',
   refused: 'Refused by the network',
+  unknown: 'Outcome unknown',
 });
+
+/**
+ * The error code of a phone account's payment whose answer was lost (D13).
+ * A phone signs and broadcasts the payment itself, so it may have been
+ * sent: the screens title it as unknown and offer no retry, which would
+ * ask the phone to pay again. The text, asking the user to check the
+ * phone's wallet first, is main's (src/main/wallet/remote/errors.js).
+ */
+export const PHONE_OUTCOME_UNKNOWN = 'REMOTE_OUTCOME_UNKNOWN';
 
 /** The waiting payments: the identity-view row and its list. */
 export const HELD = Object.freeze({
