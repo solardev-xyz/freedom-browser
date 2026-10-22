@@ -220,6 +220,26 @@ class FakeBetterSqlite3WorkspacesDatabase {
         },
       };
     }
+    if (query === 'UPDATE agent_workspaces SET conversation_id = ?, enabled = 0 WHERE id = ? AND conversation_id = ?') {
+      return {
+        run: (owner, id, conversationId) => {
+          const row = this.state.workspaces.find(
+            (candidate) => candidate.id === id && candidate.conversation_id === conversationId
+          );
+          if (!row) return { changes: 0 };
+          Object.assign(row, { conversation_id: owner, enabled: 0 });
+          return { changes: 1 };
+        },
+      };
+    }
+    if (query === "SELECT id FROM agent_workspaces WHERE conversation_id LIKE 'removing:%' ORDER BY id") {
+      return {
+        all: () => this.state.workspaces
+          .filter((row) => row.conversation_id.startsWith('removing:'))
+          .sort((first, second) => first.id.localeCompare(second.id))
+          .map((row) => ({ id: row.id })),
+      };
+    }
     throw new Error(`Unsupported SQL in fake-better-sqlite3-workspaces: ${query}`);
   }
 

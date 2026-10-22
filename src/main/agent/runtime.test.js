@@ -104,6 +104,7 @@ describe('Freedom agent runtime', () => {
     const publicationController = { dispose: jest.fn(() => calls.push('publications')) };
     const workspaceStore = {
       markStaleRunningAsInterrupted: jest.fn(),
+      retryPendingRemovals: jest.fn(async () => 0),
       close: jest.fn(() => calls.push('workspaces')),
     };
     let finishWorkspaceShutdown;
@@ -202,6 +203,7 @@ describe('Freedom agent runtime', () => {
       userDataDir: options.profile.userDataDir,
     });
     expect(workspaceStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
+    expect(workspaceStore.retryPendingRemovals).toHaveBeenCalledTimes(1);
     expect(ManagedWorkspaceController).toHaveBeenCalledWith({
       store: workspaceStore,
       runtimeOptions: options.workspaceRuntimeOptions,

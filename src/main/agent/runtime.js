@@ -81,6 +81,10 @@ function createFreedomAgentRuntime(options = {}) {
     const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender, isAgentLauncherSender });
     return { unavailable: true, dispose: async () => unregisterIpc() };
   }
+  // Finish removing workspaces whose cleanup timed out before the last exit.
+  workspaceStore.retryPendingRemovals().catch((error) => {
+    log.warn('[AgentWorkspaces] Could not resume workspace removal:', error?.message);
+  });
   const dictation = new DictationService({ dataDir: options.dataDir, providerStore,
     local: new LocalDictation({ dataDir: options.dataDir, fetch: guardedFetch }), fetch: guardedFetch, assertEnabled,
     onEvent: (sender, event) => {

@@ -12,6 +12,11 @@ const DB_FILE = 'agent-workspaces.sqlite';
 const SCHEMA_VERSION = 5;
 const WORKSPACE_DIRECTORY = 'agent-workspaces';
 const MAX_RETAINED_COMMANDS = 1_000;
+// A workspace whose removal failed (the macOS/Windows cleanup helpers time out
+// on a large tree) stays as a row owned by this marker instead of a
+// conversation, so later passes and the next start finish the removal.
+const REMOVAL_OWNER_PREFIX = 'removing:';
+const REMOVAL_RETRY_DELAYS_MS = Object.freeze([30_000, 120_000, 600_000, 1_800_000]);
 const COMMAND_STATES = new Set([
   'running',
   'completed',
@@ -123,6 +128,10 @@ class AgentManagedWorkspaceStore {
     this.statements = null;
     this.gitInitializations = new Map();
     this.projectAccess = new ExternalProjectAccess({ userDataDir: this.userDataDir });
+    this.removalRetryDelaysMs = options.removalRetryDelaysMs || REMOVAL_RETRY_DELAYS_MS;
+    this.removalRetryCount = 0;
+    this.removalTimer = null;
+    this.removalPass = null;
     this.removeDirectory = options.removeDirectory || (async directory => {
       if (process.platform === 'darwin') {
         await require('./workspace-execution/seatbelt-backend').removeSandboxTree(directory);
@@ -147,6 +156,8 @@ class AgentManagedWorkspaceStore {
   }
 
   close() {
+    clearTimeout(this.removalTimer);
+    this.removalTimer = null;
     this.projectAccess.clear();
     if (!this.db) return;
     log.info('[AgentWorkspaces] Closing database');
@@ -280,6 +291,12 @@ class AgentManagedWorkspaceStore {
       `),
       deleteWorkspace: db.prepare(
         `DELETE FROM agent_workspaces WHERE id = ? AND conversation_id = ?`
+      ),
+      markRemoval: db.prepare(
+        `UPDATE agent_workspaces SET conversation_id = ?, enabled = 0 WHERE id = ? AND conversation_id = ?`
+      ),
+      pendingRemovals: db.prepare(
+        `SELECT id FROM agent_workspaces WHERE conversation_id LIKE 'removing:%' ORDER BY id`
       ),
     };
     return this.statements;
@@ -537,8 +554,63 @@ class AgentManagedWorkspaceStore {
     // An ambiguous external commit can leave a repository index lock. Preserve
     // its reconciliation evidence even when the conversation itself is deleted.
     const pendingCommit = workspace.project && fs.existsSync(path.join(workspacePath, 'git-commit-pending.json'));
-    if (!pendingCommit) await this.removeDirectory(workspacePath);
+    if (!pendingCommit) {
+      try {
+        await this.removeDirectory(workspacePath);
+      } catch (error) {
+        // The conversation itself is usually deleted already. Hand the leftover
+        // tree to bounded background retries that also resume after a restart.
+        this.#getStatements().markRemoval.run(
+          `${REMOVAL_OWNER_PREFIX}${workspace.workspaceId}`, workspace.workspaceId, ownerId
+        );
+        this.removalRetryCount = 0;
+        this.#scheduleRemovalRetry();
+        throw error;
+      }
+    }
     return this.#getStatements().deleteWorkspace.run(workspace.workspaceId, ownerId).changes > 0;
+  }
+
+  // Retries every workspace whose removal failed earlier. Resolves with the
+  // number still pending; while any remain, a bounded backoff tries again.
+  retryPendingRemovals() {
+    if (this.removalPass) return this.removalPass;
+    this.removalPass = (async () => {
+      let remaining = 0;
+      for (const { id } of this.#getStatements().pendingRemovals.all()) {
+        try {
+          let directory = null;
+          try {
+            directory = await this.#validateWorkspaceDirectory(id);
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+          if (directory) await this.removeDirectory(directory);
+          this.#getStatements().deleteWorkspace.run(id, `${REMOVAL_OWNER_PREFIX}${id}`);
+        } catch (error) {
+          remaining += 1;
+          log.warn('[AgentWorkspaces] Could not finish removing a deleted workspace:', error?.message);
+        }
+      }
+      return remaining;
+    })().finally(() => { this.removalPass = null; });
+    return this.removalPass.then((remaining) => {
+      if (remaining) this.#scheduleRemovalRetry();
+      return remaining;
+    });
+  }
+
+  #scheduleRemovalRetry() {
+    if (this.removalTimer || this.removalRetryCount >= this.removalRetryDelaysMs.length) return;
+    const delay = this.removalRetryDelaysMs[this.removalRetryCount];
+    this.removalRetryCount += 1;
+    this.removalTimer = setTimeout(() => {
+      this.removalTimer = null;
+      this.retryPendingRemovals().catch((error) => {
+        log.warn('[AgentWorkspaces] Workspace removal retry failed:', error?.message);
+      });
+    }, delay);
+    this.removalTimer.unref?.();
   }
 }
 
