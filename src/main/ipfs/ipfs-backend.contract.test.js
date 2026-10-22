@@ -265,8 +265,11 @@ describeContract(`IPFS backend contract (${BACKEND})`, () => {
       sub: content.dir({ 'b.txt': content.file('bee\n') }),
     });
     site.bare = content.dir({ 'x.txt': content.file('x\n'), 'y.bin': content.file('yy') });
-    fixture = await startIpfsFixture(content);
-    backend = await BACKENDS[BACKEND].load({ router: fixture.router });
+    // Every provider a configured target (the router, and a pool listed
+    // with it), as freedom-ipfsd's address table needs for providers on
+    // loopback: 7 more, the most `ipfs.start` takes with the router (8).
+    fixture = await startIpfsFixture(content, { pool: 7 });
+    backend = await BACKENDS[BACKEND].load({ router: fixture.router, routers: fixture.routers });
     recordCaptures(backend.manager);
     await backend.manager.startIpfs();
   }, 60_000);
