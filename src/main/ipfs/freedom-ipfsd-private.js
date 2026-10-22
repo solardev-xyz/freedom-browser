@@ -451,10 +451,15 @@ class PrivateInstances {
       await this.backoff(instance);
     }
     if (instance.state !== 'starting') throw notRunning();
-    const network = await this.networkFor(instance);
+    await this.networkFor(instance);
     if (instance.state !== 'starting') throw notRunning();
     instance.network = network;
     const gen = await this.process();
+    if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
+    // The policy again, after the process came up: it may have changed or
+    // gone meanwhile. The one sent is the one in force at the send, which
+    // the fence checks once more.
+    const network = await this.networkFor(instance);
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
     instance.gen = gen;
     instance.id = this.nextInstanceId(gen);
@@ -467,7 +472,8 @@ class PrivateInstances {
     );
     try {
       await this.client.startInstance(gen, params, {
-        fence: () => instance.state === 'starting',
+        fence: () =>
+          instance.state === 'starting' && samePolicy(this.network.current(), network),
       });
     } catch (err) {
       // Refused for memory, retired by main, or its process gone: the next

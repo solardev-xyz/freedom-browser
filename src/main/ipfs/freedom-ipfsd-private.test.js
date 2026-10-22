@@ -166,6 +166,82 @@ describe('the network policy (0007, step 8, B2)', () => {
     lease.release();
   });
 
+  test('a private start through Tor routes by the delegated routers only, as the service requires', async () => {
+    const tor = throughTor();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(await load('private-a')).toBe('private e-1');
+    const [start] = sent('ipfs.start');
+    expect(start.params.routing.mode).toBe('delegated');
+    expect(start.params.routing.delegated_routers).toEqual([
+      'https://delegated-ipfs.dev/routing/v1',
+      'https://cid.contact/routing/v1',
+    ]);
+  });
+
+  describe('the policy changing while the process comes up (ipfs.hello held)', () => {
+    /** A cold start whose process's hello is held; `answer()` lets it go. */
+    async function coldStartHeld(network) {
+      const hellos = holding();
+      newInstances({ hello: hellos.handler }, { network });
+      const lease = instances.lease('private-a');
+      const loading = lease.request(init({ headersTimeoutMs: 60_000 }));
+      loading.catch(() => {});
+      await settle();
+      expect(hellos.held).toHaveLength(1);
+      const answer = async () => {
+        const { message, child: c } = hellos.held[0];
+        ephemeralHello(message, c);
+        await settle();
+      };
+      return { lease, loading, answer };
+    }
+
+    test('Tor selected with no endpoint: no direct start; it waits, then starts on the endpoint', async () => {
+      let routes = false;
+      const tor = fakeTorEndpoint();
+      const network = new IpfsNetwork({ routesThroughTor: () => routes, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      routes = true;
+      network.changed();
+      await answer();
+      expect(sent('ipfs.start')).toEqual([]);
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+        { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+      ]);
+      lease.release();
+    });
+
+    test("Tor's endpoint withdrawn: nothing is sent; it waits for the next", async () => {
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      tor.offer(null);
+      await answer();
+      expect(sent('ipfs.start')).toEqual([]);
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network.port)).toEqual([9152]);
+      lease.release();
+    });
+
+    test("Tor's endpoint replaced: the start takes the replacement", async () => {
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      tor.offer({ ip: '::1', port: 9151 });
+      await answer();
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+        { mode: 'socks5', ip: '::1', port: 9151 },
+      ]);
+      lease.release();
+    });
+  });
+
   test("a waiter's deadline bounds the wait, and the instance's retirement ends it", async () => {
     const tor = throughTor();
     const lease = instances.lease('private-a');

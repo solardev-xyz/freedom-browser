@@ -13,7 +13,7 @@ const path = require('path');
 const { FreedomIpfsdNode, BackendBusy } = require('./freedom-ipfsd-node');
 const { IpfsNetwork } = require('./ipfs-network');
 const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
-const { fakeIpfsd, statsResult, HELLO } = require('../../../test/helpers/fake-ipfsd');
+const { fakeIpfsd, statsResult, startRefusal, HELLO } = require('../../../test/helpers/fake-ipfsd');
 
 const DATA_DIR = path.join('profile', 'ipfs-data', 'freedom-ipfs');
 const LOCK_DIR = path.join('app-data', 'Freedom', 'locks');
@@ -149,6 +149,24 @@ describe('the network policy (0007, step 8, B2)', () => {
     expect(await start).toBe(true);
     const [message] = child().sent('ipfs.start');
     expect(message.params.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+    // The service takes only delegated routing under socks5 (D6); direct
+    // keeps today's automatic routing.
+    expect(message.params.routing.mode).toBe('delegated');
+  });
+
+  test('the fake service refuses a start the real one would (D6, D9), before any script sees it', () => {
+    const { instanceParams } = require('./freedom-ipfsd-node');
+    const store = { kind: 'disk', max_bytes: 1 };
+    const socks5 = { mode: 'socks5', ip: '127.0.0.1', port: 9150 };
+    expect(startRefusal(instanceParams('p-1', store, 15000))).toBeNull();
+    expect(startRefusal(instanceParams('p-1', store, 15000, socks5))).toBeNull();
+    const auto = instanceParams('p-1', store, 15000);
+    expect(startRefusal({ ...auto, network: socks5 })).toBe(
+      'network mode socks5 takes routing mode delegated or offline'
+    );
+    expect(startRefusal({ ...auto, routing: { ...auto.routing, doh_endpoint: undefined } })).toBe(
+      'routing.doh_endpoint must be a string'
+    );
   });
 
   test('through Tor with no endpoint yet, nothing starts, nothing falls back, until Tor offers one', async () => {
