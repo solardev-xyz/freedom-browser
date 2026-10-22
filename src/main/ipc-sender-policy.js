@@ -290,6 +290,25 @@ function isSenderAllowed(channel, event) {
   return false;
 }
 
+// Settings keys `settings:save` takes only from particular pages (or the
+// chrome). The channel itself is INTERNAL, but the AI master switch is the
+// consent step for Freedom Agent: it is turned on in Settings, so a script
+// running in any other internal page (an XSS in history, say) must not be able
+// to opt the user in. The start page writes `aiInvitationDismissed` only.
+const SETTINGS_KEY_WRITERS = new Map([['enableAi', new Set([SETTINGS_FILE])]]);
+
+/**
+ * @returns {string[]} the keys of `settings` that `event`'s sender may not
+ *   write over `settings:save`; empty when the whole save is allowed.
+ */
+function refusedSettingsKeys(event, settings) {
+  if (!settings || typeof settings !== 'object' || isChromeSender(event)) return [];
+  const file = internalPageFileOf(event);
+  return [...SETTINGS_KEY_WRITERS]
+    .filter(([key, files]) => Object.prototype.hasOwnProperty.call(settings, key) && !files.has(file))
+    .map(([key]) => key);
+}
+
 function describeSender(event) {
   const type = senderType(event) || 'unknown';
   let scheme = 'unknown';
@@ -384,6 +403,8 @@ module.exports = {
   installIpcSenderPolicy,
   isSenderAllowed,
   isChromeSender,
+  refusedSettingsKeys,
+  describeSender,
   internalPageFileForUrl,
   isChromeIndexUrl,
   TIER,

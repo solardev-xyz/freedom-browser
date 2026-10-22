@@ -140,6 +140,20 @@ describe('isSenderAllowed', () => {
     expect(isSenderAllowed('profile:delete', page('downloads.html'))).toBe(false);
   });
 
+  test('only Settings or the chrome may write the AI master switch over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    expect(refusedSettingsKeys(page('settings.html'), { enableAi: true })).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), { enableAi: true })).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { enableAi: true, theme: 'dark' })).toEqual(['enableAi']);
+      expect(refusedSettingsKeys(page(file), { theme: 'dark' })).toEqual([]);
+    }
+    expect(refusedSettingsKeys(page('home.html'), { aiInvitationDismissed: true })).toEqual([]);
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), { enableAi: true })).toEqual(['enableAi']);
+    expect(refusedSettingsKeys(makeEvent({ url: fileUrl('/tmp/pages/settings.html') }), { enableAi: true })).toEqual(['enableAi']);
+    expect(refusedSettingsKeys(web(), { enableAi: true })).toEqual(['enableAi']);
+  });
+
   test('a chrome sender must be the top frame of our index.html in a window', () => {
     expect(isSenderAllowed('wallet:send-transaction', chrome({ subFrame: true }))).toBe(false);
     expect(isSenderAllowed('wallet:send-transaction', chrome({ noFrame: true }))).toBe(false);

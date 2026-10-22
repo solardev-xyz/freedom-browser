@@ -540,6 +540,41 @@ describe('settings-store', () => {
     expect(nativeTheme.themeSource).toBe('dark');
   });
 
+  // #777: the AI master switch is the consent step, so only Settings (or the
+  // chrome) may write it; the start page may still dismiss its invitation.
+  test('only Settings or the chrome can change enableAi over IPC', async () => {
+    const { pathToFileURL } = require('url');
+    const { CHROME_INDEX, PAGES_DIR } = require('./ipc-sender-policy');
+    const ipcMain = createIpcMainMock();
+    const { mod, logger } = loadSettingsStore({ userDataDir, ipcMain });
+    mod.registerSettingsIpc();
+    const save = ipcMain.handlers.get(IPC.SETTINGS_SAVE);
+    const sender = (type, file) => {
+      const mainFrame = { url: pathToFileURL(file).href };
+      return { sender: { getType: () => type, mainFrame }, senderFrame: mainFrame };
+    };
+    const page = (name) => sender('webview', path.join(PAGES_DIR, name));
+
+    for (const name of ['home.html', 'history.html', 'downloads.html', 'error.html']) {
+      expect(save(page(name), { enableAi: true })).toBe(false);
+      // Nothing else in a refused request is applied either.
+      expect(save(page(name), { enableAi: true, showBookmarkBar: true })).toBe(false);
+    }
+    expect(mod.loadSettings()).toMatchObject({ enableAi: false, showBookmarkBar: false });
+    expect(fs.existsSync(path.join(userDataDir, 'settings.json'))).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith('[settings] refused enableAi from webview/file');
+
+    expect(save(page('home.html'), { aiInvitationDismissed: true })).toBe(true);
+    expect(save(page('history.html'), { showBookmarkBar: true })).toBe(true);
+    expect(mod.loadSettings()).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
+
+    expect(save(page('settings.html'), { enableAi: true })).toBe(true);
+    expect(mod.loadSettings().enableAi).toBe(true);
+    expect(save(page('history.html'), { enableAi: false })).toBe(false);
+    expect(save(sender('window', CHROME_INDEX), { enableAi: false })).toBe(true);
+    expect(mod.loadSettings().enableAi).toBe(false);
+  });
+
   // #233: the sandboxed webview preload reads the Appearance theme
   // synchronously at document-start so internal pages can paint the right
   // scheme before their first frame.

@@ -6,6 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
 const { normalizeCacheBytes } = require('./swarm/ant-cache');
+const { refusedSettingsKeys, describeSender } = require('./ipc-sender-policy');
 
 // Apply theme to nativeTheme so webviews get correct prefers-color-scheme
 function applyNativeTheme(theme) {
@@ -414,7 +415,14 @@ function registerSettingsIpc() {
     return loadSettings();
   });
 
-  ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
+  ipcMain.handle(IPC.SETTINGS_SAVE, (event, newSettings) => {
+    // Refuse the whole save rather than drop the key: the caller learns it
+    // failed, and nothing else in the same request is half-applied.
+    const refused = refusedSettingsKeys(event, newSettings);
+    if (refused.length > 0) {
+      log.warn(`[settings] refused ${refused.join(', ')} from ${describeSender(event)}`);
+      return false;
+    }
     return saveSettings(newSettings);
   });
 
