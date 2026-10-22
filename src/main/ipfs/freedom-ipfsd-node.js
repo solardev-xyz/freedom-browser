@@ -55,6 +55,11 @@ const MIB = 1024 * 1024;
 // the service takes every member explicitly.
 const DHT_QUERY_TIMEOUT_S = 3;
 const DHT_MAX_PROVIDERS = 32;
+// The DoH endpoint DNSLink and the DoH resolver ask: the add-on's
+// (freedom-ipfs's default), sent explicitly, as freedom-ipfsd 0.2.0
+// requires (design 0007, decision D9). It is a configured target of the
+// instance's network policy.
+const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const MAX_CONCURRENT_REQUESTS = 8;
 const HEALTH_INTERVAL_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
@@ -165,6 +170,7 @@ function instanceParams(instance, store, requestQueueTimeoutMs = REQUEST_QUEUE_T
       delegated_routers: DELEGATED_ROUTERS.split(','),
       dht_query_timeout_s: DHT_QUERY_TIMEOUT_S,
       dht_max_providers: DHT_MAX_PROVIDERS,
+      doh_endpoint: DOH_ENDPOINT,
     },
     gateway: {
       max_concurrent_requests: MAX_CONCURRENT_REQUESTS,

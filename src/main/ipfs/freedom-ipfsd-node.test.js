@@ -166,6 +166,7 @@ describe('start', () => {
           ],
           dht_query_timeout_s: 3,
           dht_max_providers: 32,
+          doh_endpoint: 'https://cloudflare-dns.com/dns-query',
         },
         gateway: { max_concurrent_requests: 8, request_queue_timeout_ms: 15000 },
         network: { mode: 'direct' },
