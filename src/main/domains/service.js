@@ -306,16 +306,22 @@ class DomainService {
           },
           beforeSend: async () => {
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
-            // Any transaction this dispatch produces takes a nonce past every
-            // one the account already has in flight, so the 'pending' count is
-            // its floor. Recording it keeps an older byte-identical
-            // renew/setText/setAddr — mined, or still pending right now — from
-            // being accepted later as this operation's dispatch. ('latest'
-            // would let a still-pending older copy through.) A floor that
-            // overshoots only refuses a recovery hash, which leaves the
-            // operation at dispatch_unknown for reconciliation, never resent.
-            const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [operation.account.address, 'pending'])).toString();
+            // Two floors, for two different hashes. Every nonce below the
+            // 'latest' count is already mined, so the wallet's own reply can
+            // never legitimately carry one: #confirm holds the returned hash
+            // to that floor. A recovery hash the agent supplies later is held
+            // to the 'pending' count instead, so an older byte-identical
+            // renew/setText/setAddr still in the mempool at dispatch cannot be
+            // adopted as this operation's. The pending floor can overshoot (a
+            // stuck pending tx this dispatch replaces at the same nonce), so
+            // it must only ever refuse a recovery hash, which leaves the
+            // operation at dispatch_unknown for reconciliation; it must not
+            // judge the wallet's own mined transaction.
+            const account = operation.account.address;
+            const minedFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'latest'])).toString();
+            const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'pending'])).toString();
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
+            operation.dispatchMinedNonce = minedFloor;
             operation.dispatchNonceFloor = nonceFloor;
             operation.state = 'dispatching';
             operation.dispatchDigest = digest({ to: plan.to.toLowerCase(), data: plan.data.toLowerCase(), value: BigInt(plan.value).toString(), from: operation.account.address.toLowerCase() });
@@ -397,7 +403,7 @@ class DomainService {
       if (!/^0x[a-fA-F0-9]{64}$/.test(input.transactionHash) || operation.state !== 'dispatch_unknown') refuse('A recovery hash is only accepted for an uncertain domain dispatch.', 'DOMAIN_INVALID');
       const tx = await this.chain.request('eth_getTransactionByHash', [input.transactionHash]);
       if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest) refuse('That transaction does not match this exact domain operation.', 'DOMAIN_INVALID');
-      if (!this.#afterDispatch(operation, tx)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
+      if (!this.#atOrAbove(tx, operation.dispatchNonceFloor)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
       operation.transactionHash = input.transactionHash;
       operation.state = 'pending';
       this.store.save(operation);
@@ -428,7 +434,7 @@ class DomainService {
     const receipt = await this.chain.receipt(operation.transactionHash);
     if (!receipt) return;
     const tx = await this.chain.request('eth_getTransactionByHash', [operation.transactionHash]);
-    if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest || !this.#afterDispatch(operation, tx)) {
+    if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest || !this.#atOrAbove(tx, operation.dispatchMinedNonce)) {
       operation.state = 'verification_needed'; operation.message = 'The returned transaction does not match the prepared domain operation.';
       this.store.save(operation); return;
     }
@@ -461,10 +467,10 @@ class DomainService {
     }
     this.store.save(operation);
   }
-  #afterDispatch(operation, tx) {
-    // Journals saved before the nonce floor existed keep the digest-only check.
-    if (operation.dispatchNonceFloor === undefined) return true;
-    try { return BigInt(tx.nonce) >= BigInt(operation.dispatchNonceFloor); } catch { return false; }
+  #atOrAbove(tx, floor) {
+    // Journals saved before a floor existed keep the digest-only check.
+    if (floor === undefined) return true;
+    try { return BigInt(tx.nonce) >= BigInt(floor); } catch { return false; }
   }
   #transactionDigest(tx) {
     return digest({ to: tx.to?.toLowerCase(), data: tx.input?.toLowerCase(), value: BigInt(tx.value).toString(), from: tx.from?.toLowerCase() });

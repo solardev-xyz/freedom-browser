@@ -375,6 +375,41 @@ test('the nonce floor excludes an older identical transaction still pending at d
   expect(f.store.get(plan.operationId).state).toBe('dispatch_unknown');
 });
 
+test('an overshooting pending floor never judges the wallet\'s own mined transaction', async () => {
+  // A stuck transaction sits at nonce 5 when the floor is read (pending 6),
+  // and the wallet replaces it with this dispatch at nonce 5.
+  const overshoot = f => {
+    const request = f.chain.request.getMockImplementation();
+    f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionCount'
+      ? (args[1] === 'pending' ? '0x6' : '0x5') : request(method, args));
+  };
+  const renew = fixture();
+  overshoot(renew);
+  const plan = await renew.service.prepare({ name: renew.state.name, intent: 'renew' }, renew.context);
+  expect(await renew.service.execute(plan.operationId, renew.context)).toMatchObject({ state: 'completed' });
+  expect(renew.store.get(plan.operationId)).toMatchObject({ dispatchNonceFloor: '6', dispatchMinedNonce: '5' });
+  // A paid commit at the replaced nonce still advances to its reveal.
+  const register = fixture('wei', true);
+  overshoot(register);
+  const commit = await register.service.prepare({ name: register.state.name, intent: 'register' }, register.context);
+  expect(await register.service.execute(commit.operationId, register.context)).toMatchObject({ state: 'waiting_commitment', step: 'reveal' });
+});
+
+test('a wallet reply carrying an already-mined nonce is not confirmed', async () => {
+  const f = fixture();
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const send = f.wallet.send.getMockImplementation();
+  let replay;
+  f.wallet.send.mockImplementation(async (...args) => {
+    const result = await send(...args);
+    replay = { ...(await f.chain.request('eth_getTransactionByHash', [hash])), nonce: '0x4' };
+    return result;
+  });
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionByHash' && replay ? replay : request(method, args));
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'verification_needed' });
+});
+
 test('a phone wallet rejection through the real wallet path is resumable, not an uncertain dispatch', async () => {
   const f = fixture();
   const { DomainTransactions } = require('../wallet/domain-transactions');
