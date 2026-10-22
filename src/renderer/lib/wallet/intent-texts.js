@@ -88,6 +88,29 @@ export const RESULT_TITLES = Object.freeze({
  */
 export const PHONE_OUTCOME_UNKNOWN = 'REMOTE_OUTCOME_UNKNOWN';
 
+/**
+ * The error a site gets for such a payment, from the approval or from an
+ * auto-approved send (D13). Never EIP-1193's 4001 "User rejected the
+ * request": that says nothing happened, so a site may send the request
+ * again, and the phone could pay twice. No standard code means "the
+ * outcome is unknown". EIP-1193's 4xxx codes and EIP-1474's -3200x each
+ * say the request was refused, failed or never ran, so this is JSON-RPC's
+ * -32603 (internal error), which claims neither. The message says what is
+ * known, and `data.outcome` says it for a site that reads the error's data.
+ * Neither names the account's kind.
+ */
+export const SITE_OUTCOME_UNKNOWN = Object.freeze({
+  code: -32603,
+  message:
+    "The payment's outcome is unknown: it may have been sent. Check the wallet before retrying.",
+  data: Object.freeze({ outcome: 'unknown' }),
+});
+
+/** A fresh copy of SITE_OUTCOME_UNKNOWN, to reject a site's request with. */
+export function siteOutcomeUnknownError() {
+  return { ...SITE_OUTCOME_UNKNOWN, data: { ...SITE_OUTCOME_UNKNOWN.data } };
+}
+
 /** The waiting payments: the identity-view row and its list. */
 export const HELD = Object.freeze({
   // The sub-screen's title, "Payments Waiting", is in index.html.

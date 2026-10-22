@@ -1,2 +1,3 @@
 - A phone account's payment whose answer is lost shows as unknown, not failed, and asks you to check the phone's wallet first ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
   - No new QR code is offered once the payment is on the phone
+  - The requesting site is told the outcome is unknown, not that the request was rejected
