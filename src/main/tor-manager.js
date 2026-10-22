@@ -58,12 +58,12 @@ let lastError = null;
 let artiProcess = null;
 let healthCheckInterval = null;
 let pendingStart = false;
-let forceKillTimeout = null;
-// Set by a startup-timeout before it calls stopTor(), so the exit handler
-// reports this error rather than the raw "arti exited with code N" that the
-// SIGTERM/SIGKILL produces. Consumed once. (Arti is single-process, so unlike
-// radicle there is no leaked-backstop hazard — this is message fidelity.)
-let pendingStopError = null;
+// Each managed child being terminated, with its SIGKILL backstop: bound to
+// that child, and cleared when it closes. A stop's child and a child a
+// later start retired are both here, so neither can outlive its backstop
+// and neither's backstop can signal another child.
+const terminating = new Map();
+const FORCE_KILL_MS = 10000;
 let currentSocksPort = DEFAULTS.tor.socksPort;
 let currentSocksEndpoint = `127.0.0.1:${DEFAULTS.tor.socksPort}`;
 // Every session that must follow the `.onion` routing policy, keyed by a
@@ -80,6 +80,16 @@ const proxySessions = new Map();
 let appliedSocksEndpoint = null;
 let artiBootstrapped = false;
 let artiOutputBuffer = '';
+// The SOCKS endpoint offered to the IPFS service, for a profile that routes
+// IPFS through Tor (freedom-core design 0007, "Where the proxy comes from"):
+// `{ ip, port }` while Tor is RUNNING at an endpoint it can take, otherwise
+// null, with `ipfsEndpointRefusal` saying why when Tor runs at one it can't.
+// Each of `ipfsEndpointListeners` is called with getIpfsSocksEndpoint() each
+// time either changes, on its own: one that throws is logged, and neither
+// stops the others nor Tor's start or stop.
+let ipfsEndpoint = null;
+let ipfsEndpointRefusal = null;
+const ipfsEndpointListeners = new Set();
 // Bumped by every start attempt and by every stop, so a start that is awaiting
 // something (external-candidate prompt, port probe, SOCKS probe) can tell that
 // it has been superseded and must not spawn/commit anything.
@@ -229,6 +239,7 @@ function updateState(newState, error = null) {
   log.info('[Tor] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
+  publishIpfsEndpoint();
   const windows = require('electron').BrowserWindow.getAllWindows();
   for (const win of windows) {
     try {
@@ -276,9 +287,9 @@ async function findAvailablePort(defaultPort, maxAttempts = DEFAULTS.tor.fallbac
   return null;
 }
 
-/** External liveness: the configured endpoint accepts a TCP connection. */
-async function checkHealth() {
-  return probeTcpEndpoint(currentSocksEndpoint);
+/** External liveness: `endpoint` accepts a TCP connection. */
+async function checkHealth(endpoint = currentSocksEndpoint) {
+  return probeTcpEndpoint(endpoint);
 }
 
 async function checkSocksProtocolHealth() {
@@ -294,8 +305,19 @@ function startHealthCheck(mode) {
     healthCheckInterval = null;
     return;
   }
-  healthCheckInterval = setInterval(async () => {
-    const healthy = await checkHealth();
+  // Each result belongs to this run: one that settles after a stop, a
+  // restart, another endpoint or another interval is dropped, so a check of
+  // an earlier run can't move a later start's state, nor offer its endpoint.
+  const generation = startGeneration;
+  const endpoint = currentSocksEndpoint;
+  let interval = null;
+  const current = () =>
+    generation === startGeneration &&
+    endpoint === currentSocksEndpoint &&
+    healthCheckInterval === interval;
+  interval = setInterval(async () => {
+    const healthy = await checkHealth(endpoint);
+    if (!current()) return;
     if (!healthy && currentState === STATUS.RUNNING) {
       updateState(STATUS.ERROR, 'SOCKS port unreachable');
       setErrorState('tor', 'Tor unreachable. Retrying…');
@@ -304,6 +326,7 @@ function startHealthCheck(mode) {
       updateState(STATUS.RUNNING);
     }
   }, 5000);
+  healthCheckInterval = interval;
 }
 
 /**
@@ -317,6 +340,20 @@ async function applyOnionRouting(endpoint) {
   await Promise.all(
     [...proxySessions.values()].map((targetSession) => applyOnionProxy(targetSession, endpoint))
   );
+}
+
+/**
+ * Re-applies the routing policy in force now on every tracked session: what
+ * an obsolete apply's completion does instead of undoing anything itself,
+ * so its own calls, whenever they land, can't leave a later start's or a
+ * stop's policy changed. Cleanup is fenced to the routing operation it owns.
+ */
+async function reassertOnionRouting() {
+  if (appliedSocksEndpoint) {
+    await applyOnionRouting(appliedSocksEndpoint).catch(() => {});
+  } else {
+    await clearOnionRouting();
+  }
 }
 
 /** Restore DIRECT `.onion` connections on every tracked session. */
@@ -352,11 +389,24 @@ function unregisterOnionRoutingSession(key) {
   proxySessions.delete(key);
 }
 
-async function applyTorProxy(mode, statusMessage, superseded = () => false) {
+/**
+ * Routes `.onion` through the current endpoint, then reports Tor RUNNING.
+ * `superseded` says a stop or a restart came meanwhile: the routing in
+ * force now (the stop's or the restart's) is re-applied over whatever this
+ * apply's calls left. `retired` says the node it was for is gone (managed
+ * Arti exited): its exit has set the state, and the routing stays, failing
+ * closed.
+ */
+async function applyTorProxy(
+  mode,
+  statusMessage,
+  superseded = () => false,
+  retired = () => false
+) {
   try {
     await applyOnionRouting(currentSocksEndpoint);
   } catch (err) {
-    if (superseded()) return false;
+    if (superseded() || retired()) return false;
     log.error('[Tor] Failed to apply proxy:', err.message);
     updateState(STATUS.ERROR, 'Failed to apply Tor proxy');
     setStatusMessage('tor', 'Tor failed to start');
@@ -364,11 +414,12 @@ async function applyTorProxy(mode, statusMessage, superseded = () => false) {
   }
 
   if (superseded()) {
-    // Stopped while the proxy was being applied: undo it instead of reporting
-    // RUNNING for a service the user just turned off.
-    clearOnionRouting().catch(() => {});
+    // Stopped or restarted while the proxy was being applied: no RUNNING for
+    // it, and the routing in force now is the last word, not this apply's.
+    reassertOnionRouting().catch(() => {});
     return false;
   }
+  if (retired()) return false;
 
   updateService('tor', {
     socks: currentSocksEndpoint,
@@ -531,6 +582,15 @@ async function startTor(opts = {}) {
 
   pendingStart = false;
   const superseded = beginStartAttempt();
+  // A child an errored start or stop left running (its proxy failed to
+  // apply, or its signal failed) is retired: its handlers stop acting, and
+  // it is terminated with its own backstop.
+  if (artiProcess) {
+    const leftover = artiProcess;
+    artiProcess = null;
+    log.warn('[Tor] Retiring an arti process left running');
+    terminate(leftover);
+  }
   updateState(STATUS.STARTING);
   setStatusMessage('tor', 'Bootstrapping…');
 
@@ -634,8 +694,9 @@ async function startTor(opts = {}) {
   }
 
   log.info(`[Tor] Starting arti: ${artiPath} proxy -c ${configPath} (SOCKS ${socksPort})`);
+  let child;
   try {
-    artiProcess = spawn(artiPath, ['proxy', '-c', configPath], {
+    child = spawn(artiPath, ['proxy', '-c', configPath], {
       env: { ...process.env },
     });
   } catch (err) {
@@ -643,25 +704,42 @@ async function startTor(opts = {}) {
     setStatusMessage('tor', 'Tor failed to start');
     return;
   }
+  // This child is the live one until it exits or a later start retires
+  // it. Every handler below acts only while it is: a retired child's
+  // output, error or exit never touches its successor.
+  artiProcess = child;
+  const live = () => artiProcess === child;
+  // Set by this child's startup timeout before it calls stopTor(), so this
+  // child's exit reports it rather than the raw "arti exited with code N"
+  // that the SIGTERM/SIGKILL produces. It is this child's alone: a child
+  // retired before it exits never reports it, and no other child sees it.
+  let stopError = null;
 
-  artiProcess.stdout.on('data', (data) => handleArtiOutput('stdout', data));
-  artiProcess.stderr.on('data', (data) => handleArtiOutput('stderr', data));
+  child.stdout.on('data', (data) => {
+    if (live()) handleArtiOutput('stdout', data);
+  });
+  child.stderr.on('data', (data) => {
+    if (live()) handleArtiOutput('stderr', data);
+  });
 
-  artiProcess.on('error', (err) => {
+  child.on('error', (err) => {
+    if (!live()) return;
     log.error('[Tor] Failed to start process:', err);
     updateState(STATUS.ERROR, err.message);
     setStatusMessage('tor', 'Tor failed to start');
   });
 
-  artiProcess.on('close', (code) => {
+  child.on('close', (code) => {
+    if (!live()) {
+      log.info(`[Tor] a retired arti process exited with code ${code}`);
+      return;
+    }
     log.info(`[Tor] arti process exited with code ${code}`);
+    // Its exit retires it: a readiness still pending for it (the proxy
+    // being applied) won't report RUNNING.
     artiProcess = null;
     artiBootstrapped = false;
     artiOutputBuffer = '';
-    if (forceKillTimeout) {
-      clearTimeout(forceKillTimeout);
-      forceKillTimeout = null;
-    }
     if (healthCheckInterval) {
       clearInterval(healthCheckInterval);
       healthCheckInterval = null;
@@ -672,12 +750,10 @@ async function startTor(opts = {}) {
     // error instead of silently falling back to DIRECT, which would hand the
     // onion hostname to the system resolver. A deliberate stop (stopTor
     // without preserveOnionRouting) is the only path that restores DIRECT.
-    if (pendingStopError) {
+    if (stopError) {
       // A startup timeout initiated this stop: report its message instead of
       // the raw arti exit code from the SIGTERM/SIGKILL that carried it out.
-      const message = pendingStopError;
-      pendingStopError = null;
-      updateState(STATUS.ERROR, message);
+      updateState(STATUS.ERROR, stopError);
       setErrorState('tor', 'Tor failed to start');
     } else if (currentState !== STATUS.STOPPING && code !== 0) {
       // Unexpected exit (crash / killed): surface it as an error and keep the
@@ -705,21 +781,26 @@ async function startTor(opts = {}) {
       superseded()
       || currentState === STATUS.STOPPED
       || currentState === STATUS.ERROR
-      || !artiProcess
+      || !live()
     ) {
       clearInterval(pollInterval);
       return;
     }
     if (artiBootstrapped) {
       clearInterval(pollInterval);
-      await applyTorProxy(MODE.BUNDLED, `SOCKS: ${currentSocksEndpoint}`, superseded);
+      await applyTorProxy(
+        MODE.BUNDLED,
+        `SOCKS: ${currentSocksEndpoint}`,
+        superseded,
+        () => !live()
+      );
     } else {
       attempts++;
       if (attempts >= maxAttempts) {
         clearInterval(pollInterval);
         // Flag the terminal error before stopTor() so the exit handler reports
         // it instead of the raw arti exit code from the kill it performs.
-        pendingStopError = 'Startup timed out';
+        stopError = 'Startup timed out';
         setStatusMessage('tor', 'Tor failed to start');
         // Fail closed: a failed start must not hand `.onion` back to DIRECT
         // (a previous session may already be routing through the PAC).
@@ -744,15 +825,20 @@ function stopTor(options = {}) {
     // Cancel any startTor() still sitting on an await, so it can't spawn arti
     // after we've reported the service as stopped.
     startGeneration += 1;
+    // The stop is bound to its run and its child: if a later start comes
+    // before the child closes (its signal failed, and it went ERROR), the
+    // stop only resolves, and its cleanup never touches the newer run.
+    const generation = startGeneration;
+    const child = artiProcess;
 
     const finish = () => {
+      if (generation !== startGeneration) {
+        resolve();
+        return;
+      }
       if (healthCheckInterval) {
         clearInterval(healthCheckInterval);
         healthCheckInterval = null;
-      }
-      if (forceKillTimeout) {
-        clearTimeout(forceKillTimeout);
-        forceKillTimeout = null;
       }
       if (!preserveOnionRouting) clearOnionRouting().catch(() => {});
       clearTorServiceEntry();
@@ -761,7 +847,7 @@ function stopTor(options = {}) {
       resolve();
     };
 
-    if (!artiProcess) {
+    if (!child) {
       updateState(STATUS.STOPPED);
       finish();
       return;
@@ -770,23 +856,104 @@ function stopTor(options = {}) {
     updateState(STATUS.STOPPING);
     if (healthCheckInterval) clearInterval(healthCheckInterval);
 
-    artiProcess.once('close', finish);
-
-    if (forceKillTimeout) clearTimeout(forceKillTimeout);
-    forceKillTimeout = setTimeout(() => {
-      if (artiProcess) {
-        log.warn('[Tor] Force killing arti...');
-        artiProcess.kill('SIGKILL');
-      }
-      forceKillTimeout = null;
-    }, 10000);
-
-    artiProcess.kill('SIGTERM');
+    child.once('close', finish);
+    terminate(child);
   });
+}
+
+/**
+ * Ends `child`: SIGTERM, then SIGKILL if it hasn't closed within
+ * FORCE_KILL_MS. The backstop is the child's own, so it signals no other
+ * child, and asking again while one is armed sends nothing more.
+ */
+function terminate(child) {
+  if (terminating.has(child)) return;
+  child.once('close', () => {
+    clearTimeout(terminating.get(child));
+    terminating.delete(child);
+  });
+  terminating.set(
+    child,
+    setTimeout(() => {
+      terminating.delete(child);
+      log.warn('[Tor] Force killing arti...');
+      child.kill('SIGKILL');
+    }, FORCE_KILL_MS)
+  );
+  child.kill('SIGTERM');
 }
 
 function getActivePort() {
   return currentSocksPort;
+}
+
+/**
+ * The SOCKS endpoint `raw` ('host:port') names, as the IPFS service takes it
+ * (design 0007, decision D8): an IP literal and a port, `{ endpoint: { ip,
+ * port } }`. `localhost` is 127.0.0.1. Any other host name is refused,
+ * `{ refused: reason }`: the service would need a resolver outside the proxy
+ * to reach it. The service checks the address itself too (no unspecified,
+ * multicast or broadcast proxy).
+ */
+function ipfsSocksEndpointFor(raw) {
+  const parsed = parseSocksEndpoint(raw);
+  if (!parsed) return { refused: 'Tor has no SOCKS endpoint' };
+  if (parsed.host.toLowerCase() === 'localhost') {
+    return { endpoint: { ip: '127.0.0.1', port: parsed.port } };
+  }
+  if (net.isIP(parsed.host)) {
+    return { endpoint: { ip: parsed.host, port: parsed.port } };
+  }
+  return {
+    refused: `Tor's SOCKS endpoint ${parsed.host} is a host name: IPFS through Tor needs an IP address`,
+  };
+}
+
+/** Recomputes the endpoint offered to the IPFS service; emits a change. */
+function publishIpfsEndpoint() {
+  const { endpoint = null, refused = null } =
+    currentState === STATUS.RUNNING ? ipfsSocksEndpointFor(currentSocksEndpoint) : {};
+  const same =
+    endpoint === ipfsEndpoint ||
+    (endpoint &&
+      ipfsEndpoint &&
+      endpoint.ip === ipfsEndpoint.ip &&
+      endpoint.port === ipfsEndpoint.port);
+  if (same && refused === ipfsEndpointRefusal) return;
+  ipfsEndpoint = endpoint;
+  ipfsEndpointRefusal = refused;
+  if (refused) log.warn('[Tor] Not offered to IPFS:', refused);
+  for (const listener of ipfsEndpointListeners) {
+    try {
+      listener(getIpfsSocksEndpoint());
+    } catch (err) {
+      log.error('[Tor] IPFS endpoint listener failed:', err);
+    }
+  }
+}
+
+/**
+ * The SOCKS endpoint offered to the IPFS service: `{ endpoint, refused }`,
+ * `endpoint` being `{ ip, port }` while Tor is RUNNING at an endpoint the
+ * service can take, else null; `refused` says why Tor runs at one it can't.
+ * Tor's ERROR state, the external health check's retry included, withdraws
+ * it: the service fails closed anyway, without a proxy that answers.
+ */
+function getIpfsSocksEndpoint() {
+  return {
+    endpoint: ipfsEndpoint && { ...ipfsEndpoint },
+    refused: ipfsEndpointRefusal,
+  };
+}
+
+/**
+ * Calls `listener` with getIpfsSocksEndpoint() each time it changes, as
+ * ant-manager's status listeners are called: synchronously, each on its
+ * own, a throw logged and dropped. Returns the function that stops it.
+ */
+function onIpfsSocksEndpointChange(listener) {
+  ipfsEndpointListeners.add(listener);
+  return () => ipfsEndpointListeners.delete(listener);
 }
 
 function registerTorIpc() {
@@ -847,6 +1014,8 @@ module.exports = {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
   getActivePort,
+  getIpfsSocksEndpoint,
+  onIpfsSocksEndpointChange,
   getArtiVersion,
   getArtiBinaryPath,
   getTorDataPath,

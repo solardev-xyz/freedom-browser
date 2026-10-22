@@ -673,3 +673,623 @@ describe('tor-manager .onion routing across sessions', () => {
     }
   }, 15_000);
 });
+
+describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
+  const externalAt = (externalSocks, extra = {}) =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: { metadata: { nodes: { tor: { mode: 'external', externalSocks } } } },
+      ...extra,
+    });
+  const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  test('a running Tor offers its endpoint as an IP and a port, and a stop withdraws it', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    const changes = [];
+    mod.onIpfsSocksEndpointChange((change) => changes.push(change));
+    expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    expect(mod.getIpfsSocksEndpoint()).toEqual({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      refused: null,
+    });
+
+    await mod.stopTor();
+    expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+    expect(changes).toEqual([
+      { endpoint: { ip: '127.0.0.1', port: 9150 }, refused: null },
+      { endpoint: null, refused: null },
+    ]);
+  });
+
+  test('localhost is 127.0.0.1, and an IPv6 literal is offered unbracketed', async () => {
+    for (const [externalSocks, ip, port] of [
+      ['socks5://localhost:9150', '127.0.0.1', 9150],
+      ['socks5://LocalHost:9150', '127.0.0.1', 9150],
+      ['socks5h://[::1]:9150', '::1', 9150],
+      ['10.0.0.2:9050', '10.0.0.2', 9050],
+    ]) {
+      const { mod } = externalAt(externalSocks);
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip, port });
+      await mod.stopTor();
+    }
+  });
+
+  test('an external endpoint at a host name is refused for IPFS, and still routes .onion', async () => {
+    for (const externalSocks of [
+      'socks5://tor.lan:9050',
+      'socks5://2130706433:9050',
+      'socks5://127.1:9050',
+    ]) {
+      const targetSession = createSessionMock();
+      const { mod } = externalAt(externalSocks);
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change));
+
+      await mod.startTor({ targetSession });
+      const offered = mod.getIpfsSocksEndpoint();
+      expect(offered.endpoint).toBeNull();
+      expect(offered.refused).toContain('is a host name');
+      expect(changes).toEqual([offered]);
+      // Tor itself runs: .onion still goes through it.
+      expect(targetSession.setProxy).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'pac_script' })
+      );
+
+      await mod.stopTor();
+      expect(mod.getIpfsSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+    }
+  });
+
+  test('the health check withdraws the endpoint while the proxy is unreachable, and offers it again', async () => {
+    jest.useFakeTimers();
+    let reachable = true;
+    const { mod } = externalAt('socks5://127.0.0.1:9150/', {
+      extraMocks: {
+        [require.resolve('./socks-probe')]: () => ({
+          probeSocks5Endpoint: jest.fn().mockResolvedValue(true),
+          probeTcpEndpoint: jest.fn(async () => reachable),
+        }),
+      },
+    });
+    const changes = [];
+    mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    await jest.advanceTimersByTimeAsync(5000);
+    // Still healthy: no change.
+    expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }]);
+
+    reachable = false;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+    reachable = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(changes).toEqual([
+      { ip: '127.0.0.1', port: 9150 },
+      null,
+      { ip: '127.0.0.1', port: 9150 },
+    ]);
+
+    await mod.stopTor();
+  });
+
+  test('a listener that throws neither fails the start nor keeps the others from hearing it', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    mod.onIpfsSocksEndpointChange(() => {
+      throw new Error('a failing IPFS listener');
+    });
+    const other = jest.fn();
+    mod.onIpfsSocksEndpointChange(other);
+
+    await expect(mod.startTor({ targetSession: createSessionMock() })).resolves.toBeUndefined();
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledWith({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      refused: null,
+    });
+    expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9150 });
+
+    await expect(mod.stopTor()).resolves.toBeUndefined();
+    expect(other).toHaveBeenCalledTimes(2);
+  });
+
+  test("a listener that throws on withdrawal doesn't keep managed Arti from being stopped", async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-stop-'));
+    const artiProcess = createArtiProcessMock();
+    try {
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19152 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn: jest.fn(() => artiProcess), execFile: jest.fn() }),
+        },
+      });
+      await mod.startTor({ targetSession: createSessionMock() });
+      artiProcess.stdout.on.mock.calls[0][1]('Sufficiently bootstrapped\n');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 19152 });
+
+      mod.onIpfsSocksEndpointChange(() => {
+        throw new Error('a failing IPFS listener');
+      });
+      await expect(mod.stopTor()).resolves.toBeUndefined();
+      expect(artiProcess.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  describe('managed Arti: readiness and handlers belong to the live child', () => {
+    // A port probe that always finds the port free, so a start never
+    // waits on a real socket under fake timers.
+    class FreePort {
+      constructor() {
+        this.handlers = {};
+      }
+      on(event, handler) {
+        this.handlers[event] = handler;
+        return this;
+      }
+      setTimeout() {
+        return this;
+      }
+      connect() {
+        this.handlers.error(new Error('nothing listens here'));
+        return this;
+      }
+      destroy() {}
+    }
+    let userDataDir;
+    afterEach(() => {
+      if (userDataDir) fs.rmSync(userDataDir, { recursive: true, force: true });
+      userDataDir = null;
+    });
+    // Managed Arti whose spawns return `children` in turn.
+    const managedWith = (...children) => {
+      jest.useFakeTimers();
+      const realExistsSync = fs.existsSync;
+      jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+        if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+        return realExistsSync(target);
+      });
+      userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-child-'));
+      const spawn = jest.fn();
+      for (const child of children) spawn.mockReturnValueOnce(child);
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19153 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn, execFile: jest.fn() }),
+          net: () => ({ ...jest.requireActual('net'), Socket: FreePort }),
+        },
+      });
+      return mod;
+    };
+    const bootstrap = (child) => child.stdout.on.mock.calls[0][1]('Sufficiently bootstrapped\n');
+    const failingSession = () => ({
+      setProxy: jest.fn().mockRejectedValue(new Error('the session closed')),
+    });
+    const endpoint = { ip: '127.0.0.1', port: 19153 };
+
+    test('an exit while the proxy is applied leaves nothing offered, and .onion fail-closed', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      let applied;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (applied = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(child);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(applied).toBeDefined();
+
+      child.emit('close', 1);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      applied();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // Its exit stands: an error, not RUNNING, and the PAC kept.
+      expect(targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'direct')).toEqual(
+        []
+      );
+      await mod.stopTor();
+    });
+
+    test("a retired child's output can't bootstrap its replacement", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      const mod = managedWith(a, b);
+      // A bootstraps, but its proxy fails: an error, A left running.
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      // B replaces it, and A is stopped.
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(a.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // A's marker is A's: B hasn't bootstrapped.
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // B's own marker does.
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+    });
+
+    test("a late apply after a crash and a restart leaves the restart's routing in force", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      const mod = managedWith(a, b);
+      let appliedA;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (appliedA = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(appliedA).toBeDefined();
+      a.emit('close', 1);
+      await mod.startTor({ targetSession });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      appliedA();
+      await jest.advanceTimersByTimeAsync(0);
+      const modes = targetSession.setProxy.mock.calls.map(([arg]) => arg?.mode);
+      expect(modes).not.toContain('direct');
+      expect(modes[modes.length - 1]).toBe('pac_script');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+    });
+
+    test('a late apply after a deliberate stop leaves DIRECT in force', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      let applied;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (applied = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(child);
+      await jest.advanceTimersByTimeAsync(1000);
+      await mod.stopTor();
+      const calls = targetSession.setProxy.mock.calls.length;
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+      applied();
+      await jest.advanceTimersByTimeAsync(0);
+      // The late completion puts DIRECT last again, whatever order its own
+      // call lands in.
+      expect(targetSession.setProxy.mock.calls.length).toBe(calls + 1);
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // The closed child's backstop is gone with it.
+      await jest.advanceTimersByTimeAsync(11000);
+      expect(child.kills).toEqual(['SIGTERM']);
+    });
+
+    test("a stop whose signal failed can't signal a later start's child", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      // A's SIGTERM fails with an error and no exit; its SIGKILL ends it.
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        if (signal === 'SIGTERM') {
+          a.emit('error', new Error('the signal failed'));
+          return false;
+        }
+        a.emit('close', 0);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      let stopped = false;
+      const stopping = mod.stopTor().then(() => {
+        stopped = true;
+      });
+      // The error made it ERROR: a start is allowed, and runs B.
+      const sessionB = createSessionMock();
+      await mod.startTor({ targetSession: sessionB });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // A's backstop, ten seconds after its stop: A's alone.
+      await jest.advanceTimersByTimeAsync(9000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(b.kills).toEqual([]);
+      await stopping;
+      expect(stopped).toBe(true);
+      // A's stop ended without touching B: its offer, and its routing.
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      expect(sessionB.setProxy.mock.calls.map(([arg]) => arg?.mode)).not.toContain('direct');
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+    });
+
+    test('a retired child that ignores SIGTERM is killed by its own backstop', async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(a.kills).toEqual(['SIGTERM']);
+
+      await jest.advanceTimersByTimeAsync(9000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(b.kills).toEqual([]);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+    });
+
+    test('a child that never bootstraps is stopped, and reports its startup timeout', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      mod.registerTorIpc();
+      const targetSession = createSessionMock();
+      await mod.startTor({ targetSession });
+      await jest.advanceTimersByTimeAsync(120000);
+      expect(child.kills).toEqual(['SIGTERM']);
+      expect(await jest.requireMock('electron').ipcMain.invoke(IPC.TOR_GET_STATUS)).toEqual({
+        status: 'error',
+        error: 'Startup timed out',
+      });
+      // A failed start keeps .onion fail-closed.
+      expect(targetSession.setProxy.mock.calls.map(([arg]) => arg?.mode)).not.toContain('direct');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    });
+
+    test("a retired child's startup timeout isn't its replacement's", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      // A never bootstraps; its timeout's SIGTERM fails with an error and
+      // no exit; its SIGKILL ends it.
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        if (signal === 'SIGTERM') {
+          a.emit('error', new Error('the signal failed'));
+          return false;
+        }
+        a.emit('close', 0);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      mod.registerTorIpc();
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(120000);
+      expect(a.kills).toEqual(['SIGTERM']);
+
+      // B replaces it, runs, and is stopped cleanly.
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      const handler = jest.requireMock('electron').ipcMain;
+      const status = await handler.invoke(IPC.TOR_GET_STATUS);
+      expect(status).toEqual({ status: 'stopped', error: null });
+      // A's exit, late, reports nothing either.
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(await handler.invoke(IPC.TOR_GET_STATUS)).toEqual({ status: 'stopped', error: null });
+    });
+
+    test("a retired child's exit or error doesn't touch its running replacement", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // A exits late, after its SIGTERM, and reports an error first.
+      a.emit('error', new Error('a late error'));
+      a.emit('close', 1);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // B is still the one a stop ends.
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    });
+  });
+
+  describe('a health result from an earlier run', () => {
+    // External Tor at `endpoint` (mutable), whose SOCKS check answers
+    // `socks.healthy`, and whose health checks wait until a test settles
+    // them, oldest first.
+    const heldHealthChecks = (profile, socks) => {
+      const held = [];
+      const { mod } = loadTorManager({
+        enableTorIntegration: true,
+        activeProfile: profile,
+        extraMocks: {
+          [require.resolve('./socks-probe')]: () => ({
+            probeSocks5Endpoint: jest.fn(async () => socks.healthy),
+            probeTcpEndpoint: jest.fn(
+              (endpoint) => new Promise((settle) => held.push({ endpoint, settle }))
+            ),
+          }),
+        },
+      });
+      return { mod, held };
+    };
+    const externalProfile = (externalSocks) => ({
+      metadata: { nodes: { tor: { mode: 'external', externalSocks } } },
+    });
+
+    test("a stale success doesn't offer a restart whose SOCKS check failed", async () => {
+      jest.useFakeTimers();
+      const profile = externalProfile('127.0.0.1:9150');
+      const socks = { healthy: true };
+      const { mod, held } = heldHealthChecks(profile, socks);
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(held.map((check) => check.endpoint)).toEqual(['127.0.0.1:9150']);
+      await mod.stopTor();
+
+      profile.metadata.nodes.tor.externalSocks = '127.0.0.1:9151';
+      socks.healthy = false;
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      held[0].settle(true);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }, null]);
+      await mod.stopTor();
+    });
+
+    test("a stale failure doesn't withdraw a restart that runs", async () => {
+      jest.useFakeTimers();
+      const profile = externalProfile('127.0.0.1:9150');
+      const socks = { healthy: true };
+      const { mod, held } = heldHealthChecks(profile, socks);
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      await mod.stopTor();
+
+      profile.metadata.nodes.tor.externalSocks = '127.0.0.1:9151';
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9151 });
+
+      held[0].settle(false);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9151 });
+
+      // The restart's own check still counts: it is of 9151, and a failure
+      // withdraws the endpoint.
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(held[1].endpoint).toBe('127.0.0.1:9151');
+      held[1].settle(false);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      await mod.stopTor();
+    });
+
+    test('a check that settles after its run was stopped changes nothing', async () => {
+      jest.useFakeTimers();
+      const { mod, held } = heldHealthChecks(externalProfile('127.0.0.1:9150'), {
+        healthy: true,
+      });
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      await mod.stopTor();
+      held[0].settle(false);
+      await flushMicrotasks();
+      held.length = 0;
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }, null]);
+    });
+  });
+
+  test('a stopped listener hears nothing more', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    const listener = jest.fn();
+    const stop = mod.onIpfsSocksEndpointChange(listener);
+    stop();
+    await mod.startTor({ targetSession: createSessionMock() });
+    await mod.stopTor();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('managed Arti offers its endpoint once bootstrapped, and withdraws it when it exits', async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-endpoint-'));
+    const artiProcess = createArtiProcessMock();
+    try {
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19151 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn: jest.fn(() => artiProcess), execFile: jest.fn() }),
+        },
+      });
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      // Spawned, not yet bootstrapped: nothing offered.
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      const onStdout = artiProcess.stdout.on.mock.calls[0][1];
+      onStdout('Sufficiently bootstrapped\n');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 19151 });
+
+      artiProcess.emit('close', 1);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 19151 }, null]);
+      await mod.stopTor();
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
