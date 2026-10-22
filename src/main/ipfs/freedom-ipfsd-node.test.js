@@ -348,6 +348,46 @@ describe('a change of network policy (0007, step 8, B3)', () => {
     expect(await start).toBe(true);
   });
 
+  test('rapid changes go one at a time: a change during a teardown waits for it, and each teardown has its own 5 s', async () => {
+    const held = [];
+    const { tor } = await running({ stop: (message, c) => held.push({ message, c }) });
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    await clock.advance(3_000);
+    // A second change during p-1's teardown: nothing more is sent.
+    tor.offer({ ip: '127.0.0.1', port: 9152 });
+    await settle();
+    expect(stops().map((m) => m.params.instance)).toEqual(['p-1']);
+    expect(starts()).toHaveLength(1);
+
+    // p-1's teardown is proven: the next instance takes the policy then
+    // in force.
+    await clock.advance(1_000);
+    held[0].c.result(held[0].message.id, { instance: 'p-1' });
+    await settle();
+    expect(starts().map((m) => [m.params.instance, m.params.network.port])).toEqual([
+      ['p-1', 9150],
+      ['p-2', 9152],
+    ]);
+    expect(node.state).toBe('running');
+
+    // A third change: p-2's teardown, held, has 5 s of its own.
+    tor.offer({ ip: '127.0.0.1', port: 9153 });
+    await settle();
+    expect(stops().map((m) => m.params.instance)).toEqual(['p-1', 'p-2']);
+    await clock.advance(4_999);
+    expect(service.children).toHaveLength(1);
+    await clock.advance(1);
+    await clock.advance(1_000);
+    expect(service.children).toHaveLength(2);
+    expect(
+      child()
+        .sent('ipfs.start')
+        .map((m) => [m.params.instance, m.params.network.port])
+    ).toEqual([['p-1', 9153]]);
+    expect(node.state).toBe('running');
+  });
+
   test('a stop during the teardown ends the change', async () => {
     const { tor } = await running({ stop: () => {} });
     tor.offer({ ip: '127.0.0.1', port: 9151 });

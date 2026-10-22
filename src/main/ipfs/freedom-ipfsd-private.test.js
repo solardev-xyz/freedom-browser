@@ -433,6 +433,80 @@ describe('a change of network policy (0007, step 8, B3)', () => {
     ).toEqual([9151]);
   });
 
+  describe('rapid changes: each change has its own 5 s', () => {
+    /** Private instances through Tor at 9150 whose `ipfs.stop`s are held,
+     * and `private-a` loaded on `e-1`. */
+    async function heldStops() {
+      const stops = holding();
+      const { tor } = throughTor({ stop: stops.handler });
+      expect(await load('private-a')).toBe('private e-1');
+      const prove = async (n) => {
+        const { message, child: c } = stops.held[n];
+        c.result(message.id, { instance: message.params.instance });
+        await settle();
+      };
+      return { tor, stops, prove };
+    }
+
+    test("a second change's teardown, after the first's is proven, still stops the process at its 5 s", async () => {
+      const { tor, stops, prove } = await heldStops();
+      // The first change: e-1's teardown held, its slot draining, so the
+      // next load starts e-2 in another slot.
+      tor.offer({ ip: '127.0.0.1', port: 9151 });
+      await settle();
+      expect(stops.held).toHaveLength(1);
+      expect(await load('private-a')).toBe('private e-2');
+      await prove(0);
+
+      // The second: e-2's teardown held too.
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      await settle();
+      expect(stops.held.map((s) => s.message.params.instance)).toEqual(['e-1', 'e-2']);
+      await clock.advance(4_999);
+      expect(child().sent('ipfs.shutdown')).toEqual([]);
+      await clock.advance(1);
+      expect(child().sent('ipfs.shutdown')).toHaveLength(1);
+    });
+
+    test("each change's 5 s run from that change: an earlier one's proof neither stops the process nor ends a later one's", async () => {
+      const { tor, stops, prove } = await heldStops();
+      tor.offer({ ip: '127.0.0.1', port: 9151 });
+      await settle();
+      await clock.advance(3_000);
+      expect(await load('private-a')).toBe('private e-2');
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      await settle();
+      expect(stops.held).toHaveLength(2);
+
+      // The first change's teardown is proven within its 5 s; the
+      // second's isn't.
+      await clock.advance(1_000);
+      await prove(0);
+      await clock.advance(1_000);
+      expect(child().sent('ipfs.shutdown')).toEqual([]);
+      await clock.advance(2_999);
+      expect(child().sent('ipfs.shutdown')).toEqual([]);
+      await clock.advance(1);
+      expect(child().sent('ipfs.shutdown')).toHaveLength(1);
+    });
+
+    test('changes whose teardowns are all proven stop nothing: the instance under the new policy stays', async () => {
+      const { tor, prove } = await heldStops();
+      tor.offer({ ip: '127.0.0.1', port: 9151 });
+      await settle();
+      expect(await load('private-a')).toBe('private e-2');
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      await settle();
+      expect(await load('private-b')).toBe('private e-3');
+      await prove(0);
+      await prove(1);
+      await clock.advance(10_000);
+      expect(child().sent('ipfs.shutdown')).toEqual([]);
+      expect(await load('private-b')).toBe('private e-3');
+      expect(service.spawned).toHaveLength(1);
+    });
+  });
+
   test('a stop unsubscribes, and a change after it does nothing', async () => {
     const { tor, network } = throughTor();
     expect(await load('private-a')).toBe('private e-1');

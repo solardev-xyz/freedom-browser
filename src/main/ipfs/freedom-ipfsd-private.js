@@ -185,8 +185,9 @@ class PrivateInstances {
     this.failed = false;
     this.stopped = false;
     this.stopping = null;
-    // A policy change waiting for its teardowns' proof: its timer.
-    this.changeTimer = null;
+    // Each policy change still waiting for its teardowns' proof: its own
+    // teardowns, and its own 5 s timer.
+    this.changeProofs = new Set();
     this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
   }
 
@@ -232,8 +233,8 @@ class PrivateInstances {
     if (!this.stopped) {
       this.stopped = true;
       this.unsubscribeNetwork();
-      this.clearTimer(this.changeTimer);
-      this.changeTimer = null;
+      for (const proof of this.changeProofs) this.clearTimer(proof.timer);
+      this.changeProofs.clear();
       this.retireAll();
       this.stopping = this.stopProcess();
     }
@@ -243,8 +244,9 @@ class PrivateInstances {
   /**
    * The network policy may have changed: every instance started or
    * starting under another one is retired and torn down, and if that isn't
-   * proven within 5 s the process is stopped. No policy now (Tor down)
-   * changes nothing.
+   * proven within 5 s the process is stopped. Each change's teardowns have
+   * their own 5 s, however many changes come before they are proven. No
+   * policy now (Tor down) changes nothing.
    */
   onNetworkChange() {
     if (!this.up) return;
@@ -258,15 +260,26 @@ class PrivateInstances {
       instances: changed.length,
     });
     for (const instance of changed) this.retire(instance);
-    const draining = changed.map((instance) => instance.slot).filter((slot) => slot.draining);
-    if (draining.length === 0 || this.changeTimer) return;
-    this.changeTimer = this.setTimer(() => {
-      this.changeTimer = null;
-      if (!this.up || !this.life || !draining.some((slot) => slot.draining)) return;
+    // This change's teardowns: each is unproven while its slot still
+    // drains it (its stop's outcome, or the process's end, clears it).
+    const teardowns = changed
+      .map(({ slot }) => ({ slot, drained: slot.draining }))
+      .filter(({ drained }) => drained);
+    if (teardowns.length === 0) return;
+    const unproven = () => teardowns.some(({ slot, drained }) => slot.draining === drained);
+    const proof = { timer: null };
+    proof.timer = this.setTimer(() => {
+      this.changeProofs.delete(proof);
+      if (!this.up || !this.life || !unproven()) return;
       this.log.warn('[IPFS] private freedom-ipfs teardown unproven after a policy change');
       this.life = null;
       this.shutdown = this.stopProcess();
     }, POLICY_CHANGE_PROOF_MS);
+    this.changeProofs.add(proof);
+    // Proven: this change's timer goes, and only this change's.
+    Promise.all(teardowns.map(({ drained }) => drained)).then(() => {
+      if (this.changeProofs.delete(proof)) this.clearTimer(proof.timer);
+    });
   }
 
   // ---- instances and their slots ----
