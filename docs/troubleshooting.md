@@ -21,9 +21,9 @@
 
 ## An IPFS provider on my local network isn't used
 
-- By design: the built-in IPFS node connects only to public internet addresses for the providers and peers it finds, so a page can't make it reach the devices on your network. Providers on your local network or this computer are refused.
+- By design: the built-in IPFS node connects only to public internet addresses for the providers and peers it finds. A provider at an address on your local network or this computer is refused, so a page can't point the node at it. See **Public Addresses Only** in [features.md](features.md) for what Freedom can and can't identify as local.
 - To use a node on your network, point the profile at it as an external IPFS gateway under **Settings → Nodes**. Freedom doesn't verify content in that mode, so use a gateway you run yourself.
-- On an IPv6-only network that uses NAT64, IPv6 connections can wait or be refused while Freedom learns the network's translation prefixes, or if its DNS servers don't answer. IPv4 keeps working.
+- On an IPv6-only network that uses NAT64, most IPv6 connections wait while Freedom learns the network's translation prefixes. If the network's DNS servers don't answer, IPv6 addresses outside the well-known NAT64 prefix (`64:ff9b::/96`) and 6to4 (`2002::/16`) are refused; those two are still checked, and may work. IPv4 keeps working.
 
 ## Radicle fails to start
 
