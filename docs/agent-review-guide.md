@@ -120,7 +120,8 @@ for this preparation pass:
 Useful reviewer smoke tests, in disposable projects:
 
 1. Connect an available provider; select a model and ask for an ordinary browsing
-   task. Try a WebMCP demo and check the page-action discovery UI.
+   task. Try a WebMCP demo and check the page-action discovery UI (website
+   actions need a restart after AI is first turned on).
 2. Ask for three independent article summaries. Check separate helper tabs,
    synthesis, individual Stop, and absence of redundant parent rereads.
 3. Build a small website in a new managed workspace. Inspect permissions, build,

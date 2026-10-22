@@ -114,6 +114,49 @@ test('invitation dismissal persists across a real restart without enabling AI', 
   await expect(chrome.locator('#agent-toggle-btn')).toBeHidden();
 });
 
+// #777: the AI switch is the consent step, so the start page cannot flip it
+// itself, and the experimental WebMCP API is only exposed to pages for a
+// launch with AI on (a process-wide switch, so enabling AI applies to it from
+// the next start).
+test('with AI off pages get no WebMCP, the start page cannot enable AI, and Settings does from the next launch', async ({ electronApp, window, relaunchApp }) => {
+  test.setTimeout(60_000);
+  const url = 'https://webmcp-gate.test/';
+  const fixture = { body: '<!doctype html><title>WebMCP gate</title><p>Fixture</p>' };
+  const modelContext = async (app) => {
+    await app.evaluate((_e, { url, fixture }) => globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture(url, fixture), { url, fixture });
+    let chrome;
+    await expect.poll(() => {
+      chrome = app.windows().find(page => page.url().endsWith('/renderer/index.html'));
+      return Boolean(chrome);
+    }).toBe(true);
+    await chrome.locator('#address-input').fill(url);
+    await chrome.locator('#address-input').press('Enter');
+    let page;
+    await expect.poll(() => {
+      page = app.windows().find(page => page.url() === url);
+      return Boolean(page);
+    }).toBe(true);
+    await page.waitForLoadState('load');
+    return page.evaluate(() => [isSecureContext, typeof document.modelContext]);
+  };
+
+  const home = await guest(electronApp, 'home');
+  expect(await home.evaluate(() => window.freedomAPI.saveSettings({ enableAi: true }))).toBe(false);
+  expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false });
+  await expect(window.locator('#agent-toggle-btn')).toBeHidden();
+  expect(await home.evaluate(() => window.freedomAPI.saveSettings({ aiInvitationDismissed: true }))).toBe(true);
+  expect(await modelContext(electronApp)).toEqual([true, 'undefined']);
+
+  const page = await settings(electronApp, window);
+  await page.locator('#enable-ai').check();
+  await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  expect(await modelContext(electronApp)).toEqual([true, 'undefined']);
+
+  await electronApp.close();
+  const restarted = await relaunchApp();
+  expect(await modelContext(restarted)).toEqual([true, 'object']);
+});
+
 test('What’s new remains discoverable with AI enabled and fits both themes at narrow widths', async ({ electronApp, window }, testInfo) => {
   test.setTimeout(60_000);
   const home = await guest(electronApp, 'home');

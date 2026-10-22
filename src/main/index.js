@@ -507,6 +507,7 @@ const {
 } = require('./automation/runtime');
 const { createFreedomAgentRuntime } = require('./agent/runtime');
 const { PREVIEW_PARTITION, isolatePreviewNetwork } = require('./agent/workspace-preview-network');
+const { webMcpBlinkFeatures } = require('./agent/webmcp-launch');
 let agentPreviewNetwork;
 const { getAgentDataDir } = require('./profile-paths');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
@@ -533,8 +534,9 @@ function hasRuntimeNodeTransition() {
   );
 }
 
-// Native WebMCP is experimental in the pinned Electron runtime.
-app.commandLine.appendSwitch('enable-blink-features', 'WebMCP,WebMCPTesting');
+// Native WebMCP only for a launch with AI on; see agent/webmcp-launch.js.
+const webMcpFeatures = webMcpBlinkFeatures(loadSettings());
+if (webMcpFeatures) app.commandLine.appendSwitch('enable-blink-features', webMcpFeatures);
 // <link rel=dns-prefetch> asks the system resolver directly: no proxy, no Tor, no CSP,
 // and Chromium ignores X-DNS-Prefetch-Control for it. A workspace preview could
 // otherwise exfiltrate data in a hostname. Disabled for every renderer, because a
