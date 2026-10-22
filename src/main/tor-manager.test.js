@@ -783,6 +783,157 @@ describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
     await mod.stopTor();
   });
 
+  test('a listener that throws neither fails the start nor keeps the others from hearing it', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    mod.onIpfsSocksEndpointChange(() => {
+      throw new Error('a failing IPFS listener');
+    });
+    const other = jest.fn();
+    mod.onIpfsSocksEndpointChange(other);
+
+    await expect(mod.startTor({ targetSession: createSessionMock() })).resolves.toBeUndefined();
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledWith({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      refused: null,
+    });
+    expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9150 });
+
+    await expect(mod.stopTor()).resolves.toBeUndefined();
+    expect(other).toHaveBeenCalledTimes(2);
+  });
+
+  test("a listener that throws on withdrawal doesn't keep managed Arti from being stopped", async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-ipfs-stop-'));
+    const artiProcess = createArtiProcessMock();
+    try {
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19152 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn: jest.fn(() => artiProcess), execFile: jest.fn() }),
+        },
+      });
+      await mod.startTor({ targetSession: createSessionMock() });
+      artiProcess.stdout.on.mock.calls[0][1]('Sufficiently bootstrapped\n');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 19152 });
+
+      mod.onIpfsSocksEndpointChange(() => {
+        throw new Error('a failing IPFS listener');
+      });
+      await expect(mod.stopTor()).resolves.toBeUndefined();
+      expect(artiProcess.kills).toEqual(['SIGTERM']);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  describe('a health result from an earlier run', () => {
+    // External Tor at `endpoint` (mutable), whose SOCKS check answers
+    // `socks.healthy`, and whose health checks wait until a test settles
+    // them, oldest first.
+    const heldHealthChecks = (profile, socks) => {
+      const held = [];
+      const { mod } = loadTorManager({
+        enableTorIntegration: true,
+        activeProfile: profile,
+        extraMocks: {
+          [require.resolve('./socks-probe')]: () => ({
+            probeSocks5Endpoint: jest.fn(async () => socks.healthy),
+            probeTcpEndpoint: jest.fn(
+              (endpoint) => new Promise((settle) => held.push({ endpoint, settle }))
+            ),
+          }),
+        },
+      });
+      return { mod, held };
+    };
+    const externalProfile = (externalSocks) => ({
+      metadata: { nodes: { tor: { mode: 'external', externalSocks } } },
+    });
+
+    test("a stale success doesn't offer a restart whose SOCKS check failed", async () => {
+      jest.useFakeTimers();
+      const profile = externalProfile('127.0.0.1:9150');
+      const socks = { healthy: true };
+      const { mod, held } = heldHealthChecks(profile, socks);
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(held.map((check) => check.endpoint)).toEqual(['127.0.0.1:9150']);
+      await mod.stopTor();
+
+      profile.metadata.nodes.tor.externalSocks = '127.0.0.1:9151';
+      socks.healthy = false;
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+
+      held[0].settle(true);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }, null]);
+      await mod.stopTor();
+    });
+
+    test("a stale failure doesn't withdraw a restart that runs", async () => {
+      jest.useFakeTimers();
+      const profile = externalProfile('127.0.0.1:9150');
+      const socks = { healthy: true };
+      const { mod, held } = heldHealthChecks(profile, socks);
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      await mod.stopTor();
+
+      profile.metadata.nodes.tor.externalSocks = '127.0.0.1:9151';
+      await mod.startTor({ targetSession: createSessionMock() });
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9151 });
+
+      held[0].settle(false);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9151 });
+
+      // The restart's own check still counts: it is of 9151, and a failure
+      // withdraws the endpoint.
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(held[1].endpoint).toBe('127.0.0.1:9151');
+      held[1].settle(false);
+      await flushMicrotasks();
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      await mod.stopTor();
+    });
+
+    test('a check that settles after its run was stopped changes nothing', async () => {
+      jest.useFakeTimers();
+      const { mod, held } = heldHealthChecks(externalProfile('127.0.0.1:9150'), {
+        healthy: true,
+      });
+      const changes = [];
+      mod.onIpfsSocksEndpointChange((change) => changes.push(change.endpoint));
+
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(5000);
+      await mod.stopTor();
+      held[0].settle(false);
+      await flushMicrotasks();
+      held.length = 0;
+      expect(changes).toEqual([{ ip: '127.0.0.1', port: 9150 }, null]);
+    });
+  });
+
   test('a stopped listener hears nothing more', async () => {
     const { mod } = externalAt('socks5://127.0.0.1:9150/');
     const listener = jest.fn();

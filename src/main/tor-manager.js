@@ -17,7 +17,6 @@ const { promisify } = require('util');
 const path = require('path');
 
 const execFileAsync = promisify(execFile);
-const { EventEmitter } = require('events');
 const fs = require('fs');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
@@ -85,11 +84,12 @@ let artiOutputBuffer = '';
 // IPFS through Tor (freedom-core design 0007, "Where the proxy comes from"):
 // `{ ip, port }` while Tor is RUNNING at an endpoint it can take, otherwise
 // null, with `ipfsEndpointRefusal` saying why when Tor runs at one it can't.
-// `ipfsEndpointEvents` emits 'change' with getIpfsSocksEndpoint() each time
-// either changes.
+// Each of `ipfsEndpointListeners` is called with getIpfsSocksEndpoint() each
+// time either changes, on its own: one that throws is logged, and neither
+// stops the others nor Tor's start or stop.
 let ipfsEndpoint = null;
 let ipfsEndpointRefusal = null;
-const ipfsEndpointEvents = new EventEmitter();
+const ipfsEndpointListeners = new Set();
 // Bumped by every start attempt and by every stop, so a start that is awaiting
 // something (external-candidate prompt, port probe, SOCKS probe) can tell that
 // it has been superseded and must not spawn/commit anything.
@@ -287,9 +287,9 @@ async function findAvailablePort(defaultPort, maxAttempts = DEFAULTS.tor.fallbac
   return null;
 }
 
-/** External liveness: the configured endpoint accepts a TCP connection. */
-async function checkHealth() {
-  return probeTcpEndpoint(currentSocksEndpoint);
+/** External liveness: `endpoint` accepts a TCP connection. */
+async function checkHealth(endpoint = currentSocksEndpoint) {
+  return probeTcpEndpoint(endpoint);
 }
 
 async function checkSocksProtocolHealth() {
@@ -305,8 +305,19 @@ function startHealthCheck(mode) {
     healthCheckInterval = null;
     return;
   }
-  healthCheckInterval = setInterval(async () => {
-    const healthy = await checkHealth();
+  // Each result belongs to this run: one that settles after a stop, a
+  // restart, another endpoint or another interval is dropped, so a check of
+  // an earlier run can't move a later start's state, nor offer its endpoint.
+  const generation = startGeneration;
+  const endpoint = currentSocksEndpoint;
+  let interval = null;
+  const current = () =>
+    generation === startGeneration &&
+    endpoint === currentSocksEndpoint &&
+    healthCheckInterval === interval;
+  interval = setInterval(async () => {
+    const healthy = await checkHealth(endpoint);
+    if (!current()) return;
     if (!healthy && currentState === STATUS.RUNNING) {
       updateState(STATUS.ERROR, 'SOCKS port unreachable');
       setErrorState('tor', 'Tor unreachable. Retrying…');
@@ -315,6 +326,7 @@ function startHealthCheck(mode) {
       updateState(STATUS.RUNNING);
     }
   }, 5000);
+  healthCheckInterval = interval;
 }
 
 /**
@@ -836,7 +848,13 @@ function publishIpfsEndpoint() {
   ipfsEndpoint = endpoint;
   ipfsEndpointRefusal = refused;
   if (refused) log.warn('[Tor] Not offered to IPFS:', refused);
-  ipfsEndpointEvents.emit('change', getIpfsSocksEndpoint());
+  for (const listener of ipfsEndpointListeners) {
+    try {
+      listener(getIpfsSocksEndpoint());
+    } catch (err) {
+      log.error('[Tor] IPFS endpoint listener failed:', err);
+    }
+  }
 }
 
 /**
@@ -854,12 +872,13 @@ function getIpfsSocksEndpoint() {
 }
 
 /**
- * Calls `listener` with getIpfsSocksEndpoint() each time it changes.
- * Returns the function that stops it.
+ * Calls `listener` with getIpfsSocksEndpoint() each time it changes, as
+ * ant-manager's status listeners are called: synchronously, each on its
+ * own, a throw logged and dropped. Returns the function that stops it.
  */
 function onIpfsSocksEndpointChange(listener) {
-  ipfsEndpointEvents.on('change', listener);
-  return () => ipfsEndpointEvents.off('change', listener);
+  ipfsEndpointListeners.add(listener);
+  return () => ipfsEndpointListeners.delete(listener);
 }
 
 function registerTorIpc() {
