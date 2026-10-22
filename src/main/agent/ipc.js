@@ -74,14 +74,15 @@ function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
 }
 
-function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSettingsSender }) {
+function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSettingsSender, isAgentLauncherSender }) {
   const channels = Object.entries(IPC)
     .filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'))
     .map(([, channel]) => channel);
   for (const channel of channels) {
     ipcMain.handle(channel, (event) => {
-      const settingsRequest = (channel.startsWith('agent:provider:') || channel === IPC.AGENT_OPEN) && isProviderSettingsSender?.(event);
-      if (!isTrustedSender(event.sender) && !settingsRequest)
+      const settingsRequest = channel.startsWith('agent:provider:') && isProviderSettingsSender?.(event);
+      const launcherRequest = channel === IPC.AGENT_OPEN && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
+      if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
       if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
       return errorEnvelope(
@@ -1432,8 +1433,8 @@ function registerFreedomAgentIpc(options = {}) {
   });
 
   handle(IPC.AGENT_OPEN, (event) => {
-    if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event))
-      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open Agent from Settings');
+    if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open Agent from the start page or Settings');
     const window = getOwnerWindow?.(event.sender);
     if (!window || window.isDestroyed?.()) return { ok: false };
     window.webContents.send('agent:show');

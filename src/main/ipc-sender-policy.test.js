@@ -30,6 +30,19 @@ const web = (url = 'https://evil.example/', extra = {}) =>
   makeEvent({ type: 'webview', url, ...extra });
 
 describe('isSenderAllowed', () => {
+  test('opening Agent is limited to home and Settings without granting provider authority', () => {
+    for (const file of ['home.html', 'settings.html']) {
+      expect(isSenderAllowed('agent:open', page(file))).toBe(true);
+      expect(isSenderAllowed('agent:open', page(file, { subFrame: true }))).toBe(false);
+    }
+    for (const file of ['history.html', 'private.html', 'error.html']) {
+      expect(isSenderAllowed('agent:open', page(file))).toBe(false);
+    }
+    expect(isSenderAllowed('agent:open', web())).toBe(false);
+    expect(isSenderAllowed('agent:open', makeEvent({ url: fileUrl('/tmp/pages/home.html') }))).toBe(false);
+    expect(isSenderAllowed('agent:provider:get-catalog', page('home.html'))).toBe(false);
+    expect(isSenderAllowed('agent:start', page('home.html'))).toBe(false);
+  });
   test('the PDF worker can return results without granting tabs or other windows access', () => {
     const channel = 'agent:pdf-processor:result';
     const url = fileUrl(path.join(PAGES_DIR, 'pdf-processor.html'));
@@ -235,6 +248,7 @@ describe('webview tiers mirror webview-preload.js', () => {
     guardInternal: TIER.INTERNAL,
     guardSettingsPage: TIER.SETTINGS,
     guardProfileManagerPage: TIER.PROFILE_MANAGER,
+    guardAgentLauncherPage: TIER.AGENT_LAUNCHER,
   };
 
   function preloadTiers() {
@@ -255,7 +269,7 @@ describe('webview tiers mirror webview-preload.js', () => {
     // Inside freedomAPI: attribute each call to the guard that opened the
     // chunk it sits in.
     const api = source.slice(start, end);
-    const chunks = api.split(/\b(guard(?:Internal|SettingsPage|ProfileManagerPage))\(/);
+    const chunks = api.split(/\b(guard(?:Internal|SettingsPage|ProfileManagerPage|AgentLauncherPage))\(/);
     for (let i = 1; i < chunks.length; i += 2) {
       const tier = GUARD_TIERS[chunks[i]];
       for (const match of chunks[i + 1].matchAll(CALL)) add(match[2], tier);

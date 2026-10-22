@@ -25,6 +25,7 @@
  *       INTERNAL the top frame of one of our internal pages
  *                (`renderer/pages/<file>` from internal-pages.json);
  *       SETTINGS the top frame of settings.html;
+ *       AGENT_LAUNCHER settings.html or home.html (open the UI only);
  *       PROFILE_MANAGER settings.html or profiles.html.
  *     `ipc-sender-policy.test.js` parses webview-preload.js and fails if a
  *     channel is added there without a tier here, or given a different tier.
@@ -55,6 +56,7 @@ const TIER = Object.freeze({
   PUBLIC: 'public',
   INTERNAL: 'internal',
   SETTINGS: 'settings',
+  AGENT_LAUNCHER: 'agent-launcher',
   PROFILE_MANAGER: 'profile-manager',
 });
 
@@ -162,7 +164,6 @@ const SETTINGS_CHANNELS = [
   'agent:provider:select-model',
   'agent:provider:remove',
   'agent:provider:clear',
-  'agent:open',
 
   'adblock:add-allowlist-host',
   'adblock:remove-allowlist-host',
@@ -200,6 +201,7 @@ const WEBVIEW_CHANNEL_TIERS = new Map([
   ...INTERNAL_CHANNELS.map((c) => [c, TIER.INTERNAL]),
   ...SETTINGS_CHANNELS.map((c) => [c, TIER.SETTINGS]),
   ...PROFILE_MANAGER_CHANNELS.map((c) => [c, TIER.PROFILE_MANAGER]),
+  ['agent:open', TIER.AGENT_LAUNCHER],
 ]);
 
 function senderType(event) {
@@ -283,6 +285,7 @@ function isSenderAllowed(channel, event) {
   if (!file) return false;
   if (tier === TIER.INTERNAL) return true;
   if (tier === TIER.SETTINGS) return file === SETTINGS_FILE;
+  if (tier === TIER.AGENT_LAUNCHER) return file === SETTINGS_FILE || file === internalPages.routable.home;
   if (tier === TIER.PROFILE_MANAGER) return file === SETTINGS_FILE || file === PROFILES_FILE;
   return false;
 }

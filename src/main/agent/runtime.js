@@ -37,6 +37,7 @@ function createFreedomAgentRuntime(options = {}) {
   let featureController = new AbortController();
   const isEnabled = () => loadSettings().enableAi === true;
   const isProviderSettingsSender = event => !isPrivateWebContents(event?.sender) && isSenderAllowed('agent:provider:get-status', event);
+  const isAgentLauncherSender = event => !isPrivateWebContents(event?.sender) && isSenderAllowed('agent:open', event);
   const assertEnabled = () => {
     if (!isEnabled()) throw Object.assign(new Error('AI is disabled'), { code: 'AGENT_DISABLED' });
   };
@@ -77,7 +78,7 @@ function createFreedomAgentRuntime(options = {}) {
     for (const store of [workspaceStore, nodeOperationStore, historyStore]) {
       try { store?.close(); } catch { log.warn('[Agent] Could not close an unavailable store'); }
     }
-    const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender });
+    const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender, isAgentLauncherSender });
     return { unavailable: true, dispose: async () => unregisterIpc() };
   }
   const dictation = new DictationService({ dataDir: options.dataDir, providerStore,
@@ -175,6 +176,7 @@ function createFreedomAgentRuntime(options = {}) {
     isTrustedSender: options.isTrustedSender,
     isEnabled,
     isProviderSettingsSender,
+    isAgentLauncherSender,
     onProviderChanged: async () => {
       dictation.connectionsChanged();
       await service.connectionsChanged();

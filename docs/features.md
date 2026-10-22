@@ -205,6 +205,9 @@ and purchases keep their normal approval steps.
 
 - **Browser work:** Agent uses conversation-owned tabs and can delegate independent
   work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **What's new:** A compact glass list on the built-in start page currently highlights
+  Freedom Agent. The Freedom Agent row shows On/Off and opens Agent when enabled or AI
+  Settings when disabled. Viewing a highlight does not enable AI or start a task.
 - **Project work:** Create a managed workspace or attach an existing folder read-only.
   Grant editing separately. Drag files into the composer to attach them to a prompt.
   File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.

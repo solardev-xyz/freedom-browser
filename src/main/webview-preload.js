@@ -690,6 +690,11 @@ const isSettingsPage = () => {
   return pathname.endsWith(`/pages/${settingsFile}`);
 };
 
+const isAgentLauncherPage = () => isSettingsPage() || (
+  globalThis.location?.protocol === 'file:' &&
+  (globalThis.location.pathname || '').endsWith(`/pages/${internalPages.routable.home}`)
+);
+
 const isProfilesPage = () => {
   const location = globalThis.location;
   if (!location || location.protocol !== 'file:') return false;
@@ -721,6 +726,15 @@ const guardSettingsPage =
       const url = globalThis.location?.href || 'unknown';
       console.warn(`[freedomAPI] blocked settings-only "${name}" on page: ${url}`);
       return Promise.reject(new Error('freedomAPI profile changes are only available on settings'));
+    }
+    return fn(...args);
+  };
+
+const guardAgentLauncherPage =
+  (name, fn) =>
+  (...args) => {
+    if (!isAgentLauncherPage()) {
+      return Promise.reject(new Error('Open Agent from the start page or Settings'));
     }
     return fn(...args);
   };
@@ -1145,7 +1159,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId })),
   removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
   clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
-  openAgent: guardSettingsPage('openAgent', () => ipcRenderer.invoke('agent:open')),
+  openAgent: guardAgentLauncherPage('openAgent', () => ipcRenderer.invoke('agent:open')),
   onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
     guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),
   onAgentProviderChanged: guardSettingsPage('onAgentProviderChanged',

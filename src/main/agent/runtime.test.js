@@ -264,6 +264,7 @@ describe('Freedom agent runtime', () => {
       isTrustedSender: options.isTrustedSender,
       isEnabled: expect.any(Function),
       isProviderSettingsSender: expect.any(Function),
+      isAgentLauncherSender: expect.any(Function),
       onEnabledChanged: expect.any(Function),
       onProviderChanged: expect.any(Function),
       openExternal: options.openExternal,

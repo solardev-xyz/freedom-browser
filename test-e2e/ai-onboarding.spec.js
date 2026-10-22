@@ -54,7 +54,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   const blocked = await window.evaluate(() => window.electronAPI.getAgentProviderCatalog());
   expect(blocked).toMatchObject({ ok: false, error: { code: 'AGENT_DISABLED' } });
   expect(requests).toBe(before);
-  await home.getByRole('link', { name: 'Explore AI' }).click();
+  await home.locator('#ai-invitation-open').click();
   const page = await guest(electronApp, 'settings');
   await expect(page.locator('#enable-ai')).not.toBeChecked();
   await expect(page.locator('#ai-provider-settings')).toBeHidden();
@@ -102,13 +102,60 @@ test('invitation dismissal persists across a real restart without enabling AI', 
   await expect(home.locator('#ai-invitation')).toBeVisible();
   await home.locator('#ai-invitation-dismiss').click();
   await expect(home.locator('#ai-invitation')).toBeHidden();
+  await expect(home.locator('#home-intro')).toBeFocused();
+  await expect(home.locator('#whats-new')).toBeHidden();
   expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
   await electronApp.close();
   const restarted = await relaunchApp();
   const restartedHome = await guest(restarted, 'home');
   await expect(restartedHome.locator('#ai-invitation')).toBeHidden();
+  await expect(restartedHome.locator('#whats-new')).toBeHidden();
   const chrome = await restarted.firstWindow();
   await expect(chrome.locator('#agent-toggle-btn')).toBeHidden();
+});
+
+test('What’s new remains discoverable with AI enabled and fits both themes at narrow widths', async ({ electronApp, window }, testInfo) => {
+  test.setTimeout(60_000);
+  const home = await guest(electronApp, 'home');
+  await expect(home.locator('#whats-new')).toBeVisible();
+  await expect(home.locator('#ai-invitation-state')).toHaveText('Off');
+  expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false });
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect(home.locator('#ai-invitation')).toBeVisible();
+  await expect(home.locator('#ai-invitation-state')).toHaveText('On');
+  await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  await expect(home.locator('.whats-new-row')).toHaveCount(1);
+  await home.locator('#ai-invitation-open').click();
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await expect(home).toHaveURL(/\/pages\/home.html$/);
+  await window.locator('#agent-sidebar-close').click();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
+    for (const width of [1280, 760, 390, 320]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+        win.setMinimumSize(320, 300);
+        win.setContentSize(width, 900);
+      }, width);
+      await expect.poll(() => home.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(await home.locator('#ai-invitation').evaluate(el => {
+        const state = el.querySelector('#ai-invitation-state').getBoundingClientRect();
+        const chevron = el.querySelector('.whats-new-chevron').getBoundingClientRect();
+        const dismiss = el.querySelector('#ai-invitation-dismiss').getBoundingClientRect();
+        return state.right <= chevron.left && chevron.right <= dismiss.left && dismiss.right <= innerWidth;
+      })).toBe(true);
+      await home.evaluate(() => scrollTo(0, 0));
+      await home.screenshot({ animations: 'disabled',
+        path: testInfo.outputPath(`whats-new-${theme}-${width}.png`) });
+      await home.locator('#ai-invitation').scrollIntoViewIfNeeded();
+      await expect.poll(() => home.locator('#ai-invitation').evaluate(el =>
+        el.getBoundingClientRect().bottom <= innerHeight + 1)).toBe(true);
+      await home.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await home.screenshot({ animations: 'disabled',
+        path: testInfo.outputPath(`whats-new-${theme}-${width}-bottom.png`) });
+    }
+  }
 });
 
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {

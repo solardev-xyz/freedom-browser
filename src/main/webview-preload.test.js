@@ -197,6 +197,23 @@ function loadWebviewPreloadModule(options = {}) {
 }
 
 describe('webview-preload', () => {
+  test.each(['home.html', 'settings.html'])('opens Agent from %s without returning provider authority to home', async file => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: {
+      protocol: 'file:', pathname: `/app/pages/${file}`, href: `file:///app/pages/${file}`,
+    } });
+    await exposures.freedomAPI.openAgent();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:open');
+    if (file === 'home.html') {
+      await expect(exposures.freedomAPI.getAgentProviderCatalog()).rejects.toThrow('only available on settings');
+    }
+  });
+  test('does not expose the Agent launcher to other internal pages or websites', async () => {
+    const { exposures, ipcRenderer, location } = loadWebviewPreloadModule();
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    location.protocol = 'https:'; location.pathname = '/pages/home.html';
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('agent:open');
+  });
   let consoleLogSpy;
   let consoleWarnSpy;
   let consoleErrorSpy;

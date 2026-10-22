@@ -1609,6 +1609,27 @@ test('page-action previews are single-flight and discard a removed binding', asy
 });
 
 describe('profile AI opt-in', () => {
+  test('home may open Agent but cannot access providers or start work, and off still blocks opening', async () => {
+    const home = createSender();
+    const send = jest.fn();
+    let enabled = true;
+    const ctx = register({ isAgentLauncherSender: event => event.sender === home,
+      isEnabled: () => enabled, getOwnerWindow: () => ({ webContents: { send } }) });
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith('agent:show');
+    for (const channel of [IPC.AGENT_START, IPC.AGENT_PROVIDER_GET_CATALOG]) {
+      expect(await ctx.ipcMain.handlers.get(channel)({ sender: home }, {})).toMatchObject({
+        ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+      });
+    }
+    enabled = false;
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toMatchObject({
+      ok: false, error: { code: 'AGENT_DISABLED' },
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(ctx.service.start).not.toHaveBeenCalled();
+    await ctx.dispose();
+  });
   test('off blocks model/auth/discovery/work without erasing stored connection status', async () => {
     const ctx = register({ isEnabled: () => false });
     for (const channel of [IPC.AGENT_START, IPC.AGENT_STEER, IPC.AGENT_RESUME,
