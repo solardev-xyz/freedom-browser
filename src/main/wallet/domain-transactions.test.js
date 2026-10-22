@@ -52,3 +52,26 @@ test('a typed domain description reaches the approval card beside the exact tran
   expect(wallet.domain).toEqual(f.plan.presentation);
   expect(wallet).toMatchObject({ to: f.plan.to, data: '0x1234', value: '0.000000000000000123 ETH' });
 });
+
+test.each([
+  [{ type: 'eip1559', maxFeePerGas: '10' }],
+  [{ type: 'eip1559', maxFeePerGas: '10', maxPriorityFeePerGas: null }],
+  [{ type: 'eip1559', maxFeePerGas: '10', maxPriorityFeePerGas: '0' }],
+  [{ type: 'eip1559', maxPriorityFeePerGas: '1' }],
+])('a partial EIP-1559 quote %j is refused before approval', async fees => {
+  const f = fixture(); f.dependencies.getGasPrices.mockResolvedValue(fees);
+  await expect(f.wallet.send(f.plan, f.context)).rejects.toThrow('maximum network fee');
+  expect(f.context.requestApproval).not.toHaveBeenCalled();
+  expect(f.dependencies.signAndRecord).not.toHaveBeenCalled();
+});
+
+test('ownWallet checks an address against the profile’s own wallet list', async () => {
+  const f = fixture();
+  f.dependencies.identityManager.getDerivedWallets.mockResolvedValue([{ ...account, name: 'Savings\u202e' },
+    { index: 1, address: '0x000000000000000000000000000000000000bEEF', type: 'safe', name: 'Team' }]);
+  expect(await f.wallet.ownWallet(account.address.toLowerCase())).toEqual({ status: 'own', name: 'Savings ' });
+  expect(await f.wallet.ownWallet('0x000000000000000000000000000000000000beef')).toEqual({ status: 'own', name: 'Team' });
+  expect(await f.wallet.ownWallet('0x000000000000000000000000000000000000cafE')).toEqual({ status: 'other' });
+  f.dependencies.identityManager.getDerivedWallets.mockResolvedValue([account, { index: 1, address: null, type: 'mnemonic' }]);
+  expect(await f.wallet.ownWallet('0x000000000000000000000000000000000000cafE')).toEqual({ status: 'unknown' });
+});

@@ -46,6 +46,27 @@ Every transaction is simulated from the real sender, checked again after the
 exact wallet approval, then journaled before handoff to the existing signer.
 The approval shows the name, action, term, requested record difference, exact
 payment, maximum gas fee and contract bytes. No approval mode auto-authorizes it.
+An ETH-address approval also says whether the new address is one of the profile's
+own Freedom wallets; main checks the wallet list, not the model's description.
+Fee quotes must be complete before approval: an EIP-1559 cap without a priority
+fee is refused like a missing or zero quote, never re-quoted at signing.
+`domain_inspect` labels its result as untrusted data for the model: records are
+set by whoever controls the name.
+
+Registration (reveal) and renewal send the quoted price plus a disclosed 2%
+buffer, the same margin the ENS manager app uses
+([`CURRENCY_FLUCTUATION_BUFFER_PERCENTAGE`](https://github.com/ensdomains/ens-app-v2/blob/ffd39877139528cf54fc4df2a4db5e6c8cc6b2a5/src/utils/constants.ts)),
+so an ETH/USD oracle update between signing and mining does not revert the
+payment. The approval's amount is the buffered value and a separate row names the
+price and the buffer. Every supported contract refunds the excess to the sender in
+the same transaction: the pinned ENS
+[ETHRegistrarController](https://github.com/ensdomains/ens-contracts/blob/2a00e564caf5cf676cec66c9d13c322fb734a7f5/contracts/ethregistrar/ETHRegistrarController.sol)
+`register`/`renew` and the wrapped renewal controller's `renew` (its pinned
+`solcInputs` source) via `transfer`, and WNS/GNS `NameNFT.reveal`/`renew` via
+`safeTransferETH`. The ENS refund uses a 2,300-gas `transfer`; the pre-approval
+simulation from the real sender refuses a wallet that cannot receive it.
+The renewal amount is fixed when the operation is prepared: a lower current price
+still sends the approved amount (refunding the rest), a higher one is refused.
 
 Reads use Freedom's existing Ethereum chain-data policy. There is no independent
 public-RPC fallback, indexer or new connection. Candidate-name queries can disclose
@@ -69,7 +90,11 @@ only **encrypted** registration secrets. Secret protection requires Electron
 safeStorage with an OS-backed backend; Linux `basic_text` and unavailable
 credential storage are refused. Secrets are generated in main and erased from
 the saved operation after successful registration. File replacement is atomic;
-in-flight and ambiguous records are not silently pruned. The initial limit is
+in-flight and ambiguous records are not silently pruned. Each record carries a
+revision and a save must name the revision it read: a status poll that read the
+record before slow chain reads cannot overwrite a newer one (for example a
+dispatched reveal's hash) and drops its write instead. A dispatch outcome is
+always applied to the current record. The initial limit is
 500 operations / 4 MiB; a manual retention/inventory interface is future work.
 
 Secrets/preimages are excluded from model outputs, ordinary conversation history,
@@ -102,6 +127,10 @@ transaction digest and current commitment. Valid commitments resume their age
 wait or become ready for a separately approved reveal, without another commit.
 Missing/reorganized receipts, mismatched transactions and uncertain reveals
 remain blocked. An expired commitment is reported as expired, never repurchased.
+A reveal that is mined but reverts (for example after a price move) consumes
+neither the commitment nor the price. Within the commitment's maximum age the
+operation returns to `ready` on the same commitment, and the next `domain_execute`
+requotes it for a fresh wallet approval; after that age it is `expired`.
 
 A crash during dispatch is uncertain, even with no returned transaction hash.
 Preparing another operation for that name is blocked until reconciled. A recovery

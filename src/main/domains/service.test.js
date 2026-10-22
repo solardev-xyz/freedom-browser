@@ -46,7 +46,9 @@ function fixture(namespace = 'eth', available = false) {
     request: jest.fn(async method => method === 'eth_getTransactionCount' ? `0x${nonce.toString(16)}` : wire),
   };
   const account = { index: 0, address, type: 'mnemonic' };
-  const wallet = { account: jest.fn(async () => account), send: jest.fn(async (plan, context) => {
+  const wallet = { account: jest.fn(async () => account),
+    ownWallet: jest.fn(async value => value.toLowerCase() === address.toLowerCase() ? { status: 'own', name: 'Main wallet' } : { status: 'other' }),
+    send: jest.fn(async (plan, context) => {
     await context.requestApproval({ label: plan.label });
     await context.revalidate();
     await context.beforeSend();
@@ -64,7 +66,7 @@ function fixture(namespace = 'eth', available = false) {
   const options = { store, chain, wallet, executeWaitMs: 0, pollMs: 1, verifyResolution: jest.fn(async () => true),
     getPublication: jest.fn(async () => ({ publicationId, reference: '12'.repeat(32), state: 'completed', verified: true, indexDocument: 'index.html' })) };
   return { service: new DomainService(options), options, state, chain, wallet, clock, store,
-    context: { conversationId: 'conversation', requestApproval: jest.fn(async () => 'approved') }, getSecret: () => secret };
+    context: { conversationId: 'conversation', requestApproval: jest.fn(async () => 'approved') }, getSecret: () => secret, getWire: () => wire };
 }
 
 test.each(['eth', 'wei', 'gwei'])('%s registration survives a restart and needs a separately approved reveal', async namespace => {
@@ -315,7 +317,7 @@ test('a reveal requotes without paying for another commitment', async () => {
   expect(result).toMatchObject({ state: 'completed', priceWei: '200' });
   expect(f.wallet.send).toHaveBeenCalledTimes(2);
   const sent = f.wallet.send.mock.calls[1][0];
-  expect(sent.value).toBe('200');
+  expect(sent.value).toBe('204'); // The new quote plus the disclosed 2% buffer.
   expect(ABI.nft.parseTransaction({ data: sent.data }).name).toBe('reveal');
   // The approval names the commit-time quote the new price departs from.
   expect(sent.presentation.items).toContainEqual({ label: 'Price change',
@@ -581,4 +583,112 @@ test('a text record cannot forge extra approval summary rows', async () => {
   expect(sent.summary.split(/\r\n?|\n|\u2028|\u2029/)).toHaveLength(5);
   // The exact calldata still carries the value byte for byte.
   expect(ABI.resolver.parseTransaction({ data: sent.data }).args[2]).toBe(forged);
+});
+
+test('a slow status poll cannot erase a dispatched reveal or re-offer it for approval', async () => {
+  const f = fixture('gwei', true);
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  const commitWire = f.getWire();
+  const commitReceipt = { blockHash: hash, blockNumber: '0x100', status: '0x1' };
+  const reveal = `0x${'c1'.repeat(32)}`;
+  // The reveal is broadcast but not mined yet.
+  f.chain.receipt.mockImplementation(async transaction => transaction === hash ? commitReceipt : null);
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, params) => method === 'eth_getTransactionByHash' && params[0] === hash ? commitWire : request(method, params));
+  const send = f.wallet.send.getMockImplementation();
+  f.wallet.send.mockImplementation(async (plan, context) => ({ ...await send(plan, context), hash: reveal }));
+  f.clock.timestamp += 61;
+  let release;
+  f.chain.receipt.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const slow = f.service.status({ operationId }); // Reads the journal, then stalls on RPC.
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready' });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'pending', transactionHash: reveal });
+  Object.assign(f.state, { available: true, active: false, owner: ZeroAddress });
+  release(commitReceipt);
+  expect(await slow).toMatchObject({ state: 'pending', transactionHash: reveal });
+  expect(f.store.get(operationId)).toMatchObject({ state: 'pending', transactionHash: reveal });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'pending' });
+  expect(f.context.requestApproval).toHaveBeenCalledTimes(2);
+  expect(f.wallet.send).toHaveBeenCalledTimes(2);
+});
+
+test.each(['eth', 'wei', 'gwei'])('%s register and renew send the quote plus a disclosed, refunded 2%% buffer', async namespace => {
+  const f = fixture(namespace, true);
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  expect(f.wallet.send.mock.calls[0][0].value).toBe('0');
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId });
+  await f.service.execute(operationId, f.context);
+  const renewal = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  expect(await f.service.execute(renewal.operationId, f.context)).toMatchObject({ state: 'completed', priceWei: '100' });
+  for (const sent of f.wallet.send.mock.calls.slice(1).map(call => call[0])) {
+    expect(sent.value).toBe('102');
+    expect(sent.presentation.items).toContainEqual({ label: 'Price', value: '0.0000000000000001 ETH, plus network fees' });
+    expect(sent.presentation.items).toContainEqual({ label: 'Price buffer',
+      value: 'Sends 0.000000000000000102 ETH: the price plus 2%, in case the price changes before the transaction is mined. The contract refunds the unused amount to this wallet in the same transaction.' });
+  }
+  expect(f.wallet.send.mock.calls[0][0].presentation.items.map(item => item.label)).not.toContain('Price buffer');
+});
+
+test('a quote that drops after preparation still renews with the approved buffered amount', async () => {
+  const f = fixture('eth');
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const call = f.chain.call.getMockImplementation();
+  f.chain.call.mockImplementation((role, method, args) => method === 'rentPrice' ? [{ base: 90n, premium: 0n }] : call(role, method, args));
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.wallet.send.mock.calls[0][0].value).toBe('102');
+});
+
+test.each([['wei', 61, 'ready'], ['eth', 86400, 'expired']])('%s reverted reveal keeps its paid commitment (%s s after commit: %s)', async (namespace, elapsed, outcome) => {
+  const f = fixture(namespace, true);
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId });
+  // The first reveal is mined but reverts, e.g. after a price move, so
+  // nothing changes on chain; the second one succeeds.
+  const commitWire = f.getWire();
+  const reveals = [`0x${'c1'.repeat(32)}`, `0x${'c2'.repeat(32)}`];
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, params) => method === 'eth_getTransactionByHash' && params[0] === hash ? commitWire : request(method, params));
+  f.chain.receipt.mockImplementation(async transaction => ({ blockHash: hash, blockNumber: '0x100', status: transaction === reveals[0] ? '0x0' : '0x1' }));
+  const send = f.wallet.send.getMockImplementation();
+  f.wallet.send.mockImplementationOnce(async (plan, context) => {
+    await send(plan, context);
+    Object.assign(f.state, { available: true, active: false, owner: ZeroAddress });
+    f.clock.timestamp += elapsed - 61;
+    return { hash: reveals[0] };
+  }).mockImplementationOnce(async (plan, context) => ({ ...await send(plan, context), hash: reveals[1] }));
+  const reverted = await f.service.execute(operationId, f.context);
+  expect(reverted).toMatchObject({ state: outcome, step: 'reveal' });
+  expect(reverted.transactionHash).toBeUndefined();
+  expect(reverted.transactions).toEqual([expect.objectContaining({ step: 'commit' }), expect.objectContaining({ step: 'reveal', hash: reveals[0], reverted: true })]);
+  if (outcome === 'expired') {
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'expired' });
+    expect(f.wallet.send).toHaveBeenCalledTimes(2);
+    return;
+  }
+  expect(reverted.message).toContain('commitment is still valid');
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed', transactionHash: reveals[1] });
+  expect(f.wallet.send).toHaveBeenCalledTimes(3);
+  expect(f.context.requestApproval).toHaveBeenCalledTimes(3);
+  expect(f.wallet.send.mock.calls.map(call => ABI.nft.parseTransaction({ data: call[0].data }).name)).toEqual(['commit', 'reveal', 'reveal']);
+});
+
+test.each([
+  [address, 'Your Freedom wallet “Main wallet”'],
+  ['0x000000000000000000000000000000000000bEEF', 'Not one of your Freedom wallets. Payments sent to freedom-fixture.eth will go to this address.'],
+  ['0x000000000000000000000000000000000000cafE', 'Unknown: not every Freedom wallet address could be read. Check this address yourself.'],
+])('set_address approval says whether %s is one of the user’s wallets', async (value, belongsTo) => {
+  const f = fixture('eth');
+  f.wallet.ownWallet.mockImplementation(async candidate => candidate === address ? { status: 'own', name: 'Main wallet' }
+    : candidate.toLowerCase().endsWith('beef') ? { status: 'other' } : { status: 'unknown' });
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'set_address', address: value }, f.context);
+  await f.service.execute(operationId, f.context);
+  const sent = f.wallet.send.mock.calls[0][0];
+  expect(f.wallet.ownWallet).toHaveBeenCalledWith(value);
+  expect(sent.presentation.items.at(-1)).toEqual({ label: 'Belongs to', value: belongsTo });
+  expect(sent.summary).toContain(`Belongs to: ${belongsTo}`);
 });

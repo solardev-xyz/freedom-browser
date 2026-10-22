@@ -41,3 +41,19 @@ test('corrupt journals are refused without overwriting evidence', () => {
   expect(() => new DomainOperationStore({ directory: path.dirname(store.filename) })).toThrow();
   expect(fs.readFileSync(store.filename, 'utf8')).toBe('{bad json');
 });
+test('a copy read before a newer save is refused instead of overwriting it', () => {
+  const store = fixture();
+  const operation = { id: `domain_${'c'.repeat(24)}`, state: 'ready', name: 'test.eth' };
+  store.save(operation);
+  const stale = store.get(operation.id);
+  const current = store.get(operation.id);
+  current.state = 'pending'; current.transactionHash = `0x${'ab'.repeat(32)}`;
+  store.save(current);
+  stale.state = 'ready';
+  expect(() => store.save(stale)).toThrow(expect.objectContaining({ code: 'DOMAIN_CONFLICT' }));
+  const reopened = new DomainOperationStore({ directory: path.dirname(store.filename) });
+  expect(reopened.get(operation.id)).toMatchObject({ state: 'pending', transactionHash: current.transactionHash, revision: 2 });
+  // The holder of the newest copy keeps saving; a journal from before revisions counts as revision 0.
+  reopened.save({ ...reopened.get(operation.id), state: 'completed' });
+  expect(reopened.get(operation.id)).toMatchObject({ state: 'completed', revision: 3 });
+});

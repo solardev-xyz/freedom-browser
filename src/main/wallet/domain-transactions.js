@@ -3,6 +3,8 @@
 const { getAddress, formatEther } = require('ethers');
 const { DomainError, refuse } = require('../domains/contracts');
 
+const walletName = wallet => String(wallet.name || `Wallet ${wallet.index + 1}`).replace(/[\p{Cc}\p{Cf}]/gu, ' ').slice(0, 80);
+
 // Shared wallet bridge. DomainService supplies an already encoded typed plan;
 // this module has no page API and never accepts calldata from an Agent tool.
 class DomainTransactions {
@@ -30,8 +32,16 @@ class DomainTransactions {
     const selected = index ?? this.identity.getActiveWalletIndex();
     const wallet = (await this.identity.getDerivedWallets()).find(item => item.index === selected);
     if (!wallet || !['mnemonic', 'ledger', 'remote'].includes(wallet.type)) refuse('Choose a supported Freedom wallet: local, Ledger or remote.');
-    return { index: wallet.index, address: getAddress(wallet.address), type: wallet.type,
-      name: String(wallet.name || `Wallet ${selected + 1}`).replace(/[\p{Cc}\p{Cf}]/gu, ' ').slice(0, 80) };
+    return { index: wallet.index, address: getAddress(wallet.address), type: wallet.type, name: walletName(wallet) };
+  }
+  // Whether an address is one of this profile's own wallets, decided from the
+  // wallet list itself, never from anything a model says about the address.
+  async ownWallet(address) {
+    const wallets = await this.identity.getDerivedWallets();
+    const own = wallets.find(item => item.address && item.address.toLowerCase() === String(address).toLowerCase());
+    if (own) return { status: 'own', name: walletName(own) };
+    // A locked vault can leave a wallet without a readable address.
+    return { status: wallets.some(item => !item.address) ? 'unknown' : 'other' };
   }
   async send(plan, context) {
     if (typeof context.requestApproval !== 'function') refuse('This operation needs Freedom’s wallet approval surface.');
@@ -43,7 +53,11 @@ class DomainTransactions {
     const tx = { ...intent, gasLimit: estimate.gasLimit,
       ...(fees.type === 'eip1559' ? { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas } : { gasPrice: fees.gasPrice }) };
     const gasPrice = tx.maxFeePerGas || tx.gasPrice;
+    // A partial EIP-1559 quote (a cap without a priority fee) would be
+    // re-quoted at signing, so the approved maximum fee would not be the one
+    // signed. Refuse it here, like a missing or zero quote.
     if (!tx.gasLimit || !gasPrice || BigInt(tx.gasLimit) <= 0n || BigInt(gasPrice) <= 0n ||
+        (fees.type === 'eip1559' && (!tx.maxPriorityFeePerGas || BigInt(tx.maxPriorityFeePerGas) <= 0n)) ||
         (tx.maxPriorityFeePerGas && BigInt(tx.maxPriorityFeePerGas) > BigInt(gasPrice))) refuse('The maximum network fee could not be determined.');
     const maxFee = BigInt(tx.gasLimit) * BigInt(gasPrice);
     const checkBalance = async () => {

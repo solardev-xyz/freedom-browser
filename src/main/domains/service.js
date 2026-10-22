@@ -10,6 +10,14 @@ const INTENTS = ['set_website', 'clear_website', 'set_address', 'set_text', 'reg
 const WAITING = new Set(['pending', 'waiting_commitment']);
 const TERMINAL = new Set(['completed', 'failed', 'declined', 'expired', 'dispatch_unknown', 'verification_needed', 'stale']);
 const digest = value => keccak256(toUtf8Bytes(JSON.stringify(value)));
+// Registration and renewal send the quote plus a small disclosed buffer, as the
+// ENS manager app does (2%, ens-app-v2 CURRENCY_FLUCTUATION_BUFFER_PERCENTAGE),
+// so a price update between signing and mining does not revert the payment.
+// Every supported controller refunds msg.value above the price to the sender
+// in the same transaction: ENS ETHRegistrarController and the wrapped renewal
+// controller (register/renew), and WNS/GNS NameNFT (reveal/renew).
+const PRICE_BUFFER_PERCENT = 2n;
+const withBuffer = wei => (BigInt(wei) * (100n + PRICE_BUFFER_PERCENT) / 100n).toString();
 const pause = (ms, signal) => new Promise((resolve, reject) => {
   signal?.throwIfAborted();
   const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); };
@@ -37,7 +45,7 @@ function termText(seconds) {
 // Typed description of one prepared transaction for the wallet approval card:
 // the renderer builds its heading from action/name/term and lists `items`
 // one per row, so nothing here is parsed back out of display text.
-function presentPlan({ operation, parsed, target, previous }) {
+function presentPlan({ operation, parsed, target, previous, ownWallet }) {
   const action = operation.intent === 'register'
     ? operation.step === 'commit' ? 'register_commit' : 'register'
     : operation.intent;
@@ -56,8 +64,13 @@ function presentPlan({ operation, parsed, target, previous }) {
       items.push({ label: 'Price change', value: `Quoted ${ethText(operation.commitQuoteWei)} at commit time, now ${ethText(operation.quotedWei)}` });
     }
   } else if (operation.intent === 'renew') {
-    items.push({ label: 'Price', value: `${ethText(operation.quotedWei)}, plus network fees` },
-      { label: 'Ownership', value: 'Renewal extends this exact name; it does not transfer ownership to the paying wallet.' });
+    items.push({ label: 'Price', value: `${ethText(operation.quotedWei)}, plus network fees` });
+  }
+  if ((operation.intent === 'register' && operation.step !== 'commit') || operation.intent === 'renew') {
+    items.push({ label: 'Price buffer', value: `Sends ${ethText(withBuffer(operation.quotedWei))}: the price plus ${PRICE_BUFFER_PERCENT}%, in case the price changes before the transaction is mined. The contract refunds the unused amount to this wallet in the same transaction.` });
+  }
+  if (operation.intent === 'renew') {
+    items.push({ label: 'Ownership', value: 'Renewal extends this exact name; it does not transfer ownership to the paying wallet.' });
   }
   const record = operation.record;
   if (record) {
@@ -65,6 +78,13 @@ function presentPlan({ operation, parsed, target, previous }) {
     if (record.kind === 'text') items.push({ label: 'Key', value: visible(record.key) });
     items.push({ label: 'Current', value: previous && previous !== '0x' ? visible(previous) : '(empty)' },
       { label: 'New', value: operation.reference ? `bzz://${operation.reference}` : record.value ? visible(record.value) : '(clear)' });
+    // Payments sent to the name go to this address. Main checks it against
+    // the profile's wallet list; the model's description is not evidence.
+    if (record.kind === 'address' && ownWallet) {
+      items.push({ label: 'Belongs to', value: ownWallet.status === 'own' ? `Your Freedom wallet “${visible(ownWallet.name)}”`
+        : ownWallet.status === 'other' ? `Not one of your Freedom wallets. Payments sent to ${parsed.name} will go to this address.`
+          : 'Unknown: not every Freedom wallet address could be read. Check this address yourself.' });
+    }
   }
   return { format: 'freedom-domain-approval/1', action, name: parsed.name,
     ...(operation.duration && { durationSeconds: operation.duration }),
@@ -258,7 +278,7 @@ class DomainService {
         if (operation.state !== 'ready') refuse('The registration commitment is not ready for reveal.', 'DOMAIN_STALE');
         method = eth ? 'register' : 'reveal';
         args = eth ? [registrationTuple(operation, secret)] : [parsed.label, secret];
-        value = quotedWei;
+        value = withBuffer(operation.quotedWei);
         label = `Register ${parsed.name}`;
       }
     } else if (operation.intent === 'renew') {
@@ -276,10 +296,11 @@ class DomainService {
         }
         method = 'renew'; args = state.wrapped ? [parsed.label, operation.duration] : [parsed.label, operation.duration, `0x${'00'.repeat(32)}`];
       } else { method = 'renew'; args = [parsed.tokenId]; }
-      value = await this.#price(operation, target, snapshot, false);
+      const price = await this.#price(operation, target, snapshot, false);
       previous = { expiry: state.expiry, owner: state.owner, manager: state.manager, wrapped: state.wrapped || false, wrapperExpiry: state.wrapperExpiry };
-      if (preparing) operation.quotedWei = value;
-      if (BigInt(value) > BigInt(operation.quotedWei)) refuse('The renewal price increased. Prepare a fresh quote.', 'DOMAIN_STALE');
+      if (preparing) operation.quotedWei = price;
+      if (BigInt(price) > BigInt(operation.quotedWei)) refuse('The renewal price increased. Prepare a fresh quote.', 'DOMAIN_STALE');
+      value = withBuffer(operation.quotedWei);
       label = `Renew ${parsed.name}`;
     } else {
       if (!state.active || !state.supportedResolver) refuse('An active name with a supported resolver is required. Freedom will not replace the resolver automatically.', 'DOMAIN_UNSUPPORTED');
@@ -310,7 +331,8 @@ class DomainService {
     const tx = { id: operation.id, name: parsed.name, step: operation.step, account: operation.account,
       to: ADDRESSES[target], data: abi.encodeFunctionData(method, args), value, from: operation.account.address,
       label };
-    tx.presentation = presentPlan({ operation, parsed, target, previous });
+    const ownWallet = operation.record?.kind === 'address' ? await this.wallet.ownWallet(operation.record.value) : undefined;
+    tx.presentation = presentPlan({ operation, parsed, target, previous, ownWallet });
     tx.summary = tx.presentation.items.map(item => `${item.label}: ${item.value}`).join('\n');
     // Always simulate from the actual wallet, including commits.
     await this.chain.simulate(tx, snapshot);
@@ -371,37 +393,55 @@ class DomainService {
             const minedFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'latest'])).toString();
             const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'pending'])).toString();
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
-            operation.dispatchMinedNonce = minedFloor;
-            operation.dispatchNonceFloor = nonceFloor;
-            operation.state = 'dispatching';
-            operation.dispatchDigest = digest({ to: plan.to.toLowerCase(), data: plan.data.toLowerCase(), value: BigInt(plan.value).toString(), from: operation.account.address.toLowerCase() });
-            this.store.save(operation);
+            // Saved as a copy: a refused (stale) save leaves this attempt
+            // unmarked, since nothing was handed to the signer.
+            const dispatching = { ...operation, dispatchMinedNonce: minedFloor, dispatchNonceFloor: nonceFloor, state: 'dispatching',
+              dispatchDigest: digest({ to: plan.to.toLowerCase(), data: plan.data.toLowerCase(), value: BigInt(plan.value).toString(), from: operation.account.address.toLowerCase() }) };
+            this.store.save(dispatching);
+            Object.assign(operation, dispatching);
           },
         });
         if (!/^0x[a-fA-F0-9]{64}$/.test(result?.hash || '')) refuse('The wallet did not return a transaction hash. Inspect its history before retrying.');
-        operation.transactionHash = result.hash;
-        operation.state = 'pending';
-        operation.message = 'Transaction submitted; waiting for confirmation.';
-        this.store.save(operation);
+        this.#recordDispatch(operation, { transactionHash: result.hash, state: 'pending', message: 'Transaction submitted; waiting for confirmation.' });
       } catch (error) {
-        if (operation.state === 'dispatching' && error.code === 'DOMAIN_NOT_BROADCAST') {
-          operation.state = 'declined'; operation.message = 'The wallet did not broadcast this step. Resume this operation only on the user’s request, with a fresh approval.';
-        } else if (operation.state === 'dispatching') {
-          operation.state = 'dispatch_unknown';
-          operation.message = 'The wallet may have submitted this transaction. Do not send it again; reconcile wallet history first.';
-        } else if (error.code === 'DOMAIN_DECLINED') {
-          operation.state = 'declined'; operation.message = error.message;
-        } else if (error.code === 'DOMAIN_QUOTE_CHANGED') {
-          operation.state = 'ready'; operation.message = 'The registration quote changed during approval. No reveal was sent. The same commitment can be requoted for a fresh approval.';
-        } else if (error.code === 'DOMAIN_STALE') {
-          if (!['expired', 'verification_needed', 'waiting_commitment'].includes(operation.state)) {
-            operation.state = 'stale'; operation.message = error.message;
-          }
-        } else throw error;
-        this.store.save(operation);
+        if (operation.state === 'dispatching') {
+          this.#recordDispatch(operation, error.code === 'DOMAIN_NOT_BROADCAST'
+            ? { state: 'declined', message: 'The wallet did not broadcast this step. Resume this operation only on the user’s request, with a fresh approval.' }
+            : { state: 'dispatch_unknown', message: 'The wallet may have submitted this transaction. Do not send it again; reconcile wallet history first.' });
+        } else {
+          if (error.code === 'DOMAIN_DECLINED') {
+            operation.state = 'declined'; operation.message = error.message;
+          } else if (error.code === 'DOMAIN_QUOTE_CHANGED') {
+            operation.state = 'ready'; operation.message = 'The registration quote changed during approval. No reveal was sent. The same commitment can be requoted for a fresh approval.';
+          } else if (error.code === 'DOMAIN_STALE') {
+            if (!['expired', 'verification_needed', 'waiting_commitment'].includes(operation.state)) {
+              operation.state = 'stale'; operation.message = error.message;
+            }
+          } else throw error;
+          this.store.save(operation);
+        }
       }
       return this.status({ operationId: id, waitMs: this.executeWaitMs }, context);
     } finally { this.locks.delete(id); }
+  }
+  // Once the signer has the transaction, its outcome is the newest fact about
+  // the operation: apply it over any concurrent observation, never drop it.
+  #recordDispatch(operation, fields) {
+    Object.assign(operation, fields);
+    try { this.store.save(operation); } catch (error) {
+      if (error.code !== 'DOMAIN_CONFLICT') throw error;
+      const current = Object.assign(this.#get(operation.id), fields);
+      this.store.save(current);
+      Object.assign(operation, current);
+    }
+  }
+  // Status observations are recomputed from chain state. If another caller
+  // saved first, its record is newer than this copy: drop the write.
+  #observe(operation) {
+    try { this.store.save(operation); return true; } catch (error) {
+      if (error.code === 'DOMAIN_CONFLICT') return false;
+      throw error;
+    }
   }
   #get(id) {
     if (typeof id !== 'string' || !/^domain_[a-f0-9]{24}$/.test(id)) refuse('Choose a valid domain operation ID.', 'DOMAIN_INVALID');
@@ -464,20 +504,22 @@ class DomainService {
     }
     do {
       context.signal?.throwIfAborted();
+      let saved = true;
       if (operation.state === 'completed' && operation.transactionHash && !await this.chain.receipt(operation.transactionHash)) {
         operation.state = 'verification_needed';
         operation.message = 'The previously confirmed transaction is no longer in the canonical chain. Reconcile before any further send.';
-        this.store.save(operation);
+        saved = this.#observe(operation);
       }
-      if (operation.state === 'pending') await this.#confirm(operation);
-      else if (operation.intent === 'register' && operation.step === 'reveal' && !operation.transactionHash &&
+      if (saved && operation.state === 'pending') saved = await this.#confirm(operation);
+      else if (saved && operation.intent === 'register' && operation.step === 'reveal' && !operation.transactionHash &&
           ['waiting_commitment', 'verification_needed'].includes(operation.state)) {
         // Also reconciles journals saved by older versions after a stale-block
         // read. Only a verified existing commit may recover; never resend it.
         const receipt = await this.#registrationReceipt(operation);
         if (receipt) await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
-        this.store.save(operation);
+        saved = this.#observe(operation);
       }
+      if (!saved) operation = this.#get(input.operationId);
       if (!WAITING.has(operation.state) || Date.now() >= deadline) break;
       await pause(Math.min(this.pollMs, deadline - Date.now()), context.signal);
       operation = this.#get(input.operationId);
@@ -486,14 +528,22 @@ class DomainService {
   }
   async #confirm(operation) {
     const receipt = await this.chain.receipt(operation.transactionHash);
-    if (!receipt) return;
+    if (!receipt) return true;
     const tx = await this.chain.request('eth_getTransactionByHash', [operation.transactionHash]);
     if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest || !this.#atOrAbove(tx, operation.dispatchMinedNonce)) {
       operation.state = 'verification_needed'; operation.message = 'The returned transaction does not match the prepared domain operation.';
-      this.store.save(operation); return;
+      return this.#observe(operation);
     }
-    operation.transactions.push({ step: operation.step, hash: operation.transactionHash, blockHash: receipt.blockHash });
-    if (BigInt(receipt.status) !== 1n) {
+    operation.transactions.push({ step: operation.step, hash: operation.transactionHash, blockHash: receipt.blockHash, ...(BigInt(receipt.status) !== 1n && { reverted: true }) });
+    if (BigInt(receipt.status) !== 1n && operation.intent === 'register' && operation.step === 'reveal') {
+      // A reverted reveal (for example after a price move) rolls back with it
+      // the commitment's consumption and the payment. Keep the paid commitment
+      // usable: within its maximum age, the same operation is requoted for a
+      // fresh wallet approval instead of buying another commit.
+      delete operation.transactionHash;
+      await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
+      if (operation.state === 'ready') operation.message = 'The registration transaction reverted: its network fee was spent, the name was not bought and no price was paid. The commitment is still valid; domain_execute requotes it for a fresh wallet approval.';
+    } else if (BigInt(receipt.status) !== 1n) {
       operation.state = 'failed'; operation.message = 'The domain transaction reverted. Gas may have been spent; inspect current state before preparing another operation.';
     } else if (operation.step === 'commit') {
       operation.step = 'reveal';
@@ -519,7 +569,7 @@ class DomainService {
       }
       if (operation.state === 'completed') delete operation.encryptedSecret;
     }
-    this.store.save(operation);
+    return this.#observe(operation);
   }
   #atOrAbove(tx, floor) {
     // Journals saved before a floor existed keep the digest-only check.

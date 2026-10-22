@@ -45,9 +45,14 @@ class DomainOperationStore {
       return secret;
     } catch { refuse('The saved registration secret could not be recovered.', 'DOMAIN_SECURE_STORAGE'); }
   }
+  // Compare-and-swap: a caller saves the revision it read. A copy read before
+  // a slow RPC must never overwrite a newer record, such as a dispatched
+  // reveal's transaction hash. Journals written before revisions count as 0.
   save(operation) {
+    const revision = operation.revision ?? 0;
+    if ((this.operations.get(operation.id)?.revision ?? 0) !== revision) refuse('This domain operation changed while it was being checked. Inspect its current status; nothing was overwritten.', 'DOMAIN_CONFLICT');
     const next = new Map(this.operations);
-    next.set(operation.id, structuredClone(operation));
+    next.set(operation.id, { ...structuredClone(operation), revision: revision + 1 });
     if (next.size > 500) refuse('Domain operation storage is full. Existing operations can still be inspected.');
     const body = JSON.stringify({ version: 1, operations: [...next.values()] });
     if (Buffer.byteLength(body) > MAX_BYTES) refuse('Domain operation storage is full.');
@@ -58,6 +63,7 @@ class DomainOperationStore {
       try { fs.writeFileSync(fd, body); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       fs.renameSync(temporary, this.filename);
       this.operations = next;
+      operation.revision = revision + 1;
     } catch (error) {
       try { fs.unlinkSync(temporary); } catch { /* Preserve the original storage failure. */ }
       throw error;

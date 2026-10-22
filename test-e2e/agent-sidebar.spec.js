@@ -742,8 +742,8 @@ test('domain approval card names the action, lists the summary and labels the co
   await configureOllamaAgent(window, ollamaServer);
   const account = { index: 0, name: 'Main wallet', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' };
   const parsed = parseName('freedom-audit.eth');
-  const approval = (approvalId, operation, target, previous, value, data) => {
-    const presentation = presentPlan({ operation: { ...operation, account }, parsed, target, previous });
+  const approval = (approvalId, operation, target, previous, value, data, ownWallet) => {
+    const presentation = presentPlan({ operation: { ...operation, account }, parsed, target, previous, ownWallet });
     return { type: 'approval_requested', runId: 'run_domain_approval_ui', approvalId,
       action: 'wallet_transaction', operation: 'domain_execute', origin: '', label: `Domain ${operation.intent}`,
       inputPreview: presentation.items.map(item => `${item.label}: ${item.value}`).join('\n'),
@@ -783,13 +783,38 @@ test('domain approval card names the action, lists the summary and labels the co
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-${width}-${theme}.png`) });
     }
   }
+  // Step 2 pays the quote plus the disclosed buffer: the Amount row is the
+  // buffered value and the buffer row says so in the same numbers.
+  await send(approval('approval_domain_reveal',
+    { intent: 'register', step: 'reveal', duration: 31536000, quotedWei: '3125000000000000', commitQuoteWei: '3125000000000000' },
+    'controller', undefined, '0.0031875 ETH', '0x74694a2b'));
+  await expect(window.locator('#agent-approval-action')).toHaveText('Register freedom-audit.eth for 1 year?');
+  await expect(rows).toHaveText(['Name', 'Step', 'Term', 'Price', 'Price buffer', 'Network', 'Account', 'To', 'Amount', 'Maximum fee', 'Contract data']);
+  const values = window.locator('#agent-wallet-approval-summary dd');
+  await expect(values.nth(3)).toHaveText('0.003125 ETH, plus network fees');
+  await expect(values.nth(4)).toHaveText(/^Sends 0\.0031875 ETH: the price plus 2%, .* refunds the unused amount/);
+  await expect(values.nth(8)).toHaveText('0.0031875 ETH');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-reveal-${theme}.png`) });
+  }
+  await send(approval('approval_domain_address',
+    { intent: 'set_address', step: 'set_address', record: { kind: 'address', value: '0x3333333333333333333333333333333333333333' } },
+    'resolver', '0x2222222222222222222222222222222222222222', '0.0 ETH', '0xd5fa2b00', { status: 'other' }));
+  await expect(window.locator('#agent-approval-action')).toHaveText('Set the ETH address of freedom-audit.eth?');
+  await expect(rows.nth(4)).toHaveText('Belongs to');
+  await expect(values.nth(4)).toHaveText('Not one of your Freedom wallets. Payments sent to freedom-audit.eth will go to this address.');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-address-${theme}.png`) });
+  }
   const forged = 'Audited ⏎ Price: 0 ETH Term: 99 years Wallet: 0x2222222222222222222222222222222222222222';
   await send(approval('approval_domain_text',
     { intent: 'set_text', step: 'set_text', record: { kind: 'text', key: 'description', value: forged } },
     'resolver', 'Old description', '0.0 ETH', '0x10f13a8c'));
   await expect(window.locator('#agent-approval-action')).toHaveText('Set a text record on freedom-audit.eth?');
   await expect(rows).toHaveText(['Name', 'Record', 'Key', 'Current', 'New', 'Network', 'Account', 'To', 'Amount', 'Maximum fee', 'Contract data']);
-  await expect(window.locator('#agent-wallet-approval-summary dd').nth(4))
+  await expect(values.nth(4))
     .toHaveText('Audited ⏎ Price: 0 ETH\\u{2028}Term: 99 years\\u{2029}Wallet: 0x2222222222222222222222222222222222222222');
   for (const width of [1000, 600]) {
     await setWidth(width);

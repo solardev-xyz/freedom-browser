@@ -117,7 +117,7 @@ MIN_REGISTRATION_DURATION() view returns (uint256);
 7. Recheck availability, account/chain, tuple integrity and quote. Price/premium can change; a larger spend needs fresh approval. Send `register(tuple)` with current approved `base+premium` ETH. It registers through the base registrar and transfers its ERC721 to the requested owner. These latest registrations are **unwrapped**, unlike the older controller.
 8. Confirm receipt status and ownership/expiry/records; retrieve the site through the name. A successful commit or a broadcast reveal hash is not ownership. If someone else bought the name, report that and do not pick/buy another without user direction.
 
-No arbitrary price buffer by default. Overpayments are refunded, but refund behavior can differ for contract-wallet callers; qualify the actual wallet type. A fresh quote plus simulation and a bounded user-approved total is better than silently adding ETH. Historical test label/year quote at the recorded block was `2046496373659585 wei` base, zero premium; this is **not a current price or product estimate**.
+No silent price buffer. Overpayments are refunded, but refund behavior can differ for contract-wallet callers; qualify the actual wallet type. Maintainer decision (October 22): reveal and renewal send a disclosed 2% buffer, matching the ENS manager app, shown as its own approval row and covered by simulation from the real sender; see [domain management](domain-management.md). Historical test label/year quote at the recorded block was `2046496373659585 wei` base, zero premium; this is **not a current price or product estimate**.
 
 ### Renewal: distinguish wrapped names
 
