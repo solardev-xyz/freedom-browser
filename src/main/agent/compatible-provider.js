@@ -11,12 +11,17 @@ const failure = (code = 'AGENT_PROVIDER_INVALID') => Object.assign(new Error('Ch
 function cleanText(value, max = 200) {
   return typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= max && [...value].every(c => c.codePointAt(0) > 31 && c.codePointAt(0) !== 127);
 }
-function normalizeCompatibleUrl(value) {
+// Plain HTTP is only for this computer or the local network. A *.localhost name
+// is refused rather than trusted: Node's fetch resolves it through the system
+// resolver like any other name instead of pinning it to loopback as Chromium does.
+// `stored` keeps a connection saved before that rule readable, so the provider
+// store stays valid; using it still goes through the strict check and fails.
+function normalizeCompatibleUrl(value, { stored = false } = {}) {
   let url;
   try { url = new URL(value); } catch { throw failure(); }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.href.length > 2048) throw failure();
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
-  if (url.protocol === 'http:' && hostname !== 'localhost' && !hostname.endsWith('.localhost') &&
+  if (url.protocol === 'http:' && hostname !== 'localhost' && !(stored && hostname.endsWith('.localhost')) &&
       !(isIP(hostname) && localAddresses.check(hostname, isIP(hostname) === 6 ? 'ipv6' : 'ipv4'))) throw failure();
   return url.href.replace(/\/+$/, '');
 }
@@ -36,12 +41,13 @@ function normalizeCompatibleModels(input) {
 function isStoredCompatible(connection) {
   try {
     return isCompatibleId(connection.providerId) && cleanText(connection.name, 80) &&
-      normalizeCompatibleUrl(connection.baseUrl) === connection.baseUrl &&
+      normalizeCompatibleUrl(connection.baseUrl, { stored: true }) === connection.baseUrl &&
       normalizeCompatibleModels(connection.models).some(m => m.id === connection.modelId) &&
       (connection.encryptedApiKey === undefined || (typeof connection.encryptedApiKey === 'string' && connection.encryptedApiKey.length > 0 && connection.encryptedApiKey.length < 128 * 1024));
   } catch { return false; }
 }
 function compatibleFetch(baseUrl, apiKey, fetchImpl) {
+  normalizeCompatibleUrl(baseUrl);
   const allowed = new Set([`${baseUrl}/models`, `${baseUrl}/chat/completions`]);
   return (input, options = {}) => {
     if (!allowed.has(String(input))) throw failure();

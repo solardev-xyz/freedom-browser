@@ -94,3 +94,23 @@ test.each([
   if (outcome === 'tools_verified') expect(result.checks).toEqual({ chat: true, streaming: true, toolCall: true, toolResult: true });
   if (['chat-error', 'no-deltas'].includes(mode)) expect(runtime.completeSimple).not.toHaveBeenCalled();
 });
+
+// Node's (and Electron main's) fetch hands foo.localhost to the system resolver
+// rather than pinning it to loopback, so it cannot carry plain HTTP.
+test('a *.localhost name is refused for plain HTTP, and a saved one cannot be used', async () => {
+  const { isStoredCompatible } = require('./compatible-provider');
+  for (const url of ['http://ollama.localhost:11434/v1', 'http://a.b.localhost/v1', 'http://LMSTUDIO.LOCALHOST:1234/v1'])
+    expect(() => normalizeCompatibleUrl(url)).toThrow();
+  expect(normalizeCompatibleUrl('http://localhost:1234/v1')).toBe('http://localhost:1234/v1');
+  expect(normalizeCompatibleUrl('https://gateway.localhost/v1')).toBe('https://gateway.localhost/v1');
+  const saved = { kind: 'compatible', providerId: 'custom-11111111-1111-4111-8111-111111111111', name: 'Saved',
+    baseUrl: 'http://ollama.localhost:11434/v1', models: [{ id: 'local' }], modelId: 'local' };
+  expect(isStoredCompatible(saved)).toBe(true);
+  const fetch = jest.fn(async () => new Response(JSON.stringify({ data: [{ id: 'local' }] })));
+  expect(() => compatibleFetch(saved.baseUrl, '', fetch)).toThrow();
+  await expect(discoverCompatibleModels(saved.baseUrl, '', fetch)).rejects.toMatchObject({ code: 'AGENT_CUSTOM_DISCOVERY_FAILED' });
+  const runtime = { registerProvider: jest.fn(), setRuntimeApiKey: jest.fn() };
+  await expect(resolveCompatible(saved, runtime, fetch)).rejects.toThrow();
+  expect(runtime.registerProvider).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
