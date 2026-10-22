@@ -64,11 +64,6 @@ let pendingStart = false;
 // and neither's backstop can signal another child.
 const terminating = new Map();
 const FORCE_KILL_MS = 10000;
-// Set by a startup-timeout before it calls stopTor(), so the exit handler
-// reports this error rather than the raw "arti exited with code N" that the
-// SIGTERM/SIGKILL produces. Consumed once. (Arti is single-process, so unlike
-// radicle there is no leaked-backstop hazard — this is message fidelity.)
-let pendingStopError = null;
 let currentSocksPort = DEFAULTS.tor.socksPort;
 let currentSocksEndpoint = `127.0.0.1:${DEFAULTS.tor.socksPort}`;
 // Every session that must follow the `.onion` routing policy, keyed by a
@@ -714,6 +709,11 @@ async function startTor(opts = {}) {
   // output, error or exit never touches its successor.
   artiProcess = child;
   const live = () => artiProcess === child;
+  // Set by this child's startup timeout before it calls stopTor(), so this
+  // child's exit reports it rather than the raw "arti exited with code N"
+  // that the SIGTERM/SIGKILL produces. It is this child's alone: a child
+  // retired before it exits never reports it, and no other child sees it.
+  let stopError = null;
 
   child.stdout.on('data', (data) => {
     if (live()) handleArtiOutput('stdout', data);
@@ -750,12 +750,10 @@ async function startTor(opts = {}) {
     // error instead of silently falling back to DIRECT, which would hand the
     // onion hostname to the system resolver. A deliberate stop (stopTor
     // without preserveOnionRouting) is the only path that restores DIRECT.
-    if (pendingStopError) {
+    if (stopError) {
       // A startup timeout initiated this stop: report its message instead of
       // the raw arti exit code from the SIGTERM/SIGKILL that carried it out.
-      const message = pendingStopError;
-      pendingStopError = null;
-      updateState(STATUS.ERROR, message);
+      updateState(STATUS.ERROR, stopError);
       setErrorState('tor', 'Tor failed to start');
     } else if (currentState !== STATUS.STOPPING && code !== 0) {
       // Unexpected exit (crash / killed): surface it as an error and keep the
@@ -802,7 +800,7 @@ async function startTor(opts = {}) {
         clearInterval(pollInterval);
         // Flag the terminal error before stopTor() so the exit handler reports
         // it instead of the raw arti exit code from the kill it performs.
-        pendingStopError = 'Startup timed out';
+        stopError = 'Startup timed out';
         setStatusMessage('tor', 'Tor failed to start');
         // Fail closed: a failed start must not hand `.onion` back to DIRECT
         // (a previous session may already be routing through the PAC).

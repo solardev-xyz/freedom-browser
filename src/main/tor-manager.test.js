@@ -1067,6 +1067,57 @@ describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
       expect(b.kills).toEqual(['SIGTERM']);
     });
 
+    test('a child that never bootstraps is stopped, and reports its startup timeout', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      mod.registerTorIpc();
+      const targetSession = createSessionMock();
+      await mod.startTor({ targetSession });
+      await jest.advanceTimersByTimeAsync(120000);
+      expect(child.kills).toEqual(['SIGTERM']);
+      expect(await jest.requireMock('electron').ipcMain.invoke(IPC.TOR_GET_STATUS)).toEqual({
+        status: 'error',
+        error: 'Startup timed out',
+      });
+      // A failed start keeps .onion fail-closed.
+      expect(targetSession.setProxy.mock.calls.map(([arg]) => arg?.mode)).not.toContain('direct');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+    });
+
+    test("a retired child's startup timeout isn't its replacement's", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      // A never bootstraps; its timeout's SIGTERM fails with an error and
+      // no exit; its SIGKILL ends it.
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        if (signal === 'SIGTERM') {
+          a.emit('error', new Error('the signal failed'));
+          return false;
+        }
+        a.emit('close', 0);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      mod.registerTorIpc();
+      await mod.startTor({ targetSession: createSessionMock() });
+      await jest.advanceTimersByTimeAsync(120000);
+      expect(a.kills).toEqual(['SIGTERM']);
+
+      // B replaces it, runs, and is stopped cleanly.
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      const handler = jest.requireMock('electron').ipcMain;
+      const status = await handler.invoke(IPC.TOR_GET_STATUS);
+      expect(status).toEqual({ status: 'stopped', error: null });
+      // A's exit, late, reports nothing either.
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(await handler.invoke(IPC.TOR_GET_STATUS)).toEqual({ status: 'stopped', error: null });
+    });
+
     test("a retired child's exit or error doesn't touch its running replacement", async () => {
       const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
       a.kill = jest.fn((signal) => {
