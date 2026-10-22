@@ -240,6 +240,96 @@ describe('the network policy (0007, step 8, B2)', () => {
       ]);
       lease.release();
     });
+
+    describe('the policy changing after the start picked it, before the send', () => {
+      /** The next read of `network`'s policy (the start's pick, once the
+       * process is up) runs `change` in the microtask after it: before
+       * the start's next turn, which sends. */
+      function changeAfterNextRead(network, change) {
+        const read = network.current.bind(network);
+        network.current = () => {
+          network.current = read;
+          queueMicrotask(change);
+          return read();
+        };
+      }
+
+      test('Tor selected with no endpoint: nothing is sent, and the load waits for one', async () => {
+        let routes = false;
+        const tor = fakeTorEndpoint();
+        const network = new IpfsNetwork({ routesThroughTor: () => routes, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        let result;
+        loading.then(
+          (res) => (result = res),
+          (err) => (result = err)
+        );
+        changeAfterNextRead(network, () => {
+          routes = true;
+          network.changed();
+        });
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        expect(result).toBeUndefined();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+          { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+        ]);
+        lease.release();
+      });
+
+      test("Tor's endpoint withdrawn: nothing is sent, and the load waits for the next", async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        let result;
+        loading.then(
+          (res) => (result = res),
+          (err) => (result = err)
+        );
+        changeAfterNextRead(network, () => tor.offer(null));
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        expect(result).toBeUndefined();
+        tor.offer({ ip: '127.0.0.1', port: 9152 });
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network.port)).toEqual([9152]);
+        lease.release();
+      });
+
+      test('retired while it waits again: no ipfs.stop for an instance never sent', async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        changeAfterNextRead(network, () => tor.offer(null));
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        // The instances' own subscription, and this start's wait.
+        expect(network.listeners.size).toBe(2);
+        lease.release();
+        await expect(loading).rejects.toThrow();
+        await settle();
+        expect(sent('ipfs.stop')).toEqual([]);
+        expect(network.listeners.size).toBe(1);
+      });
+
+      test("Tor's endpoint replaced: the start picks the replacement, and the load succeeds", async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        changeAfterNextRead(network, () => tor.offer({ ip: '::1', port: 9151 }));
+        await answer();
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+          { mode: 'socks5', ip: '::1', port: 9151 },
+        ]);
+        lease.release();
+      });
+    });
   });
 
   test("a waiter's deadline bounds the wait, and the instance's retirement ends it", async () => {
