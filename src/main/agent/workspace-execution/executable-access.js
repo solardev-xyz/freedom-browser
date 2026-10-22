@@ -97,21 +97,40 @@ function isSystemExecutable(executablePath, platform) {
   return roots.some((root) => insidePath(root, executablePath));
 }
 
+// Both the lexical HOME and its realpath. A symlinked, junctioned or mis-cased HOME
+// differs from the realpath'd executable roots compared against it, so either form
+// alone lets ~/.cargo, ~/.local or the whole home slip past the checks below.
+function homeDirectoryForms() {
+  const lexical = path.resolve(os.homedir());
+  const forms = [lexical];
+  try {
+    const canonical = fs.realpathSync(lexical);
+    if (canonical !== lexical) forms.push(canonical);
+  } catch {
+    // An unavailable HOME still keeps the lexical form.
+  }
+  return forms;
+}
+
+// A root that is or contains the home directory exposes every credential beneath it.
+function rootContainsHome(root, homeForms = homeDirectoryForms()) {
+  return homeForms.some((home) => insidePath(root, home));
+}
+
 function packageRootForExecutable(executablePath) {
   const executableDirectory = path.dirname(executablePath);
   const leaf = path.basename(executableDirectory);
   let candidate =
     leaf === 'bin' || leaf === 'sbin' ? path.dirname(executableDirectory) : executableDirectory;
-  const home = path.resolve(os.homedir());
-  const relative = path.relative(home, candidate);
+  const homes = homeDirectoryForms();
   // Do not turn a command shim into a read grant for credentials/keyrings in
   // an entire ~/.cargo or ~/.local tree. Versioned runtime roots stay scoped.
-  if (relative.startsWith('.') && !relative.startsWith('..') && !relative.includes(path.sep)) candidate = executableDirectory;
-  if (
-    candidate === path.parse(candidate).root ||
-    candidate === home ||
-    insidePath(candidate, home)
-  ) {
+  const directlyInHomeDotDirectory = homes.some((home) => {
+    const relative = path.relative(home, candidate);
+    return relative.startsWith('.') && !relative.startsWith('..') && !relative.includes(path.sep);
+  });
+  if (directlyInHomeDotDirectory) candidate = executableDirectory;
+  if (candidate === path.parse(candidate).root || rootContainsHome(candidate, homes)) {
     throw new ExecutableAccessError(
       'EXECUTABLE_SCOPE_TOO_BROAD',
       'Freedom refused an executable whose package root would expose a broad host directory'
@@ -393,6 +412,7 @@ module.exports = {
   isValidatedExecutableAccessRequest,
   isValidatedExecutableRoot,
   resolveExecutableAccess,
+  rootContainsHome,
   systemToolchainDirectories,
   validateExecutableNames,
 };

@@ -42,3 +42,13 @@ test('insufficient balance and unsupported signers never reach approval', async 
   f.dependencies.identityManager.getDerivedWallets.mockResolvedValue([{ ...account, type: 'safe' }]);
   await expect(f.wallet.account(0)).rejects.toThrow('supported');
 });
+
+test('a typed domain description reaches the approval card beside the exact transaction', async () => {
+  const f = fixture();
+  f.plan.presentation = { format: 'freedom-domain-approval/1', action: 'register_commit', name: 'test.eth',
+    items: [{ label: 'Name', value: 'test.eth' }], contract: { address: f.plan.to, name: 'ENS ETHRegistrarController' } };
+  await f.wallet.send(f.plan, f.context);
+  const { wallet } = f.context.requestApproval.mock.calls[0][0];
+  expect(wallet.domain).toEqual(f.plan.presentation);
+  expect(wallet).toMatchObject({ to: f.plan.to, data: '0x1234', value: '0.000000000000000123 ETH' });
+});

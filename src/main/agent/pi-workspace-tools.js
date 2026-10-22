@@ -35,6 +35,11 @@ const READ_ONLY_WORKSPACE_OPERATIONS = new Set([
   'request_permissions',
 ]);
 const MAX_MODEL_BASH_OUTPUT_BYTES = 48 * 1024;
+// Pi's bash tool writes its full output to os.tmpdir()/pi-bash-<hex>.log (mode 0644,
+// never deleted, path shown to the model) once it sees more than 50 KB or 2,000
+// lines. Staying below both, with room for the notices added around the output,
+// keeps every command result in memory only.
+const MAX_MODEL_BASH_OUTPUT_LINES = 1_500;
 const MAX_MODEL_READ_BYTES = 50 * 1024;
 const MAX_MODEL_READ_LINES = 2_000;
 const MAX_MODEL_DISCOVERY_OUTPUT_BYTES = 50 * 1024;
@@ -719,12 +724,20 @@ function failedWorkspaceReceipt(
 function boundedBashOutput(receipt) {
   const output = `${receipt.stdout || ''}${receipt.stderr || ''}`;
   const buffer = Buffer.from(output, 'utf8');
-  if (buffer.byteLength <= MAX_MODEL_BASH_OUTPUT_BYTES) return buffer;
-  const tail = buffer.subarray(buffer.byteLength - MAX_MODEL_BASH_OUTPUT_BYTES).toString('utf8');
-  return Buffer.from(
-    `[Freedom omitted earlier command output; showing the final ${MAX_MODEL_BASH_OUTPUT_BYTES} bytes.]\n${tail}`,
-    'utf8'
-  );
+  let tail = output;
+  let notice = null;
+  if (buffer.byteLength > MAX_MODEL_BASH_OUTPUT_BYTES) {
+    tail = buffer.subarray(buffer.byteLength - MAX_MODEL_BASH_OUTPUT_BYTES).toString('utf8');
+    notice = `the final ${MAX_MODEL_BASH_OUTPUT_BYTES} bytes`;
+  }
+  const lines = tail.split('\n');
+  const trailingNewline = tail.endsWith('\n') ? 1 : 0;
+  if (lines.length - trailingNewline > MAX_MODEL_BASH_OUTPUT_LINES) {
+    tail = lines.slice(-(MAX_MODEL_BASH_OUTPUT_LINES + trailingNewline)).join('\n');
+    notice = `the final ${MAX_MODEL_BASH_OUTPUT_LINES} lines`;
+  }
+  if (!notice) return buffer;
+  return Buffer.from(`[Freedom omitted earlier command output; showing ${notice}.]\n${tail}`, 'utf8');
 }
 
 async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
@@ -1666,6 +1679,7 @@ async function createWorkspaceTools(options = {}) {
 
 module.exports = {
   MAX_MODEL_BASH_OUTPUT_BYTES,
+  MAX_MODEL_BASH_OUTPUT_LINES,
   MAX_MODEL_DISCOVERY_OUTPUT_BYTES,
   MAX_MODEL_READ_BYTES,
   MAX_MODEL_READ_LINES,

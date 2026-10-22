@@ -314,6 +314,30 @@ describe('independent command access review', () => {
     available: true, backend: 'macos-seatbelt', network: 'disabled', filesystem: 'managed_workspace_only',
   } });
 
+  test('a domain transaction approval keeps its typed card description and drops a malformed one', async () => {
+    const ctx = await setup('every_interaction');
+    const domain = { format: 'freedom-domain-approval/1', action: 'set_text', name: 'freedom-audit.eth',
+      contract: { address: '0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63', name: 'ENS PublicResolver' },
+      items: [{ label: 'Name', value: 'freedom-audit.eth' }, { label: 'New', value: 'x\u2028Wallet: 0x1' }], extra: 'dropped' };
+    const request = (value) => ({ action: 'wallet_transaction', operation: 'domain_execute', label: 'Set a text record',
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', to: domain.contract.address, value: '0.0 ETH',
+        maxFee: '0.0001 ETH', data: '0x10f13a8c', summary: 'Name: freedom-audit.eth', domain: value } });
+    const scope = ctx.dependencies.createControllerScope.mock.calls[0][0];
+    const first = scope.requestApproval(request(domain));
+    const { extra, ...kept } = domain;
+    expect(extra).toBe('dropped');
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'approval_requested', wallet: { domain: kept } });
+    expect(ctx.events.at(-1).wallet.domain.extra).toBeUndefined();
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await first;
+    const second = scope.requestApproval(request({ ...domain, items: [{ label: 'Name', value: 7 }] }));
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    expect(ctx.events.at(-1).wallet.domain).toBeUndefined();
+    expect(ctx.events.at(-1).wallet.summary).toBe('Name: freedom-audit.eth');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await second; await stop(ctx);
+  });
+
   test('Ask when needed allows a private workspace without a sheet or model review', async () => {
     const ctx = await setup();
     ctx.workspaceController.getWorkspace.mockReturnValue(null);
@@ -664,12 +688,19 @@ describe('FreedomAgentService', () => {
         sequence: 2,
         conversationId: 'conversation_test',
         runId: 'run_test',
+        type: 'workspace_changed',
+      },
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 3,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
         type: 'assistant_text_delta',
         text: 'Summary',
       },
       {
         version: AGENT_EVENT_VERSION,
-        sequence: 3,
+        sequence: 4,
         conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'tool_started',
@@ -683,7 +714,7 @@ describe('FreedomAgentService', () => {
       },
       {
         version: AGENT_EVENT_VERSION,
-        sequence: 4,
+        sequence: 5,
         conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'tool_finished',
@@ -696,7 +727,7 @@ describe('FreedomAgentService', () => {
       },
       {
         version: AGENT_EVENT_VERSION,
-        sequence: 5,
+        sequence: 6,
         conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'run_finished',
@@ -1723,12 +1754,25 @@ describe('FreedomAgentService', () => {
       activeTabId: 'tab_agent_first',
     });
     expect(first.session.dispose).not.toHaveBeenCalled();
+    // The adopted user tabs are held like the tabs each conversation created.
     expect(service.listAgentTabs()).toEqual([
+      {
+        tabId: 'tab_user_first',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_first',
+      },
       {
         tabId: 'tab_agent_first',
         provenance: 'agent',
         custody: 'agent',
         conversationId: 'conversation_first',
+      },
+      {
+        tabId: 'tab_user_second',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_second',
       },
       {
         tabId: 'tab_agent_second',
@@ -1744,7 +1788,9 @@ describe('FreedomAgentService', () => {
       tabIds: ['tab_user_first'],
       activeTabId: 'tab_user_first',
     });
-    expect(service.listAgentTabs().map((record) => record.tabId)).toEqual(['tab_agent_second']);
+    expect(service.listAgentTabs().map((record) => record.tabId)).toEqual([
+      'tab_user_first', 'tab_user_second', 'tab_agent_second',
+    ]);
 
     await service.openConversation('conversation_second');
     expect(service.getWorkspaceState()).toEqual({
@@ -1754,6 +1800,89 @@ describe('FreedomAgentService', () => {
     await expect(service.deleteConversation('conversation_first')).resolves.toBe(true);
     expect(first.session.dispose).toHaveBeenCalledTimes(1);
     expect(second.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('holds the adopted user tab in Agent custody with the created-tab release rules', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore({ deleteSession: jest.fn(() => true) });
+    const controller = { execute: jest.fn(), setPageAgentCustody: jest.fn() };
+    const { service } = createService(fake, { controller, historyStore });
+
+    await service.start(startOptions({ approvalMode: 'allow_website_interactions' }));
+    expect(controller.setPageAgentCustody).toHaveBeenCalledWith('tab_assigned', true);
+    expect(service.listAgentTabs()).toEqual([{
+      tabId: 'tab_assigned', provenance: 'agent', custody: 'agent', conversationId: 'conversation_test',
+    }]);
+
+    // Finishing the turn and deleting the conversation keep custody...
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    await expect(service.deleteConversation('conversation_test')).resolves.toBe(true);
+    expect(service.listAgentTabs()).toEqual([
+      expect.objectContaining({ tabId: 'tab_assigned', custody: 'agent', conversationId: null }),
+    ]);
+    expect(controller.setPageAgentCustody).not.toHaveBeenCalledWith('tab_assigned', false);
+    // ...only the user's explicit takeover releases it.
+    await expect(service.claimTab('tab_assigned')).resolves.toBe(true);
+    expect(controller.setPageAgentCustody).toHaveBeenLastCalledWith('tab_assigned', false);
+    expect(service.listAgentTabs()).toEqual([]);
+  });
+
+  test('a popup from an Agent-held page opens as an Agent-held tab of the same conversation', async () => {
+    const fake = createFakeSession();
+    const opener = { id: 12 };
+    const controller = {
+      execute: jest.fn(async (operation) => operation === OPERATIONS.CREATE_TAB
+        ? { ok: true, result: { tab: { tabId: 'tab_popup' } } }
+        : { ok: false }),
+      tabIdForWebContents: jest.fn((contents) => (contents === opener ? 'tab_assigned' : null)),
+      setPageAgentCustody: jest.fn(),
+    };
+    const { service } = createService(fake, { controller });
+    await service.start(startOptions());
+
+    await expect(service.openCustodyPopup(opener, 'https://app.example/pay')).resolves.toBe(true);
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CREATE_TAB, {
+      url: 'https://app.example/pay',
+      openerTabId: 'tab_assigned',
+    });
+    expect(controller.setPageAgentCustody).toHaveBeenCalledWith('tab_popup', true);
+    expect(service.listAgentTabs()).toContainEqual({
+      tabId: 'tab_popup', provenance: 'agent', custody: 'agent', conversationId: 'conversation_test',
+    });
+    // Custody only: the conversation does not drive the popup.
+    expect(service.getWorkspaceState().tabIds).not.toContain('tab_popup');
+
+    // An opener Freedom cannot bind, or a tab that could not be created, opens nothing.
+    controller.execute.mockClear();
+    await expect(service.openCustodyPopup({ id: 99 }, 'https://app.example/pay')).resolves.toBe(false);
+    expect(controller.execute).not.toHaveBeenCalled();
+    controller.execute.mockResolvedValueOnce({ ok: false });
+    await expect(service.openCustodyPopup(opener, 'javascript:alert(1)')).resolves.toBe(false);
+
+    await expect(service.claimTab('tab_popup')).resolves.toBe(true);
+    expect(controller.setPageAgentCustody).toHaveBeenLastCalledWith('tab_popup', false);
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    // With no run to carry workspace_changed, chrome still gets a repaint hint.
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await expect(service.openCustodyPopup(opener, 'https://app.example/pay')).resolves.toBe(true);
+    expect(events.map(event => event.type)).toEqual(['agent_tabs_changed']);
+  });
+
+  test('a run that never started leaves the user tab out of Agent custody', async () => {
+    const fake = createFakeSession();
+    const controller = { execute: jest.fn(), setPageAgentCustody: jest.fn() };
+    const { service } = createService(fake, {
+      controller,
+      createSession: jest.fn(async () => { throw new Error('provider refused'); }),
+    });
+
+    await expect(service.start(startOptions())).rejects.toThrow();
+    expect(controller.setPageAgentCustody).not.toHaveBeenCalled();
+    expect(service.listAgentTabs()).toEqual([]);
   });
 
   test('persists the visible conversation lifecycle without raw Pi events', async () => {
@@ -2981,6 +3110,30 @@ describe('FreedomAgentService', () => {
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 
+  test('records a nested codemode call under its parent so history can fold its failure', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'call_script', toolName: 'codemode', args: {} });
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'call_nested', toolName: 'browser_snapshot',
+      args: {}, parentToolCallId: 'call_script' });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'call_nested', toolName: 'browser_snapshot',
+      result: { content: [{ type: 'text', text: 'nope' }] }, isError: true, parentToolCallId: 'call_script' });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'call_script', toolName: 'codemode',
+      result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    const activity = service.getState().transcript[0].activity;
+    expect(activity.find(item => item.toolCallId === 'call_nested')).toMatchObject({ parentToolCallId: 'call_script' });
+    expect(activity.find(item => item.toolCallId === 'call_script').parentToolCallId).toBeUndefined();
+    expect(events.find(event => event.type === 'tool_started' && event.toolCallId === 'call_nested'))
+      .toMatchObject({ parentToolCallId: 'call_script' });
+  });
+
   test.each([[false, 'bash'], [true, 'bash'], [false, 'workspace_server'], [true, 'workspace_server']])('reconciles a yielded process into its finished turn during shutdown=%s via %s', async (duringShutdown, toolName) => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();
@@ -3928,7 +4081,8 @@ describe('FreedomAgentService', () => {
     fake.prompt.resolve();
     await service.waitForIdle();
 
-    expect(events.map((event) => event.type)).toEqual(['run_started', 'run_finished']);
+    // The adopted tab entering Agent custody refreshes the chrome's projection.
+    expect(events.map((event) => event.type)).toEqual(['run_started', 'workspace_changed', 'run_finished']);
   });
 });
 

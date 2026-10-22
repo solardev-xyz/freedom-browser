@@ -171,6 +171,16 @@ class AutomationController {
     catch { /* A closed page cannot sign. */ }
   }
 
+  // The automation tab bound to a guest, so main can follow a page's own
+  // requests (a popup) back to the tab that made them.
+  tabIdForWebContents(contents) {
+    if (!contents) return null;
+    for (const entry of this.pages.entries.values()) {
+      if (entry.adapter.webContents === contents) return entry.tabId;
+    }
+    return null;
+  }
+
   markPageControlled(tabId) {
     try { this.downloadController?.setControlledPage?.(this.pages.require(tabId).adapter.webContents, true); } catch { /* Closed page. */ }
   }

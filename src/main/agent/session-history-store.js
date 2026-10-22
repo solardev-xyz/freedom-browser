@@ -28,6 +28,21 @@ const TURN_STATUSES = new Set(['running', 'completed', 'interrupted', 'failed', 
 const GUIDANCE_STATUSES = new Set(['queued', 'applying', 'applied', 'cancelled']);
 const ACTIVITY_EFFECTS = new Set(['observed', 'changed', 'managed']);
 const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn', 'reviewer_approved']);
+const ACTIVITY_STATUSES = new Set(['running', 'succeeded', 'failed', 'cancelled']);
+// Saved activity is bounded per class, so one turn cannot grow without limit
+// (a codemode loop of failing calls once saved ~25 MB), while a loop of routine
+// reads or failures cannot push approvals or effects out of the record.
+// Total: at most 8,500 items per turn.
+const ACTIVITY_LIMITS = Object.freeze({
+  receipt: 4_000,
+  consequential: 2_000,
+  failed: 500,
+  routine: 2_000,
+});
+const RECEIPT_KEYS = ['wallet', 'publication', 'nodeRequest', 'nodeLifecycle', 'workspace', 'upload'];
+const CONSEQUENTIAL_KEYS = ['subagent', 'subagents', 'attachment', 'artifact', 'artifacts'];
+const CONSEQUENTIAL_OPERATIONS = new Set(['codemode', 'delegate_task', 'helper_task', 'domain_execute']);
+const MAX_NESTED_ERROR_CODES = 5;
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -60,69 +75,136 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+// receipt: approvals and effect receipts (wallet, publication, node, workspace,
+// upload, MCP requests). consequential: other actions with effects even when no
+// prompt was shown (clicks, typing, page tools, dialogs), helpers, attachments,
+// artifacts, tool scripts, and items that did not finish (running, cancelled).
+function activityClass(item) {
+  if (ACTIVITY_APPROVALS.has(item.approval) || RECEIPT_KEYS.some(key => item[key]) ||
+      item.operation === 'mcp_request') return 'receipt';
+  if (CONSEQUENTIAL_KEYS.some(key => item[key]) || item.effect === 'changed' ||
+      CONSEQUENTIAL_OPERATIONS.has(item.operation) || item.status === 'running' ||
+      item.status === 'cancelled') return 'consequential';
+  if (item.status !== 'succeeded') return 'failed';
+  return 'routine';
+}
+
+// Routine reads and failures keep their latest entries. An over-long receipt or
+// consequential class also keeps its start: a run's first effects and its latest
+// state are both evidence.
+function boundedSelection(items, className) {
+  const limit = ACTIVITY_LIMITS[className];
+  if (items.length <= limit) return items;
+  const head = ['receipt', 'consequential'].includes(className) ? Math.floor(limit / 4) : 0;
+  return items.slice(0, head).concat(items.slice(items.length - (limit - head)));
+}
+
+function nestedParentId(item) {
+  return typeof item.parentToolCallId === 'string' && item.parentToolCallId.length <= 160
+    ? item.parentToolCallId : null;
+}
+
+// A failing call made by a tool script is folded into the script's own item as a
+// count, instead of being saved as one more row per failed nested call.
+function foldNestedFailures(items) {
+  const parents = new Map(items.filter(item => typeof item.toolCallId === 'string')
+    .map(item => [item.toolCallId, item]));
+  const folds = new Map();
+  const remaining = items.filter(item => {
+    const parent = parents.get(nestedParentId(item));
+    if (!parent || parent === item || activityClass(item) !== 'failed') return true;
+    const fold = folds.get(parent) || { count: 0, errorCodes: new Set() };
+    fold.count += 1;
+    if (typeof item.errorCode === 'string' && item.errorCode.length <= 120 &&
+        fold.errorCodes.size < MAX_NESTED_ERROR_CODES) fold.errorCodes.add(item.errorCode);
+    folds.set(parent, fold);
+    return false;
+  });
+  if (!folds.size) return items;
+  return remaining.map(item => {
+    const fold = folds.get(item);
+    if (!fold) return item;
+    const previous = Number.isSafeInteger(item.nestedFailures) && item.nestedFailures > 0 ? item.nestedFailures : 0;
+    const errorCodes = [...new Set([...(Array.isArray(item.nestedErrorCodes) ? item.nestedErrorCodes : []), ...fold.errorCodes])]
+      .filter(code => typeof code === 'string' && code.length <= 120).slice(0, MAX_NESTED_ERROR_CODES);
+    return { ...item, nestedFailures: previous + fold.count, ...(errorCodes.length && { nestedErrorCodes: errorCodes }) };
+  });
+}
+
+// Items are classified after normalization, so saving and reading back a turn
+// classifies, folds and bounds it the same way.
 function normalizeActivity(activity) {
   if (!Array.isArray(activity)) return [];
-  const items = activity.filter((item) => item && typeof item === 'object');
-  const important = item => item.status === 'failed' || ACTIVITY_APPROVALS.has(item.approval) ||
-    ['wallet', 'publication', 'nodeRequest', 'nodeLifecycle', 'workspace', 'upload', 'download', 'mcp'].some(key => item[key]) ||
-    item.operation === 'mcp_request';
-  const routine = new Set(items.filter(item => !important(item)).slice(-2_000));
-  // Routine loops may be shortened; approval/effect/error evidence is never
-  // discarded simply because it occurred after the routine-entry limit.
-  return items.filter(item => important(item) || routine.has(item))
-    .map((item) => {
-      const label = optionalString(item.label, 240);
-      const intent = optionalString(item.intent, 240);
-      const origin = originScopeForUrl(optionalString(item.origin, 512));
-      const pageTitle = optionalString(item.pageTitle, 240);
-      const destinationOrigin = originScopeForUrl(optionalString(item.destinationOrigin, 512));
-      const pageId = optionalString(item.pageId, 160);
-      const artifact = normalizeArtifact(item.artifact);
-      const upload = normalizeUpload(item.upload);
-      const wallet = normalizeWalletReceipt(item.wallet);
-      const nodeLifecycle = normalizeNodeLifecycleReceipt(item.nodeLifecycle);
-      const nodeRequest = normalizeNodeRequestReceipt(item.nodeRequest);
-      const attachment = normalizeAttachmentReceipt(item.attachment, item.operation);
-      const publication = normalizePublicationReceipt(item.publication);
-      const workspace = normalizeWorkspaceReceipt(item.workspace);
-      const subagent = normalizeSubagentReceipt(item.subagent);
-      const subagents = normalizeSubagentReceipts(item.subagents);
-      const artifacts = Array.isArray(item.artifacts)
-        ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
-        : [];
-      return {
-        toolCallId: optionalString(item.toolCallId, 160) || '',
-        ...(Number.isSafeInteger(item.textOffset) && item.textOffset >= 0 && { textOffset: item.textOffset }),
-        ...(Number.isSafeInteger(item.timelineOrder) && item.timelineOrder >= 0 && { timelineOrder: item.timelineOrder }),
-        operation: optionalString(item.operation, 120) || '',
-        status: ['running', 'succeeded', 'failed'].includes(item.status) ? item.status : 'failed',
-        ...(label && { label }),
-        ...(intent && { intent }),
-        ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
-        ...(ACTIVITY_APPROVALS.has(item.approval) && { approval: item.approval }),
-        ...(origin && { origin }),
-        ...(pageTitle && { pageTitle }),
-        ...(destinationOrigin && { destinationOrigin }),
-        ...(pageId && { pageId }),
-        ...(artifact && { artifact }),
-        ...(upload && { upload }),
-        ...(wallet && { wallet }),
-        ...(nodeLifecycle && { nodeLifecycle }),
-        ...(nodeRequest && { nodeRequest }),
-        ...(attachment && { attachment }),
-        ...(publication && { publication }),
-        ...(workspace && { workspace }),
-        ...(subagent && { subagent }),
-        ...(subagents && { subagents }),
-        ...(artifacts.length && { artifacts }),
-        ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
-          ? { pageCount: item.pageCount }
-          : {}),
-        ...(typeof item.errorCode === 'string' && item.errorCode.length <= 120
-          ? { errorCode: item.errorCode }
-          : {}),
-      };
-    });
+  const items = foldNestedFailures(activity.filter((item) => item && typeof item === 'object')
+    .map(normalizeActivityItem));
+  const classes = { receipt: [], consequential: [], failed: [], routine: [] };
+  for (const item of items) classes[activityClass(item)].push(item);
+  const retained = new Set(Object.entries(classes)
+    .flatMap(([name, members]) => boundedSelection(members, name)));
+  return items.filter(item => retained.has(item));
+}
+
+function normalizeActivityItem(item) {
+  const label = optionalString(item.label, 240);
+  const intent = optionalString(item.intent, 240);
+  const origin = originScopeForUrl(optionalString(item.origin, 512));
+  const pageTitle = optionalString(item.pageTitle, 240);
+  const destinationOrigin = originScopeForUrl(optionalString(item.destinationOrigin, 512));
+  const pageId = optionalString(item.pageId, 160);
+  const artifact = normalizeArtifact(item.artifact);
+  const upload = normalizeUpload(item.upload);
+  const wallet = normalizeWalletReceipt(item.wallet);
+  const nodeLifecycle = normalizeNodeLifecycleReceipt(item.nodeLifecycle);
+  const nodeRequest = normalizeNodeRequestReceipt(item.nodeRequest);
+  const attachment = normalizeAttachmentReceipt(item.attachment, item.operation);
+  const publication = normalizePublicationReceipt(item.publication);
+  const workspace = normalizeWorkspaceReceipt(item.workspace);
+  const subagent = normalizeSubagentReceipt(item.subagent);
+  const subagents = normalizeSubagentReceipts(item.subagents);
+  const artifacts = Array.isArray(item.artifacts)
+    ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
+    : [];
+  return {
+    toolCallId: optionalString(item.toolCallId, 160) || '',
+    ...(Number.isSafeInteger(item.textOffset) && item.textOffset >= 0 && { textOffset: item.textOffset }),
+    ...(Number.isSafeInteger(item.timelineOrder) && item.timelineOrder >= 0 && { timelineOrder: item.timelineOrder }),
+    operation: optionalString(item.operation, 120) || '',
+    ...(nestedParentId(item) && { parentToolCallId: nestedParentId(item) }),
+    status: ACTIVITY_STATUSES.has(item.status) ? item.status : 'failed',
+    ...(label && { label }),
+    ...(intent && { intent }),
+    ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
+    ...(ACTIVITY_APPROVALS.has(item.approval) && { approval: item.approval }),
+    ...(origin && { origin }),
+    ...(pageTitle && { pageTitle }),
+    ...(destinationOrigin && { destinationOrigin }),
+    ...(pageId && { pageId }),
+    ...(artifact && { artifact }),
+    ...(upload && { upload }),
+    ...(wallet && { wallet }),
+    ...(nodeLifecycle && { nodeLifecycle }),
+    ...(nodeRequest && { nodeRequest }),
+    ...(attachment && { attachment }),
+    ...(publication && { publication }),
+    ...(workspace && { workspace }),
+    ...(subagent && { subagent }),
+    ...(subagents && { subagents }),
+    ...(artifacts.length && { artifacts }),
+    ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
+      ? { pageCount: item.pageCount }
+      : {}),
+    ...(typeof item.errorCode === 'string' && item.errorCode.length <= 120
+      ? { errorCode: item.errorCode }
+      : {}),
+    ...(Number.isSafeInteger(item.nestedFailures) && item.nestedFailures > 0 && {
+      nestedFailures: item.nestedFailures,
+      ...(Array.isArray(item.nestedErrorCodes) && {
+        nestedErrorCodes: item.nestedErrorCodes
+          .filter(code => typeof code === 'string' && code.length <= 120)
+          .slice(0, MAX_NESTED_ERROR_CODES),
+      }),
+    }),
+  };
 }
 
 function normalizeGuidance(guidance) {

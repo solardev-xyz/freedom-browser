@@ -19,6 +19,18 @@ const ADDRESSES = Object.freeze({
   wei: '0x0000000000696760E15f265e828DB644A0c242EB',
   gwei: '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6',
 });
+// What the approval card calls each pinned deployment. Keyed like ADDRESSES,
+// so a label can only ever name an address Freedom itself selected.
+const CONTRACT_NAMES = Object.freeze({
+  registry: 'ENS Registry',
+  base: 'ENS BaseRegistrar',
+  controller: 'ENS ETHRegistrarController',
+  wrappedController: 'ENS WrappedETHRegistrarController',
+  wrapper: 'ENS NameWrapper',
+  resolver: 'ENS PublicResolver',
+  wei: 'WNS NameNFT (.wei)',
+  gwei: 'GNS NameNFT (.gwei)',
+});
 const REGISTRATION = '(string label,address owner,uint256 duration,bytes32 secret,address resolver,bytes[] data,uint8 reverseRecord,bytes32 referrer)';
 const ABI = Object.freeze({
   registry: new Interface(['function owner(bytes32) view returns(address)', 'function resolver(bytes32) view returns(address)']),
@@ -102,4 +114,4 @@ function commitmentFor(operation, secret) {
     : keccak256(coder.encode(['bytes', 'address', 'bytes32'], [toUtf8Bytes(operation.label), operation.account.address, secret]));
 }
 
-module.exports = { ADDRESSES, ABI, CODE_HASHES, REGISTRATION, DomainError, refuse, parseName, swarmContenthash, registrationTuple, commitmentFor, ZeroAddress, ZeroHash };
+module.exports = { ADDRESSES, CONTRACT_NAMES, ABI, CODE_HASHES, REGISTRATION, DomainError, refuse, parseName, swarmContenthash, registrationTuple, commitmentFor, ZeroAddress, ZeroHash };

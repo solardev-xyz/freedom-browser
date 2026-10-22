@@ -1,8 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
-const { getAddress, keccak256, toUtf8Bytes } = require('ethers');
-const { ADDRESSES, ABI, DomainError, refuse, parseName, swarmContenthash, registrationTuple, commitmentFor, ZeroAddress } = require('./contracts');
+const { getAddress, keccak256, toUtf8Bytes, formatEther } = require('ethers');
+const { ADDRESSES, CONTRACT_NAMES, ABI, DomainError, refuse, parseName, swarmContenthash, registrationTuple, commitmentFor, ZeroAddress } = require('./contracts');
 const { DomainChain, sameAddress } = require('./chain');
 const { DomainTransactions } = require('../wallet/domain-transactions');
 const YEAR = 31536000;
@@ -19,6 +19,58 @@ const pause = (ms, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener('abort', aborted, { once: true });
   if (signal?.aborted) aborted();
 });
+
+// Approval-card values are shown, never executed: make every control and
+// line/paragraph separator visible, so a text record cannot break onto what
+// looks like a separate summary line.
+const visible = value => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+  character => `\\u{${character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
+const ethText = wei => `${formatEther(BigInt(wei))} ETH`;
+function termText(seconds) {
+  if (seconds % YEAR === 0) {
+    const years = seconds / YEAR;
+    return `${years} ${years === 1 ? 'year' : 'years'} (${years * 365} days)`;
+  }
+  return seconds % 86400 === 0 ? `${seconds / 86400} days` : `${seconds} seconds`;
+}
+
+// Typed description of one prepared transaction for the wallet approval card:
+// the renderer builds its heading from action/name/term and lists `items`
+// one per row, so nothing here is parsed back out of display text.
+function presentPlan({ operation, parsed, target, previous }) {
+  const action = operation.intent === 'register'
+    ? operation.step === 'commit' ? 'register_commit' : 'register'
+    : operation.intent;
+  const items = [{ label: 'Name', value: parsed.name }];
+  if (operation.intent === 'register') {
+    items.push(operation.step === 'commit'
+      ? { label: 'Step', value: '1 of 2: commit. It costs network fees but does not reserve or buy the name. Registering needs a second approval.' }
+      : { label: 'Step', value: '2 of 2: register and pay for the name.' });
+  }
+  if (operation.duration) items.push({ label: 'Term', value: termText(operation.duration) });
+  if (operation.intent === 'register') {
+    items.push({ label: 'Price', value: operation.step === 'commit'
+      ? `${ethText(operation.quotedWei)}, paid at step 2, plus network fees`
+      : `${ethText(operation.quotedWei)}, plus network fees` });
+    if (BigInt(operation.quotedWei) > BigInt(operation.commitQuoteWei ?? operation.quotedWei)) {
+      items.push({ label: 'Price change', value: `Quoted ${ethText(operation.commitQuoteWei)} at commit time, now ${ethText(operation.quotedWei)}` });
+    }
+  } else if (operation.intent === 'renew') {
+    items.push({ label: 'Price', value: `${ethText(operation.quotedWei)}, plus network fees` },
+      { label: 'Ownership', value: 'Renewal extends this exact name; it does not transfer ownership to the paying wallet.' });
+  }
+  const record = operation.record;
+  if (record) {
+    items.push({ label: 'Record', value: record.kind === 'contenthash' ? 'Website (content hash)' : record.kind === 'address' ? 'ETH address' : 'Text record' });
+    if (record.kind === 'text') items.push({ label: 'Key', value: visible(record.key) });
+    items.push({ label: 'Current', value: previous && previous !== '0x' ? visible(previous) : '(empty)' },
+      { label: 'New', value: operation.reference ? `bzz://${operation.reference}` : record.value ? visible(record.value) : '(clear)' });
+  }
+  return { format: 'freedom-domain-approval/1', action, name: parsed.name,
+    ...(operation.duration && { durationSeconds: operation.duration }),
+    ...(['register', 'renew'].includes(operation.intent) && { priceWei: operation.quotedWei }),
+    contract: { address: ADDRESSES[target], name: CONTRACT_NAMES[target] }, items };
+}
 
 function publicOperation(operation) {
   // Positive allowlist: no encrypted secret, commitment preimage, calldata,
@@ -257,14 +309,9 @@ class DomainService {
     const abi = ABI[target] || ABI.nft;
     const tx = { id: operation.id, name: parsed.name, step: operation.step, account: operation.account,
       to: ADDRESSES[target], data: abi.encodeFunctionData(method, args), value, from: operation.account.address,
-      label, summary: [label, `Wallet: ${operation.account.address}`,
-        ...(operation.duration ? [`Term: ${operation.duration} seconds (${operation.duration / YEAR} × 365 days)`] : []),
-        ...(operation.intent === 'renew' ? ['Renewal extends this exact name; it does not transfer ownership to the paying wallet.'] : []),
-        ...(operation.record ? [`Current: ${previous || '(empty)'}`, `New: ${operation.reference ? `bzz://${operation.reference}` : operation.record.value || '(clear)'}`] : []),
-        ...(operation.intent === 'register' ? [`Registration price: ${operation.quotedWei} wei, plus network fees.`,
-          ...(BigInt(operation.quotedWei) > BigInt(operation.commitQuoteWei ?? operation.quotedWei)
-            ? [`Price increased since the commit: quoted ${operation.commitQuoteWei} wei at commit time, now ${operation.quotedWei} wei.`] : []),
-          'Commit costs gas but does not reserve or buy the name. Reveal needs a separate approval.'] : [])].join('\n') };
+      label };
+    tx.presentation = presentPlan({ operation, parsed, target, previous });
+    tx.summary = tx.presentation.items.map(item => `${item.label}: ${item.value}`).join('\n');
     // Always simulate from the actual wallet, including commits.
     await this.chain.simulate(tx, snapshot);
     tx.digest = digest({ to: tx.to, data: tx.data, value: tx.value, account: tx.account.address, previous });
@@ -497,4 +544,4 @@ class DomainService {
   close() { this.closed = true; }
 }
 
-module.exports = { DomainService, publicOperation, WAITING, INTENTS };
+module.exports = { DomainService, publicOperation, presentPlan, WAITING, INTENTS };

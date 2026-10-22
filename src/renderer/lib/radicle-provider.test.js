@@ -80,6 +80,7 @@ const loadProvider = async (options = {}) => {
   }));
   jest.doMock('./tabs.js', () => ({
     getDisplayUrlForWebview: jest.fn(() => state.displayUrl),
+    isTabAgentOwned: jest.fn((tabId) => options.agentOwnedTabId === tabId),
   }));
   jest.doMock('./radicle-consent.js', () => consentMocks);
 
@@ -89,6 +90,8 @@ const loadProvider = async (options = {}) => {
 
   const webview = createElement('webview');
   webview.send = jest.fn();
+  webview.dataset = { tabId: '3' };
+  webview.getWebContentsId = jest.fn(() => 41);
   mod.setupRadicleProvider(webview);
   // The guest's main frame commits, as Electron reports it before any
   // message from the new document (see guest-main-frame.js).
@@ -375,7 +378,8 @@ describe('radicle-provider', () => {
       expect(execute).toHaveBeenCalledWith(
         'radicle_unseed',
         { rid: 'rad:zExample' },
-        'https://app.example'
+        'https://app.example',
+        { webContentsId: 41, approval: 'user' }
       );
     });
 
@@ -430,6 +434,35 @@ describe('radicle-provider', () => {
       expect(consentMocks.showRadicleUnseedApproval).not.toHaveBeenCalled();
       expect(consentMocks.showRadicleSeedApproval).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledTimes(2);
+      expect(execute).toHaveBeenCalledWith(
+        'radicle_seed',
+        { rid: 'rad:zExample' },
+        'https://app.example',
+        { webContentsId: 41, approval: 'auto' }
+      );
+    });
+
+    test('node auto-approve never answers for a tab in Agent custody', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        autoApprove: true,
+        agentOwnedTabId: 3,
+      });
+
+      sendRequest({ id: 26, method: 'radicle_seed', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSeedApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        'rad:zExample',
+        webview
+      );
+      expect(execute).toHaveBeenCalledWith(
+        'radicle_seed',
+        { rid: 'rad:zExample' },
+        'https://app.example',
+        { webContentsId: 41, approval: 'user' }
+      );
     });
 
     test('sync stays promptless — main gates it on an existing seeding policy', async () => {

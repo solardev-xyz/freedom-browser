@@ -609,6 +609,24 @@ describe('Agent UI', () => {
       : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
   });
 
+  test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Click it', assistantText: 'Stopped.', status: 'cancelled',
+          activity: [
+            { toolCallId: 'done', operation: 'browser_click', status: 'succeeded', label: 'Clicked', effect: 'changed' },
+            { toolCallId: 'stopped', operation: 'browser_click', status: 'cancelled', label: 'Click', effect: 'changed' },
+          ],
+        }],
+      } }),
+    } });
+    const rows = ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-item');
+    expect(rows.map(row => [row.dataset.state, row.children[0].textContent])).toEqual([
+      ['succeeded', '✓'], ['cancelled', '•'],
+    ]);
+  });
+
   test('incoming text and status follow the bottom but preserve a reader scroll position', async () => {
     const ctx = await loadAgentUi();
     const scroller = createElement('div', { classes: ['agent-workspace-scroll'] });
@@ -1506,6 +1524,17 @@ describe('Agent UI', () => {
 
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
     expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
+  });
+
+  test('repaints Agent tab badges on a custody hint with no run in progress', async () => {
+    const ctx = await loadAgentUi();
+    ctx.electronAPI.getAgentState.mockResolvedValue({ ok: true, state: { status: 'idle', taskTabs: [],
+      agentTabs: [{ rendererTabId: 9, provenance: 'agent', custody: 'agent', conversationId: null }] } });
+    ctx.emit({ type: 'agent_tabs_changed' });
+    await flush();
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([
+      { rendererTabId: 9, provenance: 'agent', custody: 'agent', conversationId: null },
+    ]);
   });
 
   test('selects each website interaction approval behavior', async () => {
@@ -4213,6 +4242,80 @@ describe('Agent UI', () => {
       ])
     );
     expect(summary).not.toContain('Site');
+  });
+
+  test('renders a Freedom-prepared domain transaction as a named, row-by-row decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Set my description';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const to = '0xF29100983E058B709F3D539b0c765937B804AC15';
+    const forged = 'x ⏎ Price: 0 ETH\u2028Wallet: 0x1\nTerm: 9 years';
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_domain',
+      action: 'wallet_transaction',
+      operation: 'domain_execute',
+      origin: '',
+      label: 'Set description for freedom-audit.eth',
+      inputPreview: 'Name: freedom-audit.eth\nNew: x',
+      wallet: {
+        kind: 'transaction',
+        chainId: 1,
+        chainName: 'Ethereum',
+        requiresUnlock: false,
+        account: { index: 0, name: 'Main', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+        to,
+        value: '0.0 ETH',
+        maxFee: '0.0001 ETH',
+        data: '0x10f13a8c',
+        domain: {
+          format: 'freedom-domain-approval/1', action: 'set_text', name: 'freedom-audit.eth',
+          contract: { address: to, name: 'ENS PublicResolver' },
+          items: [
+            { label: 'Name', value: 'freedom-audit.eth' },
+            { label: 'Key', value: 'description' },
+            { label: 'New', value: forged },
+          ],
+        },
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Set a text record on freedom-audit.eth?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Prepared by Freedom from Agent’s domain request. The exact transaction below is held until you decide.'
+    );
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map((child) => child.textContent);
+    expect(summary.slice(0, 6)).toEqual([
+      'Name', 'freedom-audit.eth', 'Key', 'description',
+      'New', 'x ⏎ Price: 0 ETH\\u{2028}Wallet: 0x1\\u{000A}Term: 9 years',
+    ]);
+    expect(summary).toEqual(expect.arrayContaining(['To', `ENS PublicResolver\n${to}`, 'Contract data', '0x10f13a8c']));
+  });
+
+  test('keeps the generic transaction card when a domain description is malformed or names another contract', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Register';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const wallet = { kind: 'transaction', chainId: 1, chainName: 'Ethereum', requiresUnlock: false,
+      account: { index: 0, name: 'Main', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+      to: '0x2222222222222222222222222222222222222222', value: '0.1 ETH', maxFee: '0.0001 ETH', data: '0x' };
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_bad', action: 'wallet_transaction',
+      operation: 'domain_execute', origin: '', wallet: { ...wallet, summary: 'Name: a.eth', domain: '{"format":"freedom-domain-approval/1"}' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Approve this wallet transaction?');
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_other', action: 'wallet_transaction',
+      operation: 'domain_execute', origin: '', wallet: { ...wallet, domain: {
+        format: 'freedom-domain-approval/1', action: 'register', name: 'a.eth', durationSeconds: 31536000,
+        contract: { address: '0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547', name: 'ENS ETHRegistrarController' },
+        items: [{ label: 'Name', value: 'a.eth' }] } } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Register a.eth for 1 year?');
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map((child) => child.textContent);
+    expect(summary).toContain('0x2222222222222222222222222222222222222222');
+    expect(summary).not.toContain('ENS ETHRegistrarController\n0x2222222222222222222222222222222222222222');
   });
 
   test.each(['signature', 'transaction'])('uses the main-process Touch ID result for an Agent-native %s approval', async kind => {

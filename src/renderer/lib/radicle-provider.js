@@ -9,7 +9,7 @@
  */
 
 import { getPermissionKey } from './dapp-provider.js';
-import { getDisplayUrlForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, isTabAgentOwned } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import {
   showRadicleConnect,
@@ -113,15 +113,23 @@ async function handleRadicleRequest(webview, request) {
       // policy the user chose — and a connected origin can enumerate
       // targets through radicle_listSeededRepos — so neither may run off
       // the lightweight connection grant alone.
+      // A tab in Agent custody is always prompted (as dapp-provider.js does
+      // for wallet rules); main refuses an automatic one on its own custody
+      // reading, so the request names its guest and the path it took.
       await requirePermission(permissionKey);
-      const autoApproved = await window.radiclePermissions.getAutoApprove(permissionKey, 'node');
+      const autoApproved =
+        Boolean(await window.radiclePermissions.getAutoApprove(permissionKey, 'node')) &&
+        isTabAgentOwned?.(Number(webview.dataset?.tabId)) !== true;
       if (!autoApproved) {
         const showApproval =
           method === 'radicle_seed' ? showRadicleSeedApproval : showRadicleUnseedApproval;
         await showApproval(permissionKey, params?.rid ?? '', webview);
       }
       assertSameDocument();
-      result = await forwardToMain(method, params, permissionKey);
+      result = await forwardToMain(method, params, permissionKey, {
+        webContentsId: guestIdOf(webview),
+        approval: autoApproved ? 'auto' : 'user',
+      });
     } else if (SIGNING_METHODS.has(method)) {
       await requirePermission(permissionKey);
       const hasGrant = await window.radiclePermissions.hasSigningGrant(permissionKey);
@@ -187,8 +195,18 @@ async function requirePermission(permissionKey) {
   }
 }
 
-async function forwardToMain(method, params, permissionKey) {
-  const response = await window.radicleProvider.execute(method, params, permissionKey);
+function guestIdOf(webview) {
+  try {
+    return webview.getWebContentsId?.();
+  } catch {
+    return undefined;
+  }
+}
+
+async function forwardToMain(method, params, permissionKey, meta) {
+  const response = await (meta
+    ? window.radicleProvider.execute(method, params, permissionKey, meta)
+    : window.radicleProvider.execute(method, params, permissionKey));
   if (response.error) throw response.error;
   return response.result;
 }

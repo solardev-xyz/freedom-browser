@@ -833,8 +833,11 @@ body.agent-first-mode {
   --agent-conversation-gutter: 24px;
 }
 
+/* clip, not hidden: .app-body is never meant to scroll, and a hidden overflow
+   is still a scroll container that focus() or scrollIntoView() can shift
+   sideways, leaving the conversation cut off with no way back. */
 body.agent-first-mode .app-body {
-  overflow: hidden;
+  overflow: clip;
 }
 
 body.agent-first-mode,
@@ -4051,6 +4054,13 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
   body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
     margin: 0;
     visibility: hidden;
+  }
+  /* The closed workspace's tab strip slides out with translateX(100%); here it
+     sits inside the right-anchored overlay, so that pushes it past the
+     window's right edge and widens .app-body by its own width. The overlay is
+     already hidden, so the strip has nowhere to slide. */
+  body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface .agent-task-pages {
+    transform: none;
   }
 
   body.agent-first-mode .agent-pane-resizer { display: none; }

@@ -444,6 +444,28 @@ describe('detectPaymentRequiredHandler', () => {
     expect(mockSignAndQueueRetry).toHaveBeenCalledTimes(1);
   });
 
+  test('a tab in Agent custody never auto-pays from a covering cap; the charge goes to the approval card', async () => {
+    const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+    const guest = { hostWebContents: { send: mockHostSend } };
+    webContents.fromId.mockImplementation(() => guest);
+    setAgentPageCustody(guest, true);
+    mockGetPermission.mockReturnValue({
+      capAmount: '20000', spentAmount: '0',
+      createdAt: 1, expiresAt: 9999999999,
+    });
+    try {
+      detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+      expect(getDetectedPayment(7)?.authorizedBy).toBeUndefined();
+      expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({
+        webContentsId: 7,
+      }));
+    } finally {
+      setAgentPageCustody(guest, false);
+    }
+  });
+
   test('auto-pay: when an active cap covers the charge, calls signAndQueueRetry with a detection snapshot and authorizedBy=cap', () => {
     mockGetPermission.mockReturnValueOnce({
       capAmount: '20000', spentAmount: '0',

@@ -1280,6 +1280,7 @@ jobs:
             test-e2e/agent-product-qualification.spec.js \
             test-e2e/agent-sidebar.spec.js \
             test-e2e/agent-preview-isolation.spec.js \
+            test-e2e/agent-preview-dns-prefetch.spec.js \
             test-e2e/agent-review-layout.spec.js \
             test-e2e/agent-mcp.spec.js \
             test-e2e/custom-provider.spec.js \

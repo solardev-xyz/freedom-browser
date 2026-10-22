@@ -535,6 +535,11 @@ function hasRuntimeNodeTransition() {
 
 // Native WebMCP is experimental in the pinned Electron runtime.
 app.commandLine.appendSwitch('enable-blink-features', 'WebMCP,WebMCPTesting');
+// <link rel=dns-prefetch> asks the system resolver directly: no proxy, no Tor, no CSP,
+// and Chromium ignores X-DNS-Prefetch-Control for it. A workspace preview could
+// otherwise exfiltrate data in a hostname. Disabled for every renderer, because a
+// per-guest switch would not survive renderer process reuse.
+app.commandLine.appendSwitch('blink-settings', 'dnsPrefetchingEnabled=false');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
@@ -783,7 +788,11 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
-  registerWebContentsHandlers({ isManagedPage: contents => hiddenPageManager?.ownsWebContents(contents) === true });
+  registerWebContentsHandlers({
+    isManagedPage: contents => hiddenPageManager?.ownsWebContents(contents) === true,
+    // Popups from a page in Agent custody stay in Agent custody.
+    openAgentPopup: (contents, url) => agentRuntime?.service?.openCustodyPopup(contents, url) ?? false,
+  });
   registerClientCertificateHandler();
   if (!RUNTIME_MODE) setupApplicationMenu();
 

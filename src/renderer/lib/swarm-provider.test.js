@@ -5,9 +5,11 @@ jest.mock('./dapp-provider.js', () => ({
   getPermissionKey: jest.fn(() => 'app.eth'),
 }));
 
+const mockIsTabAgentOwned = jest.fn(() => false);
 jest.mock('./tabs.js', () => ({
   getDisplayUrlForWebview: jest.fn(() => 'bzz://app.eth/'),
   getNavigationKeyForWebview: jest.fn(() => 'tab-1:1'),
+  isTabAgentOwned: (...args) => mockIsTabAgentOwned(...args),
 }));
 
 jest.mock('./wallet-ui.js', () => ({
@@ -350,5 +352,53 @@ describe('routing setup failures into the publish setup', () => {
     await flush();
 
     expect(mockRouteToPublishSetup).not.toHaveBeenCalled();
+  });
+});
+
+describe('Agent custody and site auto-approve', () => {
+  let setupSwarmProvider;
+  let showSwarmPublishApproval;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmPublishApproval } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({
+      origin: 'app.eth',
+      autoApprove: { publish: true },
+    });
+    window.swarmProvider.execute.mockResolvedValue({ result: { reference: 'abc' } });
+    showSwarmPublishApproval.mockImplementation((_key, _params, resolve) => resolve());
+  });
+
+  const publish = async (agentOwned) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 1, method: 'swarm_publishData', params: { data: 'hi' } });
+    await flush();
+    await flush();
+    return webview;
+  };
+
+  test('an Agent-held tab is prompted and main is told the user approved', async () => {
+    await publish(true);
+    expect(showSwarmPublishApproval).toHaveBeenCalledTimes(1);
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_publishData', { data: 'hi' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test("a user tab keeps the site's rule and main is told it answered", async () => {
+    await publish(false);
+    expect(showSwarmPublishApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_publishData', { data: 'hi' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
   });
 });

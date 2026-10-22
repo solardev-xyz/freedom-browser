@@ -36,6 +36,36 @@ test.afterAll(async () => {
   await new Promise(resolve => server.close(resolve));
 });
 
+async function expectReachable(window, selector) {
+  await expect.poll(() => window.locator(selector).evaluate(element => {
+    const r = element.getBoundingClientRect();
+    const target = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return r.width > 0 && r.height > 0 && r.left >= 0 && r.right <= innerWidth &&
+      r.top >= 0 && r.bottom <= innerHeight && (target === element || element.contains(target));
+  }), selector).toBe(true);
+}
+
+// .app-body clips its panes; it must never be left scrolled, and closed panes
+// must not make it wider than the window (that is what let it scroll).
+async function expectAgentFirstUnscrolled(window) {
+  await expect.poll(() => window.evaluate(() => {
+    const body = document.querySelector('.app-body');
+    return {
+      scrollLeft: body.scrollLeft,
+      overflow: body.scrollWidth - body.clientWidth,
+      composerOnScreen: document.getElementById('agent-composer-wrap').getBoundingClientRect().left >= 0,
+    };
+  })).toEqual({ scrollLeft: 0, overflow: 0, composerOnScreen: true });
+}
+
+async function setContentSize(electronApp, width, height) {
+  await electronApp.evaluate(({ BrowserWindow }, size) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    win.setMinimumSize(320, 300);
+    win.setContentSize(size.width, size.height);
+  }, { width, height });
+}
+
 test('each example starts immediately once, while a typed draft stays protected', async ({ window }) => {
   await window.emulateMedia({ reducedMotion: 'reduce' });
   await configureOllamaAgent(window, baseUrl);
@@ -135,27 +165,19 @@ test('examples and composer remain reachable in both themes, small windows and A
   await configureOllamaAgent(window, baseUrl);
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-    for (const [width, height] of [[1100, 800], [760, 560], [420, 640], [760, 420], [380, 500], [380, 540], [380, 610]]) {
-      await electronApp.evaluate(({ BrowserWindow }, size) => {
-        const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
-        win.setMinimumSize(320, 300);
-        win.setContentSize(size.width, size.height);
-      }, { width, height });
+    for (const [width, height] of [[1100, 800], [760, 560], [600, 700], [500, 700], [420, 640], [760, 420], [380, 500], [380, 540], [380, 610]]) {
+      await setContentSize(electronApp, width, height);
       for (const mode of ['floating', 'agent-first']) {
         if (mode === 'agent-first') await window.locator('#agent-first-toggle').click();
         const compact = mode === 'floating' && (height <= 520 || (width <= 380 && height <= 600));
         if (compact) await expect(window.locator('#agent-examples')).toBeHidden();
         const controls = ['#agent-prompt', '#agent-attachment-button', '#agent-run'];
         if (!compact) controls.unshift('#agent-examples button:last-child');
-        for (const selector of controls) {
-          if (mode === 'agent-first') await window.locator(selector).scrollIntoViewIfNeeded();
-          await expect.poll(() => window.locator(selector).evaluate(element => {
-            const r = element.getBoundingClientRect();
-            const target = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-            return r.width > 0 && r.height > 0 && r.left >= 0 && r.right <= innerWidth &&
-              r.top >= 0 && r.bottom <= innerHeight && (target === element || element.contains(target));
-          })).toBe(true);
-        }
+        // Reachable as the window opens it: nothing is scrolled into view
+        // first, so an Agent-first layout that lands scrolled sideways (closed
+        // panes still widening .app-body) fails here instead of being hidden.
+        if (mode === 'agent-first') await expectAgentFirstUnscrolled(window);
+        for (const selector of controls) await expectReachable(window, selector);
         if (!compact) {
           const cards = await window.locator('#agent-examples').boundingBox();
           const composer = await window.locator('#agent-composer-wrap').boundingBox();
@@ -175,6 +197,30 @@ test('examples and composer remain reachable in both themes, small windows and A
       }
     }
   }
+});
+
+test('Agent-first stays on screen when the window narrows and on a new chat', async ({ electronApp, window }) => {
+  await window.emulateMedia({ reducedMotion: 'reduce' });
+  await configureOllamaAgent(window, baseUrl);
+  await setContentSize(electronApp, 1000, 700);
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expectAgentFirstUnscrolled(window);
+  for (const width of [600, 500]) {
+    await setContentSize(electronApp, width, 700);
+    await expect.poll(() => window.evaluate(() => innerWidth)).toBe(width);
+    await expectAgentFirstUnscrolled(window);
+    for (const selector of ['#agent-examples button:first-child', '#agent-prompt', '#agent-attachment-button', '#agent-run'])
+      await expectReachable(window, selector);
+  }
+  await window.locator('#agent-examples button').first().click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete');
+  await window.locator('#agent-new-chat').click();
+  await expect(window.locator('#agent-examples')).toBeVisible();
+  await expectAgentFirstUnscrolled(window);
+  for (const selector of ['#agent-examples button:first-child', '#agent-prompt', '#agent-attachment-button', '#agent-run'])
+    await expectReachable(window, selector);
+  await window.keyboard.press('Escape');
 });
 
 test('without a connection, Agent directs users to Settings without running an example', async ({ window }) => {

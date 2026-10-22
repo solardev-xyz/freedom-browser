@@ -109,20 +109,22 @@ async function readRegularFile(root, relativePath, remainingBytes, identity) {
     await checkedEntry(root, relativePath, checked.identity);
     return bytes;
   }
+  // NONBLOCK: opening a workspace FIFO (or a file swapped for one) must not park a
+  // libuv thread until a writer appears. The opened inode is verified before any read.
   const handle = await fs.promises.open(
     checked.candidate,
-    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0)
   );
   try {
     const stats = await handle.stat();
-    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
-      throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'The opened file escaped its managed workspace');
-    }
     if (!stats.isFile() || stats.nlink !== 1) {
       throw sourceError(
         'WORKSPACE_PUBLICATION_UNSAFE',
         'Only ordinary files without hard links can be published'
       );
+    }
+    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
+      throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'The opened file escaped its managed workspace');
     }
     if (stats.size > remainingBytes) {
       throw sourceError(

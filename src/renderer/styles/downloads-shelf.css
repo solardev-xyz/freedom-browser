@@ -2,10 +2,17 @@
    (The update toast owns the bottom-left corner.) */
 .download-shelf {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
-  width: min(320px, calc(100vw - 32px));
-  max-height: 36vh;
+  /* The shelf scrolls, and a scroll container clips what it holds, the
+     cards' drop shadows included. Pad it by the shadow's reach (blur 20px,
+     4px down) and pull it out to the window's corner by the same amount, so
+     the cards still sit 16px in and their shadows fade out instead of being
+     cut into a hard grey box. downloads-ui.js reports the height without this
+     padding. */
+  bottom: 0;
+  right: 0;
+  padding: 16px 16px 16px 20px;
+  width: calc(min(320px, 100vw - 32px) + 36px);
+  max-height: calc(36vh + 32px);
   overflow-y: auto;
   scrollbar-width: thin;
   z-index: var(--z-popover);

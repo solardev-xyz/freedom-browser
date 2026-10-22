@@ -55,7 +55,10 @@ class DomainTransactions {
       action: 'wallet_transaction', operation: 'domain_execute', label: plan.label, inputPreview: plan.summary,
       wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', account,
         to: tx.to, value: `${formatEther(tx.value)} ETH`, maxFee: `${formatEther(maxFee)} ETH`,
-        summary: plan.summary, data: plan.data, requiresUnlock: account.type === 'mnemonic' },
+        // The typed card description; the renderer falls back to the generic
+        // transaction card (with this one-line-per-item summary) if it is invalid.
+        summary: plan.summary, ...(plan.presentation && { domain: plan.presentation }),
+        data: plan.data, requiresUnlock: account.type === 'mnemonic' },
     });
     if (![true, 'approved'].includes(decision) && decision?.status !== 'approved') throw new DomainError('DOMAIN_DECLINED', 'The domain transaction was not approved.');
     context.signal?.throwIfAborted();

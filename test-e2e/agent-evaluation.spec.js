@@ -1726,6 +1726,9 @@ test('Pi opens a popup while remaining pinned to the original tab', async ({ win
   );
   await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓']);
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  // The adopted tab and the popup it opened are both held in Agent custody
+  // (audit M1): no site auto-approve rule answers for either.
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(2);
   expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_get_tab']);
   expect(observedPopupAssignedUrl).toBe(POPUP_PAGE_URL);
   expect(requestCount).toBe(4);

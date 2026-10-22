@@ -12,7 +12,7 @@ const {
   isValidatedElectronJavaScriptRuntime,
   statValidatedElectronPackageArchive,
 } = require('./electron-runtime');
-const { isValidatedExecutableRoot } = require('./executable-access');
+const { isValidatedExecutableRoot, rootContainsHome } = require('./executable-access');
 
 const POLICY_VERSION = 1;
 const WORKSPACE_MOUNT_PATH = '/workspace';
@@ -641,6 +641,17 @@ function resolveAggregateLimits(limits) {
   return Object.freeze(normalized);
 }
 
+// Policy-level backstop for executable resolution: no approved package root may be,
+// or contain, the home directory in either its lexical or its realpath form.
+function refuseHomeExecutableRoot(sourcePath) {
+  if (rootContainsHome(sourcePath)) {
+    throw new ExecutionPolicyError(
+      'EXECUTABLE_ROOT_TOO_BROAD',
+      'An executable root cannot grant access to the home directory'
+    );
+  }
+}
+
 async function canonicalExecutableRuntimeRoot(input) {
   if (!isValidatedExecutableRoot(input)) {
     throw new ExecutionPolicyError(
@@ -648,7 +659,9 @@ async function canonicalExecutableRuntimeRoot(input) {
       'Executable roots must come from Freedom executable resolution'
     );
   }
+  refuseHomeExecutableRoot(input.sourcePath);
   const sourcePath = await canonicalDirectory(input.sourcePath, 'runtimeRoots sourcePath');
+  refuseHomeExecutableRoot(sourcePath);
   if (sourcePath !== input.sourcePath) {
     throw new ExecutionPolicyError(
       'EXECUTABLE_ROOT_CHANGED',
@@ -1046,6 +1059,7 @@ function restrictWorkspaceExecutionPolicy(policy, options = {}) {
       'Added runtime roots must come from Freedom executable resolution'
     );
   }
+  for (const root of addedRuntimeRoots) refuseHomeExecutableRoot(root.sourcePath);
   const runtimeRootIds = new Set();
   for (const value of omittedRuntimeRootIds) {
     if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)) {

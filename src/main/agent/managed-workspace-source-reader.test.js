@@ -1,11 +1,13 @@
 'use strict';
 
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
   MAX_WORKSPACE_PUBLICATION_FILES,
   ManagedWorkspaceSourceReader,
+  readRegularFile,
   validateWorkspacePublicationPath,
 } = require('./managed-workspace-source-reader');
 
@@ -137,6 +139,30 @@ describe('ManagedWorkspaceSourceReader', () => {
     await expect(reader.read('conversation_test', 'unsafe')).rejects.toMatchObject({
       code: 'WORKSPACE_PUBLICATION_UNSAFE',
     });
+  });
+
+  (process.platform === 'win32' ? test.skip : test)('refuses a FIFO swapped in after listing without parking the open', async () => {
+    const fifo = path.join(workspaceRoot, 'pipe.txt');
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0);
+    let timer;
+    try {
+      // readRegularFile is what read() calls once lstat has seen an ordinary file.
+      const reads = Array.from({ length: 20 }, () => readRegularFile(workspaceRoot, 'pipe.txt', 1024));
+      const stalled = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('FIFO open stalled')), 2_000);
+      });
+      const results = await Promise.race([Promise.allSettled(reads), stalled]);
+      expect(results.map(result => result.reason?.code)).toEqual(
+        Array(20).fill('WORKSPACE_PUBLICATION_UNSAFE')
+      );
+      await expect(reader.read('conversation_test', 'pipe.txt')).rejects.toMatchObject({
+        code: expect.stringMatching(/^WORKSPACE_PUBLICATION_/),
+      });
+    } finally {
+      clearTimeout(timer);
+      try { fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)); }
+      catch { /* No reader is waiting. */ }
+    }
   });
 
   test('fails closed when a folder exceeds the bounded file count', async () => {

@@ -1405,6 +1405,52 @@ test('installed Pi preserves project recovery through its real bash and edit ada
   })).toBe('passed');
 });
 
+test('installed Pi keeps long bash output in memory instead of spilling it to os.tmpdir()', () => {
+  const { execFileSync } = require('child_process');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  // The child's os.tmpdir() is a fresh, empty directory this test owns.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-bash-spill-'));
+  const script = `
+    (async () => {
+      const assert = require('node:assert/strict');
+      const os = require('node:os');
+      assert.equal(os.tmpdir(), process.env.TMPDIR);
+      const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+      const { createWorkspaceTools, MAX_MODEL_BASH_OUTPUT_LINES } = require('./src/main/agent/pi-workspace-tools');
+      const stdout = Array.from({ length: 5000 }, (_, index) => 'line ' + index).join('\\n') + '\\n';
+      const workspace = { workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        kind: 'command', command: 'seq', workingDirectory: '.', backend: 'linux-bubblewrap', state: 'completed', exitCode: 0,
+        stdout, stderr: '', terminationGuarantee: 'namespace_scoped', sideEffects: 'unknown' };
+      const controller = Object.fromEntries([
+        'execute', 'accessFile', 'readFile', 'createDirectory', 'writeFile', 'listDirectory',
+        'findFiles', 'grepFiles', 'prepareCommandPermissions', 'grantCommandPermissions', 'interactProcess',
+      ].map(name => [name, async () => { throw new Error('unused'); }]));
+      controller.getWorkspace = () => ({ workspaceId: workspace.workspaceId, enabled: true });
+      controller.startProcess = async () => ({ processId: 'workspace_process_cccccccccccccccccccccccc', state: 'completed', output: stdout, workspace });
+      const tools = await createWorkspaceTools({ sdk: await loadPiSdk(), controller, conversationId: 'conversation_one',
+        requestApproval: async () => ({ approved: true }) });
+      const result = await tools.find(tool => tool.name === 'bash').execute('bash_1', { command: 'seq 5000' });
+      const text = result.content.map(part => part.text || '').join('');
+      assert.ok(text.includes('line 4999'));
+      assert.ok(!text.includes('line 3499\\n'));
+      assert.ok(text.includes('showing the final ' + MAX_MODEL_BASH_OUTPUT_LINES + ' lines'));
+      assert.ok(!/Full output|pi-bash-/.test(JSON.stringify(result)));
+      process.stdout.write('passed');
+    })().catch(error => { console.error(error); process.exit(1); });
+  `;
+  try {
+    expect(execFileSync(process.execPath, ['-e', script], {
+      cwd: path.resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, TMPDIR: tmpdir, TMP: tmpdir, TEMP: tmpdir },
+    })).toBe('passed');
+    expect(fs.readdirSync(tmpdir)).toEqual([]);
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
 test('npm audit findings preserve advisory output and do not disguise execution failures', () => {
   const options = { operation: 'bash', receipt: { command: 'npm audit --json', state: 'failed', exitCode: 1 }, commandOutput: JSON.stringify({ metadata: { vulnerabilities: { total: 2 } } }) };
   expect(safeWorkspaceError({}, options)).toMatchObject({ code: 'WORKSPACE_AUDIT_FINDINGS' });

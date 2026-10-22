@@ -342,7 +342,10 @@ function registerFreedomAgentIpc(options = {}) {
   const sendEvent = (event) => {
     if (
       !owner ||
-      (owner.conversationId && owner.conversationId !== event.conversationId) ||
+      // A custody refresh hint carries no conversation data; every chrome
+      // owner repaints its Agent tab badges from its own state request.
+      (event.type !== 'agent_tabs_changed' &&
+        owner.conversationId && owner.conversationId !== event.conversationId) ||
       (owner.runId && event.runId && owner.runId !== event.runId)
     ) {
       return;

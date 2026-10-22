@@ -419,6 +419,10 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       type: 'tool_started',
       toolCallId: String(event.toolCallId),
       operation: String(event.toolName),
+      // A codemode script's nested calls name their parent; history folds
+      // their failures into it instead of keeping each one.
+      ...(typeof event.parentToolCallId === 'string' && event.parentToolCallId
+        && { parentToolCallId: event.parentToolCallId.slice(0, 160) }),
       ...progress,
     };
   }
@@ -942,7 +946,40 @@ function normalizeWalletApproval(value) {
       signatureType: value.signatureType.slice(0, 80),
     }),
     ...(typeof value.summary === 'string' && { summary: value.summary.slice(0, 65_536) }),
+    ...(normalizeDomainPresentation(value.domain) && { domain: normalizeDomainPresentation(value.domain) }),
     requiresUnlock: value.requiresUnlock === true,
+  });
+}
+
+// The typed card description of a domain transaction Freedom prepared
+// (src/main/domains/service.js presentPlan). Bounded here; the renderer
+// re-validates it and only names the contract the wallet actually calls.
+const DOMAIN_PRESENTATION_ACTIONS = new Set(['register_commit', 'register', 'renew',
+  'set_website', 'clear_website', 'set_address', 'set_text']);
+function normalizeDomainPresentation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.format !== 'freedom-domain-approval/1' || !DOMAIN_PRESENTATION_ACTIONS.has(value.action)) return null;
+  if (typeof value.name !== 'string' || !value.name || value.name.length > 255) return null;
+  if (!Array.isArray(value.items) || value.items.length > 20) return null;
+  const items = value.items.map(item => (
+    typeof item?.label === 'string' && item.label && item.label.length <= 40 &&
+    typeof item.value === 'string' && item.value.length <= 4096
+      ? Object.freeze({ label: item.label, value: item.value }) : null));
+  if (items.includes(null)) return null;
+  const contract = value.contract;
+  return Object.freeze({
+    format: value.format,
+    action: value.action,
+    name: value.name,
+    ...(Number.isSafeInteger(value.durationSeconds) && value.durationSeconds > 0 && {
+      durationSeconds: value.durationSeconds,
+    }),
+    ...(typeof value.priceWei === 'string' && /^\d{1,78}$/.test(value.priceWei) && { priceWei: value.priceWei }),
+    ...(typeof contract?.address === 'string' && contract.address.length <= 80 &&
+      typeof contract.name === 'string' && contract.name && contract.name.length <= 80 && {
+      contract: Object.freeze({ address: contract.address, name: contract.name }),
+    }),
+    items: Object.freeze(items),
   });
 }
 
@@ -1494,6 +1531,28 @@ class FreedomAgentService {
     return deleted;
   }
 
+  // A page in Agent custody cannot hand a site a tab outside it. Its popups
+  // open as Agent-held tabs under the opener's conversation (custody only;
+  // the conversation does not drive them), released like any Agent tab:
+  // by the user's explicit takeover. Returns false when no such tab could
+  // be opened; the caller then opens nothing.
+  async openCustodyPopup(openerContents, url) {
+    if (this.disposed || typeof url !== 'string' || !url) return false;
+    const openerTabId = this.controller.tabIdForWebContents?.(openerContents);
+    if (typeof openerTabId !== 'string' || !openerTabId) return false;
+    const conversationId = this.agentTabs.get(openerTabId)?.conversationId ?? null;
+    let opened;
+    try {
+      opened = await this.controller.execute(OPERATIONS.CREATE_TAB, { url, openerTabId });
+    } catch {
+      return false;
+    }
+    const tabId = opened?.ok ? opened.result?.tab?.tabId : null;
+    if (typeof tabId !== 'string' || !tabId) return false;
+    this.#registerAgentTab(tabId, conversationId);
+    return true;
+  }
+
   async claimTab(tabId) {
     if (this.disposed || typeof tabId !== 'string' || !tabId) return false;
     const record = this.agentTabs.get(tabId);
@@ -1642,6 +1701,7 @@ class FreedomAgentService {
     const permissionRuntime = needsRuntime ? withSessionPrivacy(options.modelRuntime, privacy, 'permission', privacySignal) : null;
     const helperRuntime = needsRuntime ? withSessionPrivacy(options.modelRuntime, privacy, 'helper', privacySignal) : null;
     if (conversation) conversation.activeRun = run;
+    let adoptedTabId = null;
 
     try {
       if (attachmentIds.length && !this.attachmentStore) {
@@ -1714,6 +1774,7 @@ class FreedomAgentService {
             );
           }
         } else {
+          adoptedTabId = tabId || null;
           scopedController = await this.createControllerScope({
             controller: this.controller,
             tabId,
@@ -1998,6 +2059,13 @@ class FreedomAgentService {
         conversation.unsubscribe = session.subscribe((event) =>
           this.#handlePiEvent(conversation, event)
         );
+        // The user's tab a new conversation adopts is held exactly like the
+        // tabs it creates: Agent custody (no site auto-approve rule answers
+        // for it) until the user explicitly takes it back (claimTab). It is
+        // registered once the turn is committed, before the model can act.
+        if (adoptedTabId && this.#conversationHasTab(conversation, adoptedTabId)) {
+          this.#registerAgentTab(adoptedTabId, run.conversationId);
+        }
       } else {
         const readiness = await conversation.scopedController.prepareResume();
         if (!readiness?.ok) {
@@ -2645,6 +2713,7 @@ class FreedomAgentService {
         label: normalized.label,
         intent: normalized.intent,
         effect: normalized.effect,
+        ...(normalized.parentToolCallId && { parentToolCallId: normalized.parentToolCallId }),
         ...(normalized.origin && { origin: normalized.origin }),
         ...(normalized.pageId && { pageId: normalized.pageId }),
         ...(Number.isSafeInteger(normalized.pageCount) && {
@@ -3438,6 +3507,9 @@ class FreedomAgentService {
     const run = this.activeRun;
     if (run && !run.finished && run.conversationId === conversationId) {
       this.#emit(run, { type: 'workspace_changed' });
+    } else {
+      // A popup from an idle Agent tab: no run event will repaint the badge.
+      this.#broadcast({ type: 'agent_tabs_changed' });
     }
   }
 

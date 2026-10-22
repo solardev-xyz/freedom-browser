@@ -53,6 +53,18 @@ function createController(authorize = jest.fn(async () => ({ allowed: true }))) 
 }
 
 describe('AutomationController', () => {
+  test('follows a guest back to its automation tab, so a popup can inherit Agent custody', () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    adapter.webContents = { id: 12 };
+    const tabId = controller.registerPage(adapter);
+    expect(controller.tabIdForWebContents(adapter.webContents)).toBe(tabId);
+    expect(controller.tabIdForWebContents({ id: 12 })).toBeNull();
+    expect(controller.tabIdForWebContents(null)).toBeNull();
+    controller.unregisterPage(tabId);
+    expect(controller.tabIdForWebContents(adapter.webContents)).toBeNull();
+  });
+
   test('frame dispatch retains host-only authority behind the operation policy', async () => {
     const { controller, authorize } = createController();
     const adapter = new FakePageAdapter();

@@ -4,6 +4,12 @@ import { createAgentDictation } from './agent-dictation.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
+import {
+  DOMAIN_APPROVAL_SOURCE,
+  domainApprovalHeading,
+  domainDisplayText,
+  parseDomainApproval,
+} from './domain-approval.js';
 import { isPrivateWindow } from './private-mode.js';
 import { homeUrl } from './page-urls.js';
 import { matchesShortcut } from './shortcuts.js';
@@ -2313,10 +2319,12 @@ function shortAddress(value) {
     : value || '';
 }
 
-function renderWalletApproval(request) {
+function renderWalletApproval(request, domain = null) {
   const wallet = request.wallet;
   elements.walletApprovalDetails.hidden = false;
   elements.walletApprovalSummary.replaceChildren();
+  // A domain transaction leads with what it does, one fact per row.
+  for (const item of domain?.items || []) appendWalletSummary(item.label, domainDisplayText(item.value));
   appendWalletSummary('Site', request.origin);
   appendWalletSummary('Network', wallet.chainName || `Chain ${wallet.chainId}`);
   if (wallet.kind === 'connection') {
@@ -2337,7 +2345,7 @@ function renderWalletApproval(request) {
     );
   }
   if (wallet.kind === 'transaction' || wallet.kind === 'transfer') {
-    appendWalletSummary('To', wallet.to);
+    appendWalletSummary('To', domain?.contractName ? `${domain.contractName}\n${wallet.to}` : wallet.to);
     if (wallet.recipientVerification) {
       appendWalletSummary('Recipient verification', wallet.recipientVerification);
     }
@@ -2474,6 +2482,7 @@ function renderApproval(request) {
   const workspace = request.workspace;
   const workspacePermission = request.workspacePermission;
   const projectAccess = request.projectAccess;
+  const domain = parseDomainApproval(request);
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   elements.approval.classList.toggle(
     'conversation-approval',
@@ -2518,7 +2527,7 @@ function renderApproval(request) {
                     : request.action === 'wallet_connection'
                       ? 'Connect this site to a wallet account?'
                       : request.action === 'wallet_transaction'
-                        ? 'Approve this wallet transaction?'
+                        ? domain ? domainApprovalHeading(domain) : 'Approve this wallet transaction?'
                         : request.action === 'wallet_transfer'
                           ? 'Send these funds from your Freedom wallet?'
                           : request.action === 'wallet_signature'
@@ -2563,14 +2572,17 @@ function renderApproval(request) {
                 : request.wallet
                   ? request.wallet.kind === 'transfer'
                     ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
-                    : 'Requested by the page Agent is controlling. The request is held until you decide.'
+                    : domain
+                      ? DOMAIN_APPROVAL_SOURCE
+                      : 'Requested by the page Agent is controlling. The request is held until you decide.'
                   : interaction
                     ? interaction.kind === 'uncertain'
                       ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
                       : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
                     : approvalOriginSummary(request);
   if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: ${JSON.stringify(request.pageMessage)}`;
-  if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview.replace(/\r\n?|\n/g, ' ⏎ ')}`;
+  // A domain transaction's preview is the same summary listed row by row below.
+  if (request.inputPreview && !domain) elements.approvalOrigin.textContent += `\n\n${request.inputPreview.replace(/\r\n?|\n/g, ' ⏎ ')}`;
   if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.map(classifierUncertaintyText).join('\n')}`;
   elements.pageToolDetails.hidden = !pageTool && !mcp;
   elements.pageToolDetails.open = Boolean(pageTool || mcp);
@@ -2620,7 +2632,7 @@ function renderApproval(request) {
   if (workspacePermission) {
     elements.approvalAllowConversation.textContent = 'Allow for conversation';
   }
-  if (request.wallet) renderWalletApproval(request);
+  if (request.wallet) renderWalletApproval(request, domain);
   if (nodeRequest) renderNodeRequestApproval(request);
   if (nodeLifecycle) renderNodeLifecycleApproval(request);
   if (publication) renderPublicationApproval(request);
@@ -3166,7 +3178,7 @@ function finishToolRow(event) {
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
-  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled;
+  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || event.status === 'cancelled';
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
@@ -3618,6 +3630,10 @@ function handleAgentEvent(event) {
 function applyAgentEvent(event) {
   if (event?.type === 'conversation_privacy_changed') {
     if (event.conversationId === currentConversationId) sessionPrivacy?.update(event.privacy);
+    return;
+  }
+  if (event?.type === 'agent_tabs_changed') {
+    void refreshWorkspaceProjection();
     return;
   }
   if (event?.type === 'conversation_cleared') {

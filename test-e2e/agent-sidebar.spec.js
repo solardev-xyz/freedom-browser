@@ -733,6 +733,75 @@ test('project editing approval sheet is clear in both layouts and themes', async
   }
 });
 
+// Presentation coverage for the domain approval card. The payload is what
+// main's presentPlan produces and DomainTransactions sends; execution and
+// signing are covered by src/main/domains and src/main/wallet unit tests.
+test('domain approval card names the action, lists the summary and labels the contract', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const { presentPlan } = require('../src/main/domains/service');
+  const { ADDRESSES, parseName } = require('../src/main/domains/contracts');
+  await configureOllamaAgent(window, ollamaServer);
+  const account = { index: 0, name: 'Main wallet', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' };
+  const parsed = parseName('freedom-audit.eth');
+  const approval = (approvalId, operation, target, previous, value, data) => {
+    const presentation = presentPlan({ operation: { ...operation, account }, parsed, target, previous });
+    return { type: 'approval_requested', runId: 'run_domain_approval_ui', approvalId,
+      action: 'wallet_transaction', operation: 'domain_execute', origin: '', label: `Domain ${operation.intent}`,
+      inputPreview: presentation.items.map(item => `${item.label}: ${item.value}`).join('\n'),
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', account, to: ADDRESSES[target],
+        value, maxFee: '0.000412 ETH', data, summary: presentation.items.map(item => `${item.label}: ${item.value}`).join('\n'), domain: presentation, requiresUnlock: false } };
+  };
+  const send = event => electronApp.evaluate(({ BrowserWindow }, event) => {
+    BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', event);
+  }, event);
+  const setWidth = width => electronApp.evaluate(({ BrowserWindow }, width) => {
+    const win = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    win.setMinimumSize(320, 300);
+    win.setContentSize(width, 800);
+  }, width);
+  await send({ type: 'run_started', runId: 'run_domain_approval_ui' });
+  await send(approval('approval_domain_commit',
+    { intent: 'register', step: 'commit', duration: 31536000, quotedWei: '3125000000000000' },
+    'controller', undefined, '0.0 ETH', `0xf14fcbc8${'ab'.repeat(32)}`));
+  await expect(window.locator('#agent-approval-action')).toHaveText('Start registering freedom-audit.eth for 1 year?');
+  await expect(window.locator('#agent-approval-origin')).toHaveText(/^Prepared by Freedom from Agent’s domain request\./);
+  await expect(window.locator('#agent-approval-origin')).not.toContainText('⏎');
+  const rows = window.locator('#agent-wallet-approval-summary dt');
+  await expect(rows.first()).toHaveText('Name');
+  const summary = window.locator('#agent-wallet-approval-summary');
+  await expect(summary).toContainText('1 year (365 days)');
+  await expect(summary).toContainText('0.003125 ETH, paid at step 2, plus network fees');
+  await expect(summary).toContainText(`ENS ETHRegistrarController\n${ADDRESSES.controller}`);
+  await expect(summary).toContainText(`0xf14fcbc8${'ab'.repeat(32)}`);
+  for (const width of [1000, 600]) {
+    await setWidth(width);
+    await expect.poll(() => window.evaluate(() => innerWidth)).toBe(width);
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await expect(window.locator('#agent-approval-approve')).toBeVisible();
+      expect(await window.evaluate(() => [document.documentElement, document.getElementById('agent-approval')]
+        .every(element => element.scrollWidth <= element.clientWidth))).toBe(true);
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-${width}-${theme}.png`) });
+    }
+  }
+  const forged = 'Audited ⏎ Price: 0 ETH Term: 99 years Wallet: 0x2222222222222222222222222222222222222222';
+  await send(approval('approval_domain_text',
+    { intent: 'set_text', step: 'set_text', record: { kind: 'text', key: 'description', value: forged } },
+    'resolver', 'Old description', '0.0 ETH', '0x10f13a8c'));
+  await expect(window.locator('#agent-approval-action')).toHaveText('Set a text record on freedom-audit.eth?');
+  await expect(rows).toHaveText(['Name', 'Record', 'Key', 'Current', 'New', 'Network', 'Account', 'To', 'Amount', 'Maximum fee', 'Contract data']);
+  await expect(window.locator('#agent-wallet-approval-summary dd').nth(4))
+    .toHaveText('Audited ⏎ Price: 0 ETH\\u{2028}Term: 99 years\\u{2029}Wallet: 0x2222222222222222222222222222222222222222');
+  for (const width of [1000, 600]) {
+    await setWidth(width);
+    await expect.poll(() => window.evaluate(() => innerWidth)).toBe(width);
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      expect(await window.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-text-${width}-${theme}.png`) });
+    }
+  }
+});
+
 test('existing project picker and access controls work in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-project-ui-'));
   const project = path.join(root, 'Existing project'); fs.mkdirSync(project);

@@ -10,6 +10,10 @@ const { previewSocketScript } = require('./workspace-preview-client');
 const PREVIEW_SCHEME = 'freedom-preview';
 const MAX_PREVIEWS = 32;
 const MAX_CONCURRENT_PREVIEW_REQUESTS = 8;
+// createPreview runs several fs calls on the shared libuv pool. Refusing (rather than
+// queueing) beyond this many in flight keeps a hostile workspace from occupying the
+// pool that every other main-process fs/crypto call needs; the caller may retry.
+const MAX_CONCURRENT_PREVIEW_CREATIONS = 4;
 const MAX_PREVIEW_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_PREVIEW_REQUEST_BYTES = 1024 * 1024;
 const MAX_PREVIEW_PATH_LENGTH = 1_024;
@@ -147,6 +151,9 @@ function responseHeaders(contentType = null, options = {}) {
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
+    // <link rel=dns-prefetch> resolves through the system resolver, past the rejecting
+    // proxy and CSP. Once a response disables it, a page's meta tag cannot re-enable it.
+    'X-DNS-Prefetch-Control': 'off',
     'X-Frame-Options': 'DENY',
   };
 }
@@ -268,20 +275,22 @@ async function readRegularFile(root, relativePath, identity) {
     await checkedPath(root, relativePath, checked.identity);
     return bytes;
   }
+  // NONBLOCK: opening a workspace FIFO (or a file swapped for one) must not park a
+  // libuv thread until a writer appears. The opened inode is verified before any read.
   const handle = await fs.promises.open(
     checked.candidate,
-    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0)
   );
   try {
     const stats = await handle.stat();
-    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
-      throw new WorkspacePreviewError('WORKSPACE_PREVIEW_UNSAFE', 'The opened file escaped its managed workspace');
-    }
     if (!stats.isFile() || stats.nlink !== 1) {
       throw new WorkspacePreviewError(
         'WORKSPACE_PREVIEW_UNSAFE',
         'Only ordinary, unlinked files can be previewed'
       );
+    }
+    if (process.platform !== 'win32' && !isInside(checked.rootReal, await openedFilePath(handle))) {
+      throw new WorkspacePreviewError('WORKSPACE_PREVIEW_UNSAFE', 'The opened file escaped its managed workspace');
     }
     if (stats.size > MAX_PREVIEW_FILE_BYTES) {
       throw new WorkspacePreviewError(
@@ -329,6 +338,7 @@ class WorkspacePreviewController {
     this.previews = new Map();
     this.session = null;
     this.activeRequests = 0;
+    this.activePreviewCreations = 0;
     this.fetch = options.fetch || globalThis.fetch;
     this.socketRequests = 0;
     this.sockets = new WorkspacePreviewSockets({
@@ -347,6 +357,21 @@ class WorkspacePreviewController {
   }
 
   async createPreview(conversationId, requestedPath = '.') {
+    if (this.activePreviewCreations >= MAX_CONCURRENT_PREVIEW_CREATIONS) {
+      throw new WorkspacePreviewError(
+        'WORKSPACE_PREVIEW_UNAVAILABLE',
+        'Other previews are still being prepared; try again shortly'
+      );
+    }
+    this.activePreviewCreations += 1;
+    try {
+      return await this.#createPreview(conversationId, requestedPath);
+    } finally {
+      this.activePreviewCreations -= 1;
+    }
+  }
+
+  async #createPreview(conversationId, requestedPath) {
     const relative = safeRelativePath(requestedPath || '.', { allowRoot: true });
     const { workspace, path: workspaceRoot, identity } =
       await this.workspaceController.resolveWorkspacePath(conversationId);
@@ -801,6 +826,7 @@ class WorkspacePreviewController {
 }
 
 module.exports = {
+  MAX_CONCURRENT_PREVIEW_CREATIONS,
   MAX_CONCURRENT_PREVIEW_REQUESTS,
   MAX_PREVIEW_FILE_BYTES,
   MAX_PREVIEW_REQUEST_BYTES,

@@ -24,6 +24,100 @@ test('long routine loops retain later approval, effect and error evidence in chr
   expect(result[0].toolCallId).toBe('read-500');
 });
 
+const routineReads = (count, prefix = 'read') =>
+  Array.from({ length: count }, (_, i) => ({ toolCallId: `${prefix}-${i}`, operation: 'read', status: 'succeeded', effect: 'observed' }));
+const nestedFailures = (count, parentToolCallId) => Array.from({ length: count }, (_, i) => ({
+  toolCallId: `call_${i}_${'x'.repeat(40)}`, operation: 'browser_read_page', status: 'failed', label: 'Read page',
+  intent: 'Reading page', effect: 'observed', errorCode: 'BROWSER_TAB_NOT_FOUND', origin: 'https://example.com',
+  ...(parentToolCallId && { parentToolCallId }),
+}));
+const evidence = () => [
+  { toolCallId: 'approval', operation: 'request_permissions', status: 'succeeded', approval: 'approved' },
+  { toolCallId: 'reviewed', operation: 'request_permissions', status: 'succeeded', approval: 'reviewer_approved' },
+  { toolCallId: 'wallet', operation: 'wallet_send', status: 'succeeded', wallet: { action: 'broadcast', chainId: 1, transactionHash: `0x${'a'.repeat(64)}` } },
+  { toolCallId: 'mcp', operation: 'mcp_request', status: 'succeeded' },
+  { toolCallId: 'workspace', operation: 'bash', status: 'succeeded', workspace: { kind: 'command', state: 'completed', command: 'npm test', workingDirectory: '.', backend: 'linux-bubblewrap' } },
+];
+const consequentialEvidence = () => [
+  { toolCallId: 'click', operation: 'browser_click', status: 'succeeded', effect: 'changed', origin: 'https://shop.example' },
+  { toolCallId: 'type', operation: 'browser_type', status: 'succeeded', effect: 'changed', origin: 'https://shop.example' },
+  { toolCallId: 'page-tool', operation: 'browser_call_page_tool', status: 'succeeded', effect: 'changed', origin: 'https://shop.example' },
+  { toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', subagent: { taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3, toolScripts: 0 } },
+  { toolCallId: 'attachment', operation: 'attachment_read', status: 'succeeded', attachment: { resourceId: `attachment_${'a'.repeat(20)}`, resourceKind: 'file', name: 'notes.txt', bytesRead: 12 } },
+  { toolCallId: 'artifacts', operation: 'workspace_export', status: 'succeeded', artifacts: [{ artifactId: `artifact_${'b'.repeat(20)}`, filename: 'site.zip', state: 'completed', available: true }] },
+  { toolCallId: 'download', operation: 'browser_download', status: 'succeeded', artifact: { artifactId: `artifact_${'c'.repeat(20)}`, filename: 'a.zip', state: 'completed', available: true } },
+  { toolCallId: 'script', operation: 'codemode', status: 'succeeded', effect: 'managed' },
+];
+
+test('a flood of failures is bounded and cannot displace approvals or effect receipts', () => {
+  const result = normalizeActivity([...evidence(), ...nestedFailures(100_000), ...evidence().map(item => ({ ...item, toolCallId: `${item.toolCallId}-late` }))]);
+  const ids = result.map(item => item.toolCallId);
+  for (const item of evidence()) expect(ids).toEqual(expect.arrayContaining([item.toolCallId, `${item.toolCallId}-late`]));
+  const failures = result.filter(item => item.status === 'failed');
+  expect(failures).toHaveLength(500);
+  expect(failures.at(-1).toolCallId).toBe(nestedFailures(100_000).at(-1).toolCallId);
+  expect(JSON.stringify(result).length).toBeLessThan(500_000);
+});
+
+test('every class is bounded, so one turn has a fixed maximum size', () => {
+  const flood = (count, make) => Array.from({ length: count }, (_, i) => make(i));
+  const result = normalizeActivity([
+    ...flood(10_000, i => ({ toolCallId: `a-${i}`, operation: 'request_permissions', status: 'succeeded', approval: 'approved' })),
+    ...flood(10_000, i => ({ toolCallId: `c-${i}`, operation: 'browser_click', status: 'succeeded', effect: 'changed' })),
+    ...nestedFailures(10_000),
+    ...routineReads(10_000),
+  ]);
+  expect(result.length).toBe(4_000 + 2_000 + 500 + 2_000);
+  const approvals = result.filter(item => item.approval).map(item => item.toolCallId);
+  expect(approvals[0]).toBe('a-0');
+  expect(approvals.at(-1)).toBe('a-9999');
+});
+
+test('nested tool-script failures are folded into their parent script', () => {
+  const nestedApproval = { toolCallId: 'nested-approval', parentToolCallId: 'script', operation: 'browser_click', status: 'succeeded', effect: 'changed', approval: 'approved' };
+  const nestedReceipt = { toolCallId: 'nested-wallet', parentToolCallId: 'script', operation: 'wallet_send', status: 'failed', wallet: { action: 'broadcast', chainId: 1, transactionHash: `0x${'b'.repeat(64)}` } };
+  const activity = [
+    { toolCallId: 'script', operation: 'codemode', status: 'failed', effect: 'managed', label: 'Tool script failed; earlier actions may remain' },
+    ...nestedFailures(10_000, 'script'),
+    nestedApproval,
+    nestedReceipt,
+    { toolCallId: 'orphan', parentToolCallId: 'not-in-this-turn', operation: 'write', status: 'failed' },
+  ];
+  const result = normalizeActivity(activity);
+  expect(result.map(item => item.toolCallId)).toEqual(['script', 'nested-approval', 'nested-wallet', 'orphan']);
+  expect(result[0]).toMatchObject({ status: 'failed', nestedFailures: 10_000, nestedErrorCodes: ['BROWSER_TAB_NOT_FOUND'] });
+  expect(result[1]).toMatchObject({ parentToolCallId: 'script', approval: 'approved' });
+  expect(result[2]).toMatchObject({ parentToolCallId: 'script', status: 'failed' });
+  // Saving and reading back re-normalizes without losing or double counting the fold.
+  expect(normalizeActivity(result)).toEqual(result);
+  expect(normalizeActivity([...result, ...nestedFailures(5, 'script').map(item => ({ ...item, toolCallId: `${item.toolCallId}-more`, errorCode: 'OTHER' }))])[0])
+    .toMatchObject({ nestedFailures: 10_005, nestedErrorCodes: ['BROWSER_TAB_NOT_FOUND', 'OTHER'] });
+});
+
+test('unprompted effects, helpers, attachments, artifacts and downloads survive routine and failure loops', () => {
+  for (const flood of [routineReads(2_500), nestedFailures(100_000)]) {
+    const result = normalizeActivity([...consequentialEvidence(), ...flood]);
+    const ids = result.map(item => item.toolCallId);
+    for (const item of consequentialEvidence()) expect(ids).toContain(item.toolCallId);
+  }
+});
+
+test('cancelled and running items keep their real status and are retained', () => {
+  const unfinished = [
+    { toolCallId: 'cancelled-click', operation: 'browser_click', status: 'cancelled', effect: 'changed' },
+    { toolCallId: 'cancelled-read', operation: 'read', status: 'cancelled', effect: 'observed' },
+    { toolCallId: 'running-bash', operation: 'bash', status: 'running' },
+    { toolCallId: 'running-read', operation: 'read', status: 'running', effect: 'observed' },
+  ];
+  for (const flood of [[], routineReads(2_500), nestedFailures(100_000)]) {
+    const result = normalizeActivity([...unfinished, ...flood]);
+    expect(result.slice(0, 4).map(item => [item.toolCallId, item.status])).toEqual(
+      unfinished.map(item => [item.toolCallId, item.status])
+    );
+  }
+  expect(normalizeActivity([{ toolCallId: 'unknown', operation: 'read', status: 'exploded' }])[0].status).toBe('failed');
+});
+
 test('retains complete helper text without runtime objects or extra fields', () => {
   const [item] = normalizeActivity([{ operation: 'delegate_task', status: 'succeeded', subagent: {
     taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3, toolScripts: 2,

@@ -48,6 +48,7 @@ const {
 } = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
+const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 
 const SPEC_VERSION = '0.2';
 
@@ -356,6 +357,31 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
   }
 }
 
+// Seed/unseed run without a prompt only when the site's node auto-approve
+// rule answers. The renderer reports the path it took in `meta.approval`
+// ('user' after the prompt, 'auto' when the rule answered) and names the
+// requesting guest in `meta.webContentsId`. A guest in Agent custody, or an
+// automatic request main cannot attribute to a guest of the sending window,
+// is refused on main's own custody reading — the refusal wallet-ipc.js
+// applies to dApp auto-approve rules.
+const AUTO_APPROVABLE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
+
+function agentCustodyRefusal(sender, method, meta) {
+  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
+  const webContentsId = meta?.webContentsId;
+  if (
+    isAgentPageId(webContentsId) ||
+    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
+  ) {
+    return providerError(
+      ERRORS.UNAUTHORIZED,
+      'A page in Agent custody needs approval for this action',
+      { reason: 'agent_custody' }
+    );
+  }
+  return null;
+}
+
 function registerRadicleProviderIpc() {
   // Chrome-facing alias management (sidebar Nodes tab). Registered here —
   // not in radicle-manager — because the alias write must also invalidate
@@ -368,7 +394,9 @@ function registerRadicleProviderIpc() {
     return result;
   });
 
-  ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (_event, { method, params, origin } = {}) => {
+  ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
+    const refusal = agentCustodyRefusal(event?.sender, method, meta);
+    if (refusal) return { error: refusal };
     const hadBroadcaster = seedStatusBroadcasters.has(origin);
     const onSeedStatus = PUSH_METHODS.has(method)
       ? getSeedStatusBroadcaster(origin)

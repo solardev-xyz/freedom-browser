@@ -305,6 +305,39 @@ describe('workspace execution policy', () => {
     ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_EXECUTABLE_ROOT' }));
   });
 
+  test('refuses an executable root that is or contains HOME in its lexical or realpath form', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const packageRoot = path.join(fixture.fixtureRoot, 'toolchain');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(path.join(packageRoot, 'home'), { recursive: true });
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'formatter'), '#!/bin/sh\n', { mode: 0o700 });
+    const access = await resolveExecutableAccess(['formatter'], {
+      platform: 'linux',
+      hostEnvironment: { PATH: bin },
+    });
+    const basePolicy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const linkedHome = path.join(fixture.fixtureRoot, 'linked-home');
+    await fs.promises.symlink(path.join(packageRoot, 'home'), linkedHome);
+    for (const home of [linkedHome, packageRoot, path.join(packageRoot, 'home')]) {
+      const homedir = jest.spyOn(os, 'homedir').mockReturnValue(home);
+      try {
+        expect(() =>
+          restrictWorkspaceExecutionPolicy(basePolicy, { addRuntimeRoots: access.runtimeRoots })
+        ).toThrow(expect.objectContaining({ code: 'EXECUTABLE_ROOT_TOO_BROAD' }));
+        await expect(
+          createWorkspaceExecutionPolicy({
+            workspaceRoot: fixture.workspaceRoot,
+            runtimeRoots: access.runtimeRoots,
+          })
+        ).rejects.toMatchObject({ code: 'EXECUTABLE_ROOT_TOO_BROAD' });
+      } finally {
+        homedir.mockRestore();
+      }
+    }
+  });
+
   test('revalidates packaged Linux app.asar through the attested physical filesystem', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);

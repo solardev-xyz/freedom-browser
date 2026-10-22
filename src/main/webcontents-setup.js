@@ -14,6 +14,7 @@ const { isExternalProtocolUrl, trackUserGestures } = require('./external-protoco
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
+const { isAgentPage } = require('./wallet/agent-tab-custody');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -205,7 +206,7 @@ function lockChromeWindow(contents, tag, isManagedPage) {
   });
 }
 
-function registerWebContentsHandlers({ isManagedPage } = {}) {
+function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
   app.on('web-contents-created', (_event, contents) => {
     let previousRtcPolicy;
     contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
@@ -337,6 +338,20 @@ function registerWebContentsHandlers({ isManagedPage } = {}) {
             reuseOnly: isNamedTarget && disposition === 'foreground-tab',
             origin: verdict.origin,
           });
+          return { action: 'deny' };
+        }
+        // A page in Agent custody cannot hand a site a tab outside it, where
+        // the site's auto-approve rules would answer again (audit M1). Its
+        // popup opens as an Agent-held tab (agent service openCustodyPopup)
+        // or not at all.
+        if (isAgentPage(contents)) {
+          log.info(`${tag} popup from a page in Agent custody opens in Agent custody`);
+          Promise.resolve()
+            .then(() => openAgentPopup?.(contents, url))
+            .then((opened) => {
+              if (opened !== true) log.info(`${tag} popup from a page in Agent custody was not opened`);
+            })
+            .catch(() => {});
           return { action: 'deny' };
         }
         // Send message to the owning BrowserWindow to open URL in new tab

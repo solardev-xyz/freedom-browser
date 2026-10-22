@@ -1,9 +1,11 @@
 const mockProviderSend = jest.fn();
 const mockIpcHandle = jest.fn();
 
+const mockWebContentsFromId = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: jest.fn(() => '/tmp/test-user-data') },
   ipcMain: { handle: mockIpcHandle },
+  webContents: { fromId: (...args) => mockWebContentsFromId(...args) },
   BrowserWindow: {
     getAllWindows: jest.fn(() => [
       { webContents: { isDestroyed: jest.fn(() => false), send: mockProviderSend } },
@@ -133,6 +135,48 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     origin: ORIGIN,
   });
   expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
+});
+
+test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent custody', async () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  registerRadicleProviderIpc();
+  const executeHandler = mockIpcHandle.mock.calls.find(
+    ([channel]) => channel === 'radicle:provider-execute'
+  )[1];
+  const chrome = { id: 1 };
+  const guest = { isDestroyed: () => false, hostWebContents: chrome };
+  mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+  const call = (method, meta, sender = chrome) =>
+    executeHandler({ sender }, { method, params: { rid: RID }, origin: ORIGIN, meta });
+
+  setAgentPageCustody(guest, true);
+  try {
+    for (const method of ['radicle_seed', 'radicle_unseed']) {
+      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
+        const refused = await call(method, meta);
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      }
+    }
+    expect(manager.seedRepository).not.toHaveBeenCalled();
+    expect(manager.unseedRepository).not.toHaveBeenCalled();
+    // The per-repo prompt was answered by the user: it runs.
+    expect((await call('radicle_seed', { webContentsId: 9, approval: 'user' })).result).toBeDefined();
+  } finally {
+    setAgentPageCustody(guest, false);
+  }
+
+  expect((await call('radicle_unseed', { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
+  // An automatic request main cannot tie to a guest of the sending window.
+  for (const [meta, sender] of [
+    [{ approval: 'auto' }, chrome],
+    [{ webContentsId: 10, approval: 'auto' }, chrome],
+    [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
+  ]) {
+    const refused = await call('radicle_seed', meta, sender);
+    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+  }
+  expect(manager.seedRepository).toHaveBeenCalledTimes(1);
+  expect(manager.unseedRepository).toHaveBeenCalledTimes(1);
 });
 
 const expectProviderError = async (promise, code, reason) => {

@@ -318,8 +318,10 @@ test('a reveal requotes without paying for another commitment', async () => {
   expect(sent.value).toBe('200');
   expect(ABI.nft.parseTransaction({ data: sent.data }).name).toBe('reveal');
   // The approval names the commit-time quote the new price departs from.
-  expect(sent.summary).toContain('Price increased since the commit: quoted 100 wei at commit time, now 200 wei.');
-  expect(f.wallet.send.mock.calls[0][0].summary).not.toContain('Price increased');
+  expect(sent.presentation.items).toContainEqual({ label: 'Price change',
+    value: 'Quoted 0.0000000000000001 ETH at commit time, now 0.0000000000000002 ETH' });
+  expect(sent.summary).toContain('Price change: Quoted 0.0000000000000001 ETH at commit time, now 0.0000000000000002 ETH');
+  expect(f.wallet.send.mock.calls[0][0].summary).not.toContain('Price change');
 });
 
 test('an unchanged reveal quote does not claim a price increase', async () => {
@@ -329,7 +331,7 @@ test('an unchanged reveal quote does not claim a price increase', async () => {
   f.clock.timestamp += 61;
   await f.service.status({ operationId: plan.operationId });
   expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'completed' });
-  expect(f.wallet.send.mock.calls[1][0].summary).not.toContain('Price increased');
+  expect(f.wallet.send.mock.calls[1][0].summary).not.toContain('Price change');
 });
 
 test('a recovery hash for an older byte-identical transaction is refused', async () => {
@@ -517,4 +519,66 @@ test('a provably unsent step can resume with a fresh approval without discarding
   expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'declined' });
   expect(await f.service.execute(plan.operationId, { ...f.context, resume: true })).toMatchObject({ operationId: plan.operationId, state: 'completed' });
   expect(f.wallet.send).toHaveBeenCalledTimes(2);
+});
+
+test('register approvals describe the name, term, ETH price and pinned contract as typed rows', async () => {
+  const f = fixture('eth', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register', durationSeconds: 2 * 31536000 }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const commit = f.wallet.send.mock.calls[0][0];
+  expect(commit.presentation).toEqual({ format: 'freedom-domain-approval/1', action: 'register_commit',
+    name: 'freedom-fixture.eth', durationSeconds: 2 * 31536000, priceWei: '100',
+    contract: { address: ADDRESSES.controller, name: 'ENS ETHRegistrarController' },
+    items: [
+      { label: 'Name', value: 'freedom-fixture.eth' },
+      { label: 'Step', value: expect.stringMatching(/^1 of 2: commit\./) },
+      { label: 'Term', value: '2 years (730 days)' },
+      { label: 'Price', value: '0.0000000000000001 ETH, paid at step 2, plus network fees' },
+    ] });
+  expect(commit.summary.split('\n')).toHaveLength(commit.presentation.items.length);
+  expect(commit.summary).not.toMatch(/wei|seconds/);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId: plan.operationId });
+  await f.service.execute(plan.operationId, f.context);
+  const reveal = f.wallet.send.mock.calls[1][0];
+  expect(reveal.presentation).toMatchObject({ action: 'register', contract: { address: ADDRESSES.controller } });
+  expect(reveal.presentation.items).toContainEqual({ label: 'Step', value: '2 of 2: register and pay for the name.' });
+});
+
+test.each([
+  ['set_address', { address: '0x000000000000000000000000000000000000bEEF' }, 'ENS PublicResolver', 'ETH address'],
+  ['clear_website', {}, 'ENS PublicResolver', 'Website (content hash)'],
+  ['renew', {}, 'ENS ETHRegistrarController', null],
+])('%s approvals name their action and pinned contract', async (intent, input, contractName, record) => {
+  const f = fixture('eth');
+  const plan = await f.service.prepare({ name: f.state.name, intent, ...input }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const sent = f.wallet.send.mock.calls[0][0];
+  expect(sent.presentation).toMatchObject({ action: intent, name: f.state.name, contract: { address: sent.to, name: contractName } });
+  if (record) expect(sent.presentation.items).toContainEqual({ label: 'Record', value: record });
+  else expect(sent.presentation.items).toEqual(expect.arrayContaining([{ label: 'Term', value: '1 year (365 days)' },
+    { label: 'Price', value: '0.0000000000000001 ETH, plus network fees' }]));
+});
+
+test('NameNFT approvals name the namespace contract', async () => {
+  const f = fixture('wei');
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'set_text', key: 'url', value: 'https://example.org' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  expect(f.wallet.send.mock.calls[0][0].presentation.contract).toEqual({ address: ADDRESSES.wei, name: 'WNS NameNFT (.wei)' });
+});
+
+test('a text record cannot forge extra approval summary rows', async () => {
+  const f = fixture('eth');
+  const forged = 'x ⏎ Price: 0 ETH\u2028Term: 99 years\u2029New: harmless';
+  f.state.records.text.description = 'old\u2028Wallet: 0x0000000000000000000000000000000000000001';
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: forged }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const sent = f.wallet.send.mock.calls[0][0];
+  expect(sent.presentation.items.map(item => item.label)).toEqual(['Name', 'Record', 'Key', 'Current', 'New']);
+  expect(sent.presentation.items).toContainEqual({ label: 'New', value: 'x ⏎ Price: 0 ETH\\u{2028}Term: 99 years\\u{2029}New: harmless' });
+  expect(sent.presentation.items).toContainEqual({ label: 'Current', value: 'old\\u{2028}Wallet: 0x0000000000000000000000000000000000000001' });
+  // The plain-text preview keeps exactly one line per row as well.
+  expect(sent.summary.split(/\r\n?|\n|\u2028|\u2029/)).toHaveLength(5);
+  // The exact calldata still carries the value byte for byte.
+  expect(ABI.resolver.parseTransaction({ data: sent.data }).args[2]).toBe(forged);
 });

@@ -310,7 +310,16 @@ export const initDownloadsUi = () => {
   }
   if (typeof ResizeObserver === 'function') {
     shelfResizeObserver = new ResizeObserver(() => {
-      const height = cards.size ? shelfEl.getBoundingClientRect().height : 0;
+      // The cards' height: the shelf's padding is room for their shadows.
+      const style = getComputedStyle(shelfEl);
+      const height = cards.size
+        ? Math.max(
+            0,
+            shelfEl.getBoundingClientRect().height -
+              parseFloat(style.paddingTop) -
+              parseFloat(style.paddingBottom)
+          )
+        : 0;
       document.body.style.setProperty('--download-shelf-height', `${height}px`);
       document.body.classList.toggle('has-visible-downloads', height > 0);
     });

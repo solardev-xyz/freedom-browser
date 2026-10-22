@@ -892,6 +892,17 @@ describe('Freedom agent IPC', () => {
     expect(ctx.otherSender.send).not.toHaveBeenCalled();
   });
 
+  test('forwards a custody repaint hint to the owning chrome whatever conversation it names', async () => {
+    const service = createService();
+    service.start.mockResolvedValue({ runId: 'run_test', conversationId: 'conversation_test' });
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    service.emit({ type: 'agent_tabs_changed', conversationId: undefined, sequence: 4 });
+    service.emit({ type: 'workspace_changed', conversationId: 'conversation_other', sequence: 5 });
+    expect(ctx.sender.send.mock.calls).toEqual([[IPC.AGENT_EVENT, { type: 'agent_tabs_changed', sequence: 4 }]]);
+    expect(ctx.otherSender.send).not.toHaveBeenCalled();
+  });
+
   test('allows only the owning sender and exact run ID to stop', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);

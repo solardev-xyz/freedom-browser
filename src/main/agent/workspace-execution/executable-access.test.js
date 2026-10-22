@@ -29,6 +29,38 @@ describe('approved executable access', () => {
     } finally { homedir.mockRestore(); }
   });
 
+  test('a symlinked HOME does not widen ~/.cargo, ~/.local or ~/bin into a credential or home grant', async () => {
+    const fixture = await fs.promises.realpath(
+      await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-home-link-'))
+    );
+    fixtureRoots.push(fixture);
+    const realHome = path.join(fixture, 'real', 'u');
+    const linkHome = path.join(fixture, 'link');
+    await fs.promises.mkdir(realHome, { recursive: true });
+    await fs.promises.symlink(realHome, linkHome);
+    for (const [directory, name] of [['.cargo/bin', 'cargotool'], ['.local/bin', 'localtool'], ['bin', 'hometool']]) {
+      await fs.promises.mkdir(path.join(realHome, directory), { recursive: true });
+      await fs.promises.writeFile(path.join(realHome, directory, name), '#!/bin/sh\n', { mode: 0o700 });
+    }
+    const homedir = jest.spyOn(os, 'homedir').mockReturnValue(linkHome);
+    try {
+      for (const pathHome of [linkHome, realHome]) {
+        const options = { platform: 'linux', hostEnvironment: { PATH: [path.join(pathHome, '.cargo/bin'), path.join(pathHome, '.local/bin'), path.join(pathHome, 'bin')].join(':') } };
+        const access = await resolveExecutableAccess(['cargotool', 'localtool'], options);
+        expect(access.commands.map(command => command.rootPath).sort()).toEqual([
+          path.join(realHome, '.cargo/bin'),
+          path.join(realHome, '.local/bin'),
+        ]);
+        for (const root of access.runtimeRoots) {
+          expect([realHome, path.join(realHome, '.cargo'), path.join(realHome, '.local')]).not.toContain(root.sourcePath);
+        }
+        await expect(resolveExecutableAccess(['hometool'], options)).rejects.toMatchObject({
+          code: 'EXECUTABLE_SCOPE_TOO_BROAD',
+        });
+      }
+    } finally { homedir.mockRestore(); }
+  });
+
   async function scriptFixture(files) {
     const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-interpreters-'));
     fixtureRoots.push(fixture);

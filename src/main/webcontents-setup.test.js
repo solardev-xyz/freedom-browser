@@ -720,7 +720,7 @@ describe('webcontents-setup', () => {
         url: options.url || 'https://site.example/page',
         hostWebContents: host,
       });
-      ctx.mod.registerWebContentsHandlers();
+      ctx.mod.registerWebContentsHandlers(options.handlers);
       ctx.app.emit('web-contents-created', {}, contents);
       const opened = () =>
         parentWindow.webContents.send.mock.calls.filter(([ch]) => ch === 'tab:new-with-url');
@@ -756,6 +756,31 @@ describe('webcontents-setup', () => {
       gesture(contents);
       open('https://site.example/third');
       expect(opened()).toHaveLength(2);
+    });
+
+    test('a popup from a page in Agent custody opens in Agent custody, never as a user tab', async () => {
+      const openAgentPopup = jest.fn(async () => true);
+      const { contents, opened, open } = setup({ handlers: { openAgentPopup } });
+      const { setAgentPageCustody } = require('./wallet/agent-tab-custody');
+      setAgentPageCustody(contents, true);
+      gesture(contents);
+      expect(open('https://site.example/pay', { disposition: 'new-window' })).toEqual({ action: 'deny' });
+      await Promise.resolve();
+      expect(openAgentPopup).toHaveBeenCalledWith(contents, 'https://site.example/pay');
+      expect(opened()).toHaveLength(0);
+
+      // Without an Agent service to hold it, nothing opens at all.
+      const { contents: orphan, opened: orphanOpened, open: orphanOpen } = setup();
+      require('./wallet/agent-tab-custody').setAgentPageCustody(orphan, true);
+      gesture(orphan);
+      expect(orphanOpen('https://site.example/pay')).toEqual({ action: 'deny' });
+      expect(orphanOpened()).toHaveLength(0);
+
+      // The popup blocker still applies first.
+      openAgentPopup.mockClear();
+      open('https://site.example/again');
+      await Promise.resolve();
+      expect(openAgentPopup).not.toHaveBeenCalled();
     });
 
     test('no gesture: nothing opens and the blocked popup is reported to the tab window', () => {

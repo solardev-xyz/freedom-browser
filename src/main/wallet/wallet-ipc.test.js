@@ -447,6 +447,95 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  // Audit M1: the user's own tab a run adopts is driven like the tabs it
+  // creates, so it must be held in Agent custody the same way.
+  test('a run that adopts the user tab with "Allow website interactions" cannot use dApp auto-approve rules until the user takes it back', async () => {
+    const { FreedomAgentService } = require('../agent/freedom-agent-service');
+    const { createOriginScopedAutomationController } = require('../automation/origin-scoped-controller');
+    const { OPERATIONS } = require('../automation/contract/operations');
+    const { setAgentPageCustody, isAgentPage } = require('./agent-tab-custody');
+    const page = guests.get(12);
+    const envelope = (result) => ({
+      ok: true, runtimeId: 'r', contextId: 'c', tabId: 'tab_user', navigationId: 1, result,
+    });
+    const controller = {
+      execute: jest.fn(async (operation) => envelope(operation === OPERATIONS.SNAPSHOT
+        ? { elements: [{ ref: 'ref_swap', role: 'button', name: 'Swap' }] }
+        : { tab: { tabId: 'tab_user', url: `${SITE}/swap`, navigationId: 1, available: true } })),
+      inspectAction: jest.fn(async () => envelope({ label: 'Swap' })),
+      markPageControlled: jest.fn(),
+      releasePageControl: jest.fn(),
+      setPageAgentCustody: jest.fn((tabId, owned) => tabId === 'tab_user' && setAgentPageCustody(page, owned)),
+    };
+    let scoped;
+    let finishTurn;
+    const session = {
+      subscribe: jest.fn(() => () => {}),
+      prompt: jest.fn(() => new Promise((resolve) => { finishTurn = resolve; })),
+      sendCustomMessage: jest.fn(async () => {}),
+      steer: jest.fn(async () => {}),
+      clearQueue: jest.fn(() => ({ steering: [], followUp: [] })),
+      abort: jest.fn(async () => finishTurn?.()),
+      dispose: jest.fn(),
+    };
+    const service = new FreedomAgentService({
+      controller,
+      loadSdk: jest.fn(async () => ({})),
+      createControllerScope: async (options) => {
+        scoped = await createOriginScopedAutomationController(options);
+        return scoped;
+      },
+      createTools: jest.fn(async () => []),
+      createSession: jest.fn(async () => ({ session })),
+      effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
+      accessReviewer: { review: jest.fn(async () => ({ decision: 'ask_user' })) },
+      interactionClassifier: { classify: jest.fn(async () => ({
+        kind: 'ordinary', confidence: 1, summary: 'Swap.', uncertainties: [],
+      })) },
+      runIdFactory: () => 'run_adopted',
+      conversationIdFactory: () => 'conversation_adopted',
+      now: () => 1_000,
+    });
+    dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
+    dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+    dappPermissions.getSigningAutoApprove.mockReturnValue(true);
+    const autoSend = () => handlers['wallet:dapp-send-transaction'](
+      AUTO, TX, 0, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
+    const autoSign = () => handlers['wallet:sign-message'](
+      AUTO, '0x68656c6c6f', 0, { autoApprove: SITE, webContentsId: 12 });
+
+    try {
+      await service.start({
+        prompt: 'Swap on this page', tabId: 'tab_user', approvalMode: 'allow_website_interactions',
+        model: { id: 'model_test', provider: 'test' }, modelRuntime: {},
+        createWorkspacePage: jest.fn(async () => 'tab_fresh'),
+      });
+      // The model's click on the adopted page needs no approval in this mode...
+      await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_user' });
+      expect(await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_user', ref: 'ref_swap' }))
+        .toMatchObject({ ok: true });
+      expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything(), expect.anything());
+      // ...so whatever the page then asks for, no site rule answers for it.
+      expect(isAgentPage(page)).toBe(true);
+      expect(await autoSend()).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(await autoSign()).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(signer.signMessage).not.toHaveBeenCalled();
+
+      // Ending the turn does not hand the tab back; only the user does.
+      finishTurn();
+      await service.waitForIdle();
+      expect(await autoSend()).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      await expect(service.claimTab('tab_user')).resolves.toBe(true);
+      expect(isAgentPage(page)).toBe(false);
+      expect(await autoSend()).toMatchObject({ success: true });
+      expect(await autoSign()).toMatchObject({ success: true });
+    } finally {
+      setAgentPageCustody(page, false);
+      await service.dispose();
+    }
+  });
+
   describe('Safe handlers', () => {
     const SAFE_TX = { to: TX.to, value: '5', data: '0x' };
 

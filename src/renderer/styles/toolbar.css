@@ -504,9 +504,16 @@
 .address-input { min-width: 0; }
 @media (max-width: 560px) {
   .toolbar { padding-inline: 4px; }
-  .toolbar .nav-buttons #home-btn { display: none; }
-  .toolbar .icon-btn,
-  .toolbar .agent-toggle-btn,
-  .toolbar .menu-button { width: 28px; margin-inline: 0; }
+  /* The Agent button needs the room; without it the toolbar keeps Home. */
+  .toolbar:has(#agent-toggle-btn:not([hidden])) #home-btn { display: none; }
+  /* Square, so hover and pressed states stay circles. Named one by one: the
+     address bar's own star/permission buttons are .icon-btn too and keep
+     their size. */
+  .toolbar :is(#back-btn, #forward-btn, #reload-btn, #home-btn, #bee-menu-button,
+    #agent-toggle-btn, #wallet-toggle-btn, #menu-button) {
+    width: 32px;
+    height: 32px;
+    margin-inline: 0;
+  }
   #nav-form { margin-inline: 2px; }
 }
