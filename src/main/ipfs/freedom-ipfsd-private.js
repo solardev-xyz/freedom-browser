@@ -453,7 +453,6 @@ class PrivateInstances {
     if (instance.state !== 'starting') throw notRunning();
     await this.networkFor(instance);
     if (instance.state !== 'starting') throw notRunning();
-    instance.network = network;
     const gen = await this.process();
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
     // The policy again, after the process came up: it may have changed or
@@ -461,6 +460,8 @@ class PrivateInstances {
     // the fence checks once more.
     const network = await this.networkFor(instance);
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
+    // The policy it is started under: a change from it retires it.
+    instance.network = network;
     instance.gen = gen;
     instance.id = this.nextInstanceId(gen);
     this.byId.set(instance.id, instance);
