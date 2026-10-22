@@ -12,10 +12,15 @@
  *   holds an evicted instance until its teardown is proven: the start waits
  *   for it rather than meeting `busy`;
  * - the process exits once its last instance has stopped, and comes back
- *   on the next private load.
+ *   on the next private load;
+ * - a start under `socks5` (design 0007, step 8, B2), which the service
+ *   takes only with delegated routing, and with no proxy listening, a load
+ *   that fails closed: nothing reaches the router directly.
  */
 
+const net = require('net');
 const { PrivateInstances, MAX_INSTANCES } = require('./freedom-ipfsd-private');
+const { IpfsNetwork } = require('./ipfs-network');
 const { IpfsContent, startIpfsFixture } = require('../../../test/helpers/ipfs-fixture');
 
 const binary = process.env.FREEDOM_IPFSD_PATH;
@@ -115,5 +120,55 @@ describeIfBinary('private instances on the real freedom-ipfsd', () => {
     expect(instances.client.current.child.pid).not.toBe(child.pid);
     expect(starts).toEqual(['e-1', 'e-1']);
     next.release();
+  }, 60_000);
+
+  test('under socks5 the service takes the start, and with no proxy a load fails closed', async () => {
+    await instances.stop();
+    // A loopback port nothing listens on: Tor's endpoint, down.
+    const port = await new Promise((resolve) => {
+      const server = net.createServer().listen(0, '127.0.0.1', () => {
+        const { port: free } = server.address();
+        server.close(() => resolve(free));
+      });
+    });
+    const tor = {
+      getIpfsSocksEndpoint: () => ({ endpoint: { ip: '127.0.0.1', port }, refused: null }),
+      onIpfsSocksEndpointChange: () => () => {},
+    };
+    instances = new PrivateInstances({
+      command: binary,
+      log: quietLog,
+      shellVersion: 'jest',
+      network: new IpfsNetwork({ routesThroughTor: () => true, tor }),
+    });
+    // As sent, but with the fixture as the only router, routing untouched.
+    const sentStarts = [];
+    const { client } = instances;
+    const startInstance = client.startInstance.bind(client);
+    client.startInstance = (gen, params, options) => {
+      sentStarts.push(params);
+      return startInstance(
+        gen,
+        { ...params, routing: { ...params.routing, delegated_routers: [fixture.router] } },
+        options
+      );
+    };
+    const seen = fixture.requests.length;
+    const lease = instances.lease('private-tor');
+    const res = await lease.request({
+      path: `/ipfs/${file.cid}`,
+      method: 'GET',
+      headers: new Headers(),
+      headersTimeoutMs: 30_000,
+    });
+    // The service took the start: socks5, delegated routing.
+    expect(sentStarts).toHaveLength(1);
+    expect(sentStarts[0].network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port });
+    expect(sentStarts[0].routing.mode).toBe('delegated');
+    // Its load failed closed, and nothing reached the router directly.
+    expect([502, 504]).toContain(res.status);
+    await res.arrayBuffer();
+    expect(fixture.requests.slice(seen)).toEqual([]);
+    lease.release();
   }, 60_000);
 });

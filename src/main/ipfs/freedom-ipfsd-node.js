@@ -163,7 +163,9 @@ function nativeBody(body) {
  * configuration, sent explicitly (0007, Parity), the same for the profile's
  * instance and a private window's: automatic routing over the two delegated
  * routers, a 3 s DHT query timeout and 32 providers, 8 header permits and
- * the gateway's queue.
+ * the gateway's queue; under `network`. Under `socks5`, routing is the
+ * delegated routers only: the service takes no other (decision D6), since
+ * the light DHT would dial dozens of peers per query, each through Tor.
  */
 function instanceParams(
   instance,
@@ -175,7 +177,7 @@ function instanceParams(
     instance,
     store,
     routing: {
-      mode: 'auto',
+      mode: network.mode === 'socks5' ? 'delegated' : 'auto',
       delegated_routers: DELEGATED_ROUTERS.split(','),
       dht_query_timeout_s: DHT_QUERY_TIMEOUT_S,
       dht_max_providers: DHT_MAX_PROVIDERS,
