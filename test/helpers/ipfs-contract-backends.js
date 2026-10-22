@@ -279,8 +279,9 @@ function afterFreshStats(body, fresh) {
 /**
  * freedom-ipfsd behind `ipfs-manager.js`, with FREEDOM_IPFS_BACKEND=service.
  * As for the add-on, only the start is shimmed: `ipfs.start`'s params are
- * recorded as production sends them, then sent with the fixture's router in
- * delegated-only routing. The process is the real binary, on a data
+ * recorded as production sends them, then sent with the fixture's routers
+ * (`routers`: the router, then its pool, so every provider is a configured
+ * target) in delegated-only routing. The process is the real binary, on a data
  * directory and a lock directory of its own.
  *
  * The suite reads the gateway counters synchronously
@@ -291,7 +292,7 @@ function afterFreshStats(body, fresh) {
  * A timing run (`freshStats: false`, the cost measurement) does without
  * both, so the service is measured as production runs it.
  */
-async function loadIpfsdBackend({ router, freshStats = true }) {
+async function loadIpfsdBackend({ router, routers = [router], freshStats = true }) {
   const clientPath = path.join(SRC, 'ipfs', 'ipfsd-client.js');
   const nodePath = path.join(SRC, 'ipfs', 'freedom-ipfsd-node.js');
   const privatePath = path.join(SRC, 'ipfs', 'freedom-ipfsd-private.js');
@@ -329,7 +330,7 @@ async function loadIpfsdBackend({ router, freshStats = true }) {
               gen,
               {
                 ...params,
-                routing: { ...params.routing, mode: 'delegated', delegated_routers: [router] },
+                routing: { ...params.routing, mode: 'delegated', delegated_routers: routers },
               },
               options
             );
