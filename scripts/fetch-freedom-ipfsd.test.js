@@ -18,15 +18,15 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'ipfsd-v0.1.0-test';
-const PINNED_TAG = 'ipfsd-v0.2.0';
-// The SHA256SUMS ipfsd-v0.2.0 published, byte for byte. Its sha256 is the
+const PINNED_TAG = 'ipfsd-v0.2.1';
+// The SHA256SUMS ipfsd-v0.2.1 published, byte for byte. Its sha256 is the
 // pinned digest, so a bump has to replace it along with the tag and digest.
 const PUBLISHED_SUMS = [
-  '66757f7360124767c3b602ffb024ae66f9ca936d6a76952fd9d47d2de5f734d8  freedom-ipfsd-v0.2.0-darwin-amd64.tar.gz',
-  '4e180c1512171d3eb4629a6efe61a3cf99a8697a964f485aa5c197e9dbc7ac54  freedom-ipfsd-v0.2.0-darwin-arm64.tar.gz',
-  'ef05076757f1e2ddba764ad12079545bae04e4d8011c259994eecea0f48ea233  freedom-ipfsd-v0.2.0-linux-amd64.tar.gz',
-  'ebc96f3a7d77c79575e2b0f491158f3a1f353a6c22bedf5c9cd5de74829f729f  freedom-ipfsd-v0.2.0-linux-arm64.tar.gz',
-  '7fa24553467bb912581192413f03a82766e47e5c28e3f8b4dd0ce67464a0a60c *freedom-ipfsd-v0.2.0-windows-amd64.zip',
+  '24a441e68533d316b6e7fa92500b1cd0c4f3a0be08e8278f8667361840c367c2  freedom-ipfsd-v0.2.1-darwin-amd64.tar.gz',
+  'e67bb6f231c9834adf9180a7652758aa08472e93f9f4957c0743cdb67d86c1e7  freedom-ipfsd-v0.2.1-darwin-arm64.tar.gz',
+  '839962be75124b4d8c9796f274497bcd1c8a908805ce6cff0d7fb93c9dd1e647  freedom-ipfsd-v0.2.1-linux-amd64.tar.gz',
+  '7f4f3cd0280a1b1274dd00ac7a3b3fbb16b066b0e10c8570c53a1f9341b1ad6d  freedom-ipfsd-v0.2.1-linux-arm64.tar.gz',
+  'c40f64fc3c1eeae9814c7b33dc4f881aae67db4ffc6db54373180f7f43ad61f6 *freedom-ipfsd-v0.2.1-windows-amd64.zip',
   '',
 ].join('\n');
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
@@ -259,13 +259,13 @@ describe('manifest and asset selection', () => {
   });
 
   test('an ipfsd-v tag names its archives by the version alone', () => {
-    expect(fetcher.archiveVersion(PINNED_TAG)).toBe('v0.2.0');
+    expect(fetcher.archiveVersion(PINNED_TAG)).toBe('v0.2.1');
     // Only the service's prefix is dropped.
     expect(fetcher.archiveVersion('cored-v0.1.0')).toBe('cored-v0.1.0');
     const { release } = releaseFixture(PINNED_TAG);
     for (const target of fetcher.TARGETS) {
       const asset = fetcher.assetFor(release.assets, target, PINNED_TAG);
-      expect(asset.name).toMatch(/^freedom-ipfsd-v0\.2\.0-/);
+      expect(asset.name).toMatch(/^freedom-ipfsd-v0\.2\.1-/);
       // The tag's own spelling is never an archive name.
       const prefixed = {
         ...asset,
@@ -351,7 +351,7 @@ describe('verified installation', () => {
       'Error:',
       expect.objectContaining({
         message: expect.stringMatching(
-          /^Checksum mismatch for freedom-ipfsd-v0\.2\.0-darwin-arm64\.tar\.gz: expected 4e180c15/
+          /^Checksum mismatch for freedom-ipfsd-v0\.2\.1-darwin-arm64\.tar\.gz: expected e67bb6f2/
         ),
       })
     );

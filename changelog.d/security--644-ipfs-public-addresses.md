@@ -1,0 +1,3 @@
+- The built-in IPFS node no longer connects to peers or providers at addresses on your local network or this computer ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Reasoning: an IPFS page could otherwise point the node at devices on your network
+  - On IPv6-only networks with NAT64, IPv6 connections can wait while Freedom learns the network's prefixes
