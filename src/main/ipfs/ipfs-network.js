@@ -20,6 +20,10 @@
  * ("Route IPFS through Tor"); until then `routesThroughTor` is false, and
  * every instance runs `direct`, as before. When the setting changes, its
  * owner calls `changed()`.
+ *
+ * Tor's endpoint is watched only while someone listens and the profile
+ * routes IPFS through Tor: a `direct` profile's policy can't change with
+ * it, so tor-manager isn't asked (or loaded) for it.
  */
 
 class IpfsNetwork {
@@ -57,20 +61,28 @@ class IpfsNetwork {
    */
   subscribe(listener) {
     this.listeners.add(listener);
-    if (!this.stopWatchingTor && this.tor) {
-      this.stopWatchingTor = this.tor.onIpfsSocksEndpointChange(() => this.changed());
-    }
+    this.watchTor();
     return () => {
       this.listeners.delete(listener);
-      if (this.listeners.size === 0 && this.stopWatchingTor) {
-        this.stopWatchingTor();
-        this.stopWatchingTor = null;
-      }
+      this.watchTor();
     };
+  }
+
+  /** Watches Tor's endpoint while someone listens and the profile routes
+   * IPFS through Tor, and only then. */
+  watchTor() {
+    const wanted = Boolean(this.tor) && this.listeners.size > 0 && this.routesThroughTor();
+    if (wanted && !this.stopWatchingTor) {
+      this.stopWatchingTor = this.tor.onIpfsSocksEndpointChange(() => this.changed());
+    } else if (!wanted && this.stopWatchingTor) {
+      this.stopWatchingTor();
+      this.stopWatchingTor = null;
+    }
   }
 
   /** The setting changed, or Tor's endpoint did: every listener hears. */
   changed() {
+    this.watchTor();
     const policy = this.current();
     for (const listener of [...this.listeners]) {
       try {
