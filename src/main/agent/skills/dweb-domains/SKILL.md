@@ -70,8 +70,15 @@ This never permits resending dispatch_unknown.
 ## Completion
 
 Distinguish submitted, confirmed, on-chain state verified and Freedom name
-resolution verified. For a website, open the name in a fresh task tab after the
-verified result. If retrieval/resolution fails, report it without paying again.
+resolution verified. After a verified Swarm website binding, use browser_create_tab
+with `bzz://<name>/` to check the named site, for example `bzz://example.gwei/`,
+`bzz://example.wei/` or `bzz://example.eth/`. Report that named URL to the user.
+Do not prepend `https://`: `https://example.gwei/` requests ordinary DNS/HTTPS,
+not Freedom's decentralized-name resolution. For other inspected website records,
+use their actual IPFS/IPNS transport rather than guessing Swarm or HTTPS.
+If an earlier HTTPS attempt failed, open the correctly addressed public site in a
+fresh task tab; do not interact with Freedom's internal error or trust pages.
+If retrieval/resolution still fails, report it without paying again.
 Report transaction hashes, the name, term/expiry when known and the final URL.
 No request may claim a live purchase, ownership or resolved site from preparation
 or a commitment alone.

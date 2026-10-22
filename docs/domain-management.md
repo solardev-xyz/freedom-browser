@@ -52,6 +52,11 @@ public-RPC fallback, indexer or new connection. Candidate-name queries can discl
 interest to the configured chain-data service. A transaction and its name/records
 become public on Ethereum; naming does not make Swarm private or extend postage.
 
+To check a bound Swarm site, the Agent opens `bzz://<name>/` and reports that named
+URL. Explicit `https://<name>/` navigation uses ordinary DNS/HTTPS and does not
+invoke decentralized-name resolution. Browser tool guidance covers this for
+helpers as well as the main Agent; internal error/trust pages remain protected.
+
 The current composition root is Agent runtime; the shared service has no Agent
 session requirement. Ordinary browser startup and AI-off do not perform naming
 network requests. An unreadable domain journal disables these tools without

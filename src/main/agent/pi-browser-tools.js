@@ -20,6 +20,7 @@ const EMPTY_PARAMETERS = Object.freeze({
 });
 
 const MAX_AGENT_SCREENSHOT_BYTES = 8 * 1024 * 1024;
+const DWEB_NAVIGATION_GUIDANCE = ' For decentralized website names (.eth/.wei/.gwei), use the resolved content transport: bzz://name.gwei/ for Swarm, or the inspected IPFS/IPNS URL. Do not invent an https:// URL for a decentralized name; that uses DNS/HTTPS instead of Freedom name resolution.';
 const INTERACTION_INTENT_PROPERTY = Object.freeze({
   type: 'string',
   minLength: 1,
@@ -78,7 +79,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.CREATE_TAB,
     label: 'Create task tab',
     description:
-      'Create a visible task-owned tab at a supported web or distributed-web URL and make it the active Agent tab. Call once per new tab. No page snapshot is required to create a tab.',
+      'Create a visible task-owned tab at a supported web or distributed-web URL and make it the active Agent tab. Call once per new tab. No page snapshot is required to create a tab.' + DWEB_NAVIGATION_GUIDANCE,
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', minLength: 1 } },
@@ -185,7 +186,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.NAVIGATE,
     label: 'Navigate page',
     description:
-      'Navigate the active task tab to an absolute http, https, bzz, ipfs, or ipns URL without embedded credentials.',
+      'Navigate the active task tab to an absolute http, https, bzz, ipfs, or ipns URL without embedded credentials.' + DWEB_NAVIGATION_GUIDANCE,
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', minLength: 1 } },
