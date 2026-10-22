@@ -13,6 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
+const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
 const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
@@ -380,8 +381,12 @@ function registerDappPermissionsIpc() {
     return setSigningAutoApprove(origin, enabled);
   });
 
-  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, (_event, origin, to, selector, chainId) => {
-    return isTransactionAutoApproved(origin, to, selector, chainId);
+  // The renderer's question before a dApp transaction: auto-approve it, or
+  // show the prompt. A covering rule is paused while one of the site's
+  // payments is in Payments waiting (D12, auto-approve-pause.js).
+  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, async (_event, origin, to, selector, chainId) => {
+    if (!isTransactionAutoApproved(origin, to, selector, chainId)) return false;
+    return !(await transactionAutoApprovePaused(origin));
   });
 
   // No IPC adds a transaction auto-approve rule: the only way in is

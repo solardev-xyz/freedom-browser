@@ -1,0 +1,1 @@
+- A site's "Always allow" pauses while one of its payments is under "Payments waiting": its new transactions ask first ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))

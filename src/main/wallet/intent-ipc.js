@@ -174,6 +174,10 @@ function currentIntent(intentId) {
   }
 }
 
+/**
+ * The held intents, each with where it stands and the receipt seen for it,
+ * if any (`receipt`: a payment on chain no longer waits on the user).
+ */
 async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
@@ -189,6 +193,16 @@ async function listHeldIntents() {
       receipt: receipts.get(view.intentId) ?? mined,
     };
   });
+}
+
+/**
+ * The held intents Payments waiting lists: those no receipt has shown
+ * mined (the renderer's list applies the same rule, held-payments.js).
+ * "Always allow" pauses for a site while one of these is its own
+ * (auto-approve-pause.js, D12).
+ */
+async function waitingIntents() {
+  return (await listHeldIntents()).filter((intent) => !intent.receipt);
 }
 
 // A held intent, or the error that says why there is none.
@@ -349,4 +363,5 @@ module.exports = {
   replaceBinding,
   replacementOffer,
   resendBinding,
+  waitingIntents,
 };

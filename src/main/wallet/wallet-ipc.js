@@ -31,6 +31,7 @@ const {
   consumeConfirmation,
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
+const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -111,6 +112,29 @@ function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
   );
 }
 
+/**
+ * The auto-approve check for a dApp send (authorizeSigning's
+ * `autoApproveCheck`): the site's transaction rules, paused while one of
+ * its payments is in Payments waiting (D12, auto-approve-pause.js). The
+ * renderer then shows the approval prompt instead, so a request claiming
+ * auto-approve meanwhile is refused, saying why. The pause is read first,
+ * since the records are read asynchronously and the gate is synchronous;
+ * only for a request that claims auto-approve and that a rule covers.
+ */
+async function dappTxAutoApproveCheck(walletIndex, tx, authorization) {
+  const site = authorization?.confirmation ? undefined : authorization?.autoApprove;
+  const paused =
+    site !== undefined &&
+    isDappTxAutoApproved(site, walletIndex, tx) &&
+    (await transactionAutoApprovePaused(site));
+  return (permissionKey) => {
+    if (paused) {
+      throw notAuthorized('auto-approve is paused while a payment this site requested is waiting');
+    }
+    return isDappTxAutoApproved(permissionKey, walletIndex, tx);
+  };
+}
+
 /** Main's own evaluation of a dApp's signing auto-approve flag. */
 function isDappSigningAutoApproved(permissionKey, walletIndex) {
   return Boolean(
@@ -160,7 +184,7 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
       walletIndex,
       tx,
       confirmKind === CONFIRM_KINDS.DAPP_SEND
-        ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx)
+        ? await dappTxAutoApproveCheck(walletIndex, tx, authorization)
         : null
     );
     const result = await signAndRecord(

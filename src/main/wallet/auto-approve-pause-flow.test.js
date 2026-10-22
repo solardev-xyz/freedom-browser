@@ -1,0 +1,274 @@
+// D12 through main's real handlers: the renderer's question
+// (`dapp:is-tx-auto-approved`, which picks the prompt or the silent send) and
+// an auto-approved send (`wallet:dapp-send-transaction`), with the real
+// permissions store, intent store, payment history and transaction service.
+// Chain data and signers are mocked.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { Wallet, keccak256 } = require('ethers');
+
+let mockUserData;
+let mockSigners;
+const mockRequest = jest.fn();
+const mockBroadcast = jest.fn();
+const mockFeeQuote = jest.fn();
+jest.mock('electron', () => ({
+  app: { getPath: () => mockUserData },
+  ipcMain: { handle: jest.fn(), removeHandler: jest.fn() },
+  webContents: { getAllWebContents: () => [] },
+}));
+jest.mock('qrcode', () => ({}));
+jest.mock('./balance-service', () => ({}));
+jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
+jest.mock('./chains', () => ({
+  getChain: () => null,
+  getAllChains: () => [],
+  getTxExplorerUrl: (chainId, hash) => `https://explorer.test/${chainId}/${hash}`,
+}));
+jest.mock('../networks/chain-data', () => ({
+  request: (...args) => mockRequest(...args),
+  broadcastRawTransaction: (...args) => mockBroadcast(...args),
+  getFeeQuote: (...args) => mockFeeQuote(...args),
+}));
+jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
+jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
+jest.mock('../identity-manager', () => ({
+  getWalletRecord: () => null,
+  getActiveWalletIndex: () => 0,
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+}));
+jest.mock('./provider-manager', () => ({ testProvider: jest.fn() }));
+jest.mock('better-sqlite3', () => require('../../../test/helpers/fake-better-sqlite3-payments'));
+
+jest.setTimeout(20000);
+
+// Deterministic test keys (not real wallets).
+const ALICE = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
+const BOB = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+const SWAP = 'https://swap.example'; // "Always allow", account 0
+const OTHER = 'https://other.example'; // "Always allow", account 1
+const PLAIN = 'https://plain.example'; // connected, no "Always allow"
+const CONTRACT = '0x' + '66'.repeat(20);
+const SELECTOR = '0xabcdef12';
+const CHAIN = 1;
+
+const signerFor = (wallet) => ({
+  getAddress: jest.fn(async () => wallet.address),
+  signTransaction: jest.fn((tx) => wallet.signTransaction(tx)),
+  signMessage: jest.fn(async (message) => wallet.signMessage(message)),
+});
+const signed = () =>
+  Object.values(mockSigners).reduce((n, s) => n + s.signTransaction.mock.calls.length, 0);
+
+// Receipts the chain has, by hash: none until a test mines one.
+let mined;
+
+beforeEach(() => {
+  // Payment history polls for receipts every 2 s: those timers run only
+  // when a test advances them, and none outlives its test.
+  jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+  mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-approve-pause-'));
+  mockSigners = { 0: signerFor(ALICE), 1: signerFor(BOB) };
+  mined = new Set();
+  mockRequest.mockReset().mockImplementation(async (_chainId, method, params) => {
+    if (method === 'eth_getTransactionReceipt') {
+      return {
+        result: mined.has(params[0])
+          ? { status: '0x1', blockNumber: '0x1', gasUsed: '0x5208' }
+          : null,
+        source: 'direct',
+      };
+    }
+    if (method === 'eth_getTransactionCount') return { result: '0x7', source: 'direct' };
+    throw new Error(`unexpected read ${method}`);
+  });
+  mockFeeQuote.mockReset().mockResolvedValue({ type: 'legacy', gasPrice: '1000000000' });
+  mockBroadcast.mockReset().mockImplementation(async (_chainId, raw) => ({
+    result: keccak256(raw),
+    source: 'direct',
+  }));
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+  fs.rmSync(mockUserData, { recursive: true, force: true });
+});
+
+function start() {
+  jest.resetModules();
+  const { ipcMain } = require('electron');
+  ipcMain.handle.mockClear();
+  const permissions = require('./dapp-permissions');
+  permissions.registerDappPermissionsIpc();
+  require('./wallet-ipc').registerWalletIpc();
+  const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
+
+  permissions.grantPermission(SWAP, 0, CHAIN);
+  permissions.addTransactionAutoApprove(SWAP, CONTRACT, SELECTOR, CHAIN);
+  permissions.grantPermission(OTHER, 1, CHAIN);
+  permissions.addTransactionAutoApprove(OTHER, CONTRACT, SELECTOR, CHAIN);
+  permissions.grantPermission(PLAIN, 0, CHAIN);
+
+  const tx = {
+    chainId: CHAIN,
+    to: CONTRACT,
+    value: '0',
+    data: SELECTOR,
+    gasLimit: '50000',
+    gasPrice: '1000000000',
+  };
+  const index = { [SWAP]: 0, [OTHER]: 1, [PLAIN]: 0 };
+  return {
+    permissions,
+    handlers,
+    store: require('./intent-store').getIntentStore(),
+    // The renderer's question: true sends silently, false shows the prompt.
+    autoApproves: (site) =>
+      handlers['dapp:is-tx-auto-approved']({}, site, CONTRACT, SELECTOR, CHAIN),
+    // A send the renderer made as auto-approved.
+    autoSend: (site) =>
+      handlers['wallet:dapp-send-transaction'](
+        {},
+        tx,
+        index[site],
+        { origin: site },
+        { autoApprove: site }
+      ),
+    // A send the user confirmed on the prompt.
+    confirmedSend: async (site) => {
+      const { token } = await handlers['wallet:confirm-signing']({}, 'dapp-send', index[site], {
+        ...tx,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+      });
+      return handlers['wallet:dapp-send-transaction'](
+        {},
+        tx,
+        index[site],
+        { origin: site },
+        {
+          confirmation: token,
+        }
+      );
+    },
+  };
+}
+
+const refusedOnce = () =>
+  mockBroadcast.mockImplementationOnce(async () => {
+    throw Object.assign(new Error('insufficient funds for gas * price + value'), {
+      outcome: 'rejected',
+    });
+  });
+
+// Mine `hash`, then wait until payment history's next poll has seen it.
+async function mine(hash) {
+  mined.add(hash);
+  const history = require('../payment-history');
+  for (let i = 0; i < 100; i += 1) {
+    if (history.getRecent({}).some((row) => row.txHash === hash && row.status === 'confirmed')) {
+      return;
+    }
+    jest.advanceTimersByTime(2000);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`no receipt recorded for ${hash}`);
+}
+
+describe('"Always allow" while a payment of the site is in Payments waiting (D12)', () => {
+  test('the prompt shows while it waits, and the rule applies again once it settles', async () => {
+    const running = start();
+    await expect(running.autoApproves(SWAP)).resolves.toBe(true);
+
+    // The site's auto-approved payment is refused: it waits, held at its nonce.
+    refusedOnce();
+    const refused = await running.autoSend(SWAP);
+    expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
+    expect(running.store.get(refused.intentId).state).toBe('held');
+
+    // The site asks again: the renderer is told to show the prompt…
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+    // …and a send claiming auto-approve anyway is refused, with nothing signed.
+    const before = signed();
+    await expect(running.autoSend(SWAP)).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining('paused while a payment this site requested is waiting'),
+    });
+    expect(signed()).toBe(before);
+    // The prompt's Confirm still sends: the user decided. That payment
+    // waits too, until it is mined.
+    const confirmed = await running.confirmedSend(SWAP);
+    expect(confirmed).toMatchObject({ success: true, outcome: 'sent' });
+    await mine(confirmed.hash);
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+
+    // The refused payment settles: the rule applies again.
+    await running.store.settle({
+      intentId: refused.intentId,
+      label: 'taken',
+      hash: null,
+      block: 100,
+    });
+    await expect(running.autoApproves(SWAP)).resolves.toBe(true);
+    await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: true });
+  });
+
+  test('a payment sent and not yet mined waits too; once mined, the rule applies again', async () => {
+    const running = start();
+    const sent = await running.autoSend(SWAP);
+    expect(sent).toMatchObject({ success: true, outcome: 'sent' });
+
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+
+    await mine(sent.hash);
+    // Mined, though not final: no longer waiting, and still held.
+    expect(running.store.get(sent.intentId).state).toBe('held');
+    await expect(running.autoApproves(SWAP)).resolves.toBe(true);
+    await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: true });
+  });
+
+  test('other sites are unaffected', async () => {
+    const running = start();
+    refusedOnce();
+    await running.autoSend(SWAP);
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+
+    await expect(running.autoApproves(OTHER)).resolves.toBe(true);
+    await expect(running.autoSend(OTHER)).resolves.toMatchObject({
+      success: true,
+      from: BOB.address,
+    });
+  });
+
+  test('a site without "Always allow" is unchanged: the prompt, waiting or not', async () => {
+    const running = start();
+    await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
+    await expect(running.autoSend(PLAIN)).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining("not covered by the site's auto-approve rules"),
+    });
+
+    refusedOnce();
+    const refused = await running.confirmedSend(PLAIN);
+    expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
+    await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
+    await expect(running.confirmedSend(PLAIN)).resolves.toMatchObject({ success: true });
+  });
+
+  test("message signing isn't paused: it pays nothing", async () => {
+    const running = start();
+    running.permissions.setSigningAutoApprove(SWAP, true);
+    refusedOnce();
+    await running.autoSend(SWAP);
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+
+    await expect(
+      running.handlers['wallet:sign-message']({}, 'hello', 0, { autoApprove: SWAP })
+    ).resolves.toMatchObject({ success: true, signature: expect.stringMatching(/^0x/) });
+  });
+});
