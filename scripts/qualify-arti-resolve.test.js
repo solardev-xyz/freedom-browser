@@ -8,19 +8,21 @@ const {
   qualifies,
   parseVersion,
   verdict,
+  artiCommand,
   qualify,
 } = require('./qualify-arti-resolve');
 const { PINNED_ARTI_VERSION } = require('./fetch-arti');
 
 /**
- * A stand-in Arti in `dir`: `--version` prints `versionLine`, or fails
- * when it's `null`; `proxy -c <config>` serves SOCKS5 on the config's port
- * (any one method, RFC 1929 accepted, `RESOLVE` answering 93.184.215.14,
- * `CONNECT` succeeding) and says it bootstrapped.
+ * A stand-in Arti in `dir`, a Node script run through `process.execPath`
+ * (qualify()'s launcher seam), so it starts on Windows too: `--version`
+ * prints `versionLine`, or fails when it's `null`; `proxy -c <config>`
+ * serves SOCKS5 on the config's port (any one method, RFC 1929 accepted,
+ * `RESOLVE` answering 93.184.215.14, `CONNECT` succeeding) and says it
+ * bootstrapped.
  */
 function fakeArti(dir, versionLine) {
-  const script = `#!/usr/bin/env node
-const fs = require('fs');
+  const script = `const fs = require('fs');
 const net = require('net');
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
@@ -52,8 +54,8 @@ net
   })
   .listen(port, '127.0.0.1', () => console.log('INFO arti: Sufficiently bootstrapped; system SOCKS proxy ready.'));
 `;
-  const artiPath = path.join(dir, 'arti');
-  fs.writeFileSync(artiPath, script, { mode: 0o755 });
+  const artiPath = path.join(dir, 'fake-arti.js');
+  fs.writeFileSync(artiPath, script);
   return artiPath;
 }
 
@@ -188,6 +190,32 @@ describe('qualify-arti-resolve', () => {
     expect(verdict(report(null, true), options).qualified).toBe(false);
   });
 
+  test('Arti runs as the binary itself unless a launcher is given', () => {
+    expect(artiCommand('/opt/arti', ['--version'])).toEqual({
+      file: '/opt/arti',
+      args: ['--version'],
+    });
+    expect(artiCommand('/opt/arti', ['proxy', '-c', 'a.toml'], [])).toEqual({
+      file: '/opt/arti',
+      args: ['proxy', '-c', 'a.toml'],
+    });
+    expect(artiCommand('fake.js', ['--version'], ['/usr/bin/node'])).toEqual({
+      file: '/usr/bin/node',
+      args: ['fake.js', '--version'],
+    });
+    expect(artiCommand('fake.js', ['--version'], ['/usr/bin/node', '--no-warnings'])).toEqual({
+      file: '/usr/bin/node',
+      args: ['--no-warnings', 'fake.js', '--version'],
+    });
+  });
+
+  test('the command line never sets the launcher', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'qualify-arti-resolve.js'), 'utf-8');
+    const main = source.slice(source.indexOf('if (require.main === module)'));
+    expect(main).toContain('qualify(parseArgs(process.argv.slice(2)))');
+    expect(main).not.toContain('launcher');
+  });
+
   describe('qualify(), against a stand-in Arti', () => {
     let dir;
     beforeEach(() => {
@@ -197,13 +225,16 @@ describe('qualify-arti-resolve', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
     const run = (versionLine) =>
-      qualify({
-        arti: fakeArti(dir, versionLine),
-        name: 'example.com',
-        bootstrapTimeoutMs: 10000,
-        requireCredentials: true,
-        allowRoot: false,
-      });
+      qualify(
+        {
+          arti: fakeArti(dir, versionLine),
+          name: 'example.com',
+          bootstrapTimeoutMs: 10000,
+          requireCredentials: true,
+          allowRoot: false,
+        },
+        { launcher: [process.execPath] }
+      );
 
     test('the pinned version, with the checks passing, qualifies', async () => {
       const report = await run(`Arti ${PINNED_ARTI_VERSION}`);

@@ -133,10 +133,21 @@ function parseVersion(line) {
   return match ? match[1] : null;
 }
 
+/**
+ * The command that runs Arti at `artiPath` with `args`: the binary itself,
+ * or, with a `launcher` (a command prefix such as `[process.execPath]`, for
+ * the tests' stand-in script), the launcher with the path as its argument.
+ */
+function artiCommand(artiPath, args, launcher = []) {
+  if (launcher.length === 0) return { file: artiPath, args };
+  return { file: launcher[0], args: [...launcher.slice(1), artiPath, ...args] };
+}
+
 /** Arti's version: the first line `arti --version` prints. */
-function artiVersion(artiPath) {
+function artiVersion(artiPath, launcher = []) {
+  const { file, args } = artiCommand(artiPath, ['--version'], launcher);
   try {
-    return execFileSync(artiPath, ['--version'], { encoding: 'utf-8' }).split('\n')[0].trim();
+    return execFileSync(file, args, { encoding: 'utf-8' }).split('\n')[0].trim();
   } catch {
     return null;
   }
@@ -146,9 +157,10 @@ function artiVersion(artiPath) {
  * Starts Arti and resolves once it says it is bootstrapped. A failure
  * carries Arti's last lines of output.
  */
-function startArti(artiPath, configPath, timeoutMs) {
+function startArti(artiPath, configPath, timeoutMs, launcher = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(artiPath, ['proxy', '-c', configPath], {
+    const { file, args } = artiCommand(artiPath, ['proxy', '-c', configPath], launcher);
+    const child = spawn(file, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const tail = [];
@@ -236,7 +248,12 @@ function verdict(report, options) {
   return { qualified: true };
 }
 
-async function qualify(options) {
+/**
+ * Runs the checks against the Arti `options` names. `launcher` is a seam
+ * for the tests only (`artiCommand`): the command line never sets it, so
+ * the release job always runs the binary itself.
+ */
+async function qualify(options, { launcher = [] } = {}) {
   const artiPath = options.arti || defaultArtiPath();
   if (!fs.existsSync(artiPath)) {
     throw new Error(`no Arti binary at ${artiPath}: run \`npm run tor:download\` first`);
@@ -244,7 +261,7 @@ async function qualify(options) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arti-qualify-'));
   const socksPort = await freePort();
   const proxy = { host: '127.0.0.1', port: socksPort };
-  const arti = artiVersion(artiPath);
+  const arti = artiVersion(artiPath, launcher);
   const report = {
     arti,
     version: parseVersion(arti),
@@ -254,7 +271,7 @@ async function qualify(options) {
   let child = null;
   try {
     const config = writeConfig(dir, socksPort, { allowRoot: options.allowRoot });
-    child = await startArti(artiPath, config, options.bootstrapTimeoutMs);
+    child = await startArti(artiPath, config, options.bootstrapTimeoutMs, launcher);
     const resolveWith = (credentials) =>
       check(async () => {
         const { code, address } = await socks5Request(
@@ -300,4 +317,13 @@ if (require.main === module) {
     });
 }
 
-module.exports = { parseArgs, writeConfig, check, qualifies, parseVersion, verdict, qualify };
+module.exports = {
+  parseArgs,
+  writeConfig,
+  check,
+  qualifies,
+  parseVersion,
+  verdict,
+  artiCommand,
+  qualify,
+};
