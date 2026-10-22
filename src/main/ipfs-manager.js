@@ -17,6 +17,7 @@ const {
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
 const { PrivateInstances } = require('./ipfs/freedom-ipfsd-private');
+const { IpfsNetwork } = require('./ipfs/ipfs-network');
 const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const {
@@ -58,6 +59,20 @@ let healthCheckInterval = null;
 // they serve beside, and stopped with it. Nothing spawns until a private
 // window's first IPFS request.
 let privateInstances = null;
+// The network policy every freedom-ipfsd instance starts under (freedom-core
+// design 0007, step 8, B2): `direct`, or `socks5` through the endpoint
+// tor-manager offers IPFS when the profile routes IPFS through Tor. That
+// setting is B1's; until it exists, `direct`. tor-manager is required when
+// first asked, so loading this module doesn't load it.
+const ipfsNetwork = new IpfsNetwork({
+  routesThroughTor: () => false,
+  tor: {
+    getIpfsSocksEndpoint: () => require('./tor-manager').getIpfsSocksEndpoint(),
+    onIpfsSocksEndpointChange: (listener) =>
+      require('./tor-manager').onIpfsSocksEndpointChange(listener),
+  },
+  log,
+});
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
 // bundled freedom-ipfs node (nativeBackendKind); EXTERNAL routes gateway
@@ -790,6 +805,7 @@ async function doStartIpfs(requestedAt = stopsRequested) {
           dataDir,
           lockDir: getLockDir(),
           shellVersion: app.getVersion(),
+          network: ipfsNetwork,
           onFailure,
           onChange: (state, changedNode) => handleServiceNodeChange(state, changedNode),
         })
@@ -832,7 +848,10 @@ async function doStartIpfs(requestedAt = stopsRequested) {
 
   activeNode = node;
   if (node.restartsItself) {
-    privateInstances = new PrivateInstances({ shellVersion: app.getVersion() });
+    privateInstances = new PrivateInstances({
+      shellVersion: app.getVersion(),
+      network: ipfsNetwork,
+    });
   }
   const nodeLabel = nativeNodeLabel(node);
   updateService('ipfs', {

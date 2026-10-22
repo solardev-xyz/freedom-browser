@@ -3177,6 +3177,9 @@ describe('the freedom-ipfsd backend (the default)', () => {
       lockDir: '/tmp/freedom-locks',
       shellVersion: '0.9.0-test',
     });
+    // The network policy every instance starts under: `direct` until the
+    // Tor setting exists, the same object the private instances get.
+    expect(ctx.serviceInstances[0].config.network.current()).toEqual({ mode: 'direct' });
     expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node: freedom-ipfs 0.4.6');
     expect(ctx.mod.checkHealth()).toBe(true);
   });
@@ -3247,7 +3250,12 @@ describe('the freedom-ipfsd backend (the default)', () => {
     const ctx = loadIpfsManagerModule();
     await ctx.mod.startIpfs();
     const [privates] = ctx.privateInstances;
-    expect(privates.config).toEqual({ shellVersion: '0.9.0-test' });
+    // The profile's network policy: `direct` until the Tor setting exists.
+    expect(privates.config).toEqual({
+      shellVersion: '0.9.0-test',
+      network: expect.objectContaining({ current: expect.any(Function) }),
+    });
+    expect(privates.config.network.current()).toEqual({ mode: 'direct' });
 
     const backend = ctx.mod.ipfsBackend({ partition: 'private-a' });
     expect(backend.ref).toEqual({ ipfs: 'native', up: true });

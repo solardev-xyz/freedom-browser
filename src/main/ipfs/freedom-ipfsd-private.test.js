@@ -11,6 +11,8 @@
 
 const { PrivateInstances, MAX_INSTANCES } = require('./freedom-ipfsd-private');
 const { fakeIpfsd, HELLO } = require('../../../test/helpers/fake-ipfsd');
+const { IpfsNetwork } = require('./ipfs-network');
+const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
 
 const CID = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
 const CAPACITY = 'Too many private windows are loading IPFS content';
@@ -71,9 +73,10 @@ let service;
 let log;
 let instances;
 
-function newInstances(script = {}) {
+function newInstances(script = {}, extra = {}) {
   service = fakeIpfsd({ hello: ephemeralHello, request: serve, ...script });
   instances = new PrivateInstances({
+    ...extra,
     command: 'freedom-ipfsd',
     spawn: service.spawn,
     log,
@@ -125,6 +128,60 @@ afterEach(async () => {
   await settle();
   await clock.advance(10_000);
   await stopping;
+});
+
+describe('the network policy (0007, step 8, B2)', () => {
+  /** Private instances of a profile that routes IPFS through Tor. */
+  function throughTor() {
+    const tor = fakeTorEndpoint();
+    newInstances({}, { network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+    return tor;
+  }
+
+  test("through Tor, a private instance's ipfs.start carries Tor's endpoint", async () => {
+    const tor = throughTor();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(await load('private-a')).toBe('private e-1');
+    const [start] = sent('ipfs.start');
+    expect(start.params.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+  });
+
+  test('with no endpoint yet, a cold start waits for one, spawning nothing, then starts with it', async () => {
+    const tor = throughTor();
+    const lease = instances.lease('private-a');
+    const loading = lease.request(init({ headersTimeoutMs: 60_000 }));
+    await settle();
+    await clock.advance(5_000);
+    expect(service.spawned).toHaveLength(0);
+    expect(sent('ipfs.start')).toEqual([]);
+
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(await text(await loading)).toBe('private e-1');
+    expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+      { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+    ]);
+    lease.release();
+  });
+
+  test("a waiter's deadline bounds the wait, and the instance's retirement ends it", async () => {
+    const tor = throughTor();
+    const lease = instances.lease('private-a');
+    const loading = lease.request(init({ headersTimeoutMs: 2_000 }));
+    loading.catch(() => {});
+    await settle();
+    expect(tor.listeners.size).toBe(1);
+    await clock.advance(2_000);
+    await expect(loading).rejects.toThrow();
+    // Its last lease goes: the instance is retired, and stops waiting.
+    lease.release();
+    await settle();
+    expect(tor.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.spawned).toHaveLength(0);
+    expect(sent('ipfs.start')).toEqual([]);
+  });
 });
 
 describe('the cold start', () => {

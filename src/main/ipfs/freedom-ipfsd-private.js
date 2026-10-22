@@ -20,8 +20,11 @@
  *   evicted instance its warm cache all the same.
  * - **The cold start runs inside `request()`,** one per instance (single
  *   flight): the previous occupant's teardown, if its slot came from an
- *   eviction or a stop; the process, spawned on demand with `ipfs.hello`;
- *   then `ipfs.start` for a memory store of 32 MiB, under a new ID. Each
+ *   eviction or a stop; a network policy (`ipfs-network.js`), the
+ *   profile's: while it has none (IPFS through Tor, and no endpoint from
+ *   Tor yet), the start waits for one, and nothing falls back to `direct`;
+ *   the process, spawned on demand with `ipfs.hello`; then `ipfs.start` for
+ *   a memory store of 32 MiB, under a new ID, with that policy. Each
  *   waiter has its own signal and its own `headers_ms`, which covers the
  *   start: the request gets what is left. One waiter's abort or deadline
  *   rejects that waiter only. The start is the instance's, and goes when its
@@ -83,6 +86,7 @@ const {
   TIMEOUT,
   EXITED,
 } = require('./freedom-ipfsd-node');
+const { DIRECT } = require('./ipfs-network');
 
 /** The most instances the ephemeral process holds (0007, Bounds). */
 const MAX_INSTANCES = 8;
@@ -111,6 +115,9 @@ class PrivateInstances {
    * @param {object} [options]
    * @param {string} [options.shellVersion]
    * @param {number} [options.requestQueueTimeoutMs] - the gateway's queue (15 s)
+   * @param {object} [options.network] - the network policy
+   *   (`ipfs-network.js`): `current()` and `subscribe(listener)`;
+   *   `direct` without one
    * @param {string} [options.command] - the binary (`getIpfsdBinaryPath()`)
    * @param {string[]} [options.args] - its arguments (`ephemeralArgs()`)
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
@@ -122,6 +129,7 @@ class PrivateInstances {
   constructor({
     shellVersion,
     requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
+    network = DIRECT,
     command = null,
     args = null,
     spawn = spawnProcess,
@@ -131,6 +139,7 @@ class PrivateInstances {
     clearTimer = clearTimeout,
   } = {}) {
     this.requestQueueTimeoutMs = requestQueueTimeoutMs;
+    this.network = network;
     this.log = log;
     this.now = now;
     this.setTimer = setTimer;
@@ -398,6 +407,8 @@ class PrivateInstances {
       await this.backoff(instance);
     }
     if (instance.state !== 'starting') throw notRunning();
+    const network = await this.networkFor(instance);
+    if (instance.state !== 'starting') throw notRunning();
     const gen = await this.process();
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
     instance.gen = gen;
@@ -406,7 +417,8 @@ class PrivateInstances {
     const params = instanceParams(
       instance.id,
       { kind: 'memory', max_bytes: MEMORY_STORE_BYTES },
-      this.requestQueueTimeoutMs
+      this.requestQueueTimeoutMs,
+      network
     );
     try {
       await this.client.startInstance(gen, params, {
@@ -426,6 +438,32 @@ class PrivateInstances {
       }
       throw err;
     }
+  }
+
+  /**
+   * The network policy `instance` starts under: the policy now, or the
+   * first there is (IPFS routes through Tor, and Tor offers no endpoint
+   * yet). Each waiter's deadline bounds its wait, and the instance's
+   * retirement ends it. Nothing falls back to `direct`.
+   */
+  async networkFor(instance) {
+    let network = this.network.current();
+    while (!network) {
+      if (instance.state !== 'starting') throw notRunning();
+      let stop = () => {};
+      try {
+        await Promise.race([
+          new Promise((resolve) => {
+            stop = this.network.subscribe(resolve);
+          }),
+          instance.gone,
+        ]);
+      } finally {
+        stop();
+      }
+      network = this.network.current();
+    }
+    return network;
   }
 
   /** `promise`, or this waiter's abort or deadline, whichever is first. */

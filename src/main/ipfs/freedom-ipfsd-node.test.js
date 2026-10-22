@@ -11,6 +11,8 @@
 
 const path = require('path');
 const { FreedomIpfsdNode, BackendBusy } = require('./freedom-ipfsd-node');
+const { IpfsNetwork } = require('./ipfs-network');
+const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
 const { fakeIpfsd, statsResult, HELLO } = require('../../../test/helpers/fake-ipfsd');
 
 const DATA_DIR = path.join('profile', 'ipfs-data', 'freedom-ipfs');
@@ -60,7 +62,7 @@ let failures;
 let changes;
 let node;
 
-function newNode(script = {}) {
+function newNode(script = {}, extra = {}) {
   service = fakeIpfsd(script);
   failures = [];
   changes = [];
@@ -76,6 +78,7 @@ function newNode(script = {}) {
     now: clock.now,
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
+    ...extra,
   });
   return node;
 }
@@ -127,6 +130,83 @@ afterEach(async () => {
   await settle();
   await clock.advance(10_000);
   await stopping;
+});
+
+describe('the network policy (0007, step 8, B2)', () => {
+  /** A node whose profile routes IPFS through Tor: `tor.offer()` sets
+   * the endpoint tor-manager offers. */
+  function throughTor() {
+    const tor = fakeTorEndpoint();
+    newNode({}, { network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+    return tor;
+  }
+
+  test("through Tor, ipfs.start carries Tor's endpoint as socks5", async () => {
+    const tor = throughTor();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    const start = node.start();
+    await settle();
+    expect(await start).toBe(true);
+    const [message] = child().sent('ipfs.start');
+    expect(message.params.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+  });
+
+  test('through Tor with no endpoint yet, nothing starts, nothing falls back, until Tor offers one', async () => {
+    const tor = throughTor();
+    let result = null;
+    node.start().then((value) => (result = value));
+    await settle();
+    await clock.advance(30_000);
+
+    // The process is up, but no instance: the node stays starting.
+    expect(child().sent('ipfs.hello')).toHaveLength(1);
+    expect(child().sent('ipfs.start')).toEqual([]);
+    expect(node.state).toBe('starting');
+    expect(node.isHealthy()).toBe(false);
+    expect(result).toBeNull();
+
+    tor.offer({ ip: '::1', port: 9050 });
+    await settle();
+    const [message] = child().sent('ipfs.start');
+    expect(message.params).toMatchObject({
+      instance: 'p-1',
+      network: { mode: 'socks5', ip: '::1', port: 9050 },
+    });
+    expect(result).toBe(true);
+    expect(node.state).toBe('running');
+    // Only one start, and it took the endpoint offered.
+    expect(child().sent('ipfs.start')).toHaveLength(1);
+  });
+
+  test('a stop while the instance waits ends the wait and its subscription', async () => {
+    const tor = throughTor();
+    const start = node.start();
+    await settle();
+    expect(tor.listeners.size).toBe(1);
+    await node.stop();
+    expect(await start).toBe(false);
+    expect(tor.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(child().sent('ipfs.start')).toEqual([]);
+  });
+
+  test('a process that restarts while the instance waits still waits, then starts on the new one', async () => {
+    const tor = throughTor();
+    node.start();
+    await settle();
+    child().exit(1);
+    await settle();
+    await clock.advance(1_000);
+    expect(service.children).toHaveLength(2);
+    expect(service.children.flatMap((c) => c.sent('ipfs.start'))).toEqual([]);
+
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.children[0].sent('ipfs.start')).toEqual([]);
+    expect(child().sent('ipfs.start')).toHaveLength(1);
+    expect(node.state).toBe('running');
+  });
 });
 
 describe('start', () => {
