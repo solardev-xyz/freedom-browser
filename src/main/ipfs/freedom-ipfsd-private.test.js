@@ -11,6 +11,8 @@
 
 const { PrivateInstances, MAX_INSTANCES } = require('./freedom-ipfsd-private');
 const { fakeIpfsd, HELLO } = require('../../../test/helpers/fake-ipfsd');
+const { IpfsNetwork } = require('./ipfs-network');
+const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
 
 const CID = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
 const CAPACITY = 'Too many private windows are loading IPFS content';
@@ -71,9 +73,10 @@ let service;
 let log;
 let instances;
 
-function newInstances(script = {}) {
+function newInstances(script = {}, extra = {}) {
   service = fakeIpfsd({ hello: ephemeralHello, request: serve, ...script });
   instances = new PrivateInstances({
+    ...extra,
     command: 'freedom-ipfsd',
     spawn: service.spawn,
     log,
@@ -125,6 +128,224 @@ afterEach(async () => {
   await settle();
   await clock.advance(10_000);
   await stopping;
+});
+
+describe('the network policy (0007, step 8, B2)', () => {
+  /** Private instances of a profile that routes IPFS through Tor. */
+  function throughTor() {
+    const tor = fakeTorEndpoint();
+    newInstances({}, { network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+    return tor;
+  }
+
+  test("through Tor, a private instance's ipfs.start carries Tor's endpoint", async () => {
+    const tor = throughTor();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(await load('private-a')).toBe('private e-1');
+    const [start] = sent('ipfs.start');
+    expect(start.params.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+  });
+
+  test('with no endpoint yet, a cold start waits for one, spawning nothing, then starts with it', async () => {
+    const tor = throughTor();
+    const lease = instances.lease('private-a');
+    const loading = lease.request(init({ headersTimeoutMs: 60_000 }));
+    await settle();
+    await clock.advance(5_000);
+    expect(service.spawned).toHaveLength(0);
+    expect(sent('ipfs.start')).toEqual([]);
+
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(await text(await loading)).toBe('private e-1');
+    expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+      { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+    ]);
+    lease.release();
+  });
+
+  test('a private start through Tor routes by the delegated routers only, as the service requires', async () => {
+    const tor = throughTor();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(await load('private-a')).toBe('private e-1');
+    const [start] = sent('ipfs.start');
+    expect(start.params.routing.mode).toBe('delegated');
+    expect(start.params.routing.delegated_routers).toEqual([
+      'https://delegated-ipfs.dev/routing/v1',
+      'https://cid.contact/routing/v1',
+    ]);
+  });
+
+  describe('the policy changing while the process comes up (ipfs.hello held)', () => {
+    /** A cold start whose process's hello is held; `answer()` lets it go. */
+    async function coldStartHeld(network) {
+      const hellos = holding();
+      newInstances({ hello: hellos.handler }, { network });
+      const lease = instances.lease('private-a');
+      const loading = lease.request(init({ headersTimeoutMs: 60_000 }));
+      loading.catch(() => {});
+      await settle();
+      expect(hellos.held).toHaveLength(1);
+      const answer = async () => {
+        const { message, child: c } = hellos.held[0];
+        ephemeralHello(message, c);
+        await settle();
+      };
+      return { lease, loading, answer };
+    }
+
+    test('Tor selected with no endpoint: no direct start; it waits, then starts on the endpoint', async () => {
+      let routes = false;
+      const tor = fakeTorEndpoint();
+      const network = new IpfsNetwork({ routesThroughTor: () => routes, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      routes = true;
+      network.changed();
+      await answer();
+      expect(sent('ipfs.start')).toEqual([]);
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+        { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+      ]);
+      lease.release();
+    });
+
+    test("Tor's endpoint withdrawn: nothing is sent; it waits for the next", async () => {
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      tor.offer(null);
+      await answer();
+      expect(sent('ipfs.start')).toEqual([]);
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network.port)).toEqual([9152]);
+      lease.release();
+    });
+
+    test("Tor's endpoint replaced: the start takes the replacement", async () => {
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+      const { lease, loading, answer } = await coldStartHeld(network);
+      tor.offer({ ip: '::1', port: 9151 });
+      await answer();
+      expect(await text(await loading)).toBe('private e-1');
+      expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+        { mode: 'socks5', ip: '::1', port: 9151 },
+      ]);
+      lease.release();
+    });
+
+    describe('the policy changing after the start picked it, before the send', () => {
+      /** The next read of `network`'s policy (the start's pick, once the
+       * process is up) runs `change` in the microtask after it: before
+       * the start's next turn, which sends. */
+      function changeAfterNextRead(network, change) {
+        const read = network.current.bind(network);
+        network.current = () => {
+          network.current = read;
+          queueMicrotask(change);
+          return read();
+        };
+      }
+
+      test('Tor selected with no endpoint: nothing is sent, and the load waits for one', async () => {
+        let routes = false;
+        const tor = fakeTorEndpoint();
+        const network = new IpfsNetwork({ routesThroughTor: () => routes, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        let result;
+        loading.then(
+          (res) => (result = res),
+          (err) => (result = err)
+        );
+        changeAfterNextRead(network, () => {
+          routes = true;
+          network.changed();
+        });
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        expect(result).toBeUndefined();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+          { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+        ]);
+        lease.release();
+      });
+
+      test("Tor's endpoint withdrawn: nothing is sent, and the load waits for the next", async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        let result;
+        loading.then(
+          (res) => (result = res),
+          (err) => (result = err)
+        );
+        changeAfterNextRead(network, () => tor.offer(null));
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        expect(result).toBeUndefined();
+        tor.offer({ ip: '127.0.0.1', port: 9152 });
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network.port)).toEqual([9152]);
+        lease.release();
+      });
+
+      test('retired while it waits again: no ipfs.stop for an instance never sent', async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        changeAfterNextRead(network, () => tor.offer(null));
+        await answer();
+        expect(sent('ipfs.start')).toEqual([]);
+        lease.release();
+        await expect(loading).rejects.toThrow();
+        await settle();
+        expect(sent('ipfs.stop')).toEqual([]);
+        expect(tor.listeners.size).toBe(0);
+      });
+
+      test("Tor's endpoint replaced: the start picks the replacement, and the load succeeds", async () => {
+        const tor = fakeTorEndpoint();
+        tor.offer({ ip: '127.0.0.1', port: 9150 });
+        const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+        const { lease, loading, answer } = await coldStartHeld(network);
+        changeAfterNextRead(network, () => tor.offer({ ip: '::1', port: 9151 }));
+        await answer();
+        expect(await text(await loading)).toBe('private e-1');
+        expect(sent('ipfs.start').map((m) => m.params.network)).toEqual([
+          { mode: 'socks5', ip: '::1', port: 9151 },
+        ]);
+        lease.release();
+      });
+    });
+  });
+
+  test("a waiter's deadline bounds the wait, and the instance's retirement ends it", async () => {
+    const tor = throughTor();
+    const lease = instances.lease('private-a');
+    const loading = lease.request(init({ headersTimeoutMs: 2_000 }));
+    loading.catch(() => {});
+    await settle();
+    expect(tor.listeners.size).toBe(1);
+    await clock.advance(2_000);
+    await expect(loading).rejects.toThrow();
+    // Its last lease goes: the instance is retired, and stops waiting.
+    lease.release();
+    await settle();
+    expect(tor.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.spawned).toHaveLength(0);
+    expect(sent('ipfs.start')).toEqual([]);
+  });
 });
 
 describe('the cold start', () => {

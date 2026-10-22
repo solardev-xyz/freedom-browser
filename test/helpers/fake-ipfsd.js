@@ -18,6 +18,9 @@
  * - `child.event(name, data)`, `child.exit(code)`.
  *
  * Each child records `requests` (in order), `cancels` and the credit it got.
+ *
+ * An `ipfs.start` the real service refuses is refused here too, before any
+ * script sees it: `startRefusal` holds the rules it applies.
  */
 
 const { EventEmitter } = require('events');
@@ -31,6 +34,24 @@ const {
 const { StreamSender } = require('./stream-sender');
 
 const json = (value) => Buffer.from(JSON.stringify(value));
+
+/**
+ * Why the real freedom-ipfsd would refuse `ipfs.start`'s `params`
+ * (`invalid_argument`, its message), or null. Its rules that main's params
+ * could meet: `socks5` takes only delegated or offline routing (decision
+ * D6, freedom-ipfsd's params.rs), and `routing.doh_endpoint` is required
+ * (decision D9).
+ */
+function startRefusal(params) {
+  const routing = params?.routing ?? {};
+  if (params?.network?.mode === 'socks5' && !['delegated', 'offline'].includes(routing.mode)) {
+    return 'network mode socks5 takes routing mode delegated or offline';
+  }
+  if (typeof routing.doh_endpoint !== 'string') {
+    return 'routing.doh_endpoint must be a string';
+  }
+  return null;
+}
 
 const HELLO = Object.freeze({
   protocol: 1,
@@ -108,6 +129,11 @@ class FakeIpfsdChild extends EventEmitter {
     this.requests.push(message);
     this.sender.request(message.id);
     const method = message.method.replace(/^ipfs\./, '');
+    const refusal = method === 'start' ? startRefusal(message.params) : null;
+    if (refusal) {
+      this.error(message.id, 'invalid_argument', refusal);
+      return;
+    }
     const handler = this.script[method];
     if (handler) {
       handler(message, this);
@@ -243,4 +269,4 @@ function fakeIpfsd(script = {}) {
   return { spawn, children, spawned, script };
 }
 
-module.exports = { fakeIpfsd, statsResult, HELLO };
+module.exports = { fakeIpfsd, statsResult, startRefusal, HELLO };

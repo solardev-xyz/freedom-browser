@@ -5,7 +5,10 @@
  * runs the one persistent instance; private windows' instances are step 7.
  *
  * - **Start** (0007, "Startup and shutdown"): spawn, `ipfs.hello`, then
- *   `ipfs.start` with today's configuration sent explicitly (0007, Parity):
+ *   `ipfs.start` with today's configuration sent explicitly (0007, Parity),
+ *   under the network policy `network` says now (`ipfs-network.js`): while
+ *   it says none (IPFS through Tor, and no endpoint from Tor yet), nothing
+ *   is started and the node stays `starting`, until it says one:
  *   automatic routing over the two delegated routers, a 3 s DHT query
  *   timeout and 32 providers, 8 header permits and the 15 s queue, and the
  *   add-on's store, `<ipfs-data>/freedom-ipfs/freedom-ipfs.sqlite3`, with
@@ -44,6 +47,7 @@ const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
 const { isObject } = require('../core/service-client');
 const { IpfsdClient, getIpfsdBinaryPath, persistentArgs } = require('./ipfsd-client');
+const { DIRECT } = require('./ipfs-network');
 const {
   ATTEMPT_TIMEOUT_MS,
   DELEGATED_ROUTERS,
@@ -159,14 +163,21 @@ function nativeBody(body) {
  * configuration, sent explicitly (0007, Parity), the same for the profile's
  * instance and a private window's: automatic routing over the two delegated
  * routers, a 3 s DHT query timeout and 32 providers, 8 header permits and
- * the gateway's queue.
+ * the gateway's queue; under `network`. Under `socks5`, routing is the
+ * delegated routers only: the service takes no other (decision D6), since
+ * the light DHT would dial dozens of peers per query, each through Tor.
  */
-function instanceParams(instance, store, requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS) {
+function instanceParams(
+  instance,
+  store,
+  requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
+  network = { mode: 'direct' }
+) {
   return {
     instance,
     store,
     routing: {
-      mode: 'auto',
+      mode: network.mode === 'socks5' ? 'delegated' : 'auto',
       delegated_routers: DELEGATED_ROUTERS.split(','),
       dht_query_timeout_s: DHT_QUERY_TIMEOUT_S,
       dht_max_providers: DHT_MAX_PROVIDERS,
@@ -176,7 +187,7 @@ function instanceParams(instance, store, requestQueueTimeoutMs = REQUEST_QUEUE_T
       max_concurrent_requests: MAX_CONCURRENT_REQUESTS,
       request_queue_timeout_ms: requestQueueTimeoutMs,
     },
-    network: { mode: 'direct' },
+    network,
   };
 }
 
@@ -221,6 +232,9 @@ class FreedomIpfsdNode {
    *   after it was running
    * @param {Function} [options.onChange] - (state, node) as it goes
    *   `restarting` and back to `running`
+   * @param {object} [options.network] - the network policy
+   *   (`ipfs-network.js`): `current()` and `subscribe(listener)`;
+   *   `direct` without one
    * @param {string} [options.command] - the binary (`getIpfsdBinaryPath()`)
    * @param {string[]} [options.args] - its arguments (`persistentArgs`)
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
@@ -237,6 +251,7 @@ class FreedomIpfsdNode {
     requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
     onFailure = null,
     onChange = null,
+    network = DIRECT,
     command = null,
     args = null,
     spawn = spawnProcess,
@@ -251,6 +266,11 @@ class FreedomIpfsdNode {
     this.requestQueueTimeoutMs = requestQueueTimeoutMs;
     this.onFailure = onFailure;
     this.onChange = onChange;
+    this.network = network;
+    // The generation whose instance waits for a network policy, and the
+    // subscription that wakes it.
+    this.waitingFor = null;
+    this.unsubscribeNetwork = null;
     this.command = command ?? getIpfsdBinaryPath();
     this.args = args ?? persistentArgs({ dataDir, lockDir });
     this.spawn = spawn;
@@ -475,24 +495,56 @@ class FreedomIpfsdNode {
     return id;
   }
 
-  startParams(instance) {
+  startParams(instance, network) {
     return instanceParams(
       instance,
       { kind: 'disk', max_bytes: this.maxCacheBytes },
-      this.requestQueueTimeoutMs
+      this.requestQueueTimeoutMs,
+      network
     );
   }
 
-  /** `ipfs.start` for a new instance on `gen`, if it still serves. */
+  /**
+   * `ipfs.start` for a new instance on `gen`, if it still serves, under
+   * the network policy now. With none yet, the start waits for one.
+   */
   startInstance(gen) {
     const client = this.client;
     if (this.stopping || this.state === 'failed' || !client.serves(gen)) return;
+    const network = this.network.current();
+    if (!network) {
+      this.waitForNetwork(gen);
+      return;
+    }
+    this.waitingFor = null;
     const starting = { gen, instance: this.nextInstanceId(gen), live: false };
     this.starting = starting;
-    client.startInstance(gen, this.startParams(starting.instance)).then(
+    client.startInstance(gen, this.startParams(starting.instance, network)).then(
       () => this.onInstanceStarted(starting),
       (err) => this.onInstanceStartFailed(starting, err)
     );
+  }
+
+  /**
+   * The instance of `gen` waits for a network policy: IPFS routes through
+   * Tor, which offers no endpoint yet. Nothing is started meanwhile, and
+   * nothing falls back to `direct`.
+   */
+  waitForNetwork(gen) {
+    if (this.waitingFor === null) {
+      this.log.info('[IPFS] freedom-ipfs waits for Tor\'s SOCKS endpoint');
+    }
+    this.waitingFor = gen;
+    if (!this.unsubscribeNetwork) {
+      this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
+    }
+  }
+
+  /** The network policy may have changed: a waiting instance may start. */
+  onNetworkChange() {
+    const gen = this.waitingFor;
+    if (gen === null || this.starting || !this.network.current()) return;
+    this.startInstance(gen);
   }
 
   onInstanceStarted(starting) {
@@ -620,6 +672,7 @@ class FreedomIpfsdNode {
     }
     this.pair = null;
     this.starting = null;
+    this.waitingFor = null;
   }
 
   cancelTimers() {
@@ -627,6 +680,8 @@ class FreedomIpfsdNode {
       if (this[name]) this.clearTimer(this[name]);
       this[name] = null;
     }
+    this.unsubscribeNetwork?.();
+    this.unsubscribeNetwork = null;
   }
 
   settleStart(value) {
