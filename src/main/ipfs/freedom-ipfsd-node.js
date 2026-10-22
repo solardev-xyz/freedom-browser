@@ -37,6 +37,15 @@
  *   as a crash too, and is replaced in the same process after the back-off.
  *   Three in 60 s stop the process, and so does an `ipfs.start` that fails:
  *   the manager is told (`onFailure`), and shows today's text.
+ * - **A change of network policy** (0007, "Changing the policy"; step 8,
+ *   B3): the profile's setting, or Tor's endpoint moving. The instance is
+ *   retired at once (its requests fail with today's text, and nothing more
+ *   is sent for it), torn down (`ipfs.stop`, whose reply proves that
+ *   nothing it admitted outlives it: the service revokes its network
+ *   first), and a new one starts under the new policy, under a new ID. If
+ *   the teardown isn't proven within 5 s, the process restarts, and its
+ *   next generation's instance starts under the new policy. Tor going down
+ *   is no change: the policy stays, and IPFS fails closed.
  * - **Stop** (0007, "Stopping the process"): the instance is retired, then
  *   `ipfs.shutdown`, which tears down every instance and exits 0; the
  *   process is killed 5 s after it if still there.
@@ -47,7 +56,7 @@ const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
 const { isObject } = require('../core/service-client');
 const { IpfsdClient, getIpfsdBinaryPath, persistentArgs } = require('./ipfsd-client');
-const { DIRECT } = require('./ipfs-network');
+const { DIRECT, samePolicy } = require('./ipfs-network');
 const {
   ATTEMPT_TIMEOUT_MS,
   DELEGATED_ROUTERS,
@@ -66,6 +75,9 @@ const DHT_MAX_PROVIDERS = 32;
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const MAX_CONCURRENT_REQUESTS = 8;
 const HEALTH_INTERVAL_MS = 5_000;
+/** How long a policy change waits for the old instance's teardown to be
+ * proven before the process restarts (0007, "Changing the policy"). */
+const POLICY_CHANGE_PROOF_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
 // The service proves an instance's teardown within 5 s, or exits 70.
 const UNAVAILABLE = 'ipfs_unavailable';
@@ -267,10 +279,12 @@ class FreedomIpfsdNode {
     this.onFailure = onFailure;
     this.onChange = onChange;
     this.network = network;
-    // The generation whose instance waits for a network policy, and the
-    // subscription that wakes it.
+    // The generation whose instance waits for a network policy; the
+    // subscription to the policy's changes; and a policy change waiting
+    // for the old instance's teardown: { gen, timer }.
     this.waitingFor = null;
     this.unsubscribeNetwork = null;
+    this.changing = null;
     this.command = command ?? getIpfsdBinaryPath();
     this.args = args ?? persistentArgs({ dataDir, lockDir });
     this.spawn = spawn;
@@ -346,6 +360,7 @@ class FreedomIpfsdNode {
       clearTimer: this.clearTimer,
     });
     this.client = client;
+    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
     client.on('ready', (hello) => this.onReady(client, hello));
     client.on('exit', () => this.onExit(client));
     client.on('failed', () => this.onClientFailed(client));
@@ -517,7 +532,7 @@ class FreedomIpfsdNode {
       return;
     }
     this.waitingFor = null;
-    const starting = { gen, instance: this.nextInstanceId(gen), live: false };
+    const starting = { gen, instance: this.nextInstanceId(gen), live: false, network };
     this.starting = starting;
     client.startInstance(gen, this.startParams(starting.instance, network)).then(
       () => this.onInstanceStarted(starting),
@@ -535,16 +550,59 @@ class FreedomIpfsdNode {
       this.log.info('[IPFS] freedom-ipfs waits for Tor\'s SOCKS endpoint');
     }
     this.waitingFor = gen;
-    if (!this.unsubscribeNetwork) {
-      this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
-    }
   }
 
-  /** The network policy may have changed: a waiting instance may start. */
+  /**
+   * The network policy may have changed: a waiting instance may start, and
+   * one running or starting under another policy restarts under the new
+   * one. No policy now (Tor down) changes nothing: the old one stays, and
+   * IPFS fails closed.
+   */
   onNetworkChange() {
-    const gen = this.waitingFor;
-    if (gen === null || this.starting || !this.network.current()) return;
-    this.startInstance(gen);
+    if (this.stopping || this.state === 'failed' || this.changing) return;
+    const next = this.network.current();
+    if (!next) return;
+    if (this.waitingFor !== null) {
+      if (!this.starting) this.startInstance(this.waitingFor);
+      return;
+    }
+    const running = this.pair ?? this.starting;
+    if (running && !samePolicy(running.network, next)) this.changePolicy(running);
+  }
+
+  /**
+   * 0007, "Changing the policy": `running` is retired at once, torn down,
+   * and a new instance starts under the policy then in force once the
+   * teardown is proven, or on the next process if it isn't within 5 s.
+   */
+  changePolicy(running) {
+    const { gen, instance } = running;
+    this.log.info('[IPFS] the network policy changed: the freedom-ipfs instance restarts', {
+      instance,
+    });
+    this.retire();
+    this.goDown();
+    const change = { gen, timer: null };
+    this.changing = change;
+    const done = (proven) => {
+      if (this.changing !== change) return;
+      this.changing = null;
+      this.clearTimer(change.timer);
+      // Its process ended meanwhile: that ended the instance, and the next
+      // generation starts one.
+      if (this.stopping || this.state === 'failed' || !this.client.serves(gen)) return;
+      if (proven) {
+        this.startInstance(gen);
+        return;
+      }
+      this.log.warn('[IPFS] freedom-ipfs teardown unproven after a policy change: restarting');
+      this.client.end(this.client.current, 'policy');
+    };
+    change.timer = this.setTimer(() => done(false), POLICY_CHANGE_PROOF_MS);
+    this.client.stopInstance(gen, instance).then(
+      () => done(true),
+      () => done(false)
+    );
   }
 
   onInstanceStarted(starting) {
@@ -680,6 +738,8 @@ class FreedomIpfsdNode {
       if (this[name]) this.clearTimer(this[name]);
       this[name] = null;
     }
+    if (this.changing) this.clearTimer(this.changing.timer);
+    this.changing = null;
     this.unsubscribeNetwork?.();
     this.unsubscribeNetwork = null;
   }
@@ -713,4 +773,5 @@ module.exports = {
   EXITED,
   HEALTH_INTERVAL_MS,
   STATS_FRESH_MS,
+  POLICY_CHANGE_PROOF_MS,
 };

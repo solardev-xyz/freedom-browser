@@ -35,6 +35,14 @@
  *   nothing reaches a retired or evicted ID. A start already sent is
  *   stopped with `ipfs.stop`, whose reply proves the teardown: its slot is
  *   drained only then, and a start that takes it waits for that.
+ * - **A change of network policy** (0007, "Changing the policy"; step 8,
+ *   B3): every instance started or starting under another policy is
+ *   retired at once (its requests fail, nothing more is sent for it) and
+ *   torn down (`ipfs.stop`, whose reply proves it); its partition's next
+ *   request starts one under the new policy. If those teardowns aren't
+ *   proven within 5 s, the process is stopped, and the next request spawns
+ *   it again. Tor going down is no change: the policy stays, and IPFS fails
+ *   closed.
  * - **Closing a partition** (`close`, from `closeDwebSession`) retires its
  *   instance, so the leases it still holds pin nothing. A closed partition
  *   is never served again.
@@ -85,6 +93,7 @@ const {
   ABORTED,
   TIMEOUT,
   EXITED,
+  POLICY_CHANGE_PROOF_MS,
 } = require('./freedom-ipfsd-node');
 const { DIRECT, samePolicy } = require('./ipfs-network');
 
@@ -176,6 +185,10 @@ class PrivateInstances {
     this.failed = false;
     this.stopped = false;
     this.stopping = null;
+    // Each policy change still waiting for its teardowns' proof: its own
+    // teardowns, and its own 5 s timer.
+    this.changeProofs = new Set();
+    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
   }
 
   /** Whether private partitions can be served: neither failed nor stopped. */
@@ -219,10 +232,59 @@ class PrivateInstances {
   stop() {
     if (!this.stopped) {
       this.stopped = true;
+      this.unsubscribeNetwork();
+      for (const proof of this.changeProofs) this.clearTimer(proof.timer);
+      this.changeProofs.clear();
       this.retireAll();
       this.stopping = this.stopProcess();
     }
     return this.stopping;
+  }
+
+  /**
+   * The network policy may have changed: every instance started or
+   * starting under another one is retired and torn down, and if that isn't
+   * proven within 5 s the process is stopped. Each change's teardowns have
+   * their own 5 s, however many changes come before they are proven, and
+   * its deadline stops only the process they are in. No policy now (Tor
+   * down) changes nothing.
+   */
+  onNetworkChange() {
+    if (!this.up) return;
+    const next = this.network.current();
+    if (!next) return;
+    const changed = this.slots
+      .map((slot) => slot.occupant)
+      .filter((occupant) => occupant?.network && !samePolicy(occupant.network, next));
+    if (changed.length === 0) return;
+    this.log.info('[IPFS] the network policy changed: private freedom-ipfs instances restart', {
+      instances: changed.length,
+    });
+    for (const instance of changed) this.retire(instance);
+    // This change's teardowns: each is unproven while its slot still
+    // drains it (its stop's outcome, or the process's end, clears it).
+    const teardowns = changed
+      .map(({ slot }) => ({ slot, drained: slot.draining }))
+      .filter(({ drained }) => drained);
+    // The process those teardowns are in. Once it is stopping, by another
+    // change's deadline or otherwise, this change has nothing left to stop,
+    // and a process that comes after it is no concern of this change.
+    const life = this.life;
+    if (teardowns.length === 0 || !life) return;
+    const unproven = () => teardowns.some(({ slot, drained }) => slot.draining === drained);
+    const proof = { timer: null };
+    proof.timer = this.setTimer(() => {
+      this.changeProofs.delete(proof);
+      if (!this.up || this.life !== life || !unproven()) return;
+      this.log.warn('[IPFS] private freedom-ipfs teardown unproven after a policy change');
+      this.life = null;
+      this.shutdown = this.stopProcess();
+    }, POLICY_CHANGE_PROOF_MS);
+    this.changeProofs.add(proof);
+    // Proven: this change's timer goes, and only this change's.
+    Promise.all(teardowns.map(({ drained }) => drained)).then(() => {
+      if (this.changeProofs.delete(proof)) this.clearTimer(proof.timer);
+    });
   }
 
   // ---- instances and their slots ----
@@ -436,6 +498,9 @@ class PrivateInstances {
           fence: () => {
             if (instance.state !== 'starting') return false;
             moved = !samePolicy(this.network.current(), network);
+            // The policy it is started under, recorded as it is sent: a
+            // change from it retires it.
+            if (!moved) instance.network = network;
             return !moved;
           },
         });

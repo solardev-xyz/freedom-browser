@@ -40,12 +40,18 @@ describe('IpfsNetwork', () => {
     network.subscribe(() => {
       throw new Error('a failing subscriber');
     });
-    expect(tor.listeners.size).toBe(1);
 
+    // Direct: Tor's change is no change of policy, and unheard.
     tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(heard).toEqual([]);
     routes = true;
     network.changed();
-    expect(heard).toEqual([{ mode: 'direct' }, { mode: 'socks5', ip: '127.0.0.1', port: 9150 }]);
+    expect(tor.listeners.size).toBe(1);
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    expect(heard).toEqual([
+      { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+      { mode: 'socks5', ip: '127.0.0.1', port: 9151 },
+    ]);
     expect(log.error).toHaveBeenCalledTimes(2);
 
     stop();
@@ -66,6 +72,47 @@ describe('IpfsNetwork', () => {
     // Watching again on the next subscriber.
     network.subscribe(() => {});
     expect(tor.listeners.size).toBe(1);
+  });
+
+  test('Tor is watched only while the profile routes IPFS through Tor, so a direct one never asks it', () => {
+    let routes = false;
+    const asked = [];
+    const tor = fakeTor();
+    const counted = {
+      getIpfsSocksEndpoint: () => {
+        asked.push('endpoint');
+        return tor.getIpfsSocksEndpoint();
+      },
+      onIpfsSocksEndpointChange: (listener) => {
+        asked.push('watch');
+        return tor.onIpfsSocksEndpointChange(listener);
+      },
+    };
+    const network = new IpfsNetwork({ routesThroughTor: () => routes, tor: counted });
+    const heard = [];
+    const stop = network.subscribe((policy) => heard.push(policy));
+    expect(network.current()).toEqual({ mode: 'direct' });
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    network.changed();
+    expect(asked).toEqual([]);
+    expect(tor.listeners.size).toBe(0);
+    expect(heard).toEqual([{ mode: 'direct' }]);
+
+    // The setting turns on: watched, and Tor's next change is heard.
+    routes = true;
+    network.changed();
+    expect(tor.listeners.size).toBe(1);
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    expect(heard.map((policy) => policy.port ?? policy.mode)).toEqual(['direct', 9150, 9151]);
+
+    // And off: unwatched, and Tor's changes go unheard.
+    routes = false;
+    network.changed();
+    expect(tor.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9152 });
+    expect(heard).toHaveLength(4);
+    expect(heard.at(-1)).toEqual({ mode: 'direct' });
+    stop();
   });
 
   test('two policies are the same by mode and endpoint', () => {
