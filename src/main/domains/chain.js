@@ -14,9 +14,18 @@ class DomainChain {
     // public-RPC fallback or endpoint chosen by the model.
     this.request = options.request || ((method, params) => require('../networks/chain-data-router').request(1, method, params).then(response => response.result));
   }
-  async snapshot() {
-    const block = await this.request('eth_getBlockByNumber', ['latest', false]);
+  async snapshot(receipt) {
+    let block = await this.request('eth_getBlockByNumber', ['latest', false]);
+    // A receipt can arrive before a node's (or router's) latest-block view has
+    // caught up. Never verify a mined effect against an earlier block.
+    if (receipt && block?.number && BigInt(block.number) < BigInt(receipt.blockNumber)) {
+      block = await this.request('eth_getBlockByNumber', [receipt.blockNumber, false]);
+    }
     if (!block?.hash || !block.number || !block.timestamp) refuse('The current Ethereum block is unavailable.');
+    if (receipt && (BigInt(block.number) < BigInt(receipt.blockNumber) ||
+        (BigInt(block.number) === BigInt(receipt.blockNumber) && block.hash !== receipt.blockHash))) {
+      refuse('Ethereum state has not caught up with the confirmed transaction. Check the same operation again; do not resend it.', 'DOMAIN_CHAIN_BEHIND');
+    }
     return { tag: block.number, hash: block.hash, timestamp: Number(BigInt(block.timestamp)) };
   }
   async call(role, method, args, snapshot, from) {
@@ -31,8 +40,8 @@ class DomainChain {
     const code = await this.request('eth_getCode', [ADDRESSES[role], snapshot.tag]);
     if (!CODE_HASHES[role] || keccak256(code) !== CODE_HASHES[role]) refuse('The domain contract version has changed or is unsupported. Use its official app until Freedom has qualified it.', 'DOMAIN_UNSUPPORTED');
   }
-  async inspect(parsed, keys = []) {
-    const snapshot = await this.snapshot();
+  async inspect(parsed, keys = [], receipt) {
+    const snapshot = await this.snapshot(receipt);
     const role = parsed.namespace;
     if (role === 'eth') {
       const [manager] = await this.call('registry', 'owner', [parsed.node], snapshot);

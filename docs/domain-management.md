@@ -89,6 +89,15 @@ An explicitly declined or provably unbroadcast step can be resumed on a new user
 request with `domain_execute`'s `resume` flag and a fresh wallet approval. A paid
 commitment is retained. That flag never overrides an uncertain broadcast.
 
+Post-transaction checks use a block at least as recent as the confirmed receipt;
+a lagging `latest` block cannot make a mined commitment appear absent. Status
+also reconciles registrations previously stuck in `verification_needed` before
+reveal: it rechecks the saved commit's successful canonical receipt, exact
+transaction digest and current commitment. Valid commitments resume their age
+wait or become ready for a separately approved reveal, without another commit.
+Missing/reorganized receipts, mismatched transactions and uncertain reveals
+remain blocked. An expired commitment is reported as expired, never repurchased.
+
 A crash during dispatch is uncertain, even with no returned transaction hash.
 Preparing another operation for that name is blocked until reconciled. A recovery
 hash from wallet history is accepted only after sender, destination, value and
@@ -98,10 +107,11 @@ delayed/mismatched resolution are verification problems, not permission to pay t
 
 ## Qualification and smoke testing
 
-Local macOS evidence (October 22): lint passes; the full suite passes **10,882
-tests / 129 skipped** across 486 suites. A further **320 focused tests** pass
-after the final approval-cancellation, saved-plan and unsent-signer recovery
-checks. The existing real Electron startup/open/close test also passes using a
+Local macOS evidence (October 22): lint passes; the full suite passes **10,904
+tests / 129 skipped** across 486 suites. All **50 domain tests** pass after the
+fresh-block and saved-commit recovery fixes, including rejected receipts,
+restart recovery and protection against repeating uncertain reveals.
+The existing real Electron startup/open/close test also passes using a
 disposable profile. These are source-build checks, not packaged Windows/Linux
 or physical wallet-device qualification.
 

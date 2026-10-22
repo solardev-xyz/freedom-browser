@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { DomainService } = require('./service');
 const { DomainOperationStore } = require('./operation-store');
+const { DomainChain } = require('./chain');
 const { ADDRESSES, ABI, DomainError, parseName, ZeroAddress } = require('./contracts');
 
 const address = '0x000000000000000000000000000000000000dEaD';
@@ -98,6 +99,129 @@ test.each(['eth', 'wei', 'gwei'])('%s verified website binding preserves other r
   expect(f.state.records.text.description).toBe('before');
   expect(f.state.records.address).toBe(address);
   expect(f.options.verifyResolution).toHaveBeenCalledWith(f.state.name, '12'.repeat(32));
+});
+
+test('a commit is checked at its mined block when latest is one block behind', async () => {
+  const f = fixture('gwei', true);
+  f.clock.tag = '0xff';
+  const snapshots = new DomainChain({ request: jest.fn(async (_method, [tag]) => ({
+    number: tag === 'latest' ? f.clock.tag : tag, hash,
+    timestamp: `0x${f.clock.timestamp.toString(16)}`,
+  })) });
+  f.chain.snapshot.mockImplementation(receipt => snapshots.snapshot(receipt));
+  const call = f.chain.call.getMockImplementation();
+  f.chain.call.mockImplementation((role, method, args, snapshot) => method === 'commitments' && BigInt(snapshot.tag) < 256n
+    ? [0n] : call(role, method, args));
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'waiting_commitment', step: 'reveal' });
+  expect(f.chain.snapshot).toHaveBeenCalledWith(expect.objectContaining({ blockNumber: '0x100' }));
+  expect(f.chain.call).toHaveBeenCalledWith('gwei', 'commitments', expect.any(Array), expect.objectContaining({ tag: '0x100' }));
+  f.clock.tag = '0x101'; f.clock.timestamp += 61;
+  expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state: 'ready' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+});
+
+test.each(['eth', 'wei', 'gwei'])('%s recovers an already saved missing-commit state after restart without resending', async namespace => {
+  const f = fixture(namespace, true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const saved = f.store.get(plan.operationId);
+  saved.state = 'verification_needed';
+  saved.message = 'The confirmed commitment is missing from the current chain. Inspect before continuing.';
+  f.store.save(saved);
+  f.service.close();
+  const reopened = new DomainOperationStore({ directory: path.dirname(f.store.filename), safeStorage: f.store.safeStorage });
+  const service = new DomainService({ ...f.options, store: reopened });
+  expect(await service.status({ operationId: plan.operationId })).toMatchObject({ state: 'waiting_commitment' });
+  f.clock.timestamp += 61;
+  expect(await service.status({ operationId: plan.operationId })).toMatchObject({ state: 'ready', step: 'reveal' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+  expect(f.context.requestApproval).toHaveBeenCalledTimes(1);
+  expect(await service.execute(plan.operationId, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(2);
+  expect(f.context.requestApproval).toHaveBeenCalledTimes(2);
+});
+
+test.each(['missing receipt', 'reverted receipt', 'changed block', 'different transaction', 'missing commitment'])(
+  'commit recovery remains blocked for %s', async failure => {
+    const f = fixture('gwei', true);
+    const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+    await f.service.execute(plan.operationId, f.context);
+    const saved = f.store.get(plan.operationId);
+    saved.state = 'verification_needed'; f.store.save(saved);
+    if (failure === 'missing receipt') f.chain.receipt.mockResolvedValue(null);
+    if (failure === 'reverted receipt') f.chain.receipt.mockResolvedValue({ status: '0x0', blockHash: hash });
+    if (failure === 'changed block') f.chain.receipt.mockResolvedValue({ status: '0x1', blockHash: 'different-block' });
+    if (failure === 'different transaction') f.chain.request.mockResolvedValue({ from: address, to: ADDRESSES.base, input: '0x', value: '0' });
+    if (failure === 'missing commitment') {
+      const call = f.chain.call.getMockImplementation();
+      f.chain.call.mockImplementation((role, method, args) => method === 'commitments' ? [0n] : call(role, method, args));
+    }
+    expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state: 'verification_needed' });
+    await f.service.execute(plan.operationId, f.context);
+    expect(f.wallet.send).toHaveBeenCalledTimes(1);
+    expect(f.context.requestApproval).toHaveBeenCalledTimes(1);
+  });
+
+test('an old saved commitment recovers as expired rather than paying for another commit', async () => {
+  const f = fixture('gwei', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const saved = f.store.get(plan.operationId);
+  saved.state = 'verification_needed'; f.store.save(saved);
+  f.clock.timestamp += 86401;
+  expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state: 'expired' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+});
+
+test('a temporarily unavailable confirmation snapshot leaves the original commit pending', async () => {
+  const f = fixture('gwei', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  f.chain.snapshot.mockRejectedValueOnce(new DomainError('DOMAIN_CHAIN_BEHIND', 'Ethereum is catching up.'));
+  await expect(f.service.execute(plan.operationId, f.context)).rejects.toMatchObject({ code: 'DOMAIN_CHAIN_BEHIND' });
+  expect(f.store.get(plan.operationId)).toMatchObject({ state: 'pending', step: 'commit', transactionHash: hash, transactions: [] });
+  expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state: 'waiting_commitment', step: 'reveal' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+});
+
+test.each(['dispatch_unknown', 'pending', 'verification_needed'])('a %s reveal cannot be recovered as an unsent reveal', async state => {
+  const f = fixture('gwei', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  const saved = f.store.get(plan.operationId);
+  saved.state = state;
+  // A later reveal may have been broadcast. The earlier commit is not evidence
+  // that a second reveal is safe, even when it is still present on chain.
+  saved.transactionHash = `0x${'cd'.repeat(32)}`;
+  f.store.save(saved);
+  f.chain.receipt.mockResolvedValue(null);
+  expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state });
+  await f.service.execute(plan.operationId, f.context);
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+});
+
+test('post-transaction record verification also requires a snapshot including the receipt', async () => {
+  const f = fixture();
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'after' }, f.context);
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.chain.inspect).toHaveBeenLastCalledWith(expect.any(Object), ['description'], expect.objectContaining({ blockNumber: '0x100' }));
+});
+
+test('a provably unsent reveal can resume even after its dispatch digest replaced the commit digest', async () => {
+  const f = fixture('gwei', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId: plan.operationId });
+  const send = f.wallet.send.getMockImplementation();
+  f.wallet.send.mockImplementation(async (_plan, context) => {
+    await context.beforeSend();
+    throw Object.assign(new Error('Local signer did not broadcast'), { code: 'DOMAIN_NOT_BROADCAST' });
+  });
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'declined', step: 'reveal' });
+  f.wallet.send.mockImplementation(send);
+  expect(await f.service.execute(plan.operationId, { ...f.context, resume: true })).toMatchObject({ state: 'completed' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(3);
 });
 
 test('unverified/non-site publications and custom resolvers never prepare a write', async () => {

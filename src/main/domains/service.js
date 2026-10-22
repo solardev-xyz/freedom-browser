@@ -148,7 +148,10 @@ class DomainService {
         (operation.intent === 'set_address' && (record?.kind !== 'address' || !/^0x[a-fA-F0-9]{40}$/.test(record.value) || record.value === ZeroAddress)) ||
         (operation.intent === 'set_text' && (record?.kind !== 'text' || typeof record.key !== 'string' || !record.key || record.key.length > 128 ||
           typeof record.value !== 'string' || record.value.length > 2048 || /[\p{Cc}\p{Cf}]/u.test(record.key + record.value)))) refuse('The saved record does not match its typed domain intent.', 'DOMAIN_UNSUPPORTED');
-    const state = await this.chain.inspect(parsed, operation.record?.kind === 'text' ? [operation.record.key] : []);
+    const commitReceipt = operation.intent === 'register' && operation.step === 'reveal'
+      ? await this.#registrationReceipt(operation) : undefined;
+    if (commitReceipt === null) refuse(operation.message, 'DOMAIN_STALE');
+    const state = await this.chain.inspect(parsed, operation.record?.kind === 'text' ? [operation.record.key] : [], commitReceipt);
     const snapshot = state.snapshot;
     const authority = { owner: state.owner, manager: state.manager, resolver: state.resolver,
       epoch: state.epoch, parentEpoch: state.parentEpoch, fuses: state.fuses, wrapped: state.wrapped };
@@ -347,6 +350,23 @@ class DomainService {
     operation.message = operation.state === 'ready' ? 'Commitment ready. Reveal needs a new exact wallet approval.'
       : operation.state === 'expired' ? 'The commitment expired. A new commitment would cost gas and is not automatic.' : 'Waiting for the on-chain commitment age.';
   }
+  async #registrationReceipt(operation) {
+    const commit = operation.transactions.find(transaction => transaction.step === 'commit');
+    const receipt = commit && await this.chain.receipt(commit.hash);
+    const tx = receipt && await this.chain.request('eth_getTransactionByHash', [commit.hash]);
+    const role = parseName(operation.name).namespace === 'eth' ? 'controller' : operation.namespace;
+    // dispatchDigest belongs to the most recent signing attempt, which may be
+    // a provably unsent reveal. Reconstruct the earlier public commit instead.
+    const expected = this.#transactionDigest({ from: operation.account.address, to: ADDRESSES[role], value: '0',
+      input: (ABI[role] || ABI.nft).encodeFunctionData('commit', [operation.commitment]) });
+    if (!receipt || BigInt(receipt.status) !== 1n || receipt.blockHash !== commit.blockHash ||
+        !tx || this.#transactionDigest(tx) !== expected) {
+      operation.state = 'verification_needed';
+      operation.message = 'The saved commit could not be verified in the current canonical chain. Check the same operation again; do not send another commit.';
+      return null;
+    }
+    return receipt;
+  }
   async status(input = {}, context = {}) {
     if (!input.operationId && input.transactionHash) refuse('A recovery transaction hash requires its domain operation ID.', 'DOMAIN_INVALID');
     if (!input.operationId) return { operations: this.store.list().filter(operation => !context.conversationId || operation.sourceConversationId === context.conversationId).slice(-20).reverse().map(operation => ({
@@ -371,8 +391,12 @@ class DomainService {
         this.store.save(operation);
       }
       if (operation.state === 'pending') await this.#confirm(operation);
-      if (operation.state === 'waiting_commitment') {
-        await this.#commitmentWindow(operation, await this.chain.snapshot());
+      else if (operation.intent === 'register' && operation.step === 'reveal' && !operation.transactionHash &&
+          ['waiting_commitment', 'verification_needed'].includes(operation.state)) {
+        // Also reconciles journals saved by older versions after a stale-block
+        // read. Only a verified existing commit may recover; never resend it.
+        const receipt = await this.#registrationReceipt(operation);
+        if (receipt) await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
         this.store.save(operation);
       }
       if (!WAITING.has(operation.state) || Date.now() >= deadline) break;
@@ -395,9 +419,9 @@ class DomainService {
     } else if (operation.step === 'commit') {
       operation.step = 'reveal';
       delete operation.transactionHash; // The commit hash is in transactions, not a reveal receipt.
-      await this.#commitmentWindow(operation, await this.chain.snapshot());
+      await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
     } else {
-      const state = await this.chain.inspect(parseName(operation.name), operation.record?.kind === 'text' ? [operation.record.key] : []);
+      const state = await this.chain.inspect(parseName(operation.name), operation.record?.kind === 'text' ? [operation.record.key] : [], receipt);
       let verified;
       if (operation.intent === 'register') verified = state.active && sameAddress(state.owner, operation.account.address);
       else if (operation.intent === 'renew') verified = (operation.before.owner === ZeroAddress || sameAddress(state.owner, operation.before.owner)) && sameAddress(state.manager, operation.before.manager) && BigInt(state.expiry) === BigInt(operation.before.expiry) + BigInt(operation.duration) &&
