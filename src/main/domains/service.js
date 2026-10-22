@@ -316,7 +316,10 @@ class DomainService {
             // stuck pending tx this dispatch replaces at the same nonce), so
             // it must only ever refuse a recovery hash, which leaves the
             // operation at dispatch_unknown for reconciliation; it must not
-            // judge the wallet's own mined transaction.
+            // judge the wallet's own mined transaction. Register commits and
+            // reveals carry this operation's own secret, so no older
+            // byte-identical transaction can exist: their recovery hash is
+            // held only to the 'latest' floor, never the overshooting one.
             const account = operation.account.address;
             const minedFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'latest'])).toString();
             const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [account, 'pending'])).toString();
@@ -403,7 +406,11 @@ class DomainService {
       if (!/^0x[a-fA-F0-9]{64}$/.test(input.transactionHash) || operation.state !== 'dispatch_unknown') refuse('A recovery hash is only accepted for an uncertain domain dispatch.', 'DOMAIN_INVALID');
       const tx = await this.chain.request('eth_getTransactionByHash', [input.transactionHash]);
       if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest) refuse('That transaction does not match this exact domain operation.', 'DOMAIN_INVALID');
-      if (!this.#atOrAbove(tx, operation.dispatchNonceFloor)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
+      // A register commit/reveal embeds the per-operation secret, so a
+      // matching digest is already unique to this operation; the 'pending'
+      // floor would only refuse a genuine hash that replaced a stuck tx.
+      const recoveryFloor = operation.intent === 'register' ? operation.dispatchMinedNonce : operation.dispatchNonceFloor;
+      if (!this.#atOrAbove(tx, recoveryFloor)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
       operation.transactionHash = input.transactionHash;
       operation.state = 'pending';
       this.store.save(operation);

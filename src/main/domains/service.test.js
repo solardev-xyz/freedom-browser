@@ -395,6 +395,32 @@ test('an overshooting pending floor never judges the wallet\'s own mined transac
   expect(await register.service.execute(commit.operationId, register.context)).toMatchObject({ state: 'waiting_commitment', step: 'reveal' });
 });
 
+test('a register recovery hash that replaced a stuck tx is not refused by the pending floor', async () => {
+  // Stuck tx at nonce 5 (pending 6, latest 5); the wallet replaces it with
+  // this commit at nonce 5, which mines, but the reply is lost.
+  const f = fixture('wei', true);
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionCount'
+    ? (args[1] === 'pending' ? '0x6' : '0x5') : request(method, args));
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  const send = f.wallet.send.getMockImplementation();
+  let mined;
+  f.wallet.send.mockImplementation(async (...args) => {
+    await send(...args);
+    mined = { ...(await f.chain.request('eth_getTransactionByHash', [hash])), nonce: '0x5' };
+    throw new Error('lost response');
+  });
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
+  expect(f.store.get(plan.operationId)).toMatchObject({ dispatchNonceFloor: '6', dispatchMinedNonce: '5' });
+  const withCounts = f.chain.request.getMockImplementation();
+  // Below the 'latest' floor it was mined before dispatch: still refused.
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionByHash' ? { ...mined, nonce: '0x4' } : withCounts(method, args));
+  await expect(f.service.status({ operationId: plan.operationId, transactionHash: hash })).rejects.toThrow('before this domain operation');
+  expect(f.store.get(plan.operationId).state).toBe('dispatch_unknown');
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionByHash' ? mined : withCounts(method, args));
+  expect(await f.service.status({ operationId: plan.operationId, transactionHash: hash })).toMatchObject({ state: 'waiting_commitment', step: 'reveal' });
+});
+
 test('a wallet reply carrying an already-mined nonce is not confirmed', async () => {
   const f = fixture();
   const plan = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
