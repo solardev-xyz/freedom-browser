@@ -39,7 +39,14 @@ function row({ torOn, routed, torRunning = null, ipfsMode = 'managed' }) {
   const classes = new Set();
   const fields = {
     enableTor: { checked: torOn },
-    routeIpfs: { checked: routed, disabled: false },
+    routeIpfs: {
+      checked: routed,
+      disabled: false,
+      attributes: {},
+      setAttribute(name, value) {
+        this.attributes[name] = value;
+      },
+    },
     routeIpfsRow: {
       classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
     },
@@ -52,6 +59,7 @@ function row({ torOn, routed, torRunning = null, ipfsMode = 'managed' }) {
     rowDisabled: classes.has('disabled'),
     help,
     noteShown: !note.hidden,
+    describedBy: fields.routeIpfs.attributes['aria-describedby'],
   };
 }
 
@@ -112,10 +120,22 @@ describe('Route IPFS through Tor', () => {
     };
     // Its accessible name: the label's text, and nothing else.
     expect(attr('aria-labelledby').split(' ').map(textOf).join(' ')).toBe('Route IPFS through Tor');
-    expect(attr('aria-describedby').split(' ')).toEqual([
-      'route-ipfs-through-tor-help',
-      'route-ipfs-external-note',
-    ]);
+    // Its accessible description, as the row sets it for each backend:
+    // the external note is part of it only with an external gateway, since
+    // hidden text a description names is still read out.
+    const description = (ids) => ids.split(' ').map(textOf).join(' ');
+    const help = textOf('route-ipfs-through-tor-help');
+    const note = textOf('route-ipfs-external-note');
+    expect(description(attr('aria-describedby'))).toBe(help);
+    for (const ipfsMode of ['managed', 'disabled', null]) {
+      expect(description(row({ torOn: true, routed: true, ipfsMode }).describedBy)).toBe(help);
+    }
+    expect(description(row({ torOn: true, routed: true, ipfsMode: 'external' }).describedBy)).toBe(
+      `${help} ${note}`
+    );
+    expect(note).toBe(
+      "This profile uses an external IPFS gateway, which this setting doesn't cover."
+    );
   });
 
   test('with Tor on, it can be switched either way, under its default help', () => {
@@ -125,6 +145,7 @@ describe('Route IPFS through Tor', () => {
         rowDisabled: false,
         help: { textContent: 'DEFAULT HELP' },
         noteShown: false,
+        describedBy: 'route-ipfs-through-tor-help',
       });
     }
   });
@@ -156,6 +177,7 @@ describe('Route IPFS through Tor', () => {
       rowDisabled: true,
       help: { textContent: 'Turn on Enable Tor (.onion access) above first.' },
       noteShown: false,
+      describedBy: 'route-ipfs-through-tor-help',
     });
   });
 
@@ -168,6 +190,7 @@ describe('Route IPFS through Tor', () => {
           "Tor is off, so the built-in IPFS node doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above.",
       },
       noteShown: false,
+      describedBy: 'route-ipfs-through-tor-help',
     });
   });
 

@@ -1153,7 +1153,16 @@ const applyRouteIpfsRowState = () => {
   }
   // A profile on an external gateway: the switch doesn't cover it, which
   // the row says plainly, without saying what the gateway's requests do.
-  if (routeIpfsExternalNote) routeIpfsExternalNote.hidden = ipfsMode !== 'external';
+  // The note describes the toggle only then: hidden text that a toggle's
+  // description names is still read out.
+  const external = ipfsMode === 'external';
+  if (routeIpfsExternalNote) routeIpfsExternalNote.hidden = !external;
+  fields.routeIpfs?.setAttribute(
+    'aria-describedby',
+    external
+      ? 'route-ipfs-through-tor-help route-ipfs-external-note'
+      : 'route-ipfs-through-tor-help'
+  );
 };
 
 // Tor's state, for that note: every 5 s while Advanced is shown, as the
