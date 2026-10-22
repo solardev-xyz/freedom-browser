@@ -61,8 +61,17 @@ explicitly allows multiple bundle instances so profile launching can use
 ## Integrated IPFS Native Node
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
-- **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
+- **Native Transport**: Runs `freedom-ipfs` in `freedom-ipfsd`, a service process Freedom starts and restarts, instead of a loopback Kubo process. It opens no loopback API or gateway port.
 - **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
+- **Public Addresses Only**: The node connects only to public internet addresses for the peers and providers it finds. An address on your local network or on this computer (`192.168.x.x`, `10.x.x.x`, `localhost` and the like) is refused before any connection is made, whether a provider record, a redirect or a name's DNS answer points at it. So an IPFS page can't make the node reach the devices on your network, and an IPFS provider that serves only on your local network isn't used. The delegated routing services and the DNS-over-HTTPS server Freedom is set up with are exempt.
+  - **IPv6-only networks with NAT64**: such a network can translate IPv6 addresses into IPv4 ones under a prefix of its own, which can hide a local IPv4 address inside a public-looking IPv6 one. Freedom asks the network's DNS servers for those prefixes while the node runs. Until it knows them, or while it can't get an answer, IPv6 connections wait or are refused, and IPv4 keeps working. A prefix announced only in router advertisements can't be learned this way.
+- **Route IPFS through Tor (Experimental)**: **Settings → Advanced → Route IPFS through Tor**, off by default, sends the built-in IPFS node's traffic through the profile's Tor instead of connecting directly: content discovery, providers, peers and name lookups alike. It costs more than it may seem:
+  - **Slower**: every connection goes through a Tor circuit.
+  - **Less to find**: the node looks content up only through the delegated routing services, with no DHT, and connects to peers over TCP only, without QUIC. Content that those services don't know about, or that only QUIC peers serve, may not load.
+  - **Fails closed**: it needs **Enable Tor (.onion access)**, and it doesn't start Tor. While Tor isn't running, the node doesn't connect at all rather than going direct, and the setting says it is waiting for Tor. Start Tor from the Nodes menu, or with **Start Tor when Freedom opens**.
+  - **The built-in node only**: a profile using an external IPFS gateway (**Settings → Nodes**) isn't covered; the setting says so.
+  - **Separate circuits**: the profile's node and each private window's use Tor circuits of their own.
+  - Switching it on or off applies at once: the node restarts under the new setting, without restarting Freedom.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
 - **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
@@ -75,7 +84,7 @@ explicitly allows multiple bundle instances so profile launching can use
 
 ## Tor `.onion` Access (Experimental)
 
-- **Onion-only routing**: When enabled, Freedom routes only `.onion` hosts through the profile's Arti SOCKS5 proxy; clearnet and decentralized protocols remain direct.
+- **Onion-only routing**: When enabled, Freedom routes only `.onion` hosts through the profile's Arti SOCKS5 proxy; clearnet and decentralized protocols remain direct. The one opt-in exception is [Route IPFS through Tor](#integrated-ipfs-native-node), which sends the built-in IPFS node through Tor too.
 - **Fail-closed behavior**: If Arti stops unexpectedly, `.onion` requests fail instead of falling back to direct DNS.
 - **Profile isolation**: Managed Tor state, cache, endpoint, and private-window routing are profile-scoped.
 - **Optional binary**: Source builds require `npm run tor:download`; the release workflow bundles Tor for macOS arm64, Linux x64/arm64 and Windows x64. Windows x64 bundling landed in September 2026, so only releases cut after that carry Arti on Windows — an earlier Windows install has none.
