@@ -245,8 +245,9 @@ class PrivateInstances {
    * The network policy may have changed: every instance started or
    * starting under another one is retired and torn down, and if that isn't
    * proven within 5 s the process is stopped. Each change's teardowns have
-   * their own 5 s, however many changes come before they are proven. No
-   * policy now (Tor down) changes nothing.
+   * their own 5 s, however many changes come before they are proven, and
+   * its deadline stops only the process they are in. No policy now (Tor
+   * down) changes nothing.
    */
   onNetworkChange() {
     if (!this.up) return;
@@ -265,12 +266,16 @@ class PrivateInstances {
     const teardowns = changed
       .map(({ slot }) => ({ slot, drained: slot.draining }))
       .filter(({ drained }) => drained);
-    if (teardowns.length === 0) return;
+    // The process those teardowns are in. Once it is stopping, by another
+    // change's deadline or otherwise, this change has nothing left to stop,
+    // and a process that comes after it is no concern of this change.
+    const life = this.life;
+    if (teardowns.length === 0 || !life) return;
     const unproven = () => teardowns.some(({ slot, drained }) => slot.draining === drained);
     const proof = { timer: null };
     proof.timer = this.setTimer(() => {
       this.changeProofs.delete(proof);
-      if (!this.up || !this.life || !unproven()) return;
+      if (!this.up || this.life !== life || !unproven()) return;
       this.log.warn('[IPFS] private freedom-ipfs teardown unproven after a policy change');
       this.life = null;
       this.shutdown = this.stopProcess();

@@ -505,6 +505,41 @@ describe('a change of network policy (0007, step 8, B3)', () => {
       expect(await load('private-b')).toBe('private e-3');
       expect(service.spawned).toHaveLength(1);
     });
+
+    test("a later change's deadline in a process already stopping leaves the next process alone", async () => {
+      const stops = holding();
+      // The old process answers no ipfs.shutdown: it ends only at the
+      // stop's kill.
+      const { tor } = throughTor({ stop: stops.handler, shutdown: () => {} });
+      expect(await load('private-a')).toBe('private e-1');
+      // Two changes 1 s apart, both teardowns held.
+      tor.offer({ ip: '127.0.0.1', port: 9151 });
+      await settle();
+      expect(await load('private-a')).toBe('private e-2');
+      await clock.advance(1_000);
+      tor.offer({ ip: '127.0.0.1', port: 9152 });
+      await settle();
+      expect(stops.held).toHaveLength(2);
+
+      // The first change's deadline stops the old process.
+      await clock.advance(4_000);
+      const old = child();
+      expect(old.sent('ipfs.shutdown')).toHaveLength(1);
+      // A load meanwhile: the next process waits for the old one's end.
+      const loading = load('private-b');
+      loading.catch(() => {});
+      await settle();
+
+      // The second change's deadline, in the process already stopping:
+      // nothing more is stopped, and the load waiting for the next
+      // process is served by it once the old one is killed.
+      await clock.advance(1_000);
+      expect(old.sent('ipfs.shutdown')).toHaveLength(1);
+      await clock.advance(4_000);
+      expect(await loading).toBe('private e-1');
+      expect(service.spawned).toHaveLength(2);
+      expect(child().sent('ipfs.shutdown')).toEqual([]);
+    });
   });
 
   test('a stop unsubscribes, and a change after it does nothing', async () => {
