@@ -19,9 +19,11 @@ const { PINNED_ARTI_VERSION } = require('./fetch-arti');
  * prints `versionLine`, or fails when it's `null`; `proxy -c <config>`
  * serves SOCKS5 on the config's port (any one method, RFC 1929 accepted,
  * `RESOLVE` answering 93.184.215.14, `CONNECT` succeeding) and says it
- * bootstrapped.
+ * bootstrapped. With `failFirstPassword`, a `RESOLVE` under the first
+ * password it saw fails (reply 0x01), as a failing exit on that
+ * credentials' isolated circuit would, every time.
  */
-function fakeArti(dir, versionLine) {
+function fakeArti(dir, versionLine, { failFirstPassword = false } = {}) {
   const script = `const fs = require('fs');
 const net = require('net');
 const args = process.argv.slice(2);
@@ -33,9 +35,12 @@ if (args[0] === '--version') {
 }
 const config = fs.readFileSync(args[args.indexOf('-c') + 1], 'utf-8');
 const port = Number(/socks_listen = (\\d+)/.exec(config)[1]);
+const failFirstPassword = ${JSON.stringify(failFirstPassword)};
+let firstPassword = null;
 net
   .createServer((socket) => {
     let phase = 'greeting';
+    let password = null;
     socket.on('error', () => {});
     socket.on('data', (chunk) => {
       if (phase === 'greeting') {
@@ -43,8 +48,13 @@ net
         socket.write(Buffer.from([5, method]));
         phase = method === 2 ? 'authentication' : 'request';
       } else if (phase === 'authentication') {
+        const userLength = chunk[1];
+        password = chunk.subarray(3 + userLength, 3 + userLength + chunk[2 + userLength]).toString();
+        if (firstPassword === null) firstPassword = password;
         socket.write(Buffer.from([1, 0]));
         phase = 'request';
+      } else if (chunk[1] === 0xf0 && failFirstPassword && password !== null && password === firstPassword) {
+        socket.end(Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
       } else if (chunk[1] === 0xf0) {
         socket.end(Buffer.from([5, 0, 0, 1, 93, 184, 215, 14, 0, 0]));
       } else {
@@ -224,10 +234,10 @@ describe('qualify-arti-resolve', () => {
     afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
-    const run = (versionLine) =>
+    const run = (versionLine, fake = {}) =>
       qualify(
         {
-          arti: fakeArti(dir, versionLine),
+          arti: fakeArti(dir, versionLine, fake),
           name: 'example.com',
           bootstrapTimeoutMs: 10000,
           requireCredentials: true,
@@ -248,6 +258,18 @@ describe('qualify-arti-resolve', () => {
         qualified: true,
       });
       expect(report.reason).toBeUndefined();
+    });
+
+    test('each attempt of the credentials check gets new credentials, so a new circuit', async () => {
+      // The first credentials' circuit fails RESOLVE every time: a retry
+      // on them would fail all three attempts.
+      const report = await run(`Arti ${PINNED_ARTI_VERSION}`, { failFirstPassword: true });
+      expect(report).toMatchObject({
+        resolve: { ok: true, attempts: 1 },
+        resolve_with_credentials: { ok: true, attempts: 2 },
+        checks_passed: true,
+        qualified: true,
+      });
     });
 
     test('another version passing the checks is an unpinned result, not qualified', async () => {

@@ -16,14 +16,18 @@
  *     IPv4 or IPv6 address, never a domain-typed answer, `0.0.0.0` or `::`.
  *     Required.
  *   - **resolve_with_credentials:** the same, authenticating with a
- *     username and password (RFC 1929), as per-instance stream isolation
- *     would (0007's open question 11). Reported; required with
+ *     username and password (RFC 1929), as each IPFS instance does under
+ *     `socks5` (0007, "Stream isolation"). Reported; required with
  *     `--require-credentials`.
  *   - **connect:** `CONNECT` to the address the first `RESOLVE` answered, on
  *     port 443, as freedom-ipfsd connects to a checked address. Reported:
  *     an exit's policy can refuse it, which says nothing about Arti.
  *
- * Each check is tried up to three times before it counts as failed.
+ * Each check is tried up to three times before it counts as failed. Each
+ * attempt of the credentials check sends new credentials, so Arti gives it
+ * a new isolated circuit: one circuit's exit can keep failing a name (reply
+ * 0x01 on every attempt), which says nothing about Arti, and a retry on the
+ * same credentials would only ask that exit again.
  *
  * Only the pinned Arti qualifies: `qualified` needs `arti --version` to
  * name `PINNED_ARTI_VERSION` (scripts/fetch-arti.js) and the required checks
@@ -253,6 +257,18 @@ function verdict(report, options) {
  * for the tests only (`artiCommand`): the command line never sets it, so
  * the release job always runs the binary itself.
  */
+/**
+ * New RFC 1929 credentials, as an IPFS instance's are made: a fixed
+ * username and 128 random bits. Each set is an isolated circuit of its own
+ * in Arti.
+ */
+function freshCredentials() {
+  return {
+    username: 'freedom-ipfs-qualification',
+    password: crypto.randomBytes(16).toString('hex'),
+  };
+}
+
 async function qualify(options, { launcher = [] } = {}) {
   const artiPath = options.arti || defaultArtiPath();
   if (!fs.existsSync(artiPath)) {
@@ -272,20 +288,18 @@ async function qualify(options, { launcher = [] } = {}) {
   try {
     const config = writeConfig(dir, socksPort, { allowRoot: options.allowRoot });
     child = await startArti(artiPath, config, options.bootstrapTimeoutMs, launcher);
+    // `credentials()` is asked once per attempt.
     const resolveWith = (credentials) =>
       check(async () => {
         const { code, address } = await socks5Request(
           proxy,
           { command: 'resolve', name: options.name },
-          { credentials }
+          { credentials: credentials() }
         );
         return { ok: code === 0 && isUsableAnswer(address), code, address };
       });
-    report.resolve = await resolveWith(null);
-    report.resolve_with_credentials = await resolveWith({
-      username: 'freedom-ipfs-qualification',
-      password: crypto.randomBytes(16).toString('hex'),
-    });
+    report.resolve = await resolveWith(() => null);
+    report.resolve_with_credentials = await resolveWith(freshCredentials);
     report.connect = report.resolve.ok
       ? await check(async () => {
           const { code } = await socks5Request(proxy, {
