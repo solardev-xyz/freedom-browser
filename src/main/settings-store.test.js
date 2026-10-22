@@ -523,6 +523,60 @@ describe('settings-store', () => {
     expect(mod.getRevertedShortcutOverrides()).toEqual({});
   });
 
+  test('AI off frees the AI shortcuts\' chords and keeps their remaps for when AI is back', () => {
+    const agentChord = process.platform === 'darwin' ? 'Cmd+K' : 'Ctrl+K';
+    fs.writeFileSync(
+      path.join(userDataDir, 'settings.json'),
+      JSON.stringify({
+        enableAi: false,
+        // Show Agent was moved to Ctrl+Shift+Y while AI was on; then AI went
+        // off and New Tab took both Show Agent chords.
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': 'Ctrl+Shift+Y' },
+      }),
+      'utf-8'
+    );
+    const { mod } = loadSettingsStore({ userDataDir });
+
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': 'Ctrl+Shift+Y',
+    });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
+    // A remap onto Show Agent's default while AI is off is not a conflict.
+    expect(
+      mod.saveSettings({
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': agentChord },
+      })
+    ).toBe(true);
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': agentChord,
+    });
+
+    // Turning AI on brings Show Agent's remap back untouched; New Tab is on
+    // a chord nothing else uses now, so it stays too.
+    expect(mod.saveSettings({ enableAi: true })).toBe(true);
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': agentChord,
+    });
+
+    // Off again, New Tab takes Show Agent's remapped chord; on again, that
+    // collision is settled visibly rather than both firing on one press.
+    expect(mod.saveSettings({ enableAi: false })).toBe(true);
+    expect(
+      mod.saveSettings({
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': 'Ctrl+Shift+Y' },
+      })
+    ).toBe(true);
+    expect(mod.saveSettings({ enableAi: true })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.shortcutOverrides).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({
+      'tab.new': { accelerator: 'Ctrl+Shift+Y', conflictId: 'view.toggleAgent', conflict: 'Show Agent' },
+    });
+  });
+
   test('registers IPC handlers for loading and saving settings', async () => {
     const ipcMain = createIpcMainMock();
     const { mod, nativeTheme } = loadSettingsStore({ userDataDir, ipcMain });

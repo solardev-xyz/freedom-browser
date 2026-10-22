@@ -261,6 +261,7 @@ function loadMenuModule(platform, options = {}) {
 
   const emitSettingsChanged = (merged, previous) => {
     settings.shortcutOverrides = merged.shortcutOverrides || {};
+    if ('enableAi' in merged) settings.enableAi = merged.enableAi;
     for (const listener of settingsListeners) listener(merged, previous);
   };
 
@@ -296,8 +297,27 @@ describe('menu', () => {
   test.each(['darwin', 'linux', 'win32'])('AI off does not reserve the Show Agent shortcut on %s', platform => {
     const { capturedTemplate } = loadMenuModule(platform, { enableAi: false });
     const item = findTopLabel(capturedTemplate, 'View').submenu.find(item => item.label === 'Show Agent');
-    expect(item.enabled).toBe(false);
+    expect(item.visible).toBe(false);
     expect(item.accelerator).toBeUndefined();
+  });
+
+  test.each(['darwin', 'linux', 'win32'])('AI on shows Show Agent with its shortcut on %s', platform => {
+    const { capturedTemplate } = loadMenuModule(platform, { enableAi: true });
+    const item = findTopLabel(capturedTemplate, 'View').submenu.find(item => item.label === 'Show Agent');
+    expect(item.visible).toBe(true);
+    expect(item.accelerator).toBe('CmdOrCtrl+K');
+  });
+
+  test('turning AI on or off rebuilds the menu with Show Agent shown or gone', () => {
+    const loaded = loadMenuModule('linux', { enableAi: false });
+    const showAgent = () =>
+      findTopLabel(loaded.capturedTemplate, 'View').submenu.find((item) => item.label === 'Show Agent');
+    expect(showAgent().visible).toBe(false);
+    loaded.emitSettingsChanged({ enableAi: true }, { enableAi: false });
+    expect(showAgent()).toMatchObject({ visible: true, accelerator: 'CmdOrCtrl+K' });
+    loaded.emitSettingsChanged({ enableAi: false }, { enableAi: true });
+    expect(showAgent().visible).toBe(false);
+    expect(showAgent().accelerator).toBeUndefined();
   });
 
   test('Windows template omits macOS-only appMenu and windowMenu', () => {

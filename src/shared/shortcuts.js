@@ -30,6 +30,11 @@
  *   editable           false for reserved bindings (DevTools F12 contract,
  *                      dev-only entries)
  *   warnOnEdit         show a caution when the user rebinds (Close Tab)
+ *   requiresAi         the shortcut belongs to an AI feature (Agent,
+ *                      dictation). While AI is off it is not listed in
+ *                      Settings > Shortcuts, never fires, and its chord is
+ *                      free for other shortcuts; a stored remap of it is
+ *                      kept, so turning AI back on restores it.
  */
 
 // ── Registry ────────────────────────────────────────────────────────────
@@ -331,6 +336,7 @@ const SHORTCUTS = [
     context: 'both',
     category: 'Window',
     editable: true,
+    requiresAi: true,
   },
 
   // Agent composer only: never intercept this chord in a page or another form.
@@ -342,6 +348,7 @@ const SHORTCUTS = [
     context: 'renderer',
     category: 'Agent',
     editable: true,
+    requiresAi: true,
   },
 
   // Developer
@@ -1082,11 +1089,21 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
  * way — carrying `description` here is what put one shortcut on screen in
  * two casings at once (#277).
  */
-function findConflict(entryOrId, accelerator, overrides, platform) {
-  return collectConflict(entryOrId, accelerator, overrides, platform, true);
+function findConflict(entryOrId, accelerator, overrides, platform, { aiEnabled = true } = {}) {
+  return collectConflict(entryOrId, accelerator, overrides, platform, true, aiEnabled);
 }
 
-function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap) {
+/**
+ * Whether a shortcut exists right now. An AI shortcut does not while AI is
+ * off: it is not listed, cannot fire, and claims no chord. Callers that do
+ * not know the AI state treat every shortcut as active.
+ */
+function isShortcutActive(entryOrId, { aiEnabled = true } = {}) {
+  const entry = typeof entryOrId === 'string' ? getShortcutById(entryOrId) : entryOrId;
+  return Boolean(entry) && (entry.requiresAi !== true || aiEnabled === true);
+}
+
+function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap, aiEnabled = true) {
   const self = typeof entryOrId === 'string' ? entryOrId : entryOrId?.id;
   const normalized = normalizeAccelerator(accelerator, platform);
   if (!normalized) return null;
@@ -1119,6 +1136,10 @@ function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap)
   const hits = [];
   for (const entry of SHORTCUTS) {
     if (entry.id === self) continue;
+    // A switched-off feature's binding is not in use, so it cannot be what
+    // a press collides with (binding Ctrl+K while AI is off is not a clash
+    // with Show Agent).
+    if (!isShortcutActive(entry, { aiEnabled })) continue;
     const effective = getEffectiveAccelerator(entry, overrides, platform);
     const effectiveIsDefault =
       normalizeAccelerator(effective, platform) ===
@@ -1150,8 +1171,8 @@ function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap)
     const swapped = { ...(overrides || {}), [other.id]: previous, [self]: normalized };
     if (
       !previous ||
-      collectConflict(selfEntry, normalized, swapped, platform, false) ||
-      collectConflict(other, previous, swapped, platform, false)
+      collectConflict(selfEntry, normalized, swapped, platform, false, aiEnabled) ||
+      collectConflict(other, previous, swapped, platform, false, aiEnabled)
     ) {
       return conflict(other, true);
     }
@@ -1175,8 +1196,13 @@ function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap)
  * on one press (e.g. a `Ctrl+0` remap made before `page.zoomReset` existed).
  * Pass `onDrop({ id, accelerator, conflict })` to observe those drops; the
  * settings store logs them and surfaces them as reverted.
+ *
+ * Pass `aiEnabled: false` while AI is off: AI shortcuts' remaps then take
+ * no part in the conflict pass, neither checked nor collided with, so they
+ * survive untouched until AI is on again (when the next sanitize, with
+ * `aiEnabled: true`, settles any chord another shortcut took meanwhile).
  */
-function sanitizeOverrides(raw, platform, { onDrop } = {}) {
+function sanitizeOverrides(raw, platform, { onDrop, aiEnabled = true } = {}) {
   const clean = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return clean;
   for (const [id, value] of Object.entries(raw)) {
@@ -1211,10 +1237,10 @@ function sanitizeOverrides(raw, platform, { onDrop } = {}) {
     let dropped = false;
     for (const entry of SHORTCUTS) {
       const accelerator = clean[entry.id];
-      if (!accelerator) continue;
+      if (!accelerator || !isShortcutActive(entry, { aiEnabled })) continue;
       // No swap is offered here, so skip findConflict's swap simulation:
       // only whether (and with what) the override collides matters.
-      const conflict = collectConflict(entry, accelerator, clean, platform, false);
+      const conflict = collectConflict(entry, accelerator, clean, platform, false, aiEnabled);
       if (!conflict) continue;
       delete clean[entry.id];
       dropped = true;
@@ -1296,6 +1322,7 @@ module.exports = {
   validateBinding,
   getEffectiveAccelerator,
   findConflict,
+  isShortcutActive,
   sanitizeOverrides,
   formatAccelerator,
 };

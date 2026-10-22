@@ -738,6 +738,12 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
   for (const section of Array.from(content?.children || [])) {
     if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
     if (!section.id || skip.includes(section.id)) continue;
+    // A panel switched off through the `hidden` attribute is a feature the
+    // user does not have right now — AI's Models & providers and Voice
+    // dictation pages while AI is off — so neither it nor its rows answer
+    // a search. (The routed panels the nav is not showing carry the
+    // `.hidden` class instead and stay searchable.)
+    if (section.hidden) continue;
     // A routed detail page can keep a stable catalogue label for search.
     const title =
       section.getAttribute?.('data-search-title') ||

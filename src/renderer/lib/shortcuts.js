@@ -317,6 +317,7 @@ export const SHORTCUTS = [
     context: 'both',
     category: 'Window',
     editable: true,
+    requiresAi: true,
   },
 
   // Agent composer only: never intercept this chord in a page or another form.
@@ -328,6 +329,7 @@ export const SHORTCUTS = [
     context: 'renderer',
     category: 'Agent',
     editable: true,
+    requiresAi: true,
   },
 
   // Developer

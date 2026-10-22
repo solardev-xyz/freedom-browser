@@ -270,7 +270,7 @@ function loadSettings() {
   cachedSettings.shortcutOverrides = sanitizeOverrides(
     cachedSettings.shortcutOverrides,
     process.platform,
-    { onDrop: recordRevertedOverrides(reverted) }
+    { onDrop: recordRevertedOverrides(reverted), aiEnabled: cachedSettings.enableAi === true }
   );
   revertedShortcutOverrides = reverted;
 
@@ -316,6 +316,10 @@ function saveSettings(newSettings) {
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;
+    // AI shortcuts take no part in the conflict pass while AI is off (see
+    // sanitizeOverrides), so a save is judged against the AI state it leaves.
+    const aiEnabled =
+      typeof newSettings?.enableAi === 'boolean' ? newSettings.enableAi : previous.enableAi === true;
 
     if (newSettings && typeof newSettings === 'object') {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
@@ -334,6 +338,7 @@ function saveSettings(newSettings) {
           const dropped = {};
           const sanitized = sanitizeOverrides(newSettings[key], process.platform, {
             onDrop: recordRevertedOverrides(dropped),
+            aiEnabled,
           });
           const overridesChanged =
             JSON.stringify(sanitized) !== JSON.stringify(previous[key] || {});
@@ -375,6 +380,21 @@ function saveSettings(newSettings) {
           merged[key] = nextValue;
           changed = true;
         }
+      }
+    }
+
+    // Turning AI on brings Show Agent and Start dictation back, and with
+    // them their chords: a shortcut remapped onto one of those while AI was
+    // off now collides, so settle it the way a load would, visibly.
+    if (merged.enableAi === true && previous.enableAi !== true) {
+      const dropped = {};
+      const settled = sanitizeOverrides(merged.shortcutOverrides, process.platform, {
+        onDrop: recordRevertedOverrides(dropped),
+        aiEnabled: true,
+      });
+      if (Object.keys(dropped).length > 0) {
+        merged.shortcutOverrides = settled;
+        revertedShortcutOverrides = { ...revertedShortcutOverrides, ...dropped };
       }
     }
 

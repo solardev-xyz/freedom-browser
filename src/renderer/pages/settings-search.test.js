@@ -241,9 +241,45 @@ describe('the markup reader these tests are built on', () => {
   });
 });
 
+// The AI subpages ship `hidden` (AI is off by default) and agent-settings.js
+// lifts that once AI is on; this flips the parsed markup the same way.
+const AI_PAGES = ['providers', 'voice'];
+function withAi(enabled, run) {
+  const pages = CONTENT.children.filter((child) => AI_PAGES.includes(child.id));
+  const before = pages.map((page) => page.hidden);
+  pages.forEach((page) => {
+    page.hidden = !enabled;
+  });
+  try {
+    return run();
+  } finally {
+    pages.forEach((page, i) => {
+      page.hidden = before[i];
+    });
+  }
+}
+
 describe('buildSettingsSearchIndex', () => {
+  test('finds nothing on the AI subpages while AI is off, and all of it once on', () => {
+    const aiResults = () =>
+      ['dictation', 'language', 'audio privacy', 'models & providers'].flatMap((query) =>
+        search(query).filter((result) => AI_PAGES.includes(result.sectionId))
+      );
+    // Shipped markup is the AI-off state.
+    expect(AI_PAGES.map((id) => CONTENT.children.find((child) => child.id === id).hidden)).toEqual(
+      [true, true]
+    );
+    expect(aiResults()).toEqual([]);
+    // The AI entry itself stays findable: it is where AI is turned on.
+    expect(labelsOf(search('enable ai'))).toContain('Enable AI features');
+    expect(withAi(true, () => labelsOf(aiResults()))).toEqual(
+      expect.arrayContaining(['Voice dictation', 'Language', 'Audio privacy', 'Models & providers'])
+    );
+  });
+
+
   test('indexes one entry per section, named by its own heading', () => {
-    const sections = index().filter(isSectionEntry);
+    const sections = withAi(true, () => index().filter(isSectionEntry));
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );

@@ -9,8 +9,13 @@ const IPC = require('../shared/ipc-channels');
 // mirrors its contract: saveSettings merges shortcutOverrides (already
 // sanitized upstream in the real store; these tests exercise the IPC
 // module's own validation).
-function loadShortcutsIpc({ platform = 'linux', initialOverrides = {}, reverted = {} } = {}) {
-  let settings = { shortcutOverrides: { ...initialOverrides } };
+function loadShortcutsIpc({
+  platform = 'linux',
+  initialOverrides = {},
+  reverted = {},
+  enableAi = true,
+} = {}) {
+  let settings = { enableAi, shortcutOverrides: { ...initialOverrides } };
   const saveSettings = jest.fn((patch) => {
     settings = { ...settings, ...patch };
     return true;
@@ -375,5 +380,70 @@ describe('shortcuts IPC', () => {
 
     await ctx.ipcMain.invoke(IPC.SHORTCUTS_RESET, {});
     expect(ctx.getSettings().shortcutOverrides).toEqual({});
+  });
+
+  describe('with AI off', () => {
+    const AI_SHORTCUTS = ['view.toggleAgent', 'agent.startDictation'];
+
+    test('get-state hides the AI shortcuts, and only them', async () => {
+      ctx = loadShortcutsIpc({ enableAi: false });
+      const off = await ctx.ipcMain.invoke(IPC.SHORTCUTS_GET_STATE);
+      expect(off.entries.filter((entry) => entry.hidden).map((entry) => entry.id).sort()).toEqual(
+        expect.arrayContaining(AI_SHORTCUTS)
+      );
+      expect(
+        off.entries.filter((entry) => !entry.hidden && AI_SHORTCUTS.includes(entry.id))
+      ).toEqual([]);
+      ctx.restorePlatform();
+
+      ctx = loadShortcutsIpc({ enableAi: true });
+      const on = await ctx.ipcMain.invoke(IPC.SHORTCUTS_GET_STATE);
+      expect(
+        on.entries.filter((entry) => AI_SHORTCUTS.includes(entry.id)).map((entry) => entry.hidden)
+      ).toEqual([false, false]);
+    });
+
+    test('Show Agent and Start dictation claim no chord', async () => {
+      ctx = loadShortcutsIpc({ enableAi: false });
+      const preview = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+        id: 'tab.new',
+        event: recordedKey('k', 'KeyK', { ctrlKey: true }),
+      });
+      expect(preview).toMatchObject({ ok: true, accelerator: 'Ctrl+K', conflict: null });
+      expect(
+        await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, { id: 'tab.new', accelerator: 'Ctrl+K' })
+      ).toEqual({ ok: true });
+      expect(
+        await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+          id: 'tab.reopenClosed',
+          accelerator: 'Ctrl+Enter',
+        })
+      ).toEqual({ ok: true });
+      // A hidden shortcut cannot be recorded onto.
+      expect(
+        await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+          id: 'view.toggleAgent',
+          accelerator: 'Ctrl+Shift+Y',
+        })
+      ).toEqual({ ok: false, reason: 'unknown-shortcut' });
+      ctx.restorePlatform();
+
+      // With AI on the same chord is Show Agent's again.
+      ctx = loadShortcutsIpc({ enableAi: true });
+      const conflicted = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+        id: 'tab.new',
+        event: recordedKey('k', 'KeyK', { ctrlKey: true }),
+      });
+      expect(conflicted.conflict).toMatchObject({ id: 'view.toggleAgent' });
+    });
+
+    test('Restore defaults keeps an AI shortcut remap for when AI is back', async () => {
+      ctx = loadShortcutsIpc({
+        enableAi: false,
+        initialOverrides: { 'tab.new': 'Ctrl+Shift+U', 'view.toggleAgent': 'Ctrl+Shift+Y' },
+      });
+      await ctx.ipcMain.invoke(IPC.SHORTCUTS_RESET, {});
+      expect(ctx.getSettings().shortcutOverrides).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
+    });
   });
 });

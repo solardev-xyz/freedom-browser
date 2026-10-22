@@ -292,7 +292,10 @@ export function createAgentDictation({ button, optionsButton, panel, menu, feedb
     finally { button.disabled = finishing; }
   }
   const startFromShortcut = event => {
-    if (event.defaultPrevented || event.isComposing || !matchesShortcut(event, 'agent.startDictation')) return;
+    // With AI off (or the composer not recording-ready) the chord is not
+    // Agent's: leave it to whatever else handles it.
+    if (event.defaultPrevented || event.isComposing || !canRecord() ||
+      !matchesShortcut(event, 'agent.startDictation')) return;
     event.preventDefault();
     if (!event.repeat) void requestStart();
   };

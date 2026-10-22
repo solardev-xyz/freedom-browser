@@ -541,12 +541,14 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     },
     // Agent floats over the page, so its chord has to reach the chrome while
     // the page holds the keyboard: the renderer's own keydown only sees it
-    // when focus is already in the chrome.
+    // when focus is already in the chrome. With AI off there is no Agent to
+    // show, so the item is gone rather than greyed out, and its chord is not
+    // reserved; the menu is rebuilt when the setting changes.
     {
       id: 'toggle-agent',
       label: 'Show Agent',
       accelerator: loadSettings()?.enableAi === true ? acc('view.toggleAgent') : undefined,
-      enabled: loadSettings()?.enableAi === true,
+      visible: loadSettings()?.enableAi === true,
       click: () => {
         const win = getTargetWindow();
         if (win) {
