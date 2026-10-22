@@ -34,5 +34,23 @@ test('restricts only the Myotis supervisor and preserves all other signing optio
     expect(forwarded.optionsForFile(file)).toBe(original);
   }
   expect(original.entitlements).toBe('config/entitlements.mac.plist');
+  expect(require('../package.json').build.mac.entitlementsInherit).toBe('config/entitlements.mac.plist');
   expect(require('../package.json').build.mac.sign).toBe('./scripts/sign-native-supervisors.js');
+});
+
+test('signs the bundled Whisper CLI with its own empty entitlements, not the inherited app set', async () => {
+  sign.mockClear();
+  const app = '/packaged/Freedom.app';
+  const original = { entitlements: 'config/entitlements.mac.plist', hardenedRuntime: true, timestamp: 'timestamp-server' };
+  await signMyotisHelper({ app, optionsForFile: () => original });
+  const { optionsForFile } = sign.mock.calls[0][0];
+  const whisper = optionsForFile(`${app}/Contents/Resources/dictation-runtime/whisper-cli`);
+  expect(whisper).toEqual({ ...original, hardenedRuntime: true,
+    entitlements: path.resolve(__dirname, '../config/entitlements.dictation-runtime.plist') });
+  expect(plist.parse(fs.readFileSync(whisper.entitlements, 'utf8'))).toEqual({});
+  // Libraries beside it and look-alike paths keep electron-builder's options.
+  for (const file of [`${app}/Contents/Resources/dictation-runtime/libggml-cpu-haswell.so`,
+    `${app}/Contents/Resources/dictation-runtime/libwhisper.dylib`, `${app}/Contents/Resources/other/whisper-cli`])
+    expect(optionsForFile(file)).toBe(original);
+  expect(require('../package.json').build.mac.binaries).toContain('Contents/Resources/dictation-runtime/whisper-cli');
 });

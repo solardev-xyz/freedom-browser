@@ -5,9 +5,49 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 const { downloadToFile } = require('./lib/fetch-with-retry');
-const { WHISPER_VERSION, WHISPER_REVISION, WHISPER_SOURCE_SHA256, SUPPORTED_TARGETS } = require('../src/shared/dictation-runtime');
+const { WHISPER_VERSION, WHISPER_REVISION, WHISPER_SOURCE_TREE_SHA256, SUPPORTED_TARGETS } = require('../src/shared/dictation-runtime');
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+// whisper.cpp publishes no source asset, and GitHub regenerates archive bytes
+// (compression, headers) without notice. Pin what is built instead: every file's
+// path and content. Same value as, in the extracted source directory or a git
+// checkout of the revision, `git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum`
+// (or `find . -type f -print0 | sed -z 's|^\./||' | ...` without git).
+function sourceTreeSha256(root) {
+  const files = [];
+  const walk = relative => {
+    for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(name);
+      else if (entry.isFile()) files.push(name);
+      else throw new Error(`Whisper source contains an unexpected entry: ${name}`);
+    }
+  };
+  walk('');
+  files.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return hash(files.map(name => `${hash(fs.readFileSync(path.join(root, name)))}  ${name}\n`).join(''));
+}
+
+// Upstream's backend loader also scans the current directory for
+// [lib]ggml-<name>-*.so/.dll and loads the best scorer, on every target and
+// even with --no-gpu. Keep only the executable's own (bundled) directory.
+const CWD_BACKEND_SEARCH = `        std::error_code cwd_ec;
+        const fs::path cwd = fs::current_path(cwd_ec);
+        if (cwd_ec) {
+            GGML_LOG_DEBUG("%s: current_path() failure, error-message: %s\\n", __func__, cwd_ec.message().c_str());
+        } else {
+            search_paths.push_back(cwd);
+        }
+`;
+
+function restrictBackendSearch(source) {
+  const file = path.join(source, 'ggml', 'src', 'ggml-backend-reg.cpp');
+  const text = fs.readFileSync(file, 'utf8');
+  if (text.split(CWD_BACKEND_SEARCH).length !== 2 || !text.includes('search_paths.push_back(get_executable_path());'))
+    throw new Error('The ggml backend search patch no longer applies; review ggml-backend-reg.cpp for this whisper.cpp version');
+  fs.writeFileSync(file, text.replace(CWD_BACKEND_SEARCH, ''));
+}
 
 function configureArguments(source, build, platform, arch) {
   const dispatch = arch === 'x64';
@@ -56,12 +96,17 @@ async function buildDictationRuntime(arch = process.arch, platform = process.pla
     const archive = path.join(scratch, 'source.tar.gz');
     await downloadToFile(`https://codeload.github.com/ggml-org/whisper.cpp/tar.gz/${WHISPER_REVISION}`, archive,
       { maxBytes: 40 * 1024 * 1024 });
-    if (hash(fs.readFileSync(archive)) !== WHISPER_SOURCE_SHA256) throw new Error('Whisper source checksum mismatch');
     const source = path.join(scratch, 'source');
     const build = path.join(scratch, 'build');
     fs.mkdirSync(source);
     const tar = platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
+    // The content is verified after extraction, so admit only plain files and
+    // directories (no links to write through) into the private scratch directory.
+    const listing = execFileSync(tar, ['-tvzf', archive], { encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+    if (listing.split('\n').some(line => line && !/^[-d]/.test(line))) throw new Error('Whisper source archive contains links or special files');
     execFileSync(tar, ['-xzf', archive, '-C', source, '--strip-components=1'], { timeout: 60000 });
+    if (sourceTreeSha256(source) !== WHISPER_SOURCE_TREE_SHA256) throw new Error('Whisper source checksum mismatch');
+    restrictBackendSearch(source);
     execFileSync(cmake, configureArguments(source, build, platform, arch), { stdio: 'inherit', timeout: 120000 });
     const variants = arch === 'x64' ? ['ggml-cpu-x64', 'ggml-cpu-sse42', 'ggml-cpu-sandybridge', 'ggml-cpu-haswell'] : [];
     execFileSync(cmake, ['--build', build, '--config', 'Release', '--target', 'whisper-cli', ...variants, '--parallel', '4'],
@@ -84,7 +129,7 @@ async function buildDictationRuntime(arch = process.arch, platform = process.pla
     if (platform === 'darwin') execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', pending], { timeout: 30000 });
     fs.copyFileSync(notices, path.join(ready, 'NOTICES.txt'));
     fs.writeFileSync(path.join(ready, 'manifest.json'), `${JSON.stringify({ version: WHISPER_VERSION, revision: WHISPER_REVISION,
-      sourceSha256: WHISPER_SOURCE_SHA256, recipeSha256, platform, arch, libraries, binarySha256: hash(fs.readFileSync(pending)) }, null, 2)}\n`);
+      sourceTreeSha256: WHISPER_SOURCE_TREE_SHA256, recipeSha256, platform, arch, libraries, binarySha256: hash(fs.readFileSync(pending)) }, null, 2)}\n`);
     // Never leave stale backends beside a new engine: the upstream loader scans
     // its own directory. Preserve the old artifact outside the packaged path.
     if (fs.existsSync(output)) fs.renameSync(output, `${output}.previous-${Date.now()}-${process.pid}`);
@@ -93,5 +138,5 @@ async function buildDictationRuntime(arch = process.arch, platform = process.pla
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
 
-module.exports = { buildDictationRuntime, configureArguments };
+module.exports = { buildDictationRuntime, configureArguments, sourceTreeSha256, restrictBackendSearch };
 if (require.main === module) buildDictationRuntime(process.argv[2]).catch(error => { console.error(error.message); process.exitCode = 1; });

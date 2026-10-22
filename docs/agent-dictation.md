@@ -101,21 +101,37 @@ Choose **On this device**, then **Download & use on this device**. Freedom downl
 about 150 MB once: multilingual Whisper Base, in the format published by the
 whisper.cpp project. The model revision and SHA-256 are fixed in
 `src/shared/dictation-runtime.js`, and the installer verifies the hash before
-atomically making it available. Files live in the active profile's Agent data
+atomically making it available. An installed model is hashed again once per app
+start (streamed so the UI stays responsive; about 0.1 s for the 148 MB file on a Linux development machine) and
+whenever the file changes, so a marker beside other content of the right size is
+refused and setup offers the download again. Staging directories left by a killed
+or crashed download are removed at the next startup once they are older than twice
+the 15-minute download limit. Files live in the active profile's Agent data
 directory. After downloading, click the microphone to start: completing a download
 never enables capture automatically. No Ollama, Python, or compiler is needed by
 users. Model downloads never happen at app startup or while AI is off.
 
 The engine is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5, built
 from source revision `d1be6fde11ac6e0407606b4e42fe72d34add8037`, with a separately
-pinned source-archive SHA-256. `scripts/build-dictation-runtime.js` builds the
+pinned SHA-256 of the source tree. whisper.cpp publishes no source asset and
+GitHub may regenerate its archive bytes, so the build hashes what it compiles:
+every extracted file's path and content (`WHISPER_SOURCE_TREE_SHA256`). The archive
+may hold only plain files and directories. To bump, check out the new revision and
+run `git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum` there.
+`scripts/build-dictation-runtime.js` builds the
 offline CLI and bundles it under `resources/dictation-runtime/`.
 It does not download executables on the user's machine. Builds disable CURL,
 server examples and host-specific CPU instructions. On x64, upstream CPU feature
 detection selects a bundled SIMD backend (including AVX2) with a baseline fallback;
 ARM64 uses a single linked CPU backend. Only those source-built libraries ship.
 The child receives no backend/library-path environment overrides and runs from
-a private audio directory, away from user project files. This integration uses
+a private audio directory, away from user project files. Upstream's loader also
+scans the working directory for `ggml` backend libraries, on every target and even
+with `--no-gpu`; the build patches that search out of the verified source (and fails
+if the patch no longer applies), so backends load only from the bundled directory.
+On macOS `whisper-cli` is signed with hardened runtime and its own empty
+entitlements (`config/entitlements.dictation-runtime.plist`), not the camera,
+microphone, network and JIT set Electron's helpers inherit. This integration uses
 CPU inference (Accelerate on macOS). No new npm
 dependency was added. MIT/MIT-0 notices for the engine, utilities, and Whisper
 ship beside the helper and the downloaded model.

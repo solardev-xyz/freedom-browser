@@ -390,7 +390,8 @@ a compiler. Myotis addons come from the pinned official release. `extraResources
 includes the helper. macOS explicitly signs only the added
 `Contents/Resources/myotis-node/myotis-supervisor` through `mac.binaries`;
 `scripts/sign-myotis-helper.js` overrides only that exact file's signing options
-with hardened runtime and the empty `config/entitlements.myotis-supervisor.plist`.
+with hardened runtime and the empty `config/entitlements.myotis-supervisor.plist`
+(and likewise the dictation `whisper-cli`, with its own empty plist).
 Existing app/Electron-helper entitlements and other signing options are preserved.
 RunAsNode fuse compatibility, ASAR script loading, native addon ABI/loading,
 helper signing, and notarized
