@@ -137,6 +137,61 @@ describe('AgentProviderResolver', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+  test('sibling subscription runtimes adopt a Freedom refresh but not a new login or disconnect', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const { AgentProviderStore } = require('./provider-store');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-oauth-sibling-'));
+    try {
+      const store = new AgentProviderStore({ dataDir: directory, userDataDir: directory, profileId: 'owned-fixture', safeStorage: {
+        isEncryptionAvailable: () => true, encryptString: value => Buffer.from(value), decryptString: value => value.toString(),
+      } });
+      const credentials = store.createCredentialStore();
+      await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 60000 }));
+      store.saveSubscription({ providerId: 'openai-codex', modelId: 'codex-model' });
+      const runtimes = [];
+      const create = jest.fn(async ({ credentials: bound }) => {
+        const runtime = createRuntime();
+        runtime.completeSimple = jest.fn(async () => ({ content: [] }));
+        runtime.login = jest.fn(async () => bound.modify('openai-codex', async () => (
+          { type: 'oauth', access: 'fixture-relogin', refresh: 'fixture-relogin-refresh', expires: Date.now() + 60000 })));
+        runtimes.push({ runtime, bound });
+        return runtime;
+      });
+      const resolver = new AgentProviderResolver({ store, dataDir: directory, loadSdk: async () => ({ ModelRuntime: { create } }) });
+      const chat = await resolver.resolveModel({ providerId: 'openai-codex' });
+      const second = await resolver.resolveModel({ providerId: 'openai-codex' });
+      // The second chat (or Test connection) refreshes the shared OAuth token twice.
+      for (const access of ['fixture-refresh-1', 'fixture-refresh-2'])
+        await runtimes[1].bound.modify('openai-codex', async value => ({ ...value, access }));
+      expect(chat.modelRuntime.connectionIsCurrent()).toBe(true);
+      await chat.modelRuntime.completeSimple(chat.model, {});
+      // The live chat can refresh again from the adopted revision, and its sibling follows.
+      await runtimes[0].bound.modify('openai-codex', async value => ({ ...value, access: 'fixture-refresh-3' }));
+      expect(second.modelRuntime.connectionIsCurrent()).toBe(true);
+      expect((await runtimes[1].bound.read('openai-codex')).access).toBe('fixture-refresh-3');
+
+      // A new login through Freedom's own login runtime is not a refresh.
+      await resolver.loginSubscription({ providerId: 'openai-codex', modelId: 'codex-model' }, { prompt: jest.fn(), notify: jest.fn() });
+      expect(runtimes[2].runtime.login).toHaveBeenCalled();
+      expect(chat.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(second.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(() => chat.modelRuntime.completeSimple(chat.model, {})).toThrow('provider connection changed');
+
+      // An external replacement and a sibling's disconnect still invalidate.
+      const fresh = await resolver.resolveModel({ providerId: 'openai-codex' });
+      const other = await resolver.resolveModel({ providerId: 'openai-codex' });
+      await credentials.modify('openai-codex', async value => ({ ...value, access: 'fixture-external' }));
+      expect(fresh.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(other.modelRuntime.connectionIsCurrent()).toBe(false);
+      const last = await resolver.resolveModel({ providerId: 'openai-codex' });
+      const lastSibling = await resolver.resolveModel({ providerId: 'openai-codex' });
+      await runtimes.at(-1).bound.delete('openai-codex');
+      expect(last.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(lastSibling.modelRuntime.connectionIsCurrent()).toBe(false);
+      expect(chat.modelRuntime.completeSimple).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test.each(['removal', 'rotation'])('cached runtimes cannot use credentials after %s', async change => {
     const selection = { kind: 'hosted', providerId: 'openai', modelId: 'model-b', apiKey: 'fixture-old-key' };
     const ctx = createResolver(selection);

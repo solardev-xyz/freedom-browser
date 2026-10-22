@@ -34,6 +34,7 @@ const SUBSCRIPTION_PROVIDERS = Object.freeze({
 const runtimeProviderId = id => ({ 'openai-chatgpt': 'openai', 'meta-subscription': 'meta' })[id] || id;
 const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+const MAX_TRACKED_CREDENTIAL_REFRESHES = 32;
 
 class AgentProviderError extends Error {
   constructor(code, message) {
@@ -108,6 +109,10 @@ class AgentProviderResolver {
     }
     this.credentials = this.store.createCredentialStore();
     this.credentialBindings = new WeakMap();
+    // connectionId -> Map(previous revision -> refreshed revision) for OAuth
+    // refreshes written by one of Freedom's own runtimes, so sibling runtimes on
+    // the same subscription can follow them instead of reporting a changed connection.
+    this.credentialRefreshes = new Map();
     this.assertEnabled = options.assertEnabled || (() => {});
     this.featureSignal = options.featureSignal || (() => undefined);
   }
@@ -337,7 +342,7 @@ class AgentProviderResolver {
         'Provider login interaction is invalid'
       );
     }
-    const runtime = await this.#createRuntime(providerId);
+    const runtime = await this.#createRuntime(providerId, { login: true });
     if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
     }
@@ -749,12 +754,31 @@ class AgentProviderResolver {
     }
   }
 
-  async #createRuntime(connectionId) {
+  #recordCredentialRefresh(connectionId, previous, next) {
+    if (!previous || !next || previous === next) return;
+    const refreshes = this.credentialRefreshes.get(connectionId) || new Map();
+    refreshes.delete(previous);
+    refreshes.set(previous, next);
+    while (refreshes.size > MAX_TRACKED_CREDENTIAL_REFRESHES) refreshes.delete(refreshes.keys().next().value);
+    this.credentialRefreshes.set(connectionId, refreshes);
+  }
+
+  async #createRuntime(connectionId, { login = false } = {}) {
     // Keep subscription credentials separate while retaining native Pi transport identities.
     const nativeId = runtimeProviderId(connectionId);
     let revision = this.store.getCredentialRevision?.(connectionId);
     let revoked = false;
-    const current = () => !revoked && this.store.getCredentialRevision?.(connectionId) === revision;
+    const current = () => {
+      if (revoked) return false;
+      const latest = this.store.getCredentialRevision?.(connectionId);
+      // Adopt token refreshes another Freedom runtime made from this revision. A
+      // login, disconnect or any write Freedom did not make as a refresh has no
+      // entry here and still invalidates the runtime.
+      const refreshes = this.credentialRefreshes.get(connectionId);
+      for (let hops = 0; revision !== latest && refreshes?.has(revision) && hops <= refreshes.size; hops += 1)
+        revision = refreshes.get(revision);
+      return latest === revision;
+    };
     const assertCurrent = () => {
       if (!current()) {
         revoked = true;
@@ -763,7 +787,10 @@ class AgentProviderResolver {
     };
     const mapped = id => id === nativeId ? connectionId : id;
     const guardedOptions = (id, options) => mapped(id) === connectionId
-      ? { ...options, assertCurrent, onChanged: value => { revision = value; } } : options;
+      ? { ...options, assertCurrent, onChanged: value => {
+        if (!login) this.#recordCredentialRefresh(connectionId, revision, value);
+        revision = value;
+      } } : options;
     const credentials = connectionId ? {
       read: (id, options) => { if (mapped(id) === connectionId) assertCurrent(); return this.credentials.read(mapped(id), options); },
       list: async options => (await this.credentials.list(options)).map(entry =>
