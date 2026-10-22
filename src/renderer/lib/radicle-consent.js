@@ -192,3 +192,54 @@ export function showRadicleSigningApproval(permissionKey, owner) {
     approveLabel: 'Allow',
   });
 }
+
+// What one signed write does, in the prompt's own words. Page-supplied text
+// only ever lands in textContent.
+function describeSignedWrite(method, params = {}) {
+  const rid = params.rid ?? '';
+  switch (method) {
+    case 'radicle_createIssue':
+      return {
+        title: 'Open this issue as you?',
+        wants: `asks to open an issue in ${rid}`,
+        allows: [`Title: ${params.title ?? ''}`, `Description: ${params.description ?? ''}`],
+        approveLabel: 'Open issue',
+      };
+    case 'radicle_commentIssue':
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on issue ${params.issueId ?? ''} in ${rid}`,
+        allows: [`Comment: ${params.body ?? ''}`],
+        approveLabel: 'Post comment',
+      };
+    case 'radicle_editIssueState':
+      return {
+        title: 'Change this issue as you?',
+        wants: `asks to change issue ${params.issueId ?? ''} in ${rid}`,
+        allows: [`Set its state to ${params.state ?? ''}`],
+        approveLabel: 'Change state',
+      };
+    default:
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on patch ${params.patchId ?? ''} in ${rid}`,
+        allows: [`Comment: ${params.body ?? ''}`],
+        approveLabel: 'Post comment',
+      };
+  }
+}
+
+/**
+ * Per-write prompt for a tab in Freedom Agent custody, where the site's
+ * standing signing grant does not answer on its own: the user sees and
+ * approves the exact content before it is signed.
+ */
+export function showRadicleSignedWriteApproval(permissionKey, method, params, owner) {
+  return prompt({
+    owner,
+    origin: permissionKey,
+    ...describeSignedWrite(method, params),
+    warning:
+      'Freedom Agent is using this tab. Approving signs this with your Radicle key and publishes it to the network, where it cannot be unpublished.',
+  });
+}

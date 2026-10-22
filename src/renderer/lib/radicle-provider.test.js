@@ -47,6 +47,7 @@ const loadProvider = async (options = {}) => {
     showRadicleSeedApproval: jest.fn(() => Promise.resolve()),
     showRadicleUnseedApproval: jest.fn(() => Promise.resolve()),
     showRadicleSigningApproval: jest.fn(() => Promise.resolve()),
+    showRadicleSignedWriteApproval: jest.fn(() => Promise.resolve()),
     dismissRadicleConsent: jest.fn(),
   };
 
@@ -168,16 +169,101 @@ describe('radicle-provider', () => {
         webview
       );
       expect(permissions.grantSigning).toHaveBeenCalledWith('https://app.example');
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledWith(
         'radicle_createIssue',
         { title: 'hi' },
-        'https://app.example'
+        'https://app.example',
+        { webContentsId: 41, approval: 'auto' }
       );
       expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
         id: 1,
         result: 'ok',
         error: null,
       });
+    });
+
+    test('the signing grant answers writes from a user tab without a prompt', async () => {
+      const { sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+
+      sendRequest({ id: 11, method: 'radicle_commentIssue', params: { body: 'Same here' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledWith(
+        'radicle_commentIssue',
+        { body: 'Same here' },
+        'https://app.example',
+        { webContentsId: 41, approval: 'auto' }
+      );
+    });
+
+    test.each([
+      ['radicle_createIssue', { rid: 'rad:zExample', title: 'Bug', description: 'Steps' }],
+      ['radicle_commentIssue', { rid: 'rad:zExample', issueId: 'a1b2c3', body: 'Same here' }],
+      ['radicle_editIssueState', { rid: 'rad:zExample', issueId: 'a1b2c3', state: 'closed' }],
+      ['radicle_commentPatch', { rid: 'rad:zExample', patchId: 'd4e5f6', body: 'LGTM' }],
+    ])('%s from a tab in Agent custody needs a per-write prompt despite the grant', async (method, params) => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        agentOwnedTabId: 3,
+      });
+
+      sendRequest({ id: 12, method, params });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        method,
+        params,
+        webview
+      );
+      expect(execute).toHaveBeenCalledWith(method, params, 'https://app.example', {
+        webContentsId: 41,
+        approval: 'user',
+      });
+    });
+
+    test('a rejected per-write prompt on an Agent-held tab signs nothing', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        agentOwnedTabId: 3,
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValue({
+        code: 4001,
+        message: 'User rejected the request',
+      });
+
+      sendRequest({ id: 13, method: 'radicle_createIssue', params: { title: 'Bug' } });
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+        id: 13,
+        result: null,
+        error: { code: 4001, message: 'User rejected the request', data: undefined },
+      });
+    });
+
+    test('disclosing the identity on an Agent-held tab stays on the grant', async () => {
+      const { sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        agentOwnedTabId: 3,
+      });
+
+      sendRequest({ id: 14, method: 'radicle_getIdentity', params: {} });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledWith('radicle_getIdentity', {}, 'https://app.example');
     });
 
     test('requestAccess without prior permission prompts and emits connect', async () => {

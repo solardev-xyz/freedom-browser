@@ -98,4 +98,31 @@ describe('radicle-consent owner binding', () => {
     const { mod } = await loadConsent();
     expect(() => mod.dismissRadicleConsent(createElement('webview'))).not.toThrow();
   });
+
+  test('the per-write prompt shows the exact content to be signed', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_createIssue',
+      { rid: 'rad:zExample', title: '<b>Bug</b>', description: 'Steps to reproduce' },
+      owner
+    );
+
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
+    expect(elementsById['radicle-consent-wants'].textContent).toBe(
+      'asks to open an issue in rad:zExample'
+    );
+    expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
+      'Title: <b>Bug</b>',
+      'Description: Steps to reproduce',
+    ]);
+    expect(elementsById['radicle-consent-warning'].textContent).toContain('Freedom Agent');
+    expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
+
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toBeUndefined();
+  });
 });

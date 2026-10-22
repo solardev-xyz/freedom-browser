@@ -366,12 +366,27 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
 // applies to dApp auto-approve rules.
 const AUTO_APPROVABLE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
+// COB writes sign with the user's node identity and publish irrevocably.
+// The site's standing signing grant answers them without a prompt, so it is
+// the same kind of automatic approval: only 'user' (the renderer showed the
+// per-write prompt) skips the check, and a request that names no path is
+// read as the grant answering.
+const SIGNED_WRITE_METHODS = new Set([
+  'radicle_createIssue',
+  'radicle_commentIssue',
+  'radicle_editIssueState',
+  'radicle_commentPatch',
+]);
+
 function agentCustodyRefusal(sender, method, meta) {
-  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
+  const signedWrite = SIGNED_WRITE_METHODS.has(method);
+  if (!signedWrite && !AUTO_APPROVABLE_METHODS.has(method)) return null;
+  if (meta?.approval === 'user') return null;
   const webContentsId = meta?.webContentsId;
+  const automatic = signedWrite || meta?.approval === 'auto';
   if (
     isAgentPageId(webContentsId) ||
-    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
+    (automatic && autoApproveRefused(sender, webContentsId))
   ) {
     return providerError(
       ERRORS.UNAUTHORIZED,

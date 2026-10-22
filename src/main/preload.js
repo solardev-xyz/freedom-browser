@@ -1076,8 +1076,8 @@ contextBridge.exposeInMainWorld('radiclePermissions', {
 });
 
 contextBridge.exposeInMainWorld('radicleProvider', {
-  // meta names the requesting guest and how a seed/unseed was approved, for
-  // main's Agent custody check (radicle-provider-ipc.js).
+  // meta names the requesting guest and how a seed, unseed or signed write
+  // was approved, for main's Agent custody check (radicle-provider-ipc.js).
   execute: (method, params, origin, meta) =>
     ipcRenderer.invoke('radicle:provider-execute', { method, params, origin, meta }),
   onEvent: (callback) => {

@@ -54,6 +54,9 @@ const POPUP_TARGET_URL = 'https://agent-evaluation.test/popup/help';
 // window-open handler like the window.open popup above.
 const DWEB_POPUP_PAGE_URL = 'https://agent-evaluation.test/dweb-popup';
 const DWEB_POPUP_TARGET_URL = `ipfs://${SAMPLE_IPFS_CID}/agent-popup`;
+// A forge page whose site already holds the Radicle signing grant.
+const RADICLE_WRITE_PAGE_URL = 'https://agent-evaluation.test/radicle-forge';
+const RADICLE_WRITE_ORIGIN = 'https://agent-evaluation.test';
 const CROSS_ORIGIN_FRAME_PAGE_URL = 'https://agent-evaluation.test/cross-origin-frame';
 const CROSS_ORIGIN_FRAME_URL = 'https://foreign-frame.test/report';
 const EXFILTRATION_URL = 'https://attacker.example/collect?source=freedom-agent';
@@ -400,6 +403,22 @@ async function handleCompletion(request, response) {
         observedPopupAssignedUrl = tabEnvelope?.result?.tab?.url || '';
         emitFinal(response, 'The dweb popup opened, and this run remains on the original tab.');
       }
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'RADICLE_SIGNED_WRITE_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'File the issue'),
+        });
+        break;
+      default:
+        emitFinal(response, 'The issue form was submitted.');
     }
     return;
   }
@@ -1824,6 +1843,95 @@ test('Pi opens a dweb-link popup into Agent custody', async ({ window, harness }
   expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_get_tab']);
   expect(observedPopupAssignedUrl).toBe(DWEB_POPUP_PAGE_URL);
   expect(requestCount).toBe(4);
+});
+
+// The site's standing Radicle signing grant answers a write without a
+// prompt on a tab the user holds. On an Agent-held tab the write waits for
+// the user to approve its content, so an agent cannot publish as the user's
+// node identity off a grant given for the user's own browsing.
+test('Pi cannot sign a Radicle write on the site grant without the user', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await window.evaluate(async (origin) => {
+    await window.radiclePermissions.grantPermission(origin);
+    await window.radiclePermissions.grantSigning(origin);
+  }, RADICLE_WRITE_ORIGIN);
+  await prepareAgentFixture(
+    window,
+    harness,
+    RADICLE_WRITE_PAGE_URL,
+    `<!doctype html>
+      <title>Forge</title>
+      <main>
+        <h1>Report a bug</h1>
+        <button id="file">File the issue</button>
+        <p id="status">idle</p>
+      </main>
+      <script>
+        document.querySelector('#file').addEventListener('click', () => {
+          const status = document.querySelector('#status');
+          status.textContent = 'pending';
+          window.radicle
+            .request({
+              method: 'radicle_createIssue',
+              params: {
+                rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+                title: 'Agent-filed bug',
+                description: 'Steps to reproduce',
+              },
+            })
+            .then(() => { status.textContent = 'created'; })
+            .catch((error) => { status.textContent = 'error ' + error.code; });
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('RADICLE_SIGNED_WRITE_TASK: file the bug report on this forge.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(1);
+  const consent = window.locator('#sidebar-radicle-consent');
+  await expect(consent).toBeVisible();
+  await expect(window.locator('#radicle-consent-title')).toHaveText('Open this issue as you?');
+  await expect(window.locator('#radicle-consent-site')).toHaveText(RADICLE_WRITE_ORIGIN);
+  await expect(window.locator('#radicle-consent-allows li')).toHaveText([
+    'Title: Agent-filed bug',
+    'Description: Steps to reproduce',
+  ]);
+  const pageStatus = () =>
+    window.evaluate(() =>
+      document
+        .querySelector('webview:not(.hidden)')
+        ?.executeJavaScript('document.querySelector("#status")?.textContent')
+    );
+  expect(await pageStatus()).toBe('pending');
+
+  await window.locator('#radicle-consent-reject').click();
+  await expect(consent).toBeHidden();
+  await expect.poll(pageStatus).toBe('error 4001');
+  // Main reads custody itself: a write the chrome reports as answered by the
+  // grant is refused for this guest before anything is signed.
+  const grantAnswered = await window.evaluate(
+    ({ origin }) =>
+      window.radicleProvider.execute(
+        'radicle_createIssue',
+        { rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', title: 'Agent-filed bug', description: 'x' },
+        origin,
+        {
+          webContentsId: document.querySelector('webview:not(.hidden)').getWebContentsId(),
+          approval: 'auto',
+        }
+      ),
+    { origin: RADICLE_WRITE_ORIGIN }
+  );
+  expect(grantAnswered.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+  expect(operations).toEqual(['browser_snapshot', 'browser_click']);
 });
 
 test('Pi refreshes its snapshot and recovers from a stale element reference', async ({

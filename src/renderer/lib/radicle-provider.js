@@ -16,6 +16,7 @@ import {
   showRadicleSeedApproval,
   showRadicleUnseedApproval,
   showRadicleSigningApproval,
+  showRadicleSignedWriteApproval,
   dismissRadicleConsent,
 } from './radicle-consent.js';
 
@@ -29,13 +30,16 @@ const ERRORS = {
 // Each takes a per-repo consent prompt (unless auto-approve is on).
 const NODE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
-const SIGNING_METHODS = new Set([
-  'radicle_getIdentity',
+// Signing-tier methods that sign and publish with the user's node identity
+// (radicle_getIdentity only discloses it).
+const SIGNED_WRITE_METHODS = new Set([
   'radicle_createIssue',
   'radicle_commentIssue',
   'radicle_editIssueState',
   'radicle_commentPatch',
 ]);
+
+const SIGNING_METHODS = new Set(['radicle_getIdentity', ...SIGNED_WRITE_METHODS]);
 
 // Per-webview navigation generation, bumped on every committed navigation
 // and on webview destruction. Requests capture the generation on arrival;
@@ -141,7 +145,22 @@ async function handleRadicleRequest(webview, request) {
         await window.radiclePermissions.grantSigning(permissionKey);
       }
       assertSameDocument();
-      result = await forwardToMain(method, params, permissionKey);
+      if (!SIGNED_WRITE_METHODS.has(method)) {
+        result = await forwardToMain(method, params, permissionKey);
+      } else {
+        // The grant answers a write without a prompt, except on a tab in
+        // Agent custody: there the user approves each write's content
+        // (main refuses a grant-answered write on its own custody reading).
+        const prompted = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
+        if (prompted) {
+          await showRadicleSignedWriteApproval(permissionKey, method, params, webview);
+          assertSameDocument();
+        }
+        result = await forwardToMain(method, params, permissionKey, {
+          webContentsId: guestIdOf(webview),
+          approval: prompted ? 'user' : 'auto',
+        });
+      }
     } else {
       // Remaining connection-tier methods: getNodeStatus, listSeededRepos,
       // sync, getSeedStatus, disconnect.
