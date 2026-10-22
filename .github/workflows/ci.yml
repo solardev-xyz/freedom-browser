@@ -1353,6 +1353,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The Agent security regressions that only macOS can run (#778): the S1
+  # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
+  # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
+  # `process.platform === 'darwin'`, so every other runner skips them, and a
+  # skipped test is green. The checker runs the seatbelt, secure-files and
+  # native-supervisor suites with `--json` and fails unless every one of their
+  # tests passed, none skipped, with each macOS-only test passing by name; its
+  # header lists those tests and why. `scripts/ci/macos-security-tests.test.js`
+  # (in `test`, on Linux) keeps that list in step with the sources. Pure jest:
+  # no display, no Electron, no built supervisor.
+  agent-macos-jest:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Run the macOS-only security suites, refusing any skip
+        run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
+
   # Browser chrome around the page that only a real window can exercise, and
   # that `e2e-tabs` (already the longest e2e job) has no room for: the find
   # bar against a real guest's find-in-page results (`find-in-page`), the tab
@@ -2128,6 +2165,7 @@ jobs:
     if: always()
     needs:
       [
+        agent-macos-jest,
         code-changed,
         e2e-agent,
         e2e-automation,
