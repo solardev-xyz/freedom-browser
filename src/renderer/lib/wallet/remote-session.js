@@ -336,6 +336,9 @@ export function createRemoteSessionBroker({
       }
 
       emit({ jobId, kind, phase: 'awaiting-approval', method });
+      // Mark delivery before the send leaves: once the phone may hold the
+      // request, main must treat a cancel/timeout as an uncertain outcome.
+      if (kind === 'signing') remoteSigner?.delivered?.({ jobId });
       const { result, error } = unwrapResponse(
         await Promise.race([session.send({ method, params }), aborted]),
       );

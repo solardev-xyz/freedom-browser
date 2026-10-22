@@ -879,6 +879,9 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   },
   // Job outcome: { jobId, result } or { jobId, error: {code, message} }.
   respond: (payload) => ipcRenderer.send('remote-signer:response', payload),
+  // The request is being handed to the phone: from now on a timeout or
+  // cancel cannot prove the phone did not act on it.
+  delivered: (payload) => ipcRenderer.send('remote-signer:delivered', payload),
   // Persist a phone account discovered via eth_requestAccounts.
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
 });

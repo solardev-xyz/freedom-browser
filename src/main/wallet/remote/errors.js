@@ -72,4 +72,28 @@ function mapRemoteRpcError(rpcError) {
   return createRemoteError(code, code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage);
 }
 
-module.exports = { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError };
+// Refusals that are only ever produced without the phone acting on the
+// request: it never reached a phone (NO_UI), or the phone wallet declined
+// it (EIP-1193 4001/4100/4200). Nothing was broadcast.
+const UNSENT_CODES = new Set([
+  REMOTE_ERROR_CODES.NO_UI,
+  REMOTE_ERROR_CODES.USER_REJECTED,
+  REMOTE_ERROR_CODES.WRONG_ACCOUNT,
+  REMOTE_ERROR_CODES.UNSUPPORTED,
+]);
+
+/**
+ * Whether a failed eth_sendTransaction provably broadcast nothing: a
+ * definitive refusal, or any bridge failure before the request was
+ * delivered to the phone. A timeout, cancel, bad response or unknown
+ * error after delivery stays uncertain — the phone may have broadcast.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isRemoteSendProvablyUnsent(err) {
+  if (!err || typeof err.code !== 'string' || !err.code.startsWith('REMOTE_')) return false;
+  return UNSENT_CODES.has(err.code) || err.requestDelivered === false;
+}
+
+module.exports = { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError, isRemoteSendProvablyUnsent };

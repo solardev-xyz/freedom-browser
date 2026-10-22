@@ -35,6 +35,18 @@ function getTargetWindow() {
   return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
 }
 
+/**
+ * Record on a rejection whether the request ever reached the phone. A
+ * phone that never saw an eth_sendTransaction cannot have broadcast it,
+ * so callers journaling an irreversible send can tell "provably unsent"
+ * from "the phone may still have broadcast it" (timeout or cancel after
+ * the request was already on the phone).
+ */
+function markDelivery(err, delivered) {
+  err.requestDelivered = delivered === true;
+  return err;
+}
+
 function settleJob(jobId, settle) {
   const job = pendingJobs.get(jobId);
   if (!job) return;
@@ -54,27 +66,35 @@ function settleJob(jobId, settle) {
 function requestRemoteSignature(job, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const win = getTargetWindow();
   if (!win || win.webContents.isDestroyed()) {
-    return Promise.reject(createRemoteError(REMOTE_ERROR_CODES.NO_UI));
+    return Promise.reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.NO_UI), false));
   }
 
   const jobId = randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      settleJob(jobId, ({ webContents }) => {
+      settleJob(jobId, ({ webContents, delivered }) => {
         if (!webContents.isDestroyed()) {
           webContents.send('remote-signer:abort', { jobId });
         }
-        reject(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT));
+        reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT), delivered));
       });
     }, timeoutMs);
 
-    pendingJobs.set(jobId, { resolve, reject, timer, webContents: win.webContents });
+    pendingJobs.set(jobId, { resolve, reject, timer, webContents: win.webContents, delivered: false });
 
     win.webContents.send('remote-signer:request', { jobId, ...job });
   });
 }
 
 function registerRemoteSignerIpc() {
+  // The renderer reports the moment it hands the request to the phone
+  // (after QR link and chain switch), so main knows from then on that a
+  // timeout or cancel leaves the outcome uncertain.
+  ipcMain.on('remote-signer:delivered', (event, payload) => {
+    const job = pendingJobs.get(payload?.jobId);
+    if (!job || event.sender.id !== job.webContents.id) return;
+    job.delivered = true;
+  });
   ipcMain.on('remote-signer:response', (event, payload) => {
     const { jobId, result, error } = payload || {};
     const job = pendingJobs.get(jobId);
@@ -83,15 +103,16 @@ function registerRemoteSignerIpc() {
       console.warn('[RemoteSigner] Ignoring response from unexpected webContents', event.sender.id);
       return;
     }
-    settleJob(jobId, ({ resolve, reject }) => {
+    settleJob(jobId, ({ resolve, reject, delivered }) => {
       if (error) {
         // rpcCode = a JSON-RPC error object straight from the phone wallet
         // (EIP-1193 codes); plain code = a REMOTE_* the renderer minted.
-        reject(
+        reject(markDelivery(
           error.rpcCode !== undefined
             ? mapRemoteRpcError({ code: error.rpcCode, message: error.message })
             : createRemoteError(error.code || REMOTE_ERROR_CODES.UNKNOWN, error.message),
-        );
+          delivered,
+        ));
       } else {
         resolve(result);
       }

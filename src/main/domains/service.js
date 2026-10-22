@@ -191,7 +191,12 @@ class DomainService {
       // Never send a commitment preimage to an RPC merely to compare hashes.
       // Bundled encoding is tested against the pinned deployment on a fork.
       const quotedWei = await this.#price(operation, role, snapshot, true);
+      // The reveal is requoted (preparing) without a ceiling of its own, so
+      // keep the quote the user agreed to at commit time and say so in the
+      // approval whenever the reveal would cost more than that.
+      if (operation.quotedWei !== undefined) operation.commitQuoteWei ??= operation.quotedWei;
       if (preparing) operation.quotedWei = quotedWei;
+      if (preparing && operation.step === 'commit') operation.commitQuoteWei = quotedWei;
       if (BigInt(quotedWei) > BigInt(operation.quotedWei)) refuse('The domain price increased. A fresh quote and wallet approval are needed.', operation.step === 'reveal' ? 'DOMAIN_QUOTE_CHANGED' : 'DOMAIN_STALE');
       if (operation.step === 'commit') {
         method = 'commit'; args = [expected];
@@ -257,6 +262,8 @@ class DomainService {
         ...(operation.intent === 'renew' ? ['Renewal extends this exact name; it does not transfer ownership to the paying wallet.'] : []),
         ...(operation.record ? [`Current: ${previous || '(empty)'}`, `New: ${operation.reference ? `bzz://${operation.reference}` : operation.record.value || '(clear)'}`] : []),
         ...(operation.intent === 'register' ? [`Registration price: ${operation.quotedWei} wei, plus network fees.`,
+          ...(BigInt(operation.quotedWei) > BigInt(operation.commitQuoteWei ?? operation.quotedWei)
+            ? [`Price increased since the commit: quoted ${operation.commitQuoteWei} wei at commit time, now ${operation.quotedWei} wei.`] : []),
           'Commit costs gas but does not reserve or buy the name. Reveal needs a separate approval.'] : [])].join('\n') };
     // Always simulate from the actual wallet, including commits.
     await this.chain.simulate(tx, snapshot);
@@ -297,8 +304,14 @@ class DomainService {
             const checked = await this.#build(operation);
             if (checked.digest !== plan.digest) refuse('The approved operation changed. No transaction was sent.', operation.intent === 'register' && operation.step === 'reveal' ? 'DOMAIN_QUOTE_CHANGED' : 'DOMAIN_STALE');
           },
-          beforeSend: () => {
+          beforeSend: async () => {
             if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
+            // Any transaction this dispatch produces uses at least the
+            // account's current confirmed nonce. Recording it keeps an older
+            // byte-identical renew/setText/setAddr from being accepted later.
+            const nonceFloor = BigInt(await this.chain.request('eth_getTransactionCount', [operation.account.address, 'latest'])).toString();
+            if (this.closed || context.signal?.aborted) refuse('Domain execution stopped before dispatch.', 'DOMAIN_STOPPED');
+            operation.dispatchNonceFloor = nonceFloor;
             operation.state = 'dispatching';
             operation.dispatchDigest = digest({ to: plan.to.toLowerCase(), data: plan.data.toLowerCase(), value: BigInt(plan.value).toString(), from: operation.account.address.toLowerCase() });
             this.store.save(operation);
@@ -379,6 +392,7 @@ class DomainService {
       if (!/^0x[a-fA-F0-9]{64}$/.test(input.transactionHash) || operation.state !== 'dispatch_unknown') refuse('A recovery hash is only accepted for an uncertain domain dispatch.', 'DOMAIN_INVALID');
       const tx = await this.chain.request('eth_getTransactionByHash', [input.transactionHash]);
       if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest) refuse('That transaction does not match this exact domain operation.', 'DOMAIN_INVALID');
+      if (!this.#afterDispatch(operation, tx)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
       operation.transactionHash = input.transactionHash;
       operation.state = 'pending';
       this.store.save(operation);
@@ -409,7 +423,7 @@ class DomainService {
     const receipt = await this.chain.receipt(operation.transactionHash);
     if (!receipt) return;
     const tx = await this.chain.request('eth_getTransactionByHash', [operation.transactionHash]);
-    if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest) {
+    if (!tx || this.#transactionDigest(tx) !== operation.dispatchDigest || !this.#afterDispatch(operation, tx)) {
       operation.state = 'verification_needed'; operation.message = 'The returned transaction does not match the prepared domain operation.';
       this.store.save(operation); return;
     }
@@ -441,6 +455,11 @@ class DomainService {
       if (operation.state === 'completed') delete operation.encryptedSecret;
     }
     this.store.save(operation);
+  }
+  #afterDispatch(operation, tx) {
+    // Journals saved before the nonce floor existed keep the digest-only check.
+    if (operation.dispatchNonceFloor === undefined) return true;
+    try { return BigInt(tx.nonce) >= BigInt(operation.dispatchNonceFloor); } catch { return false; }
   }
   #transactionDigest(tx) {
     return digest({ to: tx.to?.toLowerCase(), data: tx.input?.toLowerCase(), value: BigInt(tx.value).toString(), from: tx.from?.toLowerCase() });

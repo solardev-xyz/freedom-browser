@@ -102,6 +102,7 @@ function createHarness() {
       return () => delete handlers.abort;
     }),
     respond: jest.fn(),
+    delivered: jest.fn(),
   };
   return { session, openlv, remoteSigner, handlers };
 }
@@ -162,6 +163,21 @@ describe('remote-session broker', () => {
     await tick();
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', result: '0xsignature' });
     expect(harness.session.close).toHaveBeenCalled();
+  });
+
+  test('reports delivery to main only once the request is handed to the phone', async () => {
+    const harness = createHarness();
+    await startBroker(harness);
+
+    harness.handlers.request(JOB);
+    await tick();
+    expect(harness.remoteSigner.delivered).not.toHaveBeenCalled();
+
+    harness.session.link.resolve();
+    await tick();
+    expect(harness.remoteSigner.delivered).toHaveBeenCalledWith({ jobId: 'job-1' });
+    expect(harness.remoteSigner.delivered.mock.invocationCallOrder[0])
+      .toBeLessThan(harness.session.send.mock.invocationCallOrder[0]);
   });
 
   test('treats a bare (non-envelope) payload as the result', async () => {

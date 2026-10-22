@@ -102,6 +102,39 @@ describe('requestRemoteSignature', () => {
     expect(() => respond(7, undefined)).not.toThrow();
   });
 
+  test('records on each rejection whether the request reached the phone', async () => {
+    jest.useFakeTimers();
+    try {
+      const delivered = (senderId, jobId) =>
+        mockIpcMainHandlers['remote-signer:delivered']({ sender: { id: senderId } }, { jobId });
+
+      const undelivered = requestRemoteSignature(JOB, 1000);
+      // A delivery mark from another webContents does not count.
+      delivered(99, sentJobId());
+      jest.advanceTimersByTime(1001);
+      await expect(undelivered).rejects.toMatchObject({ code: 'REMOTE_TIMEOUT', requestDelivered: false });
+
+      const late = requestRemoteSignature(JOB, 1000);
+      delivered(7, sentJobId());
+      jest.advanceTimersByTime(1001);
+      await expect(late).rejects.toMatchObject({ code: 'REMOTE_TIMEOUT', requestDelivered: true });
+
+      const cancelled = requestRemoteSignature(JOB, 1000);
+      const jobId = sentJobId();
+      delivered(7, jobId);
+      respond(7, { jobId, error: { code: 'REMOTE_USER_CANCELLED' } });
+      await expect(cancelled).rejects.toMatchObject({ code: 'REMOTE_USER_CANCELLED', requestDelivered: true });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('a missing window rejects as undelivered', async () => {
+    mockFocusedWindow = null;
+    mockAllWindows = [];
+    await expect(requestRemoteSignature(JOB)).rejects.toMatchObject({ code: 'REMOTE_NO_UI', requestDelivered: false });
+  });
+
   test('times out with REMOTE_TIMEOUT and tells the renderer to abort', async () => {
     jest.useFakeTimers();
     try {

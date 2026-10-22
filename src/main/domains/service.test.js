@@ -23,6 +23,7 @@ function fixture(namespace = 'eth', available = false) {
     supportedResolver: true, expiry: '99999999', records: { contenthash: '0x', address, text: { description: 'before' } } };
   const clock = { tag: '0x100', hash, timestamp: 1000 };
   let wire;
+  let nonce = 5;
   let committedAt = 0n;
   const chain = {
     snapshot: jest.fn(async () => ({ ...clock })),
@@ -42,14 +43,14 @@ function fixture(namespace = 'eth', available = false) {
       return [false];
     }),
     receipt: jest.fn(async () => wire ? ({ blockHash: hash, blockNumber: '0x100', status: '0x1' }) : null),
-    request: jest.fn(async () => wire),
+    request: jest.fn(async method => method === 'eth_getTransactionCount' ? `0x${nonce.toString(16)}` : wire),
   };
   const account = { index: 0, address, type: 'mnemonic' };
   const wallet = { account: jest.fn(async () => account), send: jest.fn(async (plan, context) => {
     await context.requestApproval({ label: plan.label });
     await context.revalidate();
     await context.beforeSend();
-    wire = { from: address, to: plan.to, value: plan.value, input: plan.data };
+    wire = { from: address, to: plan.to, value: plan.value, input: plan.data, nonce: `0x${(nonce++).toString(16)}` };
     const iface = namespace === 'eth' ? (plan.to === ADDRESSES.resolver ? ABI.resolver : ABI.controller) : ABI.nft;
     const decoded = iface.parseTransaction({ data: plan.data });
     if (decoded.name === 'commit') committedAt = BigInt(clock.timestamp);
@@ -316,6 +317,69 @@ test('a reveal requotes without paying for another commitment', async () => {
   const sent = f.wallet.send.mock.calls[1][0];
   expect(sent.value).toBe('200');
   expect(ABI.nft.parseTransaction({ data: sent.data }).name).toBe('reveal');
+  // The approval names the commit-time quote the new price departs from.
+  expect(sent.summary).toContain('Price increased since the commit: quoted 100 wei at commit time, now 200 wei.');
+  expect(f.wallet.send.mock.calls[0][0].summary).not.toContain('Price increased');
+});
+
+test('an unchanged reveal quote does not claim a price increase', async () => {
+  const f = fixture('wei', true);
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(plan.operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId: plan.operationId });
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.wallet.send.mock.calls[1][0].summary).not.toContain('Price increased');
+});
+
+test('a recovery hash for an older byte-identical transaction is refused', async () => {
+  const f = fixture();
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const send = f.wallet.send.getMockImplementation();
+  let oldTx;
+  f.wallet.send.mockImplementation(async (...args) => {
+    await send(...args);
+    oldTx = { ...(await f.chain.request('eth_getTransactionByHash', [hash])), nonce: '0x1' };
+    throw new Error('lost response');
+  });
+  expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
+  expect(f.store.get(plan.operationId).dispatchNonceFloor).toBe('5');
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionByHash' ? oldTx : request(method, args));
+  await expect(f.service.status({ operationId: plan.operationId, transactionHash: hash })).rejects.toThrow('before this domain operation');
+  expect(f.store.get(plan.operationId).state).toBe('dispatch_unknown');
+  f.chain.request.mockImplementation(request);
+  expect(await f.service.status({ operationId: plan.operationId, transactionHash: hash })).toMatchObject({ state: 'completed' });
+});
+
+test('a phone wallet rejection through the real wallet path is resumable, not an uncertain dispatch', async () => {
+  const f = fixture();
+  const { DomainTransactions } = require('../wallet/domain-transactions');
+  const { signAndSendTransaction } = require('../wallet/transaction-service');
+  const { createRemoteError, REMOTE_ERROR_CODES } = require('../wallet/remote/errors');
+  const phone = { getAddress: async () => address, sendTransaction: jest.fn(async () => {
+    throw Object.assign(createRemoteError(REMOTE_ERROR_CODES.USER_REJECTED), { requestDelivered: true });
+  }) };
+  const wallet = new DomainTransactions({
+    identityManager: { getActiveWalletIndex: () => 0, getDerivedWallets: async () => [{ index: 0, address, type: 'remote' }] },
+    estimateGas: async () => ({ gasLimit: '50000' }), getGasPrices: async () => ({ type: 'legacy', gasPrice: '1' }),
+    balance: async () => 10n ** 18n, getSigner: () => phone,
+    signAndRecord: (tx, signer) => signAndSendTransaction(tx, signer),
+  });
+  const service = new DomainService({ ...f.options, wallet });
+  const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const plan = await service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'after' }, f.context);
+    expect(await service.execute(plan.operationId, f.context)).toMatchObject({ state: 'declined' });
+    expect(phone.sendTransaction).toHaveBeenCalledTimes(1);
+    // The name is not held by a stuck operation: another plan can be made.
+    const fresh = await service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'after' }, f.context);
+    expect(fresh).toMatchObject({ state: 'ready' });
+    expect(fresh.operationId).not.toBe(plan.operationId);
+    // A timeout after the phone received the request stays uncertain.
+    phone.sendTransaction.mockRejectedValueOnce(Object.assign(createRemoteError(REMOTE_ERROR_CODES.TIMEOUT), { requestDelivered: true }));
+    expect(await service.execute(fresh.operationId, f.context)).toMatchObject({ state: 'dispatch_unknown' });
+  } finally { errorLog.mockRestore(); }
 });
 
 test('a reorg of a completed receipt requires reconciliation without a second send', async () => {

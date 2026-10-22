@@ -9,7 +9,7 @@
 const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
 const chainData = require('../networks/chain-data-router');
 const { getTxExplorerUrl } = require('./chains');
-const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
+const { REMOTE_ERROR_CODES, createRemoteError, isRemoteSendProvablyUnsent } = require('./remote/errors');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -284,7 +284,15 @@ async function signAndSendTransaction(params, signer) {
     // user confirms on the device, so only the intent fields go over.
     if (typeof signer.sendTransaction === 'function') {
       broadcastAttempted = true;
-      const hash = await signer.sendTransaction({ to, value, data, chainId });
+      let hash;
+      try {
+        hash = await signer.sendTransaction({ to, value, data, chainId });
+      } catch (err) {
+        // A phone rejection, or a failure before the request ever reached
+        // the phone, broadcast nothing; only the rest stays uncertain.
+        if (isRemoteSendProvablyUnsent(err)) broadcastAttempted = false;
+        throw err;
+      }
       await verifyDeviceBroadcastFrom(hash, from, chainId);
       console.log('[TransactionService] Transaction broadcast by signer:', hash);
       return {

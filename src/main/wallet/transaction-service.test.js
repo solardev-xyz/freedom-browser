@@ -219,6 +219,25 @@ describe('signAndSendTransaction (signer-based)', () => {
     ).rejects.toThrow('Insufficient funds for transaction');
   });
 
+  it.each([
+    ['a phone rejection', { code: 'REMOTE_USER_REJECTED', requestDelivered: true }, 'DOMAIN_NOT_BROADCAST'],
+    ['no window for the QR', { code: 'REMOTE_NO_UI', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout before the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a cancel before the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout after the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a cancel after the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a bad phone response', { code: 'REMOTE_BAD_RESPONSE', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['an uncoded failure', {}, 'DOMAIN_BROADCAST_UNKNOWN'],
+  ])('classifies %s from a phone wallet', async (_label, fields, expected) => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const phone = { ...signer, sendTransaction: async () => { throw Object.assign(new Error('phone'), fields); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', chainId: 1, redactErrors: true,
+      }, phone)).rejects.toMatchObject({ code: expected });
+    } finally { errorLog.mockRestore(); }
+  });
+
   describe('signer sendTransaction capability (device broadcasts itself)', () => {
     // Remote (phone) signers cannot produce a raw signed tx: the phone
     // picks the nonce and broadcasts itself. Only intent fields go over.
