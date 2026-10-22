@@ -2,7 +2,7 @@
 
 Created: 2026-08-22
 Last updated: 2026-10-22
-Status: Concrete security repairs implemented and independently re-reviewed; bounded Windows gate passed; AI settings, onboarding, examples and dictation integrated; shared domain core on an experimental branch; broader release qualification remains
+Status: Concrete security repairs implemented and independently re-reviewed; bounded Windows gate passed; AI settings, onboarding, examples, dictation and initial domain skills integrated; broader release qualification remains
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 
 ## Active plan — colleague review follow-up, 2026-10-21
@@ -12,11 +12,13 @@ product improvements: an opt-in AI section in Settings, voice dictation, useful
 example prompts, decentralized-domain skills, and start-page discovery. AI1/AI2
 passed maintainer smoke testing and are integrated into the feature branch;
 AI3 example prompts are implemented (examples now start without implicitly sharing the active page); AI4 dictation is integrated with incremental text, service-management pages and bundled local whisper.cpp; maintainer OpenRouter/local smokes and the scoped Claude review passed.
-AI1–AI4 received a further Claude review with repairs tracked below. AI5 domain
-research is complete; the first implementation is on `experiment/domain-skills`,
-not merged into PR #457. It covers shared profile-owned plans/receipts, bundled
-skills, wallet-approved registration/renewal and website/address/text records.
-Broader management and live paid qualification remain separate slices. Ordinary
+AI1–AI4 received a further Claude review with repairs tracked below. AI5's initial
+implementation from `experiment/domain-skills` is integrated into PR #457. It
+covers shared profile-owned plans/receipts, bundled skills, wallet-approved
+registration/renewal and website/address/text records. The maintainer live-tested
+`.gwei` registration, Swarm binding and manual named-site retrieval; `.wei` and
+`.eth` retain fork/automated qualification, without additional paid tests.
+Broader management and remaining qualification stay separate slices. Ordinary
 browsing remains a complete experience with AI off.
 
 This section is the canonical priority and status index. The collapsed historical
@@ -76,7 +78,12 @@ normal user custody.
 - PR [#457](https://github.com/solardev-xyz/freedom-browser/pull/457) is open and
   ready for review, not draft. Positive colleague feedback is user-reported; it
   does not establish that every provider/platform or release gate has passed.
-- Latest qualified checkpoint: `462192d2` (last production-source change
+- Domain integration, October 22: production source through `9195e432` passes
+  lint and the full **10,906 unit tests / 129 skipped** locally on macOS. The
+  maintainer live-tested `.gwei` purchase/Swarm binding; `.wei` and `.eth` retain
+  fork/automated coverage. Current-head CI must qualify the integrated branch;
+  older platform results do not newly cover this slice.
+- Latest qualified general/Windows CI checkpoint: `462192d2` (last production-source change
   `6f539472`). [General CI 39678913701](https://github.com/solardev-xyz/freedom-browser/actions/runs/39678913701)
   and [Windows CI 39678913710](https://github.com/solardev-xyz/freedom-browser/actions/runs/39678913710)
   passed. Local lint, **10,840 unit tests / 129 skipped** and five final real
@@ -114,7 +121,7 @@ Delivered product inventory:
 | Providers | Pi 1.0.2; connected hosted/local providers; ChatGPT sign-in; installed Claude CLI session adapter; custom OpenAI-compatible endpoints and optional model compatibility checks. |
 | Creation and browser work | Semantic browser tools, managed projects, external read-only/edit grants, builds, previews, reviewed history/checkpoints and conversational Git recovery. |
 | Delegation and services | Foreground/background helpers, scoped editing/browser work, individual Stop, saved reports, autonomous orchestration, codemode and profile-owned connected MCP services. |
-| dWeb | Native wallet approvals, node operations, Swarm publication and stamp readiness/retry/continuation. `.eth`, `.wei` and `.gwei` resolution exists; domain buying/management skills do not. |
+| dWeb | Native wallet approvals, node operations, Swarm publication and stamp readiness/retry/continuation. Initial `.eth`, `.wei` and `.gwei` registration, renewal and website/address/text records through a shared wallet-backed domain service and bundled skills. |
 | Privacy | Session shield and picker symbols, per-chat OpenRouter ZDR, NEAR request-bound evidence/E2EE and eligible Venice text E2EE with disclosed fallback. GPU/software verification and broader coverage remain open; no blanket private-inference claim. |
 
 ### PR review follow-ups — indexed 2026-10-20
@@ -428,7 +435,7 @@ closed. Design and feasibility work can proceed alongside focused repairs.
 | 2 | AI2 — Start-page invitation | Discover the opt-in feature without starting it | Integrated with AI1; maintainer smoke passed |
 | 3 | AI3 — Example prompts | New users can choose a concrete browsing/creation task | Implemented; maintainer smoke pending |
 | 4 | AI4 — Composer dictation | Speak a prompt, edit its transcript, then send | Integrated into feature branch; maintainer cloud/local smokes and Claude review complete; five-target native CI passes |
-| 5 | AI5 — Domain skills | Give a published site a name and update it later | Shared core and initial skills on `experiment/domain-skills`; fork-tested; user smoke and broader management remain |
+| 5 | AI5 — Domain skills | Give a published site a name and update it later | Initial core/skills integrated; all three namespaces fork-tested; `.gwei` purchase/binding live-tested; broader management remains |
 
 AI4 is integrated. AI5 starts with binding an already-owned name, then purchases and renewals, so
 registration complexity does not block the first useful named-site workflow.
@@ -729,7 +736,7 @@ for approval before adding it.
 
 ### AI5 — Buy/manage dWeb names and bind a published site
 
-**2026-10-22 experimental first slice:** `experiment/domain-skills` implements
+**2026-10-22 initial slice integrated into the feature branch:** `experiment/domain-skills` implements
 the shared main-process naming service under `src/main/domains/`, a wallet bridge
 using existing signers/approvals/recording, four Agent tools and progressively
 loaded shared/ENS/WNS/GNS procedures. State belongs to the profile independently
@@ -750,8 +757,33 @@ expiry increases and unchanged ownership. This used 22 approved product sends
 on a private Anvil fork plus fixture setup, synthetic publication receipts and
 no real wallet/spend. Local lint and the full **10,882-test suite / 129 skipped**
 pass; **320 focused tests** pass after the final guards/recovery changes, plus the
-real Electron startup/open/close case. Live binding/retrieval, paid operations, wallet devices
-and packaged platforms are still unqualified.
+real Electron startup/open/close case. These figures describe the initial draft;
+subsequent recovery validation passed the full **10,904-test suite / 129 skipped**
+at `22cb1159`, including all 50 domain tests. The Touch ID follow-up passed 172
+Agent UI/quick-unlock tests, and navigation guidance passed 48 browser-tool/skill
+tests; lint passed after both changes.
+
+The maintainer subsequently completed a live mainnet `.gwei` registration using
+the original paid commitment, bound it to a verified Swarm publication, and opened
+the site manually through the name. No additional paid `.wei`/`.eth` tests are
+required for this iteration; both remain fork/automated-qualified rather than
+live-qualified. Renewals, other records, wallet devices and packaged domain flows
+do not inherit live qualification from this one purchase/binding.
+
+Smoke findings repaired: `22cb1159` anchors state verification at or after the
+mined block and rechecks saved pre-reveal verification states without another
+commit; `fc5ba38c` removes the redundant password unlock after main-process Touch
+ID success; `9195e432` teaches domain workflows and browser helpers to use the
+actual content transport (`bzz://<name>/` for Swarm), rather than inventing HTTPS.
+The navigation-guidance fix passed automated checks; a subsequent live Agent
+named-page check is not claimed.
+
+**Open follow-up — Claude tool timeouts around wallet work:** a website-record
+transaction completed despite the CLI returning a bare timeout. A later status
+check reconciled it. Investigate bridge timeouts and the serialized tool queue
+while approval/confirmation is pending; provide truthful waiting/recovery state
+without allowing duplicate sends or weakening approval/cancellation boundaries.
+This is not fixed by the block-freshness or Touch ID repairs.
 
 Transfers, primary names, subnames, delegate changes, resolver migration and
 ENSv2 remain researched but not implemented in this first slice. Rechecked ENS
@@ -808,13 +840,14 @@ No arbitrary signing/raw-transaction shortcut is implied. Support existing owned
 names without forcing a purchase, and allow an unavailable name, declined spend,
 expired quote or interrupted transaction to be handled conversationally.
 
-**Acceptance:** fixture/fork coverage first, followed by a separately authorized
-live small-value flow for each advertised namespace. Cover invalid/unavailable
+**Acceptance:** fixture/fork coverage first; live small-value checks require
+separate authorization. The maintainer accepted `.gwei` live coverage plus
+`.wei`/`.eth` fork/automated coverage for this iteration. Cover invalid/unavailable
 names, wrong owner/network, existing record replacement, decline, insufficient
 funds, commit/reveal recovery, renewal, republishing and fresh-name resolution.
-Ordinary test runs must not buy a real domain. Standard address/text records,
-primary names, transfers and owned-parent subnames follow the core site/purchase
-slice; their call matrix is researched. Arbitrary custom-resolver operations,
+Ordinary test runs must not buy a real domain. Standard ETH-address/text records
+are implemented; primary names, transfers and owned-parent subnames remain later
+slices with a researched call matrix. Arbitrary custom-resolver operations,
 marketplace buying and bulk management remain separate extensions.
 
 Primary references to recheck during implementation:
@@ -823,6 +856,26 @@ Primary references to recheck during implementation:
 [ENS dWeb hosting](https://docs.ens.domains/dweb/intro/),
 [WNS source/app](https://github.com/z0r0z/wei-names),
 [GNS source/app](https://github.com/lucadonnoh/gwei-names).
+
+### Next follow-up — read-only wallet balances
+
+**2026-10-22, reported during domain smoke testing; implement after the domain
+iteration:** Agent has no general, explicit balance-inspection tool. Transfer
+preflight checks are not a substitute for answering “What funds are in my wallet?”
+or checking domain affordability without attempting a transaction.
+
+- Expose a bounded read-only balance operation using the existing wallet balance
+  service and configured chain/token registries. Default to the active wallet;
+  support explicit account/network/asset selection and resolve ambiguity clearly.
+- Return native and requested token balances with account/network identity and
+  freshness/error information. Distinguish a failed or stale read from a zero balance;
+  show native gas funds separately from an asset balance.
+- No transfer, signing, spending approval, speculative transaction or new RPC
+  provider. Retain the wallet's existing network/privacy policy. Agent should use
+  this for balance questions and preflight, while actual sends still recheck funds.
+- Acceptance: ordinary balance questions and domain affordability checks succeed
+  without invoking a transfer; cover multiple networks/accounts, missing fee funds,
+  unavailable RPCs, zero balances and stale-cache handling.
 
 ### Existing qualification and maintenance follow-ups
 

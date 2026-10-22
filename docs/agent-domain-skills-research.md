@@ -2,8 +2,9 @@
 
 Date: 2026-10-20. Historical research and implementation plan; **no paid transaction tested**.
 
-October 22 follow-up: the first shared-service/Agent implementation is on
-`experiment/domain-skills`; see [current scope and qualification](domain-management.md).
+October 22 follow-up: the first shared-service/Agent implementation from
+`experiment/domain-skills` is integrated into the feature branch; see
+[current scope and qualification](domain-management.md).
 This historical call matrix includes later operations that the first slice does
 not expose. Mainnet-fork fixture writes are not live purchases or wallet-device qualification.
 

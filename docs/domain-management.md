@@ -1,6 +1,6 @@
 # Domain management — experimental first slice
 
-The `experiment/domain-skills` branch adds shared, profile-owned naming operations
+Integrated from `experiment/domain-skills`, this adds shared, profile-owned naming operations
 with Freedom Agent as their first interface. It does not add a manual settings or
 domain-management screen yet. A future UI can call the same service and continue
 the same operations without an Agent conversation.
@@ -112,7 +112,8 @@ delayed/mismatched resolution are verification problems, not permission to pay t
 
 ## Qualification and smoke testing
 
-Local macOS evidence (October 22): lint passes; the full suite passes **10,904
+Local macOS evidence (October 22, production source through `9195e432`): lint
+passes; the full suite passes **10,906
 tests / 129 skipped** across 486 suites. All **50 domain tests** pass after the
 fresh-block and saved-commit recovery fixes, including rejected receipts,
 restart recovery and protection against repeating uncertain reveals.
@@ -120,7 +121,14 @@ The existing real Electron startup/open/close test also passes using a
 disposable profile. These are source-build checks, not packaged Windows/Linux
 or physical wallet-device qualification.
 
-No real domain was purchased, renewed or changed while implementing this draft.
+The maintainer live-tested `.gwei` registration, binding to a verified Swarm
+publication and manually opening the named site. `.wei` and `.eth` remain
+fork/automated-tested, without live paid qualification. The subsequent Agent
+navigation-guidance repair has automated coverage, not a repeated live page check.
+The Claude CLI can still report a transaction-tool timeout despite an eventual
+successful transaction; reconcile the saved operation rather than resending.
+
+Automated qualification does not purchase, renew or change real domains.
 The fork qualifier runs against a deliberately local Anvil fork only, with an
 impersonated disposable account and synthetic publication receipt:
 
