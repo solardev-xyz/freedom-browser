@@ -58,7 +58,12 @@ let lastError = null;
 let artiProcess = null;
 let healthCheckInterval = null;
 let pendingStart = false;
-let forceKillTimeout = null;
+// Each managed child being terminated, with its SIGKILL backstop: bound to
+// that child, and cleared when it closes. A stop's child and a child a
+// later start retired are both here, so neither can outlive its backstop
+// and neither's backstop can signal another child.
+const terminating = new Map();
+const FORCE_KILL_MS = 10000;
 // Set by a startup-timeout before it calls stopTor(), so the exit handler
 // reports this error rather than the raw "arti exited with code N" that the
 // SIGTERM/SIGKILL produces. Consumed once. (Arti is single-process, so unlike
@@ -342,6 +347,20 @@ async function applyOnionRouting(endpoint) {
   );
 }
 
+/**
+ * Re-applies the routing policy in force now on every tracked session: what
+ * an obsolete apply's completion does instead of undoing anything itself,
+ * so its own calls, whenever they land, can't leave a later start's or a
+ * stop's policy changed. Cleanup is fenced to the routing operation it owns.
+ */
+async function reassertOnionRouting() {
+  if (appliedSocksEndpoint) {
+    await applyOnionRouting(appliedSocksEndpoint).catch(() => {});
+  } else {
+    await clearOnionRouting();
+  }
+}
+
 /** Restore DIRECT `.onion` connections on every tracked session. */
 async function clearOnionRouting() {
   appliedSocksEndpoint = null;
@@ -377,9 +396,11 @@ function unregisterOnionRoutingSession(key) {
 
 /**
  * Routes `.onion` through the current endpoint, then reports Tor RUNNING.
- * `superseded` says a stop or a restart came meanwhile: the routing is
- * undone. `retired` says the node it was for is gone (managed Arti exited):
- * its exit has set the state, and the routing stays, failing closed.
+ * `superseded` says a stop or a restart came meanwhile: the routing in
+ * force now (the stop's or the restart's) is re-applied over whatever this
+ * apply's calls left. `retired` says the node it was for is gone (managed
+ * Arti exited): its exit has set the state, and the routing stays, failing
+ * closed.
  */
 async function applyTorProxy(
   mode,
@@ -398,9 +419,9 @@ async function applyTorProxy(
   }
 
   if (superseded()) {
-    // Stopped while the proxy was being applied: undo it instead of reporting
-    // RUNNING for a service the user just turned off.
-    clearOnionRouting().catch(() => {});
+    // Stopped or restarted while the proxy was being applied: no RUNNING for
+    // it, and the routing in force now is the last word, not this apply's.
+    reassertOnionRouting().catch(() => {});
     return false;
   }
   if (retired()) return false;
@@ -566,6 +587,15 @@ async function startTor(opts = {}) {
 
   pendingStart = false;
   const superseded = beginStartAttempt();
+  // A child an errored start or stop left running (its proxy failed to
+  // apply, or its signal failed) is retired: its handlers stop acting, and
+  // it is terminated with its own backstop.
+  if (artiProcess) {
+    const leftover = artiProcess;
+    artiProcess = null;
+    log.warn('[Tor] Retiring an arti process left running');
+    terminate(leftover);
+  }
   updateState(STATUS.STARTING);
   setStatusMessage('tor', 'Bootstrapping…');
 
@@ -679,17 +709,11 @@ async function startTor(opts = {}) {
     setStatusMessage('tor', 'Tor failed to start');
     return;
   }
-  // This child is the live one until it exits or a later start replaces
+  // This child is the live one until it exits or a later start retires
   // it. Every handler below acts only while it is: a retired child's
-  // output, error or exit never touches its successor. A child an errored
-  // start left running (its proxy failed to apply) is retired and stopped.
-  const previous = artiProcess;
+  // output, error or exit never touches its successor.
   artiProcess = child;
   const live = () => artiProcess === child;
-  if (previous && previous !== child) {
-    log.warn('[Tor] Stopping a previous arti process left running');
-    previous.kill('SIGTERM');
-  }
 
   child.stdout.on('data', (data) => {
     if (live()) handleArtiOutput('stdout', data);
@@ -716,10 +740,6 @@ async function startTor(opts = {}) {
     artiProcess = null;
     artiBootstrapped = false;
     artiOutputBuffer = '';
-    if (forceKillTimeout) {
-      clearTimeout(forceKillTimeout);
-      forceKillTimeout = null;
-    }
     if (healthCheckInterval) {
       clearInterval(healthCheckInterval);
       healthCheckInterval = null;
@@ -807,15 +827,20 @@ function stopTor(options = {}) {
     // Cancel any startTor() still sitting on an await, so it can't spawn arti
     // after we've reported the service as stopped.
     startGeneration += 1;
+    // The stop is bound to its run and its child: if a later start comes
+    // before the child closes (its signal failed, and it went ERROR), the
+    // stop only resolves, and its cleanup never touches the newer run.
+    const generation = startGeneration;
+    const child = artiProcess;
 
     const finish = () => {
+      if (generation !== startGeneration) {
+        resolve();
+        return;
+      }
       if (healthCheckInterval) {
         clearInterval(healthCheckInterval);
         healthCheckInterval = null;
-      }
-      if (forceKillTimeout) {
-        clearTimeout(forceKillTimeout);
-        forceKillTimeout = null;
       }
       if (!preserveOnionRouting) clearOnionRouting().catch(() => {});
       clearTorServiceEntry();
@@ -824,7 +849,7 @@ function stopTor(options = {}) {
       resolve();
     };
 
-    if (!artiProcess) {
+    if (!child) {
       updateState(STATUS.STOPPED);
       finish();
       return;
@@ -833,19 +858,31 @@ function stopTor(options = {}) {
     updateState(STATUS.STOPPING);
     if (healthCheckInterval) clearInterval(healthCheckInterval);
 
-    artiProcess.once('close', finish);
-
-    if (forceKillTimeout) clearTimeout(forceKillTimeout);
-    forceKillTimeout = setTimeout(() => {
-      if (artiProcess) {
-        log.warn('[Tor] Force killing arti...');
-        artiProcess.kill('SIGKILL');
-      }
-      forceKillTimeout = null;
-    }, 10000);
-
-    artiProcess.kill('SIGTERM');
+    child.once('close', finish);
+    terminate(child);
   });
+}
+
+/**
+ * Ends `child`: SIGTERM, then SIGKILL if it hasn't closed within
+ * FORCE_KILL_MS. The backstop is the child's own, so it signals no other
+ * child, and asking again while one is armed sends nothing more.
+ */
+function terminate(child) {
+  if (terminating.has(child)) return;
+  child.once('close', () => {
+    clearTimeout(terminating.get(child));
+    terminating.delete(child);
+  });
+  terminating.set(
+    child,
+    setTimeout(() => {
+      terminating.delete(child);
+      log.warn('[Tor] Force killing arti...');
+      child.kill('SIGKILL');
+    }, FORCE_KILL_MS)
+  );
+  child.kill('SIGTERM');
 }
 
 function getActivePort() {

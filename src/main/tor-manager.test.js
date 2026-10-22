@@ -946,6 +946,127 @@ describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
       await mod.stopTor();
     });
 
+    test("a late apply after a crash and a restart leaves the restart's routing in force", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      const mod = managedWith(a, b);
+      let appliedA;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (appliedA = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(appliedA).toBeDefined();
+      a.emit('close', 1);
+      await mod.startTor({ targetSession });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      appliedA();
+      await jest.advanceTimersByTimeAsync(0);
+      const modes = targetSession.setProxy.mock.calls.map(([arg]) => arg?.mode);
+      expect(modes).not.toContain('direct');
+      expect(modes[modes.length - 1]).toBe('pac_script');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+    });
+
+    test('a late apply after a deliberate stop leaves DIRECT in force', async () => {
+      const child = createArtiProcessMock();
+      const mod = managedWith(child);
+      let applied;
+      const targetSession = {
+        setProxy: jest
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (applied = resolve)))
+          .mockResolvedValue(undefined),
+      };
+      await mod.startTor({ targetSession });
+      bootstrap(child);
+      await jest.advanceTimersByTimeAsync(1000);
+      await mod.stopTor();
+      const calls = targetSession.setProxy.mock.calls.length;
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+      applied();
+      await jest.advanceTimersByTimeAsync(0);
+      // The late completion puts DIRECT last again, whatever order its own
+      // call lands in.
+      expect(targetSession.setProxy.mock.calls.length).toBe(calls + 1);
+      expect(targetSession.setProxy.mock.calls.at(-1)[0].mode).toBe('direct');
+      expect(mod.getIpfsSocksEndpoint().endpoint).toBeNull();
+      // The closed child's backstop is gone with it.
+      await jest.advanceTimersByTimeAsync(11000);
+      expect(child.kills).toEqual(['SIGTERM']);
+    });
+
+    test("a stop whose signal failed can't signal a later start's child", async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      // A's SIGTERM fails with an error and no exit; its SIGKILL ends it.
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        if (signal === 'SIGTERM') {
+          a.emit('error', new Error('the signal failed'));
+          return false;
+        }
+        a.emit('close', 0);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      let stopped = false;
+      const stopping = mod.stopTor().then(() => {
+        stopped = true;
+      });
+      // The error made it ERROR: a start is allowed, and runs B.
+      const sessionB = createSessionMock();
+      await mod.startTor({ targetSession: sessionB });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+
+      // A's backstop, ten seconds after its stop: A's alone.
+      await jest.advanceTimersByTimeAsync(9000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(b.kills).toEqual([]);
+      await stopping;
+      expect(stopped).toBe(true);
+      // A's stop ended without touching B: its offer, and its routing.
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      expect(sessionB.setProxy.mock.calls.map(([arg]) => arg?.mode)).not.toContain('direct');
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+    });
+
+    test('a retired child that ignores SIGTERM is killed by its own backstop', async () => {
+      const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+      a.kill = jest.fn((signal) => {
+        a.kills.push(signal);
+        return true;
+      });
+      const mod = managedWith(a, b);
+      await mod.startTor({ targetSession: failingSession() });
+      bootstrap(a);
+      await jest.advanceTimersByTimeAsync(1000);
+      await mod.startTor({ targetSession: createSessionMock() });
+      bootstrap(b);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(a.kills).toEqual(['SIGTERM']);
+
+      await jest.advanceTimersByTimeAsync(9000);
+      expect(a.kills).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(b.kills).toEqual([]);
+      expect(mod.getIpfsSocksEndpoint().endpoint).toEqual(endpoint);
+      await mod.stopTor();
+      expect(b.kills).toEqual(['SIGTERM']);
+    });
+
     test("a retired child's exit or error doesn't touch its running replacement", async () => {
       const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
       a.kill = jest.fn((signal) => {
