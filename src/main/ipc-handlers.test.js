@@ -246,7 +246,12 @@ function loadIpcHandlersModule(options = {}) {
     electronOverrides: options.electronOverrides,
     extraMocks: {
       [require.resolve('./logger')]: () => log,
-      [require.resolve('./settings-store')]: () => ({ loadSettings }),
+      // ipfs-manager, loaded when a profile's IPFS node is reconfigured,
+      // listens for settings changes (Route IPFS through Tor).
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings,
+        onSettingsChanged: () => () => {},
+      }),
       [require.resolve('./http-fetch')]: () => ({
         fetchBuffer,
         fetchToFile,

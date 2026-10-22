@@ -15,6 +15,8 @@ const fields = {
   enableTor: $('enable-tor-integration'),
   startTorRow: $('start-tor-row'),
   startTor: $('start-tor-at-launch'),
+  routeIpfsRow: $('route-ipfs-through-tor-row'),
+  routeIpfs: $('route-ipfs-through-tor'),
   enableIdentity: $('enable-identity-wallet'),
   showIpfsProgressStatus: $('show-ipfs-progress-status'),
   autoUpdate: $('auto-update'),
@@ -1112,6 +1114,27 @@ const applyStartTorRowState = () => {
   }
 };
 
+// "Route IPFS through Tor" needs the Tor integration: while it is off, the
+// row can't be switched on, and says where to turn Tor on. A row already on
+// stays switchable, so it can always be turned off again, and says that
+// IPFS doesn't connect meanwhile (it fails closed, never direct).
+const routeIpfsHelp = $('route-ipfs-through-tor-help');
+const defaultRouteIpfsHelp = routeIpfsHelp?.textContent || '';
+const applyRouteIpfsRowState = () => {
+  const torOn = fields.enableTor?.checked === true;
+  const routed = fields.routeIpfs?.checked === true;
+  const usable = torOn || routed;
+  fields.routeIpfsRow?.classList.toggle('disabled', !usable);
+  if (fields.routeIpfs) fields.routeIpfs.disabled = !usable;
+  if (routeIpfsHelp) {
+    routeIpfsHelp.textContent = torOn
+      ? defaultRouteIpfsHelp
+      : routed
+        ? "Tor is off, so IPFS doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above."
+        : 'Turn on Enable Tor (.onion access) above first.';
+  }
+};
+
 const NODE_MODE_LABELS = {
   managed: 'Managed by Freedom',
   external: 'Use external node',
@@ -1652,6 +1675,7 @@ const currentFormState = () => ({
   startRadicleAtLaunch: fields.startRadicle.checked,
   enableTorIntegration: fields.enableTor.checked,
   startTorAtLaunch: fields.startTor.checked,
+  routeIpfsThroughTor: fields.routeIpfs.checked,
   enableIdentityWallet: fields.enableIdentity.checked,
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
   autoUpdate: fields.autoUpdate.checked,
@@ -1676,6 +1700,7 @@ const applyFormState = (settings) => {
   fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
   fields.enableTor.checked = settings.enableTorIntegration === true;
   fields.startTor.checked = settings.startTorAtLaunch === true;
+  fields.routeIpfs.checked = settings.routeIpfsThroughTor === true;
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.autoUpdate.checked = settings.autoUpdate !== false;
@@ -1687,6 +1712,7 @@ const applyFormState = (settings) => {
   fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
   fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
   applyStartTorRowState();
+  applyRouteIpfsRowState();
   // Re-evaluated whenever the form is repainted from a payload — first
   // load, and a broadcast that differs from what's on screen. Enabling
   // the integration is what keeps the rows on a build that bundles no
@@ -2160,12 +2186,18 @@ fields.askWhereToSave.addEventListener('change', save);
 fields.startRadicle.addEventListener('change', save);
 fields.enableTor.addEventListener('change', () => {
   applyStartTorRowState();
+  applyRouteIpfsRowState();
   // Enabling the integration only reveals the controls — it does not
   // start Tor. Starting is via the node-status menu toggle or
   // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
   save();
 });
 fields.startTor.addEventListener('change', save);
+// No restart: the IPFS instances restart under the new policy at once.
+fields.routeIpfs.addEventListener('change', () => {
+  applyRouteIpfsRowState();
+  save();
+});
 fields.enableIdentity.addEventListener('change', save);
 fields.showIpfsProgressStatus.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);

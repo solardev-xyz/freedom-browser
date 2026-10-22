@@ -43,6 +43,7 @@ describe('settings-store', () => {
         startRadicleAtLaunch: false,
         enableTorIntegration: false,
         startTorAtLaunch: false,
+        routeIpfsThroughTor: false,
         autoUpdate: true,
         showBookmarkBar: false,
         searchProvider: 'duckduckgo',
@@ -392,9 +393,7 @@ describe('settings-store', () => {
       })
     ).toBe(true);
 
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8')
-    );
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
     expect(persisted.shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+U' });
 
     expect(listener).toHaveBeenCalledTimes(1);
@@ -405,6 +404,22 @@ describe('settings-store', () => {
     // Saving the identical overrides again is a no-op — no second notify.
     expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+Shift+U' } })).toBe(true);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test('Route IPFS through Tor persists, survives a reload, and its change reaches main-process listeners', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+    const listener = jest.fn();
+    mod.onSettingsChanged(listener);
+
+    expect(mod.saveSettings({ routeIpfsThroughTor: true })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.routeIpfsThroughTor).toBe(true);
+    const [merged, previous] = listener.mock.calls[0];
+    expect(merged.routeIpfsThroughTor).toBe(true);
+    expect(previous.routeIpfsThroughTor).toBe(false);
+
+    const reloaded = loadSettingsStore({ userDataDir });
+    expect(reloaded.mod.loadSettings().routeIpfsThroughTor).toBe(true);
   });
 
   test('sanitizes shortcut overrides already on disk at load time', () => {
