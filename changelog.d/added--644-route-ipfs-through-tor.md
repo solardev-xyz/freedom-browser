@@ -1,4 +1,5 @@
-- Route IPFS through Tor, under Settings > Advanced, sends this profile's IPFS traffic through Tor instead of connecting directly ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
-  - Content loads more slowly, and IPFS finds it only through delegated routing, without QUIC
-  - If Tor isn't running, IPFS doesn't connect rather than going direct
+- Route IPFS through Tor, under Settings > Advanced, sends the built-in IPFS node's traffic through Tor instead of connecting directly ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Content loads more slowly, and the node finds it only through delegated routing, without QUIC
+  - If Tor isn't running, the node doesn't connect rather than going direct, and the setting says it is waiting for Tor
+  - An external IPFS gateway, chosen under Settings > Nodes, isn't covered by it
   - Off by default, and separate from the Tor setting for `.onion` sites, which it needs; it applies without a restart

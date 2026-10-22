@@ -324,12 +324,16 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
       'Enable Tor (.onion access) Beta',
       'Route IPFS through Tor Beta',
     ]);
+    // A label wrapped in a span of its own (an accessible name, #784)
+    // still carries the badge right after it.
     for (const label of [
       'Enable Identity &amp; Wallet',
       'Enable Tor \\(\\.onion access\\)',
       'Route IPFS through Tor',
     ]) {
-      expect(advanced).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
+      expect(advanced).toMatch(
+        new RegExp(`${label}(</span>)?\\s*<span class="resolver-badge">Beta</span>`)
+      );
     }
     expect(SOURCE).not.toContain('(Beta)</span>');
   });

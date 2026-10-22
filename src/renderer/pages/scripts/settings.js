@@ -1086,8 +1086,11 @@ const settingsSearchResets = [];
 // integration enabled keeps the rows either way — an external Tor SOCKS
 // proxy needs no bundled binary, and a setting nothing can switch off
 // again would be worse than a row that explains nothing.
+// The rows also stay while IPFS is routed through Tor, so that preference,
+// and Enable Tor with it, can always be reached and turned off again.
 const applyTorRowVisibility = (settings = cachedSettings) => {
-  const visible = torBundled || settings?.enableTorIntegration === true;
+  const visible =
+    torBundled || settings?.enableTorIntegration === true || settings?.routeIpfsThroughTor === true;
   document
     .querySelectorAll('[data-tor]')
     .forEach((el) => (el.style.display = visible ? '' : 'none'));
@@ -1125,8 +1128,14 @@ const applyStartTorRowState = () => {
 const routeIpfsHelp = $('route-ipfs-through-tor-help');
 const defaultRouteIpfsHelp = routeIpfsHelp?.textContent || '';
 // Whether Tor is running: its endpoint in the service registry, read while
-// Advanced is shown. Null until read.
+// Advanced is shown. Null until read. And the profile's IPFS backend
+// ('managed', 'external' or 'disabled'), read with it.
 let torRunning = null;
+let ipfsMode = null;
+const routeIpfsExternalNote = $('route-ipfs-external-note');
+// Whether the built-in node serves this profile's IPFS: not with an
+// external gateway, nor with IPFS disabled. Unknown counts as yes.
+const builtInNode = () => ipfsMode !== 'external' && ipfsMode !== 'disabled';
 const applyRouteIpfsRowState = () => {
   const torOn = fields.enableTor?.checked === true;
   const routed = fields.routeIpfs?.checked === true;
@@ -1136,24 +1145,27 @@ const applyRouteIpfsRowState = () => {
   if (routeIpfsHelp) {
     routeIpfsHelp.textContent = !torOn
       ? routed
-        ? "Tor is off, so IPFS doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above."
+        ? "Tor is off, so the built-in IPFS node doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above."
         : 'Turn on Enable Tor (.onion access) above first.'
-      : routed && torRunning === false
-        ? "IPFS is waiting for Tor, and connects once it's running. Start Tor from the Nodes menu, or turn this off to connect directly."
+      : routed && torRunning === false && builtInNode()
+        ? "The built-in IPFS node is waiting for Tor, and connects once it's running. Start Tor from the Nodes menu, or turn this off to connect directly."
         : defaultRouteIpfsHelp;
   }
+  // A profile on an external gateway: the switch doesn't cover it, which
+  // the row says plainly, without saying what the gateway's requests do.
+  if (routeIpfsExternalNote) routeIpfsExternalNote.hidden = ipfsMode !== 'external';
 };
 
 // Tor's state, for that note: every 5 s while Advanced is shown, as the
 // node rows' status is while Profile or Nodes is.
 let torStateTimer = null;
 const refreshTorState = async () => {
-  try {
-    const registry = await freedomAPI.getServiceRegistry();
-    torRunning = Boolean(registry?.tor?.socks);
-  } catch {
-    torRunning = null;
-  }
+  const [registry, profile] = await Promise.all([
+    freedomAPI.getServiceRegistry().catch(() => null),
+    freedomAPI.getActiveProfile?.().catch(() => null),
+  ]);
+  torRunning = registry ? Boolean(registry.tor?.socks) : null;
+  ipfsMode = profile?.nodes?.ipfs?.mode ?? null;
   applyRouteIpfsRowState();
 };
 setTorStateRefreshActive = (active) => {

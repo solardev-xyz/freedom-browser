@@ -73,6 +73,20 @@ describe('applyTorRowVisibility', () => {
     expect(displays(dom)).toEqual(['none', 'none']);
   });
 
+  // A preference that is on stays reachable: Route IPFS through Tor, with
+  // the integration off and no bundled Arti, keeps every Tor row, Enable
+  // Tor included, so both can be turned off or on again (#784).
+  test('keeps the rows while IPFS is routed through Tor, on a build that bundles none', () => {
+    const dom = fakeRows(3);
+    loadApply({
+      torBundled: false,
+      cachedSettings: { enableTorIntegration: false, routeIpfsThroughTor: true },
+      ...dom,
+    })();
+
+    expect(displays(dom)).toEqual(['', '', '']);
+  });
+
   test('hides the rows before any settings payload has arrived', () => {
     const dom = fakeRows();
     loadApply({ torBundled: false, cachedSettings: null, ...dom })();
