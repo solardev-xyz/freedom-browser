@@ -14,6 +14,7 @@ const { WindowsWorkspaceExecutor } = require('../src/main/agent/workspace-execut
 const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('../src/main/agent/workspace-execution/execution-policy');
 const { resolveExecutableAccess } = require('../src/main/agent/workspace-execution/executable-access');
 const { readWindowsWorkspaceFile } = require('../src/main/agent/workspace-execution/opened-file-path');
+const { raceCleanup, racerNames } = require('../src/main/agent/workspace-execution/__tests__/cleanup-racer');
 const { values } = parseArgs({ options: { root: { type: 'string' }, home: { type: 'string' } } });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -132,6 +133,17 @@ await new WindowsWorkspaceExecutor(${JSON.stringify(values.home ? { home: values
   fs.symlinkSync(outsideDirectory, substitutedRoot, 'junction');
   await executor.removeTree(substitutedRoot);
   record('handle-relative-root-cleanup', !fs.existsSync(substitutedRoot) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched');
+  // The same cleanup while a surviving process keeps swapping a subdirectory
+  // for a junction to an outside directory. `remove_dir_all` may fail while
+  // the tree keeps refilling; it must never delete through the junction.
+  const race = await raceCleanup({
+    target: fs.mkdtempSync(path.join(directory, 'freedom-win-workspace-')),
+    outside: path.join(directory, 'race-outside'),
+    names: racerNames(),
+    linkType: 'junction',
+    cleanup: target => executor.removeTree(target),
+  });
+  record('handle-relative-cleanup-race', race.overlapped && race.preserved && race.removed, race);
   record('sentinels', fs.readFileSync(outside, 'utf8') === 'untouched' && fs.readFileSync(gitSentinel, 'utf8') === 'untouched');
   if (results.some(result => !result.passed)) process.exitCode = 1;
 }

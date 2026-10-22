@@ -8,6 +8,7 @@ const { removeSandboxTree } = require('./seatbelt-backend');
 const { buildSeatbeltProfile, createPrivateDirectory } = require('./seatbelt-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const { spawnSync } = require('node:child_process');
+const { raceCleanup, racerNames } = require('./__tests__/cleanup-racer');
 
 let fixture;
 beforeEach(async () => { fixture = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-secure-files-'))); });
@@ -74,6 +75,20 @@ test('an authorized root identity rejects a replacement ordinary directory', asy
   await removeSandboxTree(target).catch(() => {});
   expect(await fs.promises.readFile(path.join(outside, 'sentinel.txt'), 'utf8')).toBe('preserved');
 });
+
+// S1 under an active race: a surviving process keeps swapping `work/sub`
+// between a real directory and a link to `outside` for as long as the cleanup
+// runs. The write-confined `rm` may fail while the tree keeps refilling, but it
+// must never delete through the link.
+(process.platform === 'darwin' ? test : test.skip)('restricted cleanup keeps the outside target while a surviving process swaps a subdirectory for a link', async () => {
+  const report = await raceCleanup({
+    target: path.join(fixture, 'work'),
+    outside: path.join(fixture, 'outside'),
+    names: racerNames(),
+    cleanup: removeSandboxTree,
+  });
+  expect(report).toMatchObject({ overlapped: true, preserved: true, removed: true, missing: [] });
+}, 60_000);
 
 (process.platform === 'darwin' ? test : test.skip)('the production missing-Git deny protects alternate-case names', async () => {
   for (const [index, name] of ['.git', '.GIT', '.Git', '.gIT'].entries()) {
