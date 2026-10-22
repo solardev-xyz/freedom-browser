@@ -4215,11 +4215,10 @@ describe('Agent UI', () => {
     expect(summary).not.toContain('Site');
   });
 
-  test('uses Touch ID for an Agent-native wallet approval when quick unlock is enabled', async () => {
+  test.each(['signature', 'transaction'])('uses the main-process Touch ID result for an Agent-native %s approval', async kind => {
     const identityUnlock = jest.fn().mockResolvedValue({ success: true });
     const quickUnlock = jest.fn().mockResolvedValue({
       success: true,
-      password: 'test-only-touch-id-password',
     });
     const ctx = await loadAgentUi({
       windowGlobals: {
@@ -4242,10 +4241,10 @@ describe('Agent UI', () => {
       type: 'approval_requested',
       runId: 'run_test',
       approvalId: 'approval_signature',
-      action: 'wallet_signature',
+      action: `wallet_${kind}`,
       origin: 'https://app.example',
       wallet: {
-        kind: 'signature',
+        kind,
         chainId: 100,
         chainName: 'Gnosis',
         requiresUnlock: true,
@@ -4265,13 +4264,34 @@ describe('Agent UI', () => {
     await flush();
 
     expect(quickUnlock).toHaveBeenCalledTimes(1);
-    expect(identityUnlock).toHaveBeenCalledWith('test-only-touch-id-password');
+    expect(identityUnlock).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-approval-message'].classList.contains('error')).toBe(false);
     expect(ctx.elements['agent-wallet-unlock'].hidden).toBe(true);
     expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
       'run_test',
       'approval_signature',
       true
     );
+  });
+
+  test('unsuccessful Touch ID keeps the wallet decision pending without a second unlock', async () => {
+    const identityUnlock = jest.fn();
+    const ctx = await loadAgentUi({ windowGlobals: {
+      identity: { getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }), unlock: identityUnlock },
+      quickUnlock: {
+        canUseTouchId: jest.fn().mockResolvedValue(true), isEnabled: jest.fn().mockResolvedValue(true),
+        unlock: jest.fn().mockResolvedValue({ success: false, error: 'Touch ID cancelled' }),
+      },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_tx',
+      action: 'wallet_transaction', wallet: { kind: 'transaction', requiresUnlock: true } });
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush(); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+    expect(identityUnlock).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Touch ID cancelled');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
   });
 
   test('uses the native picker as the final consent surface for a file upload', async () => {

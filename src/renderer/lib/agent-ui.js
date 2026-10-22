@@ -2655,11 +2655,7 @@ async function ensureWalletUnlocked(request) {
       setMessage(elements.approvalMessage, quick?.error || 'Wallet unlock was cancelled', true);
       return false;
     }
-    const unlocked = await window.identity.unlock(quick.password);
-    if (!unlocked?.success) {
-      setMessage(elements.approvalMessage, unlocked?.error || 'Wallet unlock failed', true);
-      return false;
-    }
+    // Quick unlock completes in main; its response contains no password.
     return true;
   }
   elements.walletUnlock.hidden = false;
