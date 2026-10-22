@@ -220,6 +220,13 @@ function loadIpfsManagerModule(options = {}) {
   }
   // fetch-admission's session-close listeners, called by `closeSession`.
   const closeListeners = [];
+  // The profile's settings, and their main-process change listeners
+  // (settings-store's onSettingsChanged), which `changeSettings` calls.
+  let settings = { routeIpfsThroughTor: false, ...options.settings };
+  const settingsListeners = [];
+  // tor-manager's endpoint for IPFS, which `offerTor` changes.
+  let torEndpoint = null;
+  const torListeners = new Set();
   app.getVersion = () => '0.9.0-test';
   // freedom-ipfsd's gate, which the add-on takes (design 0007, Rollback).
   const takeIpfsGate = jest.fn(async () => ({ release: jest.fn(async () => {}) }));
@@ -279,6 +286,20 @@ function loadIpfsManagerModule(options = {}) {
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
       }),
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings: () => settings,
+        onSettingsChanged: (listener) => {
+          settingsListeners.push(listener);
+          return () => {};
+        },
+      }),
+      [require.resolve('./tor-manager')]: () => ({
+        getIpfsSocksEndpoint: () => ({ endpoint: torEndpoint, refused: null }),
+        onIpfsSocksEndpointChange: (listener) => {
+          torListeners.add(listener);
+          return () => torListeners.delete(listener);
+        },
+      }),
     },
   });
 
@@ -294,6 +315,18 @@ function loadIpfsManagerModule(options = {}) {
     serviceInstances,
     privateInstances,
     closeSession: (partition) => closeListeners.forEach((listener) => listener(partition)),
+    /** Saves `changes` as settings-store does: every listener hears the
+     * merged settings and the previous ones. */
+    changeSettings: (changes) => {
+      const previous = settings;
+      settings = { ...settings, ...changes };
+      settingsListeners.forEach((listener) => listener(settings, previous));
+    },
+    offerTor: (endpoint) => {
+      torEndpoint = endpoint;
+      torListeners.forEach((listener) => listener({ endpoint, refused: null }));
+    },
+    torListeners,
     takeIpfsGate,
     setStatusMessage,
     setErrorState,
@@ -3223,6 +3256,56 @@ describe('the freedom-ipfsd backend (the default)', () => {
     });
     await expect(ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY)).resolves.toEqual({
       available: false,
+    });
+  });
+
+  // Step 8, B1: the profile's "Route IPFS through Tor" setting is the policy's
+  // predicate, and its change is a change of policy (B3).
+  describe('Route IPFS through Tor', () => {
+    test('off, the default: direct, and Tor is never asked', async () => {
+      const ctx = loadIpfsManagerModule();
+      await ctx.mod.startIpfs();
+      const network = ctx.serviceInstances[0].config.network;
+      const heard = jest.fn();
+      network.subscribe(heard);
+      ctx.offerTor({ ip: '127.0.0.1', port: 9150 });
+      expect(network.current()).toEqual({ mode: 'direct' });
+      expect(heard).not.toHaveBeenCalled();
+      expect(ctx.torListeners.size).toBe(0);
+    });
+
+    test("on: socks5 to Tor's endpoint, the same policy for the profile and private windows", async () => {
+      const ctx = loadIpfsManagerModule({ settings: { routeIpfsThroughTor: true } });
+      await ctx.mod.startIpfs();
+      const network = ctx.serviceInstances[0].config.network;
+      // No endpoint yet: no policy, and nothing falls back to direct.
+      expect(network.current()).toBeNull();
+      ctx.offerTor({ ip: '127.0.0.1', port: 9150 });
+      expect(network.current()).toEqual({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+      expect(ctx.privateInstances[0].config.network).toBe(network);
+    });
+
+    test('switching it is a change of policy that every instance hears; other settings are none', async () => {
+      const ctx = loadIpfsManagerModule();
+      await ctx.mod.startIpfs();
+      const network = ctx.serviceInstances[0].config.network;
+      const heard = jest.fn();
+      network.subscribe(heard);
+      ctx.offerTor({ ip: '127.0.0.1', port: 9150 });
+
+      ctx.changeSettings({ showIpfsProgressStatus: true });
+      expect(heard).not.toHaveBeenCalled();
+
+      ctx.changeSettings({ routeIpfsThroughTor: true });
+      expect(heard).toHaveBeenLastCalledWith({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+      // Watched now: Tor's endpoint moving is heard too.
+      ctx.offerTor({ ip: '127.0.0.1', port: 9151 });
+      expect(heard).toHaveBeenLastCalledWith({ mode: 'socks5', ip: '127.0.0.1', port: 9151 });
+
+      ctx.changeSettings({ routeIpfsThroughTor: false });
+      expect(heard).toHaveBeenLastCalledWith({ mode: 'direct' });
+      expect(heard).toHaveBeenCalledTimes(3);
+      expect(ctx.torListeners.size).toBe(0);
     });
   });
 

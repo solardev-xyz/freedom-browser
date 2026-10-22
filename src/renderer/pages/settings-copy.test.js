@@ -317,14 +317,23 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
   const rowLabels = (html) =>
     [...html.matchAll(/<p class="row-label">([\s\S]*?)<\/p>/g)].map(([, body]) => textOf(body));
 
-  test('the two Beta features are all that is left, each badged rather than parenthesised', () => {
+  test('only the Beta features are left, each badged rather than parenthesised', () => {
     const advanced = section('experimental');
     expect(rowLabels(advanced)).toEqual([
       'Enable Identity &amp; Wallet Beta',
       'Enable Tor (.onion access) Beta',
+      'Route IPFS through Tor Beta',
     ]);
-    for (const label of ['Enable Identity &amp; Wallet', 'Enable Tor \\(\\.onion access\\)']) {
-      expect(advanced).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
+    // A label wrapped in a span of its own (an accessible name, #784)
+    // still carries the badge right after it.
+    for (const label of [
+      'Enable Identity &amp; Wallet',
+      'Enable Tor \\(\\.onion access\\)',
+      'Route IPFS through Tor',
+    ]) {
+      expect(advanced).toMatch(
+        new RegExp(`${label}(</span>)?\\s*<span class="resolver-badge">Beta</span>`)
+      );
     }
     expect(SOURCE).not.toContain('(Beta)</span>');
   });

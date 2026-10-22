@@ -59,6 +59,14 @@ const DEFAULT_SETTINGS = {
   // the decentralized protocols keep connecting directly).
   enableTorIntegration: false,
   startTorAtLaunch: false,
+  // Route IPFS through Tor (freedom-core design 0007, "Where the proxy comes
+  // from"): every IPFS instance's connections go through Arti's SOCKS
+  // endpoint, and fail closed while there is none. Off by default, and a
+  // switch of its own, apart from any Radicle one; a future "everything
+  // through Tor" mode would turn it on too (ipfs-manager's
+  // routesIpfsThroughTor). It applies at once: the instances restart under
+  // the new policy.
+  routeIpfsThroughTor: false,
   autoUpdate: true,
   showBookmarkBar: false,
   // When true, every download opens a native save dialog. Off by default:

@@ -18,6 +18,7 @@ const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
 const { FreedomIpfsdNode } = require('./ipfs/freedom-ipfsd-node');
 const { PrivateInstances } = require('./ipfs/freedom-ipfsd-private');
 const { IpfsNetwork } = require('./ipfs/ipfs-network');
+const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const {
@@ -59,19 +60,34 @@ let healthCheckInterval = null;
 // they serve beside, and stopped with it. Nothing spawns until a private
 // window's first IPFS request.
 let privateInstances = null;
+/**
+ * Whether the profile routes IPFS through Tor: its "Route IPFS through Tor"
+ * setting (freedom-core design 0007, "Where the proxy comes from"), a
+ * switch of its own. A future "everything through Tor" mode would make this
+ * true as well.
+ */
+function routesIpfsThroughTor(settings = loadSettings()) {
+  return settings?.routeIpfsThroughTor === true;
+}
+
 // The network policy every freedom-ipfsd instance starts under (freedom-core
 // design 0007, step 8, B2): `direct`, or `socks5` through the endpoint
-// tor-manager offers IPFS when the profile routes IPFS through Tor. That
-// setting is B1's; until it exists, `direct`. tor-manager is required when
-// first asked, so loading this module doesn't load it.
+// tor-manager offers IPFS when the profile routes IPFS through Tor.
+// tor-manager is required when first asked, so loading this module doesn't
+// load it, and a `direct` profile never asks it.
 const ipfsNetwork = new IpfsNetwork({
-  routesThroughTor: () => false,
+  routesThroughTor: () => routesIpfsThroughTor(),
   tor: {
     getIpfsSocksEndpoint: () => require('./tor-manager').getIpfsSocksEndpoint(),
     onIpfsSocksEndpointChange: (listener) =>
       require('./tor-manager').onIpfsSocksEndpointChange(listener),
   },
   log,
+});
+// The setting moving is a change of policy: the instances restart under
+// the new one (step 8, B3).
+onSettingsChanged((merged, previous) => {
+  if (routesIpfsThroughTor(merged) !== routesIpfsThroughTor(previous)) ipfsNetwork.changed();
 });
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the

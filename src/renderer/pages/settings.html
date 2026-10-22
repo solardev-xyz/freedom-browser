@@ -1862,6 +1862,34 @@
                 </label>
               </div>
             </div>
+            <div class="row" id="route-ipfs-through-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">
+                  <span id="route-ipfs-through-tor-label">Route IPFS through Tor</span>
+                  <span class="resolver-badge">Beta</span>
+                </p>
+                <p class="row-help" id="route-ipfs-through-tor-help">
+                  Sends the built-in IPFS node's traffic through Tor instead of connecting directly.
+                  Content loads more slowly, and the node finds it only through delegated routing,
+                  without QUIC. If Tor isn't running, the node doesn't connect rather than going
+                  direct.
+                </p>
+                <p class="row-help" id="route-ipfs-external-note" hidden>
+                  This profile uses an external IPFS gateway, which this setting doesn't cover.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    id="route-ipfs-through-tor"
+                    aria-labelledby="route-ipfs-through-tor-label"
+                    aria-describedby="route-ipfs-through-tor-help"
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
