@@ -188,18 +188,53 @@ describe('payments settled at the finalized block', () => {
     expect(note.textContent).toBe(TAKEN_EXPLANATION);
   });
 
-  test('a payment not settled at finality keeps its status as before', async () => {
+  // Every other row: its stored status reads as a known word, its style
+  // class unchanged, so the column doesn't mix "Confirmed (final)" with
+  // lowercase raw values.
+  test.each([
+    ['pending', 'Pending'],
+    ['confirmed', 'Confirmed'],
+    ['failed', 'Failed'],
+    ['settled', 'Settled'],
+    ['no-receipt', 'No receipt'],
+  ])('a stored %s reads "%s", its class unchanged', async (status, text) => {
+    const { pill, note } = await statusOf(
+      createPayment({ kind: 'wallet-send', status, metadata: { intentId: 'i' } })
+    );
+    expect(pill.textContent).toBe(text);
+    expect(pill.className).toBe(`status-pill status-${status}`);
+    expect(note).toBeNull();
+  });
+
+  test('"Confirmed (final)" only for a payment main settled as paid', async () => {
     for (const payment of [
-      createPayment(),
-      createPayment({ kind: 'wallet-send', status: 'pending', metadata: { intentId: 'i' } }),
       createPayment({ kind: 'wallet-send', status: 'confirmed', metadata: null }),
-      settled('constructor', { status: 'pending' }),
-      settled(undefined, { status: 'pending' }),
+      createPayment({ kind: 'wallet-send', status: 'confirmed', metadata: { intentId: 'i' } }),
+      settled('constructor', { status: 'confirmed' }),
+      settled(undefined, { status: 'confirmed' }),
+      settled('failed', { status: 'confirmed' }),
     ]) {
-      const { pill, note } = await statusOf(payment);
-      expect(pill.textContent).toBe(payment.status);
-      expect(pill.classList.contains(`status-${payment.status}`)).toBe(true);
-      expect(note).toBeNull();
+      const { pill } = await statusOf(payment);
+      expect(pill.textContent).not.toBe(LABELS.confirmed);
+    }
+    const { pill } = await statusOf(settled('paid'));
+    expect(pill.textContent).toBe(LABELS.confirmed);
+  });
+
+  test('a stored taken reads "Taken" with its explanation, even without a label', async () => {
+    const { pill, note } = await statusOf(
+      createPayment({ kind: 'wallet-send', status: 'taken', metadata: null })
+    );
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  test('an unknown status shows as it is stored, as text', async () => {
+    for (const status of ['refunded', 'Pending!', '<b>x</b>', 'constructor', 'toString']) {
+      const ctx = await runPaymentsPage({ payments: [createPayment({ status })] });
+      const pill = ctx.elements.results.querySelector('.status-pill');
+      expect(pill.textContent).toBe(status);
+      expect(ctx.document.htmlWrites ?? []).not.toContainEqual(expect.stringContaining(status));
     }
   });
 });

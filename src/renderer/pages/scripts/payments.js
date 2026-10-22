@@ -29,24 +29,37 @@ const KIND_META = {
 };
 const KIND_FALLBACK = { label: '', cls: '', anonLabel: '—' };
 
+// What "Taken" means, shown with it. A copy of TAKEN_EXPLANATION in
+// lib/wallet/intent-texts.js, which this classic script can't import;
+// payments.test.js holds it equal.
+const TAKEN_NOTE =
+  "Another transaction from this account used this payment's place in the queue, so this " +
+  'payment will never go through. That transaction may have done the same thing.';
+
 // A wallet payment settled at the finalized block, by the label it settled
 // on (`metadata.finality.label`, intent-labels.js): what its status says
 // (D10), the status style, and what is shown with it. Main's own label is
 // used rather than the row's status, which a later receipt poll may
-// rewrite. These texts are copies of LABELS and TAKEN_EXPLANATION in
-// lib/wallet/intent-texts.js, which this classic script can't import;
-// payments.test.js holds them equal. A manual close (pending freedom-core
+// rewrite. The texts are copies of LABELS in lib/wallet/intent-texts.js,
+// held equal by payments.test.js. A manual close (pending freedom-core
 // #112) would add its label here.
 const FINALITY_LABELS = {
   paid: { text: 'Confirmed (final)', status: 'confirmed' },
   failed: { text: 'Failed on chain', status: 'failed' },
-  taken: {
-    text: 'Taken',
-    status: 'taken',
-    note:
-      "Another transaction from this account used this payment's place in the queue, so this " +
-      'payment will never go through. That transaction may have done the same thing.',
-  },
+  taken: { text: 'Taken', status: 'taken', note: TAKEN_NOTE },
+};
+
+// How any other row's stored status reads. Only these known values are
+// mapped; the stored status and its style class stay as they are, and an
+// unknown status shows as it is stored (as text, never markup). "Confirmed"
+// here is a receipt someone saw, not the finalized label.
+const STATUS_TEXT = {
+  pending: 'Pending',
+  confirmed: 'Confirmed',
+  failed: 'Failed',
+  settled: 'Settled',
+  'no-receipt': 'No receipt',
+  taken: 'Taken',
 };
 
 // Atomic-units → decimal string with `decimals` precision, trailing
@@ -162,13 +175,20 @@ function finalityOf(payment) {
     : null;
 }
 
+function statusText(status) {
+  return typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)
+    ? STATUS_TEXT[status]
+    : status;
+}
+
 // The status pill, and for a taken payment the line that explains it.
 function statusCell(payment) {
   const finality = finalityOf(payment);
   const status = finality ? finality.status : payment.status;
-  const pill = el('span', 'status-pill', finality ? finality.text : payment.status);
+  const pill = el('span', 'status-pill', finality ? finality.text : statusText(payment.status));
   if (/^[\w-]+$/.test(status || '')) pill.classList.add(`status-${status}`);
-  return finality?.note ? [pill, el('p', 'status-note', finality.note)] : [pill];
+  const note = finality ? finality.note : status === 'taken' ? TAKEN_NOTE : undefined;
+  return note ? [pill, el('p', 'status-note', note)] : [pill];
 }
 
 function cell(className, ...content) {
