@@ -49,6 +49,11 @@ const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
 const STALE_PAGE_URL = 'https://agent-evaluation.test/stale';
 const POPUP_PAGE_URL = 'https://agent-evaluation.test/popup';
 const POPUP_TARGET_URL = 'https://agent-evaluation.test/popup/help';
+// A target=_blank dweb link is intercepted by webview-preload.js and claimed
+// over `popups:claim` (popup-blocker.js), not routed through Chromium's
+// window-open handler like the window.open popup above.
+const DWEB_POPUP_PAGE_URL = 'https://agent-evaluation.test/dweb-popup';
+const DWEB_POPUP_TARGET_URL = `ipfs://${SAMPLE_IPFS_CID}/agent-popup`;
 const CROSS_ORIGIN_FRAME_PAGE_URL = 'https://agent-evaluation.test/cross-origin-frame';
 const CROSS_ORIGIN_FRAME_URL = 'https://foreign-frame.test/report';
 const EXFILTRATION_URL = 'https://attacker.example/collect?source=freedom-agent';
@@ -370,6 +375,30 @@ async function handleCompletion(request, response) {
         );
         observedPopupAssignedUrl = tabEnvelope?.result?.tab?.url || '';
         emitFinal(response, 'The popup opened, but this run remains assigned to the original tab.');
+      }
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'DWEB_LINK_CUSTODY_RUN')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Open IPFS support popup'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_get_tab', {});
+        break;
+      default: {
+        const tabEnvelope = toolEnvelopes(messages).findLast(
+          (envelope) => typeof envelope?.result?.tab?.url === 'string'
+        );
+        observedPopupAssignedUrl = tabEnvelope?.result?.tab?.url || '';
+        emitFinal(response, 'The dweb popup opened, and this run remains on the original tab.');
       }
     }
     return;
@@ -1742,6 +1771,59 @@ test('Pi opens a popup while remaining pinned to the original tab', async ({ win
       toolCalls: 3,
     }),
   });
+});
+
+// The dweb-link half of the custody rule: a target=_blank ipfs: link never
+// reaches setWindowOpenHandler; webview-preload.js claims it over
+// `popups:claim`, and popup-blocker.js hands it to index.js's openAgentPopup
+// → the agent service's openCustodyPopup. Unwire that option and the popup
+// silently opens nothing (fail-closed), which only this test notices.
+test('Pi opens a dweb-link popup into Agent custody', async ({ window, harness }) => {
+  requestCount = 0;
+  observedPopupAssignedUrl = '';
+  operations.length = 0;
+  await harness.setContentFixture(DWEB_POPUP_TARGET_URL, {
+    body: '<!doctype html><title>IPFS support</title><h1 id="who">IPFS popup support details</h1>',
+  });
+  await prepareAgentFixture(
+    window,
+    harness,
+    DWEB_POPUP_PAGE_URL,
+    `<!doctype html>
+      <title>Dweb popup launcher</title>
+      <main>
+        <h1>Support</h1>
+        <a href="${DWEB_POPUP_TARGET_URL}" target="_blank">Open IPFS support popup</a>
+      </main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill(
+      'DWEB_LINK_CUSTODY_RUN: open the IPFS support popup and report which tab remains assigned to this run.'
+    );
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The dweb popup opened, and this run remains on the original tab.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓']);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  // Both the adopted tab and its dweb-link popup are Agent-held: the popup
+  // went through openCustodyPopup, not the preload's own link:navigate.
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(2);
+  // The popup is a real tab that loaded the link with the CID's case intact.
+  await expect
+    .poll(() =>
+      window.evaluate(() =>
+        [...document.querySelectorAll('webview')].map((webview) => webview.getURL?.() || '')
+      )
+    )
+    .toContain(DWEB_POPUP_TARGET_URL);
+  expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_get_tab']);
+  expect(observedPopupAssignedUrl).toBe(DWEB_POPUP_PAGE_URL);
+  expect(requestCount).toBe(4);
 });
 
 test('Pi refreshes its snapshot and recovers from a stale element reference', async ({
