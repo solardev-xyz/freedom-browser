@@ -209,6 +209,140 @@ describe('the network policy (0007, step 8, B2)', () => {
   });
 });
 
+describe('a change of network policy (0007, step 8, B3)', () => {
+  /** A running node of a profile whose setting `routes` says whether IPFS
+   * goes through Tor, and `tor` what Tor offers. */
+  async function running(script = {}, endpoint = { ip: '127.0.0.1', port: 9150 }) {
+    const tor = fakeTorEndpoint();
+    const setting = { routes: true };
+    const network = new IpfsNetwork({ routesThroughTor: () => setting.routes, tor });
+    tor.offer(endpoint);
+    newNode(script, { network });
+    const start = node.start();
+    await settle();
+    expect(await start).toBe(true);
+    return { tor, setting, network };
+  }
+
+  const starts = () => service.children.flatMap((c) => c.sent('ipfs.start'));
+  const stops = () => service.children.flatMap((c) => c.sent('ipfs.stop'));
+
+  test("Tor's endpoint moving retires the instance, proves its teardown, and starts one on the new", async () => {
+    const { tor } = await running();
+    const before = node.capture();
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    // Retired at once: what it captured fails, and it is down meanwhile.
+    expect(node.isLive(before)).toBe(false);
+    await expect(request({}, before)).rejects.toThrow('freedom-ipfs native node is not running');
+    expect(node.state).toBe('restarting');
+    await settle();
+
+    expect(stops().map((m) => m.params)).toEqual([{ instance: 'p-1' }]);
+    expect(starts().map((m) => [m.params.instance, m.params.network])).toEqual([
+      ['p-1', { mode: 'socks5', ip: '127.0.0.1', port: 9150 }],
+      ['p-2', { mode: 'socks5', ip: '127.0.0.1', port: 9151 }],
+    ]);
+    // The stop came before the new start, in the same process.
+    const order = child().requests.map((m) => m.method);
+    expect(order.indexOf('ipfs.stop')).toBeLessThan(order.lastIndexOf('ipfs.start'));
+    expect(service.children).toHaveLength(1);
+    expect(node.state).toBe('running');
+    expect(changes).toEqual(['restarting', 'running']);
+  });
+
+  test('the setting turning on or off is a change too', async () => {
+    const { setting, network } = await running();
+    setting.routes = false;
+    network.changed();
+    await settle();
+    expect(starts().map((m) => m.params.network)).toEqual([
+      { mode: 'socks5', ip: '127.0.0.1', port: 9150 },
+      { mode: 'direct' },
+    ]);
+    setting.routes = true;
+    network.changed();
+    await settle();
+    expect(
+      starts()
+        .map((m) => m.params.network)
+        .at(-1)
+    ).toEqual({
+      mode: 'socks5',
+      ip: '127.0.0.1',
+      port: 9150,
+    });
+    expect(stops()).toHaveLength(2);
+    expect(node.state).toBe('running');
+  });
+
+  test('Tor going down, or offering the same endpoint again, changes nothing', async () => {
+    const { tor } = await running();
+    tor.offer(null);
+    await settle();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(stops()).toEqual([]);
+    expect(starts()).toHaveLength(1);
+    expect(node.state).toBe('running');
+    expect(node.isLive(node.capture())).toBe(true);
+  });
+
+  test('a teardown unproven within 5 s restarts the process, whose instance takes the new policy', async () => {
+    const { tor } = await running({ stop: () => {} });
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(stops()).toHaveLength(1);
+    await clock.advance(4_999);
+    expect(service.children).toHaveLength(1);
+    await clock.advance(1);
+    await clock.advance(1_000);
+    // Killed, restarted, and its new instance runs under the new endpoint.
+    expect(service.children).toHaveLength(2);
+    expect(
+      child()
+        .sent('ipfs.start')
+        .map((m) => [m.params.instance, m.params.network])
+    ).toEqual([['p-1', { mode: 'socks5', ip: '127.0.0.1', port: 9151 }]]);
+    expect(node.state).toBe('running');
+  });
+
+  test('a change while the instance is still starting stops that start, then starts anew', async () => {
+    const tor = fakeTorEndpoint();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    let held = null;
+    newNode(
+      {
+        start: (message, c) =>
+          held ? c.result(message.id, { instance: message.params.instance }) : (held = message),
+      },
+      { network: new IpfsNetwork({ routesThroughTor: () => true, tor }) }
+    );
+    const start = node.start();
+    await settle();
+    expect(held.params.instance).toBe('p-1');
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(stops().map((m) => m.params.instance)).toEqual(['p-1']);
+    expect(starts().map((m) => [m.params.instance, m.params.network.port])).toEqual([
+      ['p-1', 9150],
+      ['p-2', 9151],
+    ]);
+    expect(await start).toBe(true);
+  });
+
+  test('a stop during the teardown ends the change', async () => {
+    const { tor } = await running({ stop: () => {} });
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    const stopping = node.stop();
+    await settle();
+    await clock.advance(10_000);
+    await stopping;
+    expect(starts()).toHaveLength(1);
+    expect(service.children).toHaveLength(1);
+  });
+});
+
 describe('start', () => {
   test("spawns the persistent process and starts its instance with today's configuration", async () => {
     await started();

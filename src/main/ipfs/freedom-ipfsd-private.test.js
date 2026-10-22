@@ -134,7 +134,9 @@ describe('the network policy (0007, step 8, B2)', () => {
   /** Private instances of a profile that routes IPFS through Tor. */
   function throughTor() {
     const tor = fakeTorEndpoint();
-    newInstances({}, { network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+    const network = new IpfsNetwork({ routesThroughTor: () => true, tor });
+    newInstances({}, { network });
+    tor.network = network;
     return tor;
   }
 
@@ -170,17 +172,109 @@ describe('the network policy (0007, step 8, B2)', () => {
     const loading = lease.request(init({ headersTimeoutMs: 2_000 }));
     loading.catch(() => {});
     await settle();
-    expect(tor.listeners.size).toBe(1);
+    // The instances' own subscription, and this start's.
+    expect(tor.network.listeners.size).toBe(2);
     await clock.advance(2_000);
     await expect(loading).rejects.toThrow();
     // Its last lease goes: the instance is retired, and stops waiting.
     lease.release();
     await settle();
-    expect(tor.listeners.size).toBe(0);
+    expect(tor.network.listeners.size).toBe(1);
     tor.offer({ ip: '127.0.0.1', port: 9150 });
     await settle();
     expect(service.spawned).toHaveLength(0);
     expect(sent('ipfs.start')).toEqual([]);
+  });
+});
+
+describe('a change of network policy (0007, step 8, B3)', () => {
+  /** Private instances of a profile whose setting says IPFS goes through
+   * Tor, which offers `endpoint`. */
+  function throughTor(script = {}, endpoint = { ip: '127.0.0.1', port: 9150 }) {
+    const tor = fakeTorEndpoint();
+    const setting = { routes: true };
+    const network = new IpfsNetwork({ routesThroughTor: () => setting.routes, tor });
+    tor.offer(endpoint);
+    newInstances(script, { network });
+    return { tor, setting, network };
+  }
+
+  test("Tor's endpoint moving retires every live instance, and the next load starts on the new", async () => {
+    const { tor } = throughTor();
+    expect(await load('private-a')).toBe('private e-1');
+    expect(await load('private-b')).toBe('private e-2');
+    const held = instances.lease('private-a');
+
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    // Retired at once: a request on it fails, and nothing is sent for it.
+    await expect(held.request(init())).rejects.toThrow('freedom-ipfs native node is not running');
+    held.release();
+    await settle();
+    expect(
+      sent('ipfs.stop')
+        .map((m) => m.params.instance)
+        .sort()
+    ).toEqual(['e-1', 'e-2']);
+
+    // With every instance gone, the process went idle: the next load
+    // spawns it again, and starts under the new endpoint.
+    expect(await load('private-a')).toBe('private e-1');
+    expect(service.spawned).toHaveLength(2);
+    const network = sent('ipfs.start').map((m) => [m.params.instance, m.params.network.port]);
+    expect(network).toEqual([
+      ['e-1', 9150],
+      ['e-2', 9150],
+      ['e-1', 9151],
+    ]);
+  });
+
+  test('the setting turning off is a change too; Tor going down, or the same endpoint, is none', async () => {
+    const { tor, setting, network } = throughTor();
+    expect(await load('private-a')).toBe('private e-1');
+    tor.offer(null);
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(sent('ipfs.stop')).toEqual([]);
+    expect(await load('private-a')).toBe('private e-1');
+
+    setting.routes = false;
+    network.changed();
+    await settle();
+    expect(sent('ipfs.stop').map((m) => m.params.instance)).toEqual(['e-1']);
+    expect(await load('private-a')).toBe('private e-1');
+    expect(service.spawned).toHaveLength(2);
+    expect(sent('ipfs.start').at(-1).params.network).toEqual({ mode: 'direct' });
+  });
+
+  test('teardowns unproven within 5 s stop the process; the next load spawns it again, on the new policy', async () => {
+    const { tor } = throughTor({ stop: () => {} });
+    expect(await load('private-a')).toBe('private e-1');
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(sent('ipfs.stop')).toHaveLength(1);
+    await clock.advance(4_999);
+    expect(child().sent('ipfs.shutdown')).toEqual([]);
+    await clock.advance(1);
+    expect(child().sent('ipfs.shutdown')).toHaveLength(1);
+    await clock.advance(10_000);
+
+    expect(await load('private-a')).toBe('private e-1');
+    expect(service.spawned).toHaveLength(2);
+    expect(
+      child()
+        .sent('ipfs.start')
+        .map((m) => m.params.network.port)
+    ).toEqual([9151]);
+  });
+
+  test('a stop unsubscribes, and a change after it does nothing', async () => {
+    const { tor, network } = throughTor();
+    expect(await load('private-a')).toBe('private e-1');
+    await instances.stop();
+    expect(network.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(sent('ipfs.stop')).toEqual([]);
   });
 });
 

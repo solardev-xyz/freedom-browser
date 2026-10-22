@@ -35,6 +35,14 @@
  *   nothing reaches a retired or evicted ID. A start already sent is
  *   stopped with `ipfs.stop`, whose reply proves the teardown: its slot is
  *   drained only then, and a start that takes it waits for that.
+ * - **A change of network policy** (0007, "Changing the policy"; step 8,
+ *   B3): every instance started or starting under another policy is
+ *   retired at once (its requests fail, nothing more is sent for it) and
+ *   torn down (`ipfs.stop`, whose reply proves it); its partition's next
+ *   request starts one under the new policy. If those teardowns aren't
+ *   proven within 5 s, the process is stopped, and the next request spawns
+ *   it again. Tor going down is no change: the policy stays, and IPFS fails
+ *   closed.
  * - **Closing a partition** (`close`, from `closeDwebSession`) retires its
  *   instance, so the leases it still holds pin nothing. A closed partition
  *   is never served again.
@@ -85,8 +93,9 @@ const {
   ABORTED,
   TIMEOUT,
   EXITED,
+  POLICY_CHANGE_PROOF_MS,
 } = require('./freedom-ipfsd-node');
-const { DIRECT } = require('./ipfs-network');
+const { DIRECT, samePolicy } = require('./ipfs-network');
 
 /** The most instances the ephemeral process holds (0007, Bounds). */
 const MAX_INSTANCES = 8;
@@ -176,6 +185,9 @@ class PrivateInstances {
     this.failed = false;
     this.stopped = false;
     this.stopping = null;
+    // A policy change waiting for its teardowns' proof: its timer.
+    this.changeTimer = null;
+    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
   }
 
   /** Whether private partitions can be served: neither failed nor stopped. */
@@ -219,10 +231,42 @@ class PrivateInstances {
   stop() {
     if (!this.stopped) {
       this.stopped = true;
+      this.unsubscribeNetwork();
+      this.clearTimer(this.changeTimer);
+      this.changeTimer = null;
       this.retireAll();
       this.stopping = this.stopProcess();
     }
     return this.stopping;
+  }
+
+  /**
+   * The network policy may have changed: every instance started or
+   * starting under another one is retired and torn down, and if that isn't
+   * proven within 5 s the process is stopped. No policy now (Tor down)
+   * changes nothing.
+   */
+  onNetworkChange() {
+    if (!this.up) return;
+    const next = this.network.current();
+    if (!next) return;
+    const changed = this.slots
+      .map((slot) => slot.occupant)
+      .filter((occupant) => occupant?.network && !samePolicy(occupant.network, next));
+    if (changed.length === 0) return;
+    this.log.info('[IPFS] the network policy changed: private freedom-ipfs instances restart', {
+      instances: changed.length,
+    });
+    for (const instance of changed) this.retire(instance);
+    const draining = changed.map((instance) => instance.slot).filter((slot) => slot.draining);
+    if (draining.length === 0 || this.changeTimer) return;
+    this.changeTimer = this.setTimer(() => {
+      this.changeTimer = null;
+      if (!this.up || !this.life || !draining.some((slot) => slot.draining)) return;
+      this.log.warn('[IPFS] private freedom-ipfs teardown unproven after a policy change');
+      this.life = null;
+      this.shutdown = this.stopProcess();
+    }, POLICY_CHANGE_PROOF_MS);
   }
 
   // ---- instances and their slots ----
@@ -409,6 +453,7 @@ class PrivateInstances {
     if (instance.state !== 'starting') throw notRunning();
     const network = await this.networkFor(instance);
     if (instance.state !== 'starting') throw notRunning();
+    instance.network = network;
     const gen = await this.process();
     if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
     instance.gen = gen;
