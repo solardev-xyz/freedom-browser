@@ -16,7 +16,7 @@ const SCRIPT = fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), '
 const START = 'const applyRouteIpfsRowState = () => {';
 const END = '\n};\n';
 
-function loadApply({ fields, help }) {
+function loadApply({ fields, help, torRunning }) {
   const start = SCRIPT.indexOf(START);
   expect(start).toBeGreaterThanOrEqual(0);
   const end = SCRIPT.indexOf(END, start);
@@ -25,12 +25,13 @@ function loadApply({ fields, help }) {
     'fields',
     'routeIpfsHelp',
     'defaultRouteIpfsHelp',
+    'torRunning',
     `${body}\nreturn applyRouteIpfsRowState;`
   );
-  return factory(fields, help, 'DEFAULT HELP');
+  return factory(fields, help, 'DEFAULT HELP', torRunning);
 }
 
-function row({ torOn, routed }) {
+function row({ torOn, routed, torRunning = null }) {
   const classes = new Set();
   const fields = {
     enableTor: { checked: torOn },
@@ -40,7 +41,7 @@ function row({ torOn, routed }) {
     },
   };
   const help = { textContent: '' };
-  loadApply({ fields, help })();
+  loadApply({ fields, help, torRunning })();
   return { disabled: fields.routeIpfs.disabled, rowDisabled: classes.has('disabled'), help };
 }
 
@@ -72,6 +73,26 @@ describe('Route IPFS through Tor', () => {
         help: { textContent: 'DEFAULT HELP' },
       });
     }
+  });
+
+  test('with Tor on but not running, the routing on says IPFS is waiting for it; otherwise the default help', () => {
+    expect(row({ torOn: true, routed: true, torRunning: false }).help.textContent).toBe(
+      "IPFS is waiting for Tor, and connects once it's running. Start Tor from the Nodes menu, or turn this off to connect directly."
+    );
+    for (const [routed, torRunning] of [
+      [true, true],
+      [true, null],
+      [false, false],
+    ]) {
+      expect(row({ torOn: true, routed, torRunning }).help.textContent).toBe('DEFAULT HELP');
+    }
+  });
+
+  test("Tor's state is read while Advanced is shown, and repaints the row", () => {
+    expect(SCRIPT).toContain("setTorStateRefreshActive(section === 'advanced');");
+    expect(SCRIPT).toContain('torRunning = Boolean(registry?.tor?.socks);');
+    const refresh = SCRIPT.slice(SCRIPT.indexOf('const refreshTorState = async () => {'));
+    expect(refresh.slice(0, refresh.indexOf('\n};\n'))).toContain('applyRouteIpfsRowState();');
   });
 
   test('with Tor off, it cannot be switched on, and says where to turn Tor on', () => {

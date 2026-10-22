@@ -123,6 +123,7 @@ let savedProfileName = '';
 let torBundled = true;
 let profileRefreshTimer = null;
 let setProfileRefreshActive = () => {};
+let setTorStateRefreshActive = () => {};
 // Starts or stops the Swarm cache usage poll to match whether its row is on
 // screen (defined with the row, below; #579).
 let syncSwarmCacheUsage = () => {};
@@ -504,6 +505,7 @@ const showSection = (route) => {
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
+  setTorStateRefreshActive(section === 'advanced');
   syncSwarmCacheUsage();
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
@@ -1117,9 +1119,14 @@ const applyStartTorRowState = () => {
 // "Route IPFS through Tor" needs the Tor integration: while it is off, the
 // row can't be switched on, and says where to turn Tor on. A row already on
 // stays switchable, so it can always be turned off again, and says that
-// IPFS doesn't connect meanwhile (it fails closed, never direct).
+// IPFS doesn't connect meanwhile (it fails closed, never direct). With Tor
+// on but not running, a row that is on says IPFS is waiting for it, so the
+// wait isn't silent.
 const routeIpfsHelp = $('route-ipfs-through-tor-help');
 const defaultRouteIpfsHelp = routeIpfsHelp?.textContent || '';
+// Whether Tor is running: its endpoint in the service registry, read while
+// Advanced is shown. Null until read.
+let torRunning = null;
 const applyRouteIpfsRowState = () => {
   const torOn = fields.enableTor?.checked === true;
   const routed = fields.routeIpfs?.checked === true;
@@ -1127,13 +1134,41 @@ const applyRouteIpfsRowState = () => {
   fields.routeIpfsRow?.classList.toggle('disabled', !usable);
   if (fields.routeIpfs) fields.routeIpfs.disabled = !usable;
   if (routeIpfsHelp) {
-    routeIpfsHelp.textContent = torOn
-      ? defaultRouteIpfsHelp
-      : routed
+    routeIpfsHelp.textContent = !torOn
+      ? routed
         ? "Tor is off, so IPFS doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above."
-        : 'Turn on Enable Tor (.onion access) above first.';
+        : 'Turn on Enable Tor (.onion access) above first.'
+      : routed && torRunning === false
+        ? "IPFS is waiting for Tor, and connects once it's running. Start Tor from the Nodes menu, or turn this off to connect directly."
+        : defaultRouteIpfsHelp;
   }
 };
+
+// Tor's state, for that note: every 5 s while Advanced is shown, as the
+// node rows' status is while Profile or Nodes is.
+let torStateTimer = null;
+const refreshTorState = async () => {
+  try {
+    const registry = await freedomAPI.getServiceRegistry();
+    torRunning = Boolean(registry?.tor?.socks);
+  } catch {
+    torRunning = null;
+  }
+  applyRouteIpfsRowState();
+};
+setTorStateRefreshActive = (active) => {
+  if (!active && torStateTimer) {
+    clearInterval(torStateTimer);
+    torStateTimer = null;
+    return;
+  }
+  if (active && !torStateTimer) {
+    refreshTorState();
+    torStateTimer = setInterval(refreshTorState, 5000);
+  }
+};
+// The page may have opened on Advanced before this was set.
+setTorStateRefreshActive(resolveSection(location.hash) === 'advanced');
 
 const NODE_MODE_LABELS = {
   managed: 'Managed by Freedom',
