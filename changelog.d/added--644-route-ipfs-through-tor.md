@@ -1,0 +1,4 @@
+- Route IPFS through Tor, under Settings > Advanced, sends this profile's IPFS traffic through Tor instead of connecting directly ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Content loads more slowly, and IPFS finds it only through delegated routing, without QUIC
+  - If Tor isn't running, IPFS doesn't connect rather than going direct
+  - Off by default, and separate from the Tor setting for `.onion` sites, which it needs; it applies without a restart
