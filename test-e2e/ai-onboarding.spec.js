@@ -123,6 +123,8 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   const url = 'https://webmcp-gate.test/';
   const fixture = { body: '<!doctype html><title>WebMCP gate</title><p>Fixture</p>' };
   const modelContext = async (app) => {
+    // A relaunched app can answer evaluate() before main has installed the harness.
+    await expect.poll(() => app.evaluate(() => Boolean(globalThis.__FREEDOM_TEST_HARNESS__))).toBe(true);
     await app.evaluate((_e, { url, fixture }) => globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture(url, fixture), { url, fixture });
     let chrome;
     await expect.poll(() => {
