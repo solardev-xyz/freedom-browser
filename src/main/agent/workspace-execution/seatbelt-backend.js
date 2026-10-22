@@ -257,21 +257,23 @@ function discoverRuntimeReadPaths(runtimeRoots) {
         const homebrewMatch = /^(\/opt\/homebrew\/opt\/[^/]+)/.exec(dependency);
         const exposedPath = homebrewMatch?.[1] || dependency;
         if (!homebrewMatch && !runtimeRoots.some(root => insidePath(root.sourcePath, exposedPath))) continue;
-        if (homebrewMatch) {
-          try {
-            if (!fs.realpathSync(exposedPath).startsWith('/opt/homebrew/Cellar/')) continue;
-          } catch { continue; }
+        let resolvedPath;
+        try {
+          resolvedPath = fs.realpathSync(exposedPath);
+        } catch {
+          // The dynamic loader fails closed if a declared dependency disappears.
+          continue;
         }
+        // Grant a dependency only where it really lives: a symlink inside an
+        // approved root must not turn into a read grant for what it points at.
+        if (homebrewMatch ? !resolvedPath.startsWith('/opt/homebrew/Cellar/')
+          : !runtimeRoots.some(root => insidePath(root.sourcePath, resolvedPath))) continue;
         paths.add(exposedPath);
         if (homebrewMatch) {
           const configurationPath = path.join('/opt/homebrew/etc', path.basename(homebrewMatch[1]));
           if (fs.existsSync(configurationPath)) paths.add(configurationPath);
         }
-        try {
-          paths.add(fs.realpathSync(exposedPath));
-        } catch {
-          // The dynamic loader will fail closed if a declared dependency disappears.
-        }
+        paths.add(resolvedPath);
       }
     }
   }

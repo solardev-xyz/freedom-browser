@@ -305,6 +305,25 @@ describe('workspace execution policy', () => {
     ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_EXECUTABLE_ROOT' }));
   });
 
+  test('refuses an executable root inside or around the sandbox-writable workspace', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const workspaceBin = path.join(fixture.workspaceRoot, 'tools', 'bin');
+    await fs.promises.mkdir(workspaceBin, { recursive: true });
+    await fs.promises.writeFile(path.join(workspaceBin, 'planted'), '#!/bin/sh\n', { mode: 0o700 });
+    const around = path.join(fixture.fixtureRoot, 'bin');
+    await fs.promises.mkdir(around);
+    await fs.promises.writeFile(path.join(around, 'wide'), '#!/bin/sh\n', { mode: 0o700 });
+    const basePolicy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    for (const [name, bin] of [['planted', workspaceBin], ['wide', around]]) {
+      const access = await resolveExecutableAccess([name], { platform: 'linux', hostEnvironment: { PATH: bin } });
+      expect(() => restrictWorkspaceExecutionPolicy(basePolicy, { addRuntimeRoots: access.runtimeRoots }))
+        .toThrow(expect.objectContaining({ code: 'EXECUTABLE_ROOT_WRITABLE' }));
+      await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot, runtimeRoots: access.runtimeRoots }))
+        .rejects.toMatchObject({ code: 'EXECUTABLE_ROOT_WRITABLE' });
+    }
+  });
+
   test('refuses an executable root that is or contains HOME in its lexical or realpath form', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);

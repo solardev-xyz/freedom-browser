@@ -30,6 +30,20 @@ describe('approved executable access', () => {
     } finally { homedir.mockRestore(); }
   });
 
+  test.each(['.ssh', '.gnupg', '.config'])('an executable directly inside ~/%s does not grant that directory', async name => {
+    const home = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-home-secrets-')));
+    fixtureRoots.push(home);
+    const directory = path.join(home, name);
+    await fs.promises.mkdir(directory);
+    await fs.promises.writeFile(path.join(directory, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    await fs.promises.writeFile(path.join(directory, 'id_ed25519'), 'fixture-private-key\n', { mode: 0o600 });
+    const homedir = jest.spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      await expect(resolveExecutableAccess(['tool'], { hostEnvironment: { PATH: directory } }))
+        .rejects.toMatchObject({ code: 'EXECUTABLE_SCOPE_TOO_BROAD' });
+    } finally { homedir.mockRestore(); }
+  });
+
   test('a symlinked HOME does not widen ~/.cargo, ~/.local or ~/bin into a credential or home grant', async () => {
     const fixture = await fs.promises.realpath(
       await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-home-link-'))

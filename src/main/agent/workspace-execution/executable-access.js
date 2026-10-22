@@ -142,12 +142,18 @@ function packageRootForExecutable(executablePath) {
   const homes = homeDirectoryForms();
   // Do not turn a command shim into a read grant for credentials/keyrings in
   // an entire ~/.cargo or ~/.local tree. Versioned runtime roots stay scoped.
-  const directlyInHomeDotDirectory = homes.some((home) => {
-    const relative = homeRelative(home, candidate);
+  const isHomeDotDirectory = (directory) => homes.some((home) => {
+    const relative = homeRelative(home, directory);
     return relative.startsWith('.') && !relative.startsWith('..') && !relative.includes(path.sep);
   });
-  if (directlyInHomeDotDirectory) candidate = executableDirectory;
-  if (candidate === path.parse(candidate).root || rootContainsHome(candidate, homes)) {
+  if (isHomeDotDirectory(candidate)) candidate = executableDirectory;
+  // An executable sitting directly in ~/.ssh, ~/.gnupg or any other home dot
+  // directory has no package boundary narrower than that credential store.
+  if (
+    candidate === path.parse(candidate).root ||
+    rootContainsHome(candidate, homes) ||
+    isHomeDotDirectory(candidate)
+  ) {
     throw new ExecutableAccessError(
       'EXECUTABLE_SCOPE_TOO_BROAD',
       'Freedom refused an executable whose package root would expose a broad host directory'

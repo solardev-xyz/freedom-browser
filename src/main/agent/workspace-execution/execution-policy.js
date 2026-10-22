@@ -652,6 +652,18 @@ function refuseHomeExecutableRoot(sourcePath) {
   }
 }
 
+// A runtime root is read and exec only. If sandboxed code can also write into it
+// (it is, or is inside or around, the workspace), it can plant files or dependency
+// symlinks there that later executions trust as part of the approved package.
+function refuseWritableRuntimeRoot(sourcePath, writablePaths) {
+  if (writablePaths.some((root) => insidePath(root, sourcePath) || insidePath(sourcePath, root))) {
+    throw new ExecutionPolicyError(
+      'EXECUTABLE_ROOT_WRITABLE',
+      'An executable root cannot overlap a sandbox-writable root'
+    );
+  }
+}
+
 async function canonicalExecutableRuntimeRoot(input) {
   if (!isValidatedExecutableRoot(input)) {
     throw new ExecutionPolicyError(
@@ -962,6 +974,7 @@ async function createWorkspacePolicy(options, readOnly) {
   for (const runtimeRoot of runtimeRootsInput) {
     runtimeRoots.push(await canonicalExecutableRuntimeRoot(runtimeRoot));
   }
+  for (const runtimeRoot of runtimeRoots) refuseWritableRuntimeRoot(runtimeRoot.sourcePath, [workspaceRoot]);
   if (options.electronRuntime) {
     runtimeRoots.push(await canonicalElectronRuntime(options.electronRuntime));
   }
@@ -1059,7 +1072,12 @@ function restrictWorkspaceExecutionPolicy(policy, options = {}) {
       'Added runtime roots must come from Freedom executable resolution'
     );
   }
-  for (const root of addedRuntimeRoots) refuseHomeExecutableRoot(root.sourcePath);
+  const writablePaths = [...policy.filesystem.readableRoots, ...policy.filesystem.writableRoots]
+    .map((root) => root.sourcePath);
+  for (const root of addedRuntimeRoots) {
+    refuseHomeExecutableRoot(root.sourcePath);
+    refuseWritableRuntimeRoot(root.sourcePath, writablePaths);
+  }
   const runtimeRootIds = new Set();
   for (const value of omittedRuntimeRootIds) {
     if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)) {

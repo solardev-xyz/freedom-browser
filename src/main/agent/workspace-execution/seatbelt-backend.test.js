@@ -348,4 +348,39 @@ describe('macOS Seatbelt backend contract', () => {
     });
   });
 
+  // Pure path logic with a mocked otool, so it runs on every platform (L9).
+  test('grants a dependency only where its realpath stays inside the approved root', async () => {
+    const fixture = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-seatbelt-deps-')));
+    fixtureRoots.push(fixture);
+    const root = path.join(fixture, 'toolchain');
+    const home = path.join(fixture, 'Users', 'alice');
+    await fs.promises.mkdir(path.join(root, 'bin'), { recursive: true });
+    await fs.promises.mkdir(path.join(root, 'lib'));
+    await fs.promises.mkdir(path.join(home, '.ssh'), { recursive: true });
+    const executable = path.join(root, 'bin', 'tool');
+    await fs.promises.writeFile(executable, 'fixture');
+    await fs.promises.writeFile(path.join(root, 'lib', 'libreal.dylib'), 'fixture');
+    await fs.promises.symlink('libreal.dylib', path.join(root, 'lib', 'libinner.dylib'));
+    await fs.promises.symlink(home, path.join(root, 'lib', 'libhome.dylib'));
+    await fs.promises.symlink(path.join(home, '.ssh'), path.join(root, 'lib', 'ssh'));
+    const dependencies = ['libreal.dylib', 'libinner.dylib', 'libhome.dylib', 'ssh', 'missing.dylib']
+      .map(name => path.join(root, 'lib', name));
+    const otool = jest.fn(() => `${executable}:\n${dependencies.map(value => `\t${value} (compatibility version 1.0.0)`).join('\n')}\n`);
+    let discoverRuntimeReadPaths;
+    jest.isolateModules(() => {
+      jest.doMock('child_process', () => ({ ...jest.requireActual('child_process'), execFileSync: otool }));
+      ({ discoverRuntimeReadPaths } = require('./seatbelt-backend'));
+    });
+    try {
+      const paths = discoverRuntimeReadPaths([{ sourcePath: root, executablePaths: [executable] }]);
+      expect(otool).toHaveBeenCalledWith('/usr/bin/otool', ['-L', executable], expect.any(Object));
+      expect(paths.sort()).toEqual([
+        path.join(root, 'lib', 'libinner.dylib'),
+        path.join(root, 'lib', 'libreal.dylib'),
+      ]);
+      expect(paths.some(value => value.startsWith(home))).toBe(false);
+    } finally {
+      jest.dontMock('child_process');
+    }
+  });
 });
