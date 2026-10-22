@@ -97,24 +97,41 @@ function isSystemExecutable(executablePath, platform) {
   return roots.some((root) => insidePath(root, executablePath));
 }
 
-// Both the lexical HOME and its realpath. A symlinked, junctioned or mis-cased HOME
-// differs from the realpath'd executable roots compared against it, so either form
-// alone lets ~/.cargo, ~/.local or the whole home slip past the checks below.
+// The lexical HOME and its realpath forms. A symlinked, junctioned or mis-cased HOME
+// differs from the realpath'd executable roots compared against it, so any one form
+// alone lets ~/.cargo, ~/.local or the whole home slip past the checks below. The
+// JS fs.realpathSync only resolves links; the native one (what fs.promises.realpath
+// uses for the executable roots) also returns the on-disk case on macOS/Windows.
 function homeDirectoryForms() {
   const lexical = path.resolve(os.homedir());
   const forms = [lexical];
-  try {
-    const canonical = fs.realpathSync(lexical);
-    if (canonical !== lexical) forms.push(canonical);
-  } catch {
-    // An unavailable HOME still keeps the lexical form.
+  for (const resolve of [fs.realpathSync, fs.realpathSync.native]) {
+    try {
+      const canonical = resolve(lexical);
+      if (!forms.includes(canonical)) forms.push(canonical);
+    } catch {
+      // An unavailable HOME still keeps the lexical form.
+    }
   }
   return forms;
 }
 
+// macOS volumes are case-insensitive by default and path.posix compares case-
+// sensitively, so a mis-cased form of HOME must still match there. Folding is
+// conservative: on a case-sensitive volume it can only refuse more, never grant.
+// (path.win32.relative already folds case.)
+function homeRelative(home, candidate, platform = process.platform) {
+  return platform === 'darwin'
+    ? path.relative(home.toLowerCase(), candidate.toLowerCase())
+    : path.relative(home, candidate);
+}
+
 // A root that is or contains the home directory exposes every credential beneath it.
-function rootContainsHome(root, homeForms = homeDirectoryForms()) {
-  return homeForms.some((home) => insidePath(root, home));
+function rootContainsHome(root, homeForms = homeDirectoryForms(), platform = process.platform) {
+  return homeForms.some((home) => {
+    const relative = homeRelative(root, home, platform);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  });
 }
 
 function packageRootForExecutable(executablePath) {
@@ -126,7 +143,7 @@ function packageRootForExecutable(executablePath) {
   // Do not turn a command shim into a read grant for credentials/keyrings in
   // an entire ~/.cargo or ~/.local tree. Versioned runtime roots stay scoped.
   const directlyInHomeDotDirectory = homes.some((home) => {
-    const relative = path.relative(home, candidate);
+    const relative = homeRelative(home, candidate);
     return relative.startsWith('.') && !relative.startsWith('..') && !relative.includes(path.sep);
   });
   if (directlyInHomeDotDirectory) candidate = executableDirectory;

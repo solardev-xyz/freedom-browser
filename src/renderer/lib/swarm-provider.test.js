@@ -402,3 +402,70 @@ describe('Agent custody and site auto-approve', () => {
     );
   });
 });
+
+describe('feed writes with a locked vault', () => {
+  let setupSwarmProvider;
+  let showSwarmFeedApproval;
+  let showVaultUnlock;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmFeedApproval, showVaultUnlock } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.getAutoApprove = jest.fn().mockResolvedValue(false);
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(true) };
+    window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }) };
+    window.swarmProvider.execute.mockResolvedValue({ result: { ok: true } });
+    showSwarmFeedApproval.mockImplementation((_key, _params, resolve) => resolve());
+    showVaultUnlock.mockResolvedValue();
+  });
+
+  afterAll(() => {
+    delete window.swarmFeedStore;
+    delete window.identity;
+  });
+
+  const writeEntry = async ({ agentOwned = false } = {}) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 1, method: 'swarm_writeFeedEntry', params: { name: 'blog' } });
+    for (let i = 0; i < 4; i += 1) await flush();
+    return webview;
+  };
+
+  test('without an auto-approve rule, the unlock does not replace the feed approval', async () => {
+    await writeEntry();
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('an Agent-held tab is prompted per operation even with the site rule on', async () => {
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(true);
+    await writeEntry({ agentOwned: true });
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('a user tab with the site rule only unlocks, and main is told the rule answered', async () => {
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(true);
+    await writeEntry();
+    expect(showSwarmFeedApproval).not.toHaveBeenCalled();
+    expect(showVaultUnlock).toHaveBeenCalledWith('app.eth');
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+});

@@ -9,6 +9,7 @@ const {
   isValidatedExecutableAccessRequest,
   isValidatedExecutableRoot,
   resolveExecutableAccess,
+  rootContainsHome,
   validateExecutableNames,
 } = require('./executable-access');
 
@@ -59,6 +60,30 @@ describe('approved executable access', () => {
         });
       }
     } finally { homedir.mockRestore(); }
+  });
+
+  test('a mis-cased HOME on macOS still matches the on-disk-cased roots', () => {
+    // HOME=/users/alice on a case-insensitive APFS volume; executable roots come
+    // from the native realpath, so they read /Users/alice/...
+    expect(rootContainsHome('/Users/alice', ['/users/alice'], 'darwin')).toBe(true);
+    expect(rootContainsHome('/Users', ['/users/alice'], 'darwin')).toBe(true);
+    expect(rootContainsHome('/Users/alice/bin', ['/users/alice'], 'darwin')).toBe(false);
+    // A case-sensitive Linux volume keeps exact comparison.
+    expect(rootContainsHome('/Users/alice', ['/users/alice'], 'linux')).toBe(false);
+  });
+
+  test('the home forms include the native realpath, which canonicalizes case', () => {
+    const homedir = jest.spyOn(os, 'homedir').mockReturnValue('/users/alice');
+    const nativeRealpath = jest.spyOn(fs.realpathSync, 'native').mockReturnValue('/Users/Alice');
+    try {
+      // The JS realpath of the nonexistent lexical form throws and is skipped;
+      // only the native form names /Users/Alice, and Linux comparison is exact.
+      expect(rootContainsHome('/Users/Alice', undefined, 'linux')).toBe(true);
+      expect(nativeRealpath).toHaveBeenCalledWith('/users/alice');
+    } finally {
+      nativeRealpath.mockRestore();
+      homedir.mockRestore();
+    }
   });
 
   async function scriptFixture(files) {

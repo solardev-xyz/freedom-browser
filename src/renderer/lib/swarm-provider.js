@@ -306,9 +306,12 @@ async function handleFeedSigningRequest(method, params, permissionKey, autoAppro
     await new Promise((resolve, reject) => {
       showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
     });
-  } else if (vaultLocked) {
-    await showVaultUnlock(permissionKey);
   } else {
+    // A locked vault does not stand in for the per-operation approval: only
+    // the site's auto-approve rule (never for an Agent-held tab) skips the
+    // feed prompt, which unlocks the vault itself. An auto-approved write
+    // still needs the vault, so it gets just the unlock screen, and main is
+    // told the rule answered.
     autoApproved =
       Boolean(await window.swarmPermissions.getAutoApprove(permissionKey, autoApproveType)) &&
       !isAgentHeld(webview);
@@ -316,6 +319,8 @@ async function handleFeedSigningRequest(method, params, permissionKey, autoAppro
       await new Promise((resolve, reject) => {
         showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
       });
+    } else if (vaultLocked) {
+      await showVaultUnlock(permissionKey);
     }
   }
 

@@ -44,7 +44,7 @@ const { KINDS: PAYMENT_KINDS, STATUSES: PAYMENT_STATUSES } = paymentHistory;
 const { findCoveringPermission } = require('./payment-utils');
 const { tryConsume } = require('./permissions');
 const { isVaultLockedError } = require('../wallet/vault-errors');
-const { isAgentPageId } = require('../wallet/agent-tab-custody');
+const { isUserPageId } = require('../wallet/agent-tab-custody');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 // Header names used on the wire. V2 uses the un-prefixed names; V1 (Coinbase
@@ -861,9 +861,11 @@ async function detectPaymentRequiredHandler(details) {
   // array. See `research/x402-multi-accept-ux.md` §3 for the policy.
   // A tab in Agent custody never pays from a cap: the charge goes to the
   // approval card below, the same refusal wallet-ipc applies to dApp
-  // auto-approve rules.
+  // auto-approve rules. Nor does a request main cannot attribute to a live
+  // user tab (the id names no guest, or one already gone): custody cannot
+  // be read for it, so it fails closed to the card as well.
   const origin = originKeyForUrl(details.url);
-  const covering = origin && !isAgentPageId(details.webContentsId)
+  const covering = origin && isUserPageId(details.webContentsId)
     ? findCoveringPermission(origin, requirements.accepts)
     : null;
   if (covering) {

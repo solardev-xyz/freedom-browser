@@ -639,7 +639,10 @@ async function bootstrap() {
   registerDappPermissionsIpc();
   registerPermissionsIpc();
   registerExternalProtocolIpc();
-  registerPopupBlockerIpc();
+  registerPopupBlockerIpc({
+    // A dweb-link popup from a page in Agent custody stays in Agent custody.
+    openAgentPopup: (contents, url) => agentRuntime?.service?.openCustodyPopup(contents, url) ?? false,
+  });
   registerX402Ipc();
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();

@@ -22,6 +22,15 @@ function guestForId(webContentsId) {
 // Main's own custody reading for a page request named by guest id.
 const isAgentPageId = webContentsId => isAgentPage(guestForId(webContentsId));
 
+// A standing grant that spends without a prompt (an x402 payment cap) may
+// answer only for a live guest main can attribute the request to, outside
+// Agent custody. An unattributable request (a service worker's, a guest that
+// is already gone) is refused like an Agent one.
+function isUserPageId(webContentsId) {
+  const contents = guestForId(webContentsId);
+  return Boolean(contents) && !contents.isDestroyed?.() && !isAgentPage(contents);
+}
+
 // A site's auto-approve rule may answer only for a live guest of the chrome
 // window that relayed the request, and never for one in Agent custody. An
 // unattributable request is refused like an Agent one.
@@ -31,4 +40,10 @@ function autoApproveRefused(sender, webContentsId) {
   return !Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id;
 }
 
-module.exports = { setAgentPageCustody, isAgentPage, isAgentPageId, autoApproveRefused };
+module.exports = {
+  setAgentPageCustody,
+  isAgentPage,
+  isAgentPageId,
+  isUserPageId,
+  autoApproveRefused,
+};

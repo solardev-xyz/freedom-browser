@@ -466,6 +466,31 @@ describe('detectPaymentRequiredHandler', () => {
     }
   });
 
+  test.each([
+    ['names no live guest', () => undefined],
+    ['names a guest already destroyed', () => ({ hostWebContents: { send: mockHostSend }, isDestroyed: () => true })],
+  ])('a request whose id %s never auto-pays from a covering cap', async (_label, guestFor) => {
+    webContents.fromId.mockImplementation(guestFor);
+    mockGetPermission.mockReturnValue({
+      capAmount: '20000', spentAmount: '0',
+      createdAt: 1, expiresAt: 9999999999,
+    });
+    detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(getDetectedPayment(7)?.authorizedBy).toBeUndefined();
+  });
+
+  test('a request with no webContentsId (a service worker) is ignored, never paid', async () => {
+    mockGetPermission.mockReturnValue({
+      capAmount: '20000', spentAmount: '0',
+      createdAt: 1, expiresAt: 9999999999,
+    });
+    await expect(detectPaymentRequiredHandler(detail({ webContentsId: undefined }))).resolves.toBeNull();
+    await expect(detectPaymentRequiredHandler(detail({ webContentsId: -1 }))).resolves.toBeNull();
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+  });
+
   test('auto-pay: when an active cap covers the charge, calls signAndQueueRetry with a detection snapshot and authorizedBy=cap', () => {
     mockGetPermission.mockReturnValueOnce({
       capAmount: '20000', spentAmount: '0',
