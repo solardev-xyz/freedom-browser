@@ -8,6 +8,26 @@ const element = (tag, text, className) => {
   return node;
 };
 
+// "Downloading Whisper Base · 48 MB of 142 MB": one wording for the local
+// model download in the composer chooser and in Settings → AI.
+export const downloadStatusText = event =>
+  `${event.label}${event.bytes ? ` · ${Math.round(event.bytes / 1000000)} MB${event.total ? ` of ${Math.round(event.total / 1000000)} MB` : ''}` : '…'}`;
+
+// The download's progress bar, shared by both surfaces so they look alike.
+// An unknown total leaves the bar indeterminate.
+export function createDownloadProgress() {
+  const bar = element('progress', '', 'voice-download-progress');
+  bar.setAttribute('aria-label', 'Local dictation download');
+  const update = (bytes = 0, total = 0) => {
+    if (total) {
+      bar.max = total;
+      bar.value = bytes;
+    } else bar.removeAttribute('value');
+  };
+  update();
+  return { element: bar, update };
+}
+
 // The first-use chooser and Settings → AI share the same choices and wording.
 export function createDictationChoices(host, api, { onChosen = () => {}, onCancel = () => {}, onAlternative = () => {}, autoSave = false } = {}) {
   let state;
@@ -30,6 +50,14 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     host.dispatchEvent(new CustomEvent('dictation-settings', { bubbles: true, detail: { providerId: blocked?.providerId } }));
   });
   const status = element('p', '', 'agent-dictation-help'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  // Same treatment as Settings → AI: failures in the error colour, and a
+  // progress bar under the status while the local model downloads.
+  const setStatus = (text = '', error = false) => {
+    status.textContent = text;
+    status.classList.toggle('error', error);
+  };
+  const progress = createDownloadProgress();
+  progress.element.hidden = true;
   const actions = element('div', '', 'agent-dictation-actions');
   const use = element('button', 'Use for dictation', 'agent-button primary'); use.type = 'button';
   const cancel = element('button', autoSave ? 'Cancel download' : 'Cancel', 'agent-text-button'); cancel.type = 'button';
@@ -40,7 +68,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     host.dispatchEvent(new CustomEvent('dictation-connect', { bubbles: true }));
   });
   actions.append(use, cancel);
-  const form = [...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, unavailable, manage, status, actions, connect];
+  const form = [...(autoSave ? [] : [heading]), intro, serviceLabel, languageLabel, detail, unavailable, manage, status, progress.element, actions, connect];
   host.replaceChildren(...form);
   const renderSelection = () => {
     const option = state?.options.find(option => option.providerId === service.value);
@@ -70,13 +98,13 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   const refresh = async () => {
     host.replaceChildren(...form);
     const current = ++generation;
-    status.textContent = 'Loading dictation options…';
+    setStatus('Loading dictation options…');
     try {
       const response = await api.getAgentDictationState();
       if (current !== generation) return;
       if (!response?.ok) throw new Error(response?.error?.message || 'Could not load dictation options.');
-      render(response); status.textContent = '';
-    } catch (error) { if (current === generation) status.textContent = error.message; }
+      render(response); setStatus();
+    } catch (error) { if (current === generation) setStatus(error.message, true); }
   };
   const choose = async () => {
     if (busy) return;
@@ -89,7 +117,9 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     busy = true; renderSelection();
     try {
       if (option.providerId === 'local' && !option.ready) {
-        status.textContent = 'Downloading local dictation…';
+        setStatus('Downloading local dictation…');
+        progress.update();
+        progress.element.hidden = false;
         const response = await api.installAgentDictation();
         if (current !== generation) return;
         if (!response?.ok) throw new Error(response?.error?.message || 'The local download did not complete.');
@@ -98,10 +128,10 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
       const response = await api.chooseAgentDictation({ providerId: option.providerId, language: language.value });
       if (current !== generation) return;
       if (!response?.ok) throw new Error(response?.error?.message || 'Could not select dictation.');
-      render(response); status.textContent = 'Dictation is ready.';
+      render(response); setStatus('Dictation is ready.');
       onChosen(response, { downloaded: option.providerId === 'local' && !option.ready });
-    } catch (error) { if (current === generation) status.textContent = error.message; }
-    finally { if (current === generation) { busy = false; renderSelection(); } }
+    } catch (error) { if (current === generation) setStatus(error.message, true); }
+    finally { if (current === generation) { busy = false; progress.element.hidden = true; renderSelection(); } }
   };
   for (const control of [service, language]) control.addEventListener('change', () => {
     renderSelection();
@@ -114,12 +144,13 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
   const cancelWork = () => {
     generation += 1;
     if (busy) void api.cancelAgentDictation();
-    busy = false; status.textContent = ''; renderSelection();
+    busy = false; setStatus(); progress.element.hidden = true; renderSelection();
   };
   cancel.addEventListener('click', () => { cancelWork(); onCancel(); });
   const unsubscribe = api.onAgentDictationEvent?.(event => {
     if (!busy || event.type !== 'download') return;
-    status.textContent = `${event.label}${event.bytes ? ` · ${Math.round(event.bytes / 1000000)} MB${event.total ? ` of ${Math.round(event.total / 1000000)} MB` : ''}` : '…'}`;
+    setStatus(downloadStatusText(event));
+    progress.update(event.bytes, event.total);
   });
   const reviewConsent = response => {
     generation += 1;
@@ -133,7 +164,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
     const alternative = element('button', 'Choose another service', 'agent-button secondary'); alternative.type = 'button';
     const dismiss = element('button', 'Cancel', 'agent-text-button'); dismiss.type = 'button';
     const controls = element('div', '', 'agent-dictation-actions'); controls.append(accept, alternative, dismiss);
-    status.textContent = '';
+    setStatus();
     host.replaceChildren(title, disclosure, note, status, controls);
     accept.addEventListener('click', async () => {
       if (busy) return;
@@ -144,7 +175,7 @@ export function createDictationChoices(host, api, { onChosen = () => {}, onCance
         if (current !== generation) return;
         if (!chosen?.ok) throw new Error(chosen?.error?.message || 'Could not save the audio privacy choice.');
         onChosen(chosen);
-      } catch (error) { if (current === generation) status.textContent = error.message; }
+      } catch (error) { if (current === generation) setStatus(error.message, true); }
       finally { if (current === generation) { busy = false; accept.disabled = false; alternative.disabled = false; } }
     });
     alternative.addEventListener('click', () => { generation += 1; onAlternative(); });

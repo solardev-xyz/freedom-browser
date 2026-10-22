@@ -279,3 +279,153 @@ test('AI subpages have breadcrumbs, history and deep links without mixing their 
   await expect(page.locator('#enable-ai')).not.toBeChecked();
   await expect(page.locator('#voice')).toBeHidden();
 });
+
+// #782: with AI off nothing of Agent is left behind — no shortcut rows, no
+// search results that land on a disabled page, no greyed-out menu item —
+// and the stored AI shortcut remaps come back with AI.
+test('AI off hides the Agent shortcuts, search results and View menu item until AI is on', async ({ electronApp, window }) => {
+  const page = await settings(electronApp, window);
+  const viewMenuShowAgent = () => electronApp.evaluate(({ Menu }) => {
+    const item = Menu.getApplicationMenu()?.getMenuItemById('toggle-agent');
+    return item ? { visible: item.visible, accelerator: item.accelerator ?? null } : null;
+  });
+  expect(await viewMenuShowAgent()).toEqual({ visible: false, accelerator: null });
+  await page.evaluate(() => { location.hash = 'shortcuts'; });
+  await expect(page.locator('[data-shortcut-id="tab.new"]')).toBeVisible();
+  await expect(page.locator('[data-shortcut-id="view.toggleAgent"]')).toHaveCount(0);
+  await expect(page.locator('[data-shortcut-id="agent.startDictation"]')).toHaveCount(0);
+  // Ctrl+K is free while Show Agent does not exist.
+  const preview = await page.evaluate(() => window.freedomAPI.previewShortcutBinding({
+    id: 'tab.new', event: { key: 'k', code: 'KeyK', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
+  }));
+  expect(preview).toMatchObject({ ok: true, conflict: null });
+
+  const search = async (query) => {
+    await page.locator('#settings-search').click();
+    await page.locator('#settings-search').fill('');
+    await page.locator('#settings-search').pressSequentially(query);
+    await expect(page.locator('#settings-search-summary')).toContainText(query);
+    return page.locator('#settings-search-results .settings-search-result').allInnerTexts();
+  };
+  for (const query of ['dictation', 'language', 'audio privacy', 'models']) {
+    expect((await search(query)).filter((text) => /Voice dictation|Models & providers|Start dictation/.test(text))).toEqual([]);
+  }
+  expect((await search('enable ai')).join(' ')).toContain('Enable AI features');
+
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect.poll(viewMenuShowAgent).toEqual({ visible: true, accelerator: 'CmdOrCtrl+K' });
+  expect((await search('language')).join(' ')).toContain('AI › Voice dictation');
+  expect((await search('dictation')).join(' ')).toContain('Start dictation');
+  await page.locator('#settings-search').fill('');
+  await page.locator('#settings-search').dispatchEvent('input');
+  await page.evaluate(() => { location.hash = 'shortcuts'; });
+  await expect(page.locator('[data-shortcut-id="view.toggleAgent"]')).toBeVisible();
+  await expect(page.locator('[data-shortcut-id="agent.startDictation"]')).toBeVisible();
+});
+
+// #782: the AI pages look like the rest of Settings.
+test('AI settings pages share Settings\' selects, intros, headings and destructive confirmation', async ({ electronApp, window }) => {
+  const page = await settings(electronApp, window);
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-links')).toBeVisible();
+  const style = (selector, props) => page.locator(selector).first().evaluate((el, props) => {
+    const cs = getComputedStyle(el);
+    return Object.fromEntries(props.map((prop) => [prop, cs.getPropertyValue(prop)]));
+  }, props);
+  // Intro: the 12 px muted line every other section opens with.
+  const introProps = ['font-size', 'color', 'margin-bottom'];
+  expect(await style('#ai > .section-description', introProps)).toEqual(
+    await style('#shortcuts > p.row-help', introProps)
+  );
+
+  // A deep link focuses the heading for screen readers, without a ring.
+  await page.evaluate(() => { location.hash = 'ai/voice'; });
+  await expect(page.locator('#ai-dictation-settings select')).toBeVisible();
+  await expect(page.locator('#ai-voice-page-title')).toBeFocused();
+  expect((await style('#ai-voice-page-title', ['outline-style']))['outline-style']).toBe('none');
+  // The language select is the page-wide select: chevron, size, radius.
+  const selectProps = ['background-image', 'font-size', 'border-radius', 'padding-right'];
+  const themeSelect = await style('#theme-mode', selectProps);
+  expect(themeSelect['background-image']).toContain('svg');
+  expect(await style('#ai-dictation-settings select', selectProps)).toEqual(themeSelect);
+
+  // While OpenAI's page asks how to connect it is "OpenAI", not one of the two ways.
+  await page.evaluate(() => { location.hash = 'ai/providers/openai'; });
+  await expect(page.locator('#agent-provider-methods')).toBeVisible();
+  await expect(page.locator('#ai-provider-page-title')).toHaveText('OpenAI');
+  await expect(page.locator('#ai-provider-breadcrumbs')).toHaveText('AI›Models & providers›OpenAI');
+  await page.locator('#agent-provider-api').click();
+  await expect(page.locator('#agent-api-key')).toBeVisible();
+  await expect(page.locator('#ai-provider-page-title')).toHaveText('OpenAI · API');
+
+  // Disconnect deletes a connection: red, and confirmed in the page.
+  const connected = await window.evaluate(
+    (baseUrl) => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
+  expect(connected?.ok).toBe(true);
+  await page.evaluate(() => { location.hash = 'ai/providers/ollama'; });
+  await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
+  const disconnect = page.locator('#agent-provider-disconnect');
+  await expect(disconnect).toBeVisible();
+  const danger = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--danger)';
+    document.body.appendChild(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  expect((await style('#agent-provider-disconnect', ['color']))['color']).toBe(danger);
+  const dialogs = [];
+  page.on('dialog', (dialog) => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+  await disconnect.click();
+  await expect(page.locator('#agent-provider-disconnect-confirm')).toBeVisible();
+  await expect(page.locator('#agent-provider-disconnect-question')).toHaveText('Disconnect Ollama from Agent?');
+  await expect(page.locator('#agent-provider-disconnect-cancel')).toBeFocused();
+  expect((await style('#agent-provider-disconnect-accept', ['color']))['color']).toBe(danger);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#agent-provider-disconnect-confirm')).toBeHidden();
+  await expect(disconnect).toBeFocused();
+  await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
+  await disconnect.click();
+  await page.locator('#agent-provider-disconnect-accept').click();
+  await expect.poll(async () =>
+    (await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
+  expect(dialogs).toEqual([]);
+});
+
+// #782: Set up Agent is a sheet under its header — same edges, as tall as
+// what it holds, and nothing of the page reads through it.
+test('Set up Agent sheet lines up with its header and is opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate((theme) => window.electronAPI.saveSettings({ theme }), theme);
+    for (const width of [600, 1440]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+        win.setMinimumSize(320, 300);
+        win.setContentSize(width, 800);
+      }, width);
+      if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
+        await window.locator('#agent-toggle-btn').click();
+      await expect(window.locator('#agent-setup-view')).toBeVisible();
+      await expect.poll(() => window.evaluate(() => {
+        const sheet = document.getElementById('agent-setup-view');
+        const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
+        const s = sheet.getBoundingClientRect();
+        const h = header.getBoundingClientRect();
+        const content = [...sheet.children].filter((el) => el.getClientRects().length)
+          .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
+        const alpha = getComputedStyle(sheet).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
+        return {
+          left: Math.round(s.left - h.left),
+          right: Math.round(s.right - h.right),
+          slack: s.bottom - content <= 32,
+          opaque: alpha === undefined || Number(alpha) === 1,
+        };
+      })).toEqual({ left: 0, right: 0, slack: true, opaque: true });
+      await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
+      await window.locator('#agent-sidebar-close').click();
+    }
+  }
+});

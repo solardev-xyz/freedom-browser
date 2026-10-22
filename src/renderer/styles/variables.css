@@ -43,6 +43,9 @@
   /* Scrolling bubbles stay nearly opaque for readable text. Their glass
      finish comes from a painted sheen and inset edge, never live blur. */
   --agent-bubble-agent: rgba(40, 41, 46, 0.97);
+  /* Agent's Set up / Services sheets: the bubble colour, fully opaque, so
+     the page under the sheet never reads through its copy. */
+  --agent-sheet: rgb(40, 41, 46);
   --agent-bubble-user: rgba(48, 70, 108, 0.97);
   --agent-bubble-border: rgba(255, 255, 255, 0.08);
   --agent-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
@@ -137,6 +140,7 @@
   --agent-glass-shadow: 0 24px 64px rgba(15, 23, 42, 0.2), 0 2px 10px rgba(15, 23, 42, 0.08);
   --agent-glass-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.13), 0 1px 4px rgba(15, 23, 42, 0.06);
   --agent-bubble-agent: rgba(255, 255, 255, 0.97);
+  --agent-sheet: #ffffff;
   --agent-bubble-user: rgba(222, 234, 252, 0.97);
   --agent-bubble-border: rgba(15, 23, 42, 0.07);
   --agent-bubble-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);

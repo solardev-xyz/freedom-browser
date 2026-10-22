@@ -4,7 +4,7 @@ const { createDictationRecorder } = require('./dictation-recorder');
 const { createAgentDictation } = require('./agent-dictation');
 const flush = async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve(); };
 
-function setup() {
+function setup({ canRecord = () => true } = {}) {
   global.document = createDocument();
   const create = document.createElement.bind(document);
   document.createElement = tag => {
@@ -19,7 +19,7 @@ function setup() {
   nodes.menu.hidden = true;
   const state = { ok: true, preferences: { providerId: 'venice', language: 'auto', openrouterAudioConsent: false },
     options: [{ providerId: 'venice', name: 'Venice', available: true, ready: true, detail: 'Audio goes to Venice.', price: 'Usage charges' }], languages: ['auto', 'de'] };
-  let event;
+  const events = [];
   const api = { getAgentDictationState: jest.fn(async () => state), beginAgentDictation: jest.fn(async () => ({ ok: true, id: 'capture', name: 'Venice' })),
     finishAgentDictation: jest.fn(async () => ({ ok: true, text: 'a game' })), appendAgentDictation: jest.fn(async () => ({ ok: true })),
     cancelAgentDictation: jest.fn(async () => ({ ok: true })), chooseAgentDictation: jest.fn(async input => {
@@ -30,15 +30,15 @@ function setup() {
       if (option) option.consentRequired = !state.preferences.openrouterAudioConsent;
       return state;
     }),
-    onAgentDictationEvent: jest.fn(handler => { event = handler; return jest.fn(); }) };
+    onAgentDictationEvent: jest.fn(handler => { events.push(handler); return jest.fn(); }) };
   const stream = { getTracks: () => [{ stop: jest.fn() }] };
   Object.defineProperty(global, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: jest.fn(async () => stream) } } });
   const recorder = { finish: jest.fn(async () => new Uint8Array(100)), cancel: jest.fn() };
   createDictationRecorder.mockResolvedValue(recorder);
   const onInput = jest.fn(), onBusy = jest.fn(), onSubmit = jest.fn();
   const openSettings = jest.fn();
-  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord: () => true, onInput, onBusy, openSettings, onSubmit });
-  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, openSettings, onSubmit, emit: value => event(value) };
+  const ui = createAgentDictation({ ...nodes, prompt, api, canRecord, onInput, onBusy, openSettings, onSubmit });
+  return { ...nodes, ui, prompt, api, recorder, state, onInput, onBusy, openSettings, onSubmit, emit: value => events.forEach(handler => handler(value)) };
 }
 
 afterEach(() => { delete global.document; delete global.window; delete global.navigator; jest.clearAllMocks(); });
@@ -263,6 +263,28 @@ test('a delayed local installation requires a fresh microphone click', async () 
 });
 
 
+test('the chooser shows download progress as a bar and a failed download as an error, like Settings', async () => {
+  const ctx = setup();
+  ctx.state.preferences.providerId = null;
+  ctx.state.options = [{ providerId: 'local', name: 'On this device', available: true, ready: false }];
+  let installed;
+  ctx.api.installAgentDictation = jest.fn(() => new Promise(resolve => { installed = resolve; }));
+  ctx.button.dispatch('click'); await flush();
+  ctx.panel.children.find(el => el.classList.contains('agent-dictation-actions')).children[0].dispatch('click'); await flush();
+  const bar = () => descendants(ctx.panel).find(el => el.tagName === 'PROGRESS');
+  const status = () => descendants(ctx.panel).find(el => el.getAttribute?.('role') === 'status');
+  expect(bar()?.classList.contains('voice-download-progress')).toBe(true);
+  expect(bar().hidden).toBe(false);
+  ctx.emit({ type: 'download', label: 'Downloading Whisper Base', bytes: 48e6, total: 142e6 });
+  expect(bar()).toMatchObject({ max: 142e6, value: 48e6 });
+  expect(status().textContent).toBe('Downloading Whisper Base · 48 MB of 142 MB');
+  expect(status().classList.contains('error')).toBe(false);
+  installed({ ok: false, error: { message: 'The download was interrupted.' } }); await flush();
+  expect(status().textContent).toBe('The download was interrupted.');
+  expect(status().classList.contains('error')).toBe(true);
+  expect(bar().hidden).toBe(true);
+});
+
 test('hover and microphone clicks refresh a changed audio destination', async () => {
   const ctx = setup(); await flush();
   ctx.state.preferences.providerId = 'local';
@@ -438,6 +460,16 @@ test.each(['darwin', 'win32', 'linux'])('the composer start shortcut starts dict
   expect(ctx.api.beginAgentDictation).toHaveBeenCalledTimes(1);
   expect(ctx.api.finishAgentDictation).not.toHaveBeenCalled(); expect(ctx.onSubmit).not.toHaveBeenCalled();
   configureShortcuts({ platform: 'linux', overrides: {} });
+});
+
+test('the dictation start shortcut is not Agent\'s while AI is off', async () => {
+  const { configureShortcuts } = require('./shortcuts');
+  configureShortcuts({ platform: 'linux', overrides: {} });
+  const ctx = setup({ canRecord: () => false });
+  const key = { key: 'Enter', ctrlKey: true, preventDefault: jest.fn() };
+  ctx.prompt.dispatch('keydown', key); await flush();
+  expect(key.preventDefault).not.toHaveBeenCalled();
+  expect(ctx.api.beginAgentDictation).not.toHaveBeenCalled();
 });
 
 test('the dictation start shortcut respects remapping, composition and prior handlers', async () => {

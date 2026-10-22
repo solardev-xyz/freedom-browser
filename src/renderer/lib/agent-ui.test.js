@@ -11,6 +11,8 @@ function createAgentElements() {
     'agent-provider-test', 'agent-provider-test-note',
     'agent-provider-search', 'agent-model-search', 'agent-model-refresh', 'agent-model-details',
     'agent-provider-disconnect', 'agent-model-menu-search', 'agent-catalog-status',
+    'agent-provider-disconnect-confirm', 'agent-provider-disconnect-question',
+    'agent-provider-disconnect-accept', 'agent-provider-disconnect-cancel',
     'agent-privacy-controls', 'agent-privacy-policy', 'agent-privacy-save',
     'agent-toggle-btn',
     'agent-sidebar',
@@ -1690,7 +1692,20 @@ describe('Agent UI', () => {
     disconnect.dispatch('click');
     await flush();
 
-    expect(global.window.confirm).toHaveBeenCalledWith('Disconnect OpenAI · API from Agent?');
+    // Asked in the page, never through a native dialog, and nothing is
+    // removed until the destructive answer is given.
+    expect(global.window.confirm).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-provider-disconnect-confirm'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-disconnect-question'].textContent).toBe(
+      'Disconnect OpenAI · API from Agent? Its saved API key is deleted from this device.'
+    );
+    expect(ctx.electronAPI.removeAgentProvider).not.toHaveBeenCalled();
+    ctx.elements['agent-provider-disconnect-cancel'].dispatch('click');
+    expect(ctx.elements['agent-provider-disconnect-confirm'].hidden).toBe(true);
+    expect(disconnect.hidden).toBe(false);
+    disconnect.dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
     expect(ctx.electronAPI.removeAgentProvider).toHaveBeenCalledWith('openai');
     expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);

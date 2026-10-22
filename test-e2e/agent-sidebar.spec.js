@@ -209,8 +209,9 @@ test('ChatGPT browser sign-in supports cancellation and a private callback fallb
   await expect(providerPage.locator('#agent-auth-callback-input')).toHaveValue('');
   await expect(providerPage.locator('#agent-auth-callback')).toBeHidden();
   await expect(providerPage.locator('#agent-provider-login')).toBeHidden();
-  providerPage.once('dialog', dialog => dialog.accept());
   await providerPage.locator('#agent-provider-disconnect').click();
+  await expect(providerPage.locator('#agent-provider-disconnect-question')).toContainText('sign in again');
+  await providerPage.locator('#agent-provider-disconnect-accept').click();
   await expect(providerPage.locator('#agent-provider-add')).toBeVisible();
   expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
   await providerPage.locator('#agent-provider-add').click();
@@ -277,8 +278,9 @@ test('Meta subscription sign-in shows device codes, cancels and connects in both
   await expect(providerPage.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
   await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('Connect');
   await providerPage.locator('#agent-provider-chatgpt').click();
-  providerPage.once('dialog', dialog => dialog.accept());
   await providerPage.locator('#agent-provider-disconnect').click();
+  await expect(providerPage.locator('#agent-provider-disconnect-question')).toContainText('sign in again');
+  await providerPage.locator('#agent-provider-disconnect-accept').click();
   await expect(providerPage.locator('#agent-provider-add')).toBeVisible();
   expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
 });

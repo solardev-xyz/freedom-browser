@@ -428,6 +428,22 @@
   border-radius: 18px;
 }
 
+/* Set up Agent and Services are sheets hanging from the header: exactly
+   its width and corner radius, as tall as what they hold (scrolling past
+   the column's height), and opaque — the page's own text read through the
+   near-opaque bubble fill at narrow widths. */
+.agent-floating[data-presentation='column'] .agent-setup-view {
+  flex: 0 1 auto;
+  margin: 0;
+  border-radius: 16px;
+  background: var(--agent-sheet);
+}
+
+/* No status yet: the empty line would only pad the sheet's foot. */
+.agent-floating[data-presentation='column'] .agent-setup-view > .agent-message:empty {
+  display: none;
+}
+
 .agent-floating[data-presentation='column'] .agent-workspace-view {
   min-height: 0;
   margin-top: -6px;

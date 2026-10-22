@@ -36,12 +36,16 @@ const providerUi = createAgentProviderUi({
   elements: { runMessage: document.getElementById('agent-provider-message') },
   onStatusChange: updateNext,
   onScreenChange(screen, providerId) {
-    location.hash =
+    const route =
       screen === 'detail'
         ? `ai/providers/${providerId}`
         : screen === 'browser'
           ? 'ai/providers/add'
           : 'ai/providers';
+    // Choosing "API key" on OpenAI's page stays on its route, so no
+    // hashchange repaints the heading; do it once the form has rendered.
+    if (location.hash.slice(1).toLowerCase() === route) queueMicrotask(() => renderRoute());
+    else location.hash = route;
   },
   context: {
     conversationId: null,
@@ -87,12 +91,15 @@ function renderRoute({ focus = false } = {}) {
     renderRoute({ focus });
     return;
   }
+  // The provider form decides whether this page is still asking how to
+  // connect, so it is shown before the page is named.
+  if (loaded) providerUi.showSettingsPage(screen, providerId);
   const title =
     screen === 'home'
       ? 'Models & providers'
       : screen === 'browser'
         ? 'Add a provider'
-        : providerUi.providerName(providerId);
+        : providerUi.providerPageTitle(providerId);
   const heading = document.getElementById('ai-provider-page-title');
   heading.textContent = title;
   const crumbs = document.getElementById('ai-provider-breadcrumbs');
@@ -115,7 +122,6 @@ function renderRoute({ focus = false } = {}) {
   crumb('AI', '#ai');
   crumb('Models & providers', screen === 'home' ? null : '#ai/providers');
   if (screen !== 'home') crumb(title);
-  if (loaded) providerUi.showSettingsPage(screen, providerId);
   if (focus) heading.focus();
 }
 

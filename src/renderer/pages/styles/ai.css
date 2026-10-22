@@ -4,8 +4,12 @@
   --agent-bubble-agent: var(--bg-card);
   --muted: var(--text-muted);
   gap: 24px;
-  margin: 24px 0 0;
+  margin: 0;
   max-height: none;
+}
+/* The grid's own gap spaces the intro from the first group. */
+#ai-dictation-settings > .section-description {
+  margin-bottom: 0;
 }
 #voice[hidden],
 #voice:has(#ai-dictation-settings[hidden]),
@@ -13,13 +17,20 @@
 :is(#ai, #providers, #voice) .hidden {
   display: none !important;
 }
+/* A page's intro reads like every other section's: the 12 px muted
+   `.row-help` line under the heading, 16 px above the first card. */
 :is(#ai, #providers, #voice) .section-description {
+  font-size: 12px;
   color: var(--text-muted);
-  line-height: 1.6;
-  margin-bottom: 24px;
+  margin: 4px 0 16px;
+}
+/* The subpage heading takes focus on a route change so screen readers
+   announce the page; like `.layout`, it is not a control, so no ring. */
+:is(#providers, #voice) .section-title[tabindex='-1']:focus {
+  outline: none;
 }
 #ai-provider-settings {
-  margin-top: 24px;
+  margin-top: 0;
 }
 #ai-provider-settings h3 {
   font-size: 16px;
@@ -46,8 +57,8 @@
 :is(#ai, #providers, #voice) .agent-field > span {
   font-weight: 600;
 }
+/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius). */
 :is(#ai, #providers, #voice) input:not([type='checkbox']),
-:is(#ai, #providers, #voice) select,
 :is(#ai, #providers, #voice) textarea {
   width: 100%;
   min-width: 0;
@@ -64,7 +75,6 @@
   font-family: var(--font-mono);
 }
 :is(#ai, #providers, #voice) input:focus-visible,
-:is(#ai, #providers, #voice) select:focus-visible,
 :is(#ai, #providers, #voice) textarea:focus-visible,
 :is(#ai, #providers, #voice) button:focus-visible,
 :is(#ai, #providers, #voice) summary:focus-visible {
@@ -90,6 +100,31 @@
 :is(#ai, #providers, #voice) .agent-text-button {
   border-color: transparent;
   color: var(--accent);
+}
+/* Destructive, the way Settings' `.btn.danger` is: outlined in --danger. */
+:is(#ai, #providers, #voice) .agent-button.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+:is(#ai, #providers, #voice) .agent-button.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  filter: none;
+}
+/* The in-page confirmation a Disconnect asks for before deleting anything. */
+#providers .agent-disconnect-confirm {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  font-size: 13px;
+  line-height: 1.6;
+}
+#providers .agent-disconnect-confirm p {
+  margin: 0;
+}
+#providers .agent-disconnect-confirm .agent-config-actions {
+  margin: 10px 0 0;
 }
 :is(#ai, #providers, #voice) .agent-button:hover,
 :is(#ai, #providers, #voice) .agent-text-button:hover {

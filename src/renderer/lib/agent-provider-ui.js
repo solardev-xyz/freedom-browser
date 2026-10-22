@@ -71,6 +71,10 @@ export function createAgentProviderUi(options = {}) {
     modelRefresh: byId('agent-model-refresh'),
     modelDetails: byId('agent-model-details'),
     providerDisconnect: byId('agent-provider-disconnect'),
+    providerDisconnectConfirm: byId('agent-provider-disconnect-confirm'),
+    providerDisconnectQuestion: byId('agent-provider-disconnect-question'),
+    providerDisconnectAccept: byId('agent-provider-disconnect-accept'),
+    providerDisconnectCancel: byId('agent-provider-disconnect-cancel'),
     catalogStatus: byId('agent-catalog-status'),
     privacyControls: byId('agent-privacy-controls'),
     privacyPolicy: byId('agent-privacy-policy'),
@@ -135,6 +139,17 @@ export function createAgentProviderUi(options = {}) {
       providerId ||
       'Model'
     );
+  }
+
+  // What a provider's page is called. While it still asks how to connect
+  // (subscription or API key) it is the company, not one of the two ways:
+  // "OpenAI", not "OpenAI · API".
+  function providerPageTitle(providerId) {
+    if (!choosingProviderMethod || elements.provider?.value !== providerId)
+      return providerName(providerId);
+    if (['anthropic', 'anthropic-claude'].includes(providerId)) return 'Anthropic';
+    if (['meta', 'meta-subscription'].includes(providerId)) return 'Meta (Muse)';
+    return 'OpenAI';
   }
 
   function providerPrivacyMessage(providerId) {
@@ -316,7 +331,9 @@ export function createAgentProviderUi(options = {}) {
         : 'Connect provider';
     elements.modelDetails.hidden = !connection;
     elements.testProvider.hidden = !connection;
-    elements.providerDisconnect.hidden = !connection;
+    if (!connection) closeDisconnectConfirm();
+    elements.providerDisconnect.hidden =
+      !connection || elements.providerDisconnectConfirm?.hidden === false;
     elements.testProviderNote.hidden = !connection;
     const policies = providerId === 'openrouter' ? [] : descriptor?.policies || [];
     elements.privacyControls.hidden = policies.length === 0;
@@ -363,11 +380,7 @@ export function createAgentProviderUi(options = {}) {
     elements.chatgptConnectionState.classList.toggle('active', subscriptionConnected);
     elements.apiConnectionState.classList.toggle('active', apiConnected);
     if (choosingProviderMethod) {
-      elements.providerHeading.textContent = isClaude
-        ? 'Anthropic'
-        : isMeta
-          ? 'Meta (Muse)'
-          : 'OpenAI';
+      elements.providerHeading.textContent = providerPageTitle(providerId);
       elements.providerStatus.textContent =
         subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
       elements.providerStatus.classList.toggle('active', subscriptionConnected || apiConnected);
@@ -442,6 +455,7 @@ export function createAgentProviderUi(options = {}) {
   let providerScreen = 'home';
   let applyingSettingsRoute = false;
   function showProviderScreen(screen) {
+    closeDisconnectConfirm();
     providerScreen = screen;
     elements.providerHome.hidden = screen !== 'home';
     elements.providerBrowser.hidden = screen !== 'browser';
@@ -452,6 +466,7 @@ export function createAgentProviderUi(options = {}) {
   }
 
   function openProviderDetail(providerId, chooseMethod = false) {
+    closeDisconnectConfirm();
     choosingProviderMethod = chooseMethod;
     elements.provider.value = providerId;
     elements.apiKey.value = '';
@@ -1115,9 +1130,38 @@ export function createAgentProviderUi(options = {}) {
     }
   }
 
+  // Disconnecting deletes the stored API key or sign-in, which cannot be
+  // undone from this page, so it asks first — in the page, the way the
+  // Shortcuts conflict prompt does, not with a native dialog.
+  function openDisconnectConfirm(providerId) {
+    const confirm = elements.providerDisconnectConfirm;
+    if (!confirm || !providerConnection(providerId)) return;
+    const connection = providerConnection(providerId);
+    const consequence =
+      connection.kind === 'hosted' || connection.hasApiKey
+      ? ' Its saved API key is deleted from this device.'
+      : connection.kind === 'subscription'
+        ? ' You will need to sign in again to reconnect.'
+        : '';
+    elements.providerDisconnectQuestion.textContent = `Disconnect ${providerName(providerId)} from Agent?${consequence}`;
+    confirm.hidden = false;
+    elements.providerDisconnect.hidden = true;
+    elements.providerDisconnectCancel.focus();
+  }
+
+  function closeDisconnectConfirm({ restoreFocus = false } = {}) {
+    const confirm = elements.providerDisconnectConfirm;
+    if (!confirm || confirm.hidden) return;
+    confirm.hidden = true;
+    if (elements.providerDisconnect && providerConnection(elements.provider.value)) {
+      elements.providerDisconnect.hidden = false;
+      if (restoreFocus) elements.providerDisconnect.focus();
+    }
+  }
+
   async function removeProviderConnection(providerId) {
     const label = providerName(providerId);
-    if (!window.confirm(`Disconnect ${label} from Agent?`)) return;
+    closeDisconnectConfirm();
     try {
       const response = await api.removeAgentProvider(providerId);
       if (!response?.ok) {
@@ -1419,8 +1463,19 @@ export function createAgentProviderUi(options = {}) {
       saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value })
     );
     elements.providerDisconnect.addEventListener('click', () =>
+      openDisconnectConfirm(elements.provider.value)
+    );
+    elements.providerDisconnectAccept?.addEventListener('click', () =>
       removeProviderConnection(elements.provider.value)
     );
+    elements.providerDisconnectCancel?.addEventListener('click', () =>
+      closeDisconnectConfirm({ restoreFocus: true })
+    );
+    elements.providerDisconnectConfirm?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeDisconnectConfirm({ restoreFocus: true });
+    });
     elements.saveProvider.addEventListener('click', saveProvider);
     elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
     elements.authCallbackSubmit.addEventListener('click', async () => {
@@ -1472,6 +1527,7 @@ export function createAgentProviderUi(options = {}) {
     state,
     showSettingsPage,
     providerName,
+    providerPageTitle,
     invalidateCatalog,
     providerPrivacyMessage,
     renderProviderFields,

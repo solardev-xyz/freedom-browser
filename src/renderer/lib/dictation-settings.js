@@ -1,4 +1,4 @@
-import { LANGUAGE_NAMES } from './dictation-choices.js';
+import { LANGUAGE_NAMES, createDownloadProgress, downloadStatusText } from './dictation-choices.js';
 
 // Settings presents services as connections, while the first-use chooser stays
 // compact. Capabilities, availability and billing copy still come from main.
@@ -32,8 +32,7 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
   const status = node('p', '', 'agent-message');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  const progress = node('progress', '', 'voice-download-progress');
-  progress.setAttribute('aria-label', 'Local dictation download');
+  const progress = createDownloadProgress();
 
   const optionFor = (id) => state?.options.find((option) => option.providerId === id);
   const nameFor = (id) => (id === 'local' ? 'On this device' : SERVICES[id]?.name);
@@ -223,11 +222,8 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
       actions.appendChild(use);
     }
     if (installing) {
-      if (total) {
-        progress.max = total;
-        progress.value = downloaded;
-      } else progress.removeAttribute('value');
-      if (local) children.push(progress);
+      progress.update(downloaded, total);
+      if (local) children.push(progress.element);
       const cancel = node('button', 'Cancel download', 'agent-button secondary');
       cancel.type = 'button';
       cancel.addEventListener('click', cancelWork);
@@ -359,13 +355,8 @@ export function createDictationSettings(host, api, { heading, breadcrumbs, navig
     if (!installing || event.type !== 'download') return;
     downloaded = event.bytes || 0;
     total = event.total || 0;
-    if (total) {
-      progress.max = total;
-      progress.value = downloaded;
-    } else progress.removeAttribute('value');
-    message(
-      `${event.label}${downloaded ? ` · ${Math.round(downloaded / 1000000)} MB${total ? ` of ${Math.round(total / 1000000)} MB` : ''}` : '…'}`
-    );
+    progress.update(downloaded, total);
+    message(downloadStatusText(event));
   });
   render();
   return {
