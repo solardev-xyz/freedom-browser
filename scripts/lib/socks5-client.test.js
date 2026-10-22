@@ -9,8 +9,10 @@ const {
 } = require('./socks5-client');
 
 /**
- * A scripted SOCKS5 server: answers the greeting with `method`, an RFC 1929
- * request with `authStatus`, and the request with `reply` (raw bytes).
+ * A scripted SOCKS5 server: answers the greeting with `method` (in
+ * `methodVersion`, 5 unless given), an RFC 1929 request with `authStatus`
+ * (in `authVersion`, 1 unless given), and the request with `reply` (raw
+ * bytes).
  * Records everything the client sent. `afterEach` closes it, so a failing
  * test doesn't leave it listening.
  */
@@ -19,7 +21,13 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
 });
 
-function scriptedProxy({ method = 0x00, authStatus = 0x00, reply }) {
+function scriptedProxy({
+  method = 0x00,
+  methodVersion = 0x05,
+  authStatus = 0x00,
+  authVersion = 0x01,
+  reply,
+}) {
   const seen = [];
   const server = net.createServer((socket) => {
     socket.on('end', () => socket.destroy());
@@ -28,10 +36,10 @@ function scriptedProxy({ method = 0x00, authStatus = 0x00, reply }) {
     socket.on('data', (chunk) => {
       seen.push(Buffer.from(chunk));
       if (phase === 'greeting') {
-        socket.write(Buffer.from([0x05, method]));
+        socket.write(Buffer.from([methodVersion, method]));
         phase = method === 0x02 ? 'authentication' : 'request';
       } else if (phase === 'authentication') {
-        socket.write(Buffer.from([0x01, authStatus]));
+        socket.write(Buffer.from([authVersion, authStatus]));
         phase = 'request';
       } else {
         socket.write(reply);
@@ -94,6 +102,34 @@ describe('socks5-client', () => {
     expect(server.seen).toHaveLength(1);
   });
 
+  test('a method selection in another version fails the request, before it is sent', async () => {
+    const server = await scriptedProxy({
+      methodVersion: 0x04,
+      reply: reply(0x00, 0x00, 0x01, 8, 8, 4, 4, 0, 0),
+    });
+    await expect(
+      socks5Request(server.proxy, { command: 'resolve', name: 'example.com' })
+    ).rejects.toThrow('method selection is outside the protocol');
+    expect(server.seen).toHaveLength(1);
+  });
+
+  test('an RFC 1929 reply in another version fails the request, before it is sent', async () => {
+    const server = await scriptedProxy({
+      method: 0x02,
+      authVersion: 0x05,
+      reply: reply(0x00, 0x00, 0x01, 8, 8, 4, 4, 0, 0),
+    });
+    await expect(
+      socks5Request(
+        server.proxy,
+        { command: 'resolve', name: 'example.com' },
+        { credentials: { username: 'u', password: 'pw' } }
+      )
+    ).rejects.toThrow('RFC 1929 reply is outside the protocol');
+    // The greeting and the credentials, no request.
+    expect(server.seen).toHaveLength(2);
+  });
+
   test('refused credentials fail the request', async () => {
     const server = await scriptedProxy({ method: 0x02, authStatus: 0x01, reply: reply() });
     await expect(
@@ -150,6 +186,29 @@ describe('socks5-client', () => {
       address: { name: 'a' },
       length: 8,
     });
+  });
+
+  test('an IPv6 literal ending in dotted IPv4 is encoded byte for byte', () => {
+    const head = Buffer.from([0x05, 0x01, 0x00, 0x04]);
+    const port = Buffer.from([0x01, 0xbb]);
+    const mapped = Buffer.concat([
+      head,
+      Buffer.alloc(10),
+      Buffer.from([0xff, 0xff, 0xc0, 0x00, 0x02, 0x01]),
+      port,
+    ]);
+    expect(request(0x01, { ip: '::ffff:192.0.2.1', port: 443 })).toEqual(mapped);
+    expect(request(0x01, { ip: '0:0:0:0:0:ffff:192.0.2.1', port: 443 })).toEqual(mapped);
+    expect(request(0x01, { ip: '64:ff9b::198.51.100.7', port: 443 })).toEqual(
+      Buffer.concat([
+        head,
+        Buffer.from([0x00, 0x64, 0xff, 0x9b]),
+        Buffer.alloc(8),
+        Buffer.from([198, 51, 100, 7]),
+        port,
+      ])
+    );
+    expect(() => request(0x01, { ip: 'fe80::1%eth0', port: 443 })).toThrow('zone');
   });
 
   test('requests, greetings and credentials are bounded and well formed', () => {

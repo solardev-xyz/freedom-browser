@@ -16,6 +16,7 @@
 const net = require('net');
 
 const VERSION = 0x05;
+const AUTH_VERSION = 0x01;
 const NO_AUTH = 0x00;
 const USER_PASS = 0x02;
 const CONNECT = 0x01;
@@ -36,12 +37,18 @@ function authentication({ username, password }) {
   if (user.length < 1 || user.length > 255 || pass.length < 1 || pass.length > 255) {
     throw new Error('SOCKS5 credentials must be 1 to 255 bytes each');
   }
-  return Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]);
+  return Buffer.concat([
+    Buffer.from([AUTH_VERSION, user.length]),
+    user,
+    Buffer.from([pass.length]),
+    pass,
+  ]);
 }
 
 /**
  * A request: `command` for `target`, either `{ name, port }` (a domain) or
- * `{ ip, port }` (an IPv4 or IPv6 literal).
+ * `{ ip, port }` (an IPv4 or IPv6 literal; an IPv6 one may end in dotted
+ * IPv4, as `::ffff:192.0.2.1`, but has no zone).
  */
 function request(command, target) {
   const port = Buffer.alloc(2);
@@ -53,6 +60,7 @@ function request(command, target) {
       return Buffer.concat([Buffer.from([VERSION, command, 0x00, ATYP_IPV4, ...octets]), port]);
     }
     if (family === 6) {
+      if (target.ip.includes('%')) throw new Error('an IPv6 literal with a zone');
       return Buffer.concat([
         Buffer.from([VERSION, command, 0x00, ATYP_IPV6]),
         ipv6Bytes(target.ip),
@@ -72,13 +80,29 @@ function request(command, target) {
   ]);
 }
 
+/**
+ * The 16 bytes of a valid IPv6 literal (`net.isIP` says so): its groups,
+ * a dotted IPv4 suffix as the last two, and `::` as the zeros it stands
+ * for.
+ */
 function ipv6Bytes(ip) {
-  const [head, tail = ''] = ip.split('::');
   const groups = (part) => (part ? part.split(':') : []);
-  const left = groups(head);
-  const right = groups(tail);
-  const missing = 8 - left.length - right.length;
-  const all = ip.includes('::') ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  const dotted = (list) => {
+    const last = list[list.length - 1];
+    if (last === undefined || !last.includes('.')) return list;
+    const [a, b, c, d] = last.split('.').map(Number);
+    return [...list.slice(0, -1), ((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
+  };
+  const [head, tail] = ip.split('::');
+  let all;
+  if (tail === undefined) {
+    all = dotted(groups(head));
+  } else {
+    const left = groups(head);
+    const right = dotted(groups(tail));
+    all = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+  }
+  if (all.length !== 8) throw new Error('not an IPv6 literal');
   const bytes = Buffer.alloc(16);
   all.forEach((group, index) => bytes.writeUInt16BE(parseInt(group, 16), index * 2));
   return bytes;
@@ -162,8 +186,12 @@ function socks5Request(proxy, target, { credentials = null, timeoutMs = 30000 } 
         for (;;) {
           if (phase === 'greeting') {
             if (buffer.length < 2) return;
-            const chosen = buffer[1];
+            const [version, chosen] = buffer;
             buffer = buffer.subarray(2);
+            if (version !== VERSION) {
+              finish(new Error('the SOCKS5 method selection is outside the protocol'));
+              return;
+            }
             if (chosen !== (credentials ? USER_PASS : NO_AUTH)) {
               finish(new Error('the SOCKS5 proxy refused the authentication method'));
               return;
@@ -177,8 +205,12 @@ function socks5Request(proxy, target, { credentials = null, timeoutMs = 30000 } 
             }
           } else if (phase === 'authentication') {
             if (buffer.length < 2) return;
-            const status = buffer[1];
+            const [version, status] = buffer;
             buffer = buffer.subarray(2);
+            if (version !== AUTH_VERSION) {
+              finish(new Error('the RFC 1929 reply is outside the protocol'));
+              return;
+            }
             if (status !== 0x00) {
               finish(new Error('the SOCKS5 proxy refused the credentials'));
               return;

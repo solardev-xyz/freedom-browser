@@ -25,9 +25,15 @@
  *
  * Each check is tried up to three times before it counts as failed.
  *
+ * Only the pinned Arti qualifies: `qualified` needs `arti --version` to
+ * name `PINNED_ARTI_VERSION` (scripts/fetch-arti.js) and the required checks
+ * to pass. Another version's checks are still run and reported
+ * (`checks_passed`), as an unpinned result that doesn't qualify; so is a
+ * binary whose version can't be read. `reason` says why a run doesn't
+ * qualify.
+ *
  * It needs network access (Tor's), so it is a release-pipeline job, not a
- * unit test. It prints a JSON report and exits 0 only when every required
- * check passed.
+ * unit test. It prints a JSON report and exits 0 only when qualified.
  *
  * Usage:
  *   node scripts/qualify-arti-resolve.js [--arti <path>] [--name <host>]
@@ -118,6 +124,15 @@ function writeConfig(dir, socksPort, { allowRoot = false } = {}) {
   return configPath;
 }
 
+/**
+ * The version `line` (`arti --version`'s first) names, as `Arti 2.7.0`
+ * does; `null` without one.
+ */
+function parseVersion(line) {
+  const match = /^arti\s+v?(\d+\.\d+\.\d+\S*)$/i.exec((line || '').trim());
+  return match ? match[1] : null;
+}
+
 /** Arti's version: the first line `arti --version` prints. */
 function artiVersion(artiPath) {
   try {
@@ -191,12 +206,34 @@ async function check(run, attempts = 3) {
 }
 
 /**
- * Whether the checks qualify this Arti: `RESOLVE` without authentication
- * must pass, and with credentials too under `requireCredentials`.
- * `CONNECT` is reported only.
+ * Whether the checks pass: `RESOLVE` without authentication must, and with
+ * credentials too under `requireCredentials`. `CONNECT` is reported only.
  */
 function qualifies(report, { requireCredentials }) {
   return Boolean(report.resolve.ok && (!requireCredentials || report.resolve_with_credentials.ok));
+}
+
+/**
+ * The verdict: `{ qualified, reason }`. Qualified only when the checks pass
+ * (`qualifies`) and the version is the pinned one.
+ */
+function verdict(report, options) {
+  if (!report.version) {
+    return {
+      qualified: false,
+      reason: 'the version is unavailable, so it may not be the pinned one',
+    };
+  }
+  if (report.version !== report.pinned) {
+    return {
+      qualified: false,
+      reason: `Arti ${report.version} is not the pinned ${report.pinned}: an unpinned result`,
+    };
+  }
+  if (!qualifies(report, options)) {
+    return { qualified: false, reason: 'a required check failed' };
+  }
+  return { qualified: true };
 }
 
 async function qualify(options) {
@@ -207,8 +244,10 @@ async function qualify(options) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arti-qualify-'));
   const socksPort = await freePort();
   const proxy = { host: '127.0.0.1', port: socksPort };
+  const arti = artiVersion(artiPath);
   const report = {
-    arti: artiVersion(artiPath),
+    arti,
+    version: parseVersion(arti),
     pinned: PINNED_ARTI_VERSION,
     name: options.name,
   };
@@ -244,7 +283,8 @@ async function qualify(options) {
     if (child) child.kill();
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  report.qualified = qualifies(report, options);
+  report.checks_passed = qualifies(report, options);
+  Object.assign(report, verdict(report, options));
   return report;
 }
 
@@ -260,4 +300,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { parseArgs, writeConfig, check, qualifies, qualify };
+module.exports = { parseArgs, writeConfig, check, qualifies, parseVersion, verdict, qualify };
