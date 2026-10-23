@@ -56,7 +56,6 @@ const {
   previewAppScopedIdentity,
   createAppScopedIdentity,
   ensureAntWalletIdentity,
-  ensureEthereumWalletIdentity,
   activateIdentity,
   getFeed,
   setFeed,
@@ -99,6 +98,40 @@ function readFeedsFile() {
   return JSON.parse(fs.readFileSync(getFeedsFilePath(), 'utf-8'));
 }
 
+const UNAVAILABLE = "Ethereum wallet publisher identities aren't available";
+
+/**
+ * Stores an identity in the removed ethereum-wallet mode (#89) the way an
+ * older build wrote it: the browser can no longer create one.
+ */
+function storeWalletIdentity(origin, walletIndex, { active = true, feeds = {} } = {}) {
+  const store = fs.existsSync(getFeedsFilePath())
+    ? readFeedsFile()
+    : { version: 2, nextPublisherKeyIndex: 0, origins: {} };
+  const id = `ethereum-wallet:${walletIndex}`;
+  const entry = store.origins[origin] || {
+    activeIdentityId: null,
+    identities: {},
+    feedGranted: true,
+    grantedAt: 1,
+    feeds: {},
+  };
+  entry.identities[id] = {
+    id,
+    mode: 'ethereum-wallet',
+    publisherKeyIndex: null,
+    walletIndex,
+    label: `Ethereum wallet ${walletIndex + 1}`,
+    createdAt: 2,
+    lastUsedAt: null,
+  };
+  if (active || !entry.activeIdentityId) entry.activeIdentityId = id;
+  Object.assign(entry.feeds, feeds);
+  store.origins[origin] = entry;
+  fs.writeFileSync(getFeedsFilePath(), JSON.stringify(store));
+  _resetCache();
+}
+
 describe('feed-store', () => {
   describe('origin entries', () => {
     test('getOriginEntry returns null for unknown origin', () => {
@@ -130,19 +163,11 @@ describe('feed-store', () => {
       expect(entry.activeIdentityId).toBe('bee-wallet');
     });
 
-    test('setOriginEntry creates entry with ethereum-wallet mode', () => {
-      const entry = setOriginEntry('myapp.eth', {
-        identityMode: 'ethereum-wallet',
-        walletIndex: 2,
-      });
-      expect(entry.identityMode).toBe('ethereum-wallet');
-      expect(entry.publisherKeyIndex).toBeNull();
-      expect(entry.walletIndex).toBe(2);
-      expect(entry.activeIdentityId).toBe('ethereum-wallet:2');
-      expect(entry.identities['ethereum-wallet:2']).toMatchObject({
-        mode: 'ethereum-wallet',
-        walletIndex: 2,
-      });
+    // #89: the ethereum-wallet mode is gone; nothing creates it.
+    test('setOriginEntry refuses the removed ethereum-wallet mode', () => {
+      expect(() => setOriginEntry('myapp.eth', { identityMode: 'ethereum-wallet', walletIndex: 2 }))
+        .toThrow(UNAVAILABLE);
+      expect(getOriginEntry('myapp.eth')).toBeNull();
     });
 
     test('getOriginEntry returns entry after set', () => {
@@ -237,80 +262,74 @@ describe('feed-store', () => {
       expect(entry.publisherKeyIndex).toBeNull();
     });
 
-    test('ensureEthereumWalletIdentity can add and activate a browser wallet identity', async () => {
+    test('wallet accounts are not offered as publisher identities', async () => {
       setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
 
-      const entry = await ensureEthereumWalletIdentity('myapp.eth', 2, { activate: true });
+      const state = await getOriginIdentityStateWithOwners('myapp.eth');
 
-      expect(entry.activeIdentityId).toBe('ethereum-wallet:2');
-      expect(entry.identityMode).toBe('ethereum-wallet');
-      expect(entry.walletIndex).toBe(2);
-      expect(entry.identities['ethereum-wallet:2']).toMatchObject({
-        mode: 'ethereum-wallet',
-        walletIndex: 2,
-        label: 'Trading Wallet',
+      expect(state.identities.map((identity) => identity.mode)).toEqual(['app-scoped', 'bee-wallet']);
+      expect(mockGetDerivedWallets).not.toHaveBeenCalled();
+    });
+
+    // #89: a stored identity in the removed mode loads, so its origin keeps
+    // its record (and no default key is picked for it), but it is reported
+    // as unavailable and can't be activated again.
+    test('a stored ethereum-wallet identity loads, unavailable', async () => {
+      storeWalletIdentity('myapp.eth', 2, {
+        feeds: { blog: { topic: 'a', owner: '0xWallet2', manifestReference: 'c', identityId: 'ethereum-wallet:2' } },
       });
-    });
 
-    test('ensureEthereumWalletIdentity rejects missing browser wallets', async () => {
-      await expect(ensureEthereumWalletIdentity('myapp.eth', 99))
-        .rejects.toThrow('Wallet with index 99 does not exist');
-    });
-
-    test('ensureEthereumWalletIdentity rejects hardware wallet accounts', async () => {
-      mockGetDerivedWallets.mockResolvedValue([
-        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
-        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
-      ]);
-
-      await expect(ensureEthereumWalletIdentity('myapp.eth', 1, { activate: true }))
-        .rejects.toThrow('Hardware wallet accounts cannot be used as a Swarm publisher identity');
-      // Nothing persisted: the origin never gets a broken active identity.
-      expect(getOriginEntry('myapp.eth')).toBeNull();
-    });
-
-    test('hardware wallet accounts are not offered as publisher identities', async () => {
-      mockGetDerivedWallets.mockResolvedValue([
-        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
-        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
-      ]);
-      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
-
+      expect(hasIdentityMode('myapp.eth')).toBe(true);
+      expect(getOriginEntry('myapp.eth')).toMatchObject({
+        activeIdentityId: 'ethereum-wallet:2',
+        identityMode: 'ethereum-wallet',
+        walletIndex: 2,
+      });
       const state = await getOriginIdentityStateWithOwners('myapp.eth');
-      const walletIndexes = state.identities
-        .filter((identity) => identity.mode === 'ethereum-wallet')
-        .map((identity) => identity.walletIndex);
-
-      expect(walletIndexes).toEqual([0]);
+      expect(state.identities.find((identity) => identity.id === 'ethereum-wallet:2')).toMatchObject({
+        label: 'Trading Wallet',
+        owner: '0xWallet222222222222222222222222222222222222',
+        stored: true,
+        unavailable: true,
+      });
+      // The other identities stay usable.
+      expect(state.identities.find((identity) => identity.id === 'bee-wallet').unavailable).toBeUndefined();
     });
 
-    test('an already-stored hardware wallet identity is reported as unavailable', async () => {
-      mockGetDerivedWallets.mockResolvedValue([
-        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
-        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'mnemonic' },
-      ]);
-      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
-      await ensureEthereumWalletIdentity('myapp.eth', 1, { activate: true });
+    // Review of #792 (round 1): the shared grant refuses it too, whoever
+    // asks (the feed prompt or a manifest's projection), and keeps it.
+    test('feed access is never granted to a stored ethereum-wallet identity', () => {
+      storeWalletIdentity('myapp.eth', 2);
+      revokeFeedAccess('myapp.eth');
+      for (const source of ['user', 'manifest']) {
+        expect(() => grantFeedAccess('myapp.eth', { source })).toThrow(UNAVAILABLE);
+      }
+      expect(hasFeedGrant('myapp.eth')).toBe(false);
+      _resetCache();
+      expect(hasFeedGrant('myapp.eth')).toBe(false);
+      expect(getOriginEntry('myapp.eth').activeIdentityId).toBe('ethereum-wallet:2');
 
-      // The account later turns out to be (or is replaced by) a Ledger one.
-      mockGetDerivedWallets.mockResolvedValue([
-        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
-        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
-      ]);
-
-      const state = await getOriginIdentityStateWithOwners('myapp.eth');
-      const stored = state.identities.find((identity) => identity.id === 'ethereum-wallet:1');
-
-      expect(stored).toMatchObject({ unavailable: true });
+      // Once the user switches identity, the grant works.
+      createAppScopedIdentity('myapp.eth', { activate: true });
+      grantFeedAccess('myapp.eth');
+      expect(hasFeedGrant('myapp.eth')).toBe(true);
     });
 
-    test('getEthereumWalletIdentityReferences lists active and feed-pinned identities', async () => {
+    test('a stored ethereum-wallet identity is never activated', () => {
       setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
-      await ensureEthereumWalletIdentity('myapp.eth', 2, { activate: true });
+      storeWalletIdentity('myapp.eth', 2, { active: false });
+
+      expect(() => activateIdentity('myapp.eth', 'ethereum-wallet:2')).toThrow(UNAVAILABLE);
+      expect(getOriginEntry('myapp.eth').activeIdentityId).toBe('app-scoped:0');
+    });
+
+    test('getEthereumWalletIdentityReferences lists active and feed-pinned identities', () => {
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
+      storeWalletIdentity('myapp.eth', 2);
       setFeed('myapp.eth', 'blog', { topic: 'a', owner: 'b', manifestReference: 'c' });
 
       setOriginEntry('other.eth', { identityMode: 'app-scoped', publisherKeyIndex: 1 });
-      await ensureEthereumWalletIdentity('other.eth', 2);
+      storeWalletIdentity('other.eth', 2, { active: false });
       setFeed('other.eth', 'archive', {
         topic: 'd',
         owner: 'e',
@@ -319,7 +338,7 @@ describe('feed-store', () => {
       });
 
       setOriginEntry('unused.eth', { identityMode: 'app-scoped', publisherKeyIndex: 2 });
-      await ensureEthereumWalletIdentity('unused.eth', 2);
+      storeWalletIdentity('unused.eth', 2, { active: false });
 
       expect(getEthereumWalletIdentityReferences(2)).toEqual([
         {
@@ -768,8 +787,10 @@ describe('feed-store', () => {
       expect(ipcHandlers[IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_ENSURE_ANT_WALLET_IDENTITY]).toBeDefined();
-      expect(ipcHandlers[IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_ACTIVATE_FEED_IDENTITY]).toBeDefined();
+      // #89: the request that made an ethereum-wallet identity is gone.
+      expect(IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY).toBeUndefined();
+      expect(ipcHandlers['swarm:ensure-ethereum-wallet-identity']).toBeUndefined();
     });
 
     test('has-feed-identity returns false for unknown origin', () => {
@@ -807,10 +828,37 @@ describe('feed-store', () => {
         .rejects.toThrow('Invalid identity mode');
     });
 
-    test('set-feed-identity rejects ethereum-wallet for a new origin without wallet index setup', async () => {
+    // #89: a request naming the removed mode fails with a plain error, for
+    // a new origin and an existing one, and nothing falls back to a key.
+    test('set-feed-identity refuses the removed ethereum-wallet mode', async () => {
       _resetCache();
       await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth.eth', 'ethereum-wallet'))
-        .rejects.toThrow('ensureEthereumWalletIdentity');
+        .rejects.toThrow(UNAVAILABLE);
+      expect(getOriginEntry('ipc-eth.eth')).toBeNull();
+
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth2.eth', 'app-scoped');
+      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-eth2.eth');
+      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth2.eth', 'ethereum-wallet'))
+        .rejects.toThrow(UNAVAILABLE);
+      expect(hasFeedGrant('ipc-eth2.eth')).toBe(false);
+    });
+
+    test('set-feed-identity refuses an origin whose stored identity is an ethereum wallet', async () => {
+      storeWalletIdentity('ipc-stored.eth', 2);
+      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-stored.eth');
+      for (const mode of ['app-scoped', 'bee-wallet']) {
+        await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-stored.eth', mode))
+          .rejects.toThrow(UNAVAILABLE);
+      }
+      // Not re-granted, and no other identity chosen for it.
+      expect(hasFeedGrant('ipc-stored.eth')).toBe(false);
+      expect(getOriginEntry('ipc-stored.eth').activeIdentityId).toBe('ethereum-wallet:2');
+      expect(Object.keys(getOriginEntry('ipc-stored.eth').identities)).toEqual(['ethereum-wallet:2']);
+
+      // Switching to another identity explicitly, then granting, works.
+      await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'ipc-stored.eth', { activate: true });
+      const granted = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-stored.eth', 'app-scoped');
+      expect(granted).toMatchObject({ identityMode: 'app-scoped', feedGranted: true });
     });
 
     test('has-feed-identity returns true after identity set', async () => {
@@ -866,27 +914,24 @@ describe('feed-store', () => {
         stored: true,
       });
 
-      const withWalletIdentity = await ipcHandlers[IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY]({}, 'ipc-manage.eth', 2);
-      expect(withWalletIdentity.activeIdentityId).toBe('app-scoped:1');
-      expect(withWalletIdentity.identities.find((identity) => identity.id === 'ethereum-wallet:2')).toMatchObject({
-        label: 'Trading Wallet',
-        owner: '0xWallet222222222222222222222222222222222222',
-        stored: true,
-      });
+      const switched = await ipcHandlers[IPC.SWARM_ACTIVATE_FEED_IDENTITY]({}, 'ipc-manage.eth', 'bee-wallet');
+      expect(switched.activeIdentityId).toBe('bee-wallet');
+      expect(switched.identityMode).toBe('bee-wallet');
 
-      const switched = await ipcHandlers[IPC.SWARM_ACTIVATE_FEED_IDENTITY]({}, 'ipc-manage.eth', 'ethereum-wallet:2');
-      expect(switched.activeIdentityId).toBe('ethereum-wallet:2');
-      expect(switched.identityMode).toBe('ethereum-wallet');
-      expect(switched.walletIndex).toBe(2);
+      // A stored ethereum-wallet identity (#89) is listed, unavailable, and
+      // activating it fails.
+      storeWalletIdentity('ipc-manage.eth', 2, { active: false });
+      await expect(ipcHandlers[IPC.SWARM_ACTIVATE_FEED_IDENTITY]({}, 'ipc-manage.eth', 'ethereum-wallet:2'))
+        .rejects.toThrow(UNAVAILABLE);
 
       const state = await ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-manage.eth');
-      expect(state.activeIdentityId).toBe('ethereum-wallet:2');
-      expect(state.identities.map((identity) => identity.id)).toEqual([
-        'app-scoped:0',
-        'app-scoped:1',
-        'bee-wallet',
-        'ethereum-wallet:2',
-        'ethereum-wallet:0',
+      expect(state.activeIdentityId).toBe('bee-wallet');
+      // Oldest first: the stored identity predates the others.
+      expect(state.identities.map((identity) => [identity.id, !!identity.unavailable])).toEqual([
+        ['ethereum-wallet:2', true],
+        ['app-scoped:0', false],
+        ['app-scoped:1', false],
+        ['bee-wallet', false],
       ]);
     });
 
@@ -921,29 +966,13 @@ describe('feed-store', () => {
       });
     });
 
-    test('get-origin-identities includes browser wallets as available identities', async () => {
+    test('get-origin-identities offers no wallet account (#89)', async () => {
       _resetCache();
       ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-wallets.eth', 'app-scoped');
 
       const state = await ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-wallets.eth');
-      const walletIdentities = state.identities.filter((identity) => identity.mode === 'ethereum-wallet');
 
-      expect(walletIdentities).toEqual([
-        expect.objectContaining({
-          id: 'ethereum-wallet:0',
-          label: 'Main Wallet',
-          walletIndex: 0,
-          owner: '0xWallet000000000000000000000000000000000000',
-          stored: false,
-        }),
-        expect.objectContaining({
-          id: 'ethereum-wallet:2',
-          label: 'Trading Wallet',
-          walletIndex: 2,
-          owner: '0xWallet222222222222222222222222222222222222',
-          stored: false,
-        }),
-      ]);
+      expect(state.identities.filter((identity) => identity.mode === 'ethereum-wallet')).toEqual([]);
     });
 
     test('get-origin-identities requires unlocked vault for owner inspection', async () => {

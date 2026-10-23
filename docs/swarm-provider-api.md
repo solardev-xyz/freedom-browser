@@ -302,13 +302,20 @@ above.
 
 Feed and SOC writes are signed with the origin's **active publisher
 identity**, which the user picks in the first feeds/signing prompt and can
-change in Settings. Three kinds exist (`identityMode`):
+change in Settings. Two kinds exist (`identityMode`):
 
-| `identityMode`    | Key                                                                                                                                                            | Linkable across origins?                      |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `app-scoped`      | A dedicated key derived from the user's vault at `m/44'/73406'/{index}'/0/0`, one index per identity                                                           | No                                            |
-| `bee-wallet`      | The Swarm node's wallet key                                                                                                                                    | Yes: every origin using it shares the address |
-| `ethereum-wallet` | One of the user's Ethereum accounts derived from the vault's recovery phrase (Ledger, phone and Safe accounts cannot be used, since they never hand out a key) | Yes: it is the user's public wallet address   |
+| `identityMode` | Key                                                                                                  | Linkable across origins?                      |
+| -------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `app-scoped`   | A dedicated key derived from the user's vault at `m/44'/73406'/{index}'/0/0`, one index per identity | No                                            |
+| `bee-wallet`   | The Swarm node's wallet key                                                                          | Yes: every origin using it shares the address |
+
+Both keys sign nothing but Swarm chunks. The user's Ethereum accounts are
+not publisher identities: an account also answers a site's `personal_sign`,
+and a `personal_sign` of 32 bytes is exactly a feed update's signature. The
+`ethereum-wallet` mode that offered them is gone (freedom-core design 0002,
+#89). A feed identity stored in that mode is shown as unavailable, and every
+call that would sign with it fails with an error saying so; nothing falls
+back to another key, which would be another owner and so another feed.
 
 - Identities are stored per origin in `swarm-feeds.json` and **survive
   disconnect**. Revoking the connection does not forget the key.
@@ -428,9 +435,9 @@ it serves a [permission manifest](#permission-manifests):
   canPublish: boolean,          // connected AND node ready to publish
   reason: null | 'not-connected' | 'node-stopped' | 'node-not-ready'
              | 'ultra-light-mode' | 'no-usable-stamps',
-  publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
+  publisherIdentityModes: ['app-scoped', 'bee-wallet'],
   features: ['messaging'],
-  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true },
+  extensions: { publisherSigning: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
             maxSubscriptions }

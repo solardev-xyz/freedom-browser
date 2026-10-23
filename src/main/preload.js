@@ -863,8 +863,6 @@ contextBridge.exposeInMainWorld('swarmFeedStore', {
     ipcRenderer.invoke('swarm:create-app-scoped-identity', origin, options),
   ensureAntWalletIdentity: (origin, options) =>
     ipcRenderer.invoke('swarm:ensure-ant-wallet-identity', origin, options),
-  ensureEthereumWalletIdentity: (origin, walletIndex, options) =>
-    ipcRenderer.invoke('swarm:ensure-ethereum-wallet-identity', origin, walletIndex, options),
   activateFeedIdentity: (origin, identityId) =>
     ipcRenderer.invoke('swarm:activate-feed-identity', origin, identityId),
   setFeedIdentity: (origin, identityMode) =>

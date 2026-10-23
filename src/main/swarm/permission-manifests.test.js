@@ -61,6 +61,10 @@ jest.mock('./feed-store', () => ({
     mockFeedState[origin] = { ...(mockFeedState[origin] || {}), granted: false };
   }),
   onManifestMutation: jest.fn(),
+  // A stored ethereum-wallet identity (#89) is covered with the real feed
+  // store in permission-manifests.recovery.test.js.
+  hasUnavailableIdentity: jest.fn(() => false),
+  assertFeedGrantable: jest.fn(),
 }));
 
 jest.mock('./bzz-protocol', () => ({ handleBzzRequest: jest.fn() }));
