@@ -161,13 +161,24 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     .poll(() => automationTabs(electronApp), { timeout: 5_000 })
     .toEqual(expect.arrayContaining([expect.objectContaining({ url: PAGE_URL })]));
   const desktopTab = await tabForUrl(electronApp, PAGE_URL);
-  const desktopIdentity = await window.evaluate(() => {
-    const webview = document.querySelector('webview:not(.hidden)');
-    return {
-      rendererTabId: Number(webview?.dataset?.tabId),
-      guestWebContentsId: webview?.getWebContentsId?.() || null,
-    };
-  });
+  // The visible webview can still be unattached (no guest id yet) for a moment
+  // after the navigation is reported on a slow runner, and fromId(null) throws.
+  let desktopIdentity;
+  await expect
+    .poll(async () => {
+      desktopIdentity = await window.evaluate(() => {
+        const webview = document.querySelector('webview:not(.hidden)');
+        let guestWebContentsId = null;
+        try {
+          guestWebContentsId = webview?.getWebContentsId?.() || null;
+        } catch {
+          // Not attached yet.
+        }
+        return { rendererTabId: Number(webview?.dataset?.tabId), guestWebContentsId };
+      });
+      return Number.isInteger(desktopIdentity.guestWebContentsId);
+    })
+    .toBe(true);
   const boundAutomationTabId = await electronApp.evaluate(
     ({ ipcMain: _ipcMain }, identity) =>
       globalThis.__FREEDOM_TEST_HARNESS__.automationTabForRenderer(

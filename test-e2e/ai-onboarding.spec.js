@@ -156,6 +156,12 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
 
   await electronApp.close();
   const restarted = await relaunchApp();
+  // Let the relaunched chrome finish bootstrapping (its first tab is the start
+  // page) before typing into it. On the macOS runner the window shows its
+  // address bar well before the first tab exists, and an Enter pressed in
+  // that window never returned (CI run 39865561125); the sibling restart test
+  // above waits the same way.
+  await guest(restarted, 'home');
   expect(await modelContext(restarted)).toEqual([true, 'object']);
 });
 

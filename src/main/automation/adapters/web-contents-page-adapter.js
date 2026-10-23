@@ -22,6 +22,36 @@ const ELECTRON_KEY_CODES = Object.freeze({
 });
 const CHARACTER_KEYS = new Set(['Enter', 'Space']);
 const UPLOAD_MARKER_ATTRIBUTE = 'data-freedom-agent-upload';
+const SCROLL_SETTLE_QUIET_MS = 100;
+const SCROLL_SETTLE_LIMIT_MS = 2_500;
+
+// Polls the scroll position after a wheel until it has moved and then stayed
+// still for SCROLL_SETTLE_QUIET_MS, or SCROLL_SETTLE_LIMIT_MS have passed.
+// Chromium can start applying a wheel well after it was sent, notably one
+// sent soon after the previous scroll: measured on a Linux host (Oct 2026,
+// Electron 44.3.0), a horizontal scroll right after a vertical one, or the
+// reverse direction right after it, only started moving 600 ms to 1.1 s later.
+// The previous "100 ms without change after 150 ms" rule called that
+// `no_movement` (every time in hidden pages on Linux, intermittently on the
+// macOS CI runner: runs 39683336216, 39798510287, 39865561125). A quiet
+// period before any movement is therefore not "settled"; only a target that
+// never moves (it blocks wheel input, or the wheel was lost) waits out the
+// limit and reports `no_movement` with `settled: false`.
+async function settleScroll(readScroll, before) {
+  const started = Date.now();
+  let changedAt = null;
+  let after = before;
+  while (Date.now() - started < SCROLL_SETTLE_LIMIT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const next = await readScroll();
+    if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
+    after = next;
+    if (changedAt !== null && Date.now() - changedAt >= SCROLL_SETTLE_QUIET_MS) {
+      return { after, settled: true };
+    }
+  }
+  return { after, settled: false };
+}
 
 function defaultReferenceIdFactory() {
   return `ref_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -1398,20 +1428,10 @@ class WebContentsPageAdapter extends EventEmitter {
           deltaX: horizontal ? delta : 0,
           deltaY: horizontal ? 0 : delta,
         });
-        let after = before;
-        let changedAt = Date.now();
-        const started = changedAt;
-        let settled = false;
-        while (Date.now() - started < 1000) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          const next = (await read(false)).scroll;
-          if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
-          after = next;
-          if (Date.now() - started >= 150 && Date.now() - changedAt >= 100) {
-            settled = true;
-            break;
-          }
-        }
+        const { after, settled } = await settleScroll(
+          async () => (await read(false)).scroll,
+          before
+        );
         const moved = after.x !== before.x || after.y !== before.y;
         return {
           ref,
@@ -1593,20 +1613,10 @@ class WebContentsPageAdapter extends EventEmitter {
       hasPreciseScrollingDeltas: true,
       canScroll: true,
     });
-    const started = Date.now();
-    let changedAt = started;
-    let after = start;
-    let settled = false;
-    while (Date.now() - started < 1_000) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const next = (await inspect(false)).scroll;
-      if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
-      after = next;
-      if (Date.now() - started >= 150 && Date.now() - changedAt >= 100) {
-        settled = true;
-        break;
-      }
-    }
+    const { after, settled } = await settleScroll(
+      async () => (await inspect(false)).scroll,
+      start
+    );
     const moved = after.x !== start.x || after.y !== start.y;
     return {
       ref,
