@@ -2183,6 +2183,9 @@ function clearApproval() {
   elements.nodeRequestSummary.replaceChildren();
   elements.publicationDetails.hidden = true;
   elements.publicationSummary.replaceChildren();
+  elements.publicationFindings.hidden = true;
+  elements.publicationFindings.replaceChildren();
+  publicationChoices = null;
   elements.workspacePermissionDetails.hidden = true;
   elements.workspacePermissionDetails.open = false;
   elements.workspacePermissionSummary.textContent = '';
@@ -2236,6 +2239,158 @@ function publicationSubject(publication) {
   return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
 }
 
+// Per-file and per-finding choices on the publication card. Main re-checks
+// them; this only keeps "Publish publicly" disabled until secrets are resolved.
+let publicationChoices = null;
+
+const PUBLICATION_FINDING_KIND = Object.freeze({
+  secret: 'Secret',
+  personal: 'Personal data',
+  metadata: 'Metadata',
+  scope: 'Scope',
+});
+
+function appendChildren(parent, ...children) {
+  for (const child of children) parent.appendChild(child);
+}
+
+function unresolvedPublicationFindings(request = pendingApproval) {
+  const findings = request?.publication?.findings;
+  if (!Array.isArray(findings) || !publicationChoices || publicationChoices.request !== request) return [];
+  return findings.filter(finding => finding.blocking && !publicationChoices.excluded.has(finding.path) &&
+    !publicationChoices.acknowledged.has(finding.id));
+}
+
+function publicationApprovalBlocked() {
+  return unresolvedPublicationFindings().length > 0;
+}
+
+function updatePublicationFindingsState() {
+  const request = pendingApproval;
+  if (!publicationChoices || publicationChoices.request !== request) return;
+  const unresolved = unresolvedPublicationFindings(request);
+  for (const group of elements.publicationFindings.querySelectorAll('.agent-publication-finding-group')) {
+    const excluded = publicationChoices.excluded.has(group.dataset.path);
+    group.classList.toggle('excluded', excluded);
+    const exclude = group.querySelector('.agent-publication-exclude');
+    if (exclude) {
+      exclude.textContent = excluded ? 'Include file' : 'Exclude file';
+      exclude.setAttribute('aria-pressed', String(excluded));
+    }
+    const state = group.querySelector('.agent-publication-finding-state');
+    if (state) state.textContent = excluded ? 'Excluded · will not be published' : '';
+    for (const checkbox of group.querySelectorAll('.agent-publication-anyway')) checkbox.disabled = excluded;
+  }
+  const status = elements.publicationFindings.querySelector('.agent-publication-findings-status');
+  if (status) {
+    status.textContent = unresolved.length
+      ? `${unresolved.length} secret${unresolved.length === 1 ? '' : 's'} must be resolved before publishing: exclude the file, ask Agent to fix it, or tick Publish anyway.`
+      : 'All blocking findings are resolved.';
+    status.classList.toggle('blocked', unresolved.length > 0);
+  }
+  if (!elements.approvalDecline.disabled && Date.now() >= approvalReadyAt) {
+    elements.approvalApprove.disabled = unresolved.length > 0;
+  }
+}
+
+function renderPublicationFindings(request) {
+  const publication = request.publication;
+  const findings = Array.isArray(publication.findings) ? publication.findings : [];
+  publicationChoices = { request, excluded: new Set(), acknowledged: new Set() };
+  elements.publicationFindings.replaceChildren();
+  elements.publicationFindings.hidden = findings.length === 0;
+  if (!findings.length) return;
+  const heading = document.createElement('p');
+  heading.className = 'agent-publication-findings-heading';
+  const files = new Set(findings.map(finding => finding.path));
+  heading.textContent = `Pre-publish check: ${findings.length} finding${findings.length === 1 ? '' : 's'} in ${files.size} ${publication.kind === 'text' ? 'text' : `file${files.size === 1 ? '' : 's'}`}`;
+  const status = document.createElement('p');
+  status.className = 'agent-publication-findings-status';
+  status.setAttribute('aria-live', 'polite');
+  appendChildren(elements.publicationFindings, heading, status);
+  // Files with something blocking come first; scan order is kept otherwise.
+  const ordered = [...files].sort((left, right) =>
+    Number(findings.some(item => item.path === right && item.blocking)) - Number(findings.some(item => item.path === left && item.blocking)));
+  for (const filePath of ordered) {
+    const group = document.createElement('section');
+    group.className = 'agent-publication-finding-group';
+    group.dataset.path = filePath;
+    const header = document.createElement('div');
+    header.className = 'agent-publication-finding-header';
+    const name = document.createElement('span');
+    name.className = 'agent-publication-finding-path';
+    name.textContent = approvalDisplayText(publication.kind === 'text' ? 'Text to publish' : filePath);
+    const actions = document.createElement('span');
+    actions.className = 'agent-publication-finding-actions';
+    if (publication.kind === 'folder') {
+      const exclude = document.createElement('button');
+      exclude.type = 'button';
+      exclude.className = 'agent-publication-exclude';
+      exclude.textContent = 'Exclude file';
+      exclude.addEventListener('click', () => {
+        if (pendingApproval !== request) return;
+        if (publicationChoices.excluded.has(filePath)) publicationChoices.excluded.delete(filePath);
+        else publicationChoices.excluded.add(filePath);
+        updatePublicationFindingsState();
+      });
+      actions.appendChild(exclude);
+    }
+    const fix = document.createElement('button');
+    fix.type = 'button';
+    fix.className = 'agent-publication-fix';
+    fix.textContent = 'Ask Agent to fix';
+    fix.title = 'Sends the rule names and this path to Agent, never the values. Nothing is published; Agent can fix the file and ask again.';
+    fix.addEventListener('click', () => {
+      if (pendingApproval !== request) return;
+      void decideApproval(false, { publicationFix: { paths: [filePath] } }, request);
+    });
+    actions.appendChild(fix);
+    appendChildren(header, name, actions);
+    const state = document.createElement('p');
+    state.className = 'agent-publication-finding-state';
+    const list = document.createElement('ul');
+    list.className = 'agent-publication-finding-list';
+    for (const finding of findings.filter(item => item.path === filePath)) {
+      const row = document.createElement('li');
+      row.className = 'agent-publication-finding';
+      row.dataset.kind = finding.kind;
+      row.dataset.findingId = finding.id;
+      const badge = document.createElement('span');
+      badge.className = 'agent-publication-finding-badge';
+      badge.textContent = `${PUBLICATION_FINDING_KIND[finding.kind] || 'Finding'} · ${finding.blocking ? 'blocked' : 'warning'}`;
+      const label = document.createElement('span');
+      label.className = 'agent-publication-finding-label';
+      label.textContent = approvalDisplayText(`${finding.label}${Number.isSafeInteger(finding.line) ? ` · line ${finding.line}` : ''}`);
+      const excerpt = document.createElement('code');
+      excerpt.className = 'agent-publication-finding-excerpt';
+      excerpt.textContent = approvalDisplayText(finding.excerpt || '');
+      appendChildren(row, badge, label, excerpt);
+      if (finding.blocking) {
+        const anyway = document.createElement('label');
+        anyway.className = 'agent-publication-anyway-label';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'agent-publication-anyway';
+        checkbox.checked = false;
+        checkbox.addEventListener('change', () => {
+          if (pendingApproval !== request) return;
+          if (checkbox.checked) publicationChoices.acknowledged.add(finding.id);
+          else publicationChoices.acknowledged.delete(finding.id);
+          updatePublicationFindingsState();
+        });
+        const text = document.createElement('span');
+        text.textContent = 'Publish anyway';
+        appendChildren(anyway, checkbox, text);
+        row.appendChild(anyway);
+      }
+      list.appendChild(row);
+    }
+    appendChildren(group, header, state, list);
+    elements.publicationFindings.appendChild(group);
+  }
+  updatePublicationFindingsState();
+}
+
 function renderPublicationApproval(request) {
   const publication = request.publication;
   elements.publicationDetails.hidden = false;
@@ -2260,9 +2415,11 @@ function renderPublicationApproval(request) {
   appendPublicationSummary('Media type', publication.contentType);
   appendPublicationSummary('Text to publish', publication.text);
   if (publication.files?.length) appendPublicationSummary('Files to publish', publication.files.map(file => `${file.path} (${formatArtifactBytes(file.bytes)})`).join('\n'));
-  if (publication.excludedCount) appendPublicationSummary('Excluded', `${publication.excludedCount} private or credential entries`);
+  if (publication.excluded?.length) appendPublicationSummary('Not published', publication.excluded.map(entry => `${entry.path} · ${entry.reason}`).join('\n'));
+  if (publication.stripped?.length) appendPublicationSummary('Metadata removed', publication.stripped.map(entry => `${entry.path} · ${entry.reason}`).join('\n'));
   appendPublicationSummary('Default document', publication.indexDocument);
   appendPublicationSummary('Network', 'Public Swarm network');
+  renderPublicationFindings(request);
 }
 
 function effectLabel(value) {
@@ -2359,7 +2516,7 @@ function renderWalletApproval(request, domain = null) {
 }
 
 function setApprovalControlsDisabled(disabled) {
-  elements.approvalApprove.disabled = disabled;
+  elements.approvalApprove.disabled = disabled || publicationApprovalBlocked();
   elements.approvalAllowConversation.disabled = disabled;
   elements.approvalDecline.disabled = disabled;
   elements.approvalStop.disabled = disabled;
@@ -2555,10 +2712,10 @@ function renderApproval(request) {
         : 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
       : publication
         ? publication.workspacePath
-          ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+          ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and permanent.'
           : publication.kind === 'folder'
-            ? 'This publishes the attached folder snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-            : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+            ? 'This publishes the attached folder snapshot listed below using an existing postage batch. The content is public, unencrypted, and permanent.'
+            : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and permanent.'
         : nodeRequest
           ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
           : nodeLifecycle
@@ -2594,7 +2751,7 @@ function renderApproval(request) {
     : workspace
       ? workspace.setupRequired ? 'Set up protection' : 'Enable workspace'
       : publication
-        ? 'Publish'
+        ? 'Publish publicly'
         : diagnostic
           ? 'Share once'
           : request.action === 'file_upload'
@@ -2645,7 +2802,7 @@ function renderApproval(request) {
     elements.approvalAllowConversation.disabled = true;
     setTimeout(() => {
       if (pendingApproval !== request) return;
-      elements.approvalApprove.disabled = false;
+      elements.approvalApprove.disabled = publicationApprovalBlocked();
       elements.approvalAllowConversation.disabled = false;
     }, approvalReadyAt - Date.now());
   }
@@ -2679,6 +2836,7 @@ async function ensureWalletUnlocked(request) {
 async function decideApproval(approved, options = {}, request = pendingApproval) {
   const runId = currentRunId;
   if (!request || !runId || request !== pendingApproval || (approved && Date.now() < approvalReadyAt)) return;
+  if (approved && request.publication && publicationApprovalBlocked()) return;
   setApprovalControlsDisabled(true);
   if (approved && request.wallet) {
     try {
@@ -2696,7 +2854,7 @@ async function decideApproval(approved, options = {}, request = pendingApproval)
   }
   if (pendingApproval !== request || currentRunId !== runId) return;
   lastApprovalDecisionAt = Date.now();
-  setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
+  setMessage(elements.approvalMessage, approved ? 'Allowing…' : options.publicationFix ? 'Asking Agent to fix…' : 'Not allowing…');
   try {
     const walletIndex = Number(elements.walletAccount.value);
     const decisionOptions = approved
@@ -2710,8 +2868,17 @@ async function decideApproval(approved, options = {}, request = pendingApproval)
           ...(request.workspacePermission && options.workspacePermissionScope === 'conversation'
             ? { workspacePermissionScope: 'conversation' }
             : {}),
+          ...(request.publication && publicationChoices?.request === request && publicationChoices.excluded.size
+            ? { publicationExclusions: [...publicationChoices.excluded] }
+            : {}),
+          ...(request.publication && publicationChoices?.request === request && publicationChoices.acknowledged.size
+            ? { publicationAcknowledged: [...publicationChoices.acknowledged].filter(id =>
+                !publicationChoices.excluded.has(request.publication.findings.find(finding => finding.id === id)?.path)) }
+            : {}),
         }
-      : null;
+      : request.publication && options.publicationFix
+        ? { publicationFix: options.publicationFix }
+        : null;
     const hasDecisionOptions = decisionOptions && Object.keys(decisionOptions).length > 0;
     const response = hasDecisionOptions
       ? await window.electronAPI.decideAgentApproval(
@@ -4351,6 +4518,7 @@ export function initAgentUi(options = {}) {
     nodeRequestSummary: byId('agent-node-request-summary'),
     publicationDetails: byId('agent-publication-details'),
     publicationSummary: byId('agent-publication-summary'),
+    publicationFindings: byId('agent-publication-findings'),
     walletAccountField: byId('agent-wallet-account-field'),
     walletAccount: byId('agent-wallet-account'),
     walletUnlock: byId('agent-wallet-unlock'),

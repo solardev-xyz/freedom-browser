@@ -1718,6 +1718,93 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
   expect(result).toMatchObject({ version: 6, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
 });
 
+// The approval payload is the real pre-publish scan of a fixture snapshot
+// (publication-scan.js, as SwarmPublicationController sends it); the decision
+// IPC is replaced so the test sees exactly what the card would send to main.
+// Main's enforcement of these choices is covered by the controller/service
+// unit tests. Nothing is uploaded.
+test('publication approval shows scan findings, blocks secrets and says the upload is permanent', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const { preparePublication } = require('../src/main/agent/publication-scan');
+  const stripe = ['sk_live_', '51HqLyjWDarjtT1zdp7dc9a'].join('');
+  const key = '4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318';
+  const exif = Buffer.concat([Buffer.from('Exif\0\0MM\0*\0\0\0\x08\0\0\0\0\0\0GPS', 'latin1')]);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, exif.length + 2]), exif]);
+  const photo = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, Buffer.from([0xff, 0xda, 0, 2, 1, 2, 0xff, 0xd9])]);
+  const scan = preparePublication({ kind: 'folder', name: 'dist', excluded: [{ path: '.env', reason: 'Credential file' }], files: [
+    { path: 'index.html', bytes: Buffer.from('<p>Contact alice.smith@proton.me</p>') },
+    { path: 'app.js', bytes: Buffer.from(`const stripe = "${stripe}";\n//# sourceMappingURL=app.js.map\n`) },
+    { path: 'app.js.map', bytes: Buffer.from('{"sourcesContent":["// TODO remove key"]}') },
+    { path: 'deploy.js', bytes: Buffer.from(`const PRIVATE_KEY = '0x${key}';`) },
+    { path: 'photo.jpg', bytes: photo },
+  ] });
+  const publication = {
+    kind: 'folder', name: 'dist', workspacePath: 'dist', public: true, bytes: scan.source.bytes, indexDocument: 'index.html',
+    files: scan.source.files.map(file => ({ path: file.path, bytes: file.bytes.length })),
+    findings: scan.findings, excluded: scan.excluded, stripped: scan.stripped,
+  };
+  expect(JSON.stringify(publication)).not.toContain(stripe);
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }, publication) => {
+    globalThis.__publicationDecisions = [];
+    ipcMain.removeHandler('agent:approval:decide');
+    ipcMain.handle('agent:approval:decide', (_event, payload) => {
+      globalThis.__publicationDecisions.push(payload);
+      return { ok: true, decided: true };
+    });
+    const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    page.webContents.send('agent:event', { type: 'run_started', runId: 'run_publication_scan_ui', userText: 'Publish my site' });
+    page.webContents.send('agent:event', { type: 'approval_requested', runId: 'run_publication_scan_ui',
+      approvalId: 'approval_publication_scan', action: 'swarm_publish', operation: 'swarm_publish', label: 'dist', publication });
+  }, publication);
+  const approve = window.locator('#agent-approval-approve');
+  await expect(window.locator('#agent-approval-action')).toHaveText('Publish “dist” to Swarm?');
+  await expect(window.locator('#agent-publication-permanent')).toHaveText(
+    'This will be public. Anyone with the link can read it, and it can’t be deleted or taken back.');
+  await expect(approve).toHaveText('Publish publicly');
+  await expect(window.locator('#agent-approval-allow-conversation')).toBeHidden();
+  const summary = window.locator('#agent-publication-summary');
+  await expect(summary).toContainText('.env · Credential file');
+  await expect(summary).toContainText('app.js.map · Source map');
+  await expect(summary).toContainText('photo.jpg · Image metadata (EXIF, GPS, XMP) removed');
+  await expect(summary).toContainText('app.js · sourceMappingURL comment removed');
+  const groups = window.locator('.agent-publication-finding-group');
+  await expect(groups).toHaveCount(3);
+  await expect(groups.nth(0)).toContainText('app.js');
+  await expect(groups.nth(0)).toContainText('Stripe secret key · line 1');
+  await expect(groups.nth(1)).toContainText('Ethereum private key');
+  await expect(groups.nth(2)).toContainText('Email address');
+  await expect(groups.nth(2).locator('.agent-publication-anyway')).toHaveCount(0);
+  await expect(window.locator('#agent-approval')).not.toContainText(stripe);
+  await expect(window.locator('.agent-publication-findings-status')).toContainText('must be resolved before publishing');
+  await expect(approve).toBeDisabled();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-publication-permanent').scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-blocked-${theme}.png`) });
+    await approve.scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-blocked-footer-${theme}.png`) });
+  }
+
+  await groups.nth(0).getByLabel('Publish anyway').check();
+  await expect(approve).toBeDisabled();
+  await groups.nth(1).getByRole('button', { name: 'Exclude file' }).click();
+  await expect(groups.nth(1).getByRole('button', { name: 'Include file' })).toBeVisible();
+  await expect(approve).toBeEnabled();
+  await expect(window.locator('.agent-publication-findings-status')).toHaveText('All blocking findings are resolved.');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-publication-permanent').scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-resolved-${theme}.png`) });
+    await approve.scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-resolved-footer-${theme}.png`) });
+  }
+  await approve.click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions)).toEqual([{
+    runId: 'run_publication_scan_ui', approvalId: 'approval_publication_scan', approved: true,
+    publicationExclusions: ['deploy.js'], publicationAcknowledged: [scan.findings.find(finding => finding.path === 'app.js').id],
+  }]);
+});
+
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow }) => {

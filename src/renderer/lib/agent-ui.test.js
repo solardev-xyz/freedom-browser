@@ -151,6 +151,8 @@ function createAgentElements() {
     'agent-node-request-summary',
     'agent-publication-details',
     'agent-publication-summary',
+    'agent-publication-permanent',
+    'agent-publication-findings',
     'agent-wallet-account-field',
     'agent-wallet-account',
     'agent-wallet-unlock',
@@ -268,6 +270,8 @@ function createAgentElements() {
   elements['agent-node-request-summary'] = createElement('dl');
   elements['agent-publication-details'].hidden = true;
   elements['agent-publication-summary'] = createElement('dl');
+  elements['agent-publication-findings'] = createElement('div');
+  elements['agent-publication-findings'].hidden = true;
   elements['agent-wallet-account-field'].hidden = true;
   elements['agent-wallet-account'] = createElement('select');
   elements['agent-wallet-unlock'].hidden = true;
@@ -4479,7 +4483,9 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
     expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
     expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('/Users/');
-    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    // swarm_publish is approved one publication at a time: no conversation-wide grant.
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
 
     ctx.elements['agent-approval-approve'].dispatch('click');
     await flush();
@@ -4522,6 +4528,77 @@ describe('Agent UI', () => {
     card.children[1].children[0].dispatch('click');
     await flush();
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
+  });
+
+  test('publication findings block Publish publicly until each secret is resolved', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_findings',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: {
+        kind: 'folder', name: 'dist', workspacePath: 'dist', public: true,
+        files: [{ path: 'index.html', bytes: 20 }, { path: 'app.js', bytes: 40 }, { path: 'keys.js', bytes: 10 }],
+        excluded: [{ path: '.env', reason: 'Credential file' }],
+        stripped: [{ path: 'photo.jpg', reason: 'Image metadata (EXIF, GPS, XMP) removed' }],
+        findings: [
+          { id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 3, excerpt: 'sk_liv•••••••• (31 characters)', blocking: true },
+          { id: 'finding_2', path: 'index.html', kind: 'personal', rule: 'email-address', label: 'Email address', line: 1, excerpt: 'a•••@proton.me', blocking: false },
+          { id: 'finding_3', path: 'keys.js', kind: 'secret', rule: 'ethereum-private-key', label: 'Ethereum private key', line: 1, excerpt: '4c0883••••', blocking: true },
+        ],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    const summaryText = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summaryText).toContain('.env · Credential file');
+    expect(summaryText).toContain('photo.jpg · Image metadata (EXIF, GPS, XMP) removed');
+    const findings = ctx.elements['agent-publication-findings'];
+    expect(findings.hidden).toBe(false);
+    const groups = findings.querySelectorAll('.agent-publication-finding-group');
+    expect(groups.map(group => group.dataset.path)).toEqual(['app.js', 'keys.js', 'index.html']);
+    expect(groups[2].querySelector('.agent-publication-anyway')).toBeNull(); // warnings never block
+    expect(groups[0].querySelector('.agent-publication-finding-excerpt').textContent).toBe('sk_liv•••••••• (31 characters)');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    const anyway = groups[0].querySelector('.agent-publication-anyway');
+    anyway.checked = true;
+    anyway.dispatch('change');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    groups[1].querySelector('.agent-publication-exclude').dispatch('click');
+    expect(groups[1].querySelector('.agent-publication-exclude').textContent).toBe('Include file');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_findings', true, {
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+  });
+
+  test('Ask Agent to fix declines with only the file path', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_fix',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'Text',
+      publication: {
+        kind: 'text', name: 'Text', public: true, text: 'key',
+        findings: [{ id: 'finding_1', path: 'Text', kind: 'secret', rule: 'jwt', label: 'JSON Web Token', line: 1, excerpt: 'eyJhbG••••', blocking: true }],
+      },
+    });
+    const group = ctx.elements['agent-publication-findings'].querySelector('.agent-publication-finding-group');
+    expect(group.querySelector('.agent-publication-exclude')).toBeNull(); // a single text cannot drop a file
+    group.querySelector('.agent-publication-fix').dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_fix', false, {
+      publicationFix: { paths: ['Text'] },
+    });
   });
 
   test('identifies a managed project source in the Swarm approval without a host path', async () => {

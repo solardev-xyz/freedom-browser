@@ -624,7 +624,15 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     let decision = payload.approved;
+    const stringArray = (value, max) => Array.isArray(value) && value.length <= max &&
+      value.every(item => typeof item === 'string' && item.length <= 1_024) ? [...value] : null;
+    const publicationFixPaths = stringArray(payload.publicationFix?.paths, 200);
+    if (!payload.approved && publicationFixPaths?.length) {
+      decision = { approved: false, publicationFix: { paths: publicationFixPaths } };
+    }
     if (payload.approved) {
+      const publicationExclusions = stringArray(payload.publicationExclusions, 200);
+      const publicationAcknowledged = stringArray(payload.publicationAcknowledged, 200);
       const walletIndex =
         Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
           ? payload.walletIndex
@@ -632,12 +640,15 @@ function registerFreedomAgentIpc(options = {}) {
       const diagnosticScope = payload.diagnosticScope === 'conversation' ? 'conversation' : null;
       const workspacePermissionScope =
         payload.workspacePermissionScope === 'conversation' ? 'conversation' : null;
-      if (walletIndex !== null || diagnosticScope || workspacePermissionScope) {
+      if (walletIndex !== null || diagnosticScope || workspacePermissionScope ||
+          publicationExclusions?.length || publicationAcknowledged?.length) {
         decision = {
           approved: true,
           ...(walletIndex !== null && { walletIndex }),
           ...(diagnosticScope && { diagnosticScope }),
           ...(workspacePermissionScope && { workspacePermissionScope }),
+          ...(publicationExclusions?.length && { publicationExclusions }),
+          ...(publicationAcknowledged?.length && { publicationAcknowledged }),
         };
       }
     }

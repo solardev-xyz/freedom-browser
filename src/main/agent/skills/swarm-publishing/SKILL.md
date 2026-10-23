@@ -20,7 +20,8 @@ Use this skill when the user wants to publish a file, folder, static site, or te
 ## Preflight
 
 1. Identify the exact source. For managed project output, inspect the workspace only as needed to choose `.` or the correct build-output subtree and index document. For an attachment, use `attachment_list`.
-2. If the content appears to contain secrets, private keys, credentials, or personal data, warn the user rather than silently publishing it. Do not claim exhaustive secret detection.
+2. If the content appears to contain secrets, private keys, credentials, or personal data, warn the user rather than silently publishing it. Freedom also scans the exact snapshot before approval and shows its findings to the user; you never see the flagged values. Do not claim exhaustive secret detection.
+   - If the user chooses "Ask Agent to fix", the tool result names the rule and file (and line) for each finding. Remove or replace those values in the files without repeating them in chat, keep secrets out of published output entirely, then call `swarm_publish` again. Freedom scans the new snapshot and asks the user again.
 3. Call `node_status` if Swarm readiness is unknown.
 4. Publication uses an existing usable Swarm postage batch. If Freedom reports that no usable batch exists, load `/freedom-agent/skills/swarm-postage/SKILL.md` and follow that procedure. Never purchase postage implicitly.
 

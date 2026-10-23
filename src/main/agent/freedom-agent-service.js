@@ -533,6 +533,46 @@ function normalizeDiagnosticApproval(value, recipient = {}) {
   });
 }
 
+// At most this many findings reach a card (publication-scan's MAX_FINDINGS),
+// so at most this many distinct files can be excluded or sent back to fix.
+const MAX_PUBLICATION_FINDINGS = 200;
+
+function normalizePublicationFinding(value) {
+  if (!value || typeof value !== 'object' || typeof value.id !== 'string' || !/^finding_\d{1,4}$/.test(value.id)) return null;
+  if (!['secret', 'personal', 'metadata', 'scope'].includes(value.kind) || typeof value.rule !== 'string') return null;
+  return Object.freeze({
+    id: value.id,
+    path: String(value.path ?? '').slice(0, 1_024),
+    kind: value.kind,
+    rule: value.rule.slice(0, 80),
+    label: approvalLineText(String(value.label ?? value.rule), 120),
+    ...(Number.isSafeInteger(value.line) && value.line > 0 && { line: value.line }),
+    excerpt: approvalLineText(String(value.excerpt ?? ''), 160),
+    blocking: value.blocking === true,
+  });
+}
+
+// Publication choices from the approval card may only name files and
+// findings that this exact request listed.
+function validPublicationDecision(publication, decision) {
+  if (!publication) return false;
+  const findingPaths = new Set((publication.findings || []).map(finding => finding.path));
+  // The card offers "Exclude file" on every file group that has a finding, so
+  // those paths are always excludable, even past the listed-files cap.
+  const files = new Set([...(publication.files || []).map(file => file.path), ...findingPaths]);
+  const findingIds = new Set((publication.findings || []).map(finding => finding.id));
+  const list = (value, allowed, max) => value === undefined || (Array.isArray(value) && value.length <= max &&
+    value.every(item => typeof item === 'string' && allowed.has(item)));
+  if (decision.approved === false) {
+    return Boolean(decision.publicationFix && list(decision.publicationFix.paths, findingPaths, MAX_PUBLICATION_FINDINGS) &&
+      decision.publicationFix.paths.length > 0 && decision.publicationExclusions === undefined &&
+      decision.publicationAcknowledged === undefined);
+  }
+  return decision.publicationFix === undefined &&
+    list(decision.publicationExclusions, publication.kind === 'folder' ? files : new Set(), MAX_PUBLICATION_FINDINGS) &&
+    list(decision.publicationAcknowledged, findingIds, MAX_PUBLICATION_FINDINGS);
+}
+
 function normalizePublicationApproval(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
@@ -563,8 +603,12 @@ function normalizePublicationApproval(value) {
     name,
     public: true,
     ...(typeof value.text === 'string' && { text: value.text }),
-    ...(Array.isArray(value.files) && { files: value.files.slice(0, 100).map(file => ({ path: String(file.path).slice(0, 1024), bytes: file.bytes })) }),
-    ...(Number.isSafeInteger(value.excludedCount) && { excludedCount: value.excludedCount }),
+    ...(Array.isArray(value.files) && { files: value.files.slice(0, 1_000).map(file => ({ path: String(file.path).slice(0, 1024), bytes: file.bytes })) }),
+    ...(Array.isArray(value.findings) && value.findings.length && { findings: Object.freeze(value.findings.slice(0, MAX_PUBLICATION_FINDINGS).map(normalizePublicationFinding).filter(Boolean)) }),
+    ...(Array.isArray(value.excluded) && value.excluded.length && { excluded: Object.freeze(value.excluded.slice(0, 1_000).map(entry => Object.freeze({
+      path: String(entry?.path ?? '').slice(0, 1_024), reason: approvalLineText(String(entry?.reason ?? ''), 160) }))) }),
+    ...(Array.isArray(value.stripped) && value.stripped.length && { stripped: Object.freeze(value.stripped.slice(0, 1_000).map(entry => Object.freeze({
+      path: String(entry?.path ?? '').slice(0, 1_024), reason: approvalLineText(String(entry?.reason ?? ''), 160) }))) }),
     ...(Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? { bytes: value.bytes } : {}),
     ...(typeof value.contentType === 'string' && value.contentType
       ? { contentType: value.contentType.slice(0, 255) }
@@ -2319,7 +2363,8 @@ class FreedomAgentService {
       run.pendingApproval?.publicRequest.approvalId !== approvalId ||
       !(
         typeof approved === 'boolean' ||
-        (approved && typeof approved === 'object' && approved.approved === true)
+        (approved && typeof approved === 'object' && approved.approved === true) ||
+        (approved && typeof approved === 'object' && approved.approved === false && approved.publicationFix)
       )
     ) {
       return false;
@@ -2332,8 +2377,14 @@ class FreedomAgentService {
       (approved.diagnosticScope !== undefined &&
         (!request.diagnostic || !['once', 'conversation'].includes(approved.diagnosticScope))) ||
       (approved.workspacePermissionScope !== undefined &&
-        (!request.workspacePermission || !['once', 'conversation'].includes(approved.workspacePermissionScope)))
+        (!request.workspacePermission || !['once', 'conversation'].includes(approved.workspacePermissionScope))) ||
+      ((approved.publicationExclusions !== undefined || approved.publicationAcknowledged !== undefined ||
+        approved.publicationFix !== undefined) && !validPublicationDecision(request.publication, approved))
     )) return false;
+    if (typeof approved === 'object' && approved.approved === false) {
+      this.#resolveApproval(run, { status: 'declined', publicationFix: { paths: [...approved.publicationFix.paths] } });
+      return true;
+    }
     this.#resolveApproval(
       run,
       typeof approved === 'object'
@@ -2348,6 +2399,8 @@ class FreedomAgentService {
             ...(approved.workspacePermissionScope === 'conversation' && {
               workspacePermissionScope: 'conversation',
             }),
+            ...(approved.publicationExclusions && { publicationExclusions: [...approved.publicationExclusions] }),
+            ...(approved.publicationAcknowledged && { publicationAcknowledged: [...approved.publicationAcknowledged] }),
           }
         : approved
           ? 'approved'
