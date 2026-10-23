@@ -176,6 +176,64 @@ describe('reads', () => {
     });
   });
 
+  test("a read's excludeSources goes as exclude_sources: known sources, each once, or no field", async () => {
+    const { driver, client, sent } = setUp(() => read('0x1'));
+    client.hello = { capabilities: ['fragments', 'exclude_sources'] };
+    await driver.request(1, 'eth_getTransactionReceipt', ['0xh'], { excludeSources: ['colibri'] });
+    await driver.request(1, 'eth_getTransactionCount', ['0xa', 'latest'], {
+      excludeSources: ['myotis', 'nobody', 'colibri', 'myotis', 7, 'blockscout'],
+    });
+    await driver.request(1, 'eth_blockNumber', [], { excludeSources: [] });
+    await driver.request(1, 'eth_blockNumber', [], { excludeSources: ['nobody'] });
+    await driver.request(1, 'eth_blockNumber', [], { excludeSources: 'colibri' });
+    const exclusions = sent().map(([, params]) =>
+      Object.hasOwn(params, 'exclude_sources') ? params.exclude_sources : 'none'
+    );
+    expect(exclusions).toEqual([
+      ['colibri'],
+      ['myotis', 'colibri', 'blockscout'],
+      'none',
+      'none',
+      'none',
+    ]);
+    // Placed after the profile, as the core's params list it.
+    expect(Object.keys(sent()[0][1])).toEqual([
+      'chain_id',
+      'method',
+      'params',
+      'include_trust',
+      'background',
+      'profile',
+      'exclude_sources',
+      'deadline_ms',
+    ]);
+  });
+
+  test('a core that offers no exclude_sources gets the read without it, as reads went before', async () => {
+    const { driver, client, sent } = setUp(() => read('0x1'));
+    client.hello = { capabilities: ['fragments', 'myotis_refusal_codes'] };
+    await driver.request(1, 'eth_getTransactionReceipt', ['0xh'], { excludeSources: ['colibri'] });
+    client.hello = null;
+    await driver.request(1, 'eth_getTransactionReceipt', ['0xh'], { excludeSources: ['colibri'] });
+    // Asked again once the core offers it: the choice is each attempt's.
+    client.hello = { capabilities: ['exclude_sources'] };
+    await driver.request(1, 'eth_getTransactionReceipt', ['0xh'], { excludeSources: ['colibri'] });
+    expect(sent().map(([, params]) => params.exclude_sources ?? 'none')).toEqual([
+      'none',
+      'none',
+      ['colibri'],
+    ]);
+    expect(Object.keys(sent()[0][1])).toEqual([
+      'chain_id',
+      'method',
+      'params',
+      'include_trust',
+      'background',
+      'profile',
+      'deadline_ms',
+    ]);
+  });
+
   test('the result as the router returned it: an undefined `result` comes back first', async () => {
     const { driver } = setUp(() =>
       read(undefined, { source: 'direct', verified: false, undefined_keys: ['result'] })
