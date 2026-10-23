@@ -1,5 +1,10 @@
 const { ShellError } = require('./core-client');
-const { registerChainVerified, myotisClass, wirePayload } = require('./chain-verified');
+const {
+  registerChainVerified,
+  myotisClass,
+  wirePayload,
+  isColibriFault,
+} = require('./chain-verified');
 const { registerNamingVerified, MAX_PER_VERIFIER } = require('./naming-verified');
 const { NOT_SENT } = require('./chain-shell');
 const { BroadcastRecords } = require('./chain-broadcasts');
@@ -457,6 +462,82 @@ describe('Colibri', () => {
     for (const message of ['execution reverted', `${'x'.repeat(491)}out of gas`]) {
       const reply = await colibri(worker(message, { code: 3, data: '0x08c379a0' }));
       expect(Object.keys(reply)).toEqual(['revert']);
+    }
+  });
+
+  // freedom-core's #752 backoff (design 0005, The rest): `fault: true`
+  // where main's router's isColibriFault held (chain-data-router.js at
+  // 94b0af4e), only to a core whose hello offers `colibri_faults`.
+  const FAULTS = { capabilities: ['fragments', 'colibri_faults'] };
+  const faulting = (thrown, hello = FAULTS) =>
+    setUp({ colibriRequest: jest.fn(async () => Promise.reject(thrown)) }, { hello }).call({
+      colibri: 'request',
+      method: 'eth_getTransactionReceipt',
+      params: ['0xf7aa'],
+      deadline_ms: 5000,
+    });
+  const trap = () =>
+    worker('Error in rpc call eth_getTransactionReceipt["0xf7aa"] : memory access out of bounds', {
+      name: 'ProviderRpcError',
+      code: -32603,
+    });
+
+  test.each([
+    ['a trap', trap(), true],
+    ['a RuntimeError by name', worker('boom', { name: 'RuntimeError' }), true],
+    ['a replaced worker', worker('Colibri worker replaced: verification still running'), true],
+    [
+      'a retired runtime',
+      worker('Colibri WASM runtime was retired after a trap; refusing execute()'),
+      true,
+    ],
+    ['an upper-case trap', worker('MEMORY ACCESS OUT OF BOUNDS'), true],
+    ['unreachable after a colon, at the end', worker('wasm trap: unreachable'), true],
+    ['unreachable executed, alone', worker('unreachable executed'), true],
+    ['unreachable mid-text', worker('host unreachable: retry'), false],
+    ['unreachable code', worker('unreachable code'), false],
+    [
+      'a transport error',
+      worker('Request to https://p failed: fetch failed', { code: -32603 }),
+      false,
+    ],
+    [
+      'a bystander',
+      worker('Colibri worker replaced: verification still running', { colibriBystander: true }),
+      false,
+    ],
+    [
+      "a bystander's retired runtime",
+      worker('Colibri WASM runtime was retired after a trap; refusing execute()', {
+        name: 'ProviderRpcError',
+        colibriBystander: true,
+      }),
+      false,
+    ],
+  ])("the fault bit is the router's: %s", async (_name, thrown, fault) => {
+    expect(isColibriFault(thrown)).toBe(fault);
+    expect(await faulting(thrown)).toEqual(
+      fault ? { failure: 'error', fault: true } : { failure: 'error' }
+    );
+  });
+
+  test('a fault beside a revert or a capacity failure, members present only when true', async () => {
+    const revert = await faulting(worker('memory access out of bounds', { code: 3, data: '0x12' }));
+    expect(JSON.stringify(revert)).toBe('{"revert":{"data":"0x12"},"fault":true}');
+    const both = await faulting(
+      worker('out of gas: memory access out of bounds', { code: 3, data: '0x12' })
+    );
+    expect(JSON.stringify(both)).toBe('{"revert":{"data":"0x12"},"capacity":true,"fault":true}');
+    const capacity = await faulting(worker('out of gas', { name: 'RuntimeError' }));
+    expect(JSON.stringify(capacity)).toBe('{"failure":"capacity","fault":true}');
+  });
+
+  test('a core that offers no colibri_faults gets no fault bit', async () => {
+    for (const hello of [null, { capabilities: ['fragments', 'myotis_refusal_codes'] }]) {
+      expect(await faulting(trap(), hello)).toEqual({ failure: 'error' });
+      expect(
+        await faulting(worker('memory access out of bounds', { code: 3, data: '0x12' }), hello)
+      ).toEqual({ revert: { data: '0x12' } });
     }
   });
 });

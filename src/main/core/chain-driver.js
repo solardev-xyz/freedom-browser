@@ -54,6 +54,10 @@ const MAX_ID = Number.MAX_SAFE_INTEGER;
 /** The context chain requests go with (the client's default). */
 const CONTEXT = { caller: 'chrome' };
 
+/** The sources the router knows, as the core names them (fc-chain's
+ * `SOURCES`): the only names a read may exclude. */
+const READ_SOURCES = Object.freeze(['myotis', 'colibri', 'quorum', 'direct', 'blockscout']);
+
 /** A pending request whose core process ended. */
 const RESTARTED = 'Chain data restarted';
 /** No core process to send a request to. */
@@ -147,6 +151,41 @@ function endpointHost(url) {
     return new URL(url).host;
   } catch {
     return '';
+  }
+}
+
+/**
+ * A read's `excludeSources` as the core takes it: the names of the sources
+ * the router knows (READ_SOURCES), each once, in the caller's order.
+ * Anything else the router ignored, so it is dropped here too, and none
+ * left sends no field at all.
+ */
+function wireExclusions(excludeSources) {
+  if (!Array.isArray(excludeSources)) return {};
+  const names = [];
+  for (const source of excludeSources) {
+    if (READ_SOURCES.includes(source) && !names.includes(source)) names.push(source);
+  }
+  return names.length > 0 ? { exclude_sources: names } : {};
+}
+
+/** The `core.hello` feature of a core that reads `exclude_sources`
+ * (freedom-core design 0005, Methods main calls). */
+const EXCLUSIONS = 'exclude_sources';
+
+/**
+ * A read's serialized params, with and without its exclusions. A core
+ * that offers EXCLUSIONS gets them; an older one refuses a field it
+ * doesn't know, so it gets the read without them, in its profile's order,
+ * as main's reads went before. The caller's params are serialized once,
+ * in `plain`: the excluding form appends the exclusions' own JSON (known
+ * source names only) to that text, so the caller's code (a getter, a
+ * `toJSON`) never runs again, and both forms carry the same read.
+ */
+class ReadHead {
+  constructor(plain, names) {
+    this.plain = plain;
+    this.excluding = `${plain.slice(0, -1)},"exclude_sources":${JSON.stringify(names)}}`;
   }
 }
 
@@ -340,14 +379,23 @@ class ChainDriver {
    * in memory only.
    *
    * @param {object} [options] - includeTrust, routingContext, signal,
-   *   background, and profile: `default`, or `ant_scan` for the Ant
-   *   bridge's log scans
+   *   background, profile (`default`, or `ant_scan` for the Ant bridge's
+   *   log scans), and excludeSources: the router's, the sources this read
+   *   must not ask, sent as `exclude_sources` when there are any and the
+   *   core offers it (design 0005, Methods main calls)
    */
   request(
     chainId,
     method,
     params = [],
-    { includeTrust = false, routingContext = null, signal, background = false, profile } = {}
+    {
+      includeTrust = false,
+      routingContext = null,
+      signal,
+      background = false,
+      profile,
+      excludeSources,
+    } = {}
   ) {
     const until = this.now() + DEADLINE_MS;
     const id = wireChainId(chainId);
@@ -355,7 +403,7 @@ class ChainDriver {
     const origin = routingContext?.origin;
     let head;
     try {
-      head = serialized({
+      const payload = {
         chain_id: id,
         method,
         params: wireParams(method, params),
@@ -363,7 +411,10 @@ class ChainDriver {
         ...(typeof origin === 'string' ? { origin } : {}),
         background: Boolean(background),
         profile: profile === 'ant_scan' ? 'ant_scan' : 'default',
-      });
+      };
+      const plain = serialized(payload);
+      const { exclude_sources: names } = wireExclusions(excludeSources);
+      head = names ? new ReadHead(plain, names) : plain;
     } catch (err) {
       return Promise.reject(err);
     }
@@ -489,6 +540,10 @@ class ChainDriver {
    * fails `fenced` and sends nothing.
    */
   send(gen, method, head, remaining, options) {
+    if (head instanceof ReadHead) {
+      const excludes = this.client.hello?.capabilities?.includes(EXCLUSIONS) === true;
+      head = excludes ? head.excluding : head.plain;
+    }
     return this.client.requestTo(gen, method, attemptParams(head, remaining), undefined, {
       watchdogMs: remaining + WATCHDOG_MARGIN_MS,
       fence: () => this.config.idle(gen),
@@ -537,7 +592,9 @@ class ChainDriver {
    * overtook it.
    */
   async fenced(method, chainId, head, { signal, until }, publish) {
-    if (oversized(method, head)) throw new Error(TOO_LARGE);
+    if (oversized(method, head instanceof ReadHead ? head.excluding : head)) {
+      throw new Error(TOO_LARGE);
+    }
     let pinned = null;
     let resent = false;
     for (;;) {
@@ -642,6 +699,7 @@ class ChainDriver {
 }
 
 module.exports = {
+  READ_SOURCES,
   ChainDriver,
   SourceUnavailableError,
   SourceDeadlineError,

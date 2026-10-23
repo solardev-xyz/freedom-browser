@@ -19,7 +19,7 @@ const { BroadcastRecords } = require('./chain-broadcasts');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
 const { ChainDriver, RECONFIGURED } = require('./chain-driver');
-const { servesChain } = require('../../../test/helpers/core-chain-probe');
+const { servesChain, servesChainExclusions } = require('../../../test/helpers/core-chain-probe');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 jest.mock('../ipfs/gateway-transport', () => ({
@@ -36,6 +36,8 @@ const binary = process.env.FREEDOM_CORED_PATH;
 jest.setTimeout(30_000);
 const quietLog = { info() {}, warn() {}, error() {} };
 const describeIfChain = servesChain(binary) ? describe : describe.skip;
+// A core before `exclude_sources` (design 0005) refuses the field.
+const testIfExclusions = servesChainExclusions(binary) ? test : test.skip;
 
 /** A signed transaction and its hash (freedom-core vectors/chain.json). */
 const RAW =
@@ -134,6 +136,7 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
             method: message.method,
             pending: config.core.pending,
             deadline: message.params?.deadline_ms,
+            ...(message.params?.exclude_sources && { exclude: message.params.exclude_sources }),
           });
         }
       }
@@ -259,6 +262,28 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
       ['eth_call', [{ to: TO, value: '0x3', gas: '0x5208' }, 'latest']],
     ]);
   });
+
+  testIfExclusions(
+    "a read's excludeSources reaches the core: no excluded source is asked",
+    async () => {
+      const x = await start();
+      // Colibri isn't in chain 1's read order: excluding it leaves Direct.
+      expect(
+        await chainData.request(1, 'eth_blockNumber', [], { excludeSources: ['colibri'] })
+      ).toEqual({ result: '0xa', source: 'direct', verified: false });
+      const thrown = await chainData
+        .request(1, 'eth_blockNumber', [], { excludeSources: ['direct', 'colibri'] })
+        .catch((err) => err);
+      expect(thrown.message).toBe(
+        'No chain source left for eth_blockNumber on chain 1: read order [direct], excluded for this request: direct'
+      );
+      expect(x.exchanges).toHaveLength(1);
+      expect(x.wire.filter(({ method }) => method === 'chain.request')).toEqual([
+        expect.objectContaining({ exclude: ['colibri'] }),
+        expect.objectContaining({ exclude: ['direct', 'colibri'] }),
+      ]);
+    }
+  );
 
   test("results and node errors are the router's: key order, own properties, hosts", async () => {
     const x = await start();
