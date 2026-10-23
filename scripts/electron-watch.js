@@ -239,9 +239,15 @@ function readShipped(github, warnings) {
   try {
     const release = github.latestRelease();
     if (!release) return { shipped: null, shippedTag: null };
+    if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(release.tag_name))) {
+      warnings.push('latest release: its tag is not a version tag');
+      return { shipped: null, shippedTag: null };
+    }
     const lock = JSON.parse(github.fileAtRef('package-lock.json', release.tag_name));
-    const shipped = lock?.packages?.['node_modules/electron']?.version ?? null;
-    if (!shipped) warnings.push(`latest release ${release.tag_name}: no electron in its lockfile`);
+    const found = lock?.packages?.['node_modules/electron']?.version;
+    const shipped = W.isStableVersion(found) ? found : null;
+    if (!shipped)
+      warnings.push(`latest release ${release.tag_name}: no stable electron in its lockfile`);
     return { shipped, shippedTag: release.tag_name };
   } catch (error) {
     warnings.push(`latest release: ${error.message}`);
@@ -256,19 +262,27 @@ async function gather({ github, fetchers, pinned, now }) {
     throw new Error(`npm lists no stable electron ${pinned} (the version package-lock.json pins)`);
   }
   const { shipped, shippedTag } = readShipped(github, warnings);
-  const base = W.securityBase(pinned, shipped);
-  const major = W.majorOf(pinned);
-  const latest = W.latestOnMajor(releases, major);
-  const candidates = releases.filter(
-    (r) => r.major === major && W.compareVersions(r.version, base) > 0
-  );
-  if (candidates.length > MAX_CANDIDATES) {
-    throw new Error(
-      `${candidates.length} Electron ${major}.x releases after ${base}; refusing to guess`
+  const track = W.securityTrack(pinned, shipped);
+  const latest = W.latestOnMajor(releases, W.majorOf(pinned));
+  // The deadline track (the shipped major while `main` adopts a newer one),
+  // and while that is so, `main`'s own major too, to keep the pin current.
+  const tracks = [track];
+  if (track.crossMajor) tracks.push({ base: pinned, major: W.majorOf(pinned), crossMajor: false });
+  const candidates = [];
+  for (const t of tracks) {
+    const after = releases.filter(
+      (r) => r.major === t.major && W.compareVersions(r.version, t.base) > 0
     );
+    if (after.length > MAX_CANDIDATES) {
+      throw new Error(
+        `${after.length} Electron ${t.major}.x releases after ${t.base}; refusing to guess`
+      );
+    }
+    candidates.push(...after);
   }
 
   let security = null;
+  let mainSecurity = null;
   if (candidates.length) {
     const notes = new Map();
     for (const r of candidates) {
@@ -276,7 +290,12 @@ async function gather({ github, fetchers, pinned, now }) {
       notes.set(r.version, release ? { body: release.body || '', url: release.html_url } : null);
     }
     const kev = W.parseKev(await fetchers.kev());
-    const basePublishedAt = releases.find((r) => r.version === base).publishedAt;
+    const basePublishedAt = Math.min(
+      ...tracks.map((t) => releases.find((r) => r.version === t.base)?.publishedAt ?? Infinity)
+    );
+    if (!Number.isFinite(basePublishedAt)) {
+      throw new Error(`npm lists no stable electron ${track.base} (the shipped version)`);
+    }
     const [advisories, electronReleases, chromePosts] = await Promise.all([
       optional(
         'Electron advisories',
@@ -294,17 +313,9 @@ async function gather({ github, fetchers, pinned, now }) {
         warnings
       ),
     ]);
-    security = W.decideSecurity({
-      pinned,
-      shipped,
-      releases,
-      notes,
-      kev,
-      advisories,
-      electronReleases,
-      chromePosts,
-      now,
-    });
+    const inputs = { releases, notes, kev, advisories, electronReleases, chromePosts, now };
+    security = W.decideSecurity({ pinned, shipped, ...inputs });
+    if (track.crossMajor) mainSecurity = W.decideSecurity({ pinned, shipped: null, ...inputs });
   }
   const schedule = await optional('Electron schedule', fetchers.schedule, warnings);
   return {
@@ -314,6 +325,7 @@ async function gather({ github, fetchers, pinned, now }) {
     latest: latest.version,
     releases,
     security,
+    mainSecurity,
     majors: W.decideMajors({ pinned, shipped, releases, now }),
     eol: W.decideEol({
       pinned,
@@ -325,9 +337,15 @@ async function gather({ github, fetchers, pinned, now }) {
   };
 }
 
+/** releases.electronjs.org by version, each entry reduced to exact-format fields. */
 function indexElectronReleases(list) {
   if (!Array.isArray(list)) throw new Error('releases.json is not a list');
-  return new Map(list.filter((e) => e && e.version).map((e) => [e.version, e]));
+  const out = new Map();
+  for (const entry of list) {
+    const clean = W.sanitizeElectronRelease(entry);
+    if (clean) out.set(clean.version, clean);
+  }
+  return out;
 }
 
 /** Where the bump for `target` stands: an existing PR, a pushed branch, or nothing yet. */
@@ -342,23 +360,33 @@ function bumpState(github, target) {
 
 /**
  * Turn the gathered decisions into issue writes. Returns the plan, and the
- * bump to make: only for a security target newer than `main`'s pin whose
- * issue is open and for which no branch or pull request exists yet (closed
- * ones included, so a bump a person turned down is not reopened).
+ * bump to make on `main`: only for a target newer than `main`'s pin on
+ * `main`'s own major, with no branch or pull request for it yet (closed ones
+ * included, so a bump a person turned down is not reopened). On `main`'s
+ * major the deadline issue must be open; while `main` is on a newer major
+ * than the release, the bump keeps `main` current and points at the deadline
+ * issue for the shipped major, or else at the adoption issue.
  */
 function sync({ github, gathered, repo, now, dryRun, log = () => {} }) {
-  const { security, majors, eol, pinned, shipped, shippedTag } = gathered;
-  const bump = security ? bumpState(github, security.target) : null;
-  const ctx = { repo, now, shippedTag, bump };
+  const { security, mainSecurity, majors, eol, pinned, shipped, shippedTag } = gathered;
+  const crossMajor = Boolean(security && security.crossMajor);
+  const bumpTarget = security && !crossMajor ? security : mainSecurity || null;
+  const bump = bumpTarget ? bumpState(github, bumpTarget.target) : null;
+  const mainTrack = mainSecurity ? { decision: mainSecurity, bump } : null;
+  const ctx = { repo, now, shippedTag, bump: crossMajor ? null : bump, mainTrack };
+  // With no deadline issue to carry it, `main`'s track goes in the adoption
+  // issue for `main`'s major.
+  const majorCtx = { ...ctx, mainTrack: security ? null : mainTrack, mainTrackInMajor: true };
   const desired = [];
   if (security) desired.push(W.renderSecurityIssue(security, ctx));
-  for (const m of majors) desired.push(W.renderMajorIssue(m, ctx));
+  for (const m of majors) desired.push(W.renderMajorIssue(m, majorCtx));
   if (eol) desired.push(W.renderEolIssue(eol, ctx));
 
   const existing = github.listIssues();
-  const actions = W.planIssues({ desired, existing, shipped, shippedTag, pinned });
+  const published = new Map(gathered.releases.map((r) => [r.version, r.publishedAt]));
+  const actions = W.planIssues({ desired, existing, shipped, shippedTag, pinned, published });
   const numbers = new Map();
-  for (const a of actions) if (a.number) numbers.set(a.key, a.number);
+  for (const a of actions) if (a.number && a.type !== 'skip-closed') numbers.set(a.key, a.number);
 
   if (!dryRun) {
     if (actions.some((a) => a.type === 'create')) github.ensureLabel();
@@ -374,9 +402,10 @@ function sync({ github, gathered, repo, now, dryRun, log = () => {} }) {
     }
     for (const a of actions) {
       if (a.type !== 'close') continue;
+      const target = a.supersededBy ? a.supersededBy.split(':')[1] : null;
       const next = a.supersededBy && numbers.get(a.supersededBy);
       const comment = next
-        ? `Superseded by #${next} (Electron ${a.supersededBy.split(':')[1]}), which carries this deadline forward.`
+        ? a.comment.replace(`the issue for Electron ${target}`, `#${next} (Electron ${target})`)
         : a.comment;
       github.commentIssue(a.number, comment);
       github.updateIssue(a.number, { state: 'closed', state_reason: 'completed' });
@@ -386,11 +415,22 @@ function sync({ github, gathered, repo, now, dryRun, log = () => {} }) {
 
   let bumpVersion = null;
   let issueNumber = null;
-  if (security && bump.state === 'pending' && W.compareVersions(pinned, security.target) < 0) {
-    const issueAction = actions.find((a) => a.key === security.key);
-    if (issueAction && issueAction.type !== 'skip-closed') {
-      bumpVersion = security.target;
-      issueNumber = numbers.get(security.key) ?? null;
+  if (bumpTarget && bump.state === 'pending' && W.compareVersions(pinned, bumpTarget.target) < 0) {
+    const open = (key) => {
+      const action = actions.find((a) => a.key === key);
+      return action && action.type !== 'skip-closed' ? action : null;
+    };
+    if (!crossMajor && mainSecurity === null) {
+      if (open(security.key)) {
+        bumpVersion = security.target;
+        issueNumber = numbers.get(security.key) ?? null;
+      }
+    } else {
+      bumpVersion = bumpTarget.target;
+      const link = [security && security.key, `major:${W.majorOf(pinned)}`].find(
+        (key) => key && open(key) && numbers.has(key)
+      );
+      issueNumber = link ? numbers.get(link) : null;
     }
   }
   return { actions, desired, bump, bumpVersion, issueNumber };
@@ -406,12 +446,22 @@ function describePlan(gathered, result) {
     lines.push(
       `- Security: Electron ${security.target}, due ${W.formatTime(security.dueAt)}${security.overdue ? ' (overdue)' : ''}, ${security.exploited ? '72 hours (exploited in the wild)' : '7 days'}; security releases ${security.securityReleases.map((r) => r.version).join(', ')}; ${security.cves.length} CVEs`
     );
+    if (security.crossMajor) {
+      lines.push(
+        `- The latest release ships ${security.major}.x while \`main\` is on ${security.pinnedMajor}.x: these fixes stay owed until a release ships ${security.pinnedMajor}.x`
+      );
+    }
     const other = security.releases.flatMap((r) =>
-      r.otherBackports.map((t) => `${r.version}: ${t}`)
+      r.otherBackports.map((t) => `${r.version}: ${W.mdCode(t)}`)
     );
     if (other.length) lines.push(`- Backports not counted as security: ${other.join('; ')}`);
   } else {
-    lines.push('- Security: no newer release on the pinned major carries a security fix');
+    lines.push('- Security: no newer release on the shipped major carries a security fix');
+  }
+  if (gathered.mainSecurity) {
+    lines.push(
+      `- \`main\`'s major: Electron ${gathered.mainSecurity.target} carries security fixes after ${gathered.pinned}`
+    );
   }
   for (const m of majors)
     lines.push(
@@ -432,7 +482,11 @@ function describePlan(gathered, result) {
     lines.push('', `Bump branch \`${result.bump.branch}\` exists without a pull request.`);
   }
   if (gathered.warnings.length) {
-    lines.push('', '**Not checked this run:**', ...gathered.warnings.map((w) => `- ${w}`));
+    lines.push(
+      '',
+      '**Not checked this run:**',
+      ...gathered.warnings.map((w) => `- ${W.mdCode(w)}`)
+    );
   }
   return lines.join('\n');
 }

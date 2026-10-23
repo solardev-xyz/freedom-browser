@@ -185,6 +185,50 @@ describe('watch: issues', () => {
     expect(body).toContain('`main` already pins 44.9.3');
   });
 
+  test('main on the next major: the shipped major keeps its deadline issue, and no bump goes to main', async () => {
+    const github = fakeGitHub({ shipped: '44.7.0' });
+    const { gathered, result } = await run({ github, pinned: '45.0.0' });
+    expect(gathered.security).toMatchObject({ key: 'security:44.9.3', crossMajor: true });
+    expect(gathered.mainSecurity).toBeNull();
+    const created = github.state.calls.filter(([n]) => n === 'createIssue').map(([, f]) => f.title);
+    expect(created).toEqual([
+      'Ship Electron 44.9.3 (security release), due 2026-10-21',
+      'Adopt Electron 45, due 2026-12-16',
+    ]);
+    expect(result.bumpVersion).toBeNull();
+  });
+
+  test('main on the next major with fixes of its own: main is bumped, pointing at the deadline issue', async () => {
+    const github = fakeGitHub({ shipped: '43.8.0' });
+    const { gathered, result } = await run({ github, pinned: '44.7.0' });
+    expect(gathered.security).toMatchObject({ key: 'security:43.8.3', crossMajor: true });
+    expect(gathered.mainSecurity).toMatchObject({ key: 'security:44.9.3', crossMajor: false });
+    const [security] = github.state.calls.filter(([n]) => n === 'createIssue').map(([, f]) => f);
+    expect(security.title).toBe('Ship Electron 43.8.3 (security release), due 2026-10-27');
+    expect(security.body).toContain("**`main`'s major:** `main` pins 44.7.0");
+    expect(result).toMatchObject({ bumpVersion: '44.9.3', issueNumber: 900 });
+  });
+
+  test('a release moving to the next major closes the old deadline issue on evidence', async () => {
+    const old = {
+      number: 860,
+      state: 'open',
+      title: 'Ship Electron 44.9.3 (security release), due 2026-10-21',
+      body: '<!-- electron-watch:security:44.9.3 -->\nold',
+    };
+    const github = fakeGitHub({ shipped: '45.0.0', issues: [old] });
+    await run({ github, pinned: '45.0.0' });
+    const [, , comment] = github.state.calls.find(
+      ([n, number]) => n === 'commentIssue' && number === 860
+    );
+    expect(comment).toMatch(/^Shipped through the newer major: v0\.8\.7 ships Electron 45\.0\.0/);
+    expect(github.state.calls).toContainEqual([
+      'updateIssue',
+      860,
+      { state: 'closed', state_reason: 'completed' },
+    ]);
+  });
+
   test('a non-security patch opens no security issue', async () => {
     const now = Date.parse('2026-10-17T12:00:00Z');
     const { result, github } = await run({
@@ -403,6 +447,21 @@ describe('bump', () => {
     await expect(
       watch.applyBump({ version, root, exec: fakeNpm([]), fetchers: fakeFetchers() })
     ).rejects.toThrow(message);
+  });
+
+  test('a hostile releases.electronjs.org entry leaves the changelog line without detail', async () => {
+    const releases = fixture('electron-releases.json').map((e) =>
+      e.version === '44.9.3' ? { ...e, chrome: '152.0.7977.167`)\n- injected from upstream' } : e
+    );
+    const b = await watch.applyBump({
+      version: '44.9.3',
+      root,
+      exec: fakeNpm([]),
+      fetchers: fakeFetchers({ electronReleases: async () => releases }),
+    });
+    expect(b.detail).toBeNull();
+    const text = fs.readFileSync(path.join(root, b.fragment), 'utf8');
+    expect(text).toBe(`- Updated runtime dependencies:\n  - Electron ${b.pinned} to 44.9.3\n`);
   });
 
   test('npm resolving something else fails the bump', async () => {

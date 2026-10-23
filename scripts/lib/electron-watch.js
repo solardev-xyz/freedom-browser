@@ -69,8 +69,67 @@ const MARKER_RE = /<!-- electron-watch:((?:security|major|eol):[0-9.]+) -->/;
 const MAX_LISTED_CVES = 60;
 
 const CVE_RE = /\bCVE-\d{4}-\d{4,}\b/g;
+const CVE_ID_RE = /^CVE-\d{4}-\d{4,}$/;
 const GHSA_RE = /\bGHSA(?:-[0-9a-z]{4}){3}\b/gi;
 const GHSA_ONE_RE = /\bGHSA(?:-[0-9a-z]{4}){3}\b/i;
+const GHSA_ID_RE = /^GHSA(?:-[0-9a-z]{4}){3}$/i;
+
+// Upstream data is untrusted. Every value from releases.electronjs.org that
+// reaches a committed file must be in its exact numeric format, and every
+// link an issue renders must point at the source it claims to be.
+const CHROMIUM_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,6}\.\d{1,6}$/;
+const NODE_VERSION_RE = /^\d{1,3}\.\d{1,4}\.\d{1,4}$/;
+const MODULES_RE = /^\d{1,4}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const URL_RULES = [
+  /^https:\/\/github\.com\/electron\/electron\/pull\/\d+$/,
+  /^https:\/\/github\.com\/electron\/electron\/releases\/tag\/v\d+\.\d+\.\d+$/,
+  /^https:\/\/github\.com\/electron\/electron\/security\/advisories\/GHSA(?:-[0-9a-z]{4}){3}$/,
+  /^https:\/\/chromereleases\.googleblog\.com\/\d{4}\/\d{2}\/[a-z0-9_-]+\.html$/,
+];
+
+/** `url` when it is one of the sources above, else null. */
+function safeUrl(url) {
+  const text = String(url ?? '');
+  return URL_RULES.some((re) => re.test(text)) ? text : null;
+}
+
+/**
+ * Upstream text as inert Markdown: one line in a `<code>` element, every
+ * character other than a letter, digit or space written as a numeric HTML
+ * entity. Entities are never Markdown syntax, so no bracket, backtick, pipe,
+ * angle bracket or `://` in the text can open a link, an image, a tag, a
+ * table cell or an autolink; and GitHub resolves no mention or issue
+ * reference inside `<code>`. It renders as the characters it was.
+ */
+function mdCode(text) {
+  const body = String(text ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim();
+  if (!body) return '';
+  return `<code>${[...body].map((ch) => (/[A-Za-z0-9 ]/.test(ch) ? ch : `&#${ch.codePointAt(0)};`)).join('')}</code>`;
+}
+
+/** `[text](url)` for an accepted source, plain `text` otherwise. */
+function mdLink(text, url) {
+  const safe = safeUrl(url);
+  return safe ? `[${text}](${safe})` : text;
+}
+
+/**
+ * A releases.electronjs.org entry reduced to the fields the watch uses, each
+ * kept only in its exact format; anything else reads as unknown.
+ */
+function sanitizeElectronRelease(entry) {
+  if (!entry || !parseVersion(entry.version)) return null;
+  const field = (value, re) => (re.test(String(value ?? '')) ? String(value) : null);
+  return {
+    version: String(entry.version),
+    chrome: field(entry.chrome, CHROMIUM_VERSION_RE),
+    node: field(entry.node, NODE_VERSION_RE),
+    modules: field(entry.modules, MODULES_RE),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Versions
@@ -337,7 +396,7 @@ function parseChromePost(entry) {
   const fixes = /\bThis update includes (\d+) security fix/i.exec(text);
   return {
     title,
-    url: link ? link.href : null,
+    url: link ? safeUrl(link.href) : null,
     publishedAt: Date.parse(entry?.published?.$t ?? '') || null,
     versions: chromiumVersionsIn(text),
     cves: unique(text.match(CVE_RE) || []),
@@ -384,7 +443,9 @@ function parseKev(json) {
     throw new Error('CISA KEV feed has no `vulnerabilities` list');
   }
   const out = new Map();
-  for (const v of json.vulnerabilities) if (v && v.cveID) out.set(v.cveID, v);
+  for (const v of json.vulnerabilities) {
+    if (v && CVE_ID_RE.test(String(v.cveID))) out.set(v.cveID, v);
+  }
   return out;
 }
 
@@ -402,11 +463,13 @@ function isChromiumKevEntry(entry) {
 function parseAdvisories(list) {
   if (!Array.isArray(list)) throw new Error('Electron advisories response is not a list');
   return list
-    .filter((a) => a && a.ghsa_id && !a.withdrawn_at)
+    .filter((a) => a && GHSA_ID_RE.test(String(a.ghsa_id)) && !a.withdrawn_at)
     .map((a) => ({
       id: normalizeGhsa(a.ghsa_id),
-      cve: a.cve_id || null,
-      url: a.html_url || `https://github.com/electron/electron/security/advisories/${a.ghsa_id}`,
+      cve: CVE_ID_RE.test(String(a.cve_id)) ? a.cve_id : null,
+      url:
+        safeUrl(a.html_url) ||
+        `https://github.com/electron/electron/security/advisories/${normalizeGhsa(a.ghsa_id)}`,
       summary: a.summary || '',
       severity: a.severity || null,
       publishedAt: Date.parse(a.published_at || '') || null,
@@ -452,7 +515,23 @@ function securityBase(pinned, shipped) {
 }
 
 /**
- * Rules 1 and 2 for the pinned major.
+ * Which major's fixes are owed, and from which version.
+ *
+ * Users run `shipped`. While `main` adopts a newer major, the shipped major's
+ * fixes stay owed until a stable release carries the new major, so the track
+ * stays there (`crossMajor`): the 8-week adoption window never stands in for a
+ * 7-day or 72-hour deadline. Otherwise the track is the pinned major, from
+ * `securityBase()`.
+ */
+function securityTrack(pinned, shipped) {
+  if (shipped && majorOf(shipped) < majorOf(pinned)) {
+    return { base: shipped, major: majorOf(shipped), crossMajor: true };
+  }
+  return { base: securityBase(pinned, shipped), major: majorOf(pinned), crossMajor: false };
+}
+
+/**
+ * Rules 1 and 2, on the major `securityTrack()` picks.
  *
  * @param {object} input
  * @param {string} input.pinned          lockfile version on `main`
@@ -479,8 +558,7 @@ function decideSecurity(input) {
   const advisories = input.advisories
     ? input.advisories.filter((a) => !a.publishedAt || a.publishedAt <= now)
     : null;
-  const base = securityBase(pinned, shipped);
-  const major = majorOf(pinned);
+  const { base, major, crossMajor } = securityTrack(pinned, shipped);
   const latest = latestOnMajor(releases, major);
   if (!latest || compareVersions(latest.version, base) <= 0) return null;
 
@@ -506,19 +584,26 @@ function decideSecurity(input) {
     }
   }
 
-  let previousChrome = electronReleases?.get(base)?.chrome ?? null;
+  const chromeOf = (version) => {
+    const value = electronReleases?.get(version)?.chrome;
+    return CHROMIUM_VERSION_RE.test(String(value ?? '')) ? value : null;
+  };
+  let previousChrome = chromeOf(base);
   const evaluated = candidates.map((release) => {
     const note = notes.get(release.version);
     const parsed = note ? parseReleaseNotes(note.body) : null;
-    const chrome = electronReleases?.get(release.version)?.chrome ?? parsed?.chromium ?? null;
+    const notesUrl = note ? safeUrl(note.url) || electronReleaseUrl(release.version) : null;
+    const chrome = chromeOf(release.version) ?? parsed?.chromium ?? null;
     const evidence = [];
 
+    // Evidence text renders inert (`mdCode`) unless it is marked `built`:
+    // made here from validated versions and counts.
     for (const line of parsed?.lines || []) {
       evidence.push({
         source: 'notes',
         kind: line.kind,
         text: line.text,
-        url: line.pull?.url ?? note.url,
+        url: safeUrl(line.pull?.url) ?? notesUrl,
       });
     }
     for (const a of advisoryFixes.get(release.version) || []) {
@@ -541,6 +626,7 @@ function decideSecurity(input) {
         evidence.push({
           source: 'chrome',
           kind: 'chromium',
+          built: true,
           text: `Chromium ${previousChrome} to ${chrome}: ${count} CVE${count === 1 ? '' : 's'} in Chrome's release notes`,
           url: chromePostsHit[0].url,
         });
@@ -561,7 +647,7 @@ function decideSecurity(input) {
     return {
       version: release.version,
       publishedAt: release.publishedAt,
-      notesUrl: note?.url ?? null,
+      notesUrl,
       notesMissing: !note,
       chrome,
       security,
@@ -612,6 +698,8 @@ function decideSecurity(input) {
     pinned,
     shipped,
     major,
+    crossMajor,
+    pinnedMajor: majorOf(pinned),
     releases: evaluated,
     securityReleases,
     governing,
@@ -715,7 +803,9 @@ function electronReleaseUrl(version) {
 }
 
 function cveLink(cve) {
-  return `[${cve}](https://www.cve.org/CVERecord?id=${cve})`;
+  return CVE_ID_RE.test(String(cve))
+    ? `[${cve}](https://www.cve.org/CVERecord?id=${cve})`
+    : mdCode(cve);
 }
 
 function listCves(cves) {
@@ -735,9 +825,14 @@ function dueLine(dueAt, now) {
   return `**Due ${formatTime(dueAt)}**${now > dueAt ? ' (**overdue**)' : ''}.`;
 }
 
-/** Plain text for one cell of a Markdown table. */
+/** Text this module built (versions, counts), for one table cell. */
 function cell(text) {
   return String(text).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+}
+
+/** A release's notes link: the GitHub release when the URL is one, else the canonical one. */
+function releaseLink(version, url) {
+  return `[${version}](${safeUrl(url) || electronReleaseUrl(version)})`;
 }
 
 const PLAYBOOK_URL_PATH = 'docs/agent-playbooks/release-process.md#security-release-electron';
@@ -750,7 +845,8 @@ const PLAYBOOK_URL_PATH = 'docs/agent-playbooks/release-process.md#security-rele
  * @param {string} ctx.repo            owner/name
  * @param {number} ctx.now
  * @param {string|null} ctx.shippedTag  e.g. `v0.8.7`
- * @param {object|null} ctx.bump        `{ state: 'pr'|'branch'|'pending'|'not-needed', number?, url? }`
+ * @param {object|null} ctx.bump        `{ state: 'pr'|'branch'|'pending', number?, branch? }`
+ * @param {object|null} ctx.mainTrack   while `crossMajor`: `{ decision, bump }` for `main`'s own major
  */
 function renderSecurityIssue(decision, ctx) {
   const { now } = ctx;
@@ -768,7 +864,7 @@ function renderSecurityIssue(decision, ctx) {
   ];
   for (const r of d.securityReleases) {
     const why = r.evidence
-      .map((e) => (e.url ? `[${cell(e.text)}](${e.url})` : cell(e.text)))
+      .map((e) => mdLink(e.built ? cell(e.text) : mdCode(e.text), e.url))
       .join('<br>');
     const flags = [];
     if (r.inKev.length) flags.push(`in CISA KEV: ${r.inKev.join(', ')}`);
@@ -776,14 +872,14 @@ function renderSecurityIssue(decision, ctx) {
       flags.push(`exploited in the wild per Chrome: ${r.chromeSaysExploited.join(', ')}`);
     if (r.exploitedInWild && !flags.length) flags.push('notes say exploited in the wild');
     lines.push(
-      `| [${r.version}](${r.notesUrl || electronReleaseUrl(r.version)}) | ${formatTime(r.publishedAt)} | ${formatTime(r.dueAt)}${r.exploited ? ' (72 h)' : ''} | ${why}${flags.length ? `<br>**${cell(flags.join('; '))}**` : ''} |`
+      `| ${releaseLink(r.version, r.notesUrl)} | ${formatTime(r.publishedAt)} | ${formatTime(r.dueAt)}${r.exploited ? ' (72 h)' : ''} | ${why}${flags.length ? `<br>**${cell(flags.join('; '))}**` : ''} |`
     );
   }
   const quiet = d.releases.filter((r) => !r.security);
   if (quiet.length) {
     lines.push(
       '',
-      `Releases in the range with no security fix found: ${quiet.map((r) => `[${r.version}](${r.notesUrl || electronReleaseUrl(r.version)})${r.notesMissing ? ' (no release notes on GitHub)' : ''}`).join(', ')}.`
+      `Releases in the range with no security fix found: ${quiet.map((r) => `${releaseLink(r.version, r.notesUrl)}${r.notesMissing ? ' (no release notes on GitHub)' : ''}`).join(', ')}.`
     );
   }
   lines.push(
@@ -794,10 +890,14 @@ function renderSecurityIssue(decision, ctx) {
     `- Exploited in the wild per Chrome's release notes: ${d.chromeSaysExploited.length ? d.chromeSaysExploited.map(cveLink).join(', ') : 'none'}.`
   );
   if (d.unmatchedKev.length) {
+    const listed = d.unmatchedKev.map(
+      (e) =>
+        `${cveLink(e.cveID)} (${mdCode(e.product)}, added ${DATE_RE.test(String(e.dateAdded)) ? e.dateAdded : 'on an unreadable date'})`
+    );
     lines.push(
       '',
       `> [!WARNING]`,
-      `> CISA added these Chromium CVEs to KEV since Electron ${d.base} was published, and no note, advisory or Chrome post above ties them to a release: ${d.unmatchedKev.map((e) => `${cveLink(e.cveID)} (${e.product}, added ${e.dateAdded})`).join(', ')}. Electron's batch backports name no CVEs, so check the backport PRs: if ${d.target} fixes one of them, the 72-hour rule applies and the deadline is ${formatTime(Math.min(d.dueAt, d.unmatchedKevDueAt))}.`
+      `> CISA added these Chromium CVEs to KEV since Electron ${d.base} was published, and no note, advisory or Chrome post above ties them to a release: ${listed.join(', ')}. Electron's batch backports name no CVEs, so check the backport PRs: if ${d.target} fixes one of them, the 72-hour rule applies and the deadline is ${formatTime(Math.min(d.dueAt, d.unmatchedKevDueAt))}.`
     );
   }
   if (d.missing.length) {
@@ -806,16 +906,22 @@ function renderSecurityIssue(decision, ctx) {
       `Not checked this run (source unavailable): ${d.missing.map(describeSource).join(', ')}.`
     );
   }
-  lines.push('', bumpLine(d, ctx), '', ...securityChecklist(d, ctx), '', footer());
+  if (d.crossMajor) {
+    lines.push('', crossMajorBumpLine(d, ctx), ...mainTrackLines(ctx));
+  } else {
+    lines.push('', bumpLine(d.pinned, d.target, ctx.bump, ctx.repo));
+  }
+  lines.push('', ...securityChecklist(d, ctx), '', footer());
   return { key: d.key, title, body: lines.join('\n'), labels: [LABEL] };
 }
 
 function describeBase(d, ctx) {
+  const tag = ctx.shippedTag ? `, ${ctx.shippedTag},` : '';
+  if (d.crossMajor) {
+    return `The latest release${tag} ships ${d.shipped}, and \`main\` has moved on to Electron ${d.pinnedMajor} (${d.pinned}). Until a stable release ships Electron ${d.pinnedMajor}, these ${d.major}.x fixes are owed to everyone running Freedom; the adoption issue for ${d.pinnedMajor} does not replace this deadline.`;
+  }
   const parts = [`\`main\` pins ${d.pinned}`];
-  if (d.shipped)
-    parts.push(
-      `the latest release${ctx.shippedTag ? `, ${ctx.shippedTag},` : ''} ships ${d.shipped}`
-    );
+  if (d.shipped) parts.push(`the latest release${tag} ships ${d.shipped}`);
   else
     parts.push(
       'the Electron in the latest release could not be read, so the deadline counts from `main`'
@@ -833,34 +939,64 @@ function describeSource(name) {
   );
 }
 
-function bumpLine(d, ctx) {
-  const bump = ctx.bump || { state: 'pending' };
-  if (compareVersions(d.pinned, d.target) >= 0) {
-    return `**Bump:** \`main\` already pins ${d.pinned}; what is left is the release.`;
+function bumpLine(pinned, target, bump, repo) {
+  if (compareVersions(pinned, target) >= 0) {
+    return `**Bump:** \`main\` already pins ${pinned}; what is left is the release.`;
   }
-  switch (bump.state) {
+  switch ((bump || {}).state) {
     case 'pr':
       return `**Bump PR:** #${bump.number}.`;
     case 'branch':
-      return `**Bump:** branch [\`${bump.branch}\`](https://github.com/${ctx.repo}/tree/${bump.branch}) is ready, but GitHub Actions may not open pull requests in this repository. [Open the pull request](https://github.com/${ctx.repo}/compare/main...${bump.branch}?expand=1).`;
+      return `**Bump:** branch [\`${bump.branch}\`](https://github.com/${repo}/tree/${bump.branch}) is ready, but GitHub Actions may not open pull requests in this repository. [Open the pull request](https://github.com/${repo}/compare/main...${bump.branch}?expand=1).`;
     default:
       return '**Bump PR:** being opened by this workflow run.';
   }
 }
 
+/**
+ * While `main` is on a newer major, there is nothing to bump on `main` for
+ * these fixes; one of two releases settles them.
+ */
+function crossMajorBumpLine(d, ctx) {
+  const from = ctx.shippedTag ? `\`${ctx.shippedTag}\`` : 'the last release tag';
+  return `**Bump:** none on \`main\`, which is on Electron ${d.pinnedMajor}. Either ship a fast-path release from ${from} with Electron ${d.target} (on the release branch: \`node scripts/electron-watch.js bump --version ${d.target}\`), or ship a release from \`main\` on an Electron ${d.pinnedMajor}.x published to npm after ${d.target} (${formatTime(d.targetPublishedAt)}). Electron releases each security fix on every supported major together, so such a release carries these fixes; this issue closes on that basis, and any later ${d.pinnedMajor}.x fix is tracked from that release on.`;
+}
+
+/** `main`'s own major while the shipped one is older: keep the pin current for the release that adopts it. */
+function mainTrackLines(ctx) {
+  const t = ctx.mainTrack;
+  if (!t || !t.decision) return [];
+  const m = t.decision;
+  return [
+    '',
+    `**\`main\`'s major:** \`main\` pins ${m.pinned}, and Electron ${m.target} is the newest ${m.major}.x with security fixes since (${m.securityReleases.map((r) => releaseLink(r.version, r.notesUrl)).join(', ')}). A release from \`main\` has to carry it.`,
+    bumpLine(m.pinned, m.target, t.bump, ctx.repo),
+  ];
+}
+
 function securityChecklist(d, ctx) {
   const playbook = `https://github.com/${ctx.repo}/blob/main/${PLAYBOOK_URL_PATH}`;
   const from = ctx.shippedTag ? `\`${ctx.shippedTag}\`` : 'the last release tag';
+  const head = d.crossMajor
+    ? [
+        `- [ ] Release chosen: a fast-path release on ${d.major}.x from ${from}, or a release from \`main\` on an Electron ${d.pinnedMajor}.x published after ${d.target}`,
+        `- [ ] Fast path: \`release/<version>\` branched from ${from}, Electron ${d.target} applied with \`node scripts/electron-watch.js bump --version ${d.target}\`, nothing else`,
+      ]
+    : [
+        '- [ ] Bump pull request reviewed and merged into `main` with `ci-ok` green (Electron only: `package.json`, `package-lock.json`, `licenses-audit.json`, `LICENSE_AUDIT.md`, one `changelog.d/` fragment)',
+        `- [ ] \`release/<version>\` branched from ${from}, the bump cherry-picked onto it, nothing else`,
+      ];
   return [
     `### Checklist ([playbook](${playbook}))`,
     '',
-    '- [ ] Bump pull request reviewed and merged into `main` with `ci-ok` green (Electron only: `package.json`, `package-lock.json`, `licenses-audit.json`, `LICENSE_AUDIT.md`, one `changelog.d/` fragment)',
-    `- [ ] \`release/<version>\` branched from ${from}, the bump cherry-picked onto it, nothing else`,
+    ...head,
     '- [ ] `<version>-rc.1` set, audit re-stamped, changelog assembled from the fragment, `v<version>-rc.1` tagged',
     '- [ ] Release run green: the four builds and `smoke-mac-arm64`, `smoke-linux-x64`, `smoke-linux-arm64`, `smoke-windows-x64`',
     '- [ ] By hand on one machine: launch, About shows the candidate, an `https://` page renders',
     `- [ ] \`v<version>\` tagged, draft re-checked, published to freedom.baby and GitHub by ${formatTime(d.dueAt)}`,
-    "- [ ] Release branch merged back into `main`, with the bump's fragment removed there",
+    d.crossMajor
+      ? "- [ ] Release branch merged back into `main`, keeping `main`'s Electron, lockfile and license audit"
+      : "- [ ] Release branch merged back into `main`, with the bump's fragment removed there",
   ];
 }
 
@@ -871,11 +1007,13 @@ function footer() {
 function renderMajorIssue(m, ctx) {
   const { now } = ctx;
   const title = `Adopt Electron ${m.major}, due ${formatDate(m.dueAt)}`;
+  const track = ctx.mainTrack && ctx.mainTrack.decision;
   const lines = [
     marker(m.key),
     `${dueLine(m.dueAt, now)} Rule: adopt each new Electron major within 8 weeks of its first stable release; Electron ${m.firstVersion} was published to npm ${formatTime(m.firstPublishedAt)}.`,
     '',
     `Freedom ${m.shipped ? `ships Electron ${m.shipped}` : 'ships an Electron that could not be read'}; \`main\` pins ${m.pinned}. The newest ${m.major}.x release is [${m.latest}](${electronReleaseUrl(m.latest)}).${m.onMain ? ` \`main\` is on ${m.major}.x already; what is left is the release.` : ''}`,
+    ...(track && ctx.mainTrackInMajor && track.major === m.major ? mainTrackLines(ctx) : []),
     '',
     'A major is not an automatic bump. `docs/agent-playbooks/release-process.md` §2 lists the checks: the breaking-changes grep, the native-module rebuild (`npm ci` against the new headers) and the build pipeline, then a release of its own.',
     '',
@@ -909,9 +1047,13 @@ function renderEolIssue(e) {
 // ---------------------------------------------------------------------------
 // Issue sync plan
 
+/** The marker's key, when its value is well formed (a version, or a major number). */
 function issueKey(issue) {
   const m = MARKER_RE.exec(issue?.body || '');
-  return m ? m[1] : null;
+  if (!m) return null;
+  const [kind, value] = m[1].split(':');
+  if (kind === 'security') return isStableVersion(value) ? m[1] : null;
+  return /^\d+$/.test(value) ? m[1] : null;
 }
 
 function normalizeBody(text) {
@@ -931,9 +1073,17 @@ function normalizeBody(text) {
  * @param {string|null} input.shipped
  * @param {string|null} input.shippedTag
  * @param {string} input.pinned
+ * @param {Map<string, number>} [input.published]  npm publish time per version
  * @returns {{type: string, key: string, number?: number, title?: string, body?: string, labels?: string[], comment?: string, supersededBy?: string}[]}
  */
-function planIssues({ desired, existing, shipped = null, shippedTag = null, pinned }) {
+function planIssues({
+  desired,
+  existing,
+  shipped = null,
+  shippedTag = null,
+  pinned,
+  published = new Map(),
+}) {
   const byKey = new Map();
   for (const issue of existing) {
     const key = issueKey(issue);
@@ -977,11 +1127,14 @@ function planIssues({ desired, existing, shipped = null, shippedTag = null, pinn
     }
   }
 
-  const newestSecurity = desired
+  const desiredTargets = desired
     .filter((d) => d.key.startsWith('security:'))
-    .map((d) => d.key.slice('security:'.length))
-    .sort(compareVersions)
-    .pop();
+    .map((d) => d.key.slice('security:'.length));
+  const newestOn = (major) =>
+    desiredTargets
+      .filter((v) => majorOf(v) === major)
+      .sort(compareVersions)
+      .pop();
   const shippedNote = shippedTag
     ? `${shippedTag} ships Electron ${shipped}`
     : `the latest release ships Electron ${shipped}`;
@@ -989,21 +1142,49 @@ function planIssues({ desired, existing, shipped = null, shippedTag = null, pinn
     if (have.state !== 'open' || desiredKeys.has(key)) continue;
     const [kind, value] = key.split(':');
     if (kind === 'security') {
-      if (newestSecurity && compareVersions(newestSecurity, value) > 0) {
+      const major = majorOf(value);
+      const newer = newestOn(major);
+      const shippedMajor = shipped ? majorOf(shipped) : null;
+      if (newer && compareVersions(newer, value) > 0) {
         actions.push({
           type: 'close',
           key,
           number: have.number,
-          supersededBy: `security:${newestSecurity}`,
-          comment: `Superseded by the issue for Electron ${newestSecurity}, which carries this deadline forward.`,
+          supersededBy: `security:${newer}`,
+          comment: `Superseded by the issue for Electron ${newer}, which carries this deadline forward.`,
         });
-      } else if (shipped && compareVersions(shipped, value) >= 0) {
+      } else if (shippedMajor === major && compareVersions(shipped, value) >= 0) {
         actions.push({
           type: 'close',
           key,
           number: have.number,
           comment: `Shipped: ${shippedNote}.`,
         });
+      } else if (shippedMajor !== null && shippedMajor > major) {
+        // A release moved to a newer major. Its fixes are carried by a
+        // release of that major published after this target (Electron
+        // releases each security fix on every supported major together);
+        // anything later is a security release of the new major, tracked by
+        // its own issue.
+        const next = newestOn(shippedMajor);
+        const shippedAt = published.get(shipped);
+        const targetAt = published.get(value);
+        if (next) {
+          actions.push({
+            type: 'close',
+            key,
+            number: have.number,
+            supersededBy: `security:${next}`,
+            comment: `Superseded by the issue for Electron ${next}: ${shippedNote}, and its ${shippedMajor}.x security releases carry this deadline forward.`,
+          });
+        } else if (shippedAt && targetAt && shippedAt >= targetAt) {
+          actions.push({
+            type: 'close',
+            key,
+            number: have.number,
+            comment: `Shipped through the newer major: ${shippedNote}, published to npm ${formatTime(shippedAt)}, after Electron ${value} (${formatTime(targetAt)}). Electron releases each security fix on every supported major together, so it carries these fixes.`,
+          });
+        }
       }
     } else if (kind === 'major') {
       const base = shipped || pinned;
@@ -1053,16 +1234,30 @@ function updateLicenseAuditMarkdown(text, version) {
 
 /**
  * The parenthetical on the changelog line, in `changelog-process.md`'s form:
- * `Chromium 152.0.7977.130 and Node 24.21.0, unchanged`, or the moves.
+ * `Chromium 152.0.7977.130 and Node 24.21.0, unchanged`, or the moves. Every
+ * value must be in its exact numeric format: this text is committed by the
+ * one job that can push.
  */
 function chromiumNodeDetail(from, to) {
-  if (!from || !to || !from.chrome || !to.chrome || !from.node || !to.node) return null;
+  const ok = (e) =>
+    e &&
+    CHROMIUM_VERSION_RE.test(String(e.chrome ?? '')) &&
+    NODE_VERSION_RE.test(String(e.node ?? ''));
+  if (!ok(from) || !ok(to)) return null;
   const chrome = from.chrome === to.chrome;
   const node = from.node === to.node;
   if (chrome && node) return `Chromium ${to.chrome} and Node ${to.node}, unchanged`;
   const c = chrome ? `Chromium ${to.chrome} unchanged` : `Chromium ${from.chrome} to ${to.chrome}`;
   const n = node ? `Node ${to.node} unchanged` : `Node ${from.node} to ${to.node}`;
   return `${c}, ${n}`;
+}
+
+/** The only shapes `chromiumNodeDetail()` produces; anything else is dropped, not written. */
+const DETAIL_RE =
+  /^Chromium \d+(?:\.\d+){3}(?: to \d+(?:\.\d+){3}| unchanged)?(?:, | and )Node \d+(?:\.\d+){2}(?: to \d+(?:\.\d+){2}| unchanged)?(?:, unchanged)?$/;
+
+function safeDetail(detail) {
+  return typeof detail === 'string' && DETAIL_RE.test(detail) ? detail : null;
 }
 
 const FRAGMENT_LINE_RE =
@@ -1095,7 +1290,7 @@ function planChangelogFragment(fragments, { pinned, to, detailFor }) {
         ? ''
         : old.slice(split + 1).trim()
       : old.trim();
-    const parts = [detailFor(m[2]), prose].filter(Boolean);
+    const parts = [safeDetail(detailFor(m[2])), prose].filter(Boolean);
     const line = `${m[1]}${m[2]}${m[3]}${to}${parts.length ? ` (${parts.join('; ')})` : ''}`;
     const text = f.text.replace(FRAGMENT_LINE_RE, line);
     const renamed = f.name.replace(/(electron-)(\d+\.\d+\.\d+)(\.md)$/, `$1${to}$3`);
@@ -1105,7 +1300,7 @@ function planChangelogFragment(fragments, { pinned, to, detailFor }) {
       from: m[2],
     };
   }
-  const detail = detailFor(pinned);
+  const detail = safeDetail(detailFor(pinned));
   const line = `  - Electron ${pinned} to ${to}${detail ? ` (${detail})` : ''}`;
   return {
     write: {
@@ -1143,6 +1338,9 @@ module.exports = {
   EOL_WARNING_MS,
   LABEL,
   BRANCH_PREFIX,
+  safeUrl,
+  mdCode,
+  sanitizeElectronRelease,
   parseVersion,
   isStableVersion,
   majorOf,
@@ -1164,6 +1362,7 @@ module.exports = {
   parseAdvisories,
   advisoryFixesFor,
   securityBase,
+  securityTrack,
   decideSecurity,
   decideMajors,
   decideEol,

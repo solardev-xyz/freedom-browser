@@ -18,6 +18,42 @@
     "body": "# Release Notes for v35.1.2\n\n## Fixes\n\n* Fixed an issue where `navigationHistory.restore()` failed to restore the `userAgent` if it was overridden. [#46300](https://github.com/electron/electron/pull/46300) <span style=\"font-size:small;\">(Also in [34](https://github.com/electron/electron/pull/46298), [36](https://github.com/electron/electron/pull/46299))</span>\n## Other Changes\n\n* Security: backported fix for CVE-2025-2783. [#46303](https://github.com/electron/electron/pull/46303) \n* Updated Chromium to 134.0.6998.178. [#46287](https://github.com/electron/electron/pull/46287) \n"
   },
   {
+    "tag_name": "v43.8.0",
+    "name": "electron v43.8.0",
+    "html_url": "https://github.com/electron/electron/releases/tag/v43.8.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-16T05:53:53Z",
+    "body": "# Release Notes for v43.8.0\n\n## Fixes\n\n* Fixed a crash on Linux at startup or on theme change with GTK modules loaded. [#55016](https://github.com/electron/electron/pull/55016)\n* Fixed a crash when creating a framed window on Wayland in environments where GTK could not initialize. [#54893](https://github.com/electron/electron/pull/54893) <sup>(Also in [44](https://github.com/electron/electron/pull/54420), [45](https://github.com/electron/electron/pull/54399))</sup>\n* Fixed a Linux crash creating a window with a menu bar when GTK failed to load. [#54884](https://github.com/electron/electron/pull/54884) <sup>(Also in [44](https://github.com/electron/electron/pull/54859), [45](https://github.com/electron/electron/pull/54846))</sup>\n* Fixed an issue where clicks posted to a background app were dropped on macOS. [#54905](https://github.com/electron/electron/pull/54905) <sup>(Also in [42](https://github.com/electron/electron/pull/54906), [44](https://github.com/electron/electron/pull/54819), [45](https://github.com/electron/electron/pull/54818))</sup>\n* Fixed `net.fetch` and `session.fetch` failing permanently with `net::ERR_FAILED` after the Network Service process restarts. [#54908](https://github.com/electron/electron/pull/54908) <sup>(Also in [42](https://github.com/electron/electron/pull/54925), [44](https://github.com/electron/electron/pull/54909), [45](https://github.com/electron/electron/pull/54910))</sup>\n* Fixed `utilityProcess` dropping messages posted with `process.parentPort.postMessage()` right before the process exits. [#54962](https://github.com/electron/electron/pull/54962) <sup>(Also in [42](https://github.com/electron/electron/pull/55000), [45](https://github.com/electron/electron/pull/54956))</sup>\n\n## Other Changes\n\n* Backported fixes from upstream Chromium and V8. [#55032](https://github.com/electron/electron/pull/55032)\n* Updated Node.js to v24.22.0. [#55003](https://github.com/electron/electron/pull/55003)\n\n"
+  },
+  {
+    "tag_name": "v43.8.1",
+    "name": "electron v43.8.1",
+    "html_url": "https://github.com/electron/electron/releases/tag/v43.8.1",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-20T02:30:11Z",
+    "body": "# Release Notes for v43.8.1\r\n\r\n> [!NOTE]\r\n> This release contains the fix for https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9, the mitigation for compromised eMudhra intermediate certificates\r\n\r\n## Fixes\r\n\r\n* Fixed link-opened windows not using the opener's session and `webPreferences`. [#55049](https://github.com/electron/electron/pull/55049) <sup>(Also in [42](https://github.com/electron/electron/pull/55050), [44](https://github.com/electron/electron/pull/55048), [45](https://github.com/electron/electron/pull/55051))</sup>\r\n* Fixed `setCertificateVerifyProc` occasionally not being applied to a request issued concurrently with the first request to a host. [#55047](https://github.com/electron/electron/pull/55047) <sup>(Also in [42](https://github.com/electron/electron/pull/55054), [44](https://github.com/electron/electron/pull/55046), [45](https://github.com/electron/electron/pull/55045))</sup>\r\n\r\n"
+  },
+  {
+    "tag_name": "v43.8.2",
+    "name": "electron v43.8.2",
+    "html_url": "https://github.com/electron/electron/releases/tag/v43.8.2",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-20T17:34:05Z",
+    "body": "# Release Notes for v43.8.2\n\n"
+  },
+  {
+    "tag_name": "v43.8.3",
+    "name": "electron v43.8.3",
+    "html_url": "https://github.com/electron/electron/releases/tag/v43.8.3",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-21T03:05:05Z",
+    "body": "# Release Notes for v43.8.3\n\n## Other Changes\n\n* Backported fixes from upstream ANGLE, Chromium, PDFium, Skia and V8. [#55147](https://github.com/electron/electron/pull/55147)\n\n"
+  },
+  {
     "tag_name": "v44.3.0",
     "name": "electron v44.3.0",
     "html_url": "https://github.com/electron/electron/releases/tag/v44.3.0",

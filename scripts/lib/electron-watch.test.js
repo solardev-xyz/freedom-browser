@@ -29,6 +29,9 @@ const SCHEDULE = fixture('electron-schedule.json');
 
 const at = (iso) => Date.parse(iso);
 const iso = (ms) => new Date(ms).toISOString();
+/** What a reader sees of an issue body's inert upstream text: entities decoded, `<code>` dropped. */
+const rendered = (body) =>
+  body.replace(/<\/?code>/g, '').replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
 
 function decide(pinned, now, extra = {}) {
   const t = at(now);
@@ -429,7 +432,7 @@ describe('issue text', () => {
     expect(issue.body).toContain(
       '[44.7.2](https://github.com/electron/electron/releases/tag/v44.7.2)'
     );
-    expect(issue.body).toContain('GHSA-jr5w-w6x2-84p9');
+    expect(rendered(issue.body)).toContain('GHSA-jr5w-w6x2-84p9');
     expect(issue.body).toContain('**CVEs** (28)');
     expect(issue.body).toContain('**Bump PR:** #900.');
     expect(issue.body).toContain('branched from `v0.8.7`');
@@ -551,17 +554,63 @@ describe('issue plan: one issue per key', () => {
     );
     const shipped = W.planIssues({
       desired: [],
-      existing: [have(717, 'security:44.9.3'), have(718, 'major:45'), have(719, 'eol:43')],
-      shipped: '45.0.1',
-      shippedTag: 'v0.9.0',
-      pinned: '45.0.1',
+      existing: [have(717, 'security:44.9.3'), have(718, 'major:44'), have(719, 'eol:43')],
+      shipped: '44.9.3',
+      shippedTag: 'v0.8.8',
+      pinned: '44.9.3',
     });
     expect(shipped.map((a) => [a.type, a.number])).toEqual([
       ['close', 717],
       ['close', 718],
       ['close', 719],
     ]);
-    expect(shipped[0].comment).toBe('Shipped: v0.9.0 ships Electron 45.0.1.');
+    expect(shipped[0].comment).toBe('Shipped: v0.8.8 ships Electron 44.9.3.');
+  });
+
+  test('a newer target on another major does not supersede: each major keeps its deadline', () => {
+    const actions = W.planIssues({
+      desired: [want('security:45.0.2')],
+      existing: [have(721, 'security:44.9.3')],
+      shipped: '44.7.0',
+      pinned: '45.0.0',
+    });
+    expect(actions.filter((a) => a.type === 'close')).toEqual([]);
+  });
+
+  test('a release on a newer major closes the old major only on evidence it carries the fixes', () => {
+    const published = new Map([
+      ['44.9.3', at('2026-10-21T03:31:39.419Z')],
+      ['45.0.0', at('2026-10-21T06:03:52.729Z')],
+      ['45.0.1', at('2026-10-28T00:00:00Z')],
+    ]);
+    const plan = (shipped, desired = []) =>
+      W.planIssues({
+        desired,
+        existing: [have(722, 'security:44.9.3')],
+        shipped,
+        shippedTag: 'v0.9.0',
+        pinned: shipped,
+        published,
+      });
+    // Published to npm after the old target: carries it.
+    const [closed] = plan('45.0.0');
+    expect(closed).toMatchObject({ type: 'close', number: 722 });
+    expect(closed.comment).toMatch(
+      /^Shipped through the newer major: v0\.9\.0 ships Electron 45\.0\.0, published to npm 2026-10-21 06:03 UTC, after Electron 44\.9\.3/
+    );
+    // A 45.x security issue takes the deadline over.
+    expect(plan('45.0.0', [want('security:45.0.1')])).toContainEqual(
+      expect.objectContaining({ type: 'close', number: 722, supersededBy: 'security:45.0.1' })
+    );
+    // Published before it, and nothing on 45 tracks the fixes: stays open.
+    published.set('45.0.0', at('2026-10-20T00:00:00Z'));
+    expect(plan('45.0.0')).toEqual([]);
+  });
+
+  test('a malformed marker is not a key', () => {
+    expect(W.issueKey({ body: '<!-- electron-watch:security:44..1 -->' })).toBeNull();
+    expect(W.issueKey({ body: '<!-- electron-watch:major:4.5 -->' })).toBeNull();
+    expect(W.issueKey({ body: '<!-- electron-watch:security:44.9.3 -->' })).toBe('security:44.9.3');
   });
 
   test('an open security issue is kept while the release is unknown', () => {
@@ -669,5 +718,248 @@ describe('the bump: files that record the Electron version', () => {
       text: '- Updated runtime dependencies:\n  - Electron 44.7.0 to 44.9.3\n',
     });
     expect(plan.remove).toBeNull();
+  });
+});
+
+describe('main on a newer major than the release (review round 1, finding 1)', () => {
+  test('the shipped major keeps its security deadline while main adopts the next one', () => {
+    // main pins 45.0.0, the latest release still ships 44.7.0: 44.7.2's
+    // deadline (2026-10-21) is still owed, and the 8-week adoption issue for
+    // 45 (due 2026-12-16) does not replace it.
+    const d = decide('45.0.0', '2026-10-23T12:00:00Z', { shipped: '44.7.0' });
+    expect(d).toMatchObject({
+      key: 'security:44.9.3',
+      target: '44.9.3',
+      base: '44.7.0',
+      major: 44,
+      crossMajor: true,
+      pinnedMajor: 45,
+      overdue: true,
+    });
+    expect(d.governing.version).toBe('44.7.2');
+    expect(iso(d.dueAt)).toBe('2026-10-21T01:32:13.902Z');
+    // 45.0.0 is the newest 45.x in the recording: nothing to bump on main.
+    expect(decide('45.0.0', '2026-10-23T12:00:00Z')).toBeNull();
+  });
+
+  test('the issue asks for a release, not a bump on main, and names both ways to ship', () => {
+    const d = decide('45.0.0', '2026-10-23T12:00:00Z', { shipped: '44.7.0' });
+    const body = W.renderSecurityIssue(d, {
+      repo: 'solardev-xyz/freedom-browser',
+      now: at('2026-10-23T12:00:00Z'),
+      shippedTag: 'v0.8.7',
+      bump: null,
+      mainTrack: null,
+    }).body;
+    expect(body).toContain('`main` has moved on to Electron 45 (45.0.0)');
+    expect(body).toContain('the adoption issue for 45 does not replace this deadline');
+    expect(body).toContain('**Bump:** none on `main`');
+    expect(body).toContain('`node scripts/electron-watch.js bump --version 44.9.3`');
+    expect(body).toContain('published to npm after 44.9.3 (2026-10-21 03:31 UTC)');
+    expect(body).not.toContain('**Bump PR:**');
+    expect(body).toContain("keeping `main`'s Electron, lockfile and license audit");
+  });
+
+  test("main's own major is tracked beside the deadline, to keep the pin current", () => {
+    // Shipped 43.8.0, main on 44.7.0: 43.8.1 (the eMudhra advisory) and
+    // 43.8.3 (a backport batch) are owed on 43; main's 44.9.3 is a bump.
+    const now = '2026-10-23T12:00:00Z';
+    const owed = decide('44.7.0', now, { shipped: '43.8.0' });
+    expect(owed).toMatchObject({ key: 'security:43.8.3', crossMajor: true });
+    expect(owed.securityReleases.map((r) => r.version)).toEqual(['43.8.1', '43.8.3']);
+    expect(iso(owed.dueAt)).toBe('2026-10-27T02:54:21.154Z');
+    const main = decide('44.7.0', now);
+    expect(main.target).toBe('44.9.3');
+    const body = W.renderSecurityIssue(owed, {
+      repo: 'solardev-xyz/freedom-browser',
+      now: at(now),
+      shippedTag: 'v0.8.7',
+      bump: null,
+      mainTrack: { decision: main, bump: { state: 'pr', number: 950 } },
+    }).body;
+    expect(body).toContain(
+      "**`main`'s major:** `main` pins 44.7.0, and Electron 44.9.3 is the newest 44.x"
+    );
+    expect(body).toContain('**Bump PR:** #950.');
+  });
+});
+
+describe('upstream data is untrusted (review round 1, finding 2)', () => {
+  const HOSTILE =
+    'fix ](https://evil.invalid) [spoof `x` | <img src=x> @solardev-xyz www.evil.invalid\n- injected';
+  const ctx = {
+    repo: 'solardev-xyz/freedom-browser',
+    now: 0,
+    shippedTag: 'v1',
+    bump: { state: 'pending' },
+  };
+
+  test('mdCode leaves no Markdown, HTML, autolink or mention syntax', () => {
+    const out = W.mdCode(HOSTILE);
+    expect(out.startsWith('<code>') && out.endsWith('</code>')).toBe(true);
+    const inner = out.slice('<code>'.length, -'</code>'.length);
+    expect(inner).not.toMatch(/[[\]()`|<>@:\n]|www\./);
+    expect(rendered(out)).toBe(HOSTILE.replace('\n', ' '));
+  });
+
+  test('only the expected HTTPS sources are linked', () => {
+    for (const url of [
+      'https://github.com/electron/electron/pull/55149',
+      'https://github.com/electron/electron/releases/tag/v44.9.3',
+      'https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9',
+      'https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_01882797386.html',
+    ]) {
+      expect(W.safeUrl(url)).toBe(url);
+    }
+    for (const url of [
+      'https://good.invalid',
+      'http://github.com/electron/electron/pull/1',
+      'https://github.com/electron/electron/pull/1)[x](https://evil.invalid',
+      'https://github.com.evil.invalid/electron/electron/pull/1',
+      'javascript:alert(1)',
+      'https://chromereleases.googleblog.com/2026/09/x.html?u=https://evil.invalid',
+    ]) {
+      expect(W.safeUrl(url)).toBeNull();
+    }
+  });
+
+  test("the reviewer's probe: hostile evidence text and links render inert", () => {
+    const issue = W.renderSecurityIssue(
+      {
+        key: 'security:44.9.3',
+        target: '44.9.3',
+        major: 44,
+        dueAt: 0,
+        pinned: '44.7.0',
+        shipped: '44.7.0',
+        base: '44.7.0',
+        governing: { version: '44.8.0', exploited: false, publishedAt: 0 },
+        securityReleases: [
+          {
+            version: '44.8.0',
+            notesUrl: 'https://good.invalid',
+            publishedAt: 0,
+            dueAt: 0,
+            evidence: [{ text: HOSTILE, url: 'https://good.invalid' }],
+            inKev: [],
+            chromeSaysExploited: [],
+            exploitedInWild: false,
+            exploited: false,
+          },
+        ],
+        releases: [],
+        cves: [],
+        inKev: [],
+        chromeSaysExploited: [],
+        unmatchedKev: [
+          {
+            cveID: 'CVE-2026-87491',
+            product: 'V8](https://evil.invalid)',
+            dateAdded: '2026-09-09',
+          },
+        ],
+        unmatchedKevDueAt: 0,
+        missing: [],
+      },
+      ctx
+    );
+    expect(issue.body).not.toContain('](https://evil.invalid)');
+    expect(issue.body).not.toContain('good.invalid');
+    expect(issue.body).not.toContain('<img');
+    expect(issue.body).not.toContain('@solardev-xyz');
+    expect(issue.body).not.toMatch(/\n- injected/);
+    // The release link falls back to the canonical GitHub release.
+    expect(issue.body).toContain(
+      '[44.8.0](https://github.com/electron/electron/releases/tag/v44.8.0)'
+    );
+  });
+
+  test('hostile notes and URLs from the feeds never reach the issue as Markdown', () => {
+    const notes = new Map(NOTES);
+    notes.set('44.7.2', {
+      body: `* Backported fixes from upstream ${HOSTILE}. [#1](https://evil.invalid/pull/1)`,
+      url: 'https://evil.invalid/releases/tag/v44.7.2',
+    });
+    const chrome = W.parseChromeFeed({
+      feed: {
+        entry: [
+          {
+            title: { $t: 'Stable Channel Update for Desktop' },
+            published: { $t: '2026-10-01T00:00:00Z' },
+            content: { $t: 'updated to 152.0.7977.150 [x](y) CVE-2026-1234' },
+            link: [{ rel: 'alternate', href: 'javascript:alert(1)' }],
+          },
+        ],
+      },
+    });
+    expect(chrome[0].url).toBeNull();
+    const advisories = W.parseAdvisories([
+      ...fixture('electron-advisories.json').map((a) =>
+        a.ghsa_id === 'GHSA-jr5w-w6x2-84p9'
+          ? { ...a, html_url: 'https://evil.invalid/a', summary: HOSTILE }
+          : a
+      ),
+      { ghsa_id: 'GHSA-x](https://evil.invalid', vulnerabilities: [] },
+      { ghsa_id: 'GHSA-aaaa-bbbb-cccc', cve_id: 'CVE-1)[x](y', vulnerabilities: [] },
+    ]);
+    expect(advisories.find((a) => a.id === 'GHSA-jr5w-w6x2-84p9').url).toBe(
+      'https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9'
+    );
+    expect(advisories.some((a) => a.id.includes('evil'))).toBe(false);
+    expect(advisories.find((a) => a.id === 'GHSA-aaaa-bbbb-cccc').cve).toBeNull();
+    const d = decide('44.7.0', '2026-10-23T12:00:00Z', {
+      notes,
+      advisories,
+      chromePosts: [...CHROME, ...chrome],
+    });
+    const body = W.renderSecurityIssue(d, { ...ctx, now: at('2026-10-23T12:00:00Z') }).body;
+    expect(body).not.toContain('evil.invalid');
+    expect(rendered(body)).toContain('Backported fixes from upstream fix ](https://evil.invalid)');
+  });
+
+  test('a KEV entry with a malformed CVE id is dropped', () => {
+    const kev = W.parseKev({
+      vulnerabilities: [
+        { cveID: 'CVE-2026-1)[x](https://evil.invalid' },
+        { cveID: 'CVE-2026-85046' },
+      ],
+    });
+    expect([...kev.keys()]).toEqual(['CVE-2026-85046']);
+  });
+
+  test('releases.electronjs.org values reach the changelog only in their exact numeric format', () => {
+    const hostile = W.sanitizeElectronRelease({
+      version: '44.9.3',
+      chrome: '152.0.7977.167`)\n- injected from upstream',
+      node: '24.22.0',
+      modules: '149; rm',
+    });
+    expect(hostile).toEqual({ version: '44.9.3', chrome: null, node: '24.22.0', modules: null });
+    expect(W.sanitizeElectronRelease({ version: 'x', chrome: '1.2.3.4' })).toBeNull();
+    const good = ELECTRON_RELEASES.get('44.7.0');
+    expect(W.chromiumNodeDetail(good, hostile)).toBeNull();
+    expect(
+      W.chromiumNodeDetail(good, { chrome: '152.0.7977.167', node: '24.22.0\n- x' })
+    ).toBeNull();
+  });
+
+  test("the reviewer's probe: a hostile detail never enters a fragment", () => {
+    const detailFor = () => 'Chromium `)\n- injected from upstream';
+    const fresh = W.planChangelogFragment([], { pinned: '44.7.0', to: '44.9.3', detailFor });
+    expect(fresh.write.text).toBe(
+      '- Updated runtime dependencies:\n  - Electron 44.7.0 to 44.9.3\n'
+    );
+    const moved = W.planChangelogFragment(
+      [
+        {
+          name: 'security--deps-electron-44.8.0.md',
+          text: '- Updated runtime dependencies:\n  - Electron 44.7.0 to 44.8.0\n',
+        },
+      ],
+      { pinned: '44.8.0', to: '44.9.3', detailFor }
+    );
+    expect(moved.write.text).toBe(
+      '- Updated runtime dependencies:\n  - Electron 44.7.0 to 44.9.3\n'
+    );
   });
 });
