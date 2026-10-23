@@ -7,6 +7,12 @@
  * phone answered from a different account than the one on record. Stable
  * REMOTE_* codes mirror the LEDGER_* registry (see ../ledger/errors.js)
  * so approval UIs handle both hardware families the same way.
+ *
+ * One code is not a failure: OUTCOME_UNKNOWN. A phone signs and broadcasts
+ * a payment itself, so once the request has reached it, a lost or unreadable
+ * answer leaves the payment possibly sent (freedom-core design 0005,
+ * "Retrying an intent"). It is shown as unknown, never as failed, and the
+ * user checks the phone's wallet before paying again.
  */
 
 const REMOTE_ERROR_CODES = {
@@ -18,6 +24,7 @@ const REMOTE_ERROR_CODES = {
   NO_UI: 'REMOTE_NO_UI',
   UNSUPPORTED: 'REMOTE_UNSUPPORTED',
   UNKNOWN: 'REMOTE_UNKNOWN',
+  OUTCOME_UNKNOWN: 'REMOTE_OUTCOME_UNKNOWN',
 };
 
 const MESSAGES = {
@@ -30,6 +37,9 @@ const MESSAGES = {
   [REMOTE_ERROR_CODES.NO_UI]: 'No browser window available to show the signing QR code.',
   [REMOTE_ERROR_CODES.UNSUPPORTED]: 'This request type is not supported by phone accounts.',
   [REMOTE_ERROR_CODES.UNKNOWN]: 'Phone signing failed. Try again.',
+  [REMOTE_ERROR_CODES.OUTCOME_UNKNOWN]:
+    "No answer came back from your phone, so it's unknown whether this payment was sent. " +
+    "Check your phone's wallet before you try again.",
 };
 
 /**
@@ -72,4 +82,12 @@ function mapRemoteRpcError(rpcError) {
   return createRemoteError(code, code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage);
 }
 
-module.exports = { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError };
+/**
+ * The phone's answer to a payment that reached it couldn't be read: the
+ * payment may have been sent all the same.
+ */
+const UNREADABLE_ANSWER =
+  "Your phone's answer couldn't be read, so it's unknown whether this payment was sent. " +
+  "Check your phone's wallet before you try again.";
+
+module.exports = { REMOTE_ERROR_CODES, UNREADABLE_ANSWER, createRemoteError, mapRemoteRpcError };

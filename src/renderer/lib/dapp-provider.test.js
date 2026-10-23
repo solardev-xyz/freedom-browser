@@ -462,6 +462,81 @@ describe('dapp-provider only serves the guest main frame', () => {
     ]);
   });
 
+  // D13: a phone account's payment whose answer was lost may have been sent.
+  // The site hears that its outcome is unknown, never 4001 ("rejected"),
+  // which would invite the same request again.
+  const SITE_UNKNOWN = {
+    code: -32603,
+    message:
+      "The payment's outcome is unknown: it may have been sent. Check the wallet before retrying.",
+    data: { outcome: 'unknown' },
+  };
+
+  test("an auto-approved payment whose phone answer was lost tells the site it's unknown", async () => {
+    const { webview, sendRequest, walletMocks } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+      txAutoApproved: true,
+    });
+    walletMocks.dappSendTransaction.mockResolvedValue({
+      success: false,
+      code: 'REMOTE_OUTCOME_UNKNOWN',
+      error: "No answer came back from your phone, so it's unknown whether this payment was sent.",
+    });
+    const data = '0x095ea7b3' + '00'.repeat(64);
+
+    sendRequest({ id: 24, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data }] });
+    await flushMicrotasks();
+
+    expect(responsesSentTo(webview)).toEqual([
+      ['dapp:provider-response', { id: 24, result: null, error: SITE_UNKNOWN }],
+    ]);
+  });
+
+  test('any other auto-approved failure reaches the site as before', async () => {
+    const { webview, sendRequest, walletMocks } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+      txAutoApproved: true,
+    });
+    walletMocks.dappSendTransaction.mockResolvedValue({
+      success: false,
+      code: 'REMOTE_USER_REJECTED',
+      error: 'Request rejected on your phone.',
+    });
+    const data = '0x095ea7b3' + '00'.repeat(64);
+
+    sendRequest({ id: 25, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data }] });
+    await flushMicrotasks();
+
+    expect(responsesSentTo(webview)).toEqual([
+      [
+        'dapp:provider-response',
+        {
+          id: 25,
+          result: null,
+          error: { code: -32603, message: 'Request rejected on your phone.', data: undefined },
+        },
+      ],
+    ]);
+  });
+
+  test("the approval's unknown outcome reaches the site as it is", async () => {
+    const { webview, sendRequest, walletUi } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    walletUi.showDappTxApproval.mockRejectedValue({ ...SITE_UNKNOWN });
+
+    sendRequest({
+      id: 26,
+      method: 'eth_sendTransaction',
+      params: [{ to: '0xc0ffee', value: '0x1' }],
+    });
+    await flushMicrotasks();
+
+    expect(responsesSentTo(webview)).toEqual([
+      ['dapp:provider-response', { id: 26, result: null, error: SITE_UNKNOWN }],
+    ]);
+  });
+
   test('a sub-frame eth_sendTransaction reaches neither the approval UI nor main', async () => {
     const { webview, sendRequest, walletUi, walletMocks, dappPermissions } = await loadProvider({
       permission: { walletIndex: 0, chainId: 100, autoApprove: {} },

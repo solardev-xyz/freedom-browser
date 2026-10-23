@@ -102,6 +102,8 @@ function createHarness() {
       return () => delete handlers.abort;
     }),
     respond: jest.fn(),
+    // Main allows the request to go (its handshake; see bridge.js).
+    requestSent: jest.fn(async () => ({ allowed: true })),
   };
   return { session, openlv, remoteSigner, handlers };
 }
@@ -122,8 +124,10 @@ async function startBroker(harness) {
 
 const JOB = { jobId: 'job-1', walletIndex: 4, address: '0xabc', method: 'personal_sign', params: ['0x6869', '0xabc'] };
 
-// Let the runJob microtasks settle.
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// Let the runJob microtasks (and main's answer to requestSent) settle.
+const tick = async () => {
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
 describe('remote-session broker', () => {
   test('runs a job end to end: session, QR event, request, response to main', async () => {
@@ -550,10 +554,191 @@ describe('remote-session broker', () => {
     broker.cancelJob('job-1');
     harness.openlv.createSession.mockClear();
 
-    broker.retryJob('job-1');
-    broker.retryJob('nope');
+    expect(broker.retryJob('job-1')).toBe(false);
+    expect(broker.retryJob('nope')).toBe(false);
     await tick();
     expect(harness.openlv.createSession).not.toHaveBeenCalled();
+  });
+
+  // A phone signs and broadcasts a payment itself (design 0005, "Retrying
+  // an intent"): once its request went, a lost answer is unknown, and a
+  // new code would ask the phone to pay a second time.
+  describe('a payment on the phone', () => {
+    const PAYMENT = {
+      jobId: 'job-pay',
+      walletIndex: 4,
+      address: '0xabc',
+      method: 'eth_sendTransaction',
+      params: [{ from: '0xabc', to: '0xdef', value: '0x1', chainId: '0x64' }],
+      chain: { chainId: '0x64' },
+    };
+
+    test('main is told just before the request goes, after the network switch', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+      const order = [];
+      harness.remoteSigner.requestSent.mockImplementation(async (jobId) => {
+        order.push(`sent:${jobId}`);
+        return { allowed: true };
+      });
+      harness.session.send.mockImplementation(async ({ method }) => {
+        order.push(method);
+        return method === 'wallet_switchEthereumChain' ? { result: null } : new Promise(() => {});
+      });
+      const events = [];
+      broker.onJobEvent((e) => events.push(e));
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      expect(harness.remoteSigner.requestSent).not.toHaveBeenCalled();
+      harness.session.link.resolve();
+      await tick();
+
+      expect(order).toEqual(['wallet_switchEthereumChain', 'sent:job-pay', 'eth_sendTransaction']);
+      expect(events).toContainEqual(
+        expect.objectContaining({ phase: 'awaiting-approval', method: 'eth_sendTransaction' })
+      );
+    });
+
+    // Review of #787, M1: the request goes only with main's leave, asked for
+    // and answered before it goes.
+    test('main refuses (it already gave up on the job): nothing goes to the phone', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+      const events = [];
+      broker.onJobEvent((e) => events.push(e));
+      harness.remoteSigner.requestSent.mockResolvedValue({ allowed: false });
+      harness.session.send.mockImplementation(async () => ({ result: null }));
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+
+      expect(harness.session.send.mock.calls.map(([m]) => m.method)).toEqual([
+        'wallet_switchEthereumChain',
+      ]);
+      expect(harness.remoteSigner.respond).not.toHaveBeenCalled();
+      expect(events.some((e) => e.phase === 'aborted')).toBe(true);
+      expect(harness.session.close).toHaveBeenCalled();
+    });
+
+    test('the user stops waiting while main is asked: nothing goes to the phone', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+      let answer;
+      harness.remoteSigner.requestSent.mockImplementation(
+        () => new Promise((resolve) => (answer = resolve))
+      );
+      harness.session.send.mockImplementation(async () => ({ result: null }));
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+      broker.cancelJob('job-pay');
+      answer({ allowed: true });
+      await tick();
+
+      expect(harness.session.send.mock.calls.map(([m]) => m.method)).toEqual([
+        'wallet_switchEthereumChain',
+      ]);
+      expect(harness.remoteSigner.respond).toHaveBeenCalledTimes(1);
+      expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
+        jobId: 'job-pay',
+        error: { code: 'REMOTE_USER_CANCELLED' },
+      });
+    });
+
+    test("main can't be asked: nothing goes, and the job fails as not sent", async () => {
+      const harness = createHarness();
+      await startBroker(harness);
+      harness.remoteSigner.requestSent.mockRejectedValue(new Error('IPC channel closed'));
+      harness.session.send.mockImplementation(async () => ({ result: null }));
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+
+      expect(harness.session.send.mock.calls.map(([m]) => m.method)).toEqual([
+        'wallet_switchEthereumChain',
+      ]);
+      expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
+        jobId: 'job-pay',
+        error: { code: 'REMOTE_UNKNOWN', message: 'IPC channel closed' },
+      });
+    });
+
+    test('no new code once its request went: the same session stays', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+      const events = [];
+      broker.onJobEvent((e) => events.push(e));
+      harness.session.send.mockImplementation(async ({ method }) =>
+        method === 'wallet_switchEthereumChain' ? { result: null } : new Promise(() => {})
+      );
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+      harness.openlv.createSession.mockClear();
+
+      expect(broker.retryJob('job-pay')).toBe(false);
+      await tick();
+      expect(harness.openlv.createSession).not.toHaveBeenCalled();
+      expect(harness.session.close).not.toHaveBeenCalled();
+      expect(events.filter((e) => e.phase === 'qr')).toHaveLength(1);
+
+      // The user stops waiting: main hears of it, and decides it is unknown.
+      broker.cancelJob('job-pay');
+      expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
+        jobId: 'job-pay',
+        error: { code: 'REMOTE_USER_CANCELLED' },
+      });
+    });
+
+    test('a new code is still offered before its request went', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+
+      harness.handlers.request(PAYMENT);
+      await tick();
+      const secondSession = createFakeSession();
+      harness.openlv.createSession.mockImplementation(async () => secondSession);
+
+      expect(broker.retryJob('job-pay')).toBe(true);
+      await tick();
+      expect(harness.openlv.createSession).toHaveBeenCalledTimes(2);
+      expect(harness.remoteSigner.requestSent).not.toHaveBeenCalled();
+    });
+
+    test('a signature keeps its new code: it pays nothing', async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+
+      harness.handlers.request(JOB);
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+      expect(harness.remoteSigner.requestSent).toHaveBeenCalledWith('job-1');
+      harness.openlv.createSession.mockImplementation(async () => createFakeSession());
+
+      expect(broker.retryJob('job-1')).toBe(true);
+    });
+
+    test("connecting a phone tells main nothing: it isn't main's job", async () => {
+      const harness = createHarness();
+      const broker = await startBroker(harness);
+
+      broker.connectPhone();
+      await tick();
+      harness.session.link.resolve();
+      await tick();
+      expect(harness.session.send).toHaveBeenCalled();
+      expect(harness.remoteSigner.requestSent).not.toHaveBeenCalled();
+    });
   });
 
   test('stop() unsubscribes and closes live sessions', async () => {
