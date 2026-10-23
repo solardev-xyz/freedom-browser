@@ -182,7 +182,12 @@ test('reports no overlap when every attempt fails between two swaps', async () =
       throw new Error('never races');
     },
   });
-  expect(report).toMatchObject({ overlapped: false, attempts: 3, preserved: true, firstError: 'never races' });
+  expect(report).toMatchObject({
+    overlapped: false,
+    attempts: 3,
+    preserved: true,
+    firstError: 'never races',
+  });
 });
 
 test('reports the outside files a path-walking cleanup deleted through the link', async () => {

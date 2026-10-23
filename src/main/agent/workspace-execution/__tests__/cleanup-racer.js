@@ -185,7 +185,16 @@ function startCleanupRacer({
  * Once the racer has stopped, `cleanup` runs again and `removed` says
  * whether the target is gone.
  */
-async function raceCleanup({ target, outside, names, linkType, cleanup, holdMs, maxMs, attempts = 10 }) {
+async function raceCleanup({
+  target,
+  outside,
+  names,
+  linkType,
+  cleanup,
+  holdMs,
+  maxMs,
+  attempts = 10,
+}) {
   await fs.promises.mkdir(target, { recursive: true });
   await fs.promises.mkdir(outside, { recursive: true });
   for (const name of names) await fs.promises.writeFile(path.join(outside, name), PRESERVED);
