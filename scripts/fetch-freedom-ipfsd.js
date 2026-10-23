@@ -31,6 +31,8 @@ module.exports = createReleaseFetcher({
   tagEnv: 'FREEDOM_IPFSD_RELEASE_TAG',
   tagPattern: TAG_PATTERN,
   tagPrefix: 'ipfsd-',
+  // What builds and attests ipfsd-v* releases; CI verifies against it.
+  provenanceWorkflow: 'release-ipfsd.yml',
 });
 
 if (require.main === module) {

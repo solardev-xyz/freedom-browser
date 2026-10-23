@@ -77,6 +77,9 @@ function releaseRequestHeaders(url) {
  * @param {string} options.tagEnv        the env var that overrides `pinnedTag`
  * @param {RegExp} options.tagPattern    the tags this binary is released under
  * @param {string} options.tagPrefix     dropped from a tag to name its archives
+ * @param {string} options.provenanceWorkflow  the freedom-core workflow that
+ *   builds and attests this binary's releases; CI verifies their build
+ *   provenance against it (scripts/ci/verify-core-provenance.js)
  */
 function createReleaseFetcher({
   binary,
@@ -86,6 +89,7 @@ function createReleaseFetcher({
   tagEnv,
   tagPattern: TAG_PATTERN,
   tagPrefix,
+  provenanceWorkflow,
 }) {
   const CORE_REPO = process.env.FREEDOM_CORE_REPO || DEFAULT_REPO;
   const RELEASE_TAG = process.env[tagEnv] || PINNED_RELEASE_TAG;
@@ -259,10 +263,15 @@ function createReleaseFetcher({
     parseChecksums,
     assetFor,
     archiveVersion,
+    sha256File,
     TARGETS,
     NOTICE_FILES,
     CORE_REPO,
     PINNED_RELEASE_TAG,
+    PINNED_SHA256SUMS_DIGEST,
+    RELEASE_TAG,
+    binary,
+    provenanceWorkflow,
   };
 }
 

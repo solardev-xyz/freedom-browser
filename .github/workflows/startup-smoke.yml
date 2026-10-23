@@ -78,6 +78,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download freedom-ipfsd binaries
         # The app's IPFS runs on it (freedom-core design 0007). Same bounded
         # watchdog as the other downloads.
@@ -86,6 +93,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Download official Myotis addon
         run: npm run myotis:download

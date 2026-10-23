@@ -303,6 +303,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       # The IPFS backend contract (freedom-core design 0007, "Tests first"):
       # what `ipfsBackend()` and the `ipfs:` handler must do, against this
       # runner's add-on and a loopback fixture (no public network). The
@@ -369,6 +376,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: IPFS backend contract suite (freedom-ipfsd)
         run: npx jest src/main/ipfs/ipfs-backend.contract.test.js
@@ -509,6 +523,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Smoke test freedom-ipfsd
         run: npm run ipfs:native:smoke
         env:
@@ -626,6 +647,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Measure freedom-ipfsd against the add-on
         run: npx jest src/main/ipfs/ipfs-backend.cost.test.js
@@ -867,6 +895,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download freedom-cored binaries
         # The identity core owns the vault (migration step 2), so every app
         # launch needs it. Same bounded watchdog as the other downloads.
@@ -875,6 +910,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run Freedom Myotis resolver E2E
         shell: bash
@@ -1030,6 +1072,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run settings + internal-page E2E
         run: >-
           xvfb-run -a npm run test:e2e --
@@ -1096,6 +1145,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run zoom + shortcuts E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
@@ -1246,6 +1302,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
@@ -1339,6 +1402,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run address-bar + ENSv2 + name-interstitial E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
@@ -1416,6 +1486,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run wallet approval E2E
         run: |
@@ -1528,6 +1605,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run Safe E2E
         env:
           FREEDOM_SAFE_E2E_REQUIRED: '1'
@@ -1592,6 +1676,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |
@@ -1678,6 +1769,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download freedom-ipfsd binaries
         # The app's IPFS runs on it, though this spec starts no IPFS, and
         # release packaging requires it: this is the pull-request run of its
@@ -1688,6 +1786,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -1776,6 +1881,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download freedom-cored binaries
         # The identity core owns the vault (migration step 2), so every app
         # launch needs it. Same bounded watchdog as the other downloads.
@@ -1784,6 +1896,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run the IPFS clean-quit E2E on freedom-ipfsd (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
@@ -1859,6 +1978,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download freedom-ipfsd binaries
         # The app's IPFS runs on it (freedom-core design 0007). Same bounded
         # watchdog as the other downloads.
@@ -1867,6 +1993,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-ipfsd's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run Ant live download E2E (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/eth-sites.spec.js
@@ -1923,6 +2056,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run ad blocking E2E (headless)
         run: >-
@@ -1991,6 +2131,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run Chrome Web Store live E2E (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/chrome-webstore.spec.js
 
@@ -2047,6 +2194,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run address-bar clipboard E2E
         shell: bash
@@ -2131,6 +2285,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
         run: |
@@ -2195,6 +2356,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Run profile lifecycle E2E
         shell: bash
@@ -2311,6 +2479,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run theme parity E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/theme-parity.spec.js
 
@@ -2369,6 +2544,13 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Compare renderer screenshots
         run: xvfb-run -a npm run test:e2e:screenshots

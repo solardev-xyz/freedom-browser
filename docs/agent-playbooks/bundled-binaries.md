@@ -330,6 +330,19 @@ All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
 
+**freedom-cored and freedom-ipfsd** (solardev-xyz/freedom-core's releases,
+`scripts/fetch-freedom-cored.js` and `scripts/fetch-freedom-ipfsd.js`) pin the
+release's `SHA256SUMS` digest as Ant does, and CI also verifies their build
+provenance. After every step that downloads one, a step runs
+`scripts/ci/verify-core-provenance.js`, which checks with
+`gh attestation verify` that `SHA256SUMS` and every archive were built by
+freedom-core's release workflow for that binary (`provenanceWorkflow` in the
+fetch script) at exactly the pinned tag, on a GitHub-hosted runner. A failure
+fails the job, and `scripts/ci/core-provenance-steps.test.js` fails if a
+download step goes without it. So a bump must name a release with build
+provenance: `cored-v0.6.0` and later, and every `ipfsd-v*`. Locally the
+SHA-256 pins stay the check; the download scripts take no Sigstore dependency.
+
 ## See also
 
 - [`release-process.md`](release-process.md) § "Bundled binaries" — the
