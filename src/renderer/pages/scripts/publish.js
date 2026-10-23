@@ -36,6 +36,19 @@ const historyClearBtn = document.getElementById('publish-history-clear');
 
 let progressPollTimeout = null;
 let lastResult = null;
+let textPublishInFlight = false;
+
+// Cmd+Enter on macOS, Ctrl+Enter elsewhere, publishes the text area like the
+// Publish button (#720). Plain Enter, and Enter with any other modifier, still
+// edits the text.
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent || '');
+const PUBLISH_SHORTCUT_LABEL = IS_MAC ? '\u2318\u21a9' : 'Ctrl+Enter';
+
+function isPublishShortcut(event) {
+  if (event.key !== 'Enter' || event.isComposing) return false;
+  if (event.altKey || event.shiftKey) return false;
+  return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+}
 
 // ============================================
 // Init
@@ -52,6 +65,12 @@ function init() {
   publishFolderBtn?.addEventListener('click', handlePublishFolder);
   publishTextBtn?.addEventListener('click', showTextInput);
   textSubmitBtn?.addEventListener('click', handlePublishText);
+  if (textSubmitBtn) textSubmitBtn.title = `Publish (${PUBLISH_SHORTCUT_LABEL})`;
+  textArea?.addEventListener('keydown', (event) => {
+    if (!isPublishShortcut(event)) return;
+    event.preventDefault();
+    handlePublishText();
+  });
   textCancelBtn?.addEventListener('click', resetToActions);
   publishAnotherBtn?.addEventListener('click', resetToActions);
   errorRetryBtn?.addEventListener('click', resetToActions);
@@ -207,8 +226,9 @@ async function handlePublishFolder() {
 
 async function handlePublishText() {
   const text = textArea?.value;
-  if (!text) return;
+  if (!text || textPublishInFlight) return;
 
+  textPublishInFlight = true;
   try {
     if (!(await ensurePublishReady())) return;
 
@@ -225,6 +245,8 @@ async function handlePublishText() {
     showResult(result);
   } catch (err) {
     showError(err.message || 'Publish failed.');
+  } finally {
+    textPublishInFlight = false;
   }
 }
 

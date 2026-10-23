@@ -92,6 +92,8 @@ Under **Settings → Networks → Name Resolution**, enable and order the availa
 
 Freedom continues through the ordered methods when an earlier source is unavailable or cannot verify a request. An unverified answer can be held provisionally while later methods try to produce a verified result.
 
+**Settings → Networks → Name Resolution → Gateway links → Always open without gateway** (off by default) opens pages on `eth.limo`, `eth.link` and `bzz.link` at their native `ipfs://` / `ipns://` / `bzz://` address when the name has that content, instead of offering it in the address bar.
+
 Manage per-chain public and custom endpoints under **Settings → Networks → Chains**. API keys for supported commercial providers live under **Settings → Networks → RPC Providers** and remain profile-local. For development, `ETH_RPC` prepends an endpoint to the effective Ethereum mainnet pool:
 
 ```bash

@@ -15,6 +15,7 @@
 @import './styles/sidebar.css';
 @import './styles/link-status.css';
 @import './styles/permissions.css';
+@import './styles/gateway-offer.css';
 @import './styles/find-bar.css';
 @import './styles/onboarding.css';
 @import './styles/fullscreen.css';

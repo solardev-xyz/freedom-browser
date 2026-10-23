@@ -8,7 +8,7 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
+import { getActiveWebview, getActiveDisplayUrl, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
 import { showDappPermissions } from './permission-manage.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
@@ -341,16 +341,19 @@ function rejectDappConnect() {
 }
 
 /**
- * Update the connection banner for the current tab
+ * Update the connection banner for the current tab *
+ * The banner always describes the visible tab's committed page, never the
+ * address bar (a draft) and never a site named by the caller that is not
+ * on screen: a caller's `permissionKey` names the site whose state just
+ * changed — a grant made for a background tab's request, say (#764) — and
+ * is only a refresh hint, ignored unless it is the visible tab's own key.
  */
 export async function updateConnectionBanner(permissionKey = null) {
   if (!dappConnectionBanner) return;
 
-  if (!permissionKey) {
-    const addressInput = document.getElementById('address-input');
-    const displayUrl = addressInput?.value || '';
-    permissionKey = getPermissionKey(displayUrl);
-  }
+  const activeKey = getPermissionKey(getActiveDisplayUrl());
+  if (permissionKey && permissionKey !== activeKey) return;
+  permissionKey = activeKey;
 
   if (!permissionKey) {
     dappConnectionBanner.classList.add('hidden');
@@ -399,11 +402,19 @@ export async function disconnectDapp(permissionKey = null) {
     await window.dappPermissions.revokePermission(key);
     console.log('[WalletUI] Disconnected dApp:', key);
 
-    dappConnectionBanner?.classList.add('hidden');
-    currentBannerPermissionKey = null;
+    // The banner shows the visible tab's site; a key from the permissions
+    // list can name a site in another tab, whose revocation must leave the
+    // visible site's banner alone.
+    if (key === currentBannerPermissionKey) {
+      dappConnectionBanner?.classList.add('hidden');
+      currentBannerPermissionKey = null;
+    }
 
+    // Only the visible page can be told — and only when it is the site
+    // that was disconnected (a key from the permissions list can name a
+    // site in another tab).
     const webview = getActiveWebview();
-    if (webview) {
+    if (webview && getPermissionKey(getActiveDisplayUrl()) === key) {
       emitAccountsChanged(webview, []);
     }
   } catch (err) {

@@ -1,0 +1,3 @@
+- Wallet transactions on Ethereum no longer stall at the bare base fee and get dropped ([#749](https://github.com/solardev-xyz/freedom-browser/issues/749))
+  - Fees now leave room for a rising base fee and include a real tip
+  - A dropped transaction shows as dropped once its nonce is used, not pending forever

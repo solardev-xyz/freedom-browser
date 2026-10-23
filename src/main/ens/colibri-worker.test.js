@@ -120,6 +120,33 @@ describe('colibri worker service', () => {
     });
   });
 
+  test('marks a request the retired WASM instance refused as retryable, and only that', async () => {
+    const { service, instances, posted } = setup();
+    const ask = (id) => service.handle({
+      type: 'request', id, clientId: 1, config: CONFIG, method: 'eth_blockNumber', params: [],
+    });
+    await ask(1);
+    // As upstream wraps it: the refusal from colibri-runtime.js's guard.
+    instances[0].request.mockRejectedValueOnce(Object.assign(new Error(
+      'Error in rpc call eth_blockNumber[] : ' +
+      'Colibri WASM runtime was retired after a trap; refusing execute()'
+    ), { name: 'ProviderRpcError', code: -32603 }));
+    await ask(2);
+    instances[0].request.mockRejectedValueOnce(Object.assign(
+      new Error('Error in rpc call eth_getTransactionReceipt[] : memory access out of bounds'),
+      { name: 'ProviderRpcError', code: -32603 }
+    ));
+    await ask(3);
+    expect(posted[1]).toMatchObject({ id: 2, ok: false, retry: true });
+    expect(posted[2]).toEqual({
+      type: 'result', id: 3, ok: false,
+      error: {
+        name: 'ProviderRpcError', code: -32603,
+        message: 'Error in rpc call eth_getTransactionReceipt[] : memory access out of bounds',
+      },
+    });
+  });
+
   test('answers a liveness ping', async () => {
     const { service, posted } = setup();
     await service.handle({ type: 'ping', id: 11 });

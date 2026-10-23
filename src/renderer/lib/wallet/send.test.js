@@ -100,7 +100,40 @@ describe('send wallet review', () => {
     await expect(lookupPrimaryNameForAddress(ADDRESS)).resolves.toEqual({
       warning: 'unverified',
       claimedName: 'spoof.gwei',
+      cause: null,
     });
+  });
+
+  test('carries an unnormalized primary name cause through to the review', async () => {
+    installDocument();
+    global.window = {
+      location: { href: 'file:///app/index.html' },
+      internalPages: { routable: {} },
+      electronAPI: {
+        resolveEnsReverse: jest.fn().mockResolvedValue({
+          success: false,
+          reason: 'UNVERIFIED',
+          claimedName: 'vitaIik.eth',
+          unverifiedCause: 'unnormalized',
+        }),
+      },
+    };
+    const { lookupPrimaryNameForAddress, renderRecipientReview } = await loadSendTestApi();
+
+    const resolution = await lookupPrimaryNameForAddress(ADDRESS);
+    expect(resolution).toEqual({
+      warning: 'unverified',
+      claimedName: 'vitaIik.eth',
+      cause: 'unnormalized',
+    });
+
+    const container = new FakeElement('div');
+    renderRecipientReview(container, ADDRESS, resolution);
+    expect(container.textContent).not.toContain('vitaIik.eth');
+    const warning = container.children.find((child) => child.className === 'send-review-warning');
+    expect(warning.title).toContain('vitaIik.eth');
+    expect(warning.title).toContain("isn't a normalized ENS name");
+    expect(warning.title).not.toContain('forward-resolve');
   });
 
   test('hides unverified reverse claimed names behind the warning glyph', async () => {
@@ -125,6 +158,7 @@ describe('send wallet review', () => {
     expect(warning).toBeTruthy();
     expect(warning.title).toContain('spoof.gwei');
     expect(warning.getAttribute('aria-label')).toContain('spoof.gwei');
+    expect(warning.title).toContain("doesn't forward-resolve back");
   });
 });
 
