@@ -46,31 +46,58 @@ function refreshAfterRpcManagerMutation(result) {
 }
 
 /**
- * A user's RPC source must serve the chains it is saved for (freedom-core
- * design 0005, "Endpoints serve their chain"): each of its endpoints is
- * asked `eth_chainId` before the save. One that answers another chain
- * refuses the save; one whose check merely fails (down, a timeout) doesn't,
- * and stays out of the configuration until a retry succeeds. Null when the
- * source may be saved, else the error to show.
+ * An RPC endpoint the user typed must serve the chain it is saved for
+ * (freedom-core design 0005, "Endpoints serve their chain"): each is asked
+ * `eth_chainId` before the save. One that answers another chain refuses
+ * the save; one whose check merely fails (down, a timeout) doesn't, and
+ * stays out of the configuration until a retry succeeds. Null when they
+ * may be saved, else the error to show.
+ *
+ * @param {Array<[number, string]>} pairs - (chain ID, URL)
+ * @param {(chainId: number) => string|undefined} [nameOf]
  */
-async function servesItsChains(source) {
-  if (source?.role !== 'rpc' || !source.coverage || typeof source.coverage !== 'object') {
-    return null;
-  }
+async function servesTheirChains(pairs, nameOf = (chainId) => registry.getNetwork(chainId)?.name) {
   const { checkEndpointChain } = require('../core/chain');
-  const checks = Object.entries(source.coverage)
-    .filter(([cid, url]) => /^[0-9]+$/.test(cid) && registry.validateRpcUrl(url) === null)
-    .map(async ([cid, url]) => {
-      const chainId = Number(cid);
+  const checks = pairs
+    .filter(([, url]) => registry.validateRpcUrl(url) === null)
+    .map(async ([chainId, url]) => {
       const served = await checkEndpointChain(chainId, url);
       return served === null || served === chainId ? null : { chainId, served };
     });
   const mismatch = (await Promise.all(checks)).find(Boolean);
   if (!mismatch) return null;
-  const name = registry.getNetwork(mismatch.chainId)?.name || `chain ${mismatch.chainId}`;
+  const name = nameOf(mismatch.chainId) || `chain ${mismatch.chainId}`;
   return (
     `This endpoint serves another chain (chain ID ${mismatch.served}), not ${name}. ` +
     'Check the URL.'
+  );
+}
+
+/** A hand-added RPC source's endpoints, checked as servesTheirChains. */
+function servesItsChains(source) {
+  if (source?.role !== 'rpc' || !source.coverage || typeof source.coverage !== 'object') {
+    return null;
+  }
+  return servesTheirChains(
+    Object.entries(source.coverage)
+      .filter(([cid]) => /^[0-9]+$/.test(cid))
+      .map(([cid, url]) => [Number(cid), url])
+  );
+}
+
+/**
+ * A chain added by hand (`options.entered`: its RPC URLs typed in the
+ * manual form), checked as servesTheirChains. A chain picked from the
+ * catalog keeps a catalog's handling: an endpoint of it that answers
+ * another chain is left out, not refused.
+ */
+function addedServesItsChain(chain, rpcUrls, options) {
+  const chainId = Number(chain?.chainId);
+  if (options?.entered !== true || !Number.isSafeInteger(chainId) || chainId <= 0) return null;
+  if (!Array.isArray(rpcUrls)) return null;
+  return servesTheirChains(
+    rpcUrls.filter((url) => typeof url === 'string').map((url) => [chainId, url.trim()]),
+    () => (typeof chain.name === 'string' && chain.name.trim()) || undefined
   );
 }
 
@@ -199,7 +226,9 @@ function registerNetworkConfigIpc() {
     return { success: true, available: registry.isChainAvailable(chainId) };
   });
 
-  ipcMain.handle('networks:add-chain', (_event, chain, rpcUrls) => {
+  ipcMain.handle('networks:add-chain', async (_event, chain, rpcUrls, options) => {
+    const error = await addedServesItsChain(chain, rpcUrls, options);
+    if (error) return { success: false, error };
     const normalizedChain = normalizeChainForStorage(chain);
     const result = registry.addCustomChain(normalizedChain, rpcUrls || []);
     if (result.success) {

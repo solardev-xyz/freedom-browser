@@ -129,3 +129,14 @@ test("a source being saved is asked its chain through the configuration's checks
   await expect(checkEndpointChain(100, 'https://mine.example')).resolves.toBeNull();
   expect(netGatewayFetch).toHaveBeenCalled();
 });
+
+// #791 review, finding 2: the core stopped for good takes its endpoint
+// checks with it.
+test('detached, the configuration stops its endpoint checks', async () => {
+  const { attachment } = attached();
+  const dispose = jest.spyOn(attachment.config, 'dispose');
+  const reset = jest.spyOn(attachment.config.checks, 'reset');
+  detachChain();
+  expect(dispose).toHaveBeenCalledTimes(1);
+  expect(reset).toHaveBeenCalled();
+});

@@ -51,6 +51,8 @@ function attachChain(client, { running } = {}) {
 /** The core has stopped for good: calls fail from now on, as the driver's
  * do when no core process serves them. */
 function detachChain() {
+  // Its endpoint checks stop with it.
+  config?.dispose();
   driver = null;
   config = null;
 }

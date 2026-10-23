@@ -11,7 +11,8 @@
  * - **Freshness:** an answer holds for one (chain, URL) for the core
  *   process's life. A reconfiguration that keeps the URL doesn't ask again;
  *   adding or editing a source does (`check`), and so does a new core
- *   process (`reset`).
+ *   process (`reset`). When the process ends, nothing more is asked until
+ *   another starts (`reset` again).
  * - **An hourly re-check** asks every (chain, URL) again. An answer that
  *   hasn't changed does nothing; a changed one is reported (`onChange`), and
  *   the configuration joins it at most once a minute (chain-config.js).
@@ -36,9 +37,29 @@ const RECHECK_MS = 60 * 60_000;
 /** The largest answer to `eth_chainId` main reads: a JSON-RPC envelope
  * around a short hex quantity, with room to spare. */
 const ANSWER_BYTES = 64 * 1024;
-const QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/i;
+// A JSON-RPC quantity, strictly (EIP-1474): `0x`, then no leading zero.
+const QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/;
+const ASK_ID = 1;
 
-const ASK_BODY = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] });
+const ASK_BODY = JSON.stringify({ jsonrpc: '2.0', id: ASK_ID, method: 'eth_chainId', params: [] });
+
+/** The chain ID in a reply to ASK_BODY, or null: a JSON-RPC 2.0 success
+ * for its id, with a result and no error, the result a strict quantity. */
+function chainIdOf(text) {
+  let reply;
+  try {
+    reply = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!reply || typeof reply !== 'object' || Array.isArray(reply)) return null;
+  if (reply.jsonrpc !== '2.0' || reply.id !== ASK_ID) return null;
+  if (!Object.hasOwn(reply, 'result') || Object.hasOwn(reply, 'error')) return null;
+  const { result } = reply;
+  if (typeof result !== 'string' || !QUANTITY.test(result)) return null;
+  const chainId = Number(BigInt(result));
+  return Number.isSafeInteger(chainId) ? chainId : null;
+}
 
 /**
  * The transport `shell.rpc` uses (naming-shell.js): one plain exchange,
@@ -66,10 +87,7 @@ async function askChainId(url, { hop, lookup, timeoutMs = CHECK_TIMEOUT_MS } = {
       })
     );
     if (!isOk(response.status)) return null;
-    const result = JSON.parse(response.body.toString('utf8'))?.result;
-    if (typeof result !== 'string' || !QUANTITY.test(result)) return null;
-    const chainId = Number(BigInt(result));
-    return Number.isSafeInteger(chainId) ? chainId : null;
+    return chainIdOf(response.body.toString('utf8'));
   } catch {
     return null;
   }
@@ -102,8 +120,9 @@ class EndpointChecks {
     this.onChange = onChange;
     this.log = log || console;
     this.entries = new Map();
-    // Answers of checks made for pairs not configured yet (a source being
-    // saved), taken by the next sync instead of asking again.
+    // Checks made for pairs not configured yet (a source being saved):
+    // `{ answer, at }`, taken by the next sync instead of asking again. A
+    // failed one is retried as any failed check is, from its own time.
     this.fresh = new Map();
     this.recheckTimer = null;
     this.epoch = 0;
@@ -136,9 +155,12 @@ class EndpointChecks {
       if (this.entries.has(key)) continue;
       const entry = { chainId, url, answer: null, failures: 0, retry: null, asking: null };
       this.entries.set(key, entry);
-      // Just asked as its source was saved: that answer stands.
-      if (this.fresh.has(key)) entry.answer = this.fresh.get(key);
-      else this.run(entry);
+      // Just asked as its source was saved: that check stands, an answer
+      // as it is, a failure with its first retry still to come.
+      const seeded = this.fresh.get(key);
+      if (!seeded) this.run(entry);
+      else if (seeded.answer !== null) entry.answer = seeded.answer;
+      else this.failed(entry, Math.max(0, seeded.at + RETRY_FIRST_MS - Date.now()));
     }
     this.fresh.clear();
     if (this.entries.size > 0 && !this.recheckTimer) {
@@ -167,26 +189,25 @@ class EndpointChecks {
 
   /**
    * Asks `url` for chain `chainId` now (a source added or edited), and
-   * keeps the answer if the pair is configured. Resolves the chain ID it
-   * answered, or null when the check failed.
+   * keeps the result if the pair is configured. Resolves what this check
+   * found: the chain ID it answered, or null when it failed, whatever an
+   * earlier check answered.
    */
   async check(chainId, url) {
     const key = keyOf(chainId, url);
     const entry = this.entries.get(key);
-    if (entry) {
-      // Asked afresh, unless a check is already under way.
-      await this.run(entry);
-      return entry.answer;
-    }
+    // Asked afresh, unless a check is already under way.
+    if (entry) return this.run(entry);
     const epoch = this.epoch;
     const answer = await Promise.resolve()
       .then(() => this.ask(url))
       .catch(() => null);
-    if (answer !== null && epoch === this.epoch) this.fresh.set(key, answer);
+    if (epoch === this.epoch) this.fresh.set(key, { answer, at: Date.now() });
     return answer;
   }
 
-  /** A new core process: no answer carries over, and nothing runs. */
+  /** A new core process, or the end of one: no answer carries over, and
+   * nothing runs. */
   reset() {
     for (const [key, entry] of this.entries) this.forget(key, entry);
     this.fresh.clear();
@@ -217,7 +238,8 @@ class EndpointChecks {
     this.entries.delete(key);
   }
 
-  /** One check of `entry`, at most one at a time. */
+  /** One check of `entry`, at most one at a time. Resolves what it found:
+   * the chain ID answered, or null. */
   run(entry) {
     if (entry.asking) return entry.asking;
     clearTimeout(entry.retry);
@@ -228,19 +250,25 @@ class EndpointChecks {
       .catch(() => null)
       .then((answer) => {
         entry.asking = null;
-        if (entry.forgotten || epoch !== this.epoch) return;
-        this.settle(entry, answer);
+        if (!entry.forgotten && epoch === this.epoch) this.settle(entry, answer);
+        return answer;
       });
     return entry.asking;
+  }
+
+  /** A failed check of `entry`: asked again after `delay`, by default its
+   * backoff's (30 s doubling to 10 min). */
+  failed(entry, delay) {
+    entry.failures += 1;
+    const backoff = Math.min(RETRY_FIRST_MS * 2 ** (entry.failures - 1), RETRY_MAX_MS);
+    entry.retry = setTimeout(() => this.run(entry), delay ?? backoff);
+    entry.retry.unref?.();
   }
 
   settle(entry, answer) {
     if (answer === null) {
       // No answer: whatever it last answered stands, and it is asked again.
-      entry.failures += 1;
-      const delay = Math.min(RETRY_FIRST_MS * 2 ** (entry.failures - 1), RETRY_MAX_MS);
-      entry.retry = setTimeout(() => this.run(entry), delay);
-      entry.retry.unref?.();
+      this.failed(entry);
       return;
     }
     entry.failures = 0;

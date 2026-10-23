@@ -230,11 +230,12 @@ class ChainConfig {
     if (this.checks) this.checks.onChange = () => this.joinChecks();
     this.lastConfigured = -Infinity; // when the last snapshot was sent
     this.joinTimer = null;
+    // Which endpoints the checks let in changed since the last snapshot.
+    this.checksChanged = false;
     client.on('ready', () => this.attach());
     client.on('exit', () => {
       this.core = null;
-      clearTimeout(this.joinTimer);
-      this.joinTimer = null;
+      this.stopChecks();
     });
     // Built after the handshake: initialize now.
     if (client.hello) this.attach();
@@ -249,18 +250,46 @@ class ChainConfig {
 
   /**
    * Which endpoints answered their chain changed: the configuration takes
-   * it, at most once every CHECKED_CONFIGURE_MS after the last snapshot.
+   * it, CHECKED_CONFIGURE_MS after the last snapshot at the earliest. A
+   * snapshot sent meanwhile (a registry change) takes what changed before
+   * it, and moves the join to a minute after itself, for what changes
+   * after it; with nothing changed since, there is no join.
    */
   joinChecks() {
+    this.checksChanged = true;
     // Before a process's first snapshot is built, it takes every answer so
     // far itself.
     if (!this.core?.snapshotted || this.joinTimer) return;
+    this.armJoin();
+  }
+
+  armJoin() {
     const delay = Math.max(0, this.lastConfigured + CHECKED_CONFIGURE_MS - Date.now());
     this.joinTimer = setTimeout(() => {
       this.joinTimer = null;
+      if (!this.checksChanged || !this.core) return;
+      if (Date.now() < this.lastConfigured + CHECKED_CONFIGURE_MS) {
+        this.armJoin();
+        return;
+      }
       this.configure().catch(() => {});
     }, delay);
     this.joinTimer.unref?.();
+  }
+
+  /** No core process: no join is due, and the checks stop (a new process
+   * starts them afresh). */
+  stopChecks() {
+    clearTimeout(this.joinTimer);
+    this.joinTimer = null;
+    this.checksChanged = false;
+    this.checks?.reset();
+  }
+
+  /** The core has stopped for good (chain.js's detachChain). */
+  dispose() {
+    this.core = null;
+    this.stopChecks();
   }
 
   /**
@@ -462,6 +491,7 @@ class ChainConfig {
         checks ? { allows: (chainId, url) => checks.allows(chainId, url) } : {}
       );
       this.lastConfigured = Date.now();
+      this.checksChanged = false;
       core.snapshotted = true;
       result = await this.sendControl(core, 'chain.configure', params);
     } catch (err) {

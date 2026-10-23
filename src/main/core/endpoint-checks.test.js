@@ -54,6 +54,44 @@ describe('askChainId, over the executors’ transport', () => {
     await expect(askChainId('https://rpc.example', { hop: hop(response) })).resolves.toBeNull();
   });
 
+  // #791 review, finding 5: a JSON-RPC 2.0 success for its own id, and a
+  // strict quantity (EIP-1474), or the check failed.
+  const envelope = (fields) => reply(200, JSON.stringify({ jsonrpc: '2.0', id: 1, ...fields }));
+  test.each([
+    ['an uppercase 0X prefix', envelope({ result: '0X1' })],
+    ['a leading zero', envelope({ result: '0x01' })],
+    ['no digits', envelope({ result: '0x' })],
+    ['a negative', envelope({ result: '-0x1' })],
+    ['a decimal string', envelope({ result: '1' })],
+    ['a trailing newline', envelope({ result: '0x1\n' })],
+    ['a number', envelope({ result: 1 })],
+    ['a null result', envelope({ result: null })],
+    ['an unsafe chain ID', envelope({ result: '0x20000000000000' })],
+    ['a result with an error', envelope({ result: '0x1', error: { code: -32603 } })],
+    ['a reply for another id', envelope({ id: 2, result: '0x1' })],
+    ['no id', reply(200, JSON.stringify({ jsonrpc: '2.0', result: '0x1' }))],
+    [
+      'another JSON-RPC version',
+      reply(200, JSON.stringify({ jsonrpc: '1.0', id: 1, result: '0x1' })),
+    ],
+    ['no version', reply(200, JSON.stringify({ id: 1, result: '0x1' }))],
+    ['a batch', reply(200, JSON.stringify([{ jsonrpc: '2.0', id: 1, result: '0x1' }]))],
+  ])('%s is a failed check', async (_name, response) => {
+    await expect(askChainId('https://rpc.example', { hop: hop(response) })).resolves.toBeNull();
+  });
+
+  test('a strict success is an answer: 0x0, and lowercase hex digits', async () => {
+    for (const [result, chainId] of [
+      ['0x0', 0],
+      ['0x64', 100],
+      ['0xaa36a7', 11155111],
+    ]) {
+      await expect(
+        askChainId('https://rpc.example', { hop: hop(envelope({ result })) })
+      ).resolves.toBe(chainId);
+    }
+  });
+
   test('a URL main would never dial is a failed check, and nothing is sent', async () => {
     const h = hop(reply(200, '{}'));
     await expect(askChainId('http://10.0.0.1:8545', { hop: h })).resolves.toBeNull();
@@ -198,6 +236,74 @@ describe('EndpointChecks', () => {
     await expect(checks.check(ETH, 'https://new.example')).resolves.toBe(ETH);
     expect(ask).toHaveBeenCalledTimes(2);
     checks.reset();
+  });
+
+  // #791 review, finding 3: what a save-time check found is the current
+  // attempt's result, not an earlier answer.
+  test('a save-time check that fails says so, whatever the pair answered before; the earlier answer still stands for the snapshot', async () => {
+    const answers = { 'https://old.example': GNO };
+    const ask = scriptedAsk(answers);
+    const checks = new EndpointChecks({ ask, log: { warn: jest.fn() } });
+    checks.sync([{ chainId: ETH, url: 'https://old.example' }]);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(checks.answer(ETH, 'https://old.example')).toBe(GNO);
+
+    answers['https://old.example'] = null;
+    await expect(checks.check(ETH, 'https://old.example')).resolves.toBeNull();
+    // Still out, and retried as a failed check is.
+    expect(checks.answer(ETH, 'https://old.example')).toBe(GNO);
+    expect(checks.allows(ETH, 'https://old.example')).toBe(false);
+    answers['https://old.example'] = ETH;
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS);
+    expect(checks.allows(ETH, 'https://old.example')).toBe(true);
+    // And one that answers says what it answered now.
+    answers['https://old.example'] = GNO;
+    await expect(checks.check(ETH, 'https://old.example')).resolves.toBe(GNO);
+    checks.reset();
+  });
+
+  // #791 review, finding 4: a save-time check that failed is retried at its
+  // own first backoff once the pair is configured, not asked again at once.
+  test('a source saved after a failed check is asked again at the first backoff from that check', async () => {
+    const answers = { 'https://new.example': null };
+    const ask = scriptedAsk(answers);
+    const checks = new EndpointChecks({ ask });
+    await expect(checks.check(ETH, 'https://new.example')).resolves.toBeNull();
+    await jest.advanceTimersByTimeAsync(10_000);
+    checks.sync([{ chainId: ETH, url: 'https://new.example' }]);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(checks.allows(ETH, 'https://new.example')).toBe(false);
+
+    answers['https://new.example'] = ETH;
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS - 10_000 - 1);
+    expect(ask).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(checks.allows(ETH, 'https://new.example')).toBe(true);
+
+    // A second failure backs off from there: 60 s.
+    const again = scriptedAsk({ 'https://other.example': null });
+    const other = new EndpointChecks({ ask: again });
+    await other.check(ETH, 'https://other.example');
+    other.sync([{ chainId: ETH, url: 'https://other.example' }]);
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS);
+    expect(again).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(2 * RETRY_FIRST_MS - 1);
+    expect(again).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(again).toHaveBeenCalledTimes(3);
+    checks.reset();
+    other.reset();
+  });
+
+  test('removing every pair clears their retries and the hourly re-check', async () => {
+    const checks = new EndpointChecks({ ask: scriptedAsk({}) });
+    checks.sync([{ chainId: ETH, url: 'https://a.example' }]);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    checks.sync([]);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   test('settled() waits for the first answers, up to its bound', async () => {
@@ -395,6 +501,128 @@ describe('ChainConfig lists only endpoints that answered their chain', () => {
     expect(ask).toHaveBeenCalledTimes(6);
     await jest.advanceTimersByTimeAsync(0);
     expect(client.snapshots).toHaveLength(2);
+    expect(listed(config, client)).toEqual({ [ETH]: ['https://a.eth.example'], [GNO]: [] });
+    checks.reset();
+  });
+
+  // #791 review, finding 1.
+  test('a snapshot sent meanwhile moves a pending join to a minute after itself, and takes what it saw', async () => {
+    const endpoints = { [ETH]: ['https://a.eth.example', 'https://b.eth.example'], [GNO]: [] };
+    const answers = {
+      'https://a.eth.example': ETH,
+      'https://b.eth.example': null,
+      'https://c.eth.example': () => new Promise((resolve) => (answers.c = resolve)),
+    };
+    const { client, config, checks } = setup(answers, endpoints);
+    const t0 = Date.now();
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(client.snapshots).toHaveLength(1);
+
+    // B answers at its 30 s retry: a join is due at 60 s.
+    answers['https://b.eth.example'] = ETH;
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS);
+    // At 50 s a registry change adds C, and its snapshot takes B.
+    await jest.advanceTimersByTimeAsync(20_000);
+    endpoints[ETH] = [...endpoints[ETH], 'https://c.eth.example'];
+    await config.configure();
+    expect(client.snapshots).toHaveLength(2);
+    expect(listed(config, client)).toEqual({
+      [ETH]: ['https://a.eth.example', 'https://b.eth.example'],
+      [GNO]: [],
+    });
+    // C answers after it: it joins a minute after that snapshot, at 110 s,
+    // not at the 60 s the earlier join was due.
+    answers.c(ETH);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(client.snapshots).toHaveLength(2);
+    await jest.advanceTimersByTimeAsync(CHECKED_CONFIGURE_MS - 10_000 - 1);
+    expect(client.snapshots).toHaveLength(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(client.snapshots.map((snapshot) => snapshot.at - t0)).toEqual([0, 50_000, 110_000]);
+    expect(listed(config, client)).toEqual({
+      [ETH]: ['https://a.eth.example', 'https://b.eth.example', 'https://c.eth.example'],
+      [GNO]: [],
+    });
+    checks.reset();
+  });
+
+  test('a join whose changes a snapshot already took sends nothing', async () => {
+    const endpoints = { [ETH]: ['https://a.eth.example', 'https://b.eth.example'], [GNO]: [] };
+    const answers = { 'https://a.eth.example': ETH, 'https://b.eth.example': null };
+    const { client, config, checks } = setup(answers, endpoints);
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    answers['https://b.eth.example'] = ETH;
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS);
+    await config.configure();
+    expect(client.snapshots).toHaveLength(2);
+    await jest.advanceTimersByTimeAsync(5 * CHECKED_CONFIGURE_MS);
+    expect(client.snapshots).toHaveLength(2);
+    checks.reset();
+  });
+
+  // #791 review, finding 2.
+  test('the checks stop with the core process: no retry or re-check runs until another starts', async () => {
+    const endpoints = { [ETH]: ['https://a.eth.example'], [GNO]: [] };
+    const answers = { 'https://a.eth.example': null };
+    const { ask, client, checks } = setup(answers, endpoints);
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(ask).toHaveBeenCalledTimes(1);
+    client.current.ended = true;
+    client.emit('exit', {});
+    await jest.advanceTimersByTimeAsync(RECHECK_MS * 2);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+
+    // Another process asks afresh.
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(ask).toHaveBeenCalledTimes(2);
+    checks.reset();
+  });
+
+  test('a configuration disposed of for good stops its checks and its join', async () => {
+    const endpoints = { [ETH]: ['https://a.eth.example', 'https://b.eth.example'], [GNO]: [] };
+    const answers = { 'https://a.eth.example': ETH, 'https://b.eth.example': null };
+    const { ask, client, config } = setup(answers, endpoints);
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    answers['https://b.eth.example'] = ETH;
+    await jest.advanceTimersByTimeAsync(RETRY_FIRST_MS);
+    // B answered: a join is pending.
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    const asked = ask.mock.calls.length;
+    config.dispose();
+    expect(jest.getTimerCount()).toBe(0);
+    await jest.advanceTimersByTimeAsync(RECHECK_MS * 2);
+    expect(ask).toHaveBeenCalledTimes(asked);
+    expect(client.snapshots).toHaveLength(1);
+  });
+
+  test("an answer from an earlier process's check never admits an endpoint in a later one", async () => {
+    const endpoints = { [ETH]: ['https://a.eth.example'], [GNO]: [] };
+    const pending = [];
+    const answers = {
+      'https://a.eth.example': () => new Promise((resolve) => pending.push(resolve)),
+    };
+    const { client, config, checks } = setup(answers, endpoints);
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    client.current.ended = true;
+    client.emit('exit', {});
+    client.start();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(2);
+    // The first process's check answers late.
+    pending[0](ETH);
+    await jest.advanceTimersByTimeAsync(STARTUP_CHECKS_MS);
+    expect(checks.allows(ETH, 'https://a.eth.example')).toBe(false);
+    expect(listed(config, client)).toEqual({ [ETH]: [], [GNO]: [] });
+    // Its own check's answer does.
+    pending[1](ETH);
+    await jest.advanceTimersByTimeAsync(CHECKED_CONFIGURE_MS);
     expect(listed(config, client)).toEqual({ [ETH]: ['https://a.eth.example'], [GNO]: [] });
     checks.reset();
   });
