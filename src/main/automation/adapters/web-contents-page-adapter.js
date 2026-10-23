@@ -24,6 +24,10 @@ const CHARACTER_KEYS = new Set(['Enter', 'Space']);
 const UPLOAD_MARKER_ATTRIBUTE = 'data-freedom-agent-upload';
 const SCROLL_SETTLE_QUIET_MS = 100;
 const SCROLL_SETTLE_LIMIT_MS = 2_500;
+// A resend is only worth sending with at least this long left to settle it.
+const SCROLL_RESEND_MIN_SETTLE_MS = 1_000;
+// Kept free of a frame action's connection budget for the checks around the wheel.
+const FRAME_SCROLL_BUDGET_MARGIN_MS = 750;
 
 // Polls the scroll position after a wheel until it has moved and then stayed
 // still for SCROLL_SETTLE_QUIET_MS, or SCROLL_SETTLE_LIMIT_MS have passed.
@@ -37,18 +41,11 @@ const SCROLL_SETTLE_LIMIT_MS = 2_500;
 // period before any movement is therefore not "settled"; only a target that
 // never moves (it blocks wheel input, or the wheel was lost) waits out the
 // limit and reports `no_movement` with `settled: false`.
-//
-// A wheel can also be lost outright: on the macOS CI runner the first wheel
-// on a freshly loaded page has failed to move it within the whole limit
-// (run 39881059597). A wheel that measured no movement at all for the full
-// limit is therefore sent once more, after its target and point are checked
-// again; by then a merely late one would have moved, so this cannot double a
-// scroll. `attempts` reports how many wheels were sent.
-async function settleScroll(readScroll, before) {
+async function settleScroll(readScroll, before, limit = SCROLL_SETTLE_LIMIT_MS) {
   const started = Date.now();
   let changedAt = null;
   let after = before;
-  while (Date.now() - started < SCROLL_SETTLE_LIMIT_MS) {
+  while (Date.now() - started < limit) {
     await new Promise((resolve) => setTimeout(resolve, 50));
     const next = await readScroll();
     if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
@@ -58,6 +55,93 @@ async function settleScroll(readScroll, before) {
     }
   }
   return { after, settled: false };
+}
+
+// Sends one wheel and settles it, and sends it once more only when the first
+// one never reached the page at all.
+//
+// A wheel can be lost outright: on the macOS CI runner the first wheel on a
+// freshly loaded hidden page has failed to move it within the whole limit
+// (run 39881059597). An unchanged scroll position alone cannot tell that
+// apart from a wheel the page received and consumed (a carousel, map or
+// slider whose own wheel handler calls preventDefault() and acts), and
+// resending in that case delivers the page action twice. So a passive,
+// capture-phase listener in the automation world counts trusted wheel events
+// reaching the target's document (`wheelProbe`), and the resend happens only
+// when that count is still zero after the full limit, after the target and
+// point are checked again. Limits: a page listener registered earlier on the
+// same window that calls stopImmediatePropagation() hides the wheel from the
+// probe (so it is treated as lost and resent once); and a wheel that is
+// neither dispatched nor applied for the whole limit, then arrives late, can
+// still land next to its resend. `attempts` reports how many wheels were
+// sent and `delivered` whether the page received one.
+//
+// `deadline` (optional, a Date.now() value) bounds the whole operation: a
+// frame action runs inside the frame observer's connection budget, which two
+// full settle limits would overrun. The resend is skipped when too little of
+// it is left, and its settle is shortened to what remains.
+async function wheelScroll({ before, point, send, readScroll, probe, recheck, deadline = Infinity }) {
+  const unchanged = (after) => after.x === before.x && after.y === before.y;
+  const remaining = () => Math.min(SCROLL_SETTLE_LIMIT_MS, deadline - Date.now());
+  const attempt = async (at) => {
+    await probe('arm');
+    await send(at);
+    return settleScroll(readScroll, before, remaining());
+  };
+  try {
+    let { after, settled } = await attempt(point);
+    let attempts = 1;
+    let delivered = !unchanged(after) || (await probe('read')).count > 0;
+    if (!delivered && remaining() >= SCROLL_RESEND_MIN_SETTLE_MS) {
+      const next = await recheck();
+      if (next && remaining() >= SCROLL_RESEND_MIN_SETTLE_MS) {
+        ({ after, settled } = await attempt(next));
+        attempts = 2;
+        delivered = !unchanged(after) || (await probe('read')).count > 0;
+      }
+    }
+    return { after, settled, attempts, delivered };
+  } finally {
+    await Promise.resolve()
+      .then(() => probe('disarm'))
+      .catch(() => {});
+  }
+}
+
+// Runs in the automation world. Counts trusted wheel events that reach the
+// scroll reference's document; passive, so it never delays or blocks a scroll.
+function wheelProbe(ref, action) {
+  const key = '__FREEDOM_AUTOMATION_WHEEL_PROBE__';
+  const current = globalThis[key];
+  if (action === 'read') {
+    return current ? { ok: true, count: current.count } : { ok: false, reason: 'changed' };
+  }
+  if (current) {
+    try {
+      current.target.removeEventListener('wheel', current.listener, true);
+    } catch {
+      /* The probed document may already be gone. */
+    }
+    delete globalThis[key];
+  }
+  if (action !== 'arm') return { ok: true };
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  const target = reference?.frameWindow;
+  if (!target) return { ok: false, reason: 'changed' };
+  const probe = {
+    target,
+    count: 0,
+    listener: (event) => {
+      if (event.isTrusted) probe.count += 1;
+    },
+  };
+  try {
+    target.addEventListener('wheel', probe.listener, { capture: true, passive: true });
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
+  globalThis[key] = probe;
+  return { ok: true };
 }
 
 function defaultReferenceIdFactory() {
@@ -1183,6 +1267,7 @@ class WebContentsPageAdapter extends EventEmitter {
             [readScrollState]
           ),
         viewport: () => buildInvocation(frameViewport, []),
+        wheelProbe: (ref, action) => buildInvocation(wheelProbe, [ref, action]),
         select: (ref, value) => buildInvocation(selectOptionByValue, [ref, value], [inspectReferencedElement]),
       },
       this.nativeDialogs
@@ -1429,26 +1514,31 @@ class WebContentsPageAdapter extends EventEmitter {
           )
         );
         const delta = (forward ? 1 : -1) * distance;
-        const wheel = async (at) => {
-          await session.mouse({
-            type: 'mouseWheel',
-            ...at,
-            deltaX: horizontal ? delta : 0,
-            deltaY: horizontal ? 0 : delta,
-          });
-          return settleScroll(async () => (await read(false)).scroll, before);
-        };
-        let { after, settled } = await wheel(root);
-        let attempts = 1;
-        if (after.x === before.x && after.y === before.y) {
-          const again = await read(true);
-          if (!again.boundary) {
+        const { after, settled, attempts, delivered } = await wheelScroll({
+          before,
+          deadline: (session.deadline ?? Infinity) - FRAME_SCROLL_BUDGET_MARGIN_MS,
+          point: root,
+          send: (at) =>
+            session.mouse({
+              type: 'mouseWheel',
+              ...at,
+              deltaX: horizontal ? delta : 0,
+              deltaY: horizontal ? 0 : delta,
+            }),
+          readScroll: async () => (await read(false)).scroll,
+          probe: async (action) => {
+            const result = await session.evaluate('wheelProbe', [action]);
+            if (action !== 'disarm') this.#assertActionResult(result);
+            return result;
+          },
+          recheck: async () => {
+            const again = await read(true);
+            if (again.boundary) return null;
             const retryPoint = await point(again.point);
             await confirm();
-            ({ after, settled } = await wheel(retryPoint));
-            attempts = 2;
-          }
-        }
+            return retryPoint;
+          },
+        });
         const moved = after.x !== before.x || after.y !== before.y;
         return {
           ref,
@@ -1459,6 +1549,7 @@ class WebContentsPageAdapter extends EventEmitter {
           after,
           settled,
           attempts,
+          delivered,
           deltaX: after.x - before.x,
           deltaY: after.y - before.y,
         };
@@ -1585,6 +1676,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#requireReference(ref, true);
     this.#requireTrustedKeyInput();
     const navigationId = this.navigationId;
+    const zoom = this.webContents.getZoomFactor?.() || 1;
     const inspect = async (requirePoint) => {
       const result = await this.#execute(
         inspectScrollReference,
@@ -1623,27 +1715,37 @@ class WebContentsPageAdapter extends EventEmitter {
       Math.floor(Math.min(remaining, pages * (horizontal ? start.width : start.height)))
     );
     const delta = (forward ? -1 : 1) * distance;
-    const wheel = (at) => {
-      this.webContents.sendInputEvent({
-        type: 'mouseWheel',
-        ...at,
-        deltaX: horizontal ? delta : 0,
-        deltaY: horizontal ? 0 : delta,
-        hasPreciseScrollingDeltas: true,
-        canScroll: true,
-      });
-      return settleScroll(async () => (await inspect(false)).scroll, start);
-    };
-    let { after, settled } = await wheel(confirmed.point);
-    let attempts = 1;
-    // A wheel lost outright; see settleScroll.
-    if (after.x === start.x && after.y === start.y) {
-      const again = await inspect(true);
-      if (!again.boundary) {
-        ({ after, settled } = await wheel(again.point));
-        attempts = 2;
-      }
-    }
+    const { after, settled, attempts, delivered } = await wheelScroll({
+      before: start,
+      point: confirmed.point,
+      send: (at) =>
+        this.webContents.sendInputEvent({
+          type: 'mouseWheel',
+          ...at,
+          deltaX: horizontal ? delta : 0,
+          deltaY: horizontal ? 0 : delta,
+          hasPreciseScrollingDeltas: true,
+          canScroll: true,
+        }),
+      readScroll: async () => (await inspect(false)).scroll,
+      probe: async (action) => {
+        const result = await this.#execute(wheelProbe, [ref, action], false);
+        if (action !== 'disarm') {
+          this.#assertActionResult(result);
+          if (navigationId !== this.navigationId) throw this.#staleReferenceError();
+        }
+        return result;
+      },
+      // Same checks as before the first wheel: the reference and document are
+      // still current, the zoom is unchanged, and a fresh point still hits it.
+      recheck: async () => {
+        this.#requireReference(ref, true);
+        const again = await inspect(true);
+        if (again.boundary) return null;
+        if ((this.webContents.getZoomFactor?.() || 1) !== zoom) throw this.#staleReferenceError();
+        return again.point;
+      },
+    });
     const moved = after.x !== start.x || after.y !== start.y;
     return {
       ref,
@@ -1652,6 +1754,7 @@ class WebContentsPageAdapter extends EventEmitter {
       outcome: moved ? 'moved' : 'no_movement',
       settled,
       attempts,
+      delivered,
       before: start,
       after,
       deltaX: after.x - start.x,
@@ -2215,5 +2318,7 @@ class WebContentsPageAdapter extends EventEmitter {
 
 module.exports = {
   AUTOMATION_WORLD_ID,
+  wheelScroll,
+  settleScroll,
   WebContentsPageAdapter,
 };

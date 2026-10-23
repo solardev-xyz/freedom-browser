@@ -403,7 +403,9 @@ for (const mode of ['desktop', 'hidden']) {
       <button>Ordinary button</button><div style="height:3500px">Long page</div>
       <script>
         document.addEventListener('wheel', event => { document.body.dataset.trusted = String(event.isTrusted) });
-        document.querySelector('#blocked').addEventListener('wheel', event => event.preventDefault(), {passive:false});
+        // A carousel-style target: its own wheel handler consumes the wheel and acts.
+        globalThis.blockedWheels = 0;
+        document.querySelector('#blocked').addEventListener('wheel', event => { event.preventDefault(); globalThis.blockedWheels += 1 }, {passive:false});
         document.querySelector('#list').addEventListener('scroll', () => {
           if (!document.querySelector('#revealed')) {
             const button = document.createElement('button'); button.id = 'revealed';
@@ -446,8 +448,15 @@ for (const mode of ['desktop', 'hidden']) {
     expect((await snapshot(electronApp, tabId)).frames[0].viewport.y).toBe(0);
     expect(await scroll(named(first, 'Wheel blocked').ref, 'down')).toMatchObject({
       ok: true,
-      result: { moved: false, outcome: 'no_movement' },
+      result: { moved: false, outcome: 'no_movement', attempts: 1, delivered: true },
     });
+    // The page received the wheel and acted on it, so it must not get a second one.
+    expect(
+      await electronApp.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find((entry) => entry.getURL() === url);
+        return guest.executeJavaScript('globalThis.blockedWheels');
+      }, FIXTURE_URL)
+    ).toBe(1);
     expect(await scroll(named(first, 'Ordinary button').ref, 'down')).toMatchObject({
       ok: false,
       error: { code: 'ELEMENT_NOT_INTERACTABLE' },

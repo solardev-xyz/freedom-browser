@@ -167,6 +167,9 @@ class OwnedFrameObserver {
           return connection.send('Input.dispatchKeyEvent', params, opened.frame.sessionId);
         },
         evaluate,
+        // Interactions that wait must finish before this or the frame
+        // operation is cut off as timed out.
+        deadline: connection.deadline,
         assertCurrent: opened.assertCurrent,
         frame: this.#publicFrame(opened.frame, reference.frameRef),
         checkedInputPoint: (point, viewport, options = {}) =>
@@ -372,6 +375,8 @@ class OwnedFrameObserver {
           sessions,
           contexts,
           truncated: false,
+          // When the connection timer below expires; set as it is armed.
+          deadline: Infinity,
           send: async (method, params, sessionId = '') => {
             if (expired || this.disposed || !attached) throw unavailable();
             return api.sendCommand(method, params, sessionId || undefined);
@@ -430,6 +435,7 @@ class OwnedFrameObserver {
           };
           api.on('message', onMessage);
           api.on('detach', onDetach);
+          connection.deadline = Date.now() + CONNECTION_TIMEOUT_MS;
           timer = setTimeout(() => {
             expired = true;
             rejectInterrupted(unavailable('Frame observation timed out'));
