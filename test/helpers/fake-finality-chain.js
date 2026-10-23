@@ -11,6 +11,12 @@
  * which view answers each read, as the winning pair of a quorum would, and
  * may wrap or reshape any answer.
  *
+ * Nodes serve state for a window of recent blocks only (geth: 128): with
+ * `stateWindow`, a nonce read at a block more than that below the view's
+ * head fails as a node's missing state does. `prove` answers as a prover
+ * would, from the canonical chain at any depth (Colibri, design 0005
+ * "State history").
+ *
  *   const chain = fakeFinalityChain({ sender, startNonce: 7,
  *     txs: { 90: [{ hash, nonce: 7, status: 1 }] } });
  *   chain.request  // (chainId, method, params, options) => reply
@@ -38,8 +44,17 @@ const quorum = (result, { m = 2, k = 3, achieved = true } = {}) => ({
  *   by height: { hash, nonce, status, from? } (from defaults to sender)
  * @param {number} [options.head]
  * @param {number|null} [options.finalized]
+ * @param {number} [options.stateWindow] - how far below its head a view
+ *   answers nonce reads
  */
-function fakeFinalityChain({ sender, startNonce = 0, txs = {}, head = 120, finalized = 100 } = {}) {
+function fakeFinalityChain({
+  sender,
+  startNonce = 0,
+  txs = {},
+  head = 120,
+  finalized = 100,
+  stateWindow = Infinity,
+} = {}) {
   const views = {};
 
   /**
@@ -74,8 +89,11 @@ function fakeFinalityChain({ sender, startNonce = 0, txs = {}, head = 120, final
       counts.set(block.hash, count);
       blocks.set(block.hash, block);
     }
+    const heights = new Map(
+      [...blocks.values()].map((block) => [block.hash, Number(block.number)])
+    );
     const byHeight = (h) => blocks.get(hashOf(h));
-    views[name] = { blocks, counts, where, byHeight, top, finalized: fin, hashOf };
+    views[name] = { blocks, counts, heights, where, byHeight, top, finalized: fin, hashOf };
     return views[name];
   }
 
@@ -89,8 +107,9 @@ function fakeFinalityChain({ sender, startNonce = 0, txs = {}, head = 120, final
       transactions: full ? block.transactions : block.transactions.map((tx) => tx.hash),
     };
 
-  // A view's answer to a read: the result, or a thrown error.
-  function answer(view, method, params) {
+  // A view's answer to a read: the result, or a thrown error. `window`: how
+  // far below the view's head it serves state.
+  function answer(view, method, params, window = stateWindow) {
     switch (method) {
       case 'eth_getBlockByNumber': {
         if (params[0] === 'finalized') {
@@ -113,9 +132,14 @@ function fakeFinalityChain({ sender, startNonce = 0, txs = {}, head = 120, final
         if (typeof at?.blockHash !== 'string') {
           throw new Error(`unscripted block parameter ${JSON.stringify(at)}`);
         }
-        if (!view.counts.has(at.blockHash.toLowerCase()))
-          throw new Error('header for hash not found');
-        return hex(view.counts.get(at.blockHash.toLowerCase()));
+        const blockHash = at.blockHash.toLowerCase();
+        if (!view.counts.has(blockHash)) throw new Error('header for hash not found');
+        if (view.top - view.heights.get(blockHash) > window) {
+          throw new Error(
+            `missing trie node ${blockHash.slice(2, 18)} (path ) state is not available`
+          );
+        }
+        return hex(view.counts.get(blockHash));
       }
       case 'eth_getTransactionReceipt': {
         const found = view.where.get(String(params[0]).toLowerCase());
@@ -168,6 +192,16 @@ function fakeFinalityChain({ sender, startNonce = 0, txs = {}, head = 120, final
     /** Change a read's answer before it is wrapped. */
     reshape(route, fn) {
       reshapes[route] = fn;
+    },
+    /**
+     * A prover's answer to a read: the canonical chain's, at any depth,
+     * reshaped as for `request` but not wrapped.
+     */
+    prove(method, params) {
+      const route = routeOf(method, params);
+      let result = answer(views.canonical, method, params, Infinity);
+      if (reshapes[route]) result = reshapes[route](result, params);
+      return result;
     },
     /** The reads made, as [method, params]. */
     reads: () => request.mock.calls.map(([, method, params]) => [method, params]),

@@ -71,6 +71,7 @@ async function load(intents) {
       intentResend: jest.fn(),
       intentReplacementFees: jest.fn(),
       intentReplace: jest.fn(),
+      intentClose: jest.fn(),
       onIntentsChanged: jest.fn((listener) => {
         listeners.intentsChanged = listener;
       }),
@@ -601,4 +602,156 @@ test('a payment too old to verify on chain says so', async () => {
   ]);
   await mod.openHeldPayments();
   expect(markup(elements)).toContain('Too old to check on chain');
+});
+
+// freedom-core design 0005, "State history" (#94).
+describe("payments waiting: Couldn't confirm", () => {
+  const HASH_A = `0x${'a1'.repeat(32)}`;
+  const HASH_B = `0x${'b2'.repeat(32)}`;
+  const unconfirmed = (closable, overrides = {}) =>
+    held({
+      attention: 'uncertain',
+      lastOutcome: { outcome: 'uncertain' },
+      replacement: closable ? null : 'speed-up',
+      hash: HASH_B,
+      couldntConfirm: {
+        since: Date.now() - 25 * 60 * 60 * 1000,
+        closable,
+        hashes: [
+          { hash: HASH_A, explorerUrl: `https://gnosisscan.io/tx/${HASH_A}` },
+          { hash: HASH_B, explorerUrl: null },
+        ],
+      },
+      ...overrides,
+    });
+  // The text closing asks the user to confirm, pinned (design 0005).
+  const CLOSE_TEXT =
+    "We couldn't confirm whether this payment went through. It can no longer be sent. " +
+    'Check the explorer to see what happened.';
+
+  test('shown with its nonce and its hashes, each with an explorer link; once its place is used, it can only be closed', async () => {
+    const { mod, elements } = await load([unconfirmed(true)]);
+    await mod.openHeldPayments();
+    const html = markup(elements);
+    expect(html).toContain("Couldn't confirm");
+    expect(html).toContain('nonce 7');
+    expect(html).toContain(`title="${HASH_A}"`);
+    expect(html).toContain(`title="${HASH_B}"`);
+    // One link: the other hash has none. Its address is set as a property
+    // once rendered (the e2e spec follows it).
+    expect(html.match(/data-explorer="0"/g)).toHaveLength(1);
+    expect(html).not.toContain('data-explorer="1"');
+    expect(html).not.toContain('gnosisscan.io');
+    expect(html).toContain('data-action="close"');
+    expect(html).not.toContain('data-action="resend"');
+    expect(html).not.toContain('data-action="replace"');
+  });
+
+  test('one whose place is used leaves no gap a new send would wait behind; one unread still does', async () => {
+    // Recovered after a restart, its fate otherwise unknown: a gap (D11).
+    const used = unconfirmed(true, { attention: 'pending', lastOutcome: null });
+    const unread = unconfirmed(false, {
+      intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a02',
+      nonce: 8,
+      attention: 'pending',
+      lastOutcome: null,
+    });
+    const { mod } = await load([used, unread]);
+    await expect(mod.waitingPaymentBehind(100, ALICE)).resolves.toMatchObject({
+      intentId: unread.intentId,
+    });
+  });
+
+  test("with its place in the queue unread, it is shown but can't be closed, and is still offered sending again", async () => {
+    const { mod, elements } = await load([unconfirmed(false)]);
+    await mod.openHeldPayments();
+    const html = markup(elements);
+    expect(html).toContain("Couldn't confirm");
+    expect(html).toContain(`title="${HASH_A}"`);
+    expect(html).not.toContain('data-action="close"');
+    expect(html).toContain('data-action="resend"');
+    expect(html).toContain('data-action="replace"');
+    // Not closable from here either.
+    await mod.handleAction('close', unconfirmed(false));
+    expect(markup(elements)).not.toContain(CLOSE_TEXT);
+  });
+
+  test('an unmined payment is not shown as one, and is offered sending again and a replacement', async () => {
+    const { mod, elements } = await load([
+      held({ attention: 'absent', observed: 'absent', replacement: 'speed-up' }),
+    ]);
+    await mod.openHeldPayments();
+    const html = markup(elements);
+    expect(html).not.toContain("Couldn't confirm");
+    expect(html).toContain('data-action="resend"');
+    expect(html).toContain('Speed up');
+  });
+
+  test('closing asks once more, saying it proves nothing about the payment; confirmed, it is closed as the payment and hashes shown', async () => {
+    const payment = unconfirmed(true);
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    await mod.handleAction('close', payment);
+    expect(markup(elements)).toContain(CLOSE_TEXT);
+    expect(markup(elements)).toContain('data-action="confirm-close"');
+    expect(window.wallet.intentClose).not.toHaveBeenCalled();
+
+    window.wallet.intentClose.mockResolvedValue({ success: true, intentId: payment.intentId });
+    window.wallet.intentsList.mockResolvedValue({ success: true, intents: [] });
+    await mod.handleAction('confirm-close', payment);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith('intent-close', null, {
+      intentId: payment.intentId,
+      chainId: 100,
+      sender: ALICE,
+      nonce: 7,
+      hashes: [HASH_A, HASH_B],
+    });
+    expect(window.wallet.intentClose).toHaveBeenCalledWith(payment.intentId, {
+      confirmation: 'confirm-token',
+    });
+    expect(elements['held-payments-row'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('a close main refuses says why, and the payment stays', async () => {
+    const payment = unconfirmed(true);
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    await mod.handleAction('close', payment);
+    window.wallet.intentClose.mockResolvedValue({
+      success: false,
+      error: 'The payment changed since it was shown; it was not closed. Check it again.',
+      code: 'INTENT_CHANGED',
+    });
+    await mod.handleAction('confirm-close', payment);
+    expect(markup(elements)).toContain('The payment changed since it was shown');
+    expect(markup(elements)).toContain('data-action="close"');
+  });
+
+  test('cancel closes nothing', async () => {
+    const payment = unconfirmed(true);
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    await mod.handleAction('close', payment);
+    await mod.handleAction('cancel', payment);
+    expect(markup(elements)).not.toContain(CLOSE_TEXT);
+    expect(window.wallet.intentClose).not.toHaveBeenCalled();
+  });
+
+  test('an explorer address that is not a web address gets no link', async () => {
+    const payment = unconfirmed(true);
+    payment.couldntConfirm.hashes[0].explorerUrl = 'javascript:alert(1)';
+    const { mod, elements } = await load([payment]);
+    await mod.openHeldPayments();
+    expect(markup(elements)).not.toContain('data-explorer');
+    expect(markup(elements)).not.toContain('javascript:');
+  });
+
+  test('the texts', async () => {
+    const texts = await import('./intent-texts.js');
+    expect(texts.COULDNT_CONFIRM.confirmClose).toBe(CLOSE_TEXT);
+    expect(texts.LABELS.couldntConfirm).toBe("Couldn't confirm");
+    expect(
+      texts.attentionText({ couldntConfirm: { closable: false }, observed: 'unverifiable' })
+    ).toBe("Couldn't confirm");
+  });
 });

@@ -1,6 +1,11 @@
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
-const { createIntentTracker, SCHEDULE, CONCURRENCY } = require('./intent-tracker');
+const {
+  createIntentTracker,
+  SCHEDULE,
+  CONCURRENCY,
+  COULDNT_CONFIRM_AFTER_MS,
+} = require('./intent-tracker');
 const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
 
 const SENDER = '0x1111111111111111111111111111111111111111';
@@ -45,6 +50,16 @@ function fakeStore(intents = []) {
       settled.settlement = { label, hash, block };
       changed(intentId);
       return settled;
+    }),
+    // As the real store: the tracker's state of a held intent, told to
+    // no listener.
+    track: jest.fn(async ({ intentId, bracket, unreadSince }) => {
+      const tracked = map.get(intentId);
+      if (!tracked || tracked.state !== 'held') {
+        throw Object.assign(new Error('not held'), { code: 'INTENT_NOT_HELD' });
+      }
+      map.set(intentId, { ...tracked, bracket, unreadSince });
+      return map.get(intentId);
     }),
     onChange: (listener) => {
       listeners.add(listener);
@@ -347,4 +362,291 @@ test('an empty pass releases the headers of a chain with nothing held', async ()
   held.state = 'voided';
   await instance.pass();
   expect(instance.verifiedHeaderCount(1)).toBe(0);
+});
+
+// freedom-core design 0005, "State history" (#94).
+describe('state history (#94)', () => {
+  const OTHER = hashOf(0xeeee);
+  const W = 128;
+  const DAY = COULDNT_CONFIRM_AFTER_MS;
+  // The sender's nonce is 5 before block 1; another transaction of hers
+  // uses it at `at`.
+  const takenChain = (at, options) =>
+    fakeFinalityChain({
+      sender: SENDER,
+      startNonce: 5,
+      txs: at === null ? {} : { [at]: [{ hash: OTHER, nonce: 5, status: 1 }] },
+      stateWindow: W,
+      ...options,
+    });
+
+  describe('the bracket', () => {
+    test('the first pass after the commit takes it, later passes move it up while the nonce is unused, and the search then runs above it', async () => {
+      // Used at 80. The first pass sees F at 79: unused. By the second, F
+      // is 100, 100 below the head: only a search above the bracket stays
+      // within the endpoints' window.
+      const chain = takenChain(80, { head: 200, finalized: 79 });
+      const store = fakeStore([intent(5)]);
+      const { instance, recordSettlement } = tracker({ store, request: chain.request });
+      await instance.pass();
+      expect(store.track).toHaveBeenLastCalledWith({
+        intentId: 'intent-0005',
+        bracket: { number: 79, hash: chain.canonicalHash(79) },
+        unreadSince: null,
+      });
+
+      chain.views.canonical.finalized = 100;
+      await instance.pass();
+      expect(store.get('intent-0005')).toMatchObject({
+        state: 'settled',
+        settlement: { label: 'taken', block: 100 },
+      });
+      expect(recordSettlement).toHaveBeenCalledWith(expect.anything(), {
+        label: 'taken',
+        hash: null,
+        block: 100,
+      });
+
+      // The same chain without the bracket: the search reaches past the
+      // window, and the intent stays held.
+      const fresh = fakeStore([intent(5)]);
+      const other = tracker({ store: fresh, request: takenChain(80, { head: 200 }).request });
+      await other.instance.pass();
+      expect(fresh.get('intent-0005').state).toBe('held');
+    });
+
+    test('moved up on each pass while unused, and kept with the record', async () => {
+      const chain = takenChain(null, { head: 300, finalized: 100, stateWindow: Infinity });
+      const store = fakeStore([intent(5)]);
+      const { instance } = tracker({ store, request: chain.request });
+      for (const finalized of [100, 110, 125]) {
+        chain.views.canonical.finalized = finalized;
+        await instance.pass();
+        expect(store.get('intent-0005').bracket).toEqual({
+          number: finalized,
+          hash: chain.canonicalHash(finalized),
+        });
+      }
+      // Unchanged: nothing written.
+      const writes = store.track.mock.calls.length;
+      await instance.pass();
+      expect(store.track.mock.calls.length).toBe(writes);
+    });
+  });
+
+  test('every 2 minutes while a broadcast intent has no label, at its normal pace after', async () => {
+    // Held an hour without activity: 10 minutes apart, unless broadcast.
+    const chain = fakeFinalityChain({
+      sender: SENDER,
+      startNonce: 5,
+      txs: { 110: [{ hash: hashOf(5), nonce: 5, status: 1 }] },
+    });
+    const quiet = T0 - 2 * 60 * MINUTE;
+    const store = fakeStore([
+      intent(4, { createdAt: quiet, updatedAt: quiet }),
+      intent(5, { possiblySent: true, createdAt: quiet, updatedAt: quiet }),
+    ]);
+    const { instance } = tracker({ store, request: chain.request });
+    instance.start();
+    await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
+    // Intent 5 is on chain at 110, above F: no label yet.
+    expect(store.get('intent-0005').state).toBe('held');
+    expect(instance.nextPassAt() - Date.now()).toBe(SCHEDULE.fastMs);
+    await jest.advanceTimersByTimeAsync(30 * MINUTE);
+    expect(instance.nextPassAt() - Date.now()).toBeLessThanOrEqual(SCHEDULE.fastMs);
+
+    // F passes 110: it is paid, and only the unbroadcast intent 4 is held.
+    chain.views.canonical.finalized = 115;
+    await jest.advanceTimersByTimeAsync(SCHEDULE.fastMs);
+    expect(store.get('intent-0005').state).toBe('settled');
+    expect(instance.nextPassAt() - Date.now()).toBe(SCHEDULE.slowMs);
+    instance.stop();
+  });
+
+  describe("Couldn't confirm", () => {
+    // Passes every 2 minutes (the intents are broadcast) for `ms`.
+    async function runFor(instance, ms) {
+      await jest.advanceTimersByTimeAsync(ms);
+      await instance.pass();
+    }
+
+    test('the nonce past N and the block that used it out of reach: shown after a day of failed passes, not before, and closable', async () => {
+      // Used 2,000 blocks below F, past the window, with no bracket.
+      const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance } = tracker({ store, request: chain.request });
+      const changed = jest.fn();
+      instance.onChange(changed);
+      instance.start();
+      await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
+      const firstFailed = Date.now();
+      expect(store.get('intent-0005').unreadSince).toBe(firstFailed);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+      expect(instance.closeEvidence('intent-0005')).toBeNull();
+
+      await jest.advanceTimersByTimeAsync(DAY - SCHEDULE.startupMs - SCHEDULE.fastMs);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+      changed.mockClear();
+      await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs + SCHEDULE.fastMs);
+      expect(Date.now() - firstFailed).toBeGreaterThanOrEqual(DAY);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toEqual({
+        since: firstFailed,
+        closable: true,
+      });
+      // The chrome hears of it.
+      expect(changed).toHaveBeenCalled();
+      expect(instance.closeEvidence('intent-0005')).toEqual({
+        block: 3000,
+        hash: chain.canonicalHash(3000),
+      });
+      // Still held, its record as it was.
+      expect(store.get('intent-0005')).toMatchObject({
+        state: 'held',
+        hashes: [{ hash: hashOf(5) }],
+      });
+      instance.stop();
+    });
+
+    test("likewise when the nonce at F can't be read for a day; then it isn't closable", async () => {
+      const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+      chain.reshape('eth_getTransactionCount', () => {
+        throw new Error('missing trie node');
+      });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance } = tracker({ store, request: chain.request });
+      instance.start();
+      await runFor(instance, DAY + SCHEDULE.startupMs);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: false });
+      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      instance.stop();
+    });
+
+    test('a Direct answer or a quorum of one for the nonce is not evidence: not closable', async () => {
+      const direct = (result) => ({
+        result,
+        source: 'direct',
+        verified: false,
+        trust: { level: 'unverified', method: 'direct', quorum: { k: 3, m: 2, achieved: false } },
+      });
+      const singleton = (result) => ({
+        result,
+        source: 'quorum',
+        verified: false,
+        trust: { level: 'unverified', method: 'quorum', quorum: { k: 1, m: 1, achieved: true } },
+      });
+      for (const wrap of [direct, singleton]) {
+        const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+        chain.wrap('eth_getTransactionCount', wrap);
+        const store = fakeStore([intent(5, { possiblySent: true })]);
+        const { instance } = tracker({ store, request: chain.request });
+        instance.start();
+        await runFor(instance, DAY + SCHEDULE.startupMs);
+        expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({
+          closable: false,
+        });
+        expect(instance.closeEvidence('intent-0005')).toBeNull();
+        instance.stop();
+      }
+    });
+
+    test('an intent whose nonce at F is N or below is never shown, however long its label is unread', async () => {
+      // Nothing used its nonce; its receipts can't be read.
+      const chain = takenChain(null, { head: 3100, finalized: 3000 });
+      chain.reshape('eth_getTransactionReceipt', () => {
+        throw new Error('timeout');
+      });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance } = tracker({ store, request: chain.request });
+      instance.start();
+      await runFor(instance, 2 * DAY);
+      expect(store.get('intent-0005').unreadSince).toBeNull();
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      instance.stop();
+    });
+
+    test('an unmined read resets the day; a failing one after it starts it again', async () => {
+      const chain = takenChain(null, { head: 3100, finalized: 3000 });
+      let failing = true;
+      const request = jest.fn(async (chainId, method, params, options) => {
+        if (failing && method === 'eth_getTransactionCount') throw new Error('timeout');
+        return chain.request(chainId, method, params, options);
+      });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance } = tracker({ store, request });
+      await instance.pass();
+      const since = store.get('intent-0005').unreadSince;
+      expect(since).toBe(Date.now());
+      await jest.advanceTimersByTimeAsync(DAY / 2);
+      failing = false;
+      await instance.pass();
+      expect(store.get('intent-0005').unreadSince).toBeNull();
+      failing = true;
+      await jest.advanceTimersByTimeAsync(DAY / 2 + MINUTE);
+      await instance.pass();
+      expect(store.get('intent-0005').unreadSince).toBe(Date.now());
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+    });
+
+    test("once a read saw its nonce used, a lagging pair's older F where it was unused doesn't reset the day", async () => {
+      const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance } = tracker({ store, request: chain.request });
+      await instance.pass();
+      const since = store.get('intent-0005').unreadSince;
+      expect(since).toBe(Date.now());
+
+      chain.defineView('lagging', { head: 950, finalized: 900, stateWindow: W });
+      chain.route('eth_getBlockByNumber', 'lagging');
+      chain.route('eth_getTransactionCount', 'lagging');
+      await jest.advanceTimersByTimeAsync(DAY);
+      await instance.pass();
+      expect(store.get('intent-0005').unreadSince).toBe(since);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+    });
+
+    test('counted from the first failed pass, across restarts', async () => {
+      const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+      // The record says its passes have failed since a day ago.
+      const store = fakeStore([
+        intent(5, { possiblySent: true, unreadSince: Date.now() - DAY - MINUTE }),
+      ]);
+      const { instance } = tracker({ store, request: chain.request });
+      await instance.pass();
+      expect(store.get('intent-0005').unreadSince).toBe(Date.now() - DAY - MINUTE);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+    });
+
+    test('it stays held and read: a later pass that reaches the evidence settles it', async () => {
+      const chain = takenChain(1000, { head: 3100, finalized: 3000 });
+      let colibri = false;
+      // Colibri arrives later (a prover configured), proving the deep reads.
+      const request = jest.fn(async (chainId, method, params, options) => {
+        if (colibri && method === 'eth_getTransactionCount') {
+          return {
+            result: chain.prove(method, params),
+            source: 'colibri',
+            verified: true,
+            trust: { level: 'verified', method: 'colibri', quorum: { k: 1, m: 1, achieved: true } },
+          };
+        }
+        return chain.request(chainId, method, params, options);
+      });
+      const store = fakeStore([intent(5, { possiblySent: true })]);
+      const { instance, recordSettlement } = tracker({ store, request });
+      instance.start();
+      await runFor(instance, DAY + SCHEDULE.startupMs);
+      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+
+      colibri = true;
+      await instance.pass();
+      expect(store.get('intent-0005')).toMatchObject({
+        state: 'settled',
+        settlement: { label: 'taken', block: 3000 },
+      });
+      expect(recordSettlement).toHaveBeenCalled();
+      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      instance.stop();
+    });
+  });
 });

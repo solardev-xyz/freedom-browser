@@ -11,10 +11,18 @@
  *   dApp requested first asks once more, naming the site and when, since
  *   the site's request may have moved on;
  * - replaced at its nonce with a higher fee, when that is the fix (a
- *   refusal over fees) or as a speed-up for one that may be stuck.
+ *   refusal over fees) or as a speed-up for one that may be stuck;
+ * - closed by hand, once it is shown as Couldn't confirm (its label
+ *   couldn't be read on chain for a day, design 0005 "State history") and
+ *   the network shows its place in the queue used: none of its
+ *   transactions can go through then, so it is offered neither of the
+ *   above. Such a payment lists its hashes, each with an explorer link,
+ *   and closing it asks once more, saying that closing proves nothing
+ *   about whether it paid.
  *
- * Both are authorized in main by a confirmation of the held payment itself
- * ('intent-resend', 'intent-replace'), minted at the user's press.
+ * Each is authorized in main by a confirmation of the held payment itself
+ * ('intent-resend', 'intent-replace', 'intent-close'), minted at the
+ * user's press.
  *
  * `waitingPaymentBehind(chainId, sender)` serves the send review's warning
  * (D11).
@@ -36,7 +44,15 @@ import {
   endSignatureFlight,
   isSignatureInFlight,
 } from './signature-flight.js';
-import { attentionText, outcomeText, ACTIONS, HELD, REPLACE } from './intent-texts.js';
+import { bindExplorerLink } from './explorer-link.js';
+import {
+  attentionText,
+  outcomeText,
+  ACTIONS,
+  COULDNT_CONFIRM,
+  HELD,
+  REPLACE,
+} from './intent-texts.js';
 import { FEE_CHECK, FEE_CHECK_ASK_AGAIN, fetchFeeCheck } from './fee-check.js';
 
 const ERC20_TRANSFER = '0xa9059cbb';
@@ -51,8 +67,8 @@ let messageEl;
 let listEl;
 // The waiting payments, as last listed.
 let waiting = [];
-// The one payment with a step open: { intentId, step: 'resend'|'replace',
-// fees?, busy?, note?: { kind, text } }.
+// The one payment with a step open: { intentId, step: 'resend'|'replace'|
+// 'close', fees?, busy?, note?: { kind, text } }.
 let active = null;
 
 export function initHeldPayments() {
@@ -103,7 +119,8 @@ export async function listWaitingPayments() {
 /**
  * The earliest waiting payment of `sender` on `chainId` that leaves a gap
  * a new send would wait behind (refused, never sent, or recovered with its
- * fate unknown), or null.
+ * fate unknown), or null. Not one whose place in the queue the network
+ * shows used (a closable Couldn't confirm): nothing waits behind it.
  */
 export async function waitingPaymentBehind(chainId, sender) {
   const account = String(sender || '').toLowerCase();
@@ -113,7 +130,8 @@ export async function waitingPaymentBehind(chainId, sender) {
       (payment) =>
         payment.chainId === Number(chainId) &&
         payment.sender === account &&
-        GAP_ATTENTION.has(payment.attention)
+        GAP_ATTENTION.has(payment.attention) &&
+        !payment.couldntConfirm?.closable
     ) ?? null
   );
 }
@@ -206,9 +224,42 @@ function maxFeeOf(payment, fees) {
   return formatMaxFee(BigInt(fee) * BigInt(payment.fields?.gasLimit ?? 0));
 }
 
+// Explorer links open in a tab (explorer-link.js); loaded on use, as the
+// Safe board's are.
+const openTab = (url, options) =>
+  import('../tabs.js').then(({ createTab }) => createTab(url, options));
+
+// A hash's explorer link, if main gave one that is a web address.
+function explorerUrlOf(payment, index) {
+  const url = payment?.couldntConfirm?.hashes?.[index]?.explorerUrl;
+  return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null;
+}
+
 function render() {
   if (!listEl) return;
   listEl.innerHTML = waiting.map(renderPayment).join('');
+  // Each explorer link gets its address as a property, never as markup.
+  for (const link of listEl.querySelectorAll?.('a[data-explorer]') ?? []) {
+    const intentId = link.closest('[data-intent]')?.dataset.intent;
+    const payment = waiting.find((candidate) => candidate.intentId === intentId);
+    const url = explorerUrlOf(payment, Number(link.dataset.explorer));
+    if (url) link.href = url;
+    bindExplorerLink(link, () => url, openTab);
+  }
+}
+
+// A Couldn't confirm payment's hashes, each with its explorer link.
+function renderHashes(payment) {
+  const rows = payment.couldntConfirm.hashes.map(({ hash }, index) => {
+    const link = explorerUrlOf(payment, index)
+      ? ` <a href="#" class="recent-payments-link" data-explorer="${index}">${escapeHtml(COULDNT_CONFIRM.explorer)}</a>`
+      : '';
+    return `<span class="held-payment-hash"><code title="${escapeHtml(hash)}">${escapeHtml(truncateAddress(hash, 10, 8))}</code>${link}</span>`;
+  });
+  return `
+    <span class="safe-signing-row-note info">${escapeHtml(COULDNT_CONFIRM.note)}</span>
+    <div class="held-payment-hashes">${rows.join('')}</div>
+  `;
 }
 
 function renderPayment(payment) {
@@ -220,9 +271,17 @@ function renderPayment(payment) {
   if (payment.createdAt) meta.push(timeAgo(new Date(payment.createdAt)).toLowerCase());
   const replaceLabel = payment.replacement === 'replace' ? REPLACE.replace : REPLACE.speedUp;
   const disabled = busy || payment.attention === 'sending' ? 'disabled' : '';
+  const unconfirmed = payment.couldntConfirm ?? null;
 
   let stepHtml = '';
-  if (step?.step === 'resend') {
+  if (step?.step === 'close') {
+    stepHtml = renderStep(
+      COULDNT_CONFIRM.confirmClose,
+      busy ? COULDNT_CONFIRM.closing : COULDNT_CONFIRM.close,
+      'confirm-close',
+      busy
+    );
+  } else if (step?.step === 'resend') {
     stepHtml = renderStep(
       HELD.confirmDappResend(payment.origin, timeAgo(new Date(payment.createdAt)).toLowerCase()),
       busy ? ACTIONS.sendingAgain : ACTIONS.sendAgain,
@@ -249,9 +308,18 @@ function renderPayment(payment) {
   }
 
   const note = step?.note ?? {
-    kind: payment.attention === 'refused' || payment.attention === 'not-sent' ? 'error' : 'info',
+    kind:
+      unconfirmed || payment.attention === 'refused' || payment.attention === 'not-sent'
+        ? 'error'
+        : 'info',
     text: attentionText(payment),
   };
+
+  // Once its place in the queue is seen used, it can only be closed.
+  const buttons = unconfirmed?.closable
+    ? `<button type="button" class="safe-status-btn" data-action="close" ${disabled}>${escapeHtml(COULDNT_CONFIRM.close)}</button>`
+    : `<button type="button" class="safe-status-btn" data-action="resend" ${disabled}>${escapeHtml(ACTIONS.sendAgain)}</button>
+          ${payment.replacement ? `<button type="button" class="safe-status-btn" data-action="replace" ${disabled}>${escapeHtml(replaceLabel)}</button>` : ''}`;
 
   return `
     <div class="safe-signing-row held-payment-row" data-intent="${escapeHtml(payment.intentId)}">
@@ -260,14 +328,9 @@ function renderPayment(payment) {
         <span class="safe-signing-row-type">${escapeHtml(meta.join(' · '))}</span>
         ${payment.origin ? `<span class="safe-signing-row-type">${escapeHtml(HELD.requestedBy(payment.origin))}</span>` : ''}
         <span class="safe-signing-row-note ${note.kind}">${escapeHtml(note.text)}</span>
+        ${unconfirmed ? renderHashes(payment) : ''}
       </div>
-      ${
-        stepHtml ||
-        `<div class="safe-status-btn-row">
-          <button type="button" class="safe-status-btn" data-action="resend" ${disabled}>${escapeHtml(ACTIONS.sendAgain)}</button>
-          ${payment.replacement ? `<button type="button" class="safe-status-btn" data-action="replace" ${disabled}>${escapeHtml(replaceLabel)}</button>` : ''}
-        </div>`
-      }
+      ${stepHtml || `<div class="safe-status-btn-row">${buttons}</div>`}
     </div>
   `;
 }
@@ -340,8 +403,42 @@ export async function handleAction(action, payment) {
   } else if (action === 'confirm-replace') {
     await replace(payment);
     return;
+  } else if (action === 'close') {
+    if (!payment.couldntConfirm?.closable) return;
+    active = { intentId: payment.intentId, step: 'close' };
+  } else if (action === 'confirm-close') {
+    await closePayment(payment);
+    return;
   }
   render();
+}
+
+// Close a Couldn't confirm payment by hand: authorized by a confirmation of
+// the payment and every hash the list showed (the revision the user saw).
+// Closed, it leaves the list.
+async function closePayment(payment) {
+  const unconfirmed = payment.couldntConfirm;
+  if (!unconfirmed?.closable) return;
+  active = { intentId: payment.intentId, step: 'close', busy: true };
+  render();
+  let note = null;
+  try {
+    const result = await window.wallet.intentClose(
+      payment.intentId,
+      await confirmSigning('intent-close', null, {
+        intentId: payment.intentId,
+        chainId: payment.chainId,
+        sender: payment.sender,
+        nonce: payment.nonce,
+        hashes: unconfirmed.hashes.map(({ hash }) => hash),
+      })
+    );
+    if (!result.success) note = { kind: 'error', text: result.error };
+  } catch (err) {
+    note = { kind: 'error', text: err.message };
+  }
+  active = note ? { intentId: payment.intentId, note } : null;
+  await refreshHeldPayments();
 }
 
 async function sendAgain(payment) {

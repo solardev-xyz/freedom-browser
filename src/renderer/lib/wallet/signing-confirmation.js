@@ -11,6 +11,8 @@
  *   (a held payment's {intentId, chainId, sender, nonce, hash}, sent again)
  *   | 'intent-replace' (a held payment's {intentId, chainId, sender, nonce,
  *   to, value, data, gasLimit} with its new fees, signed again at its nonce)
+ *   | 'intent-close' (a held payment's {intentId, chainId, sender, nonce,
+ *   hashes}, closed by hand once it is shown as Couldn't confirm)
  * @param {number|null} accountIndex - the signing wallet / Safe index
  *   (ignored for 'wallet-send': main binds the active account)
  * @param {*} payload - the request exactly as it will be signed
