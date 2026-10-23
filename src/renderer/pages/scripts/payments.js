@@ -60,6 +60,8 @@ const STATUS_TEXT = {
   settled: 'Settled',
   'no-receipt': 'No receipt',
   taken: 'Taken',
+  // Main's #749: never mined, its nonce taken by another transaction.
+  dropped: 'Dropped',
 };
 
 // Atomic-units → decimal string with `decimals` precision, trailing

@@ -11,7 +11,6 @@ const {
   resendIntent,
   replaceIntent,
   waitForTransaction,
-  getTransactionStatus,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
 const paymentHistory = require('../payment-history');
@@ -43,24 +42,25 @@ function pollReceipt(rowId, hash, chainId) {
     })
     .catch((err) => {
       // A timeout doesn't mean the tx failed; leave the row pending and
-      // let repollPending sort it out (below, and on next boot).
+      // let repollPending sort it out on next boot.
       log.warn(`[TxRecorder] waitForTransaction failed for row ${rowId}: ${err.message}`);
-    })
-    // A mined transaction can be what makes an older row final: a re-send on
-    // the same nonce leaves the original 'dropped' (#749). Sweep now rather
-    // than on next boot; this row too, if it timed out above. The sweep
-    // records that first sighting and confirms it on a sweep it schedules
-    // itself DROPPED_CONFIRM_MS later (payment-history).
-    .then(() => paymentHistory.repollPending(getTransactionStatus))
-    .catch((err) => {
-      log.warn(`[TxRecorder] payment-history repoll failed: ${err.message}`);
     });
+  // Main (#749) sweeps every pending row once a receipt settles, for the
+  // 'dropped' rows a re-send on the same nonce leaves. A re-send here is
+  // the same intent's row, which the finality tracker labels (taken among
+  // them), and the sweep's receipt reads would reach Colibri first: the
+  // core's chain.request takes no per-request exclusions yet, and Colibri
+  // traps on a hash it hasn't seen (#750). So the sweep stays at boot.
 }
 
 // The signing account and nonce, so repollPending can tell a transaction
 // that will never be mined (its nonce taken by another) from one still
-// waiting. Phone wallets pick their own nonce and report none.
+// waiting. Phone wallets pick their own nonce and report none. Not an
+// intent's: the finality tracker labels its row from verified evidence at
+// the finalized block, whichever of its hashes was mined, where a sighting
+// of one hash's nonce taken would call a replaced payment dropped.
 function withSentFields(metadata, response) {
+  if (response.intentId) return metadata;
   if (typeof response.from !== 'string' || !Number.isSafeInteger(response.nonce)) {
     return metadata;
   }

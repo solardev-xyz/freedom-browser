@@ -215,11 +215,11 @@ async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, 
 
   const fees = await getGasPrices(chainId);
 
-  // The quote already carries the headroom (chain-data-router's feeQuote):
-  // a type-2 cap of 2x base fee + tip, and on a chain without EIP-1559 a
-  // legacy gasPrice above eth_gasPrice. Sign those as quoted; an EIP-1559
-  // quote that cannot form a valid transaction is never downgraded to a
-  // legacy gasPrice here (#749).
+  // The quote carries its headroom (the core's fee quote, chain-data.js): a
+  // type-2 cap of 2x base fee + tip. Sign it as quoted; an EIP-1559 quote
+  // that cannot form a valid transaction is never downgraded to a legacy
+  // gasPrice here (#749). Main's router also lifts a legacy quote above
+  // eth_gasPrice and sets a minimum tip; the core's quote doesn't yet.
   if (fees.type === 'eip1559') {
     if (
       isPositiveFee(fees.maxFeePerGas) &&
@@ -905,6 +905,10 @@ async function signAndSendTransaction(
  */
 async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = false } = {}) {
   try {
+    // `excludeSources` is main's router option (#749). The core's
+    // chain.request takes no per-request exclusions yet, so these reads go
+    // in the chain's read order; the 'dropped' check below still compares
+    // the two reads' sources before it decides anything.
     const { result: receipt } = await chainData.request(
       chainId,
       'eth_getTransactionReceipt',

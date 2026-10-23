@@ -5,11 +5,9 @@ jest.mock('../logger', () => ({
 
 const mockSignAndSendTransaction = jest.fn();
 const mockWaitForTransaction = jest.fn();
-const mockGetTransactionStatus = jest.fn();
 jest.mock('./transaction-service', () => ({
   signAndSendTransaction: (...args) => mockSignAndSendTransaction(...args),
   waitForTransaction: (...args) => mockWaitForTransaction(...args),
-  getTransactionStatus: (...args) => mockGetTransactionStatus(...args),
 }));
 
 const mockAppend = jest.fn();
@@ -63,26 +61,38 @@ describe('tx-recorder', () => {
     }));
   });
 
-  test('sweeps pending rows once its own transaction is mined (#749 re-send)', async () => {
-    await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
-    await settle();
+  // Integration: an intent's row is labelled by the finality tracker, so it
+  // takes no 'dropped' sighting, and no sweep runs after a receipt (its
+  // reads would reach Colibri first; see tx-recorder.js).
+  test("an intent's row records no account and nonce for the dropped sweep", async () => {
+    mockSignAndSendTransaction.mockResolvedValue({
+      hash: '0xtx',
+      from: '0xsigner',
+      nonce: 7,
+      intentId: 'intent-1',
+      outcome: 'sent',
+    });
 
-    expect(mockMarkConfirmed).toHaveBeenCalledWith(123, { gasUsed: '21000', gasPrice: '7' });
-    expect(mockRepollPending).toHaveBeenCalledTimes(1);
-    // The status fn it sweeps with is the one that can report 'dropped'.
-    await mockRepollPending.mock.calls[0][0]('0xold', 1, { from: '0xfrom', nonce: 0 });
-    expect(mockGetTransactionStatus).toHaveBeenCalledWith('0xold', 1, { from: '0xfrom', nonce: 0 });
+    await signAndRecord({ to: '0xr', value: '0', chainId: 1 }, fakeSigner, {
+      kind: 'wallet-send',
+      metadata: { note: 'x' },
+    });
+
+    expect(mockAppend).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: { note: 'x', intentId: 'intent-1', outcome: 'sent' },
+    }));
   });
 
-  test('sweeps after a confirmation timeout too, leaving the row to the sweep', async () => {
-    mockWaitForTransaction.mockRejectedValue(new Error('Timed out'));
+  test('no sweep runs once a receipt settles, mined or timed out', async () => {
+    await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    await settle();
+    expect(mockMarkConfirmed).toHaveBeenCalledWith(123, { gasUsed: '21000', gasPrice: '7' });
 
+    mockWaitForTransaction.mockRejectedValue(new Error('Timed out'));
     await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
     await settle();
 
-    expect(mockMarkConfirmed).not.toHaveBeenCalled();
-    expect(mockMarkFailed).not.toHaveBeenCalled();
-    expect(mockRepollPending).toHaveBeenCalledTimes(1);
+    expect(mockRepollPending).not.toHaveBeenCalled();
   });
 
   test('records user-visible ERC-20 recipient and amount from context', async () => {

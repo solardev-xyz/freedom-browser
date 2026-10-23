@@ -197,6 +197,7 @@ describe('payments settled at the finalized block', () => {
     ['failed', 'Failed'],
     ['settled', 'Settled'],
     ['no-receipt', 'No receipt'],
+    ['dropped', 'Dropped'],
   ])('a stored %s reads "%s", its class unchanged', async (status, text) => {
     const { pill, note } = await statusOf(
       createPayment({ kind: 'wallet-send', status, metadata: { intentId: 'i' } })
