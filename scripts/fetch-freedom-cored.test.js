@@ -20,7 +20,7 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'v0.1.0-test';
-const PINNED_TAG = 'cored-v0.7.0';
+const PINNED_TAG = 'cored-v0.8.0';
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 let fetcher;
 let https;
