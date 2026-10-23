@@ -68,6 +68,10 @@ const SURFACES = {
     '21-swarm-messaging',
     '22-swarm-feed',
     '23-dapp-permissions',
+    // A Safe's execution and activation, stopped for the executor's fee
+    // (design 0005, A): above today's fee, then couldn't compare.
+    '28-safe-execute-fee',
+    '29-safe-activate-fee',
   ],
   'internal pages and interstitials': [
     '25-tez-unverified',

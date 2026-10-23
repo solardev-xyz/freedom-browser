@@ -11,6 +11,8 @@
  * - `servesChainExclusions`: `chain.request`'s `exclude_sources` (design
  *   0005), which v0.6.0 refuses as invalid params.
  * - `servesDweb`: `dweb.open` (design 0006); v0.4.0 has none.
+ * - `servesFeeReference`: `chain.fee_reference` (design 0005, A); v0.6.0
+ *   has none.
  */
 const fs = require('fs');
 const os = require('os');
@@ -72,6 +74,10 @@ function servesChain(binary) {
   return serves(binary, 'chain.configure', { chains: [] });
 }
 
+function servesFeeReference(binary) {
+  return serves(binary, 'chain.fee_reference', { chain_id: 1, deadline_ms: 1000 });
+}
+
 function servesChainHtml(binary) {
   return serves(binary, 'chain.html', {
     chain_id: 1,
@@ -110,4 +116,10 @@ function servesDweb(binary) {
   });
 }
 
-module.exports = { servesChain, servesChainHtml, servesChainExclusions, servesDweb };
+module.exports = {
+  servesChain,
+  servesChainHtml,
+  servesChainExclusions,
+  servesDweb,
+  servesFeeReference,
+};

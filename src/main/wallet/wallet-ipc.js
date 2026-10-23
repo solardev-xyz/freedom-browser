@@ -16,6 +16,7 @@ const {
   parseAmount,
   getTransactionStatus,
   waitForTransaction,
+  namesOwnFees,
 } = require('./transaction-service');
 const { signAndRecord, KINDS: PAYMENT_KINDS } = require('./tx-recorder');
 const { intentFailure } = require('./intent-ipc');
@@ -42,6 +43,14 @@ const {
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
 const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
+const {
+  FEE_CHECK_ASK_AGAIN,
+  FEE_CHECK_NOT_AUTO_APPROVED,
+  checkFees,
+  checkAtApproval,
+  feeCheckError,
+  feeNotShownError,
+} = require('./fee-check');
 const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
@@ -85,6 +94,12 @@ function buildTxRecordContext(kind, context = {}) {
     Object.entries(context ?? {}).filter(([name]) => !RENDERER_KEY_FIELD.test(name))
   );
   return { ...display, kind };
+}
+
+/** What a Safe screen needs to ask for a fee the fee check stopped for:
+ * main's verdict and the transaction offered for confirmation. */
+function feeAsk(err) {
+  return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
 function notAuthorized(reason) {
@@ -305,6 +320,27 @@ async function authorizeSigning(authorization, kind, accountIndex, payload, auto
   throw notAuthorized('no confirmation token');
 }
 
+// The confirmations whose transaction main signs with the fees the user saw:
+// the fee check at confirmation runs for them (design 0005, A). A phone
+// account's payment is not among them in effect: the phone picks its own
+// fees, signs and broadcasts, and main signs nothing (phoneSigner).
+const FEE_CHECKED_KINDS = new Set([
+  CONFIRM_KINDS.WALLET_SEND,
+  CONFIRM_KINDS.DAPP_SEND,
+  CONFIRM_KINDS.INTENT_REPLACE,
+  CONFIRM_KINDS.EXECUTOR_SEND,
+]);
+
+/** Whether `walletIndex` is a phone account, which signs and pays itself. */
+function phoneSigner(walletIndex) {
+  if (!Number.isInteger(walletIndex)) return false;
+  try {
+    return typeof getSigner(walletIndex)?.sendTransaction === 'function';
+  } catch {
+    return false;
+  }
+}
+
 async function handleSendTransaction(
   walletIndex,
   params,
@@ -334,6 +370,18 @@ async function handleSendTransaction(
       dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null,
       sender
     );
+    // A send approved without the user is judged at this moment by the fee
+    // check (design 0005, A): one that can't be compared, is one endpoint's
+    // word, or is above the threshold goes to the user instead.
+    if (how === 'auto-approved' && !phoneSigner(walletIndex)) {
+      const verdict = await checkAtApproval(tx);
+      if (!verdict.autoApprove) throw feeCheckError(FEE_CHECK_NOT_AUTO_APPROVED, verdict);
+    }
+    // Main never signs fees the user didn't see: a send that doesn't name
+    // its own would be given today's after its confirmation
+    // (resolveFeeParams). It goes back to its screen instead, with nothing
+    // signed. A phone picks its own fees.
+    if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
       // committed (auto-approve-pause.js). A silent send doesn't wait for
@@ -378,8 +426,14 @@ async function handleSendTransaction(
   } catch (err) {
     console.error(`[WalletIPC] ${kind} transaction failed:`, err);
     // A send that got as far as an intent reports it (its id, outcome and a
-    // summary), so the screen can offer to send those same bytes again.
-    return { success: false, error: err.message, ...intentFailure(err) };
+    // summary), so the screen can offer to send those same bytes again. One
+    // its fee check refused carries the verdict.
+    return {
+      success: false,
+      error: err.message,
+      ...intentFailure(err),
+      ...(err.feeCheck ? { feeCheck: err.feeCheck } : {}),
+    };
   } finally {
     release?.();
   }
@@ -543,12 +597,38 @@ function registerWalletIpc() {
     }
   });
 
+  // The fee check of a transaction about to be shown for confirmation
+  // (design 0005, A): the most it can cost and how its fee compares with
+  // today's network fee, from evidence main keeps for up to 60 s.
+  ipcMain.handle('wallet:fee-check', async (_event, tx) => {
+    try {
+      return { success: true, feeCheck: await checkFees(tx) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Issue a confirmation token for a request the user just confirmed on an
   // approval screen (O-7). The signing handler below it will sign exactly
   // this request, once. A wallet send binds the account active right now.
-  ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload) => {
+  //
+  // A transaction's confirmation is also the moment of its approval for the
+  // fee check (design 0005, A): judged against evidence at most 60 s old, a
+  // send above the threshold gets no token unless the user confirmed it
+  // again (`options.feeAcknowledged`), and the screen asks again with the
+  // verdict it gets back.
+  ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload, options) => {
     try {
       const index = kind === CONFIRM_KINDS.WALLET_SEND ? getActiveWalletIndex() : accountIndex;
+      if (FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index)) {
+        const verdict = await checkAtApproval(payload, {
+          acknowledged: options?.feeAcknowledged === true,
+        });
+        if (verdict.askAgain) {
+          const error = feeCheckError(FEE_CHECK_ASK_AGAIN, verdict);
+          return { success: false, error: error.message, code: error.code, feeCheck: verdict };
+        }
+      }
       // Typed data: the token binds the digest the user confirmed, as the
       // core computes it, which the signature then passes as expected_hash.
       const bound =
@@ -707,16 +787,18 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:activate-safe', async (_event, index) => {
+  // `options.feeConfirmation`: an 'executor-send' confirmation of the fee
+  // the fee check stopped for, with that fee (safe-executor.js).
+  ipcMain.handle('wallet:activate-safe', async (_event, index, options) => {
     try {
       const { activateSafe } = require('./safe/safe-service');
-      const result = await activateSafe(index);
+      const result = await activateSafe(index, { feeConfirmation: options?.feeConfirmation });
       return { success: true, ...result };
     } catch (err) {
       // The identity core's errors carry their own code (`vault_locked`);
       // the renderer's contract is VAULT_LOCKED.
       const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
-      return { success: false, error: err.message, code };
+      return { success: false, error: err.message, code, ...feeAsk(err) };
     }
   });
 
@@ -734,7 +816,7 @@ function registerWalletIpc() {
       // The identity core's errors carry their own code (`vault_locked`);
       // the renderer's contract is VAULT_LOCKED.
       const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
-      return { success: false, error: err.message, code };
+      return { success: false, error: err.message, code, ...feeAsk(err) };
     }
   };
 
@@ -773,9 +855,9 @@ function registerWalletIpc() {
 
   ipcMain.handle(
     'wallet:safe-execute',
-    safeStateHandler((safeIndex) => {
+    safeStateHandler((safeIndex, options) => {
       const { executeSafePending } = require('./safe/safe-transactions');
-      return executeSafePending(safeIndex);
+      return executeSafePending(safeIndex, { feeConfirmation: options?.feeConfirmation });
     })
   );
 

@@ -12,7 +12,8 @@
 
 import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval, showVaultUnlock, updateSwarmConnectionBanner, updateX402ConnectionBanner } from './wallet-ui.js';
 import { buildDappTxContext, extractSelector } from './wallet/dapp-tx.js';
-import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
+import { isSafeAccount, accountType, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
+import { fetchFeeCheck, FEE_CHECK_NOT_AUTO_APPROVED } from './wallet/fee-check.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { confirmSigning } from './wallet/signing-confirmation.js';
 import { PHONE_OUTCOME_UNKNOWN, siteOutcomeUnknownError } from './wallet/intent-texts.js';
@@ -278,6 +279,10 @@ async function handleProviderRequest(webview, request) {
           await showVaultUnlock(permissionKey);
         }
         result = await autoApproveTx(permission, txParams, chainId, permissionKey, webview);
+        // Its fee needs the user (design 0005, A): the approval shows it.
+        if (result === NEEDS_APPROVAL) {
+          result = await showDappTxApproval(webview, permissionKey, txParams, chainId);
+        }
       } else {
         result = await showDappTxApproval(webview, permissionKey, txParams, chainId);
       }
@@ -351,9 +356,20 @@ function assertSafeOnGnosis(permission, chainId, verb) {
   }
 }
 
+/** autoApproveTx's answer when the transaction must be shown for approval. */
+const NEEDS_APPROVAL = Symbol('needs approval');
+
 /**
  * Send a transaction without showing the approval UI (auto-approved).
  * Handles gas estimation and signing via wallet IPC.
+ *
+ * The fee check at confirmation (freedom-core design 0005, A) comes first:
+ * a fee that couldn't be compared with today's network fee, one compared
+ * with one endpoint's word, or one above the threshold is never approved
+ * without the user. Then nothing is sent, and the answer is
+ * NEEDS_APPROVAL: the caller shows the approval. Main judges it again
+ * when it signs, and refuses the same way. A phone account picks and pays
+ * its own fee, so it has none to check.
  */
 async function autoApproveTx(permission, txParams, chainId, permissionKey, webview) {
   const walletIndex = permission.walletIndex;
@@ -399,6 +415,11 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey, webvi
     tx.gasPrice = gasPrices.gasPrice;
   }
 
+  if (accountType(walletIndex) !== 'remote') {
+    const feeCheck = await fetchFeeCheck(tx);
+    if (!feeCheck?.autoApprove) return NEEDS_APPROVAL;
+  }
+
   // No confirmation token: main signs only if the requesting guest's own
   // page belongs to this site and its own reading of the site's
   // auto-approve rules covers this exact transaction.
@@ -411,6 +432,8 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey, webvi
   // A phone account's payment whose answer was lost may have been sent: the
   // site hears that the outcome is unknown, as from the approval (D13).
   if (!result.success && result.code === PHONE_OUTCOME_UNKNOWN) throw siteOutcomeUnknownError();
+  // Main's own fee check refused it: nothing was signed.
+  if (!result.success && result.code === FEE_CHECK_NOT_AUTO_APPROVED) return NEEDS_APPROVAL;
   if (!result.success) throw new Error(result.error || 'Transaction failed');
   if (result.recorded === false) {
     console.warn('[DappProvider] Auto-approved transaction broadcast but payment history did not record:', result.recordError);

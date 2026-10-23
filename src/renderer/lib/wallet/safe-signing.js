@@ -28,6 +28,13 @@ import { escapeHtml, truncateAddress, formatRawTokenBalance, walletRecord, timeA
 import { refreshBalances } from './balance-display.js';
 import { showVaultUnlock } from './vault-unlock.js';
 import { bindExplorerLink } from './explorer-link.js';
+import {
+  FEE_CHECK,
+  FEE_CHECK_ASK_AGAIN,
+  FEE_CHECK_NEEDS_CONFIRMATION,
+  confirmOfferedFee,
+  describeFeeCheck,
+} from './fee-check.js';
 
 // DOM references
 let screen;
@@ -45,6 +52,9 @@ let state = null; // SafeSendState / SafeMessageState from main
 let phase = 'board'; // 'board' | 'executing' | 'success' | 'superseded'
 let executed = null; // {hash, explorerUrl} (send mode)
 let executeError = null; // {message, needsFunds}
+// The executor's fee the fee check stopped for (design 0005, A):
+// {feeCheck, offer, busy}. Until the user confirms it, nothing is signed.
+let feeAsk = null;
 let signingIndex = null; // owner row with a live ceremony
 let rowNotes = new Map(); // ownerIndex → {kind: 'error'|'info', text}
 let ledgerDetected = false;
@@ -165,6 +175,7 @@ async function openBoard(safeIndex, initialState) {
   phase = 'board';
   executed = null;
   executeError = null;
+  feeAsk = null;
   signingIndex = null;
   rowNotes = new Map();
 
@@ -275,7 +286,13 @@ async function progressAutomatics() {
  * finalization error (its banner owns the retry).
  */
 async function maybeFinalize() {
-  if (state && phase === 'board' && !executeError && state.collected >= state.threshold) {
+  if (
+    state &&
+    phase === 'board' &&
+    !executeError &&
+    !feeAsk &&
+    state.collected >= state.threshold
+  ) {
     await (boardKind === 'message' ? completeNow() : executeNow());
   }
 }
@@ -361,13 +378,22 @@ async function completeNow() {
   render();
 }
 
-async function executeNow() {
+/**
+ * `feeConfirmation`: the user's confirmation of the executor's fee that
+ * the fee check stopped for (confirmFee). Without it, main judges a new
+ * quote, and a fee that needs the user stops the execution here, with
+ * nothing signed and the transaction kept.
+ */
+async function executeNow(feeConfirmation) {
   const epoch = boardEpoch;
   phase = 'executing';
   executeError = null;
+  feeAsk = null;
   render();
 
-  const result = await window.wallet.safeExecute(boardSafeIndex);
+  const result = await (feeConfirmation
+    ? window.wallet.safeExecute(boardSafeIndex, { feeConfirmation })
+    : window.wallet.safeExecute(boardSafeIndex));
   if (isStale(epoch)) return;
   if (result.success && result.state?.status === 'executed') {
     state = result.state; // pre-clear snapshot — display survives for the summary
@@ -397,6 +423,13 @@ async function executeNow() {
       message: 'Your wallet is locked — unlock it to execute the transaction',
       needsFunds: false,
     };
+  } else if (result.code === FEE_CHECK_NEEDS_CONFIRMATION && result.offer) {
+    // The executor's fee needs the user: shown, and signed only once they
+    // confirm it.
+    feeAsk = { feeCheck: result.feeCheck, offer: result.offer, busy: false };
+    phase = 'board';
+    await refreshState();
+    if (isStale(epoch)) return;
   } else {
     executeError = {
       message: result.error || 'Execution failed',
@@ -407,6 +440,33 @@ async function executeNow() {
     if (isStale(epoch)) return;
   }
   render();
+}
+
+/** The user confirms the executor's fee: it is signed with exactly that fee. */
+async function confirmFee() {
+  if (!feeAsk || feeAsk.busy || phase !== 'board') return;
+  const epoch = boardEpoch;
+  const ask = feeAsk;
+  ask.busy = true;
+  render();
+  let feeConfirmation;
+  try {
+    feeConfirmation = await confirmOfferedFee(ask.offer, ask.feeCheck);
+  } catch (err) {
+    if (isStale(epoch)) return;
+    ask.busy = false;
+    if (err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck) {
+      // Newly above the threshold at the press: shown, and asked again.
+      ask.feeCheck = err.feeCheck;
+    } else {
+      feeAsk = null;
+      executeError = { message: err?.message || 'Execution failed', needsFunds: false };
+    }
+    render();
+    return;
+  }
+  if (isStale(epoch)) return;
+  await executeNow(feeConfirmation);
 }
 
 async function handleDiscard() {
@@ -547,6 +607,7 @@ function render() {
       </div>
     ` : `
       ${executeError ? renderExecuteError() : ''}
+      ${feeAsk ? renderFeeAsk() : ''}
       ${boardKind === 'message' ? `
         <div class="safe-signing-note">
           No transaction is sent — once enough owners have signed, the
@@ -573,7 +634,8 @@ function render() {
   document.getElementById('safe-signing-discard')?.addEventListener('click', handleDiscard);
   document
     .getElementById('safe-signing-retry-execute')
-    ?.addEventListener('click', boardKind === 'message' ? completeNow : executeNow);
+    ?.addEventListener('click', boardKind === 'message' ? completeNow : () => executeNow());
+  document.getElementById('safe-signing-confirm-fee')?.addEventListener('click', confirmFee);
 }
 
 function renderRow(owner) {
@@ -630,6 +692,20 @@ function renderExecuteError() {
       <button type="button" class="safe-status-btn primary" id="safe-signing-retry-execute">
         ${executeError.needsFunds ? "I've added funds — try again" : 'Try again'}
       </button>
+    </div>
+  `;
+}
+
+/** The executor's fee, waiting for the user's confirmation (design 0005, A). */
+function renderFeeAsk() {
+  const lines = describeFeeCheck(feeAsk.feeCheck, 'xDAI');
+  const warning = feeAsk.feeCheck?.above ? ' warning' : '';
+  return `
+    <div class="safe-signing-banner safe-signing-fee${warning}">
+      <div><strong>${escapeHtml(FEE_CHECK.confirmFee)}</strong></div>
+      ${lines.map((line) => `<div class="safe-signing-banner-hint">${escapeHtml(line)}</div>`).join('')}
+      <button type="button" class="safe-status-btn primary" id="safe-signing-confirm-fee"
+        ${feeAsk.busy ? 'disabled' : ''}>${escapeHtml(FEE_CHECK.confirmExecute)}</button>
     </div>
   `;
 }

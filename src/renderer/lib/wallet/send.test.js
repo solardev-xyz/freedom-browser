@@ -177,10 +177,29 @@ const SEND_ELEMENT_IDS = [
   'send-touchid-btn', 'send-password-link', 'send-password-section',
   'send-password-input', 'send-password-submit', 'send-unlock-error',
   'send-review-error', 'send-explorer-link', 'send-done-btn', 'send-error-text',
-  'send-retry-btn', 'wallet-send-btn',
+  'send-retry-btn', 'wallet-send-btn', 'send-review-fee-max', 'send-review-fee-note',
+  'send-fee-warning', 'send-fee-warning-text',
 ];
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * Opens the send screen, continues to its review, and confirms there: the
+ * review's fee check (design 0005, A) shows its verdict before Confirm
+ * can sign.
+ */
+async function confirmFromReview(mod, elements, options = {}) {
+  await mod.openSend({
+    chainId: 100,
+    tokenKey: 'gnosis-native',
+    recipient: ADDRESS,
+    amount: '0.45',
+    ...options,
+  });
+  elements['send-continue-btn'].dispatch('click');
+  for (let i = 0; i < 4; i += 1) await flush();
+  elements['send-confirm-btn'].dispatch('click');
+}
 
 // The review recipient is painted either as bare text (no name known) or as
 // a span list via replaceChildren; the fake DOM does not aggregate the two.
@@ -231,6 +250,11 @@ async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], rev
       sendTransaction: jest.fn(() => send.promise),
       estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
       getGasPrice: jest.fn().mockResolvedValue({ success: true, type: 'legacy', gasPrice: '1' }),
+      // The fee check at confirmation (design 0005, A): a fee like today's.
+      feeCheck: jest.fn().mockResolvedValue({
+        success: true,
+        feeCheck: { maxCost: '21000', comparable: true, ratio: '1', above: false, autoApprove: true },
+      }),
       formatUnits: jest.fn(() => '0.000021'),
     },
     dispatchEvent: jest.fn(),
@@ -279,10 +303,7 @@ describe('send screen sidebar ownership', () => {
   test('a confirming send holds the shared sidebar lock until the device answers', async () => {
     const { mod, flight, elements, send } = await loadSendScreen();
 
-    mod.openSend();
-    expect(flight.isSignatureInFlight()).toBe(false);
-
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalled();
     expect(flight.isSignatureInFlight()).toBe(true);
@@ -301,8 +322,7 @@ describe('send screen sidebar ownership', () => {
     const { mod, elements, send } = await loadSendScreen();
     const onClose = jest.fn();
 
-    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45', onClose });
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements, { onClose });
     await flush();
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
@@ -343,8 +363,7 @@ describe('send screen sidebar ownership', () => {
   test('nothing may hide the send screen while its signature is in flight', async () => {
     const { mod, state, elements, send } = await loadSendScreen();
 
-    mod.openSend();
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
 
     // The shared teardown a dApp request would use (personal_sign,
@@ -541,8 +560,7 @@ describe('send screen sidebar ownership', () => {
     const { mod, elements, send } = await loadSendScreen();
     const { createTab } = await import('../tabs.js');
 
-    mod.openSend();
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
@@ -595,8 +613,7 @@ describe('send again after a failed send (5)', () => {
       elements[view].appendChild(createElement('h3', { classes: [title] }));
     }
     window.wallet.intentResend = jest.fn();
-    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45' });
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     send.resolve(reply);
     await flush();
@@ -867,7 +884,7 @@ describe('send again after a failed send (5)', () => {
       intent: heldB,
     });
     elements['send-continue-btn'].dispatch('click');
-    await flush();
+    for (let i = 0; i < 4; i += 1) await flush();
     elements['send-confirm-btn'].dispatch('click');
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(2);
@@ -1021,5 +1038,176 @@ describe('send review: a payment that would wait behind a held one (D11)', () =>
       const elements = await review(intents);
       expect({ intents, shown: shown(elements) }).toEqual({ intents, shown: false });
     }
+  });
+});
+
+describe('send review: the fee check at confirmation (design 0005, A)', () => {
+  afterEach(() => {
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    jest.useRealTimers();
+  });
+
+  const ABOVE = {
+    maxCost: '21000000000000000',
+    comparable: true,
+    ratio: '20',
+    above: true,
+    autoApprove: false,
+  };
+
+  async function review(verdict) {
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents: [] });
+    if (verdict !== undefined) {
+      window.wallet.feeCheck.mockResolvedValue({ success: true, feeCheck: verdict });
+    }
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '0.45' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    await flush();
+    await flush();
+    return loaded;
+  }
+
+  const shown = (element) => !element.classList.contains('hidden');
+  const confirm = async (elements) => {
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    await flush();
+  };
+
+  test('the review shows the most the payment can cost, and how its fee compares', async () => {
+    const { elements } = await review();
+    expect(window.wallet.feeCheck).toHaveBeenCalledWith({ chainId: 100, gasLimit: '21000', gasPrice: '1' });
+    expect(elements['send-review-fee-max'].textContent).toBe('Up to 0.000000001 xDAI');
+    expect(elements['send-review-fee-note'].textContent).toBe("About 1× today's network fee");
+    expect(shown(elements['send-fee-warning'])).toBe(false);
+    await confirm(elements);
+    // One press sends, with no answer to the fee check.
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith(
+      'wallet-send',
+      null,
+      expect.objectContaining({ gasPrice: '1', gasLimit: '21000' })
+    );
+    expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+  });
+
+  // Review of #794, round 1: a press before main's verdict arrives signs
+  // nothing; Confirm waits until the verdict is shown.
+  test('Confirm waits for the fee check: a press before its answer signs nothing', async () => {
+    let answer;
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents: [] });
+    window.wallet.feeCheck.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '0.45' });
+    elements['send-continue-btn'].dispatch('click');
+    for (let i = 0; i < 3; i += 1) await flush();
+    expect(window.wallet.feeCheck).toHaveBeenCalled();
+    expect(elements['send-confirm-btn'].disabled).toBe(true);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+    expect(shown(elements['send-review-view'])).toBe(true);
+
+    answer({ success: true, feeCheck: { maxCost: '21000', comparable: true, ratio: '1', above: false } });
+    await flush();
+    expect(elements['send-review-fee-note'].textContent).toBe("About 1× today's network fee");
+    expect(elements['send-confirm-btn'].disabled).toBe(false);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
+  test("main's fee check failing: the most it can cost and couldn't compare, then Confirm", async () => {
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents: [] });
+    window.wallet.feeCheck.mockRejectedValue(new Error('main gone'));
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '0.45' });
+    elements['send-continue-btn'].dispatch('click');
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(elements['send-review-fee-max'].textContent).toBe('Up to 0.000000001 xDAI');
+    expect(elements['send-review-fee-note'].textContent).toBe(
+      "Couldn't compare this fee with today's network fee"
+    );
+    expect(elements['send-confirm-btn'].disabled).toBe(false);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
+  test("no reference: the most it can cost, and that it couldn't be compared", async () => {
+    const { elements } = await review({ maxCost: '21000', comparable: false, ratio: null, above: false });
+    expect(elements['send-review-fee-note'].textContent).toBe(
+      "Couldn't compare this fee with today's network fee"
+    );
+    await confirm(elements);
+    expect(window.wallet.sendTransaction).toHaveBeenCalled();
+  });
+
+  test('a fee far above today’s is confirmed twice before anything is signed', async () => {
+    const { elements } = await review(ABOVE);
+    expect(shown(elements['send-fee-warning'])).toBe(true);
+    expect(elements['send-fee-warning-text'].textContent).toBe(
+      "This network fee is 20× today's network fee."
+    );
+    expect(elements['send-review-fee-max'].textContent).toBe('Up to 0.021 xDAI');
+    // The first press asks again.
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+    expect(elements['send-confirm-btn'].textContent).toBe('Send anyway');
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    // The second sends, with the user's answer.
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith(
+      'wallet-send',
+      null,
+      expect.objectContaining({ gasPrice: '1' }),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.sendTransaction).toHaveBeenCalled();
+  });
+
+  test("a fee newly above at the press: main mints nothing, and the review asks again", async () => {
+    const { elements } = await review();
+    window.wallet.confirmSigning
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'FEE_CHECK_ASK_AGAIN',
+        error: "The network fee is 20× today's network fee. Confirm it again to send.",
+        feeCheck: { ...ABOVE, askAgain: true },
+      })
+      .mockResolvedValue({ success: true, token: 'confirm-token' });
+    await confirm(elements);
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+    // Back on the review, which asks.
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    expect(elements['send-error-view'].classList.contains('hidden')).toBe(true);
+    expect(elements['send-confirm-btn'].textContent).toBe('Send anyway');
+    expect(elements['send-confirm-btn'].disabled).toBe(false);
+    expect(elements['send-fee-warning-text'].textContent).toBe(
+      "This network fee is 20× today's network fee. Check the fee, then press Send anyway to pay it."
+    );
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenLastCalledWith(
+      'wallet-send',
+      null,
+      expect.objectContaining({ gasPrice: '1' }),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
   });
 });

@@ -373,6 +373,95 @@ describe('payments waiting: replacing with a higher fee', () => {
   });
 });
 
+describe('payments waiting: the fee check on a replacement (design 0005, A)', () => {
+  const ABOVE = {
+    maxCost: '420000000000000',
+    comparable: true,
+    ratio: '20',
+    above: true,
+    autoApprove: false,
+  };
+
+  async function offered(feeCheck) {
+    const payment = held({ replacement: 'speed-up', attention: 'uncertain' });
+    const loaded = await load([payment]);
+    await loaded.mod.openHeldPayments();
+    window.wallet.intentReplacementFees.mockResolvedValue({
+      success: true,
+      fees: { gasPrice: '2000000000' },
+    });
+    window.wallet.feeCheck = jest.fn().mockResolvedValue({ success: true, feeCheck });
+    window.wallet.intentReplace.mockResolvedValue({
+      success: true,
+      replaced: true,
+      outcome: 'sent',
+    });
+    await loaded.mod.handleAction('replace', payment);
+    return { ...loaded, payment };
+  }
+
+  test('the raised fees are judged as any other: how they compare is shown', async () => {
+    const { elements, payment, mod } = await offered({
+      maxCost: '42000000000000',
+      comparable: true,
+      ratio: '1.1',
+      above: false,
+      autoApprove: true,
+    });
+    expect(window.wallet.feeCheck).toHaveBeenCalledWith({
+      chainId: 100,
+      gasLimit: '21000',
+      gasPrice: '2000000000',
+    });
+    expect(markup(elements)).toContain(
+      'New network fee: up to 0.000042 xDAI. The same payment, signed again with a higher fee. ' +
+        "Only one of the two can go through. About 1.1× today's network fee."
+    );
+    await mod.handleAction('confirm-replace', payment);
+    expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+    expect(window.wallet.intentReplace).toHaveBeenCalled();
+  });
+
+  test('raised fees far above today’s are confirmed twice before anything is signed', async () => {
+    const { elements, payment, mod } = await offered(ABOVE);
+    expect(markup(elements)).toContain('safe-signing-row-note warning');
+    expect(markup(elements)).toContain("This network fee is 20× today's network fee.");
+    await mod.handleAction('confirm-replace', payment);
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(markup(elements)).toContain('>Send anyway<');
+    expect(markup(elements)).toContain('Check the fee, then press Send anyway to pay it.');
+    await mod.handleAction('confirm-replace', payment);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith(
+      'intent-replace',
+      null,
+      expect.objectContaining({ gasPrice: '2000000000' }),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.intentReplace).toHaveBeenCalled();
+  });
+
+  test('raised fees newly above at the press: nothing signed, and the step asks again', async () => {
+    const { elements, payment, mod } = await offered({ ...ABOVE, ratio: '1', above: false });
+    window.wallet.confirmSigning.mockResolvedValueOnce({
+      success: false,
+      code: 'FEE_CHECK_ASK_AGAIN',
+      error: "The network fee is 20× today's network fee. Confirm it again to send.",
+      feeCheck: { ...ABOVE, askAgain: true },
+    });
+    await mod.handleAction('confirm-replace', payment);
+    expect(window.wallet.intentReplace).not.toHaveBeenCalled();
+    expect(markup(elements)).toContain('>Send anyway<');
+    await mod.handleAction('confirm-replace', payment);
+    expect(window.wallet.confirmSigning).toHaveBeenLastCalledWith(
+      'intent-replace',
+      null,
+      expect.any(Object),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.intentReplace).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('payments waiting: what a new send waits behind (D11)', () => {
   test('the earliest of the account’s payments on the chain that leaves a gap', async () => {
     const { mod } = await load([

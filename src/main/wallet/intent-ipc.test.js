@@ -15,6 +15,9 @@ let mockPermission;
 const mockRequest = jest.fn();
 const mockBroadcast = jest.fn();
 const mockFeeQuote = jest.fn();
+// The fee check's evidence (design 0005, A): B's combined quote, as the
+// fee quote's own, from two endpoints.
+const mockFeeReference = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn() },
@@ -44,6 +47,7 @@ jest.mock('../networks/chain-data', () => ({
   request: (...args) => mockRequest(...args),
   broadcastRawTransaction: (...args) => mockBroadcast(...args),
   getFeeQuote: (...args) => mockFeeQuote(...args),
+  getFeeReference: (...args) => mockFeeReference(...args),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
@@ -100,6 +104,15 @@ beforeEach(() => {
     throw new Error(`unexpected read ${method}`);
   });
   mockFeeQuote.mockReset().mockResolvedValue({ type: 'legacy', gasPrice: '1000000000' });
+  mockFeeReference.mockReset().mockImplementation(async (chainId) => {
+    const quote = await mockFeeQuote(chainId).catch(() => null);
+    return {
+      header: null,
+      lowest_priority: null,
+      quote: quote && { ...quote, source: 'direct', verified: false, answered: 2 },
+    };
+  });
+  require('./fee-check')._shared.clear();
   mockBroadcast.mockReset().mockImplementation(async (_chainId, raw) => ({
     result: keccak256(raw),
     source: 'direct',
@@ -297,8 +310,8 @@ describe('held payments over IPC (4b)', () => {
     return {
       ...running,
       events: sent,
-      confirm: (kind, index, payload) =>
-        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      confirm: (kind, index, payload, options) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload, options),
       resend: (...args) => handlers['wallet:intent-resend']({}, ...args),
       list: () => handlers['wallet:intents-list']({}),
     };
@@ -793,8 +806,8 @@ describe('replacement at the same nonce (9)', () => {
     const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
     return {
       ...running,
-      confirm: (kind, index, payload) =>
-        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      confirm: (kind, index, payload, options) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload, options),
       list: () => handlers['wallet:intents-list']({}),
       fees: (intentId) => handlers['wallet:intent-replacement-fees']({}, intentId),
       replace: (...args) => handlers['wallet:intent-replace']({}, ...args),
@@ -837,8 +850,15 @@ describe('replacement at the same nonce (9)', () => {
     ...fees,
   });
 
-  async function replaceConfirmed(running, intent, fees) {
-    const { token } = await running.confirm('intent-replace', null, replacementOf(intent, fees));
+  // `options`: the fee check's answer (design 0005, A), for fees far above
+  // today's that the user confirmed again.
+  async function replaceConfirmed(running, intent, fees, options) {
+    const { token } = await running.confirm(
+      'intent-replace',
+      null,
+      replacementOf(intent, fees),
+      options
+    );
     return running.replace(intent.intentId, fees, { confirmation: token });
   }
 
@@ -894,7 +914,10 @@ describe('replacement at the same nonce (9)', () => {
       { gasPrice: '1050000000' },
       { maxFeePerGas: '9000000000', maxPriorityFeePerGas: '2000000000' },
     ]) {
-      await expect(replaceConfirmed(running, intent, fees)).resolves.toMatchObject({
+      // Fees far above today's, confirmed again past the fee check: the
+      // replacement's own floor refuses them.
+      const confirmedAgain = { feeAcknowledged: true };
+      await expect(replaceConfirmed(running, intent, fees, confirmedAgain)).resolves.toMatchObject({
         success: false,
         code: 'INTENT_FEE_TOO_LOW',
       });
@@ -1067,8 +1090,8 @@ describe('replacement fees (9)', () => {
     const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
     return {
       ...running,
-      confirm: (kind, index, payload) =>
-        handlers['wallet:confirm-signing']({}, kind, index, payload),
+      confirm: (kind, index, payload, options) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload, options),
       fees: (intentId) => handlers['wallet:intent-replacement-fees']({}, intentId),
       replace: (...args) => handlers['wallet:intent-replace']({}, ...args),
     };
@@ -1095,18 +1118,23 @@ describe('replacement fees (9)', () => {
     return running.store.get(reply.intentId);
   }
 
-  async function replaceConfirmed(running, intent, fees) {
-    const { token } = await running.confirm('intent-replace', null, {
-      intentId: intent.intentId,
-      chainId: intent.chainId,
-      sender: intent.sender,
-      nonce: intent.nonce,
-      to: intent.fields.to,
-      value: intent.fields.value,
-      data: intent.fields.data,
-      gasLimit: intent.fields.gasLimit,
-      ...fees,
-    });
+  async function replaceConfirmed(running, intent, fees, options) {
+    const { token } = await running.confirm(
+      'intent-replace',
+      null,
+      {
+        intentId: intent.intentId,
+        chainId: intent.chainId,
+        sender: intent.sender,
+        nonce: intent.nonce,
+        to: intent.fields.to,
+        value: intent.fields.value,
+        data: intent.fields.data,
+        gasLimit: intent.fields.gasLimit,
+        ...fees,
+      },
+      options
+    );
     return running.replace(intent.intentId, fees, { confirmation: token });
   }
 
@@ -1153,10 +1181,15 @@ describe('replacement fees (9)', () => {
         { error: expect.stringMatching(/priority fee/) },
       ],
     ]) {
-      await expect(replaceConfirmed(running, intent, other)).resolves.toMatchObject({
-        success: false,
-        ...refusal,
-      });
+      // Confirmed again past the fee check: the replacement's own rules
+      // refuse them.
+      const confirmedAgain = { feeAcknowledged: true };
+      await expect(replaceConfirmed(running, intent, other, confirmedAgain)).resolves.toMatchObject(
+        {
+          success: false,
+          ...refusal,
+        }
+      );
     }
     expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
 

@@ -436,6 +436,27 @@ class ChainDriver {
   }
 
   /**
+   * `chain.fee_reference` (design 0005, A: The evidence): the evidence for
+   * the fee check at confirmation, `{ header, lowest_priority, quote }` as
+   * the core gives them, numbers as decimal strings and a part that failed
+   * null. Fenced as a fee quote is, within `deadlineMs` (at most the core's
+   * 120 s).
+   */
+  feeReference(chainId, { deadlineMs = DEADLINE_MS } = {}) {
+    const limit = Number.isFinite(deadlineMs)
+      ? Math.min(Math.max(deadlineMs, 0), DEADLINE_MS)
+      : DEADLINE_MS;
+    const until = this.now() + limit;
+    const id = wireChainId(chainId);
+    if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
+    const head = serialized({ chain_id: id });
+    return this.fenced('chain.fee_reference', id, head, { until }, (reply) => {
+      const { generation: _generation, ...reference } = reply ?? {};
+      return reference;
+    });
+  }
+
+  /**
    * `broadcastRawTransaction()`: `{ result, source }` once sent, with
    * `outcome: 'uncertain'` when it may have been; otherwise a throw
    * tagged `rejected` or `not_sent`. A cancel tells the core, and the

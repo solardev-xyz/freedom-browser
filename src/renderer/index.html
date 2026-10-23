@@ -2710,6 +2710,9 @@
                   <div class="send-review-label">Network Fee</div>
                   <div class="send-review-value send-review-fee" id="send-review-fee">
                     <span id="send-review-fee-value">--</span>
+                    <!-- The fee check at confirmation (freedom-core design 0005, A) -->
+                    <span class="fee-check-max hidden" id="send-review-fee-max"></span>
+                    <span class="fee-check-note hidden" id="send-review-fee-note"></span>
                   </div>
                 </div>
 
@@ -2730,6 +2733,18 @@
                     <line x1="12" y1="17" x2="12.01" y2="17" />
                   </svg>
                   <span id="send-held-warning-text"></span>
+                </div>
+
+                <!-- A network fee far above today's (the fee check, design 0005 A) -->
+                <div class="dapp-tx-warning send-fee-warning hidden" id="send-fee-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span id="send-fee-warning-text"></span>
                 </div>
 
                 <!-- Action buttons -->
@@ -2960,6 +2975,28 @@
                     <span class="dapp-tx-label">Est. Fee</span>
                     <span class="dapp-tx-value" id="dapp-tx-fee">~0.001 ETH</span>
                   </div>
+                  <!-- No fee yet: Confirm waits for it (design 0005, A) -->
+                  <div class="dapp-tx-fee-retry-row hidden" id="dapp-tx-fee-retry-row">
+                    <span>Confirm needs the network fee.</span>
+                    <button type="button" class="dapp-tx-fee-retry" id="dapp-tx-fee-retry">
+                      Try again
+                    </button>
+                  </div>
+                  <!-- The fee check at confirmation (freedom-core design 0005, A) -->
+                  <div class="fee-check-max dapp-tx-fee-check hidden" id="dapp-tx-fee-max"></div>
+                  <div class="fee-check-note dapp-tx-fee-check hidden" id="dapp-tx-fee-note"></div>
+                </div>
+
+                <!-- A network fee far above today's (the fee check, design 0005 A) -->
+                <div class="dapp-tx-warning hidden" id="dapp-tx-fee-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span id="dapp-tx-fee-warning-text"></span>
                 </div>
 
                 <!-- Warning for contract interactions -->

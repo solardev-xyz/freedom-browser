@@ -198,10 +198,16 @@ async function getSafeStatus(index) {
  * Throws with `code: 'SAFE_NEEDS_FUNDS'` when nothing can pay — callers
  * should render getSafeStatus's blocking state instead of retrying.
  *
+ * The executor's fee is judged by the fee check at confirmation (design
+ * 0005, A): one that needs the user stops with nothing signed
+ * (FEE_CHECK_NEEDS_CONFIRMATION), and the activation runs again with
+ * `feeConfirmation`, the user's confirmation of that fee.
+ *
  * @param {number} index - Wallet index of the safe record
+ * @param {{ feeConfirmation?: Object }} [options]
  * @returns {Promise<{safeAddress: string, hash?: string, alreadyDeployed?: boolean}>}
  */
-async function activateSafe(index) {
+async function activateSafe(index, { feeConfirmation = null } = {}) {
   const record = getSafeRecord(index);
   const { status, deployment } = await assessActivation(record);
 
@@ -223,6 +229,7 @@ async function activateSafe(index) {
     chainId: DEPLOY_CHAIN_ID,
     executorIndex: status.executorIndex,
     deployment,
+    feeConfirmation,
     // The executor paid gas to create the safe: from = executor
     // (tx-recorder default), the safe is what came into existence.
     record: {

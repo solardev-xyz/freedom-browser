@@ -53,6 +53,7 @@ import {
   HELD,
   REPLACE,
 } from './intent-texts.js';
+import { FEE_CHECK, FEE_CHECK_ASK_AGAIN, fetchFeeCheck } from './fee-check.js';
 
 const ERC20_TRANSFER = '0xa9059cbb';
 // Where a held payment leaves a gap later sends wait behind (D11).
@@ -290,8 +291,20 @@ function renderPayment(payment) {
   } else if (step?.step === 'replace' && step.fees) {
     const symbol = chain.nativeSymbol || 'ETH';
     const text = `${REPLACE.newFee(maxFeeOf(payment, step.fees), symbol)}. ${REPLACE.note}`;
-    const confirmLabel = busy ? replacingLabel(payment) : HELD.confirm;
-    stepHtml = renderStep(text, confirmLabel, 'confirm-replace', busy);
+    const { note: feeNote, kind } = replacementFeeNote(step);
+    const asking = step.feeCheck?.above && !step.acknowledged && step.asking;
+    const confirmLabel = busy
+      ? replacingLabel(payment)
+      : asking
+        ? FEE_CHECK.sendAnyway
+        : HELD.confirm;
+    stepHtml = renderStep(
+      feeNote ? `${text} ${feeNote}` : text,
+      confirmLabel,
+      'confirm-replace',
+      busy,
+      kind
+    );
   }
 
   const note = step?.note ?? {
@@ -322,11 +335,27 @@ function renderPayment(payment) {
   `;
 }
 
-function renderStep(text, confirmLabel, confirmAction, busy) {
+/**
+ * The fee check's word on a replacement's fees (design 0005, A): how they
+ * compare with today's network fee, and, far above it, a warning that
+ * asks again. `kind` is the note's: `warning` above the threshold.
+ */
+function replacementFeeNote(step) {
+  const verdict = step.feeCheck;
+  // No verdict from main: the fee couldn't be compared.
+  if (!verdict || !verdict.comparable) return { note: `${FEE_CHECK.notCompared}.`, kind: 'info' };
+  if (!verdict.above) {
+    return { note: `${FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint)}.`, kind: 'info' };
+  }
+  const ask = step.asking && !step.acknowledged ? ` ${FEE_CHECK.askAgain}` : '';
+  return { note: `${FEE_CHECK.above(verdict.ratio)}${ask}`, kind: 'warning' };
+}
+
+function renderStep(text, confirmLabel, confirmAction, busy, kind = 'info') {
   const disabled = busy ? 'disabled' : '';
   return `
     <div class="held-payment-step">
-      <span class="safe-signing-row-note info">${escapeHtml(text)}</span>
+      <span class="safe-signing-row-note ${kind}">${escapeHtml(text)}</span>
       <div class="safe-status-btn-row">
         <button type="button" class="safe-status-btn primary" data-action="${confirmAction}" ${disabled}>${escapeHtml(confirmLabel)}</button>
         <button type="button" class="safe-status-btn" data-action="cancel" ${disabled}>${escapeHtml(HELD.cancel)}</button>
@@ -434,22 +463,47 @@ async function sendAgain(payment) {
   await refreshHeldPayments();
 }
 
+/** A replacement's gas limit and fees, as main's fee check judges them. */
+function replacementFields(payment, fees) {
+  return { chainId: payment.chainId, gasLimit: payment.fields?.gasLimit, ...fees };
+}
+
 async function offerReplacement(payment) {
   active = { intentId: payment.intentId, step: 'replace', busy: true };
   render();
   const result = await window.wallet.intentReplacementFees(payment.intentId);
+  // The fee check at confirmation (design 0005, A) judges the raised fees
+  // as it does any other.
+  const feeCheck = result.success
+    ? await fetchFeeCheck(replacementFields(payment, result.fees))
+    : null;
   active = result.success
-    ? { intentId: payment.intentId, step: 'replace', fees: result.fees }
+    ? { intentId: payment.intentId, step: 'replace', fees: result.fees, feeCheck }
     : { intentId: payment.intentId, note: { kind: 'error', text: result.error } };
   render();
 }
 
 async function replace(payment) {
-  const { fees } = active ?? {};
+  const { fees, feeCheck, asking, acknowledged } = active ?? {};
   if (!fees) return;
   if (isSignatureInFlight()) return;
+  // A fee far above today's network fee is confirmed twice: the first press
+  // asks again.
+  if (feeCheck?.above && !acknowledged && !asking) {
+    active = { ...active, asking: true };
+    render();
+    return;
+  }
+  const confirmed = Boolean(feeCheck?.above && !acknowledged && asking) || Boolean(acknowledged);
   const flight = { intentId: payment.intentId };
-  active = { intentId: payment.intentId, step: 'replace', fees, busy: true };
+  active = {
+    intentId: payment.intentId,
+    step: 'replace',
+    fees,
+    feeCheck,
+    acknowledged: confirmed,
+    busy: true,
+  };
   render();
   beginSignatureFlight(flight);
   let note;
@@ -457,22 +511,40 @@ async function replace(payment) {
     const result = await window.wallet.intentReplace(
       payment.intentId,
       fees,
-      await confirmSigning('intent-replace', null, {
-        intentId: payment.intentId,
-        chainId: payment.chainId,
-        sender: payment.sender,
-        nonce: payment.nonce,
-        to: payment.fields.to,
-        value: payment.fields.value,
-        data: payment.fields.data,
-        gasLimit: payment.fields.gasLimit,
-        ...fees,
-      })
+      await confirmSigning(
+        'intent-replace',
+        null,
+        {
+          intentId: payment.intentId,
+          chainId: payment.chainId,
+          sender: payment.sender,
+          nonce: payment.nonce,
+          to: payment.fields.to,
+          value: payment.fields.value,
+          data: payment.fields.data,
+          gasLimit: payment.fields.gasLimit,
+          ...fees,
+        },
+        confirmed ? { feeAcknowledged: true } : undefined
+      )
     );
     note = result.success
       ? { kind: 'info', text: REPLACE.replaced }
       : { kind: 'error', text: outcomeText(result.outcome, result.reasonClass) || result.error };
   } catch (err) {
+    // Above the threshold at the press: nothing was signed, and the step
+    // asks again with main's verdict.
+    if (err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck) {
+      active = {
+        intentId: payment.intentId,
+        step: 'replace',
+        fees,
+        feeCheck: err.feeCheck,
+        asking: true,
+      };
+      render();
+      return;
+    }
     note = { kind: 'error', text: err.message };
   } finally {
     endSignatureFlight(flight);

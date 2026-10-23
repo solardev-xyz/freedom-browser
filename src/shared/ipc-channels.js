@@ -260,6 +260,7 @@ module.exports = {
   // Wallet Transactions
   WALLET_ESTIMATE_GAS: 'wallet:estimate-gas',
   WALLET_GET_GAS_PRICE: 'wallet:get-gas-price',
+  WALLET_FEE_CHECK: 'wallet:fee-check',
   WALLET_BUILD_ERC20_DATA: 'wallet:build-erc20-data',
   WALLET_PARSE_AMOUNT: 'wallet:parse-amount',
   WALLET_SEND_TRANSACTION: 'wallet:send-transaction',

@@ -330,6 +330,134 @@ async function dappPermissions({ win }, origin = 'https://swap.example') {
   await win.waitForTimeout(400);
 }
 
+// A Safe's own transactions, stopped by the fee check (design 0005, A): the
+// executor's fee waits on the screen for the user's confirmation. A browser
+// owner (the executor) and the Ledger above own a 2-of-2 Safe on Gnosis.
+const SAFE_OWNER = {
+  index: 0,
+  name: 'Main Wallet',
+  address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+  type: 'mnemonic',
+};
+const SAFE = {
+  index: 7,
+  name: 'Team Safe',
+  address: '0x41aD4887971f90BB3fE4d83eCa65177281283261',
+  type: 'safe',
+  owners: [SAFE_OWNER.index, LEDGER.index],
+  threshold: 2,
+  deployed: {},
+};
+const feeStop = (to, feeCheck) => ({
+  success: false,
+  code: 'FEE_CHECK_NEEDS_CONFIRMATION',
+  error: "This payment's network fee needs your confirmation.",
+  feeCheck: { maxCost: '310000000000000', oneEndpoint: false, autoApprove: false, ...feeCheck },
+  offer: {
+    executorIndex: SAFE_OWNER.index,
+    chainId: 100,
+    to,
+    value: '0',
+    data: '0x6a761202',
+    gasLimit: '155000',
+    maxFeePerGas: '2000000000',
+    maxPriorityFeePerGas: '1000000000',
+  },
+});
+
+// The signing board, every signature in: the executor's fee is far above
+// today's network fee, its ratio shown.
+async function safeExecuteFee({ app, win }) {
+  const state = {
+    status: 'collecting',
+    collected: 2,
+    threshold: 2,
+    createdAt: new Date().toISOString(),
+    display: { toAddress: RECIPIENT, amount: '250000000000000000', symbol: 'xDAI' },
+    executorIndex: SAFE_OWNER.index,
+    owners: [
+      { index: SAFE_OWNER.index, type: 'mnemonic', signed: true },
+      { index: LEDGER.index, type: 'ledger', signed: true },
+    ],
+  };
+  const stop = feeStop(SAFE.address, { comparable: true, ratio: '12', above: true });
+  await app.evaluate(
+    ({ ipcMain }, { state, stop }) => {
+      const replace = (ch, h) => {
+        ipcMain.removeHandler(ch);
+        ipcMain.handle(ch, h);
+      };
+      replace('wallet:safe-state', () => ({ success: true, state }));
+      replace('wallet:safe-execute', () => stop);
+    },
+    { state, stop }
+  );
+  await win.evaluate(
+    async ({ wallets, safe, state }) => {
+      const { walletState } = await import('./lib/wallet/wallet-state.js');
+      const board = await import('./lib/wallet/safe-signing.js');
+      walletState.derivedWallets = wallets;
+      await board.openSafeSigningBoard(safe.index, state);
+    },
+    { wallets: [SAFE_OWNER, LEDGER, SAFE], safe: SAFE, state }
+  );
+  await win.waitForSelector('#safe-signing-confirm-fee', { state: 'visible' });
+  await win.waitForTimeout(400);
+}
+
+// The account card's activation: its fee couldn't be compared with today's
+// network fee.
+async function safeActivateFee({ app, win }) {
+  const stop = feeStop('0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67', {
+    comparable: false,
+    ratio: null,
+    above: false,
+  });
+  await app.evaluate(
+    ({ ipcMain }, { stop, executorAddress }) => {
+      const replace = (ch, h) => {
+        ipcMain.removeHandler(ch);
+        ipcMain.handle(ch, h);
+      };
+      replace('wallet:get-safe-status', () => ({
+        success: true,
+        status: {
+          deployed: false,
+          chainId: 100,
+          executorIndex: 0,
+          executorAddress,
+          executorBalance: '1000000000000000000',
+          estimatedCost: '310000000000000',
+          needsFunds: false,
+        },
+      }));
+      replace('wallet:activate-safe', () => stop);
+      // No site is connected in this tab (stubWalletIpc connects every one).
+      replace('dapp:get-permission', () => null);
+    },
+    { stop, executorAddress: SAFE_OWNER.address }
+  );
+  await win.evaluate(
+    async ({ wallets, safe }) => {
+      const { walletState, hideAllSubscreens } = await import('./lib/wallet/wallet-state.js');
+      const selector = await import('./lib/wallet/wallet-selector.js');
+      const connect = await import('./lib/wallet/dapp-connect.js');
+      walletState.derivedWallets = wallets;
+      walletState.activeWalletIndex = safe.index;
+      hideAllSubscreens();
+      walletState.identityView?.classList.remove('hidden');
+      await connect.updateConnectionBanner();
+      // The Safe as the active account: its name, and its status card.
+      selector.updateWalletSelectorDisplay(safe);
+    },
+    { wallets: [SAFE_OWNER, LEDGER, SAFE], safe: SAFE }
+  );
+  await win.waitForSelector('#safe-status-activate', { state: 'visible' });
+  await win.click('#safe-status-activate');
+  await win.waitForSelector('#safe-status-confirm-fee', { state: 'visible' });
+  await win.waitForTimeout(400);
+}
+
 // Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed'
 async function swarmApproval({ win }, kind = 'connect') {
   await win.evaluate(async (k) => {
@@ -485,6 +613,8 @@ module.exports = {
   dappSign,
   dappConnect,
   dappPermissions,
+  safeExecuteFee,
+  safeActivateFee,
   swarmApproval,
   onchainApp,
   trustPopover,

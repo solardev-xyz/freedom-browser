@@ -288,6 +288,8 @@ function mockRendererModules() {
     },
     bypassUnlockGateForSafe: () => false,
     isSafeAccount: () => false,
+    // A phone picks and pays its own fee: the fee check has none to judge.
+    accountType: () => 'remote',
     renderSafeFeePayer: () => {},
     truncateAddress: (address) => address,
     signingButtonLabel: () => 'Confirm on your phone…',

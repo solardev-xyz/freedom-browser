@@ -13,6 +13,7 @@ import {
 import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, GNOSIS_CHAIN_ID } from './wallet-utils.js';
 import { openSafeSigningBoard } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { FeeConfirmation } from './fee-check.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import {
   getTrustStatusSentence,
@@ -69,6 +70,13 @@ let sendReviewFee;
 let sendReviewTotal;
 let sendEditBtn;
 let sendConfirmBtn;
+// The review's fee check at confirmation (freedom-core design 0005, A).
+let sendFeeCheck = null;
+// Confirm's state: the vault locked, or a send under way. With the fee
+// check pending (design 0005, A), Confirm waits for its verdict too.
+let sendLocked = false;
+let sendConfirming = false;
+const SEND_CONFIRM_LABEL = 'Confirm & Send';
 let sendUnlockSection;
 let sendTouchIdBtn;
 let sendPasswordLink;
@@ -155,6 +163,12 @@ export function initSend() {
   sendReviewTotal = document.getElementById('send-review-total');
   sendEditBtn = document.getElementById('send-edit-btn');
   sendConfirmBtn = document.getElementById('send-confirm-btn');
+  sendFeeCheck = new FeeConfirmation({
+    maxEl: document.getElementById('send-review-fee-max'),
+    noteEl: document.getElementById('send-review-fee-note'),
+    warningEl: document.getElementById('send-fee-warning'),
+    warningTextEl: document.getElementById('send-fee-warning-text'),
+  });
   sendUnlockSection = document.getElementById('send-unlock-section');
   sendTouchIdBtn = document.getElementById('send-touchid-btn');
   sendPasswordLink = document.getElementById('send-password-link');
@@ -1292,13 +1306,35 @@ function populateSendReview() {
 
   showHeldWarning().catch((err) => console.warn('[Send] Held payments unavailable:', err));
 
+  // A new review: no send of it is under way yet.
+  sendConfirming = false;
   const safe = activeSafeWallet();
   if (safe) {
     // The executor EOA pays the execution fee, quoted after signing.
+    sendFeeCheck?.reset();
+    renderSendConfirmLabel();
+    syncSendConfirm();
     renderSafeFeePayer(sendReviewFee, safe.index);
     if (sendReviewTotal) sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
     return;
   }
+
+  // The fee check (design 0005, A): the most this payment can cost, and how
+  // its fee compares with today's network fee. Confirm waits until it is
+  // shown. A phone picks and pays its own fee: there is none here to check.
+  if (sendPaysOwnFee()) {
+    sendFeeCheck?.reset();
+  } else {
+    sendFeeCheck
+      ?.load(sendFeeFields(), chain?.nativeSymbol || 'ETH')
+      .then(() => {
+        renderSendConfirmLabel();
+        syncSendConfirm();
+      })
+      .catch((err) => console.warn('[Send] Fee check unavailable:', err));
+  }
+  renderSendConfirmLabel();
+  syncSendConfirm();
 
   if (sendReviewFee && sendTxState.estimatedFee) {
     const feeInNative = parseFloat(sendTxState.estimatedFee) / 1e18;
@@ -1314,6 +1350,43 @@ function populateSendReview() {
     } else {
       sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
     }
+  }
+}
+
+/** The review's gas limit and fees, as they will be signed. */
+function sendFeeFields() {
+  const fields = { chainId: sendTxState.chainId, gasLimit: sendTxState.gasLimit };
+  if (sendTxState.maxFeePerGas) {
+    fields.maxFeePerGas = sendTxState.maxFeePerGas;
+    fields.maxPriorityFeePerGas = sendTxState.maxPriorityFeePerGas;
+  } else {
+    fields.gasPrice = sendTxState.gasPrice;
+  }
+  return fields;
+}
+
+/** Whether the active account's payment has no fee to check here: a phone
+ * picks and pays its own. */
+function sendPaysOwnFee() {
+  return accountType(walletState.activeWalletIndex) === 'remote';
+}
+
+/** Confirm's state: disabled while the vault is locked, a send is under
+ * way, or the fee check's verdict is pending. */
+function syncSendConfirm() {
+  if (!sendConfirmBtn) return;
+  sendConfirmBtn.disabled = sendLocked || sendConfirming || Boolean(sendFeeCheck?.pending());
+}
+
+/** The vault's state for the review, and Confirm's with it. */
+function setSendLocked(locked) {
+  sendLocked = locked;
+  syncSendConfirm();
+}
+
+function renderSendConfirmLabel() {
+  if (sendConfirmBtn && sendFeeCheck) {
+    sendConfirmBtn.textContent = sendFeeCheck.confirmLabel(SEND_CONFIRM_LABEL);
   }
 }
 
@@ -1411,6 +1484,7 @@ function buildRecipientVerifiedBadge(trust) {
 async function configureSendUnlockUI() {
   try {
     if (bypassUnlockGateForDevice(walletState.activeWalletIndex, sendUnlockSection, sendConfirmBtn)) {
+      setSendLocked(false);
       return;
     }
 
@@ -1418,12 +1492,12 @@ async function configureSendUnlockUI() {
 
     if (status.isUnlocked) {
       sendUnlockSection?.classList.add('hidden');
-      if (sendConfirmBtn) sendConfirmBtn.disabled = false;
+      setSendLocked(false);
       return;
     }
 
     sendUnlockSection?.classList.remove('hidden');
-    if (sendConfirmBtn) sendConfirmBtn.disabled = true;
+    setSendLocked(true);
 
     const canUseTouchId = await window.quickUnlock.canUseTouchId();
     const touchIdEnabled = await window.quickUnlock.isEnabled();
@@ -1465,7 +1539,7 @@ async function handleSendTouchIdUnlock() {
     }
 
     sendUnlockSection?.classList.add('hidden');
-    if (sendConfirmBtn) sendConfirmBtn.disabled = false;
+    setSendLocked(false);
   } catch (err) {
     console.error('[WalletUI] Send Touch ID unlock failed:', err);
     if (err.message !== 'Touch ID cancelled') {
@@ -1488,7 +1562,7 @@ async function handleSendPasswordUnlock() {
     }
 
     sendUnlockSection?.classList.add('hidden');
-    if (sendConfirmBtn) sendConfirmBtn.disabled = false;
+    setSendLocked(false);
     clearSendError('unlock');
   } catch (err) {
     console.error('[WalletUI] Send password unlock failed:', err);
@@ -1497,10 +1571,18 @@ async function handleSendPasswordUnlock() {
 }
 
 async function handleSendConfirm() {
-  if (sendConfirmBtn) sendConfirmBtn.disabled = true;
+  const safe = activeSafeWallet();
+  // Nothing is confirmed before the fee check's verdict is shown, and a
+  // fee far above today's network fee is confirmed twice (design 0005, A):
+  // the first press asks again.
+  if (!safe && !sendPaysOwnFee() && sendFeeCheck && !sendFeeCheck.proceed()) {
+    renderSendConfirmLabel();
+    return;
+  }
+  sendConfirming = true;
+  syncSendConfirm();
 
   showSendPendingView();
-  const safe = activeSafeWallet();
 
   // Claim the sidebar for the whole flight: wallet:send-transaction puts a
   // prompt on the device that the renderer cannot recall, so no other
@@ -1589,7 +1671,7 @@ async function handleSendConfirm() {
     const result = await window.wallet.sendTransaction(
       txParams,
       display,
-      await confirmSigning('wallet-send', null, txParams)
+      await confirmSigning('wallet-send', null, txParams, sendFeeCheck?.options())
     );
 
     if (!result.success) {
@@ -1618,6 +1700,15 @@ async function handleSendConfirm() {
     );
     setTimeout(() => refreshBalances(), 3000);
   } catch (err) {
+    // The fee is above the threshold at the press: nothing was signed, and
+    // the review asks again with main's verdict.
+    if (sendFeeCheck?.askAgain(err)) {
+      showSendReviewView();
+      renderSendConfirmLabel();
+      sendConfirming = false;
+      syncSendConfirm();
+      return;
+    }
     console.error('[WalletUI] Transaction failed:', err);
     showSendErrorView(err.message || 'Transaction failed', err.failure);
   } finally {

@@ -1,0 +1,282 @@
+/**
+ * The fee check at confirmation, on the approval screens (freedom-core
+ * design 0005, A: the check at confirmation).
+ *
+ * Main judges a transaction's fee against today's network fee: when the
+ * screen is shown (`wallet:fee-check`), and again at the user's press,
+ * when it mints the confirmation (`wallet:confirm-signing`). The screen
+ * shows the verdict:
+ * - the most the payment can cost, and how its fee compares with today's
+ *   network fee;
+ * - above the threshold, an amber warning naming the ratio, and the
+ *   confirm button asks again ("Send anyway") before anything is signed;
+ * - without a reference, that the fee couldn't be compared.
+ *
+ * A fee that was fine when shown can be above the threshold at the press
+ * (today's fee fell, or the evidence was gathered again): main then mints
+ * nothing and answers FEE_CHECK_ASK_AGAIN with the new verdict, and the
+ * screen asks again.
+ *
+ * A Safe's execution or activation that main stopped for its executor's fee
+ * (FEE_CHECK_NEEDS_CONFIRMATION) is shown on the signing board or the
+ * account card (describeFeeCheck), and confirmed there (confirmOfferedFee).
+ */
+
+import { confirmSigning } from './signing-confirmation.js';
+
+/** Main's answer when a fee is newly above the threshold at the press. */
+export const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
+
+/** Main's answer when an auto-approved send's fee needs the user. */
+export const FEE_CHECK_NOT_AUTO_APPROVED = 'FEE_CHECK_NOT_AUTO_APPROVED';
+
+/** Main's answer when a transaction it sends on its own (a Safe's
+ * execution or activation) needs the user to confirm its fee. */
+export const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
+
+/** Main's answer to a send whose fee wasn't shown: nothing was signed. */
+export const FEE_NOT_SHOWN = 'FEE_NOT_SHOWN';
+
+/** Every text the fee check shows. */
+export const FEE_CHECK = Object.freeze({
+  upTo: (amount, symbol) => `Up to ${amount} ${symbol}`,
+  compared: (ratio, oneEndpoint) =>
+    oneEndpoint
+      ? `About ${ratio}× today's network fee, as one network source reports it`
+      : `About ${ratio}× today's network fee`,
+  notCompared: "Couldn't compare this fee with today's network fee",
+  above: (ratio) => `This network fee is ${ratio}× today's network fee.`,
+  askAgain: 'Check the fee, then press Send anyway to pay it.',
+  sendAnyway: 'Send anyway',
+  confirmFee: 'Confirm the network fee',
+  confirmExecute: 'Confirm fee and execute',
+  confirmActivate: 'Confirm fee and activate',
+  feeUnknown: "Couldn't get the network fee",
+  retry: 'Try again',
+});
+
+/**
+ * A verdict in lines of text: the most the transaction can cost, then how
+ * its fee compares with today's network fee (or that it couldn't be
+ * compared, or the warning above the threshold).
+ */
+export function describeFeeCheck(verdict, symbol = 'ETH') {
+  if (!verdict) return [];
+  const lines = [];
+  if (verdict.maxCost) lines.push(FEE_CHECK.upTo(formatMaxCost(verdict.maxCost), symbol));
+  if (!verdict.comparable) lines.push(FEE_CHECK.notCompared);
+  else if (verdict.above) lines.push(FEE_CHECK.above(verdict.ratio).replace(/\.$/, ''));
+  else lines.push(FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint));
+  return lines;
+}
+
+/**
+ * The user's confirmation of the fee main stopped a transaction of its own
+ * for (FEE_CHECK_NEEDS_CONFIRMATION): an 'executor-send' confirmation of
+ * the transaction main offered, with that fee, as main takes it back
+ * (`feeConfirmation`). A fee shown above the threshold is confirmed as
+ * such. Throws as confirmSigning does: FEE_CHECK_ASK_AGAIN with main's new
+ * verdict when the fee is newly above at the press.
+ */
+export async function confirmOfferedFee(offer, verdict) {
+  const { executorIndex, ...payload } = offer;
+  const { confirmation } = await confirmSigning(
+    'executor-send',
+    executorIndex,
+    payload,
+    verdict?.above ? { feeAcknowledged: true } : undefined
+  );
+  const { gasLimit, ...fees } = feeFields(payload);
+  delete fees.chainId;
+  return { confirmation, gasLimit, fees };
+}
+
+/** An amount of wei in whole units, rounded up at 9 decimals (a gwei):
+ * "up to" never understates it. */
+export function formatMaxCost(wei) {
+  const gwei = 10n ** 9n;
+  const amount = ((BigInt(wei) + gwei - 1n) / gwei) * gwei;
+  const base = 10n ** 18n;
+  const fraction = (amount % base).toString().padStart(18, '0').replace(/0+$/, '');
+  return fraction ? `${amount / base}.${fraction}` : String(amount / base);
+}
+
+/** The fee fields of a transaction, as main judges them. */
+export function feeFields(tx) {
+  const fields = { chainId: tx.chainId, gasLimit: tx.gasLimit };
+  if (tx.maxFeePerGas != null && tx.maxPriorityFeePerGas != null) {
+    fields.maxFeePerGas = tx.maxFeePerGas;
+    fields.maxPriorityFeePerGas = tx.maxPriorityFeePerGas;
+  } else if (tx.gasPrice != null) {
+    fields.gasPrice = tx.gasPrice;
+  }
+  return fields;
+}
+
+/**
+ * The verdict shown when main gives none: the most `tx` can cost, from its
+ * own fields, and that its fee couldn't be compared. Main still judges the
+ * fee at the press.
+ */
+export function unreferencedVerdict(tx) {
+  let maxCost = null;
+  try {
+    const perGas = tx?.maxFeePerGas ?? tx?.gasPrice;
+    if (tx?.gasLimit != null && perGas != null) {
+      maxCost = (BigInt(tx.gasLimit) * BigInt(perGas)).toString();
+    }
+  } catch {
+    maxCost = null;
+  }
+  return {
+    maxCost,
+    comparable: false,
+    ratio: null,
+    above: false,
+    oneEndpoint: false,
+    basis: null,
+    autoApprove: false,
+  };
+}
+
+/** Main's verdict on `tx`'s fee, or null when it couldn't give one. */
+export async function fetchFeeCheck(tx) {
+  try {
+    const result = await window.wallet.feeCheck(feeFields(tx));
+    return result?.success ? result.feeCheck : null;
+  } catch (err) {
+    console.warn('[FeeCheck] No verdict:', err?.message);
+    return null;
+  }
+}
+
+/**
+ * One confirmation's fee check: the verdict it shows, and whether the user
+ * has confirmed a fee above the threshold again.
+ *
+ * Its state is `none` (no check asked for this transaction), `loading`
+ * (main's answer pending) or `shown`. Confirm waits while it is loading
+ * (`pending()`), and `proceed()` goes on only once a verdict is shown: a
+ * failed answer shows the no-reference verdict (`unreferencedVerdict`).
+ *
+ * @param {object} elements
+ * @param {HTMLElement} [elements.maxEl] - "Up to …"
+ * @param {HTMLElement} [elements.noteEl] - the comparison, or "couldn't compare"
+ * @param {HTMLElement} [elements.warningEl] - the amber callout, shown above
+ *   the threshold
+ * @param {HTMLElement} [elements.warningTextEl] - its text
+ */
+export class FeeConfirmation {
+  constructor({ maxEl = null, noteEl = null, warningEl = null, warningTextEl = null } = {}) {
+    this.elements = { maxEl, noteEl, warningEl, warningTextEl };
+    this.symbol = 'ETH';
+    this.state = 'none';
+    this.verdict = null;
+    this.asking = false;
+    this.acknowledged = false;
+    this.request = 0;
+  }
+
+  /** Clears it for another transaction: nothing shown, nothing confirmed. */
+  reset(symbol = 'ETH') {
+    this.request += 1;
+    this.symbol = symbol;
+    this.state = 'none';
+    this.verdict = null;
+    this.asking = false;
+    this.acknowledged = false;
+    this.render();
+  }
+
+  /**
+   * Asks main for `tx`'s verdict and shows it; an answer for an earlier
+   * transaction is dropped. Without an answer, it shows the most `tx` can
+   * cost and that its fee couldn't be compared.
+   */
+  async load(tx, symbol = 'ETH') {
+    this.reset(symbol);
+    const request = this.request;
+    this.state = 'loading';
+    const verdict = await fetchFeeCheck(tx);
+    if (request !== this.request) return null;
+    this.verdict = verdict ?? unreferencedVerdict(tx);
+    this.state = 'shown';
+    this.render();
+    return this.verdict;
+  }
+
+  /** Whether main's verdict is still pending: Confirm waits for it. */
+  pending() {
+    return this.state === 'loading';
+  }
+
+  /**
+   * The user pressed confirm. True to go on; false while no verdict is
+   * shown, and when the fee is above the threshold and not yet confirmed
+   * again: the screen then asks, and the next press confirms it.
+   */
+  proceed() {
+    if (this.state !== 'shown' || !this.verdict) return false;
+    if (!this.verdict.above || this.acknowledged) return true;
+    if (this.asking) {
+      this.acknowledged = true;
+      return true;
+    }
+    this.asking = true;
+    this.render();
+    return false;
+  }
+
+  /** What the confirmation's request tells main of the user's answer. */
+  options() {
+    return this.acknowledged ? { feeAcknowledged: true } : undefined;
+  }
+
+  /**
+   * Main asked again at the press (FEE_CHECK_ASK_AGAIN): show its verdict,
+   * and ask. False for any other error.
+   */
+  askAgain(err) {
+    if (err?.code !== FEE_CHECK_ASK_AGAIN || !err.feeCheck) return false;
+    this.request += 1;
+    this.state = 'shown';
+    this.verdict = err.feeCheck;
+    this.acknowledged = false;
+    this.asking = true;
+    this.render();
+    return true;
+  }
+
+  /** The confirm button's label: `label`, or "Send anyway" while asking. */
+  confirmLabel(label) {
+    return this.asking && !this.acknowledged ? FEE_CHECK.sendAnyway : label;
+  }
+
+  render() {
+    const { maxEl, noteEl, warningEl, warningTextEl } = this.elements;
+    const verdict = this.verdict;
+    if (maxEl) {
+      maxEl.textContent = verdict?.maxCost
+        ? FEE_CHECK.upTo(formatMaxCost(verdict.maxCost), this.symbol)
+        : '';
+      maxEl.classList.toggle('hidden', !verdict?.maxCost);
+    }
+    if (noteEl) {
+      let note = '';
+      if (verdict && !verdict.comparable) note = FEE_CHECK.notCompared;
+      else if (verdict && !verdict.above)
+        note = FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint);
+      noteEl.textContent = note;
+      noteEl.classList.toggle('hidden', !note);
+    }
+    if (warningEl) {
+      const above = Boolean(verdict?.above);
+      if (warningTextEl) {
+        warningTextEl.textContent = above
+          ? `${FEE_CHECK.above(verdict.ratio)}${this.asking ? ` ${FEE_CHECK.askAgain}` : ''}`
+          : '';
+      }
+      warningEl.classList.toggle('hidden', !above);
+    }
+  }
+}

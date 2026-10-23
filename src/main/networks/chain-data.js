@@ -11,6 +11,9 @@
  *   `routingContext`, `signal`, `background` and `excludeSources` as the
  *   router did; the Ant bridge's log scans name their options as one
  *   profile, `ant_scan`.
+ * - `getFeeReference(chainId, options)` is the core's `chain.fee_reference`:
+ *   the evidence the wallet's fee check reads (design 0005, A), new with
+ *   the core, not one of the router's calls.
  * - `chainHtml(chainId, contract, options)` is the `web3:` handler's
  *   `html()` read as the core's `chain.html` (design 0006): the document
  *   decoded, capped, hashed and classified there, within the handler's
@@ -111,6 +114,12 @@ async function getFeeQuote(chainId) {
   return chainDriver().feeQuote(chainId);
 }
 
+// The evidence for the fee check at confirmation (design 0005, A):
+// `{ header, lowest_priority, quote }`, within `options.deadlineMs`.
+async function getFeeReference(chainId, options = {}) {
+  return chainDriver().feeReference(chainId, options);
+}
+
 async function chainHtml(chainId, contract, options = {}) {
   return chainDriver().chainHtml(chainId, contract, options);
 }
@@ -133,6 +142,7 @@ module.exports = {
   isReadMethod,
   request,
   getFeeQuote,
+  getFeeReference,
   chainHtml,
   broadcastRawTransaction,
 };

@@ -74,6 +74,11 @@ const loadProvider = async (options = {}) => {
     confirmSigning: jest.fn(async () => ({ success: true, token: 'confirm-token' })),
     getGasPrice: jest.fn(async () => ({ success: true, type: 'legacy', gasPrice: '7' })),
     estimateGas: jest.fn(async () => ({ success: true, gasLimit: '50000' })),
+    // The fee check at confirmation (design 0005, A): a fee like today's.
+    feeCheck: jest.fn(async () => ({
+      success: true,
+      feeCheck: { maxCost: '350000', comparable: true, ratio: '1', above: false, autoApprove: true },
+    })),
     dappSendTransaction: jest.fn(async () => ({ success: true, hash: '0xtx' })),
   };
 
@@ -126,6 +131,7 @@ const loadProvider = async (options = {}) => {
   }));
   jest.doMock('./wallet/wallet-utils.js', () => ({
     isSafeAccount: jest.fn((index) => index >= SAFE_WALLET_INDEX),
+    accountType: jest.fn((index) => (index >= SAFE_WALLET_INDEX ? 'safe' : 'mnemonic')),
     GNOSIS_CHAIN_ID: 100,
   }));
   const safeSigning = {
@@ -734,6 +740,50 @@ describe('dapp-provider signing authorization', () => {
       undefined,
       { autoApprove: 'https://app.example', webContentsId: 42 }
     );
+  });
+
+  // The fee check at confirmation (design 0005, A): an "Always allow" rule
+  // covers the call, never a fee the check can't pass without the user.
+  test('an auto-approved transaction whose fee needs the user shows the approval instead', async () => {
+    const data = '0x095ea7b3' + '00'.repeat(64);
+    for (const feeCheck of [
+      { comparable: false, ratio: null, above: false, autoApprove: false },
+      { comparable: true, ratio: '1', above: false, oneEndpoint: true, autoApprove: false },
+      { comparable: true, ratio: '20', above: true, autoApprove: false },
+    ]) {
+      const { sendRequest, walletMocks, walletUi } = await loadProvider({
+        permission: eoaPermission(),
+        txAutoApproved: true,
+      });
+      walletMocks.feeCheck.mockResolvedValue({ success: true, feeCheck });
+      sendRequest({ id: 1, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data }] });
+      await flushMicrotasks();
+      expect(walletMocks.feeCheck).toHaveBeenCalledWith({ chainId: 100, gasLimit: '50000', gasPrice: '7' });
+      expect(walletMocks.dappSendTransaction).not.toHaveBeenCalled();
+      expect(walletUi.showDappTxApproval).toHaveBeenCalledWith(
+        expect.anything(),
+        'https://app.example',
+        expect.objectContaining({ to: '0xc0ffee', data }),
+        100
+      );
+    }
+  });
+
+  test("main's own fee check refusing an auto-approved send shows the approval too", async () => {
+    const { sendRequest, walletMocks, walletUi } = await loadProvider({
+      permission: eoaPermission(),
+      txAutoApproved: true,
+    });
+    walletMocks.dappSendTransaction.mockResolvedValueOnce({
+      success: false,
+      code: 'FEE_CHECK_NOT_AUTO_APPROVED',
+      error: "This payment's network fee needs your confirmation.",
+    });
+    const data = '0x095ea7b3' + '00'.repeat(64);
+    sendRequest({ id: 1, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data }] });
+    await flushMicrotasks();
+    expect(walletMocks.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(walletUi.showDappTxApproval).toHaveBeenCalled();
   });
 
   test('a user-approved signature mints a token for exactly that payload', async () => {

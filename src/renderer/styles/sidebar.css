@@ -6569,6 +6569,11 @@
   color: var(--muted);
 }
 
+/* A replacement's fee far above today's network fee (design 0005, A). */
+.safe-signing-row-note.warning {
+  color: var(--warning-fg);
+}
+
 .safe-signing-row-state {
   font-size: 12px;
   color: var(--text);
@@ -6619,6 +6624,18 @@
 
 .safe-signing-banner-hint {
   color: var(--muted);
+}
+
+/* The executor's fee, waiting for the user (design 0005, A): neutral, and
+   amber when it is far above today's network fee. */
+.safe-signing-banner.safe-signing-fee {
+  background: var(--toolbar);
+  border-color: var(--border);
+}
+
+.safe-signing-banner.safe-signing-fee.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .safe-signing-discard {
@@ -6724,7 +6741,49 @@
   color: var(--text);
 }
 
-/* The send review's warning that a payment would wait behind a held one. */
-.send-held-warning {
+/* The send review's warnings: a payment that would wait behind a held one,
+   and a network fee far above today's. */
+.send-held-warning,
+.send-fee-warning {
   margin: 16px 0 0;
+}
+
+/* The fee check at confirmation (freedom-core design 0005, A): the most a
+   payment can cost and how its fee compares with today's network fee,
+   under the estimate. */
+.fee-check-max,
+.fee-check-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dapp-tx-fee-check {
+  text-align: right;
+}
+
+/* No fee yet: Confirm waits for it, and the fee can be asked for again. */
+.dapp-tx-fee-retry-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dapp-tx-fee-retry {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dapp-tx-fee-retry:hover {
+  background: var(--toolbar);
 }

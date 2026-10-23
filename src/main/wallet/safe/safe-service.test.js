@@ -195,6 +195,8 @@ describe('activateSafe', () => {
       saltNonce: '7508',
       chainId: DEPLOY_CHAIN_ID,
       executorIndex: 0,
+      // no fee confirmation: the executor's fee is judged as it is signed
+      feeConfirmation: null,
       // the quoted deployment is reused — no second protocol-kit build
       deployment: await mockBuildDeploymentTransaction.mock.results[0].value,
       // the deploy lands in payment history

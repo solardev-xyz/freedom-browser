@@ -355,3 +355,160 @@ describe('safe signing board — cross-session fencing of in-flight continuation
     expect(screen.classList.contains('hidden')).toBe(true);
   });
 });
+
+// Design 0005, A: main judges the executor's fee as it signs. One that needs
+// the user stops before signing; the board shows it and signs only the fee
+// the user confirms there.
+describe("safe signing board — the executor's fee", () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+    jest.restoreAllMocks();
+  });
+
+  const OFFER = {
+    executorIndex: 0,
+    chainId: 100,
+    to: '0x41aD4887971f90BB3fE4d83eCa65177281283261',
+    value: '0',
+    data: '0x6a761202',
+    gasLimit: '150000',
+    maxFeePerGas: '2000000000',
+    maxPriorityFeePerGas: '1000000000',
+  };
+  const VERDICT = {
+    maxCost: '300000000000000',
+    comparable: false,
+    ratio: null,
+    above: false,
+    oneEndpoint: false,
+    autoApprove: false,
+  };
+  const ABOVE = { ...VERDICT, comparable: true, ratio: '20', above: true };
+  const stopped = (feeCheck = VERDICT) => ({
+    success: false,
+    code: 'FEE_CHECK_NEEDS_CONFIRMATION',
+    error: "This payment's network fee needs your confirmation.",
+    feeCheck,
+    offer: OFFER,
+  });
+  const sendState = () => ({
+    status: 'collecting',
+    collected: 2,
+    threshold: 2,
+    createdAt: '2026-07-12T00:00:00.000Z',
+    display: { toAddress: '0xabc', amount: '1000', symbol: 'xDAI' },
+    executorIndex: 0,
+    owners: [
+      { index: 0, type: 'mnemonic', signed: true },
+      { index: 1, type: 'mnemonic', signed: true },
+    ],
+  });
+  const CONFIRMED = {
+    confirmation: 'token-1',
+    gasLimit: '150000',
+    fees: { maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000' },
+  };
+
+  async function openStoppedBoard(feeCheck = VERDICT) {
+    const board = await loadBoard();
+    const content = global.document.getElementById('safe-signing-content');
+    const confirmButton = createElement('button');
+    const retryButton = createElement('button');
+    global.document.getElementById = (id) =>
+      ({
+        'sidebar-safe-signing': board.screen,
+        'safe-signing-content': content,
+        'safe-signing-confirm-fee': confirmButton,
+        'safe-signing-retry-execute': retryButton,
+      })[id] ?? null;
+    Object.assign(board.walletMocks, {
+      safeState: jest.fn(async () => ({ success: true, state: sendState() })),
+      safeSign: jest.fn(),
+      safeCancelPending: jest.fn(),
+      safeExecute: jest.fn(async () => stopped(feeCheck)),
+      confirmSigning: jest.fn(async () => ({ success: true, token: 'token-1' })),
+    });
+    await board.mod.openSafeSigningBoard(5, sendState());
+    await flushMicrotasks();
+    return { ...board, content, confirmButton, retryButton };
+  }
+
+  const click = async (button) => {
+    button.dispatch('click');
+    await flushMicrotasks();
+  };
+
+  test("a fee that needs the user: shown, and nothing signed until it's confirmed", async () => {
+    const { walletMocks, content } = await openStoppedBoard();
+    expect(walletMocks.safeExecute).toHaveBeenCalledTimes(1);
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5);
+    expect(content.innerHTML).toContain('Confirm the network fee');
+    expect(content.innerHTML).toContain('Up to 0.0003 xDAI');
+    expect(content.innerHTML).toContain("Couldn't compare this fee with today's network fee");
+    expect(content.innerHTML).toContain('Confirm fee and execute');
+    // It waits for the user: the automatic run doesn't go round again.
+    expect(walletMocks.confirmSigning).not.toHaveBeenCalled();
+  });
+
+  test('the confirmed fee is what main signs', async () => {
+    const { walletMocks, confirmButton } = await openStoppedBoard();
+    walletMocks.safeExecute.mockResolvedValueOnce({
+      success: true,
+      state: { ...sendState(), status: 'executed', executed: { hash: '0xhash' } },
+    });
+    await click(confirmButton);
+    const { executorIndex: _executor, ...payload } = OFFER;
+    expect(walletMocks.confirmSigning).toHaveBeenCalledWith('executor-send', 0, payload);
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED });
+  });
+
+  test('above the threshold: the ratio, and the confirmation says it was seen', async () => {
+    const { walletMocks, content, confirmButton } = await openStoppedBoard(ABOVE);
+    expect(content.innerHTML).toContain("This network fee is 20× today's network fee");
+    await click(confirmButton);
+    expect(walletMocks.confirmSigning).toHaveBeenCalledWith(
+      'executor-send',
+      0,
+      expect.objectContaining({ maxFeePerGas: OFFER.maxFeePerGas }),
+      { feeAcknowledged: true }
+    );
+  });
+
+  test('newly above at the press: main asks again, and the board shows it', async () => {
+    const { walletMocks, content, confirmButton } = await openStoppedBoard();
+    walletMocks.confirmSigning.mockResolvedValueOnce({
+      success: false,
+      code: 'FEE_CHECK_ASK_AGAIN',
+      error: 'again',
+      feeCheck: ABOVE,
+    });
+    await click(confirmButton);
+    expect(walletMocks.safeExecute).toHaveBeenCalledTimes(1);
+    expect(content.innerHTML).toContain("This network fee is 20× today's network fee");
+    await click(confirmButton);
+    expect(walletMocks.confirmSigning).toHaveBeenLastCalledWith(
+      'executor-send',
+      0,
+      expect.anything(),
+      { feeAcknowledged: true }
+    );
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED });
+  });
+
+  test('a failed execution stays retryable, and "Try again" is judged again', async () => {
+    const { walletMocks, content, confirmButton, retryButton } = await openStoppedBoard();
+    walletMocks.safeExecute.mockResolvedValueOnce({
+      success: false,
+      error: 'Insufficient funds for transaction',
+      code: 'SAFE_NEEDS_FUNDS',
+    });
+    await click(confirmButton);
+    expect(content.innerHTML).toContain('Insufficient funds for transaction');
+    await click(retryButton);
+    // A new quote, judged again: no confirmation rides along.
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5);
+    expect(content.innerHTML).toContain('Confirm fee and execute');
+  });
+});

@@ -545,8 +545,13 @@ contextBridge.exposeInMainWorld('wallet', {
   // and hands it to the signing call as `{ confirmation: token }`.
   // kind: 'wallet-send' | 'dapp-send' | 'sign-message' | 'sign-typed-data'
   //       | 'safe-send' | 'safe-message'.
-  confirmSigning: (kind, accountIndex, payload) =>
-    ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload),
+  // A transaction's confirmation is also its fee check's approval (design
+  // 0005, A): `options.feeAcknowledged` once the user confirmed a fee above
+  // the threshold again; without it, main may answer FEE_CHECK_ASK_AGAIN.
+  confirmSigning: (kind, accountIndex, payload, options) =>
+    ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload, options),
+  // The fee check of a transaction about to be shown for confirmation.
+  feeCheck: (tx) => ipcRenderer.invoke('wallet:fee-check', tx),
   sendTransaction: (params, context, authorization) =>
     ipcRenderer.invoke('wallet:send-transaction', params, context, authorization),
   // Held payments (the wallet's intent records). A resend sends the same
@@ -604,13 +609,16 @@ contextBridge.exposeInMainWorld('wallet', {
   createSafe: (name, ownerIndexes, threshold) =>
     ipcRenderer.invoke('wallet:create-safe', name, ownerIndexes, threshold),
   getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
-  activateSafe: (index) => ipcRenderer.invoke('wallet:activate-safe', index),
+  // `options.feeConfirmation`: the user's 'executor-send' confirmation of a
+  // fee the fee check stopped for (design 0005, A), with that fee.
+  activateSafe: (index, options) => ipcRenderer.invoke('wallet:activate-safe', index, options),
   // Safe sends (the signing board): every call returns {success, state}
   // where state is the board's render model (null when nothing pending).
   safeSend: (safeIndex, tx, display, chainId, authorization) =>
     ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId, authorization),
   safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
-  safeExecute: (safeIndex) => ipcRenderer.invoke('wallet:safe-execute', safeIndex),
+  safeExecute: (safeIndex, options) =>
+    ipcRenderer.invoke('wallet:safe-execute', safeIndex, options),
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
   safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
   safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),

@@ -266,6 +266,8 @@ describe('executeSafePending', () => {
       safeTxData: builtResult.safeTxData,
       signatures: [signatureOf(0), signatureOf(2)],
       executorIndex: 0,
+      // no fee confirmation: the executor's fee is judged as it is signed
+      feeConfirmation: null,
       record: {
         kind: 'safe-send',
         fromAddress: SAFE_ADDRESS,

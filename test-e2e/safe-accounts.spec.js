@@ -18,9 +18,12 @@ test.skip(
   'anvil (foundry) or the Gnosis fork RPC not available — Safe E2E needs both'
 );
 
-test('create, activate, and send from a Safe account', async ({ window: win, anvil }) => {
-  test.setTimeout(300_000);
-
+/**
+ * Create a 1-of-2 Safe through the wizard, see its blocking state, and fund
+ * its executor (Main Wallet) on the fork. Resolves with the Safe's address,
+ * its activation card on screen.
+ */
+async function createFundedSafe(win, anvil) {
   // --- Create a 1-of-2 Safe through the wizard ---------------------------
 
   await win.click('#wallet-toggle-btn');
@@ -56,10 +59,58 @@ test('create, activate, and send from a Safe account', async ({ window: win, anv
     .wallets.find((w) => w.index === 0).address;
   await anvil.rpc('anvil_setBalance', [mainAddress, '0x' + parseEther('1').toString(16)]);
   await win.click('#safe-status-refresh');
+  await expect(win.locator('#safe-status-activate')).toBeVisible({ timeout: 60_000 });
+  return safeAddress;
+}
+
+/** Give the Safe a balance and let the asset list see it (switch away and
+ * back — the account change refreshes balances, like a user would). */
+async function fundSafe(win, anvil, safeAddress) {
+  await anvil.rpc('anvil_setBalance', [safeAddress, '0x' + parseEther('1').toString(16)]);
+  await win.evaluate(() => window.wallet.clearBalanceCache());
+  await win.click('#wallet-selector-btn');
+  await win.locator('.wallet-selector-item', { hasText: 'Main Wallet' }).click();
+  await win.click('#wallet-selector-btn');
+  await win.locator('.wallet-selector-item', { hasText: 'E2E Safe' }).click();
+  await expect(win.locator('#asset-list')).toContainText('1', { timeout: 60_000 });
+}
+
+/** Fill the Send form for 0.5 xDAI to a new address and confirm it; the
+ * signing board takes over. Resolves with the recipient. */
+async function sendFromSafe(win) {
+  const recipient = Wallet.createRandom().address;
+  await win.click('#wallet-send-btn');
+  await win.fill('#send-recipient', recipient);
+  await win.fill('#send-amount', '0.5');
+  await win.click('#send-continue-btn');
+
+  // Review names who pays instead of quoting exec gas.
+  await expect(win.locator('#send-review-view')).toBeVisible({ timeout: 30_000 });
+  await expect(win.locator('#send-review-fee-value')).toContainText('Main Wallet');
+
+  // Vault was unlocked for activation, so no unlock gate here.
+  await expect(win.locator('#send-confirm-btn')).toBeEnabled({ timeout: 15_000 });
+  await win.click('#send-confirm-btn');
+  await expect(win.locator('#sidebar-safe-signing')).toBeVisible({ timeout: 30_000 });
+  return recipient;
+}
+
+/** The money actually moved on the fork (allow a block for inclusion). */
+async function expectReceived(anvil, recipient) {
+  await expect
+    .poll(async () => BigInt(await anvil.rpc('eth_getBalance', [recipient, 'latest'])), {
+      timeout: 30_000,
+    })
+    .toBe(parseEther('0.5'));
+}
+
+test('create, activate, and send from a Safe account', async ({ window: win, anvil }) => {
+  test.setTimeout(300_000);
+  const safeAddress = await createFundedSafe(win, anvil);
+  const card = win.locator('#safe-status-card');
 
   // --- Activate: real deployment through the canonical factory -----------
 
-  await expect(win.locator('#safe-status-activate')).toBeVisible({ timeout: 60_000 });
   // Deployment is signed by the executor's vault key; the vault is
   // locked, so activating walks through the standard unlock screen.
   await win.click('#safe-status-activate');
@@ -79,42 +130,77 @@ test('create, activate, and send from a Safe account', async ({ window: win, anv
 
   // --- Send xDAI out of the Safe ------------------------------------------
 
-  // Give the Safe a balance and let the asset list see it (switch away
-  // and back — the account change refreshes balances, like a user would).
-  await anvil.rpc('anvil_setBalance', [safeAddress, '0x' + parseEther('1').toString(16)]);
-  await win.evaluate(() => window.wallet.clearBalanceCache());
-  await win.click('#wallet-selector-btn');
-  await win.locator('.wallet-selector-item', { hasText: 'Main Wallet' }).click();
-  await win.click('#wallet-selector-btn');
-  await win.locator('.wallet-selector-item', { hasText: 'E2E Safe' }).click();
-  await expect(win.locator('#asset-list')).toContainText('1', { timeout: 60_000 });
-
-  const recipient = Wallet.createRandom().address;
-  await win.click('#wallet-send-btn');
-  await win.fill('#send-recipient', recipient);
-  await win.fill('#send-amount', '0.5');
-  await win.click('#send-continue-btn');
-
-  // Review names who pays instead of quoting exec gas.
-  await expect(win.locator('#send-review-view')).toBeVisible({ timeout: 30_000 });
-  await expect(win.locator('#send-review-fee-value')).toContainText('Main Wallet');
-
-  // Vault was unlocked for activation, so no unlock gate here.
-  await expect(win.locator('#send-confirm-btn')).toBeEnabled({ timeout: 15_000 });
-  await win.click('#send-confirm-btn');
+  await fundSafe(win, anvil, safeAddress);
+  const recipient = await sendFromSafe(win);
 
   // Confirm hands over to the signing board; with a 1-of-2 vault owner
-  // the free signature meets the threshold and execution runs on its own.
-  await expect(win.locator('#sidebar-safe-signing')).toBeVisible({ timeout: 30_000 });
+  // the free signature meets the threshold and execution runs on its own:
+  // the executor's fee is like today's (the harness's fee reference).
   await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
     timeout: 90_000,
   });
   await win.click('#safe-signing-done');
+  await expectReceived(anvil, recipient);
+});
 
-  // The money actually moved on the fork (allow a block for inclusion).
-  await expect
-    .poll(async () => BigInt(await anvil.rpc('eth_getBalance', [recipient, 'latest'])), {
-      timeout: 30_000,
-    })
-    .toBe(parseEther('0.5'));
+// Design 0005, A: main judges the executor's fee as it signs. A fee it can't
+// let go ahead on its own stops before anything is signed; the activation
+// card and the signing board show it, and the executor signs only the fee
+// the user confirms there.
+test("a Safe's activation and execution wait for the user to confirm their fee", async ({
+  electronApp,
+  window: win,
+  anvil,
+}) => {
+  test.setTimeout(300_000);
+  const setFeeReference = (reply) =>
+    electronApp.evaluate(
+      (_electron, value) => globalThis.__FREEDOM_TEST_HARNESS__.setFeeReferenceFixture(value),
+      reply
+    );
+  const safeAddress = await createFundedSafe(win, anvil);
+  const card = win.locator('#safe-status-card');
+
+  // No reference: the activation fee couldn't be compared.
+  await setFeeReference({ header: null, lowest_priority: null, quote: null });
+  await win.click('#safe-status-activate');
+  await expect(win.locator('#sidebar-vault-unlock')).toBeVisible({ timeout: 15_000 });
+  await win.fill('#vault-unlock-password-input', VAULT_PASSWORD);
+  await win.click('#vault-unlock-password-submit');
+  await expect(card).toContainText('Confirm the network fee', { timeout: 60_000 });
+  await expect(card).toContainText("Couldn't compare this fee with today's network fee");
+  await expect(card).toContainText(/Up to [\d.]+ xDAI/);
+  // Nothing was deployed while it waits.
+  expect(await anvil.rpc('eth_getCode', [safeAddress, 'latest'])).toBe('0x');
+  await win.click('#safe-status-confirm-fee');
+  await expect(win.locator('#wallet-send-btn')).toBeEnabled({ timeout: 90_000 });
+  await expect(card).toBeHidden();
+  const code = await anvil.rpc('eth_getCode', [safeAddress, 'latest']);
+  expect(code.length).toBeGreaterThan(2);
+
+  // One endpoint's word: the execution waits on the board, retryable.
+  await setFeeReference({
+    header: null,
+    lowest_priority: null,
+    quote: {
+      type: 'legacy',
+      gasPrice: '1000000000',
+      effectiveGasPrice: '1000000000',
+      source: 'direct',
+      verified: false,
+      answered: 1,
+    },
+  });
+  await fundSafe(win, anvil, safeAddress);
+  const recipient = await sendFromSafe(win);
+  const board = win.locator('#safe-signing-content');
+  await expect(board).toContainText('Confirm the network fee', { timeout: 60_000 });
+  await expect(board).toContainText(/Up to [\d.]+ xDAI/);
+  expect(BigInt(await anvil.rpc('eth_getBalance', [recipient, 'latest']))).toBe(0n);
+  await win.click('#safe-signing-confirm-fee');
+  await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
+    timeout: 90_000,
+  });
+  await win.click('#safe-signing-done');
+  await expectReceived(anvil, recipient);
 });
