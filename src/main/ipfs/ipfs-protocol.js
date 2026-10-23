@@ -53,11 +53,13 @@ const {
 } = require('../content-name-resolver');
 const { serveNativeGatewayRequest } = require('../ipfs-manager');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
+const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   runWithPrivateLogContext,
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 } = require('../private/private-log-context');
 const {
   cidV0ToV1Base32,
@@ -663,6 +665,19 @@ async function handleRequest(
     return jsonErrorResponse(405, 'freedom-ipfs native gateway supports GET and HEAD');
   }
 
+  // Chromium keeps `%2F`, `%5C` and escapes inside a segment, so
+  // `ipfs://<cid>/..%2f..%2fipns/<name>` reaches the node or gateway as
+  // written; one that decodes before it resolves dot segments would serve
+  // another root, or its own API, under this CID's origin. Refused before
+  // the gateway-form redirect and any name resolution (see
+  // `lib/gateway-path.js`).
+  if (!isContainedRequestUrl(request.url)) {
+    log.info(
+      `[${namespace}-protocol] 400 for ${redactUrlForLog(request.url)}: path leaves its content root`
+    );
+    return jsonErrorResponse(400, `invalid ${namespace} path`);
+  }
+
   // O-3: never serve a gateway-form URL under the gateway host's origin.
   // A redirect is followed by Chromium for navigations (top-level and
   // iframe) and for sub-resources alike, and moves the document onto the
@@ -701,6 +716,14 @@ async function handleRequest(
     );
     return jsonErrorResponse(built.status, built.message);
   }
+  // The target as it will be sent, whatever supplied its path (a name's
+  // record can carry one), stays beneath `/ipfs/<cid>/` or `/ipns/<name>/`.
+  if (!isContainedTarget(built.url, ['ipfs', 'ipns'])) {
+    log.info(
+      `[${namespace}-protocol] 502 for ${redactUrlForLog(request.url)}: target leaves its content root`
+    );
+    return jsonErrorResponse(502, `${namespace} target leaves its content root`);
+  }
 
   const headers = sanitizeRequestHeaders(request.headers);
 
@@ -718,8 +741,11 @@ async function handleRequest(
       });
       return await renderSmallTextResponse(response, method, request);
     } catch (err) {
+      // The code only: an error's text can name the path asked for.
+      const code = errorCodeForLog(err);
       log.warn(
-        `[${namespace}-protocol] native request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
+        `[${namespace}-protocol] native request failed for ${redactForLog(gatewayPath)}` +
+          (code ? ` (${code})` : '')
       );
       return jsonErrorResponse(502, err?.message || 'freedom-ipfs native gateway error');
     }
@@ -755,10 +781,10 @@ async function handleRequest(
       );
       return jsonErrorResponse(504, 'freedom-ipfs gateway timeout');
     }
-    const code = err?.cause?.code || err?.code || '';
+    const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
     log.warn(
-      `[${namespace}-protocol] fetch failed for ${redactUrlForLog(built.url)}: ${err?.message || err}` +
+      `[${namespace}-protocol] fetch failed for ${redactUrlForLog(built.url)}` +
         (code ? ` (${code})` : '')
     );
     return jsonErrorResponse(
@@ -769,6 +795,17 @@ async function handleRequest(
     clearTimeout(timer);
     if (upstream) upstream.removeEventListener('abort', relayAbort);
   }
+}
+
+function isContainedRequestUrl(sourceUrl) {
+  let pathname;
+  try {
+    ({ pathname } = new URL(sourceUrl));
+  } catch {
+    // Malformed: buildGatewayUrl answers it with its own 400.
+    return true;
+  }
+  return isContainedPath(pathname);
 }
 
 function gatewayPathFromUrl(gatewayUrl) {

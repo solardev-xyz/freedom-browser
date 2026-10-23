@@ -16,6 +16,10 @@ const mockResolveEnsContent = jest.fn();
 jest.mock('../ens-resolver', () => ({
   resolveEnsContent: (...args) => mockResolveEnsContent(...args),
 }));
+const mockResolveTezosDomain = jest.fn();
+jest.mock('../tezos-domains-resolver', () => ({
+  resolveTezosDomain: (...args) => mockResolveTezosDomain(...args),
+}));
 
 const {
   buildGatewayUrl,
@@ -493,6 +497,51 @@ describe('handleBzzRequest', () => {
     );
   });
 
+  // F-6: a literal `\` is a `/` to undici, so `a/..\..\..\stamps` reached
+  // the node's own `/stamps` (`/bzz/<ref>/a/../../../stamps`, resolved).
+  // Chromium rewrites `\` before a page's request gets here; a direct
+  // caller of the handler doesn't.
+  test.each([
+    `bzz://${HASH}/a/..\\..\\..\\stamps`,
+    `bzz://${HASH}/a\\b`,
+    'bzz://meinhard.eth/..\\..\\wallet',
+  ])('refuses a path with a backslash: %s', async (url) => {
+    const fetchImpl = jest.fn();
+    const res = await handleBzzRequest(makeRequest(url), { fetchImpl });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ code: 400, message: 'invalid bzz path' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [`bzz://${HASH}/..foo/bar..`, `/bzz/${HASH}/..foo/bar..`],
+    [`bzz://${HASH}/.well-known/x`, `/bzz/${HASH}/.well-known/x`],
+    [`bzz://${HASH}/%2e%2efoo/100%25`, `/bzz/${HASH}/%2e%2efoo/100%25`],
+    [`bzz://${HASH}/caf%C3%A9`, `/bzz/${HASH}/caf%C3%A9`],
+  ])('still serves names that only look like dot segments: %s', async (url, path) => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const res = await handleBzzRequest(makeRequest(url), { fetchImpl });
+    expect(res.status).toBe(200);
+    expect(fetchImpl.mock.calls[0][0]).toBe(`http://127.0.0.1:1633${path}`);
+  });
+
+  // A name's record supplies a base path (a `.tez` website URI): it must not
+  // take the target out of the content root either.
+  test('refuses a resolved target that leaves its content root', async () => {
+    mockResolveTezosDomain.mockResolvedValue({
+      type: 'ok',
+      system: 'tezos',
+      protocol: 'bzz',
+      decoded: HASH,
+      basePath: '/site/../../../stamps',
+    });
+    const fetchImpl = jest.fn();
+    const res = await handleBzzRequest(makeRequest('bzz://docs.example.tez/'), { fetchImpl });
+    expect(res.status).toBe(502);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test('forwards only allowlisted request headers to the node', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 206 }));
     await handleBzzRequest(
@@ -840,6 +889,32 @@ describe('registerBzzProtocol private sessions', () => {
     const text = loggedText();
     expect(text).not.toContain(hash);
     expect(text).toContain('fetch failed for http://127.0.0.1:1633/<private>');
+  });
+
+  // An error's own text can name what was fetched; only its code is logged.
+  test('a failed fetch logs its code, never the error text', async () => {
+    const err = new Error(`connect failed for /bzz/${HASH}/diary.txt`);
+    err.code = 'ECONNREFUSED';
+    const fetchImpl = jest.fn().mockRejectedValue(err);
+
+    jest.useFakeTimers();
+    try {
+      const p = handleBzzRequest(makeRequest(`bzz://${HASH}/index.html`), { fetchImpl });
+      for (const d of RETRY_DELAYS_MS) {
+        await Promise.resolve();
+        await Promise.resolve();
+        await jest.advanceTimersByTimeAsync(d + 1);
+      }
+      expect((await p).status).toBe(503);
+    } finally {
+      jest.useRealTimers();
+    }
+
+    const text = loggedText();
+    expect(text).not.toContain('diary.txt');
+    expect(text).toContain(
+      `fetch failed for http://127.0.0.1:1633/bzz/${HASH}/index.html (ECONNREFUSED)`
+    );
   });
 });
 

@@ -1,0 +1,2 @@
+- An `ipfs://` or `ipns://` address with an encoded `..` in its path can no longer load other content, or the gateway's own API, under the page's origin ([#814](https://github.com/solardev-xyz/freedom-browser/issues/814))
+  - Failed IPFS and Swarm requests no longer write the error's text, which could name the page, to the log
