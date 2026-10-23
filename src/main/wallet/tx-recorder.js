@@ -48,9 +48,7 @@ function pollReceipt(rowId, hash, chainId) {
   // Main (#749) sweeps every pending row once a receipt settles, for the
   // 'dropped' rows a re-send on the same nonce leaves. A re-send here is
   // the same intent's row, which the finality tracker labels (taken among
-  // them), and the sweep's receipt reads would reach Colibri first: the
-  // core's chain.request takes no per-request exclusions yet, and Colibri
-  // traps on a hash it hasn't seen (#750). So the sweep stays at boot.
+  // them), so there is none to find, and the sweep stays at boot.
 }
 
 // The signing account and nonce, so repollPending can tell a transaction
