@@ -113,6 +113,32 @@ export function feeFields(tx) {
   return fields;
 }
 
+/**
+ * The verdict shown when main gives none: the most `tx` can cost, from its
+ * own fields, and that its fee couldn't be compared. Main still judges the
+ * fee at the press.
+ */
+export function unreferencedVerdict(tx) {
+  let maxCost = null;
+  try {
+    const perGas = tx?.maxFeePerGas ?? tx?.gasPrice;
+    if (tx?.gasLimit != null && perGas != null) {
+      maxCost = (BigInt(tx.gasLimit) * BigInt(perGas)).toString();
+    }
+  } catch {
+    maxCost = null;
+  }
+  return {
+    maxCost,
+    comparable: false,
+    ratio: null,
+    above: false,
+    oneEndpoint: false,
+    basis: null,
+    autoApprove: false,
+  };
+}
+
 /** Main's verdict on `tx`'s fee, or null when it couldn't give one. */
 export async function fetchFeeCheck(tx) {
   try {
@@ -128,6 +154,11 @@ export async function fetchFeeCheck(tx) {
  * One confirmation's fee check: the verdict it shows, and whether the user
  * has confirmed a fee above the threshold again.
  *
+ * Its state is `none` (no check asked for this transaction), `loading`
+ * (main's answer pending) or `shown`. Confirm waits while it is loading
+ * (`pending()`), and `proceed()` goes on only once a verdict is shown: a
+ * failed answer shows the no-reference verdict (`unreferencedVerdict`).
+ *
  * @param {object} elements
  * @param {HTMLElement} [elements.maxEl] - "Up to …"
  * @param {HTMLElement} [elements.noteEl] - the comparison, or "couldn't compare"
@@ -139,6 +170,7 @@ export class FeeConfirmation {
   constructor({ maxEl = null, noteEl = null, warningEl = null, warningTextEl = null } = {}) {
     this.elements = { maxEl, noteEl, warningEl, warningTextEl };
     this.symbol = 'ETH';
+    this.state = 'none';
     this.verdict = null;
     this.asking = false;
     this.acknowledged = false;
@@ -149,31 +181,43 @@ export class FeeConfirmation {
   reset(symbol = 'ETH') {
     this.request += 1;
     this.symbol = symbol;
+    this.state = 'none';
     this.verdict = null;
     this.asking = false;
     this.acknowledged = false;
     this.render();
   }
 
-  /** Asks main for `tx`'s verdict and shows it; an answer for an earlier
-   * transaction is dropped. */
+  /**
+   * Asks main for `tx`'s verdict and shows it; an answer for an earlier
+   * transaction is dropped. Without an answer, it shows the most `tx` can
+   * cost and that its fee couldn't be compared.
+   */
   async load(tx, symbol = 'ETH') {
     this.reset(symbol);
     const request = this.request;
+    this.state = 'loading';
     const verdict = await fetchFeeCheck(tx);
     if (request !== this.request) return null;
-    this.verdict = verdict;
+    this.verdict = verdict ?? unreferencedVerdict(tx);
+    this.state = 'shown';
     this.render();
-    return verdict;
+    return this.verdict;
+  }
+
+  /** Whether main's verdict is still pending: Confirm waits for it. */
+  pending() {
+    return this.state === 'loading';
   }
 
   /**
-   * The user pressed confirm. True to go on; false when the fee is above
-   * the threshold and not yet confirmed again: the screen now asks, and the
-   * next press confirms it.
+   * The user pressed confirm. True to go on; false while no verdict is
+   * shown, and when the fee is above the threshold and not yet confirmed
+   * again: the screen then asks, and the next press confirms it.
    */
   proceed() {
-    if (!this.verdict?.above || this.acknowledged) return true;
+    if (this.state !== 'shown' || !this.verdict) return false;
+    if (!this.verdict.above || this.acknowledged) return true;
     if (this.asking) {
       this.acknowledged = true;
       return true;
@@ -195,6 +239,7 @@ export class FeeConfirmation {
   askAgain(err) {
     if (err?.code !== FEE_CHECK_ASK_AGAIN || !err.feeCheck) return false;
     this.request += 1;
+    this.state = 'shown';
     this.verdict = err.feeCheck;
     this.acknowledged = false;
     this.asking = true;

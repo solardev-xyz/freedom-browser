@@ -344,11 +344,15 @@ async function estimateDappTxFee(request) {
         // The fee check (design 0005, A): the most this transaction can
         // cost, and how its fee compares with today's network fee. A phone
         // picks and pays its own fee: there is none here to check.
+        // Confirm waits until its verdict is shown.
         if (accountType(request.walletIndex) !== 'remote') {
           const fields = { chainId, gasLimit: gasResult.gasLimit, ...quotedFees(priceResult) };
           dappTxFeeCheck
             ?.load(feeFields(fields), symbol)
-            .then(renderDappTxConfirmLabel)
+            .then(() => {
+              renderDappTxConfirmLabel();
+              syncDappTxConfirm();
+            })
             .catch((err) => console.warn('[WalletUI] Fee check unavailable:', err));
         }
       }
@@ -400,9 +404,22 @@ function waitsForFee(request) {
 }
 
 /**
+ * Whether `request`'s Confirm waits for the fee check's verdict (design
+ * 0005, A): it is pending, for a transaction whose fee this screen checks.
+ */
+function waitsForVerdict(request) {
+  if (!request || request.failedIntent) return false;
+  if (isSafeAccount(request.walletIndex) || accountType(request.walletIndex) === 'remote') {
+    return false;
+  }
+  return Boolean(dappTxFeeCheck?.pending());
+}
+
+/**
  * Confirm's state for the request shown: disabled while the vault is
- * locked, its payment is closed, or its fee isn't known; and the way to
- * ask for the fee again after a quote failed.
+ * locked, its payment is closed, its fee isn't known, or the fee check's
+ * verdict is pending; and the way to ask for the fee again after a quote
+ * failed.
  */
 function syncDappTxConfirm() {
   const request = dappTxPending;
@@ -410,7 +427,7 @@ function syncDappTxConfirm() {
   dappTxFeeRetryRow?.classList.toggle('hidden', !request.feeFailed || Boolean(request.signing));
   if (!dappTxApproveBtn || request.signing) return;
   dappTxApproveBtn.disabled = Boolean(
-    request.locked || request.paymentClosed || waitsForFee(request)
+    request.locked || request.paymentClosed || waitsForFee(request) || waitsForVerdict(request)
   );
 }
 
@@ -519,8 +536,8 @@ async function approveDappTx() {
   if (!dappTxPending || dappTxPending.signing) return;
   // Its payment is settled, voided or unknown to main: nothing to confirm.
   if (dappTxPending.paymentClosed) return;
-  // Its fee isn't known: nothing to confirm yet.
-  if (waitsForFee(dappTxPending)) return;
+  // Its fee, or the fee check's verdict, isn't shown: nothing to confirm yet.
+  if (waitsForFee(dappTxPending) || waitsForVerdict(dappTxPending)) return;
 
   const request = dappTxPending;
   const { permissionKey, walletIndex, txParams, resolve, gasLimit, gasPrice, chainId, selector } = request;
@@ -530,8 +547,10 @@ async function approveDappTx() {
   const safeAccount = isSafeAccount(walletIndex);
 
   // A fee far above today's network fee is confirmed twice (design 0005,
-  // A): the first press asks again. A held payment sent again signs nothing.
-  if (!safeAccount && !request.failedIntent && dappTxFeeCheck && !dappTxFeeCheck.proceed()) {
+  // A): the first press asks again. A held payment sent again signs
+  // nothing, and a phone picks and pays its own fee.
+  const checked = !safeAccount && !request.failedIntent && accountType(walletIndex) !== 'remote';
+  if (checked && dappTxFeeCheck && !dappTxFeeCheck.proceed()) {
     renderDappTxConfirmLabel();
     return;
   }
@@ -669,7 +688,8 @@ async function approveDappTx() {
       outcomeText(failure.outcome, failure.reasonClass) || err.message || 'Transaction failed'
     );
     if (dappTxApproveBtn) {
-      dappTxApproveBtn.disabled = Boolean(request.paymentClosed) || waitsForFee(request);
+      dappTxApproveBtn.disabled =
+        Boolean(request.paymentClosed) || waitsForFee(request) || waitsForVerdict(request);
       dappTxApproveBtn.textContent = request.failedIntent ? ACTIONS.sendAgain : 'Confirm';
     }
     dappTxFeeRetryRow?.classList.toggle('hidden', !request.feeFailed);

@@ -111,14 +111,50 @@ test("no reference: the most it can cost, and that it couldn't be compared", asy
   expect(confirmation.proceed()).toBe(true);
 });
 
-test('no verdict at all (main unreachable): nothing shown, main still judges at the press', async () => {
+test("no verdict at all (main unreachable): the most it can cost, and couldn't compare", async () => {
   window.wallet.feeCheck.mockRejectedValue(new Error('gone'));
   const { elements, confirmation } = screen();
-  await expect(
-    confirmation.load({ chainId: 1, gasLimit: '21000', gasPrice: '1' })
-  ).resolves.toBeNull();
-  expect(Object.values(elements).filter(shown)).toEqual([]);
+  const verdict = await confirmation.load({
+    chainId: 1,
+    gasLimit: '21000',
+    gasPrice: '1000000000',
+  });
+  expect(verdict).toMatchObject({ maxCost: '21000000000000', comparable: false, above: false });
+  expect(elements.maxEl.textContent).toBe('Up to 0.000021 ETH');
+  expect(elements.noteEl.textContent).toBe("Couldn't compare this fee with today's network fee");
+  expect(shown(elements.warningEl)).toBe(false);
+  // Main still judges the fee at the press.
   expect(confirmation.proceed()).toBe(true);
+  // Fields it can't price show only that the fee couldn't be compared.
+  window.wallet.feeCheck.mockResolvedValue({ success: false, error: 'no' });
+  await confirmation.load({ chainId: 1 });
+  expect(shown(elements.maxEl)).toBe(false);
+  expect(elements.noteEl.textContent).toBe("Couldn't compare this fee with today's network fee");
+});
+
+// Review of #794, round 1: nothing is confirmed before the verdict is shown.
+test('a pending or missing verdict never lets Confirm go on', async () => {
+  let answer;
+  window.wallet.feeCheck.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      })
+  );
+  const { elements, confirmation } = screen();
+  // No check asked for yet.
+  expect(confirmation.pending()).toBe(false);
+  expect(confirmation.proceed()).toBe(false);
+  const loading = confirmation.load({ chainId: 1, gasLimit: '21000', gasPrice: '1' });
+  expect(confirmation.pending()).toBe(true);
+  expect(confirmation.proceed()).toBe(false);
+  expect(Object.values(elements).filter(shown)).toEqual([]);
+  answer({ success: true, feeCheck: VERDICT });
+  await loading;
+  expect(confirmation.pending()).toBe(false);
+  expect(confirmation.proceed()).toBe(true);
+  confirmation.reset();
+  expect(confirmation.proceed()).toBe(false);
 });
 
 test('above the threshold: warned, and asked again before anything is signed', async () => {

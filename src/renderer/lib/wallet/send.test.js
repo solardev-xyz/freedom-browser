@@ -183,6 +183,24 @@ const SEND_ELEMENT_IDS = [
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+/**
+ * Opens the send screen, continues to its review, and confirms there: the
+ * review's fee check (design 0005, A) shows its verdict before Confirm
+ * can sign.
+ */
+async function confirmFromReview(mod, elements, options = {}) {
+  await mod.openSend({
+    chainId: 100,
+    tokenKey: 'gnosis-native',
+    recipient: ADDRESS,
+    amount: '0.45',
+    ...options,
+  });
+  elements['send-continue-btn'].dispatch('click');
+  for (let i = 0; i < 4; i += 1) await flush();
+  elements['send-confirm-btn'].dispatch('click');
+}
+
 // The review recipient is painted either as bare text (no name known) or as
 // a span list via replaceChildren; the fake DOM does not aggregate the two.
 const reviewRecipientText = (elements) => {
@@ -285,10 +303,7 @@ describe('send screen sidebar ownership', () => {
   test('a confirming send holds the shared sidebar lock until the device answers', async () => {
     const { mod, flight, elements, send } = await loadSendScreen();
 
-    mod.openSend();
-    expect(flight.isSignatureInFlight()).toBe(false);
-
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalled();
     expect(flight.isSignatureInFlight()).toBe(true);
@@ -307,8 +322,7 @@ describe('send screen sidebar ownership', () => {
     const { mod, elements, send } = await loadSendScreen();
     const onClose = jest.fn();
 
-    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45', onClose });
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements, { onClose });
     await flush();
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
@@ -349,8 +363,7 @@ describe('send screen sidebar ownership', () => {
   test('nothing may hide the send screen while its signature is in flight', async () => {
     const { mod, state, elements, send } = await loadSendScreen();
 
-    mod.openSend();
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
 
     // The shared teardown a dApp request would use (personal_sign,
@@ -547,8 +560,7 @@ describe('send screen sidebar ownership', () => {
     const { mod, elements, send } = await loadSendScreen();
     const { createTab } = await import('../tabs.js');
 
-    mod.openSend();
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
@@ -601,8 +613,7 @@ describe('send again after a failed send (5)', () => {
       elements[view].appendChild(createElement('h3', { classes: [title] }));
     }
     window.wallet.intentResend = jest.fn();
-    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45' });
-    elements['send-confirm-btn'].dispatch('click');
+    await confirmFromReview(mod, elements);
     await flush();
     send.resolve(reply);
     await flush();
@@ -873,7 +884,7 @@ describe('send again after a failed send (5)', () => {
       intent: heldB,
     });
     elements['send-continue-btn'].dispatch('click');
-    await flush();
+    for (let i = 0; i < 4; i += 1) await flush();
     elements['send-confirm-btn'].dispatch('click');
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(2);
@@ -1085,6 +1096,56 @@ describe('send review: the fee check at confirmation (design 0005, A)', () => {
       expect.objectContaining({ gasPrice: '1', gasLimit: '21000' })
     );
     expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+  });
+
+  // Review of #794, round 1: a press before main's verdict arrives signs
+  // nothing; Confirm waits until the verdict is shown.
+  test('Confirm waits for the fee check: a press before its answer signs nothing', async () => {
+    let answer;
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents: [] });
+    window.wallet.feeCheck.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '0.45' });
+    elements['send-continue-btn'].dispatch('click');
+    for (let i = 0; i < 3; i += 1) await flush();
+    expect(window.wallet.feeCheck).toHaveBeenCalled();
+    expect(elements['send-confirm-btn'].disabled).toBe(true);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+    expect(shown(elements['send-review-view'])).toBe(true);
+
+    answer({ success: true, feeCheck: { maxCost: '21000', comparable: true, ratio: '1', above: false } });
+    await flush();
+    expect(elements['send-review-fee-note'].textContent).toBe("About 1× today's network fee");
+    expect(elements['send-confirm-btn'].disabled).toBe(false);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
+  test("main's fee check failing: the most it can cost and couldn't compare, then Confirm", async () => {
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents: [] });
+    window.wallet.feeCheck.mockRejectedValue(new Error('main gone'));
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '0.45' });
+    elements['send-continue-btn'].dispatch('click');
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(elements['send-review-fee-max'].textContent).toBe('Up to 0.000000001 xDAI');
+    expect(elements['send-review-fee-note'].textContent).toBe(
+      "Couldn't compare this fee with today's network fee"
+    );
+    expect(elements['send-confirm-btn'].disabled).toBe(false);
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
   });
 
   test("no reference: the most it can cost, and that it couldn't be compared", async () => {

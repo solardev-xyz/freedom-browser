@@ -783,6 +783,46 @@ describe('dapp-tx: the fee check at confirmation (design 0005, A)', () => {
     expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
   });
 
+  // Review of #794, round 1: a press before main's verdict arrives signs
+  // nothing; Confirm waits until the verdict is shown.
+  test('Confirm waits for the fee check: a press before its answer signs nothing', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    let answer;
+    window.wallet.feeCheck.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    await openApproval();
+    expect(window.wallet.feeCheck).toHaveBeenCalled();
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    await press(elements);
+    expect(confirmSigning).not.toHaveBeenCalled();
+    expect(window.wallet.dappSendTransaction).not.toHaveBeenCalled();
+
+    answer({ success: true, feeCheck: { maxCost: '21000000000000', comparable: true, ratio: '1', above: false } });
+    await flush();
+    expect(elements['dapp-tx-fee-note'].textContent).toBe("About 1× today's network fee");
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
+  test("main's fee check failing: the most it can cost and couldn't compare, then Confirm", async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    window.wallet.feeCheck.mockRejectedValue(new Error('main gone'));
+    await openApproval();
+    await flush();
+    expect(elements['dapp-tx-fee-max'].textContent).toBe('Up to 0.000021 ETH');
+    expect(elements['dapp-tx-fee-note'].textContent).toBe(
+      "Couldn't compare this fee with today's network fee"
+    );
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
   test('a phone picks and pays its own fee: there is none to check', async () => {
     const { elements, confirmSigning, openApproval } = await loadDappTx({ type: 'remote' });
     await openApproval();

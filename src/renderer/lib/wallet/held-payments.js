@@ -342,8 +342,8 @@ function renderPayment(payment) {
  */
 function replacementFeeNote(step) {
   const verdict = step.feeCheck;
-  if (!verdict) return { note: '', kind: 'info' };
-  if (!verdict.comparable) return { note: `${FEE_CHECK.notCompared}.`, kind: 'info' };
+  // No verdict from main: the fee couldn't be compared.
+  if (!verdict || !verdict.comparable) return { note: `${FEE_CHECK.notCompared}.`, kind: 'info' };
   if (!verdict.above) {
     return { note: `${FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint)}.`, kind: 'info' };
   }
