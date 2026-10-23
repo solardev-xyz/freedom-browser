@@ -428,6 +428,8 @@ async function safeActivateFee({ app, win }) {
         },
       }));
       replace('wallet:activate-safe', () => stop);
+      // No site is connected in this tab (stubWalletIpc connects every one).
+      replace('dapp:get-permission', () => null);
     },
     { stop, executorAddress: SAFE_OWNER.address }
   );
@@ -435,10 +437,12 @@ async function safeActivateFee({ app, win }) {
     async ({ wallets, safe }) => {
       const { walletState, hideAllSubscreens } = await import('./lib/wallet/wallet-state.js');
       const selector = await import('./lib/wallet/wallet-selector.js');
+      const connect = await import('./lib/wallet/dapp-connect.js');
       walletState.derivedWallets = wallets;
       walletState.activeWalletIndex = safe.index;
       hideAllSubscreens();
       walletState.identityView?.classList.remove('hidden');
+      await connect.updateConnectionBanner();
       // The Safe as the active account: its name, and its status card.
       selector.updateWalletSelectorDisplay(safe);
     },
