@@ -14,7 +14,9 @@
  * - Colibri: `{ result }`, `{ undefined_keys: ["result"] }` for a result of
  *   `undefined`, `{ revert: { data } }` (with `capacity: true` when it is
  *   also a capacity failure) or `{ failure }`. The `undefined_keys` and
- *   `capacity` forms are freedom-core's follow-up to #57.
+ *   `capacity` forms are freedom-core's follow-up to #57. A revert or a
+ *   failure that is a verifier fault carries `fault: true` too, to a core
+ *   that reads it (freedom-core #752's backoff, design 0005, The rest).
  *
  * A failure is a class of chain data's closed set, without text (Myotis
  * read outcomes); Colibri's adds `capacity`, set exactly where the router's
@@ -79,6 +81,24 @@ const REFUSALS = new Set(['rejected', 'invalid-params']);
  * (freedom-core design 0005, The rest). */
 const REFUSAL_CODES = 'myotis_refusal_codes';
 
+/** The `core.hello` feature of a core that reads Colibri's `fault`, for
+ * its verifier-fault backoff (freedom-core design 0005, Colibri). */
+const COLIBRI_FAULTS = 'colibri_faults';
+
+/** Main's router's `COLIBRI_FAULT_PATTERN` (chain-data-router.js at
+ * 94b0af4e, #752): a WASM trap, a runtime retired after one, or the worker
+ * replaced under the request. */
+const COLIBRI_FAULT_PATTERN =
+  /memory access out of bounds|(?:^|: )unreachable(?: executed)?$|retired after a trap|Colibri worker replaced/i;
+
+/** Main's router's `isColibriFault`: the verifier itself faulted. A request
+ * the worker host failed only because another one trapped or overran on
+ * its worker (`colibriBystander`, colibri-worker-host.js) didn't. */
+function isColibriFault(err) {
+  if (err?.colibriBystander) return false;
+  return err?.name === 'RuntimeError' || COLIBRI_FAULT_PATTERN.test(String(err?.message || ''));
+}
+
 /** A Myotis broadcast's failure, as myotis-process classes it: a definite
  * refusal; uncertain once dispatched; not sent when it never was, keeping
  * today's text where the core rebuilds one. Anything else may have been
@@ -121,15 +141,17 @@ function broadcastHash(payload) {
  * code 3 with hex data), or a failure. Either is a capacity failure where
  * the router would block the route for it: a failure's class is then
  * `capacity`, and a revert keeps its data with `capacity: true` beside it,
- * a member present only when true. Its text never crosses. */
-function colibriFailure(err) {
-  const capacity = isCapacityFailure(err);
+ * a member present only when true. Either is a verifier fault where the
+ * router would count it toward its backoff: `fault: true` beside it, for a
+ * core that reads it (`faults`), present only when true. Its text never
+ * crosses. */
+function colibriFailure(err, faults) {
+  const capacity = isCapacityFailure(err) ? { capacity: true } : {};
+  const fault = faults && isColibriFault(err) ? { fault: true } : {};
   if (err?.code === 3 && isHexData(err.data)) {
-    return capacity
-      ? { revert: { data: err.data }, capacity: true }
-      : { revert: { data: err.data } };
+    return { revert: { data: err.data }, ...capacity, ...fault };
   }
-  return { failure: capacity ? 'capacity' : 'error' };
+  return { failure: capacity.capacity ? 'capacity' : 'error', ...fault };
 }
 
 /** A Myotis payload with its own keys in snake_case (`codeHex` becomes
@@ -180,11 +202,11 @@ function defaultAdapters() {
 
 /**
  * The operation `params` names: its verifier, how to run it with the
- * adapters, and what its adapter's error answers (`refusalCodes()`: whether
- * the core reads a broadcast refusal's code). Anything malformed is
- * refused.
+ * adapters, and what its adapter's error answers (`features`: whether the
+ * core reads a broadcast refusal's code, `refusalCodes()`, and Colibri's
+ * fault bit, `colibriFaults()`). Anything malformed is refused.
  */
-function operation(params, adapters, broadcasts, refusalCodes) {
+function operation(params, adapters, broadcasts, features) {
   const read = typeof params.myotis === 'string' && MYOTIS_READS.get(params.myotis);
   if (read) {
     const call = params.myotis === 'call_tx' || params.myotis === 'estimate_tx';
@@ -217,7 +239,7 @@ function operation(params, adapters, broadcasts, refusalCodes) {
         const hash = broadcastHash(await adapters.myotisBroadcast(params.raw, params.chain_id));
         return hash === undefined ? { uncertain: true } : { hash };
       },
-      failed: (err) => broadcastFailure(err, refusalCodes()),
+      failed: (err) => broadcastFailure(err, features.refusalCodes()),
     };
   }
   if (params.colibri === 'request') {
@@ -236,7 +258,7 @@ function operation(params, adapters, broadcasts, refusalCodes) {
         // Replies), and the router's caller gets an own `undefined`.
         return result === undefined ? { undefined_keys: ['result'] } : { result };
       },
-      failed: colibriFailure,
+      failed: (err) => colibriFailure(err, features.colibriFaults()),
     };
   }
   throw refused();
@@ -279,8 +301,13 @@ function registerChainVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
   const running = deps.running || { myotis: 0, colibri: 0 };
   const broadcasts = deps.broadcasts || null;
-  // Whether the core reads a refusal's code: its hello's, as the reply goes.
-  const refusalCodes = () => client.hello?.capabilities?.includes(REFUSAL_CODES) === true;
+  // Whether the core reads a refusal's code, or Colibri's fault bit: its
+  // hello's, as the reply goes.
+  const offers = (feature) => client.hello?.capabilities?.includes(feature) === true;
+  const features = {
+    refusalCodes: () => offers(REFUSAL_CODES),
+    colibriFaults: () => offers(COLIBRI_FAULTS),
+  };
 
   client.handle(
     'shell.verified',
@@ -293,7 +320,7 @@ function registerChainVerified(client, config, deps = {}) {
         return NOT_SENT;
       }
       if (signal.aborted) return NOT_SENT;
-      const { verifier, run, failed } = operation(params, adapters, broadcasts, refusalCodes);
+      const { verifier, run, failed } = operation(params, adapters, broadcasts, features);
       if (running[verifier] >= MAX_PER_VERIFIER) return { failure: 'busy' };
       running[verifier] += 1;
       let reply;
@@ -316,4 +343,5 @@ module.exports = {
   registerChainVerified,
   myotisClass,
   wirePayload,
+  isColibriFault,
 };
