@@ -13,6 +13,18 @@
 - For source builds, rerun `npm run ipfsd:download` and confirm `freedom-ipfsd-bin/` holds the binary for the current OS and architecture. With `FREEDOM_IPFS_BACKEND=addon`, a development build runs the `freedom-ipfs` native addon instead: rerun `npm run ipfs:download` for it.
 - Check the Nodes panel and application log for native startup diagnostics.
 
+## IPFS content doesn't load with Route IPFS through Tor on
+
+- The built-in IPFS node connects only through Tor with this setting on, and not at all while Tor isn't running: **Settings → Advanced** says when it is waiting for Tor. Start Tor from the Nodes menu, or turn on **Start Tor when Freedom opens** under **Settings → Nodes**. The setting doesn't start Tor itself.
+- Under Tor the node finds content only through the delegated routing services, with no DHT, and reaches peers over TCP only, without QUIC, so some content that loads directly may not load through Tor. Loads are slower too.
+- A profile using an external IPFS gateway isn't covered by the setting: its gateway is reached as before.
+
+## An IPFS provider on my local network isn't used
+
+- By design: the built-in IPFS node connects only to public internet addresses for the providers and peers it finds. A provider at an address on your local network or this computer is refused, so a page can't point the node at it. See **Public Addresses Only** in [features.md](features.md) for what Freedom can and can't identify as local.
+- To use a node on your network, point the profile at it as an external IPFS gateway under **Settings → Nodes**. Freedom doesn't verify content in that mode, so use a gateway you run yourself.
+- On an IPv6-only network that uses NAT64, most IPv6 connections wait while Freedom learns the network's translation prefixes. If the network's DNS servers don't answer, IPv6 addresses outside the forms Freedom recognises without asking are refused. Those forms, the well-known NAT64 prefix (`64:ff9b::/96`) and 6to4 (`2002::/16`), are still checked, and may work, and an IPv4-mapped address (`::ffff:` followed by an IPv4 address) is treated as that IPv4 address. IPv4 keeps working.
+
 ## Radicle fails to start
 
 - Ensure Radicle is enabled for the profile under **Settings → Nodes**
