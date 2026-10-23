@@ -1174,3 +1174,118 @@ describe('dapp-provider: the view before the prompt', () => {
     expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({ id: 6, error: { message: 'Invalid hex message' } });
   });
 });
+
+// Review of #799 (round 1): typed data is compared with the chain the page
+// sees (what eth_chainId answers it), not the chain saved with its grant,
+// which the chrome's chain switcher doesn't update. The view, the
+// auto-approve decision and main's check (the context) all get it.
+describe('dapp-provider: the chain typed data is compared with', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const typedFor = (chainId) =>
+    JSON.stringify({ domain: { chainId }, types: { M: [] }, primaryType: 'M', message: {} });
+
+  // Main's view, as the core reports the chain: a mismatch warns.
+  const load = async (permission, options = {}) => {
+    const loaded = await loadProvider({ permission, ...options });
+    loaded.walletMocks.typedDataView.mockImplementation(async (typed, chainId) => {
+      const domainChain = JSON.parse(typed).domain.chainId;
+      return {
+        success: true,
+        hash: '0x' + '11'.repeat(32),
+        view: { domain: { chainId: domainChain }, types: {}, primary_type: 'M', message: {}, ignored: [] },
+        warnings: domainChain === chainId ? [] : ['chain-mismatch'],
+      };
+    });
+    return loaded;
+  };
+  const autoSigning = (chainId, walletIndex = 0) => ({ walletIndex, chainId, autoApprove: { signing: true } });
+
+  test("the chrome's chain switch: the page's chain, not the grant's", async () => {
+    // Connected on Ethereum; the chrome now has Gnosis selected, which the
+    // page sees as its chain.
+    const { sendRequest, walletUi, walletMocks } = await load(autoSigning(1));
+    walletUi.getSelectedChainId.mockReturnValue(100);
+
+    sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    sendRequest({ id: 2, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(1)] });
+    await flushMicrotasks();
+    // Data for the grant's chain, not the page's: warned, so it prompts.
+    expect(walletMocks.typedDataView).toHaveBeenLastCalledWith(typedFor(1), 100);
+    expect(walletUi.showDappSignApproval).toHaveBeenCalledTimes(1);
+    expect(walletMocks.signTypedData).not.toHaveBeenCalled();
+
+    // Data for the page's chain: auto-signed, and main gets that chain.
+    sendRequest({ id: 3, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(100)] });
+    await flushMicrotasks();
+    expect(walletUi.showDappSignApproval).toHaveBeenCalledTimes(1);
+    expect(walletMocks.signTypedData).toHaveBeenCalledWith(
+      typedFor(100), 0, { autoApprove: 'https://app.example', webContentsId: 42 }, { chainId: 100 }
+    );
+  });
+
+  test('another tab changing the global selection moves the comparison with it', async () => {
+    const { sendRequest, walletUi, walletMocks } = await load(autoSigning(100));
+    walletUi.getSelectedChainId.mockReturnValue(100);
+    sendRequest({ id: 1, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(100)] });
+    await flushMicrotasks();
+    expect(walletMocks.signTypedData).toHaveBeenCalledTimes(1);
+
+    // Another tab selects Ethereum: this page now sees chain 1.
+    walletUi.getSelectedChainId.mockReturnValue(1);
+    sendRequest({ id: 2, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(100)] });
+    await flushMicrotasks();
+    expect(walletMocks.typedDataView).toHaveBeenLastCalledWith(typedFor(100), 1);
+    expect(walletUi.showDappSignApproval).toHaveBeenCalledTimes(1);
+    expect(walletMocks.signTypedData).toHaveBeenCalledTimes(1);
+  });
+
+  test('a grant remembered on another chain is never the comparison', async () => {
+    const { sendRequest, walletUi, walletMocks } = await load({ walletIndex: 0, chainId: 100, autoApprove: {} });
+    walletUi.getSelectedChainId.mockReturnValue(1);
+    sendRequest({ id: 1, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(1)] });
+    await flushMicrotasks();
+    expect(walletMocks.typedDataView).toHaveBeenCalledWith(typedFor(1), 1);
+    expect(walletUi.showDappSignApproval).toHaveBeenCalledWith(
+      expect.anything(), 'https://app.example', 'eth_signTypedData_v4', ['0xaccount', typedFor(1)],
+      expect.objectContaining({ chainId: 1, warned: false })
+    );
+  });
+
+  test("an onchain app is compared with its own chain, whatever the chrome's", async () => {
+    const APP = 'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-1/';
+    const { sendRequest, walletUi, walletMocks } = await load(autoSigning(100), { webviewUrl: APP });
+    walletUi.getSelectedChainId.mockReturnValue(100);
+    sendRequest({ id: 1, method: 'eth_signTypedData_v4', params: ['0xaccount', typedFor(1)] });
+    await flushMicrotasks();
+    expect(walletMocks.typedDataView).toHaveBeenCalledWith(typedFor(1), 1);
+    expect(walletMocks.signTypedData).toHaveBeenCalledWith(
+      typedFor(1), 0, expect.anything(), { chainId: 1 }
+    );
+  });
+
+  test("a Safe signs only while the page's chain is Gnosis, whatever its grant", async () => {
+    const { webview, sendRequest, walletUi, walletMocks } = await load(autoSigning(100, SAFE_WALLET_INDEX));
+    walletUi.getSelectedChainId.mockReturnValue(1);
+    sendRequest({ id: 1, method: 'eth_signTypedData_v4', params: ['0xsafe', typedFor(100)] });
+    await flushMicrotasks();
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({
+      id: 1,
+      error: { message: expect.stringContaining('can only sign on Gnosis Chain') },
+    });
+
+    walletUi.getSelectedChainId.mockReturnValue(100);
+    sendRequest({ id: 2, method: 'eth_signTypedData_v4', params: ['0xsafe', typedFor(100)] });
+    await flushMicrotasks();
+    expect(walletMocks.safeMessageStart).toHaveBeenCalledTimes(1);
+  });
+});

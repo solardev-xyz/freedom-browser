@@ -287,9 +287,14 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
-      const chainId = getOnchainApp(webview)?.chainId || permission.chainId ||
-        parseInt(await getCurrentChainId(webview), 16);
-      assertSafeOnGnosis(permission, chainId, 'sign');
+      // The chain this page sees: what eth_chainId answers it
+      // (getCurrentChainId), pinned to an onchain app's own chain, never
+      // the chain saved with the grant, which the chrome's chain switcher
+      // doesn't update. A Safe signs only there on Gnosis, and typed data
+      // is compared with it: the view, the auto-approve decision and
+      // main's check all use it (freedom-core #88).
+      const activeChainId = parseInt(await getCurrentChainId(webview), 16);
+      assertSafeOnGnosis(permission, activeChainId, 'sign');
 
       // What the request signs, from main, before any prompt and for every
       // account kind (freedom-core #88): a request main can't show fails
@@ -297,13 +302,13 @@ async function handleProviderRequest(webview, request) {
       // auto-approve: a personal_sign of exactly 32 bytes (#89), or typed
       // data naming another primary type, another chain or none (#88).
       // Main refuses to auto-approve those too.
-      const prepared = await prepareSignature(method, params, chainId);
+      const prepared = await prepareSignature(method, params, activeChainId);
       if (permission.autoApprove?.signing && !prepared.warned) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
         }
-        result = await autoApproveSign(permission, method, params, permissionKey, webview, chainId);
+        result = await autoApproveSign(permission, method, params, permissionKey, webview, activeChainId);
       } else {
         result = await showDappSignApproval(webview, permissionKey, method, params, prepared);
       }
