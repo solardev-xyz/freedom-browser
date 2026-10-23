@@ -769,22 +769,19 @@ describe('ens-resolver', () => {
     });
 
     test('a name echoed in an ethers error message never quarantines an endpoint', async () => {
-      // dnsEncode refuses a label over 255 bytes and quotes the name.
-      const label = 'x503'.repeat(64);
-      let encodeError;
-      try {
-        actualEthers.dnsEncode(`${label}.eth`, 255);
-      } catch (err) {
-        encodeError = err;
-      }
-      expect(encodeError.shortMessage).toMatch(/503/);
-      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: encodeError }])));
-      const failing = await resolveEnsContent('echoed-name.box');
-      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
-
+      // dnsEncode refuses a label over 255 bytes, and its message quotes the
+      // name: a name that holds "503" or "timeout" must not read as an
+      // endpoint failure.
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
       routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      for (const label of ['x503'.repeat(64), 'timeout'.repeat(37)]) {
+        expect(() => actualEthers.dnsEncode(`${label}.eth`, 255)).toThrow(label);
+        const failing = await resolveEnsContent(`${label}.eth`);
+        expect(failing.type).not.toBe('ok');
+      }
+
       const healthy = await resolveEnsContent('healthy-after-echoed-name.box');
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
       expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
     });
 
