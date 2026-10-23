@@ -877,7 +877,8 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
 
     expect(walletMocks.signMessage).not.toHaveBeenCalled();
     expect(walletUi.showDappSignApproval).toHaveBeenCalledWith(
-      background, BACKGROUND, 'personal_sign', ['0xdead', '0xbackground']);
+      background, BACKGROUND, 'personal_sign', ['0xdead', '0xbackground'],
+      expect.objectContaining({ message: expect.objectContaining({ hex: '0xdead' }) }));
   });
 
   test('eth_sendTransaction from a background tab never applies the visible site’s rules', async () => {
@@ -964,7 +965,8 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
     expect(dappPermissions.getPermission).toHaveBeenCalledWith(NAMED);
     expect(dappPermissions.getPermission).not.toHaveBeenCalledWith(`ipns://${B36}/`);
     expect(walletUi.showDappSignApproval).toHaveBeenCalledWith(
-      ipnsTab, NAMED, 'personal_sign', ['0xdead', '0xbackground']);
+      ipnsTab, NAMED, 'personal_sign', ['0xdead', '0xbackground'],
+      expect.objectContaining({ message: expect.objectContaining({ hex: '0xdead' }) }));
 
     // The banner keys the same way; the Swarm/x402 banners read the page URL.
     mod.setActiveWebview(ipnsTab);
