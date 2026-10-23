@@ -2988,12 +2988,27 @@
                   </div>
                 </div>
 
-                <!-- Typed data display (for EIP-712) -->
+                <!-- Typed data display (for EIP-712): the identity core's view
+                     of exactly what is signed (freedom-core #88) -->
                 <div class="dapp-sign-typed-data hidden" id="dapp-sign-typed-data-section">
                   <div class="dapp-sign-typed-label">Structured Data (EIP-712)</div>
                   <div class="dapp-sign-typed-content" id="dapp-sign-typed-data">
                     <!-- Typed data will be formatted and inserted here -->
                   </div>
+                  <div class="dapp-sign-typed-ignored hidden" id="dapp-sign-typed-ignored"></div>
+                </div>
+
+                <!-- What the view reports: another primary type, another
+                     chain, or none (freedom-core #88) -->
+                <div class="dapp-tx-warning hidden" id="dapp-sign-typed-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span class="dapp-sign-typed-warning-text" id="dapp-sign-typed-warning-text"></span>
                 </div>
 
                 <!-- Warning -->

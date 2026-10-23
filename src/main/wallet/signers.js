@@ -102,18 +102,20 @@ function createVaultBackend(walletIndex) {
         if (verifyMessage(bytes, signature) !== expected) throw mismatch();
         return signature;
       }),
-    signTypedData: (typedData) =>
+    signTypedData: (typedData, { expectedHash } = {}) =>
       withVaultAccount(walletIndex, async (key) => {
         const data = toCoreTypedData(typedData);
         const expected = await ownAddress();
         let digest;
         let signature;
         try {
-          // The digest from the core's bounded encoder, not ethers' (whose
-          // type walk is exponential on some graphs): the check is that the
-          // signature is this account's over it.
-          digest = await vaultBackend.typedDataHash(data);
-          signature = await vaultBackend.sign.typedData(key, data);
+          // The digest the core signs only if the data hashes to it
+          // (freedom-core #88): the hash the user confirmed, or, for
+          // main's own typed data (SafeTx, SafeMessage, x402), the core's
+          // own hash of it, taken now. The core's bounded encoder, not
+          // ethers' (whose type walk is exponential on some graphs).
+          digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
+          signature = await vaultBackend.sign.typedData(key, data, digest);
         } catch (err) {
           throw wrapped('Typed data signing failed', err);
         }
@@ -162,12 +164,14 @@ function getSigner(walletIndex) {
     throw new Error('Safe accounts cannot sign directly — execute through the Safe flow');
   }
   let backend;
+  let vaultSigned = false;
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record);
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record);
   } else {
     backend = createVaultBackend(walletIndex);
+    vaultSigned = true;
   }
 
   let address = null;
@@ -181,11 +185,23 @@ function getSigner(walletIndex) {
     signTransaction: (tx) => backend.signTransaction(tx),
     // async: a malformed input rejects like any other signing failure.
     signMessage: async (message) => backend.signMessage(normalizeMessage(message)),
-    signTypedData: async (typedData) => {
+    /**
+     * `expectedHash`: the hash the user confirmed (#88). The core refuses a
+     * vault signature over anything else. A device signs what it shows, so
+     * for one main checks the request's hash against it first: a request
+     * that changed after the confirmation fails, and nothing is signed.
+     */
+    signTypedData: async (typedData, { expectedHash } = {}) => {
       const normalized = normalizeTypedData(typedData);
       // Every backend: the Ledger and phone ones walk the types with ethers.
       assertBoundedTypeGraph(normalized?.types);
-      return backend.signTypedData(normalized);
+      if (expectedHash !== undefined && !vaultSigned) {
+        const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
+        if (hash !== expectedHash) {
+          throw new Error('The typed data changed after it was confirmed');
+        }
+      }
+      return backend.signTypedData(normalized, { expectedHash });
     },
   };
   // Optional capability: backends that sign AND broadcast through their

@@ -365,9 +365,17 @@ const vaultBackend = {
       const message = '0x' + Buffer.from(bytes).toString('hex');
       return (await call('sign.message', { key, message })).signature;
     },
-    /** @param {{domain, types, message}} typedData */
-    async typedData(key, typedData) {
-      return (await call('sign.typed_data', { key, typed_data: typedData })).signature;
+    /**
+     * Signs only if the data's digest is `expectedHash`, the hash the user
+     * confirmed (or, for main's own typed data, the one main just hashed);
+     * any other is refused before a key is touched (freedom-core #88).
+     * @param {{domain, types, message}} typedData
+     * @param {string} expectedHash - 0x and 64 hex digits
+     */
+    async typedData(key, typedData, expectedHash) {
+      return (
+        await call('sign.typed_data', { key, typed_data: typedData, expected_hash: expectedHash })
+      ).signature;
     },
     /**
      * A Swarm single-owner chunk; the core computes the chunk address from
@@ -385,9 +393,33 @@ const vaultBackend = {
     },
   },
 
+  /**
+   * EIP-712 digest with the core's strict rules, and the core's view of
+   * exactly what it signs (freedom-core design 0002, #88): ethers'
+   * getPayload, with `ignored`, `named_type` and `chain` reports. Public,
+   * works while locked. A view too large for one reply is refused.
+   *
+   * @param {{domain, types, message}} typedData
+   * @param {{primaryType?: *, chainId?: number}} [options] - `primaryType`
+   *   as the dApp sent it, whatever its JSON type, only when it sent one;
+   *   `chainId`, the dApp's active chain. Neither changes what is signed.
+   * @returns {Promise<{hash: string, view: object}>}
+   */
+  typedDataView(typedData, options = {}) {
+    const params = { typed_data: typedData };
+    // `null` is a value (it reads `mismatch`); only an absent one is unknown.
+    if (options.primaryType !== undefined) {
+      params.primary_type = options.primaryType;
+    }
+    if (Number.isSafeInteger(options.chainId) && options.chainId >= 0) {
+      params.chain_id = String(options.chainId);
+    }
+    return call('typed_data.hash', params);
+  },
+
   /** EIP-712 digest with the core's strict rules; public, works while locked. */
   async typedDataHash(typedData) {
-    return (await call('typed_data.hash', { typed_data: typedData })).hash;
+    return (await vaultBackend.typedDataView(typedData)).hash;
   },
 
   /**

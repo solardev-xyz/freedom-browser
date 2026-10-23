@@ -21,7 +21,12 @@ import {
   isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
-import { personalSignBytes, signsRawHash, bytesToHex } from './personal-sign.js';
+import { hexToBytes, utf8Text } from './personal-sign.js';
+import {
+  formatTypedDataView,
+  typedDataWarningTexts,
+  ignoredText,
+} from './typed-data-view.js';
 
 // DOM references
 let dappSignScreen;
@@ -41,6 +46,9 @@ let dappSignRejectBtn;
 let dappSignApproveBtn;
 let dappSignAutoApproveCheckbox;
 let dappSignRawWarning;
+let dappSignTypedWarning;
+let dappSignTypedWarningText;
+let dappSignTypedIgnored;
 
 // Local state. `dappSignPending.signing` is true while the signature is
 // in flight: a hardware signature is a device prompt we cannot recall, so
@@ -66,6 +74,9 @@ export function initDappSign() {
   dappSignApproveBtn = document.getElementById('dapp-sign-approve');
   dappSignAutoApproveCheckbox = document.getElementById('dapp-sign-auto-approve');
   dappSignRawWarning = document.getElementById('dapp-sign-raw-warning');
+  dappSignTypedWarning = document.getElementById('dapp-sign-typed-warning');
+  dappSignTypedWarningText = document.getElementById('dapp-sign-typed-warning-text');
+  dappSignTypedIgnored = document.getElementById('dapp-sign-typed-ignored');
 
   // Register screen hider
   registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
@@ -128,8 +139,13 @@ function setupDappSignScreen() {
  * lock is global (see signature-flight.js), so this refuses the newcomer
  * whichever surface is holding the device: a sibling dapp-sign request,
  * dapp-tx, or an x402 payment. The dApp can retry once the device is done.
+ *
+ * `prepared` is what main says the request signs (dapp-provider.js,
+ * freedom-core #88): `{ message: { hex, rawHash } }` for personal_sign,
+ * `{ typedData: { hash, view, warnings }, chainId }` for typed data. The
+ * screen shows only that, never the dApp's own text.
  */
-export async function showDappSignApproval(webview, permissionKey, method, params) {
+export async function showDappSignApproval(webview, permissionKey, method, params, prepared = {}) {
   assertNoSignatureInFlight();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
@@ -151,10 +167,12 @@ export async function showDappSignApproval(webview, permissionKey, method, param
     }
 
     dappSignRawWarning?.classList.add('hidden');
+    dappSignTypedWarning?.classList.add('hidden');
+    dappSignTypedIgnored?.classList.add('hidden');
     if (method === 'personal_sign') {
-      displayPersonalSignMessage(params);
+      displayPersonalSignMessage(prepared.message);
     } else if (method === 'eth_signTypedData_v4') {
-      displayTypedDataMessage(params);
+      displayTypedDataView(prepared.typedData, prepared.chainId, prepared.chains);
     }
 
     // Multi-owner accounts sign as a smart contract — be upfront that
@@ -182,86 +200,55 @@ export async function showDappSignApproval(webview, permissionKey, method, param
   });
 }
 
-function displayPersonalSignMessage(params) {
-  const message = params[0];
-
+/**
+ * personal_sign, shown from the bytes main sends to sign (#88): as text
+ * when they are UTF-8, else as hex. Exactly 32 bytes are always hex, with
+ * a warning (#89): their signature can be a Swarm feed update, which
+ * nothing here could show.
+ */
+function displayPersonalSignMessage(message) {
   if (dappSignMessage) {
     dappSignMessage.parentElement?.classList.remove('hidden');
   }
   dappSignTypedDataSection?.classList.add('hidden');
 
-  // Exactly 32 bytes: shown as hex, with a warning (#89). Its signature
-  // can be a Swarm feed update, which nothing here could show.
-  const rawHash = signsRawHash(message);
+  const rawHash = Boolean(message?.rawHash);
   dappSignRawWarning?.classList.toggle('hidden', !rawHash);
 
   if (dappSignMessage) {
-    const bytes = personalSignBytes(message);
-    let displayMessage = typeof message === 'string' ? message : String(message);
-    if (rawHash && bytes) {
-      displayMessage = bytesToHex(bytes);
-    } else if (typeof message === 'string' && message.startsWith('0x')) {
-      try {
-        displayMessage = hexToUtf8(message.slice(2));
-      } catch {
-        displayMessage = message;
-      }
-    }
-    dappSignMessage.textContent = displayMessage;
+    const hex = message?.hex ?? '0x';
+    const text = rawHash ? null : utf8Text(hexToBytes(hex));
+    dappSignMessage.textContent = text ?? hex;
   }
 }
 
-function hexToUtf8(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-function displayTypedDataMessage(params) {
-  const typedDataStr = params[1];
-
+/**
+ * Typed data, shown from the identity core's view of what is signed (#88):
+ * every field whole. Keys the site sent that the types don't declare are
+ * listed as not signed, and the view's reports are warned about.
+ */
+function displayTypedDataView(typedData, siteChainId, chains) {
   if (dappSignMessage) {
     dappSignMessage.parentElement?.classList.add('hidden');
   }
   dappSignTypedDataSection?.classList.remove('hidden');
 
+  const view = typedData?.view;
   if (dappSignTypedData) {
-    try {
-      const typedData = typeof typedDataStr === 'string' ? JSON.parse(typedDataStr) : typedDataStr;
-      const formatted = formatTypedDataForDisplay(typedData);
-      dappSignTypedData.textContent = formatted;
-    } catch {
-      dappSignTypedData.textContent = typedDataStr;
-    }
-  }
-}
-
-function formatTypedDataForDisplay(typedData) {
-  const lines = [];
-
-  if (typedData.domain) {
-    lines.push('Domain:');
-    if (typedData.domain.name) lines.push(`  Name: ${typedData.domain.name}`);
-    if (typedData.domain.version) lines.push(`  Version: ${typedData.domain.version}`);
-    if (typedData.domain.chainId) lines.push(`  Chain ID: ${typedData.domain.chainId}`);
-    if (typedData.domain.verifyingContract) {
-      lines.push(`  Contract: ${typedData.domain.verifyingContract.slice(0, 10)}…`);
-    }
-    lines.push('');
+    dappSignTypedData.textContent = formatTypedDataView(view);
   }
 
-  if (typedData.message) {
-    lines.push('Message:');
-    for (const [key, value] of Object.entries(typedData.message)) {
-      const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      const truncated = displayValue.length > 50 ? displayValue.slice(0, 50) + '…' : displayValue;
-      lines.push(`  ${key}: ${truncated}`);
-    }
+  const ignored = ignoredText(view);
+  if (dappSignTypedIgnored) {
+    dappSignTypedIgnored.textContent = ignored || '';
+    dappSignTypedIgnored.classList.toggle('hidden', !ignored);
   }
 
-  return lines.join('\n');
+  const warnings = typedDataWarningTexts(typedData?.warnings || [], { view, siteChainId, chains });
+  if (dappSignTypedWarningText) {
+    dappSignTypedWarningText.textContent = warnings.join('\n\n');
+  }
+  dappSignTypedWarning?.classList.toggle('hidden', warnings.length === 0);
 }
 
 async function checkDappSignUnlockStatus() {
@@ -430,6 +417,8 @@ function rejectDappSign() {
 function closeDappSign() {
   dappSignScreen?.classList.add('hidden');
   dappSignRawWarning?.classList.add('hidden');
+  dappSignTypedWarning?.classList.add('hidden');
+  dappSignTypedIgnored?.classList.add('hidden');
   // A Safe flow may still be showing the signing board (in-flow, not a
   // modal) — restoring the identity view under it would double-render.
   if (!isSafeSigningBoardOpen()) {

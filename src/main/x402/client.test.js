@@ -1,4 +1,4 @@
-const { Wallet, verifyTypedData } = require('ethers');
+const { Wallet, TypedDataEncoder, verifyTypedData } = require('ethers');
 
 // Anvil/Hardhat-default test key — well-known, never funded on mainnet.
 const TEST_PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
@@ -181,5 +181,13 @@ describe('createX402Client', () => {
       signature,
     );
     expect(recovered).toBe(TEST_ADDRESS);
+
+    // freedom-core #88: the authorization, as approved, was hashed by the
+    // core with typed_data.hash, and that hash passed as expected_hash.
+    const signs = mockCore.calls.filter(([method]) => method === 'sign.typed_data');
+    expect(signs).toHaveLength(1);
+    const [, , data, expectedHash] = signs[0];
+    expect(mockCore.calls).toContainEqual(['typed_data.hash', data]);
+    expect(expectedHash).toBe(TypedDataEncoder.hash(data.domain, data.types, data.message));
   });
 });

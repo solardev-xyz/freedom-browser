@@ -153,19 +153,44 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
     };
     const message = { contents: 'gm', amount: 10n ** 18n };
     const data = toCoreTypedData({ domain, types: { ...types, EIP712Domain: [] }, message });
-    expect(await vaultBackend.sign.typedData(key, data)).toBe(
+    const hash = TypedDataEncoder.hash(domain, types, message);
+    // Signed only over the confirmed hash (freedom-core #88).
+    expect(await vaultBackend.sign.typedData(key, data, hash)).toBe(
       await wallet.signTypedData(domain, types, message)
     );
-    expect(await vaultBackend.typedDataHash(data)).toBe(
-      TypedDataEncoder.hash(domain, types, message)
-    );
+    expect(await vaultBackend.typedDataHash(data)).toBe(hash);
+    await expect(
+      vaultBackend.sign.typedData(key, data, '0x' + '00'.repeat(32))
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
+    // The view: ethers' getPayload, and the reports.
+    const viewed = await vaultBackend.typedDataView(data, { primaryType: 'Mail', chainId: 100 });
+    const payload = TypedDataEncoder.getPayload(domain, types, message);
+    expect(viewed).toEqual({
+      hash,
+      view: {
+        types: payload.types,
+        domain: payload.domain,
+        primary_type: payload.primaryType,
+        message: payload.message,
+        ignored: [],
+        named_type: 'match',
+        chain: 'mismatch',
+      },
+    });
+    const unknown = await vaultBackend.typedDataView(data, { primaryType: null });
+    expect(unknown.view).toMatchObject({ named_type: 'mismatch', chain: 'unknown' });
     // Stricter than ethers: a bool given "false".
     const bool = {
       domain: {},
       types: { M: [{ name: 'b', type: 'bool' }] },
       message: { b: 'false' },
     };
-    await expect(vaultBackend.sign.typedData(key, bool)).rejects.toMatchObject({
+    await expect(
+      vaultBackend.sign.typedData(key, bool, '0x' + '00'.repeat(32))
+    ).rejects.toMatchObject({
+      code: 'invalid_argument',
+    });
+    await expect(vaultBackend.typedDataView(bool)).rejects.toMatchObject({
       code: 'invalid_argument',
     });
     // Bee and publisher keys sign only chunks.
@@ -190,10 +215,14 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
     const bee = new Bee('http://127.0.0.1:1633');
     await vaultBackend.importVault('testpass1', ABANDON);
     const identifier = Buffer.alloc(32, 0x5a);
+    // Accounts don't sign chunks (freedom-core #89): only keys that sign
+    // nothing else do.
+    await expect(
+      vaultBackend.sign.soc({ kind: 'account', index: 0 }, { identifier, payload: Buffer.from('x') })
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
     for (const [key, secret] of [
       [{ kind: 'bee_wallet' }, ABANDON_BEE_KEY],
       [{ kind: 'publisher', origin_index: 0 }, ABANDON_PUBLISHER_0],
-      [{ kind: 'account', index: 0 }, ABANDON_KEY.slice(2)],
     ]) {
       for (const [payload, span] of [
         [Buffer.from('feed update'), undefined],

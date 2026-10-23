@@ -51,10 +51,29 @@ function simulatedVaultBackend(identity, core) {
         admit('sign.message', key, Buffer.from(bytes).toString('hex'));
         return wallet().signMessage(bytes);
       },
-      typedData: async (key, data) => {
-        admit('sign.typed_data', key, data);
+      // The core signs only the confirmed digest (freedom-core #88): any
+      // other is invalid_argument, before the key (so also while locked).
+      typedData: async (key, data, expectedHash) => {
+        core.calls.push(['sign.typed_data', key, data, expectedHash]);
+        const hash = TypedDataEncoder.hash(data.domain, data.types, data.message);
+        if (expectedHash !== hash) {
+          throw Object.assign(
+            new Error('invalid typed data: typed data hash is not the confirmed one (expected_hash)'),
+            { code: 'invalid_argument' }
+          );
+        }
+        if (!identity.isUnlocked()) {
+          throw Object.assign(new Error('Vault is locked'), { code: 'vault_locked' });
+        }
         return wallet().signTypedData(data.domain, data.types, data.message);
       },
+    },
+    typedDataView: async (data, options = {}) => {
+      core.calls.push(['typed_data.hash', data, options]);
+      return {
+        hash: TypedDataEncoder.hash(data.domain, data.types, data.message),
+        view: simulatedView(data, options),
+      };
     },
     typedDataHash: async (data) => {
       core.calls.push(['typed_data.hash', data]);
@@ -63,4 +82,33 @@ function simulatedVaultBackend(identity, core) {
   };
 }
 
-module.exports = { simulatedVaultBackend };
+/**
+ * The core's view of typed data (freedom-core design 0002, #88): ethers'
+ * getPayload with primaryType as primary_type, and the three reports.
+ */
+function simulatedView(data, { primaryType, chainId } = {}) {
+  const payload = TypedDataEncoder.getPayload(data.domain, data.types, data.message);
+  const declared = new Set((payload.types[payload.primaryType] || []).map((field) => field.name));
+  const ignored = Object.keys(data.message || {})
+    .filter((key) => !declared.has(key))
+    .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  let namedType = 'unknown';
+  if (primaryType !== undefined) {
+    namedType = typeof primaryType === 'string' && primaryType === payload.primaryType ? 'match' : 'mismatch';
+  }
+  const domainChain = data.domain?.chainId;
+  let chain = 'unknown';
+  if (domainChain === undefined || domainChain === null) chain = 'absent';
+  else if (chainId !== undefined) chain = BigInt(domainChain) === BigInt(chainId) ? 'match' : 'mismatch';
+  return {
+    types: payload.types,
+    domain: payload.domain,
+    primary_type: payload.primaryType,
+    message: payload.message,
+    ignored,
+    named_type: namedType,
+    chain,
+  };
+}
+
+module.exports = { simulatedVaultBackend, simulatedView };
