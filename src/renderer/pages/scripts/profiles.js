@@ -5,8 +5,11 @@ const profileToast = document.getElementById('profile-toast');
 
 // Header count line, like history's "N entries" and downloads'
 // "N downloads" (#256). Counts the cards actually on screen.
+// An empty text hides the line rather than leaving a blank gap under the title.
 const setStats = (text) => {
-  if (statsEl) statsEl.textContent = text;
+  if (!statsEl) return;
+  statsEl.textContent = text;
+  statsEl.hidden = !text;
 };
 
 const esc = (s) =>
@@ -162,8 +165,15 @@ const refreshProfiles = async () => {
     }
     renderProfiles(result.profiles || []);
   } catch (err) {
-    setStats('Profile list unavailable');
-    managerList.innerHTML = '<div class="profile-manager-empty">Profile list unavailable</div>';
+    // Said once, in the body, with the page's icon — the empty-state shape of
+    // History and Downloads. The count line has no count to give, so it goes
+    // rather than repeating the message (#606 item 7).
+    setStats('');
+    managerList.innerHTML = `
+      <div class="empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${AVATAR_ICON}</svg>
+        <p>Could not load profiles</p>
+      </div>`;
     logError('Failed to load profiles', err);
   }
 };

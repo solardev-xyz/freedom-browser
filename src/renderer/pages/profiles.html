@@ -39,10 +39,11 @@
         min-height: 100vh;
       }
 
+      /* Left-aligned on the same 48 px inset as History, Downloads and
+         Payments, full width like them (#606 item 7). The grid's 150 px
+         minimum keeps the cards from stretching on a wide window. */
       .page {
-        max-width: 900px;
-        margin: 0 auto;
-        padding: 40px 32px 64px;
+        padding: 48px;
       }
 
       .page-head {
@@ -58,7 +59,10 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        margin: 0 0 8px 0;
+        /* The siblings' bare <h1> and <p class="subtitle"> keep the default
+           block margins; these are those values, so the title and its count
+           line sit at the same height on every list page. */
+        margin: 0.67em 0 8px 0;
         font-size: 28px;
         font-weight: 600;
         letter-spacing: -0.5px;
@@ -66,7 +70,7 @@
       }
 
       .subtitle {
-        margin: 0;
+        margin: 14px 0 0;
         font-size: 14px;
         color: var(--text-muted);
       }
@@ -130,6 +134,29 @@
         color: var(--text-muted);
         font-size: 13px;
         text-align: center;
+      }
+
+      /* Error state: the icon + one-line message of History's and Downloads'
+         empty states, across the whole grid (#606 item 7). In the subtitle's
+         --text-muted rather than their --text-meta, which is 3.3:1 on the dark
+         page: an error is read, not skimmed past. */
+      .empty-state {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 64px;
+        color: var(--text-muted);
+      }
+
+      .empty-state svg {
+        width: 64px;
+        height: 64px;
+        margin-bottom: 16px;
+        opacity: 0.5;
+      }
+
+      .empty-state p {
+        margin: 0;
+        font-size: 14px;
       }
 
       /* Transient status toast for action failures (delete/open/register/edit).

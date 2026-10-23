@@ -108,6 +108,9 @@ export function hideOnboarding() {
 async function skipOnboarding() {
   console.log('[Onboarding] User skipped - starting nodes with random keys');
   hideOnboarding();
+  // The user walked away from identity setup: anything waiting on it (a
+  // publish setup asked for from an internal page) is dropped.
+  document.dispatchEvent(new CustomEvent('onboarding-dismissed'));
   // Start nodes based on settings - they will auto-generate random keys
   await startNodesFromSettings();
 }

@@ -23,7 +23,9 @@ run-name: >-
 #     maintainer publishes after the §6 smoke test in
 #     docs/agent-playbooks/release-process.md.
 #   - workflow_dispatch: same builds from any branch; macOS is signed by
-#     default, set `signed: false` for a pipeline test without secrets.
+#     default, set `signed: false` for a pipeline test without secrets. A
+#     signed dispatch only starts from `main` or `release/*`: the signing
+#     secrets sit behind the `release-signing` environment (below).
 #     Dispatch runs only upload workflow artifacts, never a release —
 #     unless `nightly` + `publish_nightly` are ticked (see below).
 #   - schedule (22:07 UTC daily): a nightly build of `main` for internal
@@ -35,8 +37,13 @@ run-name: >-
 #     scheduled run whose head commit is already published as the current
 #     nightly skips every job. See release-process.md "Nightly builds".
 #
-# Required repository secrets for a signed macOS build (Settings → Secrets
-# and variables → Actions); Linux and Windows need none:
+# Required secrets for a signed macOS build, held in the `release-signing`
+# environment (Settings → Environments → release-signing), whose deployment
+# policy admits only `main`, `release/*` and `v*` tags (#657). That policy
+# matches the ref's name only and the run uses that ref's copy of this file,
+# so it is as tight as the rulesets on who may create or push those refs;
+# see release-process.md Appendix B for what they cover and what is still
+# open. Linux and Windows need none:
 #   CSC_LINK                    Developer ID Application cert, .p12 exported
 #                               from Keychain, base64-encoded
 #   CSC_KEY_PASSWORD            password set on that .p12 export
@@ -44,12 +51,15 @@ run-name: >-
 #   APPLE_TEAM_ID               team id (46XPHRBLH5 for Solar Dev Ltd)
 #   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
 #
-# electron-builder imports CSC_LINK into a temporary keychain on CI and
-# `build.mac.notarize: true` in package.json submits + staples the
-# notarization inline, exactly like the maintainer flow in
-# docs/agent-playbooks/release-process.md §5. That inline pass covers
+# electron-builder imports CSC_LINK into a temporary keychain on CI, and its
+# afterSign hook (scripts/after-sign.js) notarizes `Freedom.app` and staples
+# the ticket before the disk image is made, exactly like the maintainer flow
+# in docs/agent-playbooks/release-process.md Appendix A. That pass covers
 # `Freedom.app` only — the disk image dmg-builder wraps around it is
-# notarized and stapled by a separate step below.
+# notarized and stapled by a separate step below. Every staple and stapler
+# validate goes through scripts/staple-with-retry.sh, which retries with
+# growing pauses: GitHub's macOS runners drop the connection to Apple's
+# ticket service now and then (#757, actions/runner-images#14924).
 
 on:
   push:
@@ -84,6 +94,8 @@ on:
         description: >-
           macOS only: sign and notarize with the Developer ID secrets.
           Uncheck for an unsigned pipeline test that needs no secrets.
+          Signed runs only start from main or release/* (the
+          release-signing environment's branch policy).
         type: boolean
         default: true
       bundle_tor:
@@ -127,7 +139,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -203,6 +215,29 @@ jobs:
     if: needs.plan.outputs.skip != 'true'
     runs-on: macos-15
     timeout-minutes: 120
+    # The signing and notarization secrets live in the `release-signing`
+    # environment, whose deployment policy admits only `main`, `release/*` and
+    # `v*` tags (#657), so a run on any other ref is refused them. That policy
+    # checks the ref's name only, and the run uses that ref's copy of this
+    # file, so it is only as tight as the rulesets on who may create or push
+    # those refs: do not loosen the `v*` / `release/**` rulesets or widen the
+    # policy without tightening the other side. release-process.md Appendix B
+    # lists what the rulesets cover and what is still open (pushes to an
+    # existing `release/*` branch, self-merged PRs to `main`, and the
+    # repository-level copies of these secrets until an admin deletes them).
+    # Only a signed run asks for the environment, with the same condition as
+    # SIGNED below: an unsigned run gets an empty name, which GitHub treats as
+    # no environment at all, so unsigned pipeline tests keep working from any
+    # branch. A signed dispatch from another branch is rejected before the job
+    # starts. Keep this the only job that references those secrets (pinned by
+    # scripts/ci/release-signing-env.test.js).
+    environment:
+      name: ${{ (github.event_name != 'workflow_dispatch' || inputs.signed) && 'release-signing' || '' }}
+    # The name the artifact is uploaded under, so smoke-mac-arm64 downloads it
+    # by name and reads the signing state off it. Keep in step with the upload
+    # step's `name:`.
+    outputs:
+      artifact: freedom-mac-arm64-${{ env.SIGNED == 'true' && 'signed' || 'unsigned' }}
     env:
       # Tag pushes and scheduled nightlies are always signed and always bundle
       # Tor — testers on macOS need a notarized build as much as users do;
@@ -218,7 +253,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -243,8 +278,8 @@ jobs:
             if [ -z "${!name}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "Signed build requested but these repository secrets are empty:$missing" >&2
-            echo "Add them under Settings → Secrets and variables → Actions, or re-run with signed=false for an unsigned pipeline test." >&2
+            echo "Signed build requested but these release-signing environment secrets are empty:$missing" >&2
+            echo "Add them under Settings → Environments → release-signing, or re-run with signed=false for an unsigned pipeline test." >&2
             exit 1
           fi
 
@@ -252,11 +287,13 @@ jobs:
       # Electron download cache is off in install-node-deps below: these jobs
       # build the signed releases and nightlies, so none of their inputs may
       # come from a cache another run wrote (#635). ci.yml keeps its caches.
-      # `package-manager-cache: false` is a no-op on setup-node v4 (which only
-      # caches when `cache:` is set) but keeps it off after a bump to v5+, which
-      # caches npm by default; v4 logs it as an unexpected input until then.
+      # `package-manager-cache: false` keeps setup-node (v5+) from turning npm
+      # caching on by itself, which it does when package.json declares npm in
+      # `packageManager` or `devEngines.packageManager`. This repo declares
+      # neither today, so the input is belt and braces: adding that field later
+      # must not quietly start restoring a cache into these builds.
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -350,7 +387,12 @@ jobs:
           fi
           npm run tor:download
 
-      - name: Build, sign and notarize
+      # scripts/after-sign.js notarizes Freedom.app and staples it with
+      # scripts/staple-with-retry.sh before the .dmg and .zip are built from
+      # it, so both wrap a stapled app. `build.mac.notarize` stays false:
+      # electron-builder's own pass staples with three 1-4 s retries only,
+      # which a ticket-service drop outlasts (#757).
+      - name: Build, sign, notarize and staple
         if: env.SIGNED == 'true'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -364,7 +406,7 @@ jobs:
         if: env.SIGNED != 'true'
         run: npm run dist -- --mac --arm64 --unsigned --no-notarize
 
-      # `build.mac.notarize: true` submits and staples `Freedom.app` and stops
+      # The afterSign hook notarizes and staples `Freedom.app` and stops
       # there: dmg-builder wraps that already-stapled app in a disk image but
       # never notarizes the image itself, so the `.dmg` carries no ticket of
       # its own — Gatekeeper has to check it online when a user opens it, and
@@ -391,7 +433,7 @@ jobs:
               --team-id "$APPLE_TEAM_ID" \
               --password "$APPLE_APP_SPECIFIC_PASSWORD" \
               --wait --timeout 30m
-            xcrun stapler staple "$dmg"
+            bash scripts/staple-with-retry.sh staple "$dmg"
           done
 
       # Stapling rewrites the disk image, so the sha512/size electron-builder
@@ -428,20 +470,28 @@ jobs:
           fs.writeFileSync(ymlPath, yml);
           NODE
 
+      # `stapler validate` asks Apple's ticket service too, so it retries
+      # the same way the staples do (#757); it still fails the job once the
+      # last attempt fails, and every path must pass.
       - name: Verify signature, notarization and staple
         if: env.SIGNED == 'true'
         run: |
           set -x
           codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Freedom.app
           spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app
-          xcrun stapler validate dist/mac-arm64/Freedom.app
-          for dmg in dist/*.dmg; do xcrun stapler validate "$dmg"; done
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No .dmg in dist/ to validate." >&2
+            exit 1
+          fi
+          bash scripts/staple-with-retry.sh validate dist/mac-arm64/Freedom.app "${dmgs[@]}"
 
       - name: List distributables
         run: ls -la dist
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: freedom-mac-arm64-${{ env.SIGNED == 'true' && 'signed' || 'unsigned' }}
           path: |
@@ -487,7 +537,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -499,7 +549,7 @@ jobs:
           fi
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -635,7 +685,7 @@ jobs:
           done
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: freedom-linux-${{ matrix.arch }}
           path: |
@@ -682,12 +732,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -707,7 +757,7 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Download the linux ${{ matrix.arch }} artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: freedom-linux-${{ matrix.arch }}
           path: artifact
@@ -820,7 +870,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-linux-${{ matrix.arch }}-report
           path: test-results/
@@ -845,12 +895,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -866,13 +916,15 @@ jobs:
           ignore-scripts: 'true'
           electron-cache: 'false'
 
-      # Signed and unsigned runs upload under different names, so match both
-      # and let the step below read the signing state back off the name that
-      # actually arrived rather than re-deriving it from the inputs.
+      # Signed and unsigned runs upload under different names; the build job
+      # reports the one it used, and the step below reads the signing state
+      # back off it rather than re-deriving it from the inputs. Download by
+      # name: download-artifact v5+ extracts a lone pattern match straight
+      # into `path`, so the artifact name no longer survives as a directory.
       - name: Download the mac arm64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: freedom-mac-arm64-*
+          name: ${{ needs.mac-arm64.outputs.artifact }}
           path: artifact
 
       # A tag push must smoke-test the version it claims to be shipping. A
@@ -895,24 +947,20 @@ jobs:
           echo "FREEDOM_E2E_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Resolve the downloaded artifact
+        env:
+          ARTIFACT_NAME: ${{ needs.mac-arm64.outputs.artifact }}
         run: |
-          shopt -s nullglob
-          dirs=(artifact/freedom-mac-arm64-*)
-          if [ ${#dirs[@]} -ne 1 ]; then
-            echo "Expected exactly one freedom-mac-arm64-* artifact, found ${#dirs[@]}" >&2
-            exit 1
-          fi
-          case "$(basename "${dirs[0]}")" in
-            *-unsigned) signed=false ;;
-            *-signed) signed=true ;;
+          case "$ARTIFACT_NAME" in
+            freedom-mac-arm64-unsigned) signed=false ;;
+            freedom-mac-arm64-signed) signed=true ;;
             *)
-              echo "Unexpected artifact name $(basename "${dirs[0]}")" >&2
+              echo "Unexpected artifact name '$ARTIFACT_NAME'" >&2
               exit 1
               ;;
           esac
-          ls -la "${dirs[0]}"
-          echo "Artifact ${dirs[0]} (signed=$signed)"
-          echo "ARTIFACT_DIR=${dirs[0]}" >> "$GITHUB_ENV"
+          ls -la artifact
+          echo "Artifact $ARTIFACT_NAME (signed=$signed)"
+          echo "ARTIFACT_DIR=artifact" >> "$GITHUB_ENV"
           echo "SIGNED=$signed" >> "$GITHUB_ENV"
 
       - name: Mount the disk image and copy the app out of it
@@ -1096,7 +1144,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-mac-arm64-report
           path: test-results/
@@ -1125,7 +1173,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1137,7 +1185,7 @@ jobs:
           fi
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -1208,8 +1256,7 @@ jobs:
       # packaging step below uses — no compiler is downloaded here either.
       # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through
       # the `win.extraResources` entry in package.json.
-      - name: Build Arti (Tor) client
-        if: env.BUNDLE_TOR == 'true'
+      - name: Prepare Rust and build Windows native components
         shell: pwsh
         env:
           RUSTUP_VERSION: 1.28.2
@@ -1236,8 +1283,10 @@ jobs:
           if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          npm run tor:download
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:BUNDLE_TOR -eq 'true') {
+            npm run tor:download
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       # No Windows code-signing certificate exists yet, so this installer is
       # unsigned (same as every release on freedom.baby so far) and SmartScreen
@@ -1266,7 +1315,7 @@ jobs:
           ls dist/*.exe dist/*-win.zip
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: freedom-win-x64
           path: |
@@ -1298,12 +1347,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -1320,7 +1369,7 @@ jobs:
           electron-cache: 'false'
 
       - name: Download the win x64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: freedom-win-x64
           path: artifact
@@ -1479,7 +1528,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-windows-x64-report
           path: test-results/
@@ -1500,7 +1549,7 @@ jobs:
 
     steps:
       - name: Download all platform artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: freedom-*
           merge-multiple: true
@@ -1586,12 +1635,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -1619,7 +1668,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-full-traces
           path: |
@@ -1647,19 +1696,23 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # "Merged since the last nightly" is a git log between two commits
           # that can be many merges apart.
           fetch-depth: 0
-          # The one checkout that keeps the token in .git/config: "Publish the
+          # The one checkout that persists the token for git: "Publish the
           # rolling nightly release" force-pushes the `nightly` tag with plain
-          # git. Nothing in this job uploads the workspace, and the job runs
-          # no npm install or build, only git, gh and the downloaded artifacts.
+          # git. Since checkout v6 the token is not written into .git/config
+          # itself but into a credentials file under $RUNNER_TEMP, which
+          # .git/config pulls in with an `includeIf` entry; post-job cleanup
+          # removes both. Nothing in this job uploads the workspace, and the
+          # job runs no npm install or build, only git, gh and the downloaded
+          # artifacts.
           persist-credentials: true # zizmor: ignore[artipacked]
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: freedom-*
           merge-multiple: true
@@ -1741,8 +1794,9 @@ jobs:
           # Move the rolling tag before touching the release, so the release
           # page never shows last night's source next to tonight's assets.
           # A lightweight tag: no identity to configure, and nothing reads a
-          # tag message here. actions/checkout left the workflow token in the
-          # remote's credentials; `contents: write` above is what lets it push.
+          # tag message here. actions/checkout left the workflow token in git's
+          # config (a $RUNNER_TEMP credentials file included from .git/config);
+          # `contents: write` above is what lets it push.
           git tag -f nightly "$GITHUB_SHA"
           git push -f origin refs/tags/nightly
 

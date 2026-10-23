@@ -101,10 +101,14 @@ all. Both are known drift waiting on a per-screen kind decision (#239); do not
 repaint them to the pairing without one, and do not read them as evidence the
 pairing above is wrong.
 
-**Sidebar sub-screens.** One header component: chevron, "Back", title, and
-the same close control on every screen (Send, Confirm Transaction, Sign
-Message, Connect, Swarm Access, Confirm Publish, Confirm Message, Feed
-Access, Connect Ledger, Connect Phone).
+**Sidebar sub-screens.** One header component, `lib/subscreen-header.js`:
+chevron, "Back", title (Send, Confirm Transaction, Sign Message, Connect,
+Swarm Access, Confirm Publish, Confirm Message, Feed Access, Connect Ledger,
+Connect Phone). The header has no close control of its own (#238): the
+sidebar's "×" is the one close affordance, and the approval screens
+(`.sidebar-modal`) cover it on purpose, so a pending dApp or Swarm request is
+answered with Reject or Back, never dismissed. Do not add a "×" to a
+sub-screen header.
 
 **Settings sections.** `h2.section-title` for the section, `h3.row-label` (or
 the 12 px uppercase category style) for sub-headings, never a second large
@@ -212,6 +216,15 @@ re-rendered file with its committed self, and adopt the ones that moved
 visibly; a repeat sweep rewrites ~14 files by 1–2/255 of gradient dithering, so
 byte equality is not the bar. See the header of
 `test-e2e/renderer-screenshots.spec.js`.
+
+When a Linux machine is unavailable, dispatch `ci.yml` on the review branch
+with `renderer_baselines=true`. The `renderer-baseline-candidates` artifact
+contains a fresh render of every surface in both themes. Capture still runs the
+ordinary comparisons, including failures, and never changes the references in
+Git. Inspect candidates against the committed images, adopt only intended visible
+changes, and let the ordinary
+pull-request comparison validate the resulting commit. Never adopt macOS renders
+as Linux references.
 
 ## Checks before opening or approving a PR that touches the renderer
 

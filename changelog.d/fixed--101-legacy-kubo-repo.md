@@ -1,0 +1,2 @@
+- Installs upgraded from a version before 0.8.0 no longer keep the retired Kubo IPFS repo on disk, which could take up several GB ([#101](https://github.com/solardev-xyz/freedom-browser/issues/101))
+  - It is deleted once, in the background after the first window opens; the current IPFS node's data stays

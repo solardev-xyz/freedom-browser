@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const {
   getProfileFocusPaths,
   readProfileFocusAck,
+  requestInstanceLockProbeSync,
   requestProfileFocusAsyncAwait,
   requestProfileFocusSync,
   requestProfileQuitAsync,
@@ -153,6 +154,19 @@ describe('profile focus handoff', () => {
       nonce: 'focus-await-1',
     });
     expect(onFocusWindow).toHaveBeenCalledTimes(1);
+  });
+
+  test('a windowless runtime refuses focus instead of acknowledging undelivered links', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const onFocusWindow = jest.fn();
+    trackWatcher(startProfileFocusRequestWatcher(profile, onFocusWindow, {
+      pollIntervalMs: 10, allowFocus: false, logger: { warn: jest.fn() },
+    }));
+    const result = await requestProfileFocusAsyncAwait(profile, {
+      nonce: 'runtime-cannot-focus', urls: ['https://example.test/'], pollIntervalMs: 10, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('automation runtime') });
+    expect(onFocusWindow).not.toHaveBeenCalled();
   });
 
   test('async-await focus request reports timedOut when no process responds', async () => {
@@ -448,5 +462,102 @@ describe('profile focus handoff', () => {
 
     await waitFor(() => !fs.existsSync(stale));
     expect(onFocusWindow).not.toHaveBeenCalled();
+  });
+
+  // R1-F1 (#142): a second launch asks for the running profile's
+  // single-instance lock only after the running profile answered this probe
+  // from its main thread, because Chromium SIGKILLs a holder that does not
+  // acknowledge the hand-over within 20 s.
+  describe('instance-lock probe', () => {
+    function runProbe(profile, options = {}) {
+      const script = `
+        const { requestInstanceLockProbeSync } = require(${JSON.stringify(require.resolve('./profile-focus-handoff'))});
+        const started = Date.now();
+        const result = requestInstanceLockProbeSync(${JSON.stringify(profile)}, ${JSON.stringify(options)});
+        process.stdout.write(JSON.stringify({ result, ms: Date.now() - started }));
+      `;
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['-e', script], {
+          stdio: ['ignore', 'pipe', 'inherit'],
+        });
+        let out = '';
+        child.stdout.on('data', (chunk) => (out += chunk));
+        child.on('error', reject);
+        child.on('close', () => {
+          try {
+            resolve(JSON.parse(out));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+    }
+
+    test('a responsive process listening on its lock answers yes, without focusing', async () => {
+      const profile = trackProfile(makeTempProfile('work'));
+      const paths = getProfileFocusPaths(profile);
+      const onFocusWindow = jest.fn();
+      trackWatcher(
+        startProfileFocusRequestWatcher(profile, onFocusWindow, {
+          isListeningOnInstanceLock: () => true,
+        })
+      );
+      const { result } = await runProbe(profile, { nonce: 'probe-yes' });
+      expect(result).toBe(true);
+      expect(onFocusWindow).not.toHaveBeenCalled();
+      // Collected by the prober, and never in the shared files an older
+      // build reads (where it could overwrite another launch's request).
+      expect(fs.existsSync(path.join(paths.ackDir, 'probe-yes.json'))).toBe(false);
+      expect(fs.existsSync(paths.requestPath)).toBe(false);
+      expect(fs.existsSync(paths.ackPath)).toBe(false);
+    });
+
+    test('a process not (yet) listening on its lock answers no', async () => {
+      const profile = trackProfile(makeTempProfile('work'));
+      let listening = false;
+      trackWatcher(
+        startProfileFocusRequestWatcher(profile, jest.fn(), {
+          pollIntervalMs: 10,
+          isListeningOnInstanceLock: () => listening,
+        })
+      );
+      expect((await runProbe(profile)).result).toBe(false);
+      listening = true;
+      expect((await runProbe(profile)).result).toBe(true);
+    });
+
+    test('a watcher without the option (or a lock-state error) answers no', async () => {
+      const profile = trackProfile(makeTempProfile('work'));
+      trackWatcher(startProfileFocusRequestWatcher(profile, jest.fn(), { pollIntervalMs: 10 }));
+      expect((await runProbe(profile)).result).toBe(false);
+      const other = trackProfile(makeTempProfile('other'));
+      trackWatcher(
+        startProfileFocusRequestWatcher(other, jest.fn(), {
+          pollIntervalMs: 10,
+          isListeningOnInstanceLock: () => {
+            throw new Error('boom');
+          },
+        })
+      );
+      expect((await runProbe(other)).result).toBe(false);
+    });
+
+    test('a blocked or older process (no answer) is a no within the timeout, and the probe is taken back', async () => {
+      const profile = trackProfile(makeTempProfile('work'));
+      const paths = getProfileFocusPaths(profile);
+      const { result, ms } = await runProbe(profile, { nonce: 'probe-none', timeoutMs: 150 });
+      expect(result).toBe(false);
+      expect(ms).toBeGreaterThanOrEqual(140);
+      expect(ms).toBeLessThan(5000);
+      expect(fs.existsSync(path.join(paths.requestDir, 'probe-none.json'))).toBe(false);
+      expect(fs.existsSync(paths.requestPath)).toBe(false);
+    });
+
+    test('an unwritable profile dir is a no', () => {
+      const profile = trackProfile(makeTempProfile('work'));
+      // A regular file where the request directory would go.
+      fs.writeFileSync(getProfileFocusPaths(profile).requestDir, 'not a dir');
+      expect(requestInstanceLockProbeSync(profile, { timeoutMs: 10 })).toBe(false);
+    });
   });
 });

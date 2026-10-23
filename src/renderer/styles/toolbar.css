@@ -1,6 +1,6 @@
 .toolbar {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) repeat(4, auto);
   align-items: center;
   gap: 0;
   padding: 6px 10px;
@@ -96,6 +96,7 @@
 
 .address-wrapper {
   position: relative;
+  min-width: 0;
   flex: 1;
 }
 
@@ -123,12 +124,12 @@
   /* Default arrow cursor, matching the toolbar's other .icon-btn buttons
      (back/forward/reload/home/bookmark) — no hand-pointer. */
   cursor: default;
-  /* Sit above the menu backdrop (z-index 9999) so a click on the shield
-     while the nodes / hamburger menu is open lands on the shield itself
-     rather than being swallowed by the backdrop. The document-click
-     handlers in menus.js then close the open menu, and the shield's
-     own handler opens the popover — single click, two effects. */
-  z-index: 10001;
+  /* Sit above the menu backdrop so a click on the shield while the
+     nodes / hamburger menu is open lands on the shield itself rather
+     than being swallowed by the backdrop. The document-click handlers
+     in menus.js then close the open menu, and the shield's own handler
+     opens the popover — single click, two effects. Order: variables.css. */
+  z-index: var(--z-over-backdrop);
   border-radius: 50%;
   transition:
     color 0.2s ease,
@@ -197,7 +198,7 @@
   border-radius: 8px;
   /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 10000;
+  z-index: var(--z-popover);
   padding: 14px 16px;
   font-size: 13px;
   color: var(--text);
@@ -339,7 +340,7 @@
   font-size: 11px;
   color: var(--text);
   white-space: nowrap;
-  z-index: 10001;
+  z-index: var(--z-over-popover);
 }
 
 .trust-popover-tooltip[hidden] {
@@ -358,7 +359,7 @@
   font-size: 11px;
   color: var(--text);
   white-space: nowrap;
-  z-index: 10001;
+  z-index: var(--z-over-popover);
 }
 
 .hover-tooltip[hidden] {
@@ -497,4 +498,22 @@
 
 .input-action-btn.hidden {
   display: none;
+}
+
+.address-bar-container { min-width: 0; }
+.address-input { min-width: 0; }
+@media (max-width: 560px) {
+  .toolbar { padding-inline: 4px; }
+  /* The Agent button needs the room; without it the toolbar keeps Home. */
+  .toolbar:has(#agent-toggle-btn:not([hidden])) #home-btn { display: none; }
+  /* Square, so hover and pressed states stay circles. Named one by one: the
+     address bar's own star/permission buttons are .icon-btn too and keep
+     their size. */
+  .toolbar :is(#back-btn, #forward-btn, #reload-btn, #home-btn, #bee-menu-button,
+    #agent-toggle-btn, #wallet-toggle-btn, #menu-button) {
+    width: 32px;
+    height: 32px;
+    margin-inline: 0;
+  }
+  #nav-form { margin-inline: 2px; }
 }

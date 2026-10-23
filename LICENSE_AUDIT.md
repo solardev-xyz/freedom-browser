@@ -9,9 +9,24 @@
 
 > **What changed in this revision.** Re-derived for the 0.8.7-rc.1 cut against the installed tree. Every version recorded in `licenses-audit.json` was compared with the installed tree and the repo's pins, not only the two the test enforces, and matches. Shipped components that moved since 0.8.6, each license re-read at the version being shipped: npm `@corpus-core/colibri-stateless` 3.0.0 → 3.0.2 (MIT, identical `LICENSE`), `@ledgerhq/hw-app-eth` 7.8.19 → 7.10.0 (Apache-2.0), `@x402/core` and `@x402/evm` 2.27.0 → 2.28.0 (Apache-2.0), `electron` 44.4.5 → 44.7.0 (MIT); bundled Ant v0.5.45 → v0.5.61 (`MIT OR Apache-2.0`), freedom-ipfs v0.4.3 → v0.4.5 (`MIT OR Apache-2.0`), libradicle 0.7.1 → 0.8.0 (`MIT OR Apache-2.0` in `Cargo.toml`, still no committed license text), Myotis v0.1.11 → v0.1.14 (Apache-2.0; upstream's `NOTICE` byte-identical at every step, sha256 `ee84afd3…`, and `NOTICES` still reproduces it per section 4(d)) and Arti 2.6.0 → 2.7.0 (`MIT OR Apache-2.0`, license files byte-identical, no upstream `NOTICE`; its `Cargo.lock` adds ten crates, all under licenses already in the tree). Three components were added since 0.8.6: the uBlock Origin filters and scriptlets in `assets/adblock/` (GPL-3.0 data, shipped alongside; decided in #412, see _The GPL question_), the Microsoft Visual C++ runtime DLLs on Windows (#563), and — found by this re-derivation, not by the test — the static **AppImage runtime** every Linux `.AppImage` now starts with (#566), which links a patched libfuse 3.15.0 under LGPL-2.1. It is recorded below under _AppImage runtime_ and attributed in `NOTICES`; the maintainer decided that pointing to upstream's published source meets LGPL-2.1 for it.
 >
+> **2026-10-16 update (v0.1.16):** Myotis is now pinned to v0.1.16. `LICENSE` and `NOTICE` are byte-identical to v0.1.15 (`git diff v0.1.15 v0.1.16 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.15 to 0.1.16); no crate is added or removed.
+>
+> **2026-10-15 update (v0.1.15):** Myotis is now pinned to v0.1.15. `LICENSE` and `NOTICE` are byte-identical to v0.1.14 (`git diff v0.1.14 v0.1.15 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile adds two crates, upstream's own `myotis-wire` (`MIT OR Apache-2.0` in its `Cargo.toml`, as the addon's other crates) and `libp2p-mplex` 0.43.1 (MIT, like the libp2p crates already linked).
+>
 > The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
 ---
+
+## Local dictation runtime and model (2026-10-21)
+
+The **whisper.cpp** 1.9.5 CLI is compiled from checksum-pinned upstream source
+and bundled under `resources/dictation-runtime/`. Its ggml
+engine is MIT; included decoder utilities use MIT (stb_vorbis) and MIT-0
+(miniaudio). No Python, server, CURL downloader, or ONNX Runtime is included.
+The **optional local dictation notices** in
+`src/main/agent/dictation-local-notices.txt` ship in `app.asar` and alongside the
+CLI. Selecting local dictation downloads only the checksum-pinned multilingual
+Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
 ## Executive Summary
 
@@ -23,7 +38,7 @@
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
 | Production npm packages (unique name@version)               | 273         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
-| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
+| External binaries / native addons shipped in `resources/`   | 7           | Ant, freedom-ipfs, libradicle, Myotis, Arti, Codex Windows sandbox, whisper.cpp                        |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
@@ -82,7 +97,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.64` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.71` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -91,7 +106,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-ipfs (Native IPFS Addon)
 
 - **Source:** https://github.com/solardev-xyz/freedom-ipfs
-- **Version:** `v0.4.5` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
+- **Version:** `v0.4.6` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
@@ -110,11 +125,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.14` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.16` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.14 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12 and v0.1.13): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.16 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12, v0.1.13, v0.1.14 and v0.1.15): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
@@ -232,6 +247,8 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 
 ## Assets
 
+Freedom's own workspace supervisor sources in `src/main/agent/workspace-execution/native/` and the compiled macOS supervisor/Linux workspace owner in `out/macos-supervisor/` and `out/linux-workspace-owner/` are first-party MPL-2.0 code.
+
 Two paths put non-code files in the artifacts, and both are inventoried here. `build.extraResources` copies `assets/` whole — icons plus the CC BY-SA filter-list data in `assets/adblock/`. `build.files`' `src/**/*` pattern commits everything under `src/` into `app.asar`, media included; `licenses-audit.test.js` fails on any file there this table does not account for.
 
 | Asset                                                                            | Ships via        | Type                               | License                                                        |
@@ -266,6 +283,8 @@ Blocking YouTube's video ads needs scriptlets, and the rules that use them live 
 Obligations met in this tree, then: licence text shipped, copyright and exact source named in `NOTICES` and the manifest, the modification notice in the list header. As with everything here, this is an engineering position, not legal advice (see the disclaimer above).
 
 `src/renderer/pages/images/` is Freedom's own internal-page artwork and wordmark, and `src/main/myotis/native/` is Freedom's own Myotis supervisor sources — original works under the same MPL-2.0 as the rest of the tree, needing no third-party notice. They are listed because the audit claims to describe what the artifact contains, and until this revision it named only `assets/`: a third-party file committed under `src/` outside `vendor/` was exactly how `qrious.min.js` shipped unnoticed.
+
+**Model provider marks.** `src/renderer/assets/provider-logos/` bundles official model provider marks solely to identify the integrations. Its README records the source URLs and collection date; NOTICES attributes their owners. Per-mark redistribution terms remain unconfirmed, as with the chain and token marks below.
 
 **Open item — the chain and token marks.** The chain marks in `src/renderer/assets/chains/` and the token marks in `src/renderer/assets/tokens/` are third-party logos (Ethereum, Gnosis, Base, Swarm, MakerDAO, Circle, Tether, Monerium). Freedom ships them to identify the chain or token each labels, which is nominative use, and `NOTICES` says so and claims no ownership. Per-mark redistribution terms have **not** been confirmed against each project's brand guidelines; several publish permissive brand kits and none is known to object, so this is recorded as a yellow open item for the maintainer rather than a blocker. Confirm before a final tag, or replace the marks with generic glyphs.
 
@@ -361,6 +380,15 @@ Combining with **GPL-3.0** would not work: it would require the combined work to
 ---
 
 ## Summary
+
+The Windows build also includes the **Codex Windows sandbox**, from pinned
+upstream commit `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d` (Apache-2.0).
+Freedom namespaces its operating-system identities and bundles the upstream
+LICENSE and NOTICE beside the three helper executables. The Freedom protocol
+adapter remains MPL-2.0. Its dependency versions come from the pinned upstream
+Cargo.lock; native dependency notices must be checked with the Windows release artifact.
+Freedom's Windows sandbox adapter manifest and Freedom's Windows sandbox adapter source
+under `src/main/agent/workspace-execution/native/windows/` are first-party MPL-2.0 material.
 
 Freedom Browser can be released under MPL-2.0, with these conditions:
 

@@ -36,8 +36,11 @@ This means Freedom works seamlessly whether you:
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
 
-On macOS, the packaged app explicitly allows multiple bundle instances so profile
-launching can use `open -n -a Freedom --args --profile=<id>`.
+Profiles can also be chosen at launch with `--profile <id>`, `FREEDOM_PROFILE` or
+`--profile-dir <path>`, and links passed on the command line open as tabs; see
+[Command-Line Flags](configuration.md#command-line-flags). On macOS, the packaged app
+explicitly allows multiple bundle instances so profile launching can use
+`open -n -a Freedom --args --profile=<id>`.
 
 ## Profiles and Sidebar
 
@@ -59,6 +62,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
+- **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
 - **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
@@ -120,6 +124,7 @@ Input that is not a URL, hash, or name is sent to your search engine — DuckDuc
 - **Transport-Aware Address Bar**: After resolution, the address bar shows the resolved transport with the name as the host — e.g. `vitalik.eth` resolves and displays as `ipfs://vitalik.eth`, a Swarm-backed `mysite.eth` displays as `bzz://mysite.eth`, a WNS-backed `alice.wei` displays as `ipfs://alice.wei`, and a GNS-backed `apoorv.gwei` displays as `ipfs://apoorv.gwei`. The legacy `ens://` form is still accepted as input (and stored bookmarks keep working) but is no longer the canonical display.
 - **Typed Scheme Is an Assertion**: Typing `bzz://name.eth`, `ipfs://name.eth`, `ipns://name.eth`, or the equivalent `.wei`/`.gwei` forms only resolves if the contenthash matches the typed transport. Mismatches surface as a "resolves to X, not Y" message rather than silently switching transports — same rule the `bzz://` protocol handler enforces for subresource fetches. Bare names and the legacy `ens://` form make no assertion and accept any supported transport.
 - **Path Forwarding**: Paths appended to names (e.g., `mysite.eth/docs`, `alice.wei/docs`, `apoorv.gwei/docs`) are preserved after resolution.
+- **Gateway Links, Offered Natively**: A page on an ENS or Swarm gateway (`vitalik.eth.limo`, `vitalik.eth.link`, `vitalik.bzz.link`, or `<swarm-cid>.bzz.link`) stays the https page it is — Freedom never rewrites the URL. When the name has IPFS, IPNS or Swarm content (or the host is a valid Swarm CID), an **Open without gateway** pill appears at the right end of the address bar, its icon the target protocol and its tooltip the destination; its popover shows the native address (e.g. `ipfs://vitalik.eth/…`, path, query and fragment kept) and opens it. `<name>.bzz.link` stands for `<name>.eth` (the gateway appends `.eth`) and is offered as `bzz://<name>.eth` only when that name's content is on Swarm. No content, a failed lookup or an invalid CID shows no pill. Links clicked inside a page get the same offer once they arrive. **Always open without gateway** (off by default) sends such pages to the native address by itself; it is a checkbox in that popover and at the foot of the trust popover, and a row under **Settings → Networks → Name Resolution**. A gateway page reached with Back is left where it is.
 - **In-HTML Links**: Ethereum name links inside web pages must carry a scheme — `ens://name.eth`, `bzz://name.eth`, `ipfs://name.eth`, `ipns://name.eth`, `bzz://name.wei`, `ipfs://name.wei`, `ipns://name.wei`, `bzz://name.gwei`, `ipfs://name.gwei`, or `ipns://name.gwei`. Bare hrefs like `<a href="vitalik.eth">` are relative URLs by HTML/URL-spec rules and resolve against the page's base before any of our handlers see them; bare names are only resolved in the address bar, where input is always absolute.
 
 ## Tezos Domains Website Resolution
@@ -162,6 +167,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Ctrl+PageUp` / `Ctrl+Shift+Tab` / `Cmd+Shift+[`: Previous tab
   - `Ctrl+Shift+PageDown`: Move tab right
   - `Ctrl+Shift+PageUp`: Move tab left
+  - `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` / `Cmd+5` / `Cmd+6` / `Cmd+7` / `Cmd+8` (`Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` / `Ctrl+5` / `Ctrl+6` / `Ctrl+7` / `Ctrl+8` on Windows and Linux): Select tab 1–8 of the window (nothing happens if there are fewer tabs; Linux also accepts `Alt+1` to `Alt+8`, as Chrome does). Bound to the digit keys themselves, so on AZERTY and other layouts where the digits need Shift, the unshifted key in that position works. One exception on French AZERTY: there the `6` key types `-` unshifted, so that press zooms out instead, whether the page or the toolbar has focus (and still does if Select tab 6 is remapped to another chord). As with `Ctrl+-` on a US layout, a page that handles that key itself can keep it. On Czech the `1` key types `+`, and that press still selects tab 1 (Zoom in keeps its own `=` key there)
+  - `Cmd+9` / `Ctrl+9`: Select the last tab, however many there are (Linux also accepts `Alt+9`)
   - `Cmd+R` / `Ctrl+R`: Reload (from cache)
   - `Cmd+Shift+R` / `Ctrl+Shift+R`: Hard reload (bypass cache)
   - `Cmd+F` / `Ctrl+F`: Find in page
@@ -169,15 +176,68 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+-` / `Ctrl+-`: Zoom out (steps the active page 10% down to 25%)
   - `Cmd+0` / `Ctrl+0`: Actual size (resets the active page to 100%)
   - `Cmd+L` / `Ctrl+L`: Focus address bar
+  - `Cmd+[` / `Alt+Left`: Back
+  - `Cmd+]` / `Alt+Right`: Forward
   - `Cmd+Y` / `Ctrl+H`: Show all history
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
-  - `F11`: Toggle fullscreen
+  - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
+  - `Cmd+Enter` / `Ctrl+Enter`: Start dictation (only with the Agent composer focused; does not send the prompt). This and Show Agent exist only while AI is on (Settings → AI): with AI off they are not listed in Settings > Shortcuts, do nothing, and leave their keys free for other shortcuts; a remap of either is kept for when AI is turned back on
+  - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
+
+## Freedom Agent
+
+AI is off by default for each profile. Enable it in **Settings → AI**
+(`freedom://settings/ai`), then connect your own model provider or a local Ollama
+model there. The start page offers a dismissible invitation to try it. Once
+enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to research pages, compare sources,
+or work on a project. Conversations appear over the page; Agent-first mode gives
+the conversation the full window.
+
+A new chat offers starting prompts below the composer for a game, personal
+website, source comparison or project review. Choosing one starts that task
+immediately with any attached files. You can also write your own prompt. Publishing
+and purchases keep their normal approval steps.
+
+- **Browser work:** Agent uses conversation-owned tabs and can delegate independent
+  work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **What's new:** A compact glass list on the built-in start page currently highlights
+  Freedom Agent. The Freedom Agent row shows On/Off and opens Agent when enabled or AI
+  Settings when disabled. Viewing a highlight does not enable AI or start a task.
+- **Project work:** Create a managed workspace or attach an existing folder read-only.
+  Grant editing separately. Drag files into the composer to attach them to a prompt.
+  File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **AI settings:** Provider connections, model discovery, favourites and the default
+  model for new chats live in Settings → AI. An existing conversation keeps its
+  model. Turning AI off stops Agent work and pending approvals, hides Agent entry
+  points and prevents model requests; it keeps chats, connections, attachments and
+  projects. Already-running preview servers keep running. Dispatched external
+  effects are not undone. Turning it back on restores access.
+- **Connections and permissions:** Manage MCP services from the composer's `+` menu.
+  Permission controls govern consequential actions and command access. The conversation
+  privacy panel reports provider settings and the evidence available for that conversation.
+- **Voice dictation:** The composer microphone shows words or phrases while you
+  speak, with a microphone-driven spectrum. Escape finishes and keeps the text; Return
+  finishes transcription and sends the complete prompt. It starts immediately with a supported connected API
+  service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
+  or the microphone's options. Audio privacy is separate from chat-model privacy.
+  See [dictation setup and draft limitations](agent-dictation.md).
+- **Domain skills (experimental):** Inspect and quote .eth/.wei/.gwei names, register
+  or renew through wallet approvals, and manage website/address/text records.
+  [Scope, supported contracts and qualification](domain-management.md).
+- **Windows projects:** First use requires administrator setup of restricted execution
+  accounts and network rules. Subsequent commands run without administrator rights.
+  Windows confines writes but allows broader file reads than the macOS and Linux
+  backends. Strictly offline shell commands are unavailable: commands require the
+  existing direct-network approval, once for the exact command and directory or
+  for the conversation if that scope is chosen. Built-in read, write, search and
+  history tools remain available. Commands use PowerShell, including `npm.cmd`
+  and `npx.cmd`. Browser networking is independent of command permissions.
 
 ## Bookmarks
 
@@ -192,6 +252,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 
 - **Automatic Recording**: Pages are recorded as you browse.
 - **History Page**: View and search your browsing history at `freedom://history`.
+- **History Menu**: The application menu's History menu (the macOS menu bar, the window menu bar on Linux and Windows) offers Back and Forward for the active tab, a **Recently Closed** list (the tabs Reopen Closed Tab would bring back, across your open windows, newest first; clicking one reopens it in the window it was closed in), a **Recently Visited** list of your 15 latest history entries (title, or the address when a page has none, with its cached favicon; clicking one loads it in the active tab exactly as if typed into the address bar), and Show All History at the bottom. The lists follow history as it changes: removing entries or clearing history takes them out of the menu at once. Private windows never contribute to either list, internal `freedom://` pages are left out, and each profile lists only its own history.
 
 ## Private Windows
 
@@ -223,7 +284,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
-- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD).
+- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD). See the [provider reference](swarm-provider-api.md).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
 
@@ -296,3 +357,23 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Profile-Aware Radicle Errors**: Opening `rad://` while Radicle is disabled for the profile shows "Radicle Disabled for This Profile" and points to **Settings → Nodes**; opening it while the node is stopped shows "Cannot Connect to Radicle Node" and points to the Nodes menu.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
+
+
+### Experimental Claude subscription connection
+
+The Agent's Anthropic setup also offers an installed Claude Code connection for
+personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
+normal tools, approvals, helpers, codemode and conversation UI. Managed installations
+are not supported. See [setup and qualification](agent-claude-subscription.md).
+
+### Experimental custom AI connections
+
+**Settings → AI → Add provider → OpenAI-compatible** connects a custom Chat Completions
+endpoint using an optional API key. Models can be discovered or entered manually;
+multiple connections appear independently in the model picker. Saved keys are
+encrypted, and model limits/capabilities can be configured in connection settings.
+After connecting, an optional compatibility check tests streaming chat and a
+synthetic tool round trip for the selected model. It discloses possible token
+charges and allows retrying or continuing despite failure. Privacy guarantees
+remain unknown unless independently established. See
+[setup and qualification](agent-openai-compatible-spike.md).

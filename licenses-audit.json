@@ -14,7 +14,7 @@
       "libradicle.node",
       "myotis-node.node"
     ],
-    "external_binaries": ["antd", "arti", "myotis-supervisor"],
+    "external_binaries": ["antd", "arti", "myotis-supervisor", "whisper-cli"],
     "vendored_renderer_bundles": [
       "src/renderer/vendor/openlv.esm.js",
       "src/renderer/vendor/highlight.min.js",
@@ -24,6 +24,33 @@
     "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
   },
   "dependencies": [
+    {
+      "name": "whisper.cpp",
+      "version": "1.9.5",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/ggml-org/whisper.cpp" },
+      "license": { "spdx": ["MIT", "MIT-0"], "raw": "MIT (whisper.cpp, ggml, stb_vorbis); MIT-0 (miniaudio)", "license_files": ["NOTICES.txt"], "notice_required": true },
+      "version_pin": "src/shared/dictation-runtime.js WHISPER_VERSION",
+      "bundled_with_app": true,
+      "linking_or_integration": "native CLI and CPU libraries built from checksum-pinned upstream source",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "codex-windows-sandbox",
+      "version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/openai/codex" },
+      "license": { "spdx": ["Apache-2.0"], "raw": "Apache-2.0", "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"], "notice_required": true },
+      "version_pin": "scripts/build-windows-workspace.js REVISION",
+      "bundled_with_app": true,
+      "platforms": ["win"],
+      "linking_or_integration": "native helper process",
+      "risk": "green",
+      "issues": []
+    },
     {
       "name": "electron",
       "version": "44.7.0",
@@ -50,7 +77,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.64",
+      "version": "v0.5.71",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
@@ -68,7 +95,7 @@
     },
     {
       "name": "freedom-ipfs",
-      "version": "v0.4.5",
+      "version": "v0.4.6",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/freedom-ipfs" },
@@ -110,7 +137,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.14",
+      "version": "v0.1.16",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
@@ -819,6 +846,35 @@
   },
   "assets": [
     {
+      "name": "optional local dictation notices",
+      "path": "src/main/agent/dictation-local-notices.txt",
+      "type": "license-text",
+      "license": { "spdx": ["MIT", "MIT-0"], "raw": "Upstream license texts for whisper.cpp, its decoder utilities, and Whisper", "notice_required": true },
+      "risk": "green",
+      "issues": [],
+      "notes": "The whisper.cpp 1.9.5 CLI is compiled from pinned source and bundled with the app. The checksum-pinned multilingual Whisper Base GGML model is an optional user-requested download. License texts ship in app.asar, beside the CLI, and beside the downloaded model as NOTICES.txt."
+    },
+    {
+      "name": "model provider marks",
+      "path": "src/renderer/assets/provider-logos/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "UNKNOWN"
+        ],
+        "raw": "Third-party provider marks; nominative identification, no ownership claimed",
+        "notice_required": true
+      },
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "trademark",
+          "details": "Official provider icons bundled locally; source URLs and attribution are recorded in the directory README and NOTICES. Per-mark redistribution terms remain unconfirmed.",
+          "recommended_fix": "Confirm brand terms before a final tag, or use generic glyphs."
+        }
+      ]
+    },
+    {
       "name": "icon.png",
       "path": "assets/icon.png",
       "type": "asset",
@@ -910,7 +966,7 @@
       "issues": []
     }
   ],
-  "summary": { "green": 266, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 266, "yellow": 3, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {

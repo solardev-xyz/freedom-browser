@@ -1,0 +1,1 @@
+- Download cards stay readable beside an open wallet ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))

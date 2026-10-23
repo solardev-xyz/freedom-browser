@@ -10,10 +10,11 @@
 // was configured when the entry first loaded.
 //
 // The mark lives here, in a leaf module, rather than on `tabs.js`'
-// `navigationState`: `page-context-menu.js` is one of the three renderer
+// `navigationState`: `page-context-menu.js` is one of the four renderer
 // routes into a traversal — the toolbar's back/forward buttons and the
-// `interstitial:go-back` handler are the other two, both in `navigation.js`
-// — and it deliberately does not import `tabs.js` (it resolves the active
+// `interstitial:go-back` handler, both in `navigation.js`, and the x402
+// card's Cancel (`wallet/dapp-x402.js`) are the others — and it
+// deliberately does not import `tabs.js` (it resolves the active
 // guest off the DOM), while `tabs.js` already imports `page-context-menu.js`,
 // so putting the setter there would close an import cycle.
 //
@@ -54,9 +55,13 @@
 // and the count cannot under-report if Chromium's coalescing above ever
 // changes.
 const pendingTraversals = new WeakMap();
+// Every traversal ever asked for, per webview; never lowered. See
+// `historyTraversalRequestCount`.
+const requestedTraversals = new WeakMap();
 
 const markTraversalPending = (webview) => {
   pendingTraversals.set(webview, (pendingTraversals.get(webview) || 0) + 1);
+  requestedTraversals.set(webview, (requestedTraversals.get(webview) || 0) + 1);
 };
 
 /**
@@ -145,3 +150,29 @@ export const consumeHistoryTraversal = (webview) => {
 export const clearHistoryTraversal = (webview) => {
   if (webview) pendingTraversals.delete(webview);
 };
+
+/**
+ * How many traversals have ever been asked for on `webview`: a running total
+ * that only goes up. Neither a commit (`consumeHistoryTraversal`) nor a
+ * shell navigation (`clearHistoryTraversal`) lowers it.
+ *
+ * Read by the gateway offer (#70) from `did-start-navigation`: with "Always
+ * open without gateway" on, a gateway page reached by Back must stay the
+ * gateway page — redirecting it again would send the user straight forward
+ * to where they just came from, and Back could never get past it.
+ *
+ * A running total rather than the pending count above, because the caller
+ * needs to know whether a traversal was asked for *since it last looked*,
+ * and the pending count cannot say that: a mark left standing by a traversal
+ * that resolved same-document or never committed (see
+ * `clearHistoryTraversal`) looks the same as a fresh one, and a commit that
+ * spends a mark lowers the count by an amount that depends on which event
+ * the caller happens to see first. The caller keeps its own "seen up to"
+ * value and moves it forward as starts and same-document commits account
+ * for the requests (gateway-offer-ui.js, `seenTraversals`).
+ *
+ * @param {object|null} webview - guest `<webview>` element
+ * @returns {number}
+ */
+export const historyTraversalRequestCount = (webview) =>
+  (webview && requestedTraversals.get(webview)) || 0;

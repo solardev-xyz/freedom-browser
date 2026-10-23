@@ -15,9 +15,11 @@
  *     to inject, optionally grant a per-origin allowance, and re-issue
  *     the original navigation.
  *
- *   x402:cancel({webContentsId}) — discard the detected payment and
- *     step the webview back one history entry (or about:blank if no
- *     back stack).
+ *   x402:cancel({webContentsId, navigate?}) — discard the detected
+ *     payment and step the webview back one history entry (or
+ *     about:blank if no back stack). `navigate: false` only discards:
+ *     the renderer then runs the Back itself so it is counted as a
+ *     history traversal.
  *
  *   x402:get-receipts({limit?}) — recent payments for the Payments tab.
  *
@@ -406,6 +408,10 @@ function registerX402Ipc() {
   ipcMain.handle(IPC.X402_CANCEL, async (event, args = {}) => {
     const id = args.webContentsId ?? event.sender.id;
     clearDetectedPayment(id);
+    // The renderer drives the Back itself when it can (through
+    // `goBackInHistory`, so the commit is counted as a traversal — see
+    // dapp-x402.js `reject`) and asks main only to clear the detection.
+    if (args.navigate === false) return { success: true };
     const wc = webContents.fromId(id);
     if (!wc) return { success: true };
     if (wc.canGoBack && wc.canGoBack()) {

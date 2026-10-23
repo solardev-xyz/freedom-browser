@@ -1,0 +1,2 @@
+- Pages can no longer make Freedom look up hostnames with `<link rel="dns-prefetch">` hints
+  - Chromium sent these lookups to the system resolver even when the page's own traffic went through a proxy, so a page could leak data in a hostname

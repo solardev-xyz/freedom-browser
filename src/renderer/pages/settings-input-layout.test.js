@@ -148,3 +148,34 @@ describe('settings.html text-field layout', () => {
     expect(rpcInputWrappers(sibling)).toEqual([{ line: 1, wrapper: 'resolver-config-line' }]);
   });
 });
+
+/**
+ * Which settings text fields are set in the page font (#606 item 5).
+ *
+ * `.rpc-input` is monospace because most of the page's fields hold URLs, keys
+ * and hashes. A name or a search query is prose, and the playbook
+ * (docs/agent-playbooks/ui-consistency.md, "Inputs") puts those in the sans
+ * font. The profile name and a custom search engine's name used to inherit
+ * the monospace stack with everything else.
+ */
+describe('prose fields use the page font, not monospace (#606)', () => {
+  const css = fs
+    .readFileSync(path.join(__dirname, 'settings.html'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const inheritSelectors = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, , body]) => /font-family:\s*inherit\b/.test(body))
+    .flatMap(([, prelude]) => prelude.split(',').map((s) => s.trim()));
+
+  test.each([
+    ['#profile-name-input', 'profile name'],
+    ['#custom-search-provider-name', 'search engine name'],
+    ['.sidebar-search input', 'Search settings'],
+    ['.shortcut-toolbar input', 'Search shortcuts'],
+  ])('%s (%s) is set in the page font', (selector) => {
+    expect(inheritSelectors).toContain(selector);
+  });
+
+  test('the URL template next to the search engine name stays monospace', () => {
+    expect(inheritSelectors).not.toContain('#custom-search-provider-template');
+  });
+});

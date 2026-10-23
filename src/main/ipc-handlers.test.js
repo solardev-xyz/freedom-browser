@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const internalPages = require('../shared/internal-pages.json');
 const IPC = require('../shared/ipc-channels');
 const { failure, success } = require('./ipc-contract');
@@ -18,9 +19,14 @@ function createWindowMock() {
   };
 }
 
-const HOST_RENDERER_URL = 'file:///app/src/renderer/index.html';
-const SETTINGS_PAGE_URL = 'file:///app/src/renderer/pages/settings.html';
-const HISTORY_PAGE_URL = 'file:///app/src/renderer/pages/history.html';
+// Real paths of this checkout's renderer: the profile-mutation gate matches
+// them exactly (ipc-sender-policy's internal-page match), not by suffix.
+const RENDERER_DIR = path.resolve(__dirname, '..', 'renderer');
+const rendererUrl = (...parts) => pathToFileURL(path.join(RENDERER_DIR, ...parts)).href;
+const HOST_RENDERER_URL = rendererUrl('index.html');
+const SETTINGS_PAGE_URL = rendererUrl('pages', 'settings.html');
+const PROFILES_PAGE_URL = rendererUrl('pages', 'profiles.html');
+const HISTORY_PAGE_URL = rendererUrl('pages', 'history.html');
 
 function createIpcEvent(url = SETTINGS_PAGE_URL) {
   return {
@@ -860,6 +866,38 @@ describe('ipc-handlers', () => {
     expect(ctx.createProfileForActiveApp).not.toHaveBeenCalled();
   });
 
+  test('rejects profile mutations from a look-alike file outside this renderer (#662)', async () => {
+    const ctx = loadIpcHandlersModule();
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    // Paths that end in the internal page's suffix but are not this
+    // checkout's renderer: a suffix test admitted every one of them.
+    const lookAlikes = [
+      'file:///home/u/x/src/renderer/pages/settings.html',
+      'file:///home/u/x/src/renderer/pages/profiles.html',
+      'file:///home/u/x/src/renderer/index.html',
+      pathToFileURL(path.join(RENDERER_DIR, 'pages', 'sub', 'settings.html')).href,
+    ];
+    for (const url of lookAlikes) {
+      expect(ctx.mod.isTrustedProfileMutationSender(createIpcEvent(url))).toBe(false);
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_CREATE, { displayName: 'Work' }, url)
+      ).resolves.toEqual(
+        failure(
+          'PROFILE_IPC_FORBIDDEN',
+          'Profile changes are only available from trusted profile UI'
+        )
+      );
+    }
+    expect(ctx.createProfileForActiveApp).not.toHaveBeenCalled();
+
+    // The real pages still pass.
+    for (const url of [HOST_RENDERER_URL, SETTINGS_PAGE_URL, PROFILES_PAGE_URL]) {
+      expect(ctx.mod.isTrustedProfileMutationSender(createIpcEvent(url))).toBe(true);
+    }
+  });
+
   test('shows the create-profile modal only for trusted senders', () => {
     const ctx = loadIpcHandlersModule();
     ctx.mod.registerBaseIpcHandlers();
@@ -874,12 +912,12 @@ describe('ipc-handlers', () => {
     };
 
     // A hostile page loaded in a webview must not be able to pop the modal.
-    const untrusted = makeEvent('file:///app/src/renderer/pages/history.html');
+    const untrusted = makeEvent(HISTORY_PAGE_URL);
     ctx.ipcMain.emit(IPC.PROFILE_REQUEST_CREATE_MODAL, untrusted);
     expect(untrusted.win.webContents.send).not.toHaveBeenCalled();
 
     // The trusted profiles manager page may.
-    const trusted = makeEvent('file:///app/src/renderer/pages/profiles.html');
+    const trusted = makeEvent(PROFILES_PAGE_URL);
     ctx.ipcMain.emit(IPC.PROFILE_REQUEST_CREATE_MODAL, trusted);
     expect(trusted.win.webContents.send).toHaveBeenCalledWith(IPC.PROFILE_SHOW_CREATE_MODAL);
   });

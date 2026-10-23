@@ -1,9 +1,11 @@
 const log = require('../logger');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { loadSettings } = require('../settings-store');
+const { attachAutomationToHostWebContents } = require('../automation/runtime');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
+const { attachFullscreenChromeSync } = require('../browser-fullscreen');
 
 let currentWindowTitle = 'Freedom';
 
@@ -107,6 +109,16 @@ function createMainWindow(initialUrl = null, options = {}) {
     },
   });
 
+  // Register before loadFile() so a fast renderer cannot attach its first
+  // <webview> before the automation runtime starts observing guest creation.
+  // Private windows are intentionally absent from the default automation
+  // context: their URLs, titles, snapshots, and screenshots must remain
+  // unobservable to normal browser agents.
+  const detachAutomation = privatePartition
+    ? () => {}
+    : attachAutomationToHostWebContents(window.webContents, { ipcMain });
+  window.once('closed', detachAutomation);
+
   // Load index.html with optional initial URL(s) / private partition as query
   // parameters. Several URLs (a launch given more than one link) repeat
   // `initialUrl`; the renderer opens each in its own tab.
@@ -148,6 +160,9 @@ function createMainWindow(initialUrl = null, options = {}) {
       window.setAlwaysOnTop(false);
     }
   });
+
+  // Hide the chrome while the window is full screen (#78).
+  attachFullscreenChromeSync(window);
 
   window.on('page-title-updated', (event) => {
     event.preventDefault();

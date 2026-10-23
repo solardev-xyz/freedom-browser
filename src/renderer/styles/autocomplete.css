@@ -22,7 +22,7 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   max-height: 360px;
   overflow-y: auto;
-  z-index: 10000;
+  z-index: var(--z-popover);
   padding: 4px;
 }
 

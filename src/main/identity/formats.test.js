@@ -113,6 +113,50 @@ describe('formats', () => {
   });
 
   describe('Radicle (OpenSSH + DID)', () => {
+    /** The private section of an unencrypted OpenSSH v1 key file. */
+    function privateSection(privateKeyFile) {
+      const body = privateKeyFile
+        .split('\n')
+        .filter((line) => line && !line.startsWith('-----'))
+        .join('');
+      const bytes = Buffer.from(body, 'base64');
+      let at = 'openssh-key-v1\0'.length;
+      const string = () => {
+        const len = bytes.readUInt32BE(at);
+        const value = bytes.subarray(at + 4, at + 4 + len);
+        at += 4 + len;
+        return value;
+      };
+      string(); // cipher
+      string(); // kdf
+      string(); // kdf options
+      at += 4; // key count
+      string(); // public key
+      return string();
+    }
+
+    test('pads the private section to a block, never by a whole block (#77)', () => {
+      // The section is 131 bytes plus the alias, so lengths 5, 13 and 21 are
+      // already aligned.
+      for (let len = 0; len <= 24; len++) {
+        const comment = 'a'.repeat(len);
+        const identity = createRadicleIdentity(
+          keys.radicleKey.privateKey,
+          keys.radicleKey.publicKey,
+          comment
+        );
+        const section = privateSection(identity.privateKeyFile);
+        expect(section.length % 8).toBe(0);
+        // checkints, then four strings: key type, public key, private key, comment.
+        let at = 8;
+        for (let i = 0; i < 4; i++) at += 4 + section.readUInt32BE(at);
+        const padding = section.subarray(at);
+        expect(padding.length).toBeLessThan(8);
+        expect([...padding]).toEqual([...padding].map((_, i) => i + 1));
+        expect(at - 8).toBe(4 + 11 + 4 + 32 + 4 + 64 + 4 + len);
+      }
+    });
+
     test('creates valid OpenSSH private key format', () => {
       const identity = createRadicleIdentity(
         keys.radicleKey.privateKey,

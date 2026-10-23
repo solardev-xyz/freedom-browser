@@ -508,7 +508,19 @@ function invalidateCachedProvider() {
   registry.invalidate();
 }
 
-const PROVIDER_FAILURE_TEXT = /502|503|504|429|timeout|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
+// Check if an error is a provider/network error that warrants retry
+// EIP-1474: resource not found, resource unavailable, limit exceeded; and
+// providers' rate limits in JSON-RPC bodies: QuickNode's per-second and
+// per-minute limits (-32007, -32008), Alchemy's 429 compute-units error.
+const NODE_FAILURE_CODES = new Set([-32001, -32002, -32005, -32007, -32008, 429]);
+const NODE_FAILURE_MESSAGE =
+  /header not found|missing trie node|unknown block|block not found|historical state|state (?:is )?not available|pruned|rate.?limit|limit exceeded|request limit reached|too many requests|request count exceeded|compute units/i;
+// Execution outcomes by code, whatever the message: Geth's revert (3) and
+// the OpenEthereum/Nethermind "VM execution error" (-32015).
+const EXECUTION_CODES = new Set([3, -32015]);
+// An HTTP status or transport failure that a gateway in front of the node
+// relayed in the node's own error message.
+const HTTP_FAILURE_MESSAGE = /(?<!\d)(?:502|503|504|429)(?!\d)|timeout|no response|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
 
 // Socket-level failures below ethers carry Node's own error code.
 const SOCKET_ERROR_CODES = new Set([
@@ -517,28 +529,38 @@ const SOCKET_ERROR_CODES = new Set([
 ]);
 
 // Revert evidence: return data as even-length hex, or a legacy
-// "Reverted 0x…" text.
+// "Reverted 0x…" text. A diagnostic object attached to a node failure is
+// not. (One character class, no nested quantifier: linear on large data.)
 function isRevertData(data) {
   if (typeof data !== 'string') return false;
   const hex = data.startsWith('Reverted ') ? data.slice('Reverted '.length) : data;
   return hex.length % 2 === 0 && /^0x[0-9a-f]*$/i.test(hex);
 }
 
-// The node says the call executed and reverted: Geth's code 3, the
-// OpenEthereum/Nethermind VM execution error, revert data in either place
-// ethers keeps it, or a message that says so.
+// The node says the call executed and reverted: an execution code, revert
+// data in either place ethers keeps it (err.data, or the envelope's own for
+// legacy formats), or a message that says so.
 function hasRevertEvidence(err, rpcError) {
-  if (rpcError.code === 3 || rpcError.code === -32015) return true;
+  if (EXECUTION_CODES.has(rpcError.code)) return true;
   if (isRevertData(err.data) || isRevertData(rpcError.data)) return true;
   return /revert/i.test(String(rpcError.message || ''));
 }
 
-// Check if an error is a provider/network error that warrants retry.
-//
+// A JSON-RPC error that names a node failure by code or by the node's own
+// message. Only asked once hasRevertEvidence has said no.
+function isNodeFailure(rpcError) {
+  return NODE_FAILURE_CODES.has(rpcError.code) || NODE_FAILURE_MESSAGE.test(String(rpcError.message || ''));
+}
+
+function stripHexRuns(text) {
+  return String(text).replace(/0x[0-9a-f]*/gi, '0x');
+}
+
 // Codes decide, not text: ethers' messages, short ones included, can embed
-// the request (a call's data, the name being encoded), and a revert's node
-// message carries the contract's reason. The one text matched is the node's
-// own error message, and only when nothing says the call reverted.
+// the request (a call's data, the name being encoded) and a revert's reason,
+// so a name or a contract could make an honest endpoint look broken and get
+// it quarantined. The one text matched is the node's own error message, and
+// only when nothing says the call reverted.
 function isProviderError(err) {
   const code = err.code || '';
 
@@ -561,11 +583,18 @@ function isProviderError(err) {
     if (!rpcError) return false;
     // -32603 = JSON-RPC internal error
     if (rpcError.code === -32603) return true;
-    // Without revert evidence the node's own message describes a node
-    // failure ("no response", an HTTP status relayed by a gateway).
+    // An execution outcome (a revert with or without data, out of gas, an
+    // invalid opcode, a legacy "VM execution error" envelope) stays a
+    // semantic answer, and never quarantines an honest endpoint.
     if (hasRevertEvidence(err, rpcError)) return false;
-    const message = String(rpcError.message || '');
-    return /no response/i.test(message) || PROVIDER_FAILURE_TEXT.test(message);
+    // The node failing, not the contract answering: it couldn't run the call
+    // against the pinned state, or refused it. Counting these as
+    // NO_CONTENTHASH let two such failures agree into a verified not-found
+    // for a name that has content.
+    if (isNodeFailure(rpcError)) return true;
+    // A gateway's relayed HTTP status or "no response", with any hex runs
+    // removed.
+    return HTTP_FAILURE_MESSAGE.test(stripHexRuns(rpcError.message || ''));
   }
 
   return false;
@@ -2375,10 +2404,43 @@ async function tryColibriReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   }
 
   if (!name) return { ...noReverseResult(normalizedAddress), trust };
+  if (!isNormalizedEnsName(name)) {
+    return unnormalizedReverseResult(normalizedAddress, name, trust);
+  }
   return { success: true, address: normalizedAddress, name, system: 'ens', trust };
 }
 
 const CONTRACT_BACKED_REVERSE_SYSTEMS = [NAME_SYSTEMS.wns, NAME_SYSTEMS.gns];
+
+// An ENS primary name counts only when it is its own ENSIP-15 normalization.
+// The forward check hashes the claimed name as written, so the owner of an
+// unnormalized lookalike such as `vitaIik.eth` (a capital I) passes it, and
+// the name would render like `vitalik.eth`. WNS and GNS claims are normalized
+// before their forward check already. (freedom-core #75.)
+function isNormalizedEnsName(name) {
+  if (typeof name !== 'string' || Buffer.byteLength(name) > 1024) return false;
+  try {
+    return ens_normalize(name) === name;
+  } catch {
+    return false;
+  }
+}
+
+// `unverifiedCause` lets the renderer tell this apart from a claim that
+// doesn't forward-resolve back: an unnormalized name usually does resolve
+// back, so the generic warning would read as a false alarm.
+function unnormalizedReverseResult(normalizedAddress, claimedName, trust) {
+  return {
+    ...unverifiedReverseResult(
+      normalizedAddress,
+      NAME_SYSTEMS.ens,
+      claimedName,
+      `Reverse record for ${normalizedAddress} claims a name that isn't normalized`,
+      trust
+    ),
+    unverifiedCause: 'unnormalized',
+  };
+}
 
 function unverifiedReverseResult(normalizedAddress, nameSystem, claimedName, detail, trust = undefined) {
   return {
@@ -2406,6 +2468,9 @@ async function readMyotisReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   }
   const ensTrust = buildMyotisTrust(ensRec, NAME_SYSTEMS.ens);
   if (ensRec.status === 'ok' && ensRec.name) {
+    if (!isNormalizedEnsName(ensRec.name)) {
+      return unnormalizedReverseResult(normalizedAddress, ensRec.name, ensTrust);
+    }
     return {
       success: true,
       address: normalizedAddress,
@@ -2540,6 +2605,9 @@ async function resolveEnsReverseWithMethod(method, normalizedAddress, coinType =
 
   const decoded = decodeReverseOutcome(outcome.resolvedData);
   if (decoded.status === REVERSE_OUTCOME.name) {
+    if (!isNormalizedEnsName(decoded.detail)) {
+      return unnormalizedReverseResult(normalizedAddress, decoded.detail, outcome.trust);
+    }
     return {
       success: true,
       address: normalizedAddress,
@@ -2835,7 +2903,7 @@ function registerEnsIpc() {
   });
 
   // Drop the cached contenthash for `name`. Used by the renderer's
-  // swarm-probe failure handler so a "Try Again" click does a fresh
+  // swarm-probe failure handler so a "Try again" click does a fresh
   // resolution rather than re-probing a stale contenthash.
   ipcMain.handle(IPC.ENS_INVALIDATE_CONTENT, async (event, payload = {}) => {
     const { name } = payload;

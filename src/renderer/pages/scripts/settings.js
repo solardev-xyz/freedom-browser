@@ -10,6 +10,7 @@ const fields = {
   startMyotis: $('start-myotis-at-launch'),
   startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
   unverifiedEnsAction: $('unverified-ens-action'),
+  openWithoutGateway: $('open-without-gateway'),
   askWhereToSave: $('ask-where-to-save'),
   startRadicle: $('start-radicle-at-launch'),
   enableTor: $('enable-tor-integration'),
@@ -498,7 +499,11 @@ const showSection = (route) => {
   const [section, sub] = String(route).split('/');
   for (const id of PANELS) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', PANEL_NAV[id] !== section);
+    if (el)
+      el.classList.toggle(
+        'hidden',
+        PANEL_NAV[id] !== section || (section === 'ai' && id !== (sub || 'ai'))
+      );
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
@@ -507,7 +512,7 @@ const showSection = (route) => {
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
   contentScroller.scrollTo({ top: 0 });
-  if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
+  if (section !== 'ai' && sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
   focusScrollerIfIdle();
 };
 
@@ -543,7 +548,9 @@ const LEGACY_ROUTES = {
 // The canonical route for a hash: `<entry>`, or `<entry>/<panel>` for a
 // panel of that entry. Under Networks any other sub-route is a chain detail
 // (`#networks/1`) — whether that chain exists is the Chains controller's
-// call, since only it has the registry. Anything else is dropped back to the
+// call, since only it has the registry. AI also has individual provider pages;
+// its controller validates provider IDs against the loaded catalogue. Anything
+// else is dropped back to the
 // entry, and a hash naming no entry at all to the first one.
 const resolveRoute = (hash) => {
   const raw = (hash || '').replace(/^#/, '').toLowerCase();
@@ -555,7 +562,11 @@ const resolveRoute = (hash) => {
   }
   if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
   if (!sub) return head;
-  if (PANEL_NAV[sub] === head || head === 'networks') return `${head}/${sub}`;
+  if (
+    PANEL_NAV[sub] === head ||
+    head === 'networks' ||
+    (head === 'ai' && /^(providers|voice)\/[a-z0-9-]+$/.test(sub))
+  ) return `${head}/${sub}`;
   return head;
 };
 
@@ -680,7 +691,7 @@ const settingsSearchAllRows = (el, out = []) => {
     if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
     const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
     if (isRow) {
-      if (settingsSearchHidden(child)) continue;
+      if (settingsSearchHidden(child) && child.getAttribute('data-search-only') !== 'true') continue;
       out.push(child);
     }
     settingsSearchAllRows(child, out);
@@ -701,7 +712,9 @@ const settingsSearchRows = (section) =>
       row,
       label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
-    .filter((entry) => entry.label);
+    .filter((entry) => entry.label)
+    .filter((entry, _index, entries) => entry.row.getAttribute('data-search-only') !== 'true' ||
+      !entries.some(other => other.label === entry.label && other.row.getAttribute('data-search-only') !== 'true'));
 
 // One entry per section plus one per labelled row, in document order.
 // `sectionLabels` maps a section id to its nav label, the fallback for
@@ -725,7 +738,15 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
   for (const section of Array.from(content?.children || [])) {
     if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
     if (!section.id || skip.includes(section.id)) continue;
+    // A panel switched off through the `hidden` attribute is a feature the
+    // user does not have right now — AI's Models & providers and Voice
+    // dictation pages while AI is off — so neither it nor its rows answer
+    // a search. (The routed panels the nav is not showing carry the
+    // `.hidden` class instead and stay searchable.)
+    if (section.hidden) continue;
+    // A routed detail page can keep a stable catalogue label for search.
     const title =
+      section.getAttribute?.('data-search-title') ||
       settingsSearchText(settingsSearchFirst(section, ['section-title', 'panel-title'])) ||
       sectionLabels[section.id] ||
       section.id;
@@ -747,12 +768,14 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
     const seen = new Map();
     for (const { row, label } of settingsSearchRows(section)) {
       const labelIndex = seen.get(label) || 0;
+      const settingsRoute = row.getAttribute?.('data-settings-route');
       seen.set(label, labelIndex + 1);
       index.push({
         sectionId: section.id,
         section: sectionLabel,
         label,
         labelIndex,
+        ...(settingsRoute ? { route: settingsRoute } : {}),
         help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
@@ -927,7 +950,7 @@ const settingsSearchResets = [];
     const section = document.getElementById(result.sectionId);
     if (!section) return null;
     if (result.element === section) return section;
-    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label);
+    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label && entry.row.getAttribute('data-search-only') !== 'true');
     return (matches[result.labelIndex || 0] || matches[0])?.row || null;
   };
 
@@ -984,6 +1007,23 @@ const settingsSearchResets = [];
     closeResults({ restoreSection: false });
     revealToken += 1;
     const route = resolveRoute(location.hash);
+    // AI pages replace each other rather than sharing one scroll. A control
+    // on a service detail returns to that detail, even from another section.
+    if (entry === 'ai') {
+      const fallback = panelId === 'ai' ? 'ai' : `ai/${panelId}`;
+      const target =
+        result.route?.startsWith('ai/') && resolveRoute(result.route) === result.route
+          ? result.route
+          : fallback;
+      if (route === target) {
+        showSection(target);
+        revealResult(result, revealToken);
+      } else {
+        pending = { result, token: revealToken };
+        location.hash = target;
+      }
+      return;
+    }
     if (route.split('/')[0] === entry) {
       showSection(route);
       if (document.getElementById(panelId)?.getClientRects().length) {
@@ -1656,6 +1696,7 @@ const currentFormState = () => ({
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
   autoUpdate: fields.autoUpdate.checked,
   blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
+  openWithoutGateway: fields.openWithoutGateway.checked,
   adblockEnabled: fields.adblockEnabled.checked,
   adblockAds: fields.adblockAds.checked,
   adblockPrivacy: fields.adblockPrivacy.checked,
@@ -1680,6 +1721,7 @@ const applyFormState = (settings) => {
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
+  fields.openWithoutGateway.checked = settings.openWithoutGateway === true;
   fields.adblockEnabled.checked = settings.adblockEnabled !== false;
   fields.adblockAds.checked = settings.adblockAds !== false;
   fields.adblockPrivacy.checked = settings.adblockPrivacy !== false;
@@ -2170,6 +2212,7 @@ fields.enableIdentity.addEventListener('change', save);
 fields.showIpfsProgressStatus.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);
 fields.unverifiedEnsAction.addEventListener('change', save);
+fields.openWithoutGateway.addEventListener('change', save);
 fields.adblockEnabled.addEventListener('change', () => {
   applyAdblockGating();
   save();
@@ -2311,14 +2354,16 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // (sentence case, #277) — the two sit inside one card.
   const renderConflict = (state) => {
     const { conflict } = state;
+    // Both combinations are key chips, and Swap — the answer the question
+    // asks for — is the primary; Cancel stays the plain secondary (#606).
     const message = conflict.fixed
-      ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
-      : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
+      ? `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+      : `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
     return `
       <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
         <div class="row-body"><p class="row-label">${message}</p></div>
         <span class="shortcut-conflict-actions">
-          ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+          ${conflict.fixed ? '' : '<button type="button" class="btn primary" data-action="swap">Swap</button>'}
           <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
         </span>
       </div>`;
@@ -4291,7 +4336,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 // permission decisions (permissions.json) grouped by origin, with
 // per-permission revoke, per-site revoke, and revoke-all. Session-only
 // (unremembered) decisions live in main-process memory and are not
-// listed here — they expire with the app anyway.
+// listed here — they expire with the app anyway. The one exception is
+// the files and folders a site was given in its picker (#671): they are
+// run-scoped too, but otherwise nothing lists them, so main adds a
+// `fileSystem` row for every site holding them.
 (() => {
   const view = $('permissions-view');
   const revokeAll = $('permissions-revoke-all');
@@ -4306,6 +4354,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     midi: 'MIDI devices',
     // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
     popups: 'Pop-ups',
+    // File System Access (#671): what the user picked in a site's file or
+    // folder dialog. Run-scoped, never stored.
+    fileSystem: 'Files and folders you picked',
   };
   // `external:<scheme>` — one decision per external-protocol scheme
   // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
@@ -4313,6 +4364,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     key.startsWith('external:')
       ? `Open ${key.slice('external:'.length)}: links`
       : PERMISSION_LABELS[key] || key;
+
+  // File System Access grants (#671) are listed for the run only: main
+  // drops them at quit and never stores them.
+  const status = (permission, decision) => {
+    if (decision !== 'allow') return 'Blocked';
+    return permission === 'fileSystem' ? 'Allowed until you quit' : 'Allowed';
+  };
 
   const render = (all) => {
     const origins = Object.keys(all || {}).sort();
@@ -4344,7 +4402,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                   <p class="row-label">${esc(label(permission))}</p>
                   <p class="row-help" ${
                     decision === 'deny' ? 'style="color: var(--danger)"' : ''
-                  }>${decision === 'allow' ? 'Allowed' : 'Blocked'}</p>
+                  }>${status(permission, decision)}</p>
                 </div>
                 <div class="row-control">
                   <button class="btn" data-action="revoke"

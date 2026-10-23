@@ -509,7 +509,7 @@ const openSettings = async (window, expect) => {
     .poll(() => settingsEval(window, `document.querySelectorAll('.nav-item').length`), {
       timeout: 15_000,
     })
-    .toBe(10);
+    .toBe(11);
 };
 
 // ---------------------------------------------------------------------------
@@ -541,6 +541,7 @@ test('every nav item opens a section titled with its own label', async ({ window
     'Privacy and security',
     'Networks',
     'Nodes',
+    'AI',
     'Advanced',
     'About Freedom',
   ]);
@@ -604,7 +605,7 @@ test('Shortcuts rows are sentence case, and search reads the label it shows', as
     label
       .split(' ')
       .slice(1)
-      .some((word) => /^[A-Z]/.test(word))
+      .some((word) => word !== 'Agent' && /^[A-Z]/.test(word))
   );
   expect(titleCased).toEqual([]);
 
@@ -1837,7 +1838,7 @@ test.describe('settings deep links name the view they open (#280)', () => {
     const targets = await page.evaluate(() =>
       [...document.querySelectorAll('.nav-item')].map((item) => item.dataset.target)
     );
-    expect(targets.length).toBe(10);
+    expect(targets.length).toBe(11);
 
     for (const target of targets) {
       // Leave and re-enter, so each section arrives through `hashchange` —

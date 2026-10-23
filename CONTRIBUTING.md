@@ -7,6 +7,7 @@ Thanks for helping build a browser for the decentralized web. Contributions to c
 - Search the [issue tracker](https://github.com/solardev-xyz/freedom-browser/issues) before opening a report or proposing work.
 - For a bug fix, comment on the relevant issue or open a structured bug report.
 - For a feature, major refactor, dependency change, or architectural change, open an issue first so maintainers and contributors can agree on scope.
+- For a new integration (another wallet, protocol, or network backend), talk to us in the [Telegram group](https://t.me/freedom_browser) first. These are trust and maintenance decisions, so agree on them before writing code.
 - Keep changes focused. Unrelated cleanup makes review and regression analysis harder.
 
 ## Set up the project

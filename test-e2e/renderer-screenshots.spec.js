@@ -86,6 +86,7 @@
 // scrollbar — is masked instead; see `guestScrollbarMask`.
 
 const path = require('path');
+const fs = require('fs');
 
 const { test, expect } = require('./fixtures');
 
@@ -321,10 +322,16 @@ function surfaceGroup(theme, group) {
  * the whole diff artifact.
  */
 async function snap(surfaces, page, name, { mask = [], extra = [] } = {}) {
-  await expect.soft(page).toHaveScreenshot(surfaces.declared(name), {
-    ...COMPARE,
-    mask: [...maskFor(page, extra), ...mask],
-  });
+  const file = surfaces.declared(name);
+  const masks = [...maskFor(page, extra), ...mask];
+  await expect.soft(page).toHaveScreenshot(file, { ...COMPARE, mask: masks });
+  // Optional review artifacts, including surfaces whose dark-theme drift falls
+  // below the comparison threshold. Never overwrite a committed reference.
+  if (process.env.FREEDOM_CAPTURE_RENDERER_BASELINES === '1') {
+    const candidate = test.info().outputPath('baseline-candidates', file);
+    fs.mkdirSync(path.dirname(candidate), { recursive: true });
+    await page.screenshot({ path: candidate, mask: masks, animations: 'disabled', caret: 'hide' });
+  }
 }
 
 test.describe('renderer screenshots', () => {
@@ -618,6 +625,29 @@ test.describe('renderer screenshots', () => {
         await priv.waitForTimeout(500);
         await snap(surfaces, priv, `${theme}-61-private-sidebar`, {
           mask: [priv.locator('webview')],
+        });
+        surfaces.tookEverySurface();
+      });
+
+      test(`AI entry points (${theme})`, async ({ electronApp, window }) => {
+        test.setTimeout(120_000);
+        const surfaces = surfaceGroup(theme, 'AI entry points');
+        await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+        const page = await recipes.settings({ app: electronApp, win: window }, 'ai');
+        const scrollbar = await guestScrollbarMask(window);
+        await expect(page.locator('#enable-ai')).not.toBeChecked();
+        await snap(surfaces, window, `${theme}-54-settings-ai-off`, { mask: scrollbar });
+        await page.locator('#enable-ai').check();
+        await expect(page.locator('#ai-settings-links')).toBeVisible();
+        await expect(page.locator('#ai-settings-status')).toBeEmpty({ timeout: 30_000 });
+        await snap(surfaces, window, `${theme}-55-settings-ai-on`, { mask: scrollbar });
+        await page.locator('#enable-ai').uncheck();
+        await go(window, 'freedom://home', 1_800);
+        const home = await pageFor(electronApp, '/pages/home.html');
+        await expect(home.locator('#ai-invitation')).toBeVisible();
+        await expect.soft(home).toHaveScreenshot(surfaces.declared(`${theme}-56-home-ai-invitation`), {
+          ...COMPARE,
+          clip: { x: 0, y: 0, width: 720, height: 320 },
         });
         surfaces.tookEverySurface();
       });

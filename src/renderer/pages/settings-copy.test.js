@@ -110,7 +110,7 @@ describe('settings.html section headings match their nav label (#276)', () => {
   test('every nav entry carries exactly one page heading, and it is the nav label', () => {
     const titles = entryTitles();
     const items = navItems();
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
     // One `<h2>` per entry however many panels it owns (#268) — a second
     // would put two page headings on one route.
     const mismatches = items
@@ -212,6 +212,17 @@ describe('settings.html destructive actions follow one rule (#284)', () => {
 
   test('"Restore defaults" is danger-styled: it drops every custom shortcut at once (#606)', () => {
     expect(SOURCE).toMatch(/class="btn danger" id="shortcuts-restore-defaults"/);
+  });
+
+  test('the shortcut conflict row: Swap is primary, Cancel plain, both chords are key chips (#606)', () => {
+    expect(SOURCE).toMatch(/class="btn primary" data-action="swap">Swap</);
+    expect(SOURCE).toMatch(/class="btn" data-action="cancel-conflict">Cancel</);
+    // The pressed combination is a chip like the one offered in the swap, in
+    // both the swappable and the fixed message.
+    const conflict = SOURCE.match(/const renderConflict = [\s\S]*?\n {2}\};/)[0];
+    expect(conflict).not.toMatch(/\$\{esc\(state\.formatted\)\}/);
+    expect(conflict.match(/\$\{kbd\(state\.formatted\)\}/g)).toHaveLength(2);
+    expect(conflict).toContain('${kbd(conflict.swapFormatted)}');
   });
 
   test('the three re-addable removals are plain', () => {

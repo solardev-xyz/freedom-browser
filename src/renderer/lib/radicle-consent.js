@@ -192,3 +192,90 @@ export function showRadicleSigningApproval(permissionKey, owner) {
     approveLabel: 'Allow',
   });
 }
+
+// What one signed write does, in the prompt's own words. Every parameter
+// main signs with is shown — a parameter the prompt leaves out (a patch
+// revision, a reply target, labels) is one the page could steer unseen.
+// Page-supplied text only ever lands in textContent.
+const shown = (value) => (value === undefined || value === null ? '' : String(value));
+
+function describeSignedWrite(method, params = {}) {
+  const rid = shown(params.rid);
+  switch (method) {
+    case 'radicle_createIssue': {
+      const allows = [`Title: ${shown(params.title)}`, `Description: ${shown(params.description)}`];
+      if (params.labels !== undefined) {
+        const labels = Array.isArray(params.labels) ? params.labels : [params.labels];
+        for (const label of labels) allows.push(`Label: ${shown(label)}`);
+      }
+      return {
+        title: 'Open this issue as you?',
+        wants: `asks to open an issue in ${rid}`,
+        allows,
+        approveLabel: 'Open issue',
+      };
+    }
+    case 'radicle_commentIssue': {
+      const allows = [`Comment: ${shown(params.body)}`];
+      if (params.replyTo !== undefined) allows.push(`In reply to comment ${shown(params.replyTo)}`);
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on issue ${shown(params.issueId)} in ${rid}`,
+        allows,
+        approveLabel: 'Post comment',
+      };
+    }
+    case 'radicle_editIssueState':
+      return {
+        title: 'Change this issue as you?',
+        wants: `asks to change issue ${shown(params.issueId)} in ${rid}`,
+        allows: [`Set its state to ${shown(params.state)}`],
+        approveLabel: 'Change state',
+      };
+    case 'radicle_commentPatch': {
+      // Main signs against revisionId when one is given, not patchId, so
+      // the prompt names the revision that actually receives the comment.
+      const target =
+        params.revisionId !== undefined && params.revisionId !== params.patchId
+          ? `revision ${shown(params.revisionId)} (the page says it belongs to patch ${shown(params.patchId)})`
+          : `patch ${shown(params.patchId)}`;
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on ${target} in ${rid}`,
+        allows: [`Comment: ${shown(params.body)}`],
+        approveLabel: 'Post comment',
+      };
+    }
+    default: {
+      // A signed write this prompt has no wording for still shows every
+      // parameter rather than borrowing another method's summary.
+      let detail;
+      try {
+        detail = JSON.stringify(params);
+      } catch {
+        detail = '(unreadable parameters)';
+      }
+      return {
+        title: 'Sign this as you?',
+        wants: `asks to sign ${shown(method)} in ${rid}`,
+        allows: [`Parameters: ${detail}`],
+        approveLabel: 'Sign',
+      };
+    }
+  }
+}
+
+/**
+ * Per-write prompt for a tab in Freedom Agent custody, where the site's
+ * standing signing grant does not answer on its own: the user sees and
+ * approves the exact content before it is signed.
+ */
+export function showRadicleSignedWriteApproval(permissionKey, method, params, owner) {
+  return prompt({
+    owner,
+    origin: permissionKey,
+    ...describeSignedWrite(method, params),
+    warning:
+      'Freedom Agent is using this tab. Approving signs this with your Radicle key and publishes it to the network, where it cannot be unpublished.',
+  });
+}

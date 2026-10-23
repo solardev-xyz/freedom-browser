@@ -59,6 +59,8 @@ describe('external-protocol', () => {
       'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
       'radapi://x',
       'ethereum:0x0000000000000000000000000000000000000001',
+      'x-freedom-profile:work',
+      'X-Freedom-Profile:default',
       'ms-msdt:/id PCWDiagnostic',
       'search-ms:query=x&crumb=location:\\\\evil\\share',
       'ms-officecmd:{}',

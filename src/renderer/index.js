@@ -1,15 +1,11 @@
+import { closeAgentPrivacy } from './lib/agent-privacy.js';
+import { closeAgentDictationMenu } from './lib/dictation-menu.js';
 // Renderer process entry point
-import {
-  updateRegistry,
-  applySettingsToState,
-} from './lib/state.js';
+import { updateRegistry, applySettingsToState } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import { initMyotisUi } from './lib/myotis-ui.js';
-import {
-  initRadicleUi,
-  updateRadicleStatusLine,
-} from './lib/radicle-ui.js';
+import { initRadicleUi, updateRadicleStatusLine } from './lib/radicle-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
 import {
   initMenus,
@@ -39,16 +35,31 @@ import {
   createTab,
   openOrFocusInternalPage,
   getActiveWebview,
+  getActiveTab,
+  getTabById,
+  closeTab,
+  switchTab,
+  setAgentControlledTab,
+  setAgentTabCustody,
+  setAgentTabClaimHandler,
+  isTabAgentOwned,
+  setTabStripProjection,
+  subscribeTabPresentation,
+  getTabPresentation,
+  createWorkspaceViewerTab,
 } from './lib/tabs.js';
 import {
   initNavigation,
   loadTarget,
   reloadPage,
   hardReloadPage,
+  stopPageLoading,
   onSettingsChanged,
   setOnHistoryRecorded,
   setSuggestionPreviewProbe,
   closeTrustPopover,
+  setAgentWorkspaceNavigationProjection,
+  setAgentWorkspaceNavigationEditable,
 } from './lib/navigation.js';
 import {
   initAutocomplete,
@@ -67,6 +78,7 @@ import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initPopupBlockerUi, closePopupBlockedPopover } from './lib/popup-blocker-ui.js';
+import { initGatewayOfferUi, closeGatewayOfferPopover } from './lib/gateway-offer-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -76,11 +88,13 @@ import {
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
-import { initSidebar } from './lib/sidebar.js';
+import { initSidebar, setFullscreenConcealed } from './lib/sidebar.js';
+import { initBrowserFullscreen, listenForFullscreenChanges } from './lib/browser-fullscreen.js';
+import { initAgentUi } from './lib/agent-ui.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
-import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
+import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
@@ -161,6 +175,28 @@ setOnOpenDownloads(openDownloadsPage);
 setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
+electronAPI.onAutomationNavigate?.(({ rendererTabId, url }) => {
+  const tab = getTabById(rendererTabId);
+  if (!tab?.webview) return false;
+  loadTarget(url, null, tab.webview);
+  return true;
+});
+electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
+  const tab = getTabById(rendererTabId);
+  if (tab?.webview) stopPageLoading(tab.webview);
+});
+electronAPI.onAutomationCreateTab?.(({ url }) => createTab(url)?.id || null);
+electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  closeTab(rendererTabId);
+  return !getTabById(rendererTabId);
+});
+electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  // Agent switches its working page without taking the user's keyboard focus.
+  switchTab(rendererTabId, { focus: false });
+  return true;
+});
 // When any popover/menu opens, dismiss other transient surfaces so we
 // don't end up with the autocomplete dropdown or any of the address bar's
 // three no-backdrop surfaces -- the ENS trust popover, the permission
@@ -180,7 +216,10 @@ const onAnyMenuOpening = () => {
   closeTrustPopover();
   closePermissionPopover();
   closePopupBlockedPopover();
+  closeGatewayOfferPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
+  closeAgentDictationMenu();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -189,6 +228,7 @@ setOnBookmarkContextMenuOpening(onAnyMenuOpening);
 // Initialize platform-specific UI adjustments
 async function initPlatformUI() {
   const platform = await electronAPI.getPlatform();
+  document.body.classList.toggle('platform-mac', platform === 'darwin');
 
   if (platform === 'linux') {
     // The window is only frameless when the user opts in to tabs-in-titlebar;
@@ -709,6 +749,7 @@ async function initProfileIndicator() {
 
 // Close all menus and context menus
 const closeAllMenus = () => {
+  closeAgentDictationMenu();
   closeMenus();
   closeProfileMenu();
   hideTabContextMenu();
@@ -740,15 +781,22 @@ const closeAllOverlays = () => {
   closeTrustPopover();
   closePermissionPopover();
   closePopupBlockedPopover();
+  closeGatewayOfferPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
 };
 
 // Listen for close menus from main process (e.g., system menu clicked)
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open
 electronAPI.onCloseMenus?.(closeAllMenus);
 
+// The window's full-screen state (#78): listened for now, before start-up's
+// first await, so main's did-finish-load report can't land unheard. It is
+// held until initBrowserFullscreen below applies it.
+listenForFullscreenChanges();
+
 // Internal pages can deep-link into the sidebar publish-setup checklist.
-electronAPI.onOpenPublishSetup?.(openPublishSetupFlow);
+electronAPI.onOpenPublishSetup?.(openPublishSetupFromPage);
 
 // Initialize update notification toast
 function initUpdateNotifications() {
@@ -849,14 +897,57 @@ window.addEventListener('DOMContentLoaded', async () => {
     openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
+  initBrowserFullscreen({
+    setSidebarConcealed: setFullscreenConcealed,
+    closeMenus: closeAllOverlays,
+  }); // Full screen hides the chrome (#78)
   initNavigation(); // Sets up event handler with tabs module
   initSitePermissionsUi(); // Permission prompt + address-bar indicator
   initPopupBlockerUi(); // Pop-up-blocked address-bar icon (#442)
+  // "Open without gateway" pill (#70). Before initTabs, so the first tab's
+  // webview is watched too. The pill's open is a chrome action on the active
+  // tab; the "always" redirect is the tab's own navigation continuing, so it
+  // leaves an address-bar draft alone like any page-driven one.
+  initGatewayOfferUi({
+    navigate: (url, webview, { auto }) =>
+      loadTarget(url, null, webview, auto ? { pageInitiated: true } : {}),
+  });
   initLinkStatus();
-  initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
+  initFindBar({
+    getActiveWebview,
+    restoreFocus: (webview) => {
+      const interlock = document.getElementById('agent-page-interlock');
+      if (interlock && !interlock.hidden) {
+        // Find is read-only; closing it must not bypass Take over by giving
+        // the guest keyboard input while Agent is still controlling it.
+        document.getElementById('agent-page-lock-trigger')?.focus();
+      } else webview.focus();
+    },
+  }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
+  initAgentUi({
+    openSettings: (route = 'ai') => openOrFocusInternalPage('settings', route),
+    onMenuOpening: onAnyMenuOpening,
+    getActiveTab,
+    getOpenTabs: getTabPresentation,
+    createWorkspaceViewerTab,
+    closeViewerTab: closeTab,
+    isTabAgentOwned,
+    setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection: setAgentWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,
+    subscribeTabPresentation,
+    switchTab,
+  }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
-  initPageContextMenu({ onOpening: onAnyMenuOpening, onReload: hardReloadPage }); // Page context menu for webviews
+  initPageContextMenu({
+    onOpening: onAnyMenuOpening,
+    onReload: hardReloadPage,
+    isActiveTabAgentOwned: () => isTabAgentOwned(getActiveTab()?.id),
+  }); // Page context menu for webviews
   // Cut/Copy/Paste/Select All for every editable chrome text field — the
   // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
   // explicitly rather than left to the module's fallback so the list of chrome

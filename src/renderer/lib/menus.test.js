@@ -604,7 +604,7 @@ describe('menus', () => {
     menus.initMenus();
     elements.beePeersCount.textContent = '5';
     elements.beeNetworkPeers.textContent = '8';
-    elements.beeVersionText.textContent = 'Ant v0.5.8';
+    elements.beeVersionText.textContent = 'Ant 0.5.8';
 
     menus.setAntMenuOpen(true);
 
@@ -627,7 +627,7 @@ describe('menus', () => {
     // menus.js keeps no second copy of those empty-state rules.
     expect(elements.beePeersCount.textContent).toBe('5');
     expect(elements.beeNetworkPeers.textContent).toBe('8');
-    expect(elements.beeVersionText.textContent).toBe('Ant v0.5.8');
+    expect(elements.beeVersionText.textContent).toBe('Ant 0.5.8');
     expect(elements.beeInfoPanel.classList.remove).not.toHaveBeenCalled();
     expect(mocks.backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
   });
@@ -643,7 +643,7 @@ describe('menus', () => {
     antUi.initAntUi();
     state.antVersionFetched = false;
     state.antVersionValue = '';
-    elements.beeVersionText.textContent = 'Ant v0.5.8';
+    elements.beeVersionText.textContent = 'Ant 0.5.8';
 
     menus.setAntMenuOpen(false);
 
