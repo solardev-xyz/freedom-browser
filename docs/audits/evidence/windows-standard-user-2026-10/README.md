@@ -32,10 +32,13 @@ administrator, as `scripts/nightly-vm-e2e/` does.
 
 ## Logs
 
+All in [`logs/`](logs/), as captured on the VM apart from CRLF → LF.
+
 - `setup-run1.log`, `setup-run2.log`: setup plus L10, as the standard user.
 - `setup-run2-admin-watch.log`: the elevated helper, seen by the admin observer.
-- `qualify-NN-*.log`: the 13 full qualification runs, in order. 01 and 02 are the
-  harness flake fixed in this PR.
+- `qualify-NN-*.log`: the 13 full qualification runs, in order. The suffix names
+  the S1 racer (`old-racer` or `fixed-racer`). 01 and 02 are the harness flake
+  fixed in this PR. 13 ran after a reboot.
 - `race-probe-40.log`: 40 standalone S1 races, all `overlapped` and `preserved`.
 - `s8.log`, `s8-dns-packets.log`: the S8 receipts, and every query the owned
   listener saw.

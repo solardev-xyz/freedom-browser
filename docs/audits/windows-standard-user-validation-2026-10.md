@@ -14,7 +14,7 @@ Raw logs, harness scripts and the marker-DLL sources are in
 
 | Check | Result |
 | --- | --- |
-| (a) Planted `netapi32.dll`/`fwpuclnt.dll` beside `freedom-windows-sandbox-setup.exe` | **Not loaded** during two UAC-elevated setups, nine qualification runs, S8 and a direct elevated launch. The positive control loads both, standard and elevated. |
+| (a) Planted `netapi32.dll`/`fwpuclnt.dll` beside `freedom-windows-sandbox-setup.exe` | **Not loaded** during two UAC-elevated setups, qualification runs 1–6, S8 and a direct elevated launch (`logs/final.log`). The positive control loads both, standard and elevated. Runs 7–13 came after that check and are not covered by it. |
 | (b) S8: an offline command is refused without a grant; DNS works with one | **Pass.** It is refused before launch, and the owned DNS listener saw 0 queries from it. With a grant, the owned name reached the listener and `example.com` resolved. |
 | (c) S1: cleanup with a junction swapped into the private directory | **Pass, no outside file deleted in any run.** The racing check itself failed to *race* in 2 of 6 runs with the old harness. That is a harness flake, now fixed with a regression test (below). |
 | (d) L10: handle locks hold through elevation | **Pass.** Every write, rename and delete of the setup exe, and every rename of the helper directory, failed with `EBUSY` from the UAC prompt until setup returned (38 rounds, 2 setups). Two rounds overlapped the elevated helper's observed lifetime. Right after setup returned, all four succeeded. |
@@ -119,9 +119,11 @@ which are the same.
 5. **Direct launch.** The setup exe was also launched straight from an elevated
    shell, with no request. It exited 1 (request rejected), the same as the PR #457
    Rust test.
-6. **Result:** after both setups, nine qualification runs, S8 and the direct
-   launch, `markers.log` does not exist. The planted DLLs were never loaded by the
-   setup helper (elevated), the workspace helper or the runner.
+6. **Result:** after both setups, qualification runs 1–6, S8 and the direct
+   launch, `markers.log` does not exist (`logs/final.log`, 16:53Z, with both
+   markers still planted). The planted DLLs were never loaded by the setup helper
+   (elevated), the workspace helper or the runner. Qualification runs 7–13 ran
+   after this check, so they add nothing to (a).
 
 ### (d) L10 locks through elevation
 
@@ -191,6 +193,8 @@ Its 19 checks cover:
 | 1, 2 | old | 18/19: `handle-relative-cleanup-race` reported `overlapped: false` (`preserved: true`, `removed: true`). |
 | 3, 10, 11, 12 | old | 19/19 |
 | 4–9, 13 (13 after a reboot) | fixed | 19/19; the race overlapped on attempt 1 every time. |
+
+Run N is `logs/qualify-NN-*.log`; the run order is the file order.
 
 - **No outside file was ever deleted.** Every run reported `preserved: true`, and
   the outside, `.git` and junction sentinels stayed `untouched`.

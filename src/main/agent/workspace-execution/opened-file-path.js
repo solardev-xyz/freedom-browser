@@ -46,12 +46,14 @@ async function openedFilePath(handle) {
   });
 }
 
-// `options` reaches resolveWindowsSandbox (e.g. an installed build's helper
-// directory for scripts/qualify-windows-workspace.js --runtime).
+// `options` takes the same `directory` and `home` as WindowsWorkspaceExecutor:
+// `directory` reaches resolveWindowsSandbox (an installed build's helpers, for
+// scripts/qualify-windows-workspace.js --runtime) and `home` is the sandbox home
+// the setup provisioned (--home), defaulting to the executor's own default.
 async function readWindowsWorkspaceFile(root, relative, maximum, options = {}) {
   const runtime = await resolveWindowsSandbox(options);
   const result = await runWindowsSandbox(runtime, { version: 1, operation: 'read-file', backend: 'elevated',
-    home: path.join(process.env.LOCALAPPDATA || os.homedir(), 'FreedomBrowser', 'Sandbox'),
+    home: options.home || path.join(process.env.LOCALAPPDATA || os.homedir(), 'FreedomBrowser', 'Sandbox'),
     workspace: root, readPath: relative, maxReadBytes: maximum },
   { stdoutBytes: Math.ceil(maximum * 4 / 3) + 4, stderrBytes: 0, timeoutMs: 15000 });
   if (result.terminal?.exitCode !== 0 || result.stdoutTruncated || result.failure) throw new Error('The workspace file could not be read safely');
