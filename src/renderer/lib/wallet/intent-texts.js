@@ -10,7 +10,8 @@
  *
  * The payments page (pages/scripts/payments.js) is a classic script that
  * can't import this module. It keeps a copy of the final labels and of
- * TAKEN_EXPLANATION, and pages/payments.test.js holds the copy equal.
+ * TAKEN_EXPLANATION and CLOSED_EXPLANATION, and pages/payments.test.js
+ * holds the copy equal.
  */
 
 /** What happened to a send, by outcome (D9). */
@@ -38,13 +39,16 @@ export function outcomeText(outcome, reasonClass) {
  * Labels of a payment's state (D10). `confirmed`, `failed` and `taken` are
  * read at the finalized block (intent-labels.js: paid, failed, taken), and
  * the payments page shows them for a settled payment. `pending` is a held
- * one's.
+ * one's. `couldntConfirm` is a held payment's whose label couldn't be read
+ * for a day, and a payment's the user then closed by hand (design 0005,
+ * "State history", #94).
  */
 export const LABELS = Object.freeze({
   pending: 'Pending',
   confirmed: 'Confirmed (final)',
   failed: 'Failed on chain',
   taken: 'Taken',
+  couldntConfirm: "Couldn't confirm",
 });
 
 /**
@@ -70,18 +74,42 @@ export const ATTENTION_TEXT = Object.freeze({
   pending: LABELS.pending,
 });
 
+/**
+ * A held payment whose label the wallet couldn't read on chain for a day
+ * (design 0005, "State history", #94): shown with its nonce and its
+ * hashes, each with an explorer link. Once the network shows its place in
+ * the queue used, none of its transactions can go through, and it may be
+ * closed by hand; the confirmation says that closing proves nothing about
+ * whether it paid.
+ */
+export const COULDNT_CONFIRM = Object.freeze({
+  label: LABELS.couldntConfirm,
+  note:
+    "We couldn't confirm whether this payment went through. It stays here, and the wallet " +
+    'keeps checking.',
+  explorer: 'View on explorer',
+  close: 'Close payment',
+  confirmClose:
+    "We couldn't confirm whether this payment went through. It can no longer be sent. " +
+    'Check the explorer to see what happened.',
+  closing: 'Closing…',
+});
+
+/**
+ * Shown with "Couldn't confirm" on the payments page, for a payment the
+ * user closed by hand.
+ */
+export const CLOSED_EXPLANATION =
+  "You closed this payment. We couldn't confirm whether it went through. Check the explorer " +
+  'to see what happened.';
+
 // What would settle the payment lies too deep below the finalized block to
-// verify (intent-labels.js): it stays waiting.
-//
-// Not yet, pending freedom-core #112 (design 0005, #94): evidence the wallet
-// can't reach becomes "Couldn't confirm", shown with the payment's hashes
-// and an explorer link, and a manual close is offered once the verified
-// nonce at a finalized block is past the payment's. The new state's text
-// goes here, next to the observation it replaces (`attentionText`). The
-// manual close's label goes in LABELS, and in the payments page's copy.
+// verify (intent-labels.js): it stays waiting, and after a day of that it
+// is shown as Couldn't confirm.
 export const UNVERIFIABLE_TEXT = 'Too old to check on chain';
 
 export function attentionText(summary) {
+  if (summary?.couldntConfirm) return COULDNT_CONFIRM.label;
   if (summary?.observed === 'unverifiable') return UNVERIFIABLE_TEXT;
   if (summary?.attention === 'refused') return refusedText(summary.lastOutcome?.reasonClass);
   return ATTENTION_TEXT[summary?.attention] ?? LABELS.pending;

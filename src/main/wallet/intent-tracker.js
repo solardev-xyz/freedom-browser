@@ -7,8 +7,26 @@
  *
  * - **When:** a pass shortly after startup; about a minute after each
  *   broadcast; then every 2 minutes while intents are held, every 10 once
- *   the newest held intent has seen no activity for an hour. Nothing held,
- *   no timer: the next intent's broadcast wakes it.
+ *   the newest held intent has seen no activity for an hour, unless one of
+ *   them was broadcast (possibly sent): then every 2 minutes until it has a
+ *   label, so its bracket stays close to F (below). Nothing held, no timer:
+ *   the next intent's broadcast wakes it.
+ * - **The bracket** (design 0005, "State history", #94): each read that
+ *   finds an intent's nonce unused at F moves its bracket up to F, and the
+ *   store keeps it with the record (`store.track`), across restarts. Once
+ *   the nonce is used, the search for the block that used it runs above
+ *   the bracket: its deepest probe is then F's lag plus at most a pass's
+ *   blocks below the head, within the window of recent state that a
+ *   quorum's endpoints serve. Colibri, asked first, proves reads deeper.
+ * - **Couldn't confirm:** a held intent whose passes couldn't read a label
+ *   for a day (COULDNT_CONFIRM_AFTER_MS, counted from the first such pass
+ *   and kept across restarts): its verified nonce at F couldn't be read, or
+ *   it was past N and the block that used N was out of reach. Never one
+ *   whose verified nonce at F is N or below: that one is unmined, and is
+ *   offered sending again. It stays held and is read on every pass, so a
+ *   source that reaches the evidence still settles it. Once a verified read
+ *   in this run showed its nonce past N, it may be closed by hand
+ *   (`closeEvidence`, intent-ipc.js).
  * - **Settling:** `store.settle` with the label, the included hash and the
  *   finalized block, conditional on the hashes that were read; then the
  *   history row (`confirmed`, `failed` or `taken`). The store's change
@@ -56,6 +74,9 @@ const SCHEDULE = Object.freeze({
   coreDownMs: 30 * SECOND,
 });
 const CONCURRENCY = 4;
+/** How long a held intent's passes go without reading a label before it is
+ * shown as Couldn't confirm (a constant to tune, design 0005). */
+const COULDNT_CONFIRM_AFTER_MS = 24 * 60 * MINUTE;
 
 // Whether the core is serving chain data now.
 function coreServesChain() {
@@ -96,6 +117,7 @@ function bounded(fn, limit) {
  * @param {{setTimeout: Function, clearTimeout: Function}} [deps.timers]
  * @param {number} [deps.concurrency]
  * @param {Partial<typeof SCHEDULE>} [deps.schedule]
+ * @param {number} [deps.couldntConfirmAfterMs]
  */
 function createIntentTracker({
   store,
@@ -106,10 +128,16 @@ function createIntentTracker({
   timers = { setTimeout, clearTimeout },
   concurrency = CONCURRENCY,
   schedule: overrides = {},
+  couldntConfirmAfterMs = COULDNT_CONFIRM_AFTER_MS,
 }) {
   const schedule = { ...SCHEDULE, ...overrides };
   const limitedRequest = bounded(request, concurrency);
   const observations = new Map();
+  // Per held intent, this run: the finalized block where a verified read
+  // saw its nonce past N. Final, as the finalized chain is.
+  const usedNonces = new Map();
+  // Per held intent, what the display last showed of Couldn't confirm.
+  const shown = new Map();
   // Each chain's headers verified down from its finalized block: immutable,
   // so kept across passes and shared by the chain's intents.
   const segments = new Map();
@@ -155,13 +183,16 @@ function createIntentTracker({
     }
   }
 
-  // When the next pass is due, after one: none with nothing held.
+  // When the next pass is due, after one: none with nothing held. Fast
+  // while a broadcast intent has no label (its bracket's reach depends on
+  // it), or while the newest held intent saw activity in the last hour.
   function scheduleNext() {
     const held = heldNow();
     if (held.length === 0) return;
     const newest = Math.max(...held.map((intent) => intent.updatedAt ?? intent.createdAt ?? 0));
-    const interval = now() - newest < schedule.slowAfterMs ? schedule.fastMs : schedule.slowMs;
-    scheduleAt(now() + interval);
+    const broadcast = held.some((intent) => intent.possiblySent);
+    const fast = broadcast || now() - newest < schedule.slowAfterMs;
+    scheduleAt(now() + (fast ? schedule.fastMs : schedule.slowMs));
   }
 
   // A chain with no held intents releases its verified headers (freedom-
@@ -188,7 +219,9 @@ function createIntentTracker({
       return;
     }
     if (!intent || intent.state !== 'held') {
-      if (observations.delete(intentId)) emit();
+      usedNonces.delete(intentId);
+      const wasShown = shown.delete(intentId);
+      if (observations.delete(intentId) || wasShown) emit();
       // Settled or voided outside a pass: its chain may have nothing held
       // left, and no pass may come to release its headers.
       releaseIdleSegments();
@@ -233,26 +266,108 @@ function createIntentTracker({
     log.info(
       `[IntentTracker] Intent ${intent.intentId} is ${result.label} at finalized block ${result.block}`
     );
-    recordSettlement(intent, result);
+    recordSettlement(intent, { label: result.label, hash: result.hash, block: result.block });
     return true;
+  }
+
+  const sameBracket = (a, b) =>
+    (a ?? null) === (b ?? null) || (a && b && a.number === b.number && a.hash === b.hash);
+
+  // What a held read leaves for later passes: the bracket it moved up or
+  // dropped, and since when the intent's label couldn't be read, kept with
+  // the record when either changed. A read that saw the nonce unused at F
+  // (and no read this run saw it used) is an unmined intent: never
+  // Couldn't confirm.
+  async function keep(intent, result) {
+    const seen = result.nonceAtF;
+    if (seen?.used && !usedNonces.has(intent.intentId)) {
+      usedNonces.set(intent.intentId, { block: seen.block, hash: seen.hash });
+    }
+    const unmined = seen && !seen.used && !usedNonces.has(intent.intentId);
+    const unreadSince = unmined ? null : (intent.unreadSince ?? now());
+    const bracket = result.bracket ?? null;
+    if (sameBracket(bracket, intent.bracket) && unreadSince === (intent.unreadSince ?? null)) {
+      return;
+    }
+    try {
+      await store.track({ intentId: intent.intentId, bracket, unreadSince });
+    } catch (err) {
+      // Settled or closed meanwhile, or no room: the next pass reads again.
+      if (err.code !== 'INTENT_NOT_HELD') {
+        log.warn(
+          `[IntentTracker] Could not keep intent ${intent.intentId}'s progress: ${err.message}`
+        );
+      }
+    }
   }
 
   async function check(intent, read) {
     let result;
     try {
       if (!segments.has(intent.chainId)) segments.set(intent.chainId, createChainSegment());
-      result = await readLabel(intent, { request: read, segment: segments.get(intent.chainId) });
+      result = await readLabel(intent, {
+        request: read,
+        segment: segments.get(intent.chainId),
+        bracket: intent.bracket ?? null,
+      });
     } catch (err) {
-      result = { label: LABELS.HELD, observed: OBSERVED.UNKNOWN, reason: err.message };
+      result = {
+        label: LABELS.HELD,
+        observed: OBSERVED.UNKNOWN,
+        reason: err.message,
+        nonceAtF: null,
+        bracket: intent.bracket ?? null,
+      };
     }
-    if (result.label === LABELS.HELD)
+    if (result.label === LABELS.HELD) {
+      await keep(intent, result);
       return observe(intent.intentId, result.observed, result.reason);
+    }
     try {
       if (await settle(intent, result)) return observations.delete(intent.intentId);
     } catch (err) {
       log.warn(`[IntentTracker] Could not settle intent ${intent.intentId}: ${err.message}`);
     }
     return false;
+  }
+
+  /**
+   * Whether `view`, a held intent, is shown as Couldn't confirm: its label
+   * unread for a day. `closable` once a verified read in this run showed
+   * its nonce past N at a finalized block.
+   */
+  function couldntConfirm(view) {
+    if (!view || view.state !== 'held') return null;
+    const since = view.unreadSince ?? null;
+    if (since === null || now() - since < couldntConfirmAfterMs) return null;
+    return { since, closable: usedNonces.has(view.intentId) };
+  }
+
+  // Whether what Couldn't confirm shows changed for any held intent.
+  function refreshShown(held) {
+    let changed = false;
+    const ids = new Set();
+    for (const intent of held) {
+      ids.add(intent.intentId);
+      let view;
+      try {
+        view = store.get(intent.intentId);
+      } catch {
+        view = intent;
+      }
+      const state = couldntConfirm(view);
+      const showing = state ? (state.closable ? 'closable' : 'shown') : null;
+      if ((shown.get(intent.intentId) ?? null) !== showing) changed = true;
+      if (showing) shown.set(intent.intentId, showing);
+      else shown.delete(intent.intentId);
+    }
+    for (const id of shown.keys()) {
+      if (!ids.has(id)) {
+        shown.delete(id);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   /** One pass over the held intents. Resolves when it is done. */
@@ -305,7 +420,11 @@ function createIntentTracker({
         for (const id of observations.keys()) {
           if (!held.some((intent) => intent.intentId === id)) observations.delete(id);
         }
-        if (changed.some(Boolean)) emit();
+        for (const id of usedNonces.keys()) {
+          if (!held.some((intent) => intent.intentId === id)) usedNonces.delete(id);
+        }
+        const shownChanged = refreshShown(heldNow());
+        if (changed.some(Boolean) || shownChanged) emit();
       } finally {
         // Every pass, an empty one or one the core being down cut short
         // among them.
@@ -343,6 +462,25 @@ function createIntentTracker({
       return seen ? { ...seen } : null;
     },
 
+    couldntConfirm,
+
+    /**
+     * What closing a held intent by hand rests on: the finalized block
+     * (`{ block, hash }`) where a verified read in this run showed its
+     * nonce past N, while it is shown as Couldn't confirm. Null otherwise:
+     * then it can't be closed.
+     */
+    closeEvidence(intentId) {
+      let view;
+      try {
+        view = store.get(intentId);
+      } catch {
+        return null;
+      }
+      const state = couldntConfirm(view);
+      return state?.closable ? { ...usedNonces.get(intentId) } : null;
+    },
+
     /** How many verified headers are kept for a chain (0 once released). */
     verifiedHeaderCount(chainId) {
       return segments.get(chainId)?.headers.size ?? 0;
@@ -378,4 +516,10 @@ function getIntentTracker() {
   return defaultTracker;
 }
 
-module.exports = { SCHEDULE, CONCURRENCY, createIntentTracker, getIntentTracker };
+module.exports = {
+  SCHEDULE,
+  CONCURRENCY,
+  COULDNT_CONFIRM_AFTER_MS,
+  createIntentTracker,
+  getIntentTracker,
+};
