@@ -3,7 +3,9 @@
 
 // Run from a normal Windows desktop session after the separate administrator
 // setup. Exercises Freedom's actual policy/executor, without a model or secrets.
-// Retain the synthetic fixture and JSONL report for inspection.
+// Retain the synthetic fixture and JSONL report for inspection. --runtime points
+// at an installed build's helper directory (<install>/resources/windows-workspace)
+// instead of the development build in out/windows-workspace.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,12 +17,13 @@ const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = requir
 const { resolveExecutableAccess } = require('../src/main/agent/workspace-execution/executable-access');
 const { readWindowsWorkspaceFile } = require('../src/main/agent/workspace-execution/opened-file-path');
 const { raceCleanup, racerNames } = require('../src/main/agent/workspace-execution/__tests__/cleanup-racer');
-const { values } = parseArgs({ options: { root: { type: 'string' }, home: { type: 'string' } } });
+const { values } = parseArgs({ options: { root: { type: 'string' }, home: { type: 'string' }, runtime: { type: 'string' } } });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function main() {
   assert.equal(process.platform, 'win32');
   assert.ok(values.root && path.isAbsolute(values.root), '--root must name an absolute scratch directory');
+  assert.ok(!values.runtime || path.isAbsolute(values.runtime), '--runtime must name an absolute helper directory');
   fs.mkdirSync(values.root, { recursive: true });
   const directory = fs.mkdtempSync(path.join(values.root, 'freedom-'));
   const workspace = path.join(directory, 'Project with spaces');
@@ -37,7 +40,8 @@ async function main() {
     console.log(JSON.stringify(value));
     fs.appendFileSync(path.join(directory, 'results.jsonl'), `${JSON.stringify(value)}\n`);
   };
-  const executor = new WindowsWorkspaceExecutor({ ...(values.home && { home: values.home }) });
+  const executorOptions = { ...(values.home && { home: values.home }), ...(values.runtime && { directory: values.runtime }) };
+  const executor = new WindowsWorkspaceExecutor(executorOptions);
   const capabilities = await executor.detectCapabilities();
   record('capabilities', capabilities.available && !capabilities.setupRequired, { capabilities, directory });
   assert.ok(capabilities.available && !capabilities.setupRequired, 'Complete administrator setup first');
@@ -97,7 +101,7 @@ async function main() {
 const {WindowsWorkspaceExecutor}=require(${JSON.stringify(require.resolve('../src/main/agent/workspace-execution/windows-backend'))});
 const {createWorkspaceExecutionPolicy}=require(${JSON.stringify(require.resolve('../src/main/agent/workspace-execution/execution-policy'))});
 (async()=>{const policy=await createWorkspaceExecutionPolicy({workspaceRoot:${JSON.stringify(workspace)},network:'full',limits:{timeoutMs:30000}});
-await new WindowsWorkspaceExecutor(${JSON.stringify(values.home ? { home: values.home } : {})}).execute(policy,{command:process.execPath,args:['-e',${JSON.stringify("const fs=require('fs');fs.writeFileSync('abrupt-heartbeat','started');setInterval(()=>fs.writeFileSync('abrupt-heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),30000);console.log('driver-ready')")}],onOutput:(_s,b)=>process.stdout.write(b)});})().catch(e=>{console.error(e);process.exitCode=1});`;
+await new WindowsWorkspaceExecutor(${JSON.stringify(executorOptions)}).execute(policy,{command:process.execPath,args:['-e',${JSON.stringify("const fs=require('fs');fs.writeFileSync('abrupt-heartbeat','started');setInterval(()=>fs.writeFileSync('abrupt-heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),30000);console.log('driver-ready')")}],onOutput:(_s,b)=>process.stdout.write(b)});})().catch(e=>{console.error(e);process.exitCode=1});`;
   const driver = spawn(process.execPath, ['-e', driverSource], { stdio: ['ignore', 'pipe', 'pipe'] });
   let driverOutput = '';
   driver.stdout.on('data', bytes => { driverOutput += bytes; });
@@ -119,10 +123,10 @@ await new WindowsWorkspaceExecutor(${JSON.stringify(values.home ? { home: values
   fs.symlinkSync(outsideDirectory, path.join(workspace, 'outside-junction'), 'junction');
   const junction = await executor.execute(junctionPolicy, { command: process.execPath, args: ['-e', "try { require('fs').writeFileSync('outside-junction/sentinel.txt','tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }"] });
   record('junction-write', junction.state === 'completed' && /EPERM|EACCES/.test(junction.stdout) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched', junction);
-  const ordinary = await readWindowsWorkspaceFile(workspace, 'hello.txt', 1024);
+  const ordinary = await readWindowsWorkspaceFile(workspace, 'hello.txt', 1024, executorOptions);
   record('opened-handle-read', ordinary.toString() === 'hello');
   let refusedOutsideRead = false;
-  try { await readWindowsWorkspaceFile(workspace, 'outside-junction/sentinel.txt', 1024); }
+  try { await readWindowsWorkspaceFile(workspace, 'outside-junction/sentinel.txt', 1024, executorOptions); }
   catch { refusedOutsideRead = true; }
   record('opened-handle-junction-read', refusedOutsideRead);
   const cleanup = fs.mkdtempSync(path.join(directory, 'freedom-win-workspace-'));

@@ -13,12 +13,23 @@ async function checkedWorkspaceRoot(root, expected) {
   const canonical = await fs.promises.realpath(root);
   const actual = await fs.promises.stat(canonical);
   const after = await fs.promises.lstat(root);
-  const matches = entry => entry.isDirectory() && !entry.isSymbolicLink() &&
-    String(entry.dev) === String(before.dev) && String(entry.ino) === String(before.ino);
-  if (!matches(before) || !matches(actual) || !matches(after) ||
-      expected && (String(before.dev) !== String(expected.dev) || String(before.ino) !== String(expected.ino) ||
-        expected.root && canonical !== expected.root)) {
-    throw Object.assign(new Error('The authorized workspace root changed'), { code: 'WORKSPACE_ROOT_CHANGED' });
+  const matches = (entry) =>
+    entry.isDirectory() &&
+    !entry.isSymbolicLink() &&
+    String(entry.dev) === String(before.dev) &&
+    String(entry.ino) === String(before.ino);
+  if (
+    !matches(before) ||
+    !matches(actual) ||
+    !matches(after) ||
+    (expected &&
+      (String(before.dev) !== String(expected.dev) ||
+        String(before.ino) !== String(expected.ino) ||
+        (expected.root && canonical !== expected.root)))
+  ) {
+    throw Object.assign(new Error('The authorized workspace root changed'), {
+      code: 'WORKSPACE_ROOT_CHANGED',
+    });
   }
   return Object.freeze({ root: canonical, dev: String(before.dev), ino: String(before.ino) });
 }
@@ -31,28 +42,49 @@ async function openedFilePath(handle) {
   const runtime = await resolveMacosSupervisor();
   return new Promise((resolve, reject) => {
     const child = spawn(runtime.executablePath, ['--file-path'], {
-      stdio: ['ignore', 'pipe', 'ignore', handle.fd], env: {}, timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore', handle.fd],
+      env: {},
+      timeout: 5000,
     });
     const chunks = [];
     let size = 0;
-    child.stdout.on('data', chunk => {
+    child.stdout.on('data', (chunk) => {
       size += chunk.length;
       if (size > 4096) child.kill('SIGKILL');
       else chunks.push(chunk);
     });
     child.on('error', reject);
-    child.on('close', code => code === 0 && size > 0 && size <= 4096
-      ? resolve(Buffer.concat(chunks).toString('utf8')) : reject(new Error('Opened file identity is unavailable')));
+    child.on('close', (code) =>
+      code === 0 && size > 0 && size <= 4096
+        ? resolve(Buffer.concat(chunks).toString('utf8'))
+        : reject(new Error('Opened file identity is unavailable'))
+    );
   });
 }
 
-async function readWindowsWorkspaceFile(root, relative, maximum) {
-  const runtime = await resolveWindowsSandbox();
-  const result = await runWindowsSandbox(runtime, { version: 1, operation: 'read-file', backend: 'elevated',
-    home: path.join(process.env.LOCALAPPDATA || os.homedir(), 'FreedomBrowser', 'Sandbox'),
-    workspace: root, readPath: relative, maxReadBytes: maximum },
-  { stdoutBytes: Math.ceil(maximum * 4 / 3) + 4, stderrBytes: 0, timeoutMs: 15000 });
-  if (result.terminal?.exitCode !== 0 || result.stdoutTruncated || result.failure) throw new Error('The workspace file could not be read safely');
+// `options` takes the same `directory` and `home` as WindowsWorkspaceExecutor:
+// `directory` reaches resolveWindowsSandbox (an installed build's helpers, for
+// scripts/qualify-windows-workspace.js --runtime) and `home` is the sandbox home
+// the setup provisioned (--home), defaulting to the executor's own default.
+async function readWindowsWorkspaceFile(root, relative, maximum, options = {}) {
+  const runtime = await resolveWindowsSandbox(options);
+  const result = await runWindowsSandbox(
+    runtime,
+    {
+      version: 1,
+      operation: 'read-file',
+      backend: 'elevated',
+      home:
+        options.home ||
+        path.join(process.env.LOCALAPPDATA || os.homedir(), 'FreedomBrowser', 'Sandbox'),
+      workspace: root,
+      readPath: relative,
+      maxReadBytes: maximum,
+    },
+    { stdoutBytes: Math.ceil((maximum * 4) / 3) + 4, stderrBytes: 0, timeoutMs: 15000 }
+  );
+  if (result.terminal?.exitCode !== 0 || result.stdoutTruncated || result.failure)
+    throw new Error('The workspace file could not be read safely');
   return Buffer.from(result.stdout, 'base64');
 }
 
