@@ -256,7 +256,7 @@ describe('ChainConfig', () => {
 
   const methods = (client) => client.sent.map(([n, m]) => `${n}:${m}`);
   const make = (client, extra = {}) =>
-    new ChainConfig({ client, sources: sources(extra), log: { warn: jest.fn() } });
+    new ChainConfig({ client, sources: sources(extra), log: { warn: jest.fn() }, checks: null });
 
   test('each handshake configures, then sends each Myotis chain readiness, under a new key', async () => {
     const client = fakeClient();

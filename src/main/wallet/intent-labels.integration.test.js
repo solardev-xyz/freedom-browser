@@ -118,6 +118,8 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
       client,
       sources: { registry, myotis: { NETWORKS: new Map() }, logIndexUrls: {} },
       log: quietLog,
+      // The endpoints are scripted: none is asked its chain.
+      checks: null,
     });
     const broadcasts = new BroadcastRecords();
     const fetch = async (url, init) => {

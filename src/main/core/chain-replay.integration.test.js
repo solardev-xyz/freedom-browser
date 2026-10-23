@@ -905,6 +905,8 @@ async function replay(scenario, { tap } = {}) {
     client,
     sources: { registry: registryOf(world), myotis: myotisOf(world), logIndexUrls: LOG_INDEX_URLS },
     log: quietLog,
+    // The replayed endpoints are scripted: none is asked its chain.
+    checks: null,
   });
   const broadcasts = new BroadcastRecords();
   registerChainShell(client, config, {
