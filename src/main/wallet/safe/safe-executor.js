@@ -35,12 +35,18 @@ const {
   estimateGas,
   getGasPrices,
   toFeeFields,
+  namesOwnFees,
   signAndSendTransaction,
   heldIntentFor,
 } = require('../transaction-service');
 const { signAndRecord } = require('../tx-recorder');
 const { takeSiteTurn } = require('../auto-approve-pause');
-const { FEE_CHECK_NEEDS_CONFIRMATION, checkAtApproval, feeCheckError } = require('../fee-check');
+const {
+  FEE_CHECK_NEEDS_CONFIRMATION,
+  checkAtApproval,
+  feeCheckError,
+  feeNotShownError,
+} = require('../fee-check');
 const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('../signing-confirmation');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { getEip1193Provider } = require('../provider-manager');
@@ -275,6 +281,8 @@ function confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmati
   const fees = confirmedFees(feeConfirmation.fees);
   const params = { to, value: '0', data, gasLimit: feeConfirmation.gasLimit, ...fees, chainId };
   consumeConfirmation(feeConfirmation.confirmation, CONFIRM_KINDS.EXECUTOR_SEND, executorIndex, params);
+  // A confirmation of no fee would be given today's as it is signed.
+  if (!namesOwnFees(params)) throw feeNotShownError();
   return params;
 }
 

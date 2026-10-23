@@ -34,6 +34,7 @@ jest.mock('../transaction-service', () => ({
   getGasPrices: (...args) => mockGetGasPrices(...args),
   // the pure fee-shape mapper stays real so its behaviour is under test
   toFeeFields: jest.requireActual('../transaction-service').toFeeFields,
+  namesOwnFees: jest.requireActual('../transaction-service').namesOwnFees,
   signAndSendTransaction: (...args) => mockSignAndSendTransaction(...args),
   heldIntentFor: (...args) => mockHeldIntentFor(...args),
 }));
@@ -600,6 +601,18 @@ describe("the fee check on the executor's fee", () => {
       code: 'SIGNING_NOT_CONFIRMED',
     });
     expect(mockSignAndSendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a confirmation of no fee signs nothing: it would be given today\'s', async () => {
+    mockCheckAtApproval.mockResolvedValue({ ...FEE_LIKE_TODAYS, comparable: false, autoApprove: false });
+    const { execute } = await signedExecution();
+    const { offer } = await stopped(execute);
+    const { executorIndex, maxFeePerGas: _max, maxPriorityFeePerGas: _tip, ...payload } = offer;
+    const { token } = issueConfirmation('executor-send', executorIndex, payload);
+    await expect(
+      execute({ feeConfirmation: { confirmation: token, gasLimit: offer.gasLimit, fees: {} } })
+    ).rejects.toMatchObject({ code: 'FEE_NOT_SHOWN' });
+    expect(mockSignAndSendTransaction).not.toHaveBeenCalled();
   });
 
   test('a held execution sent again signs nothing new, so it is not judged', async () => {

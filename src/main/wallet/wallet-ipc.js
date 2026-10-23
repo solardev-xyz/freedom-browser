@@ -36,10 +36,10 @@ const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
 const {
   FEE_CHECK_ASK_AGAIN,
   FEE_CHECK_NOT_AUTO_APPROVED,
-  FEE_NOT_SHOWN,
   checkFees,
   checkAtApproval,
   feeCheckError,
+  feeNotShownError,
 } = require('./fee-check');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
@@ -200,15 +200,6 @@ const FEE_CHECKED_KINDS = new Set([
   CONFIRM_KINDS.EXECUTOR_SEND,
 ]);
 
-/** A send whose fees the user wasn't shown, refused before it is signed. */
-function feeNotShown() {
-  const error = new Error(
-    "This payment's network fee wasn't shown, so nothing was signed. Review it again."
-  );
-  error.code = FEE_NOT_SHOWN;
-  return error;
-}
-
 /** Whether `walletIndex` is a phone account, which signs and pays itself. */
 function phoneSigner(walletIndex) {
   if (!Number.isInteger(walletIndex)) return false;
@@ -251,7 +242,7 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     // its own would be given today's after its confirmation
     // (resolveFeeParams). It goes back to its screen instead, with nothing
     // signed. A phone picks its own fees.
-    if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShown();
+    if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
       // committed (auto-approve-pause.js). A silent send doesn't wait for

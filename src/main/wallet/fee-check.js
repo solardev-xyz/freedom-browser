@@ -342,6 +342,15 @@ function feeCheckError(code, verdict) {
   return error;
 }
 
+/** A send whose fee the user wasn't shown, refused before it is signed. */
+function feeNotShownError() {
+  const error = new Error(
+    "This payment's network fee wasn't shown, so nothing was signed. Review it again."
+  );
+  error.code = FEE_NOT_SHOWN;
+  return error;
+}
+
 module.exports = {
   FEE_CHECK_MULTIPLE,
   EVIDENCE_MAX_AGE_MS,
@@ -355,6 +364,7 @@ module.exports = {
   referenceFee,
   judgeFees,
   feeCheckError,
+  feeNotShownError,
   checkFees: (tx) => shared.check(tx),
   checkAtApproval: (tx, options) => shared.atApproval(tx, options),
   _shared: shared,
