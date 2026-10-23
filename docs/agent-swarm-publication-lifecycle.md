@@ -7,6 +7,46 @@ agent waits for active publication receipts after its model turn and resumes onc
 with the result. Waiting needs no repeated model calls or additional helper/model.
 A provisional tool response after ten seconds is not the end of the user task.
 
+## Pre-publish scan and approval
+
+Every source kind (managed workspace, attachment, inline text) goes through
+`src/main/agent/publication-scan.js` in the main process before the approval is
+shown. It runs on the in-memory snapshot that is later uploaded, so the scanned
+bytes are the uploaded bytes:
+
+- Path exclusions from the source reader (hidden files except `.well-known`,
+  credential file names, `.git`) are listed on the card by name and reason.
+- Metadata is removed losslessly and listed as such: `*.map` files and
+  `Thumbs.db`/`desktop.ini` are left out of folder publications;
+  `sourceMappingURL` comments are removed from `.js`/`.mjs`/`.cjs`/`.css`;
+  EXIF/XMP/IPTC/comment segments are removed from JPEG (orientation is kept in
+  a minimal EXIF block), text/time/eXIf chunks from PNG, EXIF/XMP chunks from
+  WebP. Pixel data is copied unchanged. An image whose container cannot be
+  parsed is left untouched and reported as a metadata warning.
+- Text files are scanned with named rules: PEM private keys, cloud/API tokens
+  (AWS, OpenAI-style, GitHub, Slack, Stripe, Google, Twilio, SendGrid), JWTs,
+  passwords in URLs and key assignments, Ethereum private keys on a line that
+  names a key, BIP-39 recovery phrases (12 or more consecutive wordlist words),
+  Web3 keystore JSON, RPC URLs with embedded Infura/Alchemy/QuickNode/Ankr keys,
+  Slack/Discord webhooks; and, as warnings, email addresses, `+`-prefixed phone
+  numbers, checksum-valid IBANs and street addresses. The older
+  `historyContainsSecret` check still runs as a backstop. Binary files are not
+  text-scanned. Rules are written against each provider's documented format
+  rather than vendored from gitleaks (RE2 syntax, mostly unrelated services).
+
+Findings carry a redacted excerpt for the card. Secrets block: "Publish
+publicly" stays disabled until each one is resolved by **Exclude file**
+(folders only), a per-finding **Publish anyway** checkbox, or **Ask Agent to
+fix**, which declines and returns only rule names, paths and line numbers to the
+model. Main re-checks the choices against the listed files and finding IDs and
+refuses an approval that leaves a secret unresolved. The model-facing receipt
+carries `prepublishScan` counts and rule names only. The card's permanence line
+is fixed markup, not request text, and swarm publications never offer
+"Allow for conversation".
+
+Not implemented yet (issue #741): encrypted draft uploads, feed-based stable
+addresses, postage cost/TTL on the card, and third-party script/tracker checks.
+
 ## Readiness and retries
 
 After public-network approval, Freedom selects and retains one postage batch.

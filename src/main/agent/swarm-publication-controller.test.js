@@ -488,3 +488,108 @@ test('retains a late transport receipt after a deadline without sending another 
   expect(dependencies.verifyPublication).not.toHaveBeenCalled();
   expect((await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication.state).toBe('completed');
 });
+
+describe('SwarmPublicationController pre-publish scan', () => {
+  const STRIPE = `sk_live_${'4eC39HqLyjWDarjtT1zdp7dc'}`;
+  const folderWith = (files, excluded) => ({
+    sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist',
+    bytes: files.reduce((total, file) => total + file.bytes.length, 0), files, ...(excluded && { excluded }),
+  });
+
+  test('scans attachment, text and workspace sources before approval without blocking clean content', async () => {
+    for (const input of [{ resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa' }, { text: `key ${STRIPE}` }, { workspacePath: 'dist' }]) {
+      const { controller } = createController({
+        readAttachmentSource: jest.fn(async descriptor => ({ ...descriptor, files: [{ path: 'pay.js', bytes: Buffer.from(`const k = "${STRIPE}";`) }] })),
+        workspaceSourceReader: { read: jest.fn(async () => folderWith([{ path: 'app.js', bytes: Buffer.from(`fetch("x", { key: "${STRIPE}" })`) }])) },
+      });
+      const requestApproval = jest.fn(async () => 'declined');
+      await expect(controller.publish(input, { requestApproval })).rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER });
+      const { findings } = requestApproval.mock.calls[0][0].publication;
+      expect(findings).toEqual([expect.objectContaining({ kind: 'secret', rule: 'stripe-secret-key', blocking: true, line: 1 })]);
+      expect(JSON.stringify(findings)).not.toContain(STRIPE);
+    }
+  });
+
+  test('a secret finding blocks a plain approval; nothing is uploaded', async () => {
+    const { controller, dependencies } = createController({
+      workspaceSourceReader: { read: jest.fn(async () => folderWith([{ path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";`) }])) },
+    });
+    const failure = controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => 'approved' });
+    await expect(failure).rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER, message: expect.stringContaining('stripe-secret-key') });
+    await failure.catch(error => expect(error.message).not.toContain(STRIPE));
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+    expect(dependencies.addHistoryEntry).not.toHaveBeenCalled();
+  });
+
+  test('Publish anyway for each blocking finding uploads exactly the scanned bytes', async () => {
+    const files = [
+      { path: 'index.html', bytes: Buffer.from('<p>alice.smith@proton.me</p>') },
+      { path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";\n//# sourceMappingURL=app.js.map\n`) },
+      { path: 'app.js.map', bytes: Buffer.from('{"sources":["secret.ts"]}') },
+    ];
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } });
+    let request;
+    const result = await controller.publish({ workspacePath: 'dist' }, { requestApproval: async value => {
+      request = value;
+      const ids = value.publication.findings.filter(finding => finding.blocking).map(finding => finding.id);
+      return { status: 'approved', publicationAcknowledged: ids };
+    } });
+    expect(request.publication.findings.map(finding => [finding.path, finding.rule, finding.blocking])).toEqual([
+      ['index.html', 'email-address', false], ['app.js', 'stripe-secret-key', true],
+    ]);
+    expect(request.publication.excluded).toEqual([{ path: 'app.js.map', reason: expect.stringContaining('Source map') }]);
+    expect(request.publication.stripped).toEqual([{ path: 'app.js', reason: 'sourceMappingURL comment removed' }]);
+    const uploaded = dependencies.publishCollection.mock.calls[0][0];
+    expect(uploaded.map(file => file.path)).toEqual(['index.html', 'app.js']);
+    expect(uploaded[1].bytes.toString()).toBe(`const s = "${STRIPE}";\n\n`);
+    expect(request.publication.files).toEqual(uploaded.map(file => ({ path: file.path, bytes: file.bytes.length })));
+    // The model-facing receipt carries counts and rule names, never an excerpt.
+    expect(result.publication.prepublishScan).toEqual({ findings: 2, rules: ['email-address', 'stripe-secret-key'], excludedFiles: 1, metadataStripped: 1, excludedByUser: 0 });
+  });
+
+  test('Exclude file removes it from the upload and resolves its findings', async () => {
+    const files = [{ path: 'index.html', bytes: Buffer.from('hi') }, { path: 'keys.js', bytes: Buffer.from(`k="${STRIPE}"`) }];
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } });
+    await controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'approved', publicationExclusions: ['keys.js'] }) });
+    expect(dependencies.publishCollection).toHaveBeenCalledWith([files[0]], expect.anything());
+    await expect(createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } }).controller
+      .publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'approved', publicationExclusions: ['missing.js'] }) }))
+      .rejects.toMatchObject({ code: ERROR_CODES.INVALID_ARGUMENT });
+  });
+
+  test('Ask Agent to fix returns rule names and paths only, and the next attempt scans the new snapshot', async () => {
+    const read = jest.fn()
+      .mockResolvedValueOnce(folderWith([{ path: 'app.js', bytes: Buffer.from(`\nconst s = "${STRIPE}";`) }]))
+      .mockResolvedValueOnce(folderWith([{ path: 'app.js', bytes: Buffer.from('const s = window.config.key;') }]));
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read } });
+    const first = controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'declined', publicationFix: { paths: ['app.js'] } }) });
+    await expect(first).rejects.toMatchObject({
+      code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
+      message: expect.stringContaining('app.js: stripe-secret-key (line 2)'),
+      suggestedAction: expect.stringContaining('swarm_publish again'),
+    });
+    await first.catch(error => expect(`${error.message}${error.suggestedAction}`).not.toContain('sk_live'));
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist' }, { requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.findings).toBeUndefined();
+    expect(dependencies.publishCollection.mock.calls[0][0][0].bytes.toString()).toBe('const s = window.config.key;');
+  });
+
+  test('lists excluded paths by name and reason, and strips image metadata from a single attached file', async () => {
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x0e]), Buffer.from('Exif\0\0GPS\0\0\0', 'latin1'),
+      Buffer.from([0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]),
+    ]);
+    const { controller, dependencies } = createController({
+      attachmentStore: { resolvePublicationSource: jest.fn(async () => ({ kind: 'file', name: 'photo.jpg', path: '/x/photo.jpg' })) },
+      readAttachmentSource: jest.fn(async () => ({ kind: 'file', name: 'photo.jpg', data: jpeg, bytes: jpeg.length, contentType: 'image/jpeg' })),
+    });
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ resourceId: 'file_aaaaaaaaaaaaaaaaaaaa' }, { requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.stripped).toEqual([{ path: 'photo.jpg', reason: 'Image metadata (EXIF, GPS, XMP) removed' }]);
+    const sent = dependencies.publishData.mock.calls[0][0];
+    expect(sent.includes(Buffer.from('Exif'))).toBe(false);
+    expect(sent).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]));
+    expect(requestApproval.mock.calls[0][0].publication.bytes).toBe(sent.length);
+  });
+});

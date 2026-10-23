@@ -2588,6 +2588,41 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('publication findings reach the card, and card choices may only name listed files and findings', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const publication = {
+      kind: 'folder', name: 'dist', public: true,
+      files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 9 }],
+      excluded: [{ path: '.env', reason: 'Credential file' }],
+      findings: [{ id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 2, excerpt: 'sk_liv••••', blocking: true }],
+    };
+    const ask = () => {
+      const decision = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication });
+      return { decision, approval: events.at(-1) };
+    };
+
+    let { decision, approval } = ask();
+    expect(approval.publication.findings).toEqual(publication.findings);
+    expect(approval.publication.excluded).toEqual(publication.excluded);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['other.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationAcknowledged: ['finding_9'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] });
+
+    ({ decision, approval } = ask());
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['index.html'] } })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['app.js'] } })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'declined', publicationFix: { paths: ['app.js'] } });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('classifies an exact node request in the isolated model context and exposes a bounded approval', async () => {
     const fake = createFakeSession();
     const effectClassifier = {

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
+const { preparePublication, publicationScanSummary } = require('./publication-scan');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
 
@@ -89,7 +90,60 @@ function publicReceipt(operation) {
     ...(operation.error && { error: operation.error }),
     ...(operation.message && { message: operation.message }),
     ...(operation.batchId && { batchId: operation.batchId }),
+    ...(operation.prepublishScan && { prepublishScan: operation.prepublishScan }),
   });
+}
+
+function publicationDeclined(message, suggestedAction) {
+  return new AutomationError(ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER, message,
+    suggestedAction ? { suggestedAction } : undefined);
+}
+
+function stringList(value, max) {
+  return Array.isArray(value) ? [...new Set(value.filter(item => typeof item === 'string' && item.length <= 1_024))].slice(0, max) : [];
+}
+
+// Applies the user's per-file and per-finding choices from the approval card.
+// The renderer only proposes them; this is where secrets stay blocked.
+function resolveScan(scan, decision) {
+  const choice = decision && typeof decision === 'object' ? decision : {};
+  if (choice.status !== 'approved' && choice.publicationFix) {
+    const fixPaths = stringList(choice.publicationFix.paths, 100);
+    const requested = scan.findings.filter(finding => fixPaths.includes(finding.path));
+    if (!requested.length) throw publicationDeclined('The user declined the Swarm publication');
+    const lines = requested.slice(0, 40).map(finding =>
+      `${finding.path}: ${finding.rule}${Number.isSafeInteger(finding.line) ? ` (line ${finding.line})` : ''}`);
+    throw publicationDeclined(
+      `The user asked you to fix pre-publish scan findings before publishing. Nothing was uploaded. Findings: ${lines.join('; ')}.`,
+      'Remove or replace the flagged values in those files without repeating them in chat (keep secrets out of published files entirely), then call swarm_publish again. Freedom scans the new snapshot and the user approves it again.');
+  }
+  if (!approved(decision)) return null;
+  const sourceKind = scan.source.kind;
+  const excludedPaths = stringList(choice.publicationExclusions, 100);
+  const acknowledged = new Set(stringList(choice.publicationAcknowledged, 200));
+  if (excludedPaths.length && sourceKind !== 'folder') {
+    throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Only files inside a folder publication can be excluded');
+  }
+  const filePaths = new Set((scan.source.files || []).map(file => file.path));
+  if (excludedPaths.some(item => !filePaths.has(item))) {
+    throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'An excluded file is not part of this publication');
+  }
+  const remaining = scan.findings.filter(finding => !excludedPaths.includes(finding.path));
+  const unresolved = remaining.filter(finding => finding.blocking && !acknowledged.has(finding.id));
+  if (unresolved.length) {
+    throw publicationDeclined(
+      `Publication blocked: ${unresolved.length} pre-publish finding${unresolved.length === 1 ? '' : 's'} (${[...new Set(unresolved.map(finding => finding.rule))].join(', ')}) were not resolved. Nothing was uploaded.`,
+      'Ask the user how to proceed, or remove the flagged values and publish again.');
+  }
+  if (!excludedPaths.length) return { source: scan.source, findings: remaining, excludedByUser: 0 };
+  const files = scan.source.files.filter(file => !excludedPaths.includes(file.path));
+  if (!files.length) throw publicationDeclined('Every file was excluded. Nothing was uploaded.');
+  return {
+    source: Object.freeze({ ...scan.source, files: Object.freeze(files),
+      bytes: files.reduce((total, file) => total + file.bytes.byteLength, 0) }),
+    findings: remaining,
+    excludedByUser: excludedPaths.length,
+  };
 }
 
 function operationResult(operation) {
@@ -201,6 +255,12 @@ class SwarmPublicationController {
             bytes: Buffer.byteLength(input.text, 'utf8'),
             contentType: input.contentType,
           };
+    let scan;
+    try { scan = preparePublication(sourceDescriptor); }
+    catch (error) {
+      throw new AutomationError(['PUBLICATION_EMPTY', 'PUBLICATION_TOO_MANY_FINDINGS'].includes(error?.code) ? ERROR_CODES.INVALID_ARGUMENT : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        safeMessage(error, 'Freedom could not check the publication before upload'));
+    }
     if (input.indexDocument && sourceDescriptor.kind !== 'folder') {
       throw new AutomationError(
         ERROR_CODES.INVALID_ARGUMENT,
@@ -217,14 +277,17 @@ class SwarmPublicationController {
       action: 'swarm_publish',
       operation: OPERATIONS.SWARM_PUBLISH,
       label: sourceDescriptor.name,
+      // Shown to the user only. Excerpts are redacted and never reach the model.
       publication: {
-        kind: sourceDescriptor.kind,
-        name: sourceDescriptor.name,
+        kind: scan.source.kind,
+        name: scan.source.name,
         public: true,
-        ...(sourceDescriptor.files && { files: sourceDescriptor.files.map(file => ({ path: file.path, bytes: file.bytes.length })) }),
-        ...(sourceDescriptor.excludedCount && { excludedCount: sourceDescriptor.excludedCount }),
-        ...(sourceDescriptor.kind === 'text' && { text: sourceDescriptor.text }),
-        ...(Number.isSafeInteger(sourceDescriptor.bytes) && { bytes: sourceDescriptor.bytes }),
+        ...(scan.source.files && { files: scan.source.files.map(file => ({ path: file.path, bytes: file.bytes.length })) }),
+        ...(scan.findings.length && { findings: scan.findings }),
+        ...(scan.excluded.length && { excluded: scan.excluded }),
+        ...(scan.stripped.length && { stripped: scan.stripped }),
+        ...(scan.source.kind === 'text' && { text: scan.source.text }),
+        ...(Number.isSafeInteger(scan.source.bytes) && { bytes: scan.source.bytes }),
         ...(sourceDescriptor.contentType && { contentType: sourceDescriptor.contentType }),
         ...(sourceDescriptor.sourceType === 'workspace' && {
           workspacePath: sourceDescriptor.workspacePath,
@@ -232,7 +295,8 @@ class SwarmPublicationController {
         ...(input.indexDocument && { indexDocument: input.indexDocument }),
       },
     });
-    if (!approved(decision)) {
+    const resolved = resolveScan(scan, decision);
+    if (!resolved) {
       throw new AutomationError(
         ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
         'The user declined the Swarm publication'
@@ -241,7 +305,9 @@ class SwarmPublicationController {
     if (context.signal?.aborted) {
       throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
     }
-    const source = sourceDescriptor;
+    // The upload sends these exact buffers: the scanned snapshot, minus any
+    // files the user excluded on the approval card.
+    const source = resolved.source;
     if (
       source.kind === 'folder' &&
       input.indexDocument &&
@@ -275,6 +341,7 @@ class SwarmPublicationController {
       historyId: history.id,
       ...(Number.isSafeInteger(source.bytes) && { bytes: source.bytes }),
       ...(input.indexDocument && { indexDocument: input.indexDocument }),
+      prepublishScan: { ...publicationScanSummary(scan, resolved.findings), excludedByUser: resolved.excludedByUser },
     };
     this.operations.set(publicationId, operation);
     try { this.#emitProgress(operation, context.onProgress); }

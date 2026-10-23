@@ -203,6 +203,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ...(options.workspacePermissionScope === 'conversation'
         ? { workspacePermissionScope: 'conversation' }
         : {}),
+      ...(Array.isArray(options.publicationExclusions) ? { publicationExclusions: options.publicationExclusions } : {}),
+      ...(Array.isArray(options.publicationAcknowledged) ? { publicationAcknowledged: options.publicationAcknowledged } : {}),
+      ...(Array.isArray(options.publicationFix?.paths) ? { publicationFix: { paths: options.publicationFix.paths } } : {}),
     }),
   handleAgentWalletRequest: (rendererTabId, request) =>
     ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
