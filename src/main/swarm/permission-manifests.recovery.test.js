@@ -199,3 +199,101 @@ describe('permission manifest durable recovery with real stores', () => {
     expectFullyRecovered();
   });
 });
+
+// Review of #792 (round 1): a stored identity in the removed ethereum-wallet
+// mode (#89) is never re-granted through a manifest, by its consent or by
+// replaying a journal, and is never swapped for another owner.
+describe('permission manifests and a stored ethereum-wallet identity', () => {
+  const UNAVAILABLE = "Ethereum wallet publisher identities aren't available";
+  const IDENTITY = 'ethereum-wallet:2';
+
+  function storeWalletIdentity({ feedGranted = false } = {}) {
+    fs.writeFileSync(path.join(tempDir, 'swarm-feeds.json'), JSON.stringify({
+      version: 2,
+      nextPublisherKeyIndex: 0,
+      origins: {
+        [ORIGIN]: {
+          activeIdentityId: IDENTITY,
+          identities: {
+            [IDENTITY]: { id: IDENTITY, mode: 'ethereum-wallet', walletIndex: 2, publisherKeyIndex: null, label: 'Old account', createdAt: 1, lastUsedAt: null },
+          },
+          feedGranted,
+          grantedAt: 1,
+          feeds: {},
+        },
+      },
+    }));
+    feeds._resetCache();
+  }
+
+  function expectNothingGranted() {
+    expect(feeds.hasFeedGrant(ORIGIN)).toBe(false);
+    expect(feeds.getOriginEntry(ORIGIN).activeIdentityId).toBe(IDENTITY);
+    expect(Object.keys(feeds.getOriginEntry(ORIGIN).identities)).toEqual([IDENTITY]);
+  }
+
+  test('consent for feeds or signing is refused before anything is journaled or applied', async () => {
+    storeWalletIdentity();
+    const consent = await createConsent();
+    expect(consent.kind).toBe('consent');
+
+    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow(UNAVAILABLE);
+    expectNothingGranted();
+    // Nothing else of the decision happened either: no connection, no
+    // auto-approve, no managed record, no journal left to replay.
+    expect(permissions.getPermission(ORIGIN)).toBeNull();
+    expect(manifests.getRecord(ORIGIN)?.managed ?? {}).toEqual({});
+    const store = JSON.parse(fs.readFileSync(path.join(tempDir, 'swarm-manifest-grants.json'), 'utf8'));
+    expect(store.pending).toBeUndefined();
+
+    simulateRestart();
+    expectNothingGranted();
+    expect(permissions.getPermission(ORIGIN)).toBeNull();
+  });
+
+  test('after an explicit identity switch, the same consent is allowed', async () => {
+    storeWalletIdentity();
+    const consent = await createConsent();
+    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow(UNAVAILABLE);
+
+    feeds.createAppScopedIdentity(ORIGIN, { activate: true });
+    const again = await createConsent();
+    expect(manifests.decideManifest(again.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(feeds.hasFeedGrant(ORIGIN)).toBe(true);
+    expect(feeds.getOriginEntry(ORIGIN).identityMode).toBe('app-scoped');
+  });
+
+  test('a journal written before the mode was removed replays without the identity-bound grants', async () => {
+    // The decision is journaled while the origin has no identity (as an
+    // older build could), and the process stops right after the journal.
+    const consent = await createConsent();
+    manifests._setFaultInjectorForTests((point) => {
+      if (point === 'after-journal') throw new Error('simulated crash at after-journal');
+    });
+    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('simulated crash');
+    manifests._setFaultInjectorForTests(null);
+    // Before the restart, the origin's identity is a stored ethereum-wallet
+    // one, as that build could have made it.
+    storeWalletIdentity();
+    simulateRestart();
+
+    const record = manifests.getRecord(ORIGIN);
+    expectNothingGranted();
+    // The identity-bound projections are neither applied nor managed.
+    const permission = permissions.getPermission(ORIGIN);
+    expect(permission.autoApprove.feeds).not.toBe(true);
+    expect(permission.autoApprove.signing).not.toBe(true);
+    for (const projection of ['feedGrant', 'autoApprove.feeds', 'autoApprove.signing', 'identity']) {
+      expect(record.managed[projection]).toBeUndefined();
+    }
+    // The rest of the decision is replayed as journaled.
+    expect(permission.autoApprove.publish).toBe(true);
+    expect(permission.autoApprove.messaging).toBe(true);
+    expect(permissions.hasMessagingGrant(ORIGIN)).toBe(true);
+    expect(record.managed.connection).toEqual(['publish', 'feeds', 'signing', 'messaging']);
+    // Replayed once: nothing pending, and a later read changes nothing.
+    simulateRestart();
+    expect(manifests.getRecord(ORIGIN)).toEqual(record);
+    expectNothingGranted();
+  });
+});

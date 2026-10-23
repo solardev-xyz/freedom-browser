@@ -1038,9 +1038,9 @@ describe('swarm-provider-ipc', () => {
 
     // #89: a stored ethereum-wallet identity fails with the plain error,
     // and no chunk is signed or written, with any key.
-    test('refuses an SOC with a stored browser wallet identity', async () => {
+    test.each([['ready', true], ['stopped', false]])('refuses an SOC with a stored browser wallet identity, node %s', async (_label, ready) => {
       mockV2FeedCapability('myapp.eth', 'ethereum-wallet:2');
-      mockPreFlightOk();
+      if (ready) mockPreFlightOk();
 
       const result = await invokeProvider('swarm_writeSingleOwnerChunk', {
         identifier: VALID_IDENTIFIER,
@@ -1313,14 +1313,17 @@ describe('swarm-provider-ipc', () => {
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
     });
 
-    test('refuses to create a feed with a stored browser wallet identity (#89)', async () => {
+    // Review of #792 (round 1): the refusal comes before node readiness, so
+    // a stopped node can't mask it, and no key is asked for either way.
+    test.each([['ready', true], ['stopped', false]])('refuses to create a feed with a stored browser wallet identity, node %s (#89)', async (_label, ready) => {
       mockV2FeedCapability('myapp.eth', 'ethereum-wallet:2');
       mockGetFeed.mockReturnValue(null);
-      mockPreFlightOk();
+      if (ready) mockPreFlightOk();
 
       const result = await invokeProvider('swarm_createFeed', { name: 'blog' }, 'myapp.eth');
 
       expect(result.error.message).toMatch("Ethereum wallet publisher identities aren't available");
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
       expect(mockGetUserWalletKey).not.toHaveBeenCalled();
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
       expect(mockCreateFeed).not.toHaveBeenCalled();
@@ -1457,7 +1460,7 @@ describe('swarm-provider-ipc', () => {
     // #89: a feed bound to a stored ethereum-wallet identity fails with the
     // plain error, even when the origin's active identity is another: its
     // key would be another owner, and so another feed.
-    test('refuses to update a feed bound to a stored browser wallet identity', async () => {
+    test.each([['ready', true], ['stopped', false]])('refuses to update a feed bound to a stored browser wallet identity, node %s', async (_label, ready) => {
       mockV2FeedCapability('myapp.eth', 'app-scoped:2');
       mockGetFeed.mockReturnValue({
         topic: 'topichex',
@@ -1465,11 +1468,12 @@ describe('swarm-provider-ipc', () => {
         manifestReference: 'mref',
         identityId: 'ethereum-wallet:2',
       });
-      mockPreFlightOk();
+      if (ready) mockPreFlightOk();
 
       const result = await invokeProvider('swarm_updateFeed', { feedId: 'blog', reference: VALID_REF }, 'myapp.eth');
 
       expect(result.error.message).toMatch("Ethereum wallet publisher identities aren't available");
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
       expect(mockGetUserWalletKey).not.toHaveBeenCalled();
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
       expect(mockUpdateFeed).not.toHaveBeenCalled();
@@ -1611,7 +1615,7 @@ describe('swarm-provider-ipc', () => {
       expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey1'), 'myapp.eth/feed', 'hello', { index: undefined });
     });
 
-    test('refuses a feed entry for a feed bound to a stored browser wallet identity (#89)', async () => {
+    test.each([['ready', true], ['stopped', false]])('refuses a feed entry for a feed bound to a stored browser wallet identity, node %s (#89)', async (_label, ready) => {
       mockV2FeedCapability('myapp.eth', 'app-scoped:2');
       mockGetFeed.mockReturnValue({
         topic: 't',
@@ -1619,11 +1623,12 @@ describe('swarm-provider-ipc', () => {
         manifestReference: 'm',
         identityId: 'ethereum-wallet:2',
       });
-      mockPreFlightOk();
+      if (ready) mockPreFlightOk();
 
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello' }, 'myapp.eth');
 
       expect(result.error.message).toMatch("Ethereum wallet publisher identities aren't available");
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
       expect(mockGetUserWalletKey).not.toHaveBeenCalled();
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
       expect(mockWriteFeedPayload).not.toHaveBeenCalled();

@@ -52,6 +52,7 @@ const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
 const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
+const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
 
@@ -1053,6 +1054,17 @@ function resolveSignerKey(identity) {
 }
 
 /**
+ * The removed mode's refusal (#89), for the identity a write would sign
+ * with: checked before node readiness, so a stopped node can't mask it.
+ * Reads the stored mode only; no key or address is derived.
+ * @returns {Object|null} the error response, or null
+ */
+function unavailableIdentityError(identity) {
+  if (getIdentityMode(identity) !== ETHEREUM_WALLET_MODE) return null;
+  return { error: { ...ERRORS.INTERNAL_ERROR, message: ETHEREUM_WALLET_UNAVAILABLE } };
+}
+
+/**
  * Handle swarm_getSigningIdentity: disclose origin signing address after
  * connection + feed/signing grant. Does not require Bee node readiness.
  */
@@ -1119,12 +1131,15 @@ async function handleCreateFeed(params, origin) {
     };
   }
 
+  const activeIdentity = getActiveOriginIdentity(originEntry);
+  const unavailable = unavailableIdentityError(activeIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
-  const activeIdentity = getActiveOriginIdentity(originEntry);
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);
@@ -1203,13 +1218,16 @@ async function handleUpdateFeed(params, origin) {
     return { error: { ...ERRORS.INVALID_PARAMS, message: `Feed not found: ${feedId}`, data: { reason: 'feed_not_found' } } };
   }
 
+  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
+  const unavailable = unavailableIdentityError(feedIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
   let signerKey;
-  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
     signerKey = await resolveSignerKey(feedIdentity);
   } catch (err) {
@@ -1293,13 +1311,16 @@ async function handleWriteFeedEntry(params, origin) {
     return { error: { ...ERRORS.INVALID_PARAMS, message: `Feed not found: ${name}. Create it with createFeed first.`, data: { reason: 'feed_not_found' } } };
   }
 
+  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
+  const unavailable = unavailableIdentityError(feedIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
   let signerKey;
-  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
     signerKey = await resolveSignerKey(feedIdentity);
   } catch (err) {

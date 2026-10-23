@@ -869,7 +869,33 @@ function hasFeedGrant(origin) {
 }
 
 /**
- * Grant feed access for an origin. Called after the feed approval prompt.
+ * Whether the origin's active publisher identity is in the removed
+ * ethereum-wallet mode (#89): stored, kept, and never granted again.
+ * @param {string} origin
+ * @returns {boolean}
+ */
+function hasUnavailableIdentity(origin) {
+  const store = loadFeeds();
+  const entry = store.origins[normalizeOrigin(origin)];
+  return getActiveIdentityFromEntry(entry)?.mode === ETHEREUM_WALLET_MODE;
+}
+
+/**
+ * Throws the removed mode's error when the origin's feed access can't be
+ * granted: its active identity is a stored ethereum-wallet one. The user
+ * has to switch identity first; nothing picks another owner for them.
+ * @param {string} origin
+ */
+function assertFeedGrantable(origin) {
+  if (hasUnavailableIdentity(origin)) {
+    throw new Error(ETHEREUM_WALLET_UNAVAILABLE);
+  }
+}
+
+/**
+ * Grant feed access for an origin. Called after the feed approval prompt,
+ * and by a permission manifest's projection. Refused, whoever asks, while
+ * the active identity is a stored ethereum-wallet one (#89).
  * @param {string} origin
  * @param {{source?: string}} [options]
  */
@@ -877,6 +903,7 @@ function grantFeedAccess(origin, { source = 'user' } = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
+  assertFeedGrantable(key);
   store.origins[key].feedGranted = true;
   saveFeeds();
   if (source === 'user') notifyManifestMutation(key, 'feedGrant');
@@ -964,9 +991,7 @@ function registerFeedStoreIpc() {
 
       const existing = getOriginEntry(origin);
       // A stored ethereum-wallet identity is never granted again (#89).
-      if (existing?.identityMode === ETHEREUM_WALLET_MODE) {
-        throw new Error(ETHEREUM_WALLET_UNAVAILABLE);
-      }
+      assertFeedGrantable(origin);
       if (existing && existing.activeIdentityId) {
         // Identity already set — just re-grant feed access
         if (!existing.feedGranted) {
@@ -1010,6 +1035,8 @@ module.exports = {
   getAllOriginEntries,
   getEthereumWalletIdentityReferences,
   hasIdentityMode,
+  hasUnavailableIdentity,
+  assertFeedGrantable,
   hasFeedGrant,
   grantFeedAccess,
   revokeFeedAccess,
