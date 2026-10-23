@@ -63,8 +63,13 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-off-${theme}.png`) });
   }
+  // Page tools (WebMCP) are decided at launch: the row says so and offers
+  // the restart once AI is turned on (#803).
+  await expect(page.locator('#enable-ai-restart-help')).toHaveText('Page tools that websites offer Agent take effect after restart.');
+  await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  await expect(page.locator('#enable-ai-restart')).toBeVisible();
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await expect(page.locator('#agent-provider-add')).toBeVisible();
   await page.locator('#agent-provider-add').click();
@@ -88,6 +93,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#enable-ai').uncheck();
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
   await expect(window.locator('#agent-sidebar')).toBeHidden();
+  await expect(page.locator('#enable-ai-restart')).toBeHidden();
   expect(await window.locator('#agent-prompt').inputValue()).toContain('Keep this draft');
   const status = await window.evaluate(() => window.electronAPI.getAgentProviderStatus());
   expect(status.status.configured).toBe(true);
@@ -403,7 +409,7 @@ test('AI settings pages share Settings\' selects, intros, headings and destructi
 
 // #782: Set up Agent is a sheet under its header — same edges, as tall as
 // what it holds, and nothing of the page reads through it.
-test('Set up Agent sheet lines up with its header and is opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
+test('Set up Agent sheet lines up with its header and both are opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
   for (const theme of ['dark', 'light']) {
@@ -424,14 +430,19 @@ test('Set up Agent sheet lines up with its header and is opaque at narrow and wi
         const h = header.getBoundingClientRect();
         const content = [...sheet.children].filter((el) => el.getClientRects().length)
           .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
-        const alpha = getComputedStyle(sheet).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
+        const opaque = (el) => {
+          const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
+          return alpha === undefined || Number(alpha) === 1;
+        };
         return {
           left: Math.round(s.left - h.left),
           right: Math.round(s.right - h.right),
           slack: s.bottom - content <= 32,
-          opaque: alpha === undefined || Number(alpha) === 1,
+          opaque: opaque(sheet),
+          // The header it hangs from too: light theme's glass let the page show through (#803).
+          headerOpaque: opaque(header),
         };
-      })).toEqual({ left: 0, right: 0, slack: true, opaque: true });
+      })).toEqual({ left: 0, right: 0, slack: true, opaque: true, headerOpaque: true });
       await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
     }

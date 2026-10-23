@@ -6,6 +6,13 @@ const {
   supportedPageToolSchema,
   matchesPageToolArguments,
 } = require('../contract/page-tool-schema');
+const { webMcpEnabledAtLaunch } = require('../../agent/webmcp-launch');
+
+// Shown instead of a bare "unavailable" when this launch never enabled WebMCP:
+// AI was turned on after Freedom started, so no page can expose tools until the
+// next start (#803; see agent/webmcp-launch.js).
+const RESTART_REQUIRED_MESSAGE =
+  'Page tools need a restart: AI was turned on after Freedom started. Tell the user to restart Freedom to use page tools, and continue with normal browser tools for now.';
 
 // This function runs only in our isolated world. Never fall back to a website's
 // polyfill or inject model-provided JavaScript into the page's main world.
@@ -262,6 +269,10 @@ class PageTools {
     const tools = (result.tools || []).filter((tool) => supportedPageToolSchema(tool.inputSchema));
     const unsupportedSchemas = (result.tools?.length || 0) - tools.length;
     for (const tool of tools) this.references.set(tool.toolRef, { identity, ...tool });
+    const restart =
+      result.available === false && webMcpEnabledAtLaunch() === false
+        ? { restartRequired: true, message: RESTART_REQUIRED_MESSAGE }
+        : {};
     if (result.execution && this.execution?.identity === identity)
       this.execution.result = result.execution;
     return {
@@ -271,6 +282,7 @@ class PageTools {
       truncated: result.truncated || unsupportedSchemas > 0,
       execution: this.execution?.result || null,
       untrusted: true,
+      ...restart,
     };
   }
 
@@ -391,4 +403,4 @@ class PageTools {
   }
 }
 
-module.exports = { PageTools, pageToolsBridge };
+module.exports = { PageTools, pageToolsBridge, RESTART_REQUIRED_MESSAGE };

@@ -48,6 +48,8 @@ describe('dictation service', () => {
 
   test('offers only supported connected API services and an explicit local option', () => {
     expect(service.state().options.map(option => option.providerId)).toEqual(['local', 'openai', 'venice', 'near-ai', 'openrouter']);
+    // Same model name as the download progress label (#803).
+    expect(service.state().options[0].model).toBe('Whisper Base');
     expect(service.state().preferences.providerId).toBe(null);
     choose('venice');
     expect(fs.readFileSync(path.join(root, 'dictation.json'), 'utf8')).not.toContain('credential');

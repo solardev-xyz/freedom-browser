@@ -9,6 +9,9 @@ const status = document.getElementById('ai-settings-status');
 const providerMessage = document.getElementById('agent-provider-message');
 const next = document.getElementById('ai-next-step');
 const open = document.getElementById('ai-open-agent');
+// Page tools (WebMCP) are decided once per launch (main/agent/webmcp-launch.js),
+// so turning AI on here offers the same restart the title-bar row does (#803).
+const restart = document.getElementById('enable-ai-restart');
 let enabled = false;
 let revision = 0;
 let pending = false;
@@ -129,18 +132,28 @@ async function refresh() {
   if (!enabled || location.hash.slice(1).split('/')[0].toLowerCase() !== 'ai') return;
   const current = ++revision;
   if (location.hash.toLowerCase().startsWith('#ai/voice')) void dictation.refresh();
-  if (!loaded) {
+  // This call's own outcome, not `loaded`: a provider change arriving while it
+  // awaits clears `loaded` for the next visit, which is not a failure to load.
+  let catalogReady = loaded;
+  if (!catalogReady) {
     providerUi.invalidateCatalog();
     status.textContent = 'Loading providers…';
     providerMessage.textContent = status.textContent;
-    await providerUi.loadProviderCatalog();
-    if (current !== revision || !enabled) return;
-    loaded = providerUi.state.providerCatalog.length > 0;
+    // That same change invalidates a load in flight (a provider page opened on
+    // a day-old catalog refreshes it in the background), so the load comes
+    // back empty without having failed. Load again before calling it a
+    // failure (#803).
+    for (let attempt = 0; attempt < 3 && !catalogReady; attempt += 1) {
+      await providerUi.loadProviderCatalog();
+      if (current !== revision || !enabled) return;
+      catalogReady = providerUi.state.providerCatalog.length > 0;
+    }
+    loaded = catalogReady;
   }
   await providerUi.refreshProvider();
   if (current !== revision || !enabled) return;
-  status.textContent = loaded ? '' : 'Could not load providers. Open AI settings again to retry.';
-  if (!loaded || providerMessage.textContent === 'Loading providers…')
+  status.textContent = catalogReady ? '' : 'Could not load providers. Open AI settings again to retry.';
+  if (!catalogReady || providerMessage.textContent === 'Loading providers…')
     providerMessage.textContent = status.textContent;
   renderRoute();
 }
@@ -157,6 +170,7 @@ function apply(settings) {
   note.hidden = enabled;
   updateNext(providerUi.state.providerStatus);
   if (!enabled) {
+    restart.hidden = true;
     dictation.cancel();
     revision += 1;
     loaded = false;
@@ -175,6 +189,7 @@ toggle.addEventListener('change', async () => {
   try {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
     apply(await api.getSettings());
+    restart.hidden = !requested;
     if (!requested) status.textContent = 'AI is off. Chats, connections and projects are kept.';
   } catch {
     toggle.checked = enabled;
@@ -184,6 +199,7 @@ toggle.addEventListener('change', async () => {
     toggle.disabled = false;
   }
 });
+restart.addEventListener('click', () => api.relaunchApp());
 open.addEventListener('click', async () => {
   if (!enabled) return;
   const response = await api.openAgent();

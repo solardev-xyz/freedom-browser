@@ -6,7 +6,7 @@ const os = require('os');
 const { createHash, randomUUID } = require('crypto');
 const { execFile } = require('child_process');
 const { dictationError } = require('./dictation-service');
-const { WHISPER_VERSION, WHISPER_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, SUPPORTED_TARGETS } = require('../../shared/dictation-runtime');
+const { WHISPER_VERSION, WHISPER_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, MODEL_NAME, SUPPORTED_TARGETS } = require('../../shared/dictation-runtime');
 
 const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 // An install's staging directory cannot outlive its download deadline by this
@@ -190,7 +190,7 @@ class LocalDictation {
     try {
       const ready = path.join(stage, 'ready');
       await fs.promises.mkdir(ready, { mode: 0o700 });
-      await this.download(MODEL_URL, MODEL_SHA256, path.join(ready, 'ggml-base.bin'), signal, progress, 'Downloading multilingual Whisper');
+      await this.download(MODEL_URL, MODEL_SHA256, path.join(ready, 'ggml-base.bin'), signal, progress, `Downloading ${MODEL_NAME}`);
       await fs.promises.copyFile(path.join(__dirname, 'dictation-local-notices.txt'), path.join(ready, 'NOTICES.txt'));
       signal.throwIfAborted();
       await fs.promises.writeFile(path.join(ready, 'installed.json'), JSON.stringify({ modelSha256: MODEL_SHA256 }), { mode: 0o600 });

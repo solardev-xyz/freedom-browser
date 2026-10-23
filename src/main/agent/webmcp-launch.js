@@ -16,4 +16,17 @@ function webMcpBlinkFeatures(settings) {
   return settings?.enableAi === true ? 'WebMCP' : null;
 }
 
-module.exports = { webMcpBlinkFeatures };
+// What this launch actually decided, so page-tool discovery can say "restart
+// Freedom" instead of a bare available=false when AI was turned on after
+// launch (#803). null until main/index.js records it (tests, other hosts).
+let enabledAtLaunch = null;
+
+function recordWebMcpLaunch(features) {
+  enabledAtLaunch = Boolean(features);
+}
+
+function webMcpEnabledAtLaunch() {
+  return enabledAtLaunch;
+}
+
+module.exports = { webMcpBlinkFeatures, recordWebMcpLaunch, webMcpEnabledAtLaunch };

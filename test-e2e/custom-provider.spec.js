@@ -125,3 +125,44 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Keyless fixture');
   } finally { releaseTool?.(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
+
+// #803: "Model catalog refreshed" used to stay at the foot of a provider page
+// for good, including after a refresh nobody asked for.
+test('a catalog refresh reports itself only when asked for, and only briefly', async ({ window }) => {
+  const modelRequests = [];
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/models')) modelRequests.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'fast' }] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const providerPage = await openProviderSettings(window);
+    const message = providerPage.locator('#agent-provider-message');
+    await providerPage.locator('#agent-provider-add').click();
+    await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
+    await providerPage.locator('#agent-custom-name').fill('Refresh fixture');
+    await providerPage.locator('#agent-custom-url').fill(`http://127.0.0.1:${server.address().port}/v1`);
+    await providerPage.locator('#agent-custom-models').fill('manual-model');
+    await providerPage.locator('#agent-provider-save').click();
+    await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
+
+    // A clicked refresh says so, then the line clears itself.
+    await providerPage.locator('#agent-model-refresh').click();
+    await expect(message).toHaveText('Model catalog refreshed');
+    expect(modelRequests).toHaveLength(1);
+    await expect(message).toHaveText('', { timeout: 8000 });
+
+    // Opening the page on a day-old catalog refreshes it in the background,
+    // with no status line before, during or after.
+    await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
+    await providerPage.evaluate(() => {
+      const now = Date.now;
+      Date.now = () => now() + 2 * 24 * 60 * 60 * 1000;
+    });
+    await providerPage.locator('#agent-connected-provider-list').getByRole('button', { name: /Refresh fixture/ }).click();
+    await expect.poll(() => modelRequests.length).toBe(2);
+    await expect(providerPage.locator('#agent-model-refresh')).toBeEnabled();
+    await expect(message).toHaveText('');
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
