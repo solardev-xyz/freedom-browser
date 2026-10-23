@@ -41,6 +41,8 @@ const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, get
 const {
   publishChunk,
   readChunk,
+  readDataRoot,
+  readData,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
 } = require('./chunk-service');
@@ -52,6 +54,7 @@ const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
 const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
+const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
 
@@ -143,6 +146,7 @@ const KNOWN_METHODS = [
   'swarm_listFeeds',
   'swarm_publishChunk',
   'swarm_readChunk',
+  'swarm_readData',
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
@@ -293,12 +297,39 @@ function consumePermissionFreeReadBudget(origin, { requests = 0, bytes = 0 } = {
   permissionFreeReadBuckets.set(origin, bucket);
 
   if (bucket.requests > budget.maxRequests || bucket.bytes > budget.maxBytes) {
-    return invalidParams('Permission-free read budget exceeded', 'rate_limited', {
-      windowMs: budget.windowMs,
-      maxRequests: budget.maxRequests,
-      maxBytes: budget.maxBytes,
-    });
+    return readBudgetExceeded(budget);
   }
+  return null;
+}
+
+function readBudgetExceeded(budget) {
+  return invalidParams('Permission-free read budget exceeded', 'rate_limited', {
+    windowMs: budget.windowMs,
+    maxRequests: budget.maxRequests,
+    maxBytes: budget.maxBytes,
+  });
+}
+
+/**
+ * Reserve `bytes` of the origin's current read window up front, or refuse
+ * without reserving anything. Unlike consumePermissionFreeReadBudget, which
+ * charges after the fact, the check and the charge happen in one synchronous
+ * step, so concurrent reads cannot all pass a "does it still fit" check and
+ * then each pay for a download only one of them may return.
+ */
+function reservePermissionFreeReadBytes(origin, bytes) {
+  const budget = getReadBudget(origin);
+  const now = Date.now();
+  const existing = permissionFreeReadBuckets.get(origin);
+  const bucket = existing && now - existing.startedAt < budget.windowMs
+    ? existing
+    : { startedAt: now, requests: 0, bytes: 0 };
+
+  if (bucket.bytes + bytes > budget.maxBytes) {
+    return readBudgetExceeded(budget);
+  }
+  bucket.bytes += bytes;
+  permissionFreeReadBuckets.set(origin, bucket);
   return null;
 }
 
@@ -336,6 +367,10 @@ async function executeSwarmMethod(method, params, origin, meta) {
 
     if (method === 'swarm_readChunk') {
       return handleReadChunk(params, normalizedOrigin);
+    }
+
+    if (method === 'swarm_readData') {
+      return handleReadData(params, normalizedOrigin);
     }
 
     if (method === 'swarm_readSingleOwnerChunk') {
@@ -860,6 +895,75 @@ async function handleReadChunk(params, origin) {
 }
 
 /**
+ * Handle swarm_readData: permission-free read of a whole blob, joined by the
+ * node. One request against the read budget, like swarm_readChunk, and bytes
+ * against the shared byte budget. The root chunk is charged as soon as it is
+ * read, whatever happens next. A blob larger than the origin's whole byte
+ * budget can never be returned, so it is refused with data_too_large from the
+ * root chunk's span, before the node joins it. A blob that does not fit in
+ * its root chunk has its full size reserved before the join, atomically, so
+ * concurrent reads cannot each start a join the window has no room for; one
+ * that does not fit what is left is rate_limited without downloading. The
+ * reservation stands if the join then fails, since the node may already have
+ * fetched most of it. A reservation is charged to the window it was made in;
+ * when the window resets, a join still running from the old window no longer
+ * counts, so the bound is bytes started per window, not bytes in flight.
+ */
+async function handleReadData(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  // 32 bytes only: an encrypted reference (64 bytes, 128 hex) is refused here
+  // too, as Freedom does not decrypt blobs for pages yet.
+  const referenceError = validateHexString(params.reference, 32, 'invalid_reference', 'reference');
+  if (referenceError) return referenceError;
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const root = await readDataRoot(params.reference);
+    // The root chunk came off the network: charge it before any refusal.
+    const rootBudgetError = consumePermissionFreeReadBudget(origin, { bytes: root.chunkBytes });
+
+    const budget = getReadBudget(origin);
+    if (root.size > BigInt(budget.maxBytes)) {
+      const actual = root.size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(root.size) : root.size;
+      return invalidParams(
+        `Data exceeds the maximum read size of ${budget.maxBytes} bytes`,
+        'data_too_large',
+        { limit: budget.maxBytes, actual }
+      );
+    }
+    if (rootBudgetError) return rootBudgetError;
+
+    // A blob held in its root chunk is that chunk's payload: already paid
+    // for. A larger one is charged its size in all (the root counts towards
+    // it), reserved now, before the node joins it.
+    const size = Number(root.size);
+    if (size > root.chunkBytes) {
+      const reserveError = reservePermissionFreeReadBytes(origin, size - root.chunkBytes);
+      if (reserveError) return reserveError;
+    }
+
+    const result = await readData(params.reference, root);
+    return { result };
+  } catch (err) {
+    log.error(`[SwarmProvider] readData failed for ${origin}:`, err.message);
+    return mapChunkReadError(err);
+  }
+}
+
+/**
  * Handle swarm_writeSingleOwnerChunk: sign and publish an SOC.
  */
 async function handleWriteSingleOwnerChunk(params, origin) {
@@ -1053,6 +1157,17 @@ function resolveSignerKey(identity) {
 }
 
 /**
+ * The removed mode's refusal (#89), for the identity a write would sign
+ * with: checked before node readiness, so a stopped node can't mask it.
+ * Reads the stored mode only; no key or address is derived.
+ * @returns {Object|null} the error response, or null
+ */
+function unavailableIdentityError(identity) {
+  if (getIdentityMode(identity) !== ETHEREUM_WALLET_MODE) return null;
+  return { error: { ...ERRORS.INTERNAL_ERROR, message: ETHEREUM_WALLET_UNAVAILABLE } };
+}
+
+/**
  * Handle swarm_getSigningIdentity: disclose origin signing address after
  * connection + feed/signing grant. Does not require Bee node readiness.
  */
@@ -1119,12 +1234,15 @@ async function handleCreateFeed(params, origin) {
     };
   }
 
+  const activeIdentity = getActiveOriginIdentity(originEntry);
+  const unavailable = unavailableIdentityError(activeIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
-  const activeIdentity = getActiveOriginIdentity(originEntry);
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);
@@ -1203,13 +1321,16 @@ async function handleUpdateFeed(params, origin) {
     return { error: { ...ERRORS.INVALID_PARAMS, message: `Feed not found: ${feedId}`, data: { reason: 'feed_not_found' } } };
   }
 
+  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
+  const unavailable = unavailableIdentityError(feedIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
   let signerKey;
-  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
     signerKey = await resolveSignerKey(feedIdentity);
   } catch (err) {
@@ -1293,13 +1414,16 @@ async function handleWriteFeedEntry(params, origin) {
     return { error: { ...ERRORS.INVALID_PARAMS, message: `Feed not found: ${name}. Create it with createFeed first.`, data: { reason: 'feed_not_found' } } };
   }
 
+  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
+  const unavailable = unavailableIdentityError(feedIdentity);
+  if (unavailable) return unavailable;
+
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
   let signerKey;
-  const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
     signerKey = await resolveSignerKey(feedIdentity);
   } catch (err) {

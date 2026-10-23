@@ -88,4 +88,6 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request. It explains issue scope, local verification, commit conventions, licensing, and the policy for AI-assisted contributions.
 
+For questions, ideas, or to talk through a larger change before you build it, join the [Freedom Browser Telegram group](https://t.me/freedom_browser).
+
 Freedom Browser is available under the [Mozilla Public License 2.0](LICENSE). Third-party notices are recorded in [NOTICES](NOTICES).

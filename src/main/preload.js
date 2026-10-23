@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolveEnsAddress: (name, chainId = 1) => ipcRenderer.invoke('ens:resolve-address', { name, chainId }),
   resolveEnsReverse: (address, chainId = 1) => ipcRenderer.invoke('ens:resolve-reverse', { address, chainId }),
   invalidateEnsContent: (name) => ipcRenderer.invoke('ens:invalidate-content', { name }),
+  getGatewayOffer: (url) => ipcRenderer.invoke('gateway:offer', { url }),
   getOnchainAppProvenance: (webContentsId, url) =>
     ipcRenderer.invoke('onchain-app:get-provenance', { webContentsId, url }),
   resolveTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:resolve', { name }),
@@ -560,6 +561,10 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:intent-replacement-fees', intentId),
   intentReplace: (intentId, fees, authorization) =>
     ipcRenderer.invoke('wallet:intent-replace', intentId, fees, authorization),
+  // Close by hand a held payment shown as Couldn't confirm: `authorization`
+  // is an 'intent-close' confirmation of the payment and its hashes.
+  intentClose: (intentId, authorization) =>
+    ipcRenderer.invoke('wallet:intent-close', intentId, authorization),
   onIntentsChanged: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('wallet:intents-changed', handler);
@@ -572,8 +577,9 @@ contextBridge.exposeInMainWorld('wallet', {
 
   // dApp-specific operations (use specific wallet index)
   // `authorization` is `{ confirmation }` (see confirmSigning) or
-  // `{ autoApprove: permissionKey }`, which main checks against the site's
-  // stored auto-approve policy itself.
+  // `{ autoApprove: permissionKey, webContentsId }`, which main honours only
+  // when that requesting guest's own page belongs to `permissionKey` and the
+  // site's stored auto-approve policy covers the request (#764).
   dappSendTransaction: (params, walletIndex, context, authorization) =>
     ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context, authorization),
   signMessage: (message, walletIndex, authorization) =>

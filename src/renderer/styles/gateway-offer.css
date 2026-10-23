@@ -1,0 +1,169 @@
+/* "Open without gateway" pill and popover (#70). The pill sits at the right
+   end of the address bar, left of the indicator icons; the popover reuses
+   .permission-popover's chrome and the permission prompt's checkbox and
+   buttons (permissions.css), anchored under the pill by gateway-offer-ui.js. */
+
+.gateway-offer-pill {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  /* Left of the bookmark star, like the permission indicator. */
+  right: 36px;
+  height: 24px;
+  margin: 0;
+  padding: 0 10px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  /* The label is short and fixed; it never wraps under the address text. */
+  white-space: nowrap;
+  cursor: default;
+  z-index: 2;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.gateway-offer-pill.hidden {
+  display: none;
+}
+
+.gateway-offer-pill:hover,
+.gateway-offer-pill[aria-expanded='true'] {
+  /* theme-literal: neutral hover tint; the light override is the rule below */
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='light'] .gateway-offer-pill:hover,
+[data-theme='light'] .gateway-offer-pill[aria-expanded='true'] {
+  /* theme-literal: the light half of the pair above */
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Shift left past whichever indicator icons are showing (30px each). */
+.address-wrapper:has(.permission-indicator:not(.hidden)) .gateway-offer-pill,
+.address-wrapper:has(.popup-blocked-indicator:not(.hidden)) .gateway-offer-pill {
+  right: 66px;
+}
+
+.address-wrapper:has(.permission-indicator:not(.hidden)):has(.popup-blocked-indicator:not(.hidden))
+  .gateway-offer-pill {
+  right: 96px;
+}
+
+/* Keep the URL text clear of the pill. */
+.address-wrapper:has(.gateway-offer-pill:not(.hidden)) .address-input {
+  padding-right: 214px;
+}
+
+.address-wrapper:has(.gateway-offer-pill:not(.hidden)):has(.permission-indicator:not(.hidden))
+  .address-input,
+.address-wrapper:has(.gateway-offer-pill:not(.hidden)):has(.popup-blocked-indicator:not(.hidden))
+  .address-input {
+  padding-right: 244px;
+}
+
+/* A narrow window keeps the pill as its icon alone; the tooltip and the
+   accessible name still say what it does and where it goes. */
+@media (max-width: 760px) {
+  .gateway-offer-pill-label {
+    display: none;
+  }
+
+  .gateway-offer-pill {
+    padding: 0 5px;
+  }
+
+  .address-wrapper:has(.gateway-offer-pill:not(.hidden)) .address-input {
+    padding-right: 74px;
+  }
+}
+
+/* The target protocol's glyph, a copy of the address bar's protocol icon. */
+.gateway-offer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.gateway-offer-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.gateway-offer-icon[data-protocol='swarm'] svg {
+  /* theme-literal: Swarm's brand orange, the protocol glyph's identity, as in the protocol icon */
+  fill: #f7931a;
+}
+
+.gateway-offer-popover {
+  width: 320px;
+}
+
+.gateway-offer-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.gateway-offer-heading .gateway-offer-icon,
+.gateway-offer-heading .gateway-offer-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.gateway-offer-heading .permission-popover-title {
+  margin-bottom: 0;
+  word-break: break-word;
+}
+
+/* The destination is what the user decides on: shown whole, wrapped. */
+.gateway-offer-destination {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+  margin-bottom: 8px;
+}
+
+.gateway-offer-explanation {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-word;
+  margin-bottom: 12px;
+}
+
+/* The same "always" setting at the foot of the trust popover, below a
+   divider like the popover's own sections. */
+.trust-popover-gateway {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: default;
+  user-select: none;
+}
+
+.trust-popover-gateway[hidden] {
+  display: none !important;
+}
+
+.trust-popover-gateway input {
+  margin: 0;
+  accent-color: var(--accent);
+}

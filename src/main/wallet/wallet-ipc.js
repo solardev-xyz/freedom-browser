@@ -4,7 +4,7 @@
  * Registers IPC handlers for wallet operations.
  */
 
-const { ipcMain } = require('electron');
+const { ipcMain, webContents } = require('electron');
 const QRCode = require('qrcode');
 const { getAllBalances, getBalancesWithCache, clearBalanceCache } = require('./balance-service');
 const { getChain, getAllChains } = require('./chains');
@@ -42,7 +42,8 @@ const {
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
 const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
-const { normalizeOrigin } = require('../../shared/origin-utils');
+const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
+const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -202,24 +203,100 @@ function isDappSigningAutoApproved(permissionKey, walletIndex) {
 }
 
 /**
+ * True only when `webContentsId` names a live `<webview>` guest of the
+ * chrome window that sent this IPC (`sender`) and that guest's committed
+ * page belongs to `permissionKey` (#764).
+ *
+ * The renderer names the site whose auto-approve rules it wants applied,
+ * but the site is a renderer-side derivation; a wrong one (the visible tab
+ * answering for a background tab's request) must not borrow another
+ * site's rules. The guest's own URL is the independent cross-check, the
+ * same one swarm-provider-ipc.js uses: dweb pages keep their dweb URL
+ * (`bzz://name.eth/…` keys to `name.eth`), and an onchain app's internal
+ * `web3://0x….eip155-<chainId>/` form keys to the same `web3://0x…[:id]`
+ * key its standard display form does. A DNS-named ENS site over IPNS is
+ * the one case whose page URL does not carry its name (see
+ * `dnsNameServesIpnsGuest`). Anything unattributable — no id, a destroyed
+ * guest, another window's guest, a page that has since navigated to
+ * another site — is refused.
+ */
+async function requesterBelongsTo(sender, webContentsId, permissionKey) {
+  if (!Number.isInteger(webContentsId) || typeof permissionKey !== 'string' || !permissionKey) {
+    return false;
+  }
+  let contents;
+  try {
+    contents = webContents.fromId(webContentsId);
+  } catch {
+    return false;
+  }
+  const guestKey = () => {
+    if (!contents || contents.isDestroyed?.()) return null;
+    if (!Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id) return null;
+    try {
+      return normalizeOrigin(contents.getURL()) || null;
+    } catch {
+      return null;
+    }
+  };
+  const key = guestKey();
+  if (!key) return false;
+  if (key === permissionKey) return true;
+  if (!(await dnsNameServesIpnsGuest(permissionKey, key))) return false;
+  // The resolution awaited; the guest must still be on the same page.
+  return guestKey() === key;
+}
+
+/**
+ * A DNS name with an ENS contenthash (`example.com`, displayed
+ * `ens://example.com`) cannot load as `ipns://example.com` — that form
+ * means DNSLink — so its page loads as `ipns://<key>` while the renderer
+ * keys it on the name, the same key the address bar always gave it. Main
+ * accepts the name for that guest only when its own ENS resolution of the
+ * name answers that exact IPNS key: the resolver's base58 form, or the
+ * libp2p-key base36 form the renderer canonicalises it to before loading
+ * (exact comparison — a case-folded base58 host is a different key).
+ */
+async function dnsNameServesIpnsGuest(permissionKey, guestKey) {
+  const host = /^ipns:\/\/([^/?#]+)$/.exec(guestKey)?.[1];
+  if (!host) return false;
+  if (permissionKey.includes('://') || isDwebNameHost(permissionKey) || !isPotentialEnsName(permissionKey)) {
+    return false;
+  }
+  let result;
+  try {
+    result = await require('../ens-resolver').resolveEnsContent(permissionKey);
+  } catch {
+    return false;
+  }
+  if (result?.type !== 'ok' || result.protocol !== 'ipns' || !result.decoded) return false;
+  return host === result.decoded || host === ipnsMhToCidV1Base36(result.decoded);
+}
+
+/**
  * Gate every signing handler (security audit O-7). A request is signed
  * only when the caller presents
  *   - `{ confirmation }`: a token main issued through
  *     `wallet:confirm-signing` for exactly this request (single use,
  *     short-lived — see signing-confirmation.js), or
- *   - `{ autoApprove: permissionKey }`: and main's own reading of that
- *     dApp's stored auto-approve policy covers this request
- *     (`autoApproveCheck`, absent where auto-approve doesn't exist).
+ *   - `{ autoApprove: permissionKey, webContentsId }`: the requesting
+ *     page's guest webContents actually belongs to `permissionKey`
+ *     (`requesterBelongsTo`, #764), and main's own reading of that dApp's
+ *     stored auto-approve policy covers this request (`autoApproveCheck`,
+ *     absent where auto-approve doesn't exist).
  * Anything else throws SIGNING_NOT_CONFIRMED before a key is touched.
  *
- * @returns {'confirmed'|'auto-approved'}
+ * @returns {Promise<'confirmed'|'auto-approved'>}
  */
-function authorizeSigning(authorization, kind, accountIndex, payload, autoApproveCheck) {
+async function authorizeSigning(authorization, kind, accountIndex, payload, autoApproveCheck, sender = null) {
   if (authorization?.confirmation) {
     consumeConfirmation(authorization.confirmation, kind, accountIndex, payload);
     return 'confirmed';
   }
   if (authorization?.autoApprove !== undefined && autoApproveCheck) {
+    if (!(await requesterBelongsTo(sender, authorization.webContentsId, authorization.autoApprove))) {
+      throw notAuthorized('the requesting page does not belong to the site whose auto-approve rules were named');
+    }
     if (autoApproveCheck(authorization.autoApprove)) {
       return 'auto-approved';
     }
@@ -228,7 +305,14 @@ function authorizeSigning(authorization, kind, accountIndex, payload, autoApprov
   throw notAuthorized('no confirmation token');
 }
 
-async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
+async function handleSendTransaction(
+  walletIndex,
+  params,
+  kind,
+  context = {},
+  authorization = null,
+  sender = null
+) {
   // A dApp send's turn among its site's sends (auto-approve-pause.js), left
   // once its payment is committed, or here when it fails first.
   let release = null;
@@ -242,12 +326,13 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     const confirmKind = dapp ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
     // A dApp send is confirmed for, and recorded under, its site.
     const site = dapp ? dappSendSite(context, authorization) : undefined;
-    const how = authorizeSigning(
+    const how = await authorizeSigning(
       authorization,
       confirmKind,
       walletIndex,
       dapp ? { ...tx, origin: site } : tx,
-      dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null
+      dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null,
+      sender
     );
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
@@ -539,17 +624,18 @@ function registerWalletIpc() {
 
   // Renderer threads the dapp's permissionKey through as context.origin
   // so payment-history rows match the x402 permission store's keying.
-  ipcMain.handle('wallet:dapp-send-transaction', (_event, params, walletIndex, context, authorization) =>
-    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization));
+  ipcMain.handle('wallet:dapp-send-transaction', (event, params, walletIndex, context, authorization) =>
+    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization, event?.sender));
 
   // Sign a personal message (EIP-191) for a dApp
-  ipcMain.handle('wallet:sign-message', async (_event, message, walletIndex, authorization) => {
+  ipcMain.handle('wallet:sign-message', async (event, message, walletIndex, authorization) => {
     try {
       if (!message) {
         return { success: false, error: 'Message is required' };
       }
-      authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, (key) =>
-        isAutoApprovableMessage('personal_sign', message) && isDappSigningAutoApproved(key, walletIndex));
+      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, (key) =>
+        isAutoApprovableMessage('personal_sign', message) && isDappSigningAutoApproved(key, walletIndex),
+      event?.sender);
 
       const signature = await getSigner(walletIndex).signMessage(message);
 
@@ -562,7 +648,7 @@ function registerWalletIpc() {
 
   // Sign typed data (EIP-712) for a dApp. `context.chainId` is the dApp's
   // active chain, which an auto-approved request's view compares (#88).
-  ipcMain.handle('wallet:sign-typed-data', async (_event, typedData, walletIndex, authorization, context) => {
+  ipcMain.handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization, context) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
@@ -578,13 +664,15 @@ function registerWalletIpc() {
         ));
       } else {
         // A request with a warning always shows its prompt, even under
-        // auto-approve (#88): only an unwarned view is auto-signed.
+        // auto-approve (#88): only an unwarned view is auto-signed, for a
+        // requesting page that belongs to the site (#764).
         const viewed =
           authorization?.autoApprove !== undefined
             ? await typedDataViewFor(typedData, context?.chainId)
             : null;
-        authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
-          viewed !== null && viewed.warnings.length === 0 && isDappSigningAutoApproved(key, walletIndex));
+        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
+          viewed !== null && viewed.warnings.length === 0 && isDappSigningAutoApproved(key, walletIndex),
+        event?.sender);
         expectedHash = viewed.hash;
       }
 
@@ -652,7 +740,7 @@ function registerWalletIpc() {
 
   ipcMain.handle(
     'wallet:safe-send',
-    safeStateHandler((safeIndex, tx, display, chainId, authorization) => {
+    safeStateHandler(async (safeIndex, tx, display, chainId, authorization) => {
       // Creating the SafeTx is the confirmation point: it silently collects
       // the vault owners' signatures, and every later board step
       // (safe-sign, safe-execute) only acts on this main-held, confirmed
@@ -662,7 +750,7 @@ function registerWalletIpc() {
       // payment is recorded under that site and takes the site's turn
       // (D12), so the token binds it. A wallet's own SafeTx has none.
       const site = display?.site ?? undefined;
-      authorizeSigning(
+      await authorizeSigning(
         authorization,
         CONFIRM_KINDS.SAFE_SEND,
         safeIndex,
@@ -722,13 +810,13 @@ function registerWalletIpc() {
   // session is bound to its requesting page: start takes the requester
   // identity and returns a per-session token that every other call must
   // present.
-  ipcMain.handle(
-    'wallet:safe-message-start',
+  ipcMain.handle('wallet:safe-message-start', (event, ...args) =>
     safeStateHandler(async (safeIndex, request, display, requester, authorization) => {
       // Same confirmation point as safe-send; follow-up calls are bound to
       // the session token this returns. A dApp's signing auto-approve is
-      // evaluated here, in main. A Safe signs on Gnosis only, so that is
-      // the chain a typed-data request's view compares (#88).
+      // evaluated here, in main — for the page the session is bound to only.
+      // A Safe signs on Gnosis only, so that is the chain a typed-data
+      // request's view compares (#88).
       const { startSafeMessage } = require('./safe/safe-messages');
       const { DEPLOY_CHAIN_ID } = require('./safe/safe-service');
       const viewed =
@@ -737,13 +825,14 @@ function registerWalletIpc() {
         request?.method === 'eth_signTypedData_v4'
           ? await typedDataViewFor(request.params?.[1], DEPLOY_CHAIN_ID)
           : null;
-      authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
+      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
         key === (requester?.origin ?? null) &&
+          authorization.webContentsId === (requester?.webContentsId ?? null) &&
           isAutoApprovableMessage(request?.method, request?.params?.[0]) &&
           (viewed === null || viewed.warnings.length === 0) &&
-          isDappSigningAutoApproved(key, safeIndex));
+          isDappSigningAutoApproved(key, safeIndex), event?.sender);
       return startSafeMessage({ safeIndex, request, display, requester });
-    })
+    })(event, ...args)
   );
 
   ipcMain.handle(

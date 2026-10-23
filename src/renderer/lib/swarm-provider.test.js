@@ -128,14 +128,15 @@ describe('renderer Swarm manifest freshness gate', () => {
     });
   });
 
-  test('public reads bypass manifest discovery', async () => {
+  test.each(['swarm_readChunk', 'swarm_readData'])('public read %s bypasses manifest discovery', async (method) => {
     window.swarmProvider.execute.mockResolvedValue({ result: { data: 'public' } });
     const webview = setUp(setupSwarmProvider);
 
-    sendRequest(webview, { id: 2, method: 'swarm_readChunk', params: { reference: 'abc' } });
+    sendRequest(webview, { id: 2, method, params: { reference: 'abc' } });
     await flush();
 
     expect(window.swarmManifest.check).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(method, { reference: 'abc' }, expect.any(String));
     expect(webview.send).toHaveBeenCalledWith('swarm:provider-response', {
       id: 2,
       result: { data: 'public' },

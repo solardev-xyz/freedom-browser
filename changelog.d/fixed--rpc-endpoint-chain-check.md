@@ -1,0 +1,1 @@
+- An RPC endpoint is used for a chain only once it answers that chain's ID, and an endpoint that serves another chain can't be saved for it ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))

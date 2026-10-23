@@ -47,6 +47,10 @@
  *     value, data, gasLimit) and the new fees. The handler takes the
  *     payment from main's record and only the fees from the caller
  *     (`wallet:intent-replace`).
+ *   - intent-close: a held intent shown as Couldn't confirm, closed by
+ *     hand: its id, chainId, sender, nonce and every hash it was signed
+ *     as, in order (the revision the user saw). Nothing is signed; the
+ *     handler builds the binding from main's record (`wallet:intent-close`).
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
@@ -71,7 +75,11 @@ const KINDS = Object.freeze({
   SAFE_MESSAGE: 'safe-message',
   INTENT_RESEND: 'intent-resend',
   INTENT_REPLACE: 'intent-replace',
+  INTENT_CLOSE: 'intent-close',
 });
+// The most hashes an intent-close binds: above the intent store's bound on
+// an intent's signatures (LIMITS.hashesPerIntent).
+const MAX_CLOSE_HASHES = 64;
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
 
@@ -264,6 +272,21 @@ function bindingFor(kind, accountIndex, payload) {
         sender,
         nonce: nonce(payload?.nonce),
         ...txFields(payload),
+      };
+    }
+    case KINDS.INTENT_CLOSE: {
+      const sender = address(payload?.sender, 'sender');
+      if (!sender) throw new Error('Invalid sender');
+      const hashes = payload?.hashes;
+      if (!Array.isArray(hashes) || hashes.length === 0 || hashes.length > MAX_CLOSE_HASHES) {
+        throw new Error('Invalid hashes');
+      }
+      return {
+        intentId: intentId(payload?.intentId),
+        chainId: chain(payload?.chainId),
+        sender,
+        nonce: nonce(payload?.nonce),
+        hashes: hashes.map(txHash),
       };
     }
     case KINDS.SAFE_MESSAGE:

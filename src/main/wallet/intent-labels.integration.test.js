@@ -66,6 +66,7 @@ const OTHER = `0x${'ee'.repeat(32)}`;
 const A = 'https://a.example';
 const B = 'https://b.example';
 const X = 'https://x.example';
+const PROVER = 'https://prover.example';
 
 describeIfChain('finality labels over a real core quorum (#712 review)', () => {
   let root;
@@ -84,18 +85,22 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
    * A ready core reading chain 1 through a k=3, m=2 quorum over A, B and X.
    * `mode.b` names B's view; `mode.x(route)` the view X copies for a read;
    * `mode.slow(url, route)` the endpoints that answer late for a read, so
-   * the other two agree first.
+   * the other two agree first. With `colibri`, main's Colibri adapter
+   * answers the core's Colibri operations (design 0005, Verified
+   * operations), for a chain with a prover when `prover` is set and
+   * Colibri is in `readOrder`.
    */
-  async function start(chain, mode) {
+  async function start(chain, mode, { readOrder = ['quorum'], prover = false, colibri } = {}) {
     const registry = {
       getAllNetworks: () => ({
         1: {
           name: 'Ethereum',
-          access: { readOrder: ['quorum'], broadcastOrder: ['direct'] },
+          access: { readOrder, broadcastOrder: ['direct'] },
           quorum: { k: 3, m: 2, timeoutMs: 5000 },
         },
       }),
-      getEndpoints: (_chainId, role) => (role === 'rpc' ? [A, B, X] : []),
+      getEndpoints: (_chainId, role) =>
+        role === 'rpc' ? [A, B, X] : role === 'prover' && prover ? [PROVER] : [],
       getEndpointSources: () => [],
       getEndpointSourceList: () => [],
     };
@@ -118,6 +123,8 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
       client,
       sources: { registry, myotis: { NETWORKS: new Map() }, logIndexUrls: {} },
       log: quietLog,
+      // The endpoints are scripted: none is asked its chain.
+      checks: null,
     });
     const broadcasts = new BroadcastRecords();
     const fetch = async (url, init) => {
@@ -139,7 +146,10 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
       });
     };
     registerChainShell(client, config, { broadcasts, hop: makeHop({ fetch }) });
-    registerChainVerified(client, config, { broadcasts, adapters: {} });
+    registerChainVerified(client, config, {
+      broadcasts,
+      adapters: colibri ? { colibriRequest: colibri } : {},
+    });
     const driver = new ChainDriver({ client, config, broadcasts });
     await client.start();
     await config.whenServing();
@@ -362,5 +372,118 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
     expect(again.intentId).toBe(original.intentId);
     expect(signer.signTransaction).not.toHaveBeenCalled();
     expect(mockBroadcast.mock.calls.map(([, bytes]) => Transaction.from(bytes).nonce)).toEqual([7]);
+  });
+
+  // freedom-core design 0005, "State history" (#94): each endpoint serves
+  // state 128 blocks below its head; Colibri, where the chain has a prover
+  // and Colibri is in the read order, answers deeper through main's
+  // adapter. Finalized block 3000, 100 below the head.
+  describe('state history: Colibri and the window (#94)', () => {
+    const intent = {
+      intentId: 'review-0094',
+      chainId: 1,
+      sender: SENDER,
+      nonce: 7,
+      hashes: [{ hash: `0x${'aa'.repeat(32)}` }],
+    };
+    const honest = { b: 'canonical', x: () => 'canonical' };
+    const takenAt = (at) =>
+      fakeFinalityChain({
+        sender: SENDER,
+        startNonce: 7,
+        txs: { [at]: [{ hash: OTHER, nonce: 7 }] },
+        head: 3100,
+        finalized: 3000,
+        stateWindow: 128,
+      });
+    // Main's Colibri adapter, proving `proves` at any depth; any other
+    // method fails, as one Colibri doesn't prove does.
+    const colibriProving = (chain, proves) =>
+      jest.fn(async (_chainId, method, params) => {
+        if (!proves.has(method)) throw new Error(`${method} is not proven`);
+        return chain.prove(method, params);
+      });
+    const ALL = new Set([
+      'eth_getBlockByNumber',
+      'eth_getBlockByHash',
+      'eth_getTransactionCount',
+      'eth_getTransactionReceipt',
+    ]);
+
+    test("with a prover and Colibri proving the reads, the search reaches a block beyond the endpoints' window", async () => {
+      const chain = takenAt(2700);
+      const colibri = colibriProving(chain, ALL);
+      const { request, replies } = await start(chain, honest, {
+        readOrder: ['colibri', 'quorum'],
+        prover: true,
+        colibri,
+      });
+      await expect(readLabel(intent, { request })).resolves.toMatchObject({
+        label: LABELS.TAKEN,
+        block: 3000,
+      });
+      const counts = replies.filter(({ method }) => method === 'eth_getTransactionCount');
+      expect(counts.length).toBeGreaterThan(1);
+      for (const { reply } of counts) {
+        expect(reply).toMatchObject({ source: 'colibri', trust: { level: 'verified' } });
+      }
+      expect(colibri).toHaveBeenCalled();
+    });
+
+    test("with no prover, Colibri out of the order or failing, or a nonce read it doesn't prove, the reads fall to the quorum, within the window", async () => {
+      const cases = [
+        {
+          name: 'no prover',
+          options: (chain) => ({
+            readOrder: ['colibri', 'quorum'],
+            colibri: colibriProving(chain, ALL),
+          }),
+        },
+        {
+          name: 'out of the order',
+          options: (chain) => ({ prover: true, colibri: colibriProving(chain, ALL) }),
+        },
+        {
+          name: 'failing',
+          options: (chain) => ({
+            readOrder: ['colibri', 'quorum'],
+            prover: true,
+            colibri: colibriProving(chain, new Set()),
+          }),
+        },
+        {
+          name: 'not proving the nonce',
+          options: (chain) => ({
+            readOrder: ['colibri', 'quorum'],
+            prover: true,
+            colibri: colibriProving(
+              chain,
+              new Set(['eth_getBlockByNumber', 'eth_getBlockByHash', 'eth_getTransactionReceipt'])
+            ),
+          }),
+        },
+      ];
+      for (const { name, options } of cases) {
+        // Deep: out of every endpoint's window, so held.
+        const deep = takenAt(2700);
+        let running = await start(deep, honest, options(deep));
+        const label = await readLabel(intent, { request: running.request });
+        expect({ name, label }).toMatchObject({
+          name,
+          label: { label: LABELS.HELD, nonceAtF: { used: true } },
+        });
+        await client.stop();
+        // Within the window, the quorum's answers label it.
+        const shallow = takenAt(2995);
+        running = await start(shallow, honest, options(shallow));
+        await expect(readLabel(intent, { request: running.request })).resolves.toMatchObject({
+          label: LABELS.TAKEN,
+        });
+        const counts = running.replies.filter(({ method }) => method === 'eth_getTransactionCount');
+        for (const { reply } of counts) expect(reply).toMatchObject({ source: 'quorum' });
+        await client.stop();
+        client = null;
+      }
+    });
   });
 });

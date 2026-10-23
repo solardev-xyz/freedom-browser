@@ -35,3 +35,9 @@ identity-data/
 research/
 playwright-report/
 test-results/
+
+# Colibri falls back to writing its storage keys into the cwd when no
+# storage is registered (a probe run from the repo root); never commit them.
+/states_[0-9]*
+/sync_[0-9]*_[0-9]*
+/tx_cache_[0-9]*

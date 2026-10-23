@@ -296,6 +296,25 @@ describe('feed-store', () => {
       expect(state.identities.find((identity) => identity.id === 'bee-wallet').unavailable).toBeUndefined();
     });
 
+    // Review of #792 (round 1): the shared grant refuses it too, whoever
+    // asks (the feed prompt or a manifest's projection), and keeps it.
+    test('feed access is never granted to a stored ethereum-wallet identity', () => {
+      storeWalletIdentity('myapp.eth', 2);
+      revokeFeedAccess('myapp.eth');
+      for (const source of ['user', 'manifest']) {
+        expect(() => grantFeedAccess('myapp.eth', { source })).toThrow(UNAVAILABLE);
+      }
+      expect(hasFeedGrant('myapp.eth')).toBe(false);
+      _resetCache();
+      expect(hasFeedGrant('myapp.eth')).toBe(false);
+      expect(getOriginEntry('myapp.eth').activeIdentityId).toBe('ethereum-wallet:2');
+
+      // Once the user switches identity, the grant works.
+      createAppScopedIdentity('myapp.eth', { activate: true });
+      grantFeedAccess('myapp.eth');
+      expect(hasFeedGrant('myapp.eth')).toBe(true);
+    });
+
     test('a stored ethereum-wallet identity is never activated', () => {
       setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
       storeWalletIdentity('myapp.eth', 2, { active: false });

@@ -64,6 +64,9 @@ module.exports = {
   ENS_RESOLVE_REVERSE: 'ens:resolve-reverse',
   ENS_INVALIDATE_CONTENT: 'ens:invalidate-content',
 
+  // "Open without gateway" offer for an ENS/Swarm gateway URL (#70)
+  GATEWAY_OFFER: 'gateway:offer',
+
   // Contract-hosted application provenance (host chrome only)
   ONCHAIN_APP_GET_PROVENANCE: 'onchain-app:get-provenance',
 

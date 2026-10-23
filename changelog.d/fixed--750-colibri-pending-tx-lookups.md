@@ -1,0 +1,2 @@
+- Waiting on a just-sent Ethereum transaction no longer breaks the proof checker and fails the wallet and page reads running beside it ([#750](https://github.com/solardev-xyz/freedom-browser/issues/750))
+  - Transaction lookups now ask the RPC servers first and send only a mined transaction to the proof checker. A "not found" or pending answer is the servers' word, not a proof: with no RPC quorum available it comes from a single server, is marked unverified, and can lag a just-mined transaction until that server catches up

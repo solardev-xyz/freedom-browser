@@ -1127,6 +1127,32 @@ describe('x402:cancel', () => {
     expect(loadURL).toHaveBeenCalledWith('about:blank');
   });
 
+  // The renderer runs the Back itself (through goBackInHistory, so the
+  // gateway offer counts it as a traversal) and asks main only to clear.
+  test('navigate: false clears the detection without navigating', async () => {
+    require('./intercept').detectPaymentRequiredHandler({
+      webContentsId: 42,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: {
+        'PAYMENT-REQUIRED': [
+          Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64'),
+        ],
+      },
+    });
+    const goBack = jest.fn();
+    const loadURL = jest.fn().mockResolvedValue();
+    webContents.fromId.mockReturnValue({ canGoBack: () => true, goBack, loadURL });
+
+    const event = senderEvent(42);
+    const result = await ipcHandlers['x402:cancel'](event, { webContentsId: 42, navigate: false });
+
+    expect(result.success).toBe(true);
+    expect(goBack).not.toHaveBeenCalled();
+    expect(loadURL).not.toHaveBeenCalled();
+    expect(intercept.getDetectedPayment(42)).toBeNull();
+  });
+
   test('no-ops if the webContents has already gone away', async () => {
     webContents.fromId.mockReturnValue(null);
     const result = await ipcHandlers['x402:cancel'](senderEvent(42));

@@ -354,6 +354,33 @@ function addManagedCapability(origin, record, capability) {
   return operations;
 }
 
+// The projections that only mean something with a usable publisher
+// identity: the identity itself (which a manifest never created here), a
+// feed grant, and the auto-approve flags of the capabilities that need one
+// (feeds, signing).
+const IDENTITY_PROJECTIONS = ['identity', 'feedGrant', 'autoApprove.feeds', 'autoApprove.signing'];
+
+/**
+ * A journaled transaction, as it may be replayed for an origin whose
+ * active publisher identity is a stored ethereum-wallet one (#89): it
+ * grants none of the identity's projections and manages none of them, so
+ * no managed permission stands that couldn't work. The identity is kept;
+ * nothing picks another owner. Only a journal written before the mode was
+ * removed can hold one: a decision now is refused before it is journaled.
+ */
+function withoutUnavailableIdentity(origin, record, operations) {
+  if (!feeds.hasUnavailableIdentity(origin)) return { record, operations };
+  if (record?.managed) {
+    for (const projection of IDENTITY_PROJECTIONS) delete record.managed[projection];
+  }
+  return {
+    record,
+    operations: operations.filter(
+      (operation) => !(operation.enabled && IDENTITY_PROJECTIONS.includes(operation.projection))
+    ),
+  };
+}
+
 function runTransaction(origin, record, operations) {
   const state = loadStore();
   state.pending = { origin, record, operations };
@@ -373,7 +400,12 @@ function runTransaction(origin, record, operations) {
 function recoverPending() {
   const state = loadStore();
   if (!state.pending) return;
-  const { origin, record, operations } = state.pending;
+  const { origin } = state.pending;
+  const { record, operations } = withoutUnavailableIdentity(
+    origin,
+    state.pending.record,
+    state.pending.operations
+  );
   for (const operation of operations) applyProjectionValue(origin, operation.projection, operation.enabled);
   if (record) state.records[origin] = record;
   else delete state.records[origin];
@@ -582,6 +614,16 @@ function decideManifest(token, outcome) {
       if (!permissions.getPermission(pending.origin)) {
         operations.push({ projection: 'connection', enabled: true });
       }
+    }
+    // A stored ethereum-wallet identity (#89) can't take a feed grant: a
+    // manifest asking for feeds or signing is refused with the mode's own
+    // error, before anything is journaled or applied. The identity is
+    // kept, and the user has to switch it explicitly.
+    if (
+      outcome === 'allow' &&
+      pending.changed.some((capability) => ['feeds', 'signing'].includes(capability))
+    ) {
+      feeds.assertFeedGrantable(pending.origin);
     }
     for (const capability of pending.changed) {
       record.acknowledged[capability] = {
