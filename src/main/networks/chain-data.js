@@ -8,8 +8,9 @@
  * signatures and results, with the design's deviations:
  *
  * - `request(chainId, method, params, options)` takes `includeTrust`,
- *   `routingContext`, `signal` and `background` as the router did; the Ant
- *   bridge's log scans name their options as one profile, `ant_scan`.
+ *   `routingContext`, `signal`, `background` and `excludeSources` as the
+ *   router did; the Ant bridge's log scans name their options as one
+ *   profile, `ant_scan`.
  * - `getFeeReference(chainId, options)` is the core's `chain.fee_reference`:
  *   the evidence the wallet's fee check reads (design 0005, A), new with
  *   the core, not one of the router's calls.
@@ -62,6 +63,35 @@ function isReadMethod(method) {
   return READ_METHODS.has(method) || SINGLE_NODE_METHODS.has(method);
 }
 
+/**
+ * Each source the router knows, with the read methods it doesn't serve
+ * (design 0005, Methods and sources): the router's `SOURCE_CAPABILITIES`
+ * as far as its callers read it, so a caller can name the sources to
+ * exclude (the wallet's dropped check, transaction-service.js). The core
+ * routes; this only names.
+ */
+const SOURCE_CAPABILITIES = (() => {
+  const { READ_SOURCES } = require('../core/chain-driver');
+  const unsupported = {
+    myotis: [...SINGLE_NODE_METHODS],
+    colibri: [...SINGLE_NODE_METHODS, 'eth_getLogs'],
+    quorum: [...SINGLE_NODE_METHODS],
+    direct: [],
+    // Every read method but eth_getLogs.
+    blockscout: [...READ_METHODS, ...SINGLE_NODE_METHODS].filter(
+      (method) => method !== 'eth_getLogs'
+    ),
+  };
+  return Object.freeze(
+    Object.fromEntries(
+      READ_SOURCES.map((source) => [
+        source,
+        Object.freeze({ unsupported: new Set(unsupported[source]) }),
+      ])
+    )
+  );
+})();
+
 // The core's drivers. Without them (the core not attached yet, or stopped
 // for good), a call fails as the driver's own does when no core process
 // serves it.
@@ -108,6 +138,7 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
 module.exports = {
   READ_METHODS,
   SINGLE_NODE_METHODS,
+  SOURCE_CAPABILITIES,
   isReadMethod,
   request,
   getFeeQuote,

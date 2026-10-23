@@ -8,6 +8,8 @@
  * - `servesChain`: the chain thread (freedom-core design 0005); the pinned
  *   v0.3.0 has none.
  * - `servesChainHtml`: `chain.html` (design 0006); v0.4.0 has none.
+ * - `servesChainExclusions`: `chain.request`'s `exclude_sources` (design
+ *   0005), which v0.6.0 refuses as invalid params.
  * - `servesDweb`: `dweb.open` (design 0006); v0.4.0 has none.
  * - `servesFeeReference`: `chain.fee_reference` (design 0005, A); v0.6.0
  *   has none.
@@ -18,13 +20,13 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { scrubbedEnv } = require('../../src/main/core/core-client');
 
-function serves(binary, method, params) {
+function serves(binary, method, params, refusedBy = ['unknown_method']) {
   if (!binary) return false;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-core-probe-'));
   const probe = `
     const { spawn } = require('child_process');
     const { encodeFrame, FrameDecoder } = require(process.argv[1]);
-    const [binary, root, method, params] = process.argv.slice(2);
+    const [binary, root, method, params, refusedBy] = process.argv.slice(2);
     const core = spawn(binary, ['serve', '--data-dir', root + '/identity', '--lock-dir', root + '/locks'], {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
@@ -39,7 +41,7 @@ function serves(binary, method, params) {
     core.stdout.on('data', (chunk) => {
       for (const { message } of decoder.push(chunk)) {
         if (message?.id === 1) request(2, method, JSON.parse(params));
-        if (message?.id === 2) done(message.error?.code === 'unknown_method' ? 'no' : 'yes');
+        if (message?.id === 2) done(JSON.parse(refusedBy).includes(message.error?.code) ? 'no' : 'yes');
       }
     });
     core.on('exit', () => done('no'));
@@ -56,6 +58,7 @@ function serves(binary, method, params) {
         root,
         method,
         JSON.stringify(params),
+        JSON.stringify(refusedBy),
       ],
       { env: scrubbedEnv(), timeout: 15_000 }
     );
@@ -84,6 +87,24 @@ function servesChainHtml(binary) {
   });
 }
 
+function servesChainExclusions(binary) {
+  return serves(
+    binary,
+    'chain.request',
+    {
+      chain_id: 1,
+      method: 'eth_blockNumber',
+      params: [],
+      include_trust: false,
+      background: false,
+      profile: 'default',
+      exclude_sources: ['colibri'],
+      deadline_ms: 1000,
+    },
+    ['unknown_method', 'invalid_argument']
+  );
+}
+
 function servesDweb(binary) {
   return serves(binary, 'dweb.open', {
     url: `bzz://${'ab'.repeat(32)}/`,
@@ -95,4 +116,10 @@ function servesDweb(binary) {
   });
 }
 
-module.exports = { servesChain, servesChainHtml, servesDweb, servesFeeReference };
+module.exports = {
+  servesChain,
+  servesChainHtml,
+  servesChainExclusions,
+  servesDweb,
+  servesFeeReference,
+};

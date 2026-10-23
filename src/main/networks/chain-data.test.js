@@ -132,3 +132,37 @@ test("a call object's BigInt quantities go to the core as the router's hex", asy
   ).toEqual({ result: '0x10', source: 'direct', verified: false });
   expect(sent[0].params).toEqual([{ to, value: '0x3', gas: '0x5208' }, 'latest']);
 });
+
+// The router's SOURCE_CAPABILITIES as its callers read it (design 0005,
+// Methods and sources): the sources a read may exclude, and the methods
+// each doesn't serve.
+describe('SOURCE_CAPABILITIES', () => {
+  const { SOURCE_CAPABILITIES, READ_METHODS, SINGLE_NODE_METHODS } = require('./chain-data');
+  const { READ_SOURCES } = require('../core/chain-driver');
+
+  test('every source the core knows, and only those', () => {
+    expect(Object.keys(SOURCE_CAPABILITIES)).toEqual([...READ_SOURCES]);
+    expect(READ_SOURCES).toEqual(['myotis', 'colibri', 'quorum', 'direct', 'blockscout']);
+  });
+
+  test("what each doesn't serve", () => {
+    const unsupported = (source) => [...SOURCE_CAPABILITIES[source].unsupported].sort();
+    const single = [...SINGLE_NODE_METHODS].sort();
+    expect(unsupported('myotis')).toEqual(single);
+    expect(unsupported('quorum')).toEqual(single);
+    expect(unsupported('colibri')).toEqual([...single, 'eth_getLogs'].sort());
+    expect(unsupported('direct')).toEqual([]);
+    expect(unsupported('blockscout')).toEqual(
+      [...new Set([...READ_METHODS, ...SINGLE_NODE_METHODS])]
+        .filter((m) => m !== 'eth_getLogs')
+        .sort()
+    );
+    // The dropped check reads the nonce only from a source that answers a
+    // receipt as null: of these, Blockscout serves no receipt at all.
+    expect(
+      Object.keys(SOURCE_CAPABILITIES).filter((source) =>
+        SOURCE_CAPABILITIES[source].unsupported.has('eth_getTransactionReceipt')
+      )
+    ).toEqual(['blockscout']);
+  });
+});

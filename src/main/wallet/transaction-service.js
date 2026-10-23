@@ -911,10 +911,8 @@ async function signAndSendTransaction(
  */
 async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = false } = {}) {
   try {
-    // `excludeSources` is main's router option (#749). The core's
-    // chain.request takes no per-request exclusions yet, so these reads go
-    // in the chain's read order; the 'dropped' check below still compares
-    // the two reads' sources before it decides anything.
+    // The sweep reads without Colibri: chain.request's `exclude_sources`
+    // (design 0005, Methods main calls), on a core that offers it.
     const { result: receipt } = await chainData.request(
       chainId,
       'eth_getTransactionReceipt',
