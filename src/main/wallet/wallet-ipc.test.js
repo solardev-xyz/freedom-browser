@@ -27,6 +27,17 @@ jest.mock('./safe/safe-messages', () => ({
   startSafeMessage: jest.fn(async () => ({ token: 'session' })),
 }));
 jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn() }));
+// The fee check at confirmation (design 0005, A): every send's fee passes,
+// unless a test says otherwise.
+jest.mock('./fee-check', () => {
+  const actual = jest.requireActual('./fee-check');
+  const passing = { comparable: true, ratio: '1', above: false, autoApprove: true, askAgain: false };
+  return {
+    ...actual,
+    checkFees: jest.fn(async () => passing),
+    checkAtApproval: jest.fn(async () => passing),
+  };
+});
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
   takeSiteTurn: jest.fn(async () => () => {}),
@@ -357,7 +368,7 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { confirmation: forOther });
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       // A dApp payment's confirmation must name its site (round 2).
-      expect(handlers['wallet:confirm-signing']({}, 'dapp-send', 2, TX)).toMatchObject({
+      await expect(handlers['wallet:confirm-signing']({}, 'dapp-send', 2, TX)).resolves.toMatchObject({
         success: false,
         error: 'A dApp payment needs the site it is for',
       });
@@ -469,6 +480,105 @@ describe('signing handlers require a main-side confirmation', () => {
       // ...and only for the account the site is connected with.
       const other = await handlers[channel]({}, payload, 1, { autoApprove: SITE });
       expect(other).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    });
+  });
+
+  // The fee check at confirmation (design 0005, A): a transaction's
+  // confirmation is the moment of its approval; an auto-approved send is
+  // judged when main signs it.
+  describe('the fee check at confirmation', () => {
+    const feeCheck = require('./fee-check');
+    const verdict = (fields) => ({
+      maxCost: '1050000000000000',
+      comparable: true,
+      ratio: '1',
+      above: false,
+      oneEndpoint: false,
+      basis: 'header',
+      autoApprove: true,
+      askAgain: false,
+      ...fields,
+    });
+
+    beforeEach(() => {
+      feeCheck.checkAtApproval.mockReset().mockImplementation(async () => verdict());
+      feeCheck.checkFees.mockReset().mockImplementation(async () => verdict());
+    });
+
+    test('wallet:fee-check answers the verdict for the screen to show', async () => {
+      feeCheck.checkFees.mockResolvedValue(verdict({ ratio: '20', above: true, autoApprove: false }));
+      await expect(handlers['wallet:fee-check']({}, TX)).resolves.toEqual({
+        success: true,
+        feeCheck: verdict({ ratio: '20', above: true, autoApprove: false }),
+      });
+      expect(feeCheck.checkFees).toHaveBeenCalledWith(TX);
+    });
+
+    test('a fee above the threshold gets no confirmation until the user confirms it again', async () => {
+      const above = verdict({ ratio: '20', above: true, autoApprove: false });
+      feeCheck.checkAtApproval.mockImplementation(async (_tx, { acknowledged }) => ({
+        ...above,
+        askAgain: !acknowledged,
+      }));
+      for (const [kind, index, payload] of [
+        ['wallet-send', null, TX],
+        ['dapp-send', 2, { ...TX, origin: SITE }],
+      ]) {
+        const outstanding = confirmations._outstandingCount();
+        const asked = await handlers['wallet:confirm-signing']({}, kind, index, payload);
+        expect(asked).toEqual({
+          success: false,
+          code: 'FEE_CHECK_ASK_AGAIN',
+          error: "The network fee is 20× today's network fee. Confirm it again to send.",
+          feeCheck: { ...above, askAgain: true },
+        });
+        // Nothing was minted.
+        expect(confirmations._outstandingCount()).toBe(outstanding);
+        const confirmed = await handlers['wallet:confirm-signing']({}, kind, index, payload, {
+          feeAcknowledged: true,
+        });
+        expect(confirmed).toMatchObject({ success: true, token: expect.any(String) });
+        expect(feeCheck.checkAtApproval).toHaveBeenLastCalledWith(payload, { acknowledged: true });
+      }
+      // Anything but a strict true is no answer.
+      await handlers['wallet:confirm-signing']({}, 'wallet-send', null, TX, { feeAcknowledged: 'yes' });
+      expect(feeCheck.checkAtApproval).toHaveBeenLastCalledWith(TX, { acknowledged: false });
+    });
+
+    test("messages, Safe payments and a phone's own payments have no fee to check", async () => {
+      await mint('sign-message', 0, 'hello');
+      await mint('safe-send', 0, { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 });
+      // A phone picks and pays its own fee: main signs nothing.
+      getSigner.mockReturnValue({ sendTransaction: jest.fn() });
+      await mint('wallet-send', null, TX);
+      expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
+    });
+
+    test('an auto-approved send whose fee needs the user is refused, with nothing signed', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+      for (const fields of [
+        { comparable: false, ratio: null, autoApprove: false },
+        { oneEndpoint: true, autoApprove: false },
+        { ratio: '20', above: true, autoApprove: false, askAgain: true },
+      ]) {
+        feeCheck.checkAtApproval.mockResolvedValueOnce(verdict(fields));
+        const result = await handlers['wallet:dapp-send-transaction'](
+          {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+        expect(result).toMatchObject({
+          success: false,
+          code: 'FEE_CHECK_NOT_AUTO_APPROVED',
+          feeCheck: verdict(fields),
+        });
+      }
+      expect(signAndRecord).not.toHaveBeenCalled();
+      // Refused before it took its site's turn.
+      expect(takeSiteTurn).not.toHaveBeenCalled();
+      // A fee that passes is signed.
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+      expect(result).toMatchObject({ success: true });
+      expect(feeCheck.checkAtApproval).toHaveBeenLastCalledWith(TX);
     });
   });
 

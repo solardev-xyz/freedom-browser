@@ -544,8 +544,13 @@ contextBridge.exposeInMainWorld('wallet', {
   // and hands it to the signing call as `{ confirmation: token }`.
   // kind: 'wallet-send' | 'dapp-send' | 'sign-message' | 'sign-typed-data'
   //       | 'safe-send' | 'safe-message'.
-  confirmSigning: (kind, accountIndex, payload) =>
-    ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload),
+  // A transaction's confirmation is also its fee check's approval (design
+  // 0005, A): `options.feeAcknowledged` once the user confirmed a fee above
+  // the threshold again; without it, main may answer FEE_CHECK_ASK_AGAIN.
+  confirmSigning: (kind, accountIndex, payload, options) =>
+    ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload, options),
+  // The fee check of a transaction about to be shown for confirmation.
+  feeCheck: (tx) => ipcRenderer.invoke('wallet:fee-check', tx),
   sendTransaction: (params, context, authorization) =>
     ipcRenderer.invoke('wallet:send-transaction', params, context, authorization),
   // Held payments (the wallet's intent records). A resend sends the same

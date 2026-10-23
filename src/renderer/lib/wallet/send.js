@@ -13,6 +13,7 @@ import {
 import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, GNOSIS_CHAIN_ID } from './wallet-utils.js';
 import { openSafeSigningBoard } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { FeeConfirmation } from './fee-check.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import {
   getTrustStatusSentence,
@@ -69,6 +70,9 @@ let sendReviewFee;
 let sendReviewTotal;
 let sendEditBtn;
 let sendConfirmBtn;
+// The review's fee check at confirmation (freedom-core design 0005, A).
+let sendFeeCheck = null;
+const SEND_CONFIRM_LABEL = 'Confirm & Send';
 let sendUnlockSection;
 let sendTouchIdBtn;
 let sendPasswordLink;
@@ -155,6 +159,12 @@ export function initSend() {
   sendReviewTotal = document.getElementById('send-review-total');
   sendEditBtn = document.getElementById('send-edit-btn');
   sendConfirmBtn = document.getElementById('send-confirm-btn');
+  sendFeeCheck = new FeeConfirmation({
+    maxEl: document.getElementById('send-review-fee-max'),
+    noteEl: document.getElementById('send-review-fee-note'),
+    warningEl: document.getElementById('send-fee-warning'),
+    warningTextEl: document.getElementById('send-fee-warning-text'),
+  });
   sendUnlockSection = document.getElementById('send-unlock-section');
   sendTouchIdBtn = document.getElementById('send-touchid-btn');
   sendPasswordLink = document.getElementById('send-password-link');
@@ -1289,10 +1299,25 @@ function populateSendReview() {
   const safe = activeSafeWallet();
   if (safe) {
     // The executor EOA pays the execution fee, quoted after signing.
+    sendFeeCheck?.reset();
+    renderSendConfirmLabel();
     renderSafeFeePayer(sendReviewFee, safe.index);
     if (sendReviewTotal) sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
     return;
   }
+
+  // The fee check (design 0005, A): the most this payment can cost, and how
+  // its fee compares with today's network fee. A phone picks and pays its
+  // own fee: there is none here to check.
+  if (accountType(walletState.activeWalletIndex) === 'remote') {
+    sendFeeCheck?.reset();
+  } else {
+    sendFeeCheck
+      ?.load(sendFeeFields(), chain?.nativeSymbol || 'ETH')
+      .then(renderSendConfirmLabel)
+      .catch((err) => console.warn('[Send] Fee check unavailable:', err));
+  }
+  renderSendConfirmLabel();
 
   if (sendReviewFee && sendTxState.estimatedFee) {
     const feeInNative = parseFloat(sendTxState.estimatedFee) / 1e18;
@@ -1308,6 +1333,24 @@ function populateSendReview() {
     } else {
       sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
     }
+  }
+}
+
+/** The review's gas limit and fees, as they will be signed. */
+function sendFeeFields() {
+  const fields = { chainId: sendTxState.chainId, gasLimit: sendTxState.gasLimit };
+  if (sendTxState.maxFeePerGas) {
+    fields.maxFeePerGas = sendTxState.maxFeePerGas;
+    fields.maxPriorityFeePerGas = sendTxState.maxPriorityFeePerGas;
+  } else {
+    fields.gasPrice = sendTxState.gasPrice;
+  }
+  return fields;
+}
+
+function renderSendConfirmLabel() {
+  if (sendConfirmBtn && sendFeeCheck) {
+    sendConfirmBtn.textContent = sendFeeCheck.confirmLabel(SEND_CONFIRM_LABEL);
   }
 }
 
@@ -1491,10 +1534,16 @@ async function handleSendPasswordUnlock() {
 }
 
 async function handleSendConfirm() {
+  const safe = activeSafeWallet();
+  // A fee far above today's network fee is confirmed twice (design 0005,
+  // A): the first press asks again.
+  if (!safe && sendFeeCheck && !sendFeeCheck.proceed()) {
+    renderSendConfirmLabel();
+    return;
+  }
   if (sendConfirmBtn) sendConfirmBtn.disabled = true;
 
   showSendPendingView();
-  const safe = activeSafeWallet();
 
   // Claim the sidebar for the whole flight: wallet:send-transaction puts a
   // prompt on the device that the renderer cannot recall, so no other
@@ -1583,7 +1632,7 @@ async function handleSendConfirm() {
     const result = await window.wallet.sendTransaction(
       txParams,
       display,
-      await confirmSigning('wallet-send', null, txParams)
+      await confirmSigning('wallet-send', null, txParams, sendFeeCheck?.options())
     );
 
     if (!result.success) {
@@ -1612,6 +1661,14 @@ async function handleSendConfirm() {
     );
     setTimeout(() => refreshBalances(), 3000);
   } catch (err) {
+    // The fee is above the threshold at the press: nothing was signed, and
+    // the review asks again with main's verdict.
+    if (sendFeeCheck?.askAgain(err)) {
+      showSendReviewView();
+      renderSendConfirmLabel();
+      if (sendConfirmBtn) sendConfirmBtn.disabled = false;
+      return;
+    }
     console.error('[WalletUI] Transaction failed:', err);
     showSendErrorView(err.message || 'Transaction failed', err.failure);
   } finally {

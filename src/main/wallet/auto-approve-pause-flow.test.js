@@ -14,6 +14,9 @@ let mockSigners;
 const mockRequest = jest.fn();
 const mockBroadcast = jest.fn();
 const mockFeeQuote = jest.fn();
+// The fee check's evidence (design 0005, A): B's combined quote, as the
+// fee quote's own, from two endpoints.
+const mockFeeReference = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn(), removeHandler: jest.fn() },
@@ -31,6 +34,7 @@ jest.mock('../networks/chain-data', () => ({
   request: (...args) => mockRequest(...args),
   broadcastRawTransaction: (...args) => mockBroadcast(...args),
   getFeeQuote: (...args) => mockFeeQuote(...args),
+  getFeeReference: (...args) => mockFeeReference(...args),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
@@ -86,6 +90,15 @@ beforeEach(() => {
     throw new Error(`unexpected read ${method}`);
   });
   mockFeeQuote.mockReset().mockResolvedValue({ type: 'legacy', gasPrice: '1000000000' });
+  mockFeeReference.mockReset().mockImplementation(async (chainId) => {
+    const quote = await mockFeeQuote(chainId).catch(() => null);
+    return {
+      header: null,
+      lowest_priority: null,
+      quote: quote && { ...quote, source: 'direct', verified: false, answered: 2 },
+    };
+  });
+  require('./fee-check')._shared.clear();
   mockBroadcast.mockReset().mockImplementation(async (_chainId, raw) => ({
     result: keccak256(raw),
     source: 'direct',

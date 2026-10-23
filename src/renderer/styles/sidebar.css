@@ -6556,6 +6556,11 @@
   color: var(--muted);
 }
 
+/* A replacement's fee far above today's network fee (design 0005, A). */
+.safe-signing-row-note.warning {
+  color: var(--warning-fg);
+}
+
 .safe-signing-row-state {
   font-size: 12px;
   color: var(--text);
@@ -6690,7 +6695,24 @@
   gap: 8px;
 }
 
-/* The send review's warning that a payment would wait behind a held one. */
-.send-held-warning {
+/* The send review's warnings: a payment that would wait behind a held one,
+   and a network fee far above today's. */
+.send-held-warning,
+.send-fee-warning {
   margin: 16px 0 0;
+}
+
+/* The fee check at confirmation (freedom-core design 0005, A): the most a
+   payment can cost and how its fee compares with today's network fee,
+   under the estimate. */
+.fee-check-max,
+.fee-check-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dapp-tx-fee-check {
+  text-align: right;
 }

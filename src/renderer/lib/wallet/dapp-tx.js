@@ -18,11 +18,13 @@ import {
   bypassUnlockGateForSafe,
   signingButtonLabel,
   isSafeAccount,
+  accountType,
   renderSafeFeePayer,
   truncateAddress,
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
+import { FeeConfirmation, feeFields } from './fee-check.js';
 import {
   outcomeText,
   ACTIONS,
@@ -61,6 +63,10 @@ let dappTxAutoApproveCheckbox;
 // rejecting behind it would settle the dApp promise with 4001 while the
 // transaction still broadcasts.
 let dappTxPending = null;
+
+// The approval's fee check at confirmation (freedom-core design 0005, A).
+let dappTxFeeCheck = null;
+const DAPP_TX_CONFIRM_LABEL = 'Confirm';
 
 const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
 
@@ -101,6 +107,12 @@ export function initDappTx() {
   dappTxApproveBtn = document.getElementById('dapp-tx-approve');
   dappTxAutoApproveRow = document.getElementById('dapp-tx-auto-approve-row');
   dappTxAutoApproveCheckbox = document.getElementById('dapp-tx-auto-approve');
+  dappTxFeeCheck = new FeeConfirmation({
+    maxEl: document.getElementById('dapp-tx-fee-max'),
+    noteEl: document.getElementById('dapp-tx-fee-note'),
+    warningEl: document.getElementById('dapp-tx-fee-warning'),
+    warningTextEl: document.getElementById('dapp-tx-fee-warning-text'),
+  });
 
   // Register screen hider
   registerScreenHider(() => dappTxScreen?.classList.add('hidden'));
@@ -263,6 +275,8 @@ async function populateDappTxDetails(txParams, chainId) {
     dappTxNetwork.textContent = chain?.name || `Chain ${chainId}`;
   }
 
+  // Nothing of an earlier request's fee check stays on the screen.
+  dappTxFeeCheck?.reset();
   if (dappTxFee && isSafeAccount(dappTxPending?.walletIndex)) {
     // The executor EOA pays the execution fee, quoted after signing.
     renderSafeFeePayer(dappTxFee, dappTxPending.walletIndex);
@@ -299,6 +313,16 @@ async function populateDappTxDetails(txParams, chainId) {
             dappTxPending.gasPrice = priceResult;
             dappTxPending.chainId = chainId;
           }
+          // The fee check (design 0005, A): the most this transaction can
+          // cost, and how its fee compares with today's network fee. A phone
+          // picks and pays its own fee: there is none here to check.
+          if (accountType(dappTxPending?.walletIndex) !== 'remote') {
+            const fields = { chainId, gasLimit: gasResult.gasLimit, ...quotedFees(priceResult) };
+            dappTxFeeCheck
+              ?.load(feeFields(fields), chain?.nativeSymbol || 'ETH')
+              .then(renderDappTxConfirmLabel)
+              .catch((err) => console.warn('[WalletUI] Fee check unavailable:', err));
+          }
         } else {
           dappTxFee.textContent = 'Unable to estimate';
         }
@@ -308,6 +332,20 @@ async function populateDappTxDetails(txParams, chainId) {
       dappTxFee.textContent = 'Unable to estimate';
     }
   }
+}
+
+/** The fee fields a quote gives a transaction. */
+function quotedFees(quote) {
+  if (!quote) return {};
+  return quote.type === 'eip1559'
+    ? { maxFeePerGas: quote.maxFeePerGas, maxPriorityFeePerGas: quote.maxPriorityFeePerGas }
+    : { gasPrice: quote.gasPrice };
+}
+
+function renderDappTxConfirmLabel() {
+  if (!dappTxApproveBtn || !dappTxFeeCheck) return;
+  if (dappTxPending?.signing || dappTxPending?.failedIntent) return;
+  dappTxApproveBtn.textContent = dappTxFeeCheck.confirmLabel(DAPP_TX_CONFIRM_LABEL);
 }
 
 async function checkDappTxUnlockStatus() {
@@ -410,6 +448,13 @@ async function approveDappTx() {
   const autoApprove = Boolean(dappTxAutoApproveCheckbox?.checked);
   const safeAccount = isSafeAccount(walletIndex);
 
+  // A fee far above today's network fee is confirmed twice (design 0005,
+  // A): the first press asks again. A held payment sent again signs nothing.
+  if (!safeAccount && !request.failedIntent && dappTxFeeCheck && !dappTxFeeCheck.proceed()) {
+    renderDappTxConfirmLabel();
+    return;
+  }
+
   try {
     request.signing = true;
     // Claim the sidebar for the whole flight: no other approval surface
@@ -455,10 +500,12 @@ async function approveDappTx() {
     // main signs it once against this token, and records it under that site.
     // "Always allow" rides along and is recorded by main from the confirmed
     // transaction itself (security audit O-7).
-    const authorization = await confirmSigning('dapp-send', walletIndex, {
-      ...tx,
-      origin: permissionKey,
-    });
+    const authorization = await confirmSigning(
+      'dapp-send',
+      walletIndex,
+      { ...tx, origin: permissionKey },
+      dappTxFeeCheck?.options()
+    );
     if (autoApprove && permissionKey && selector && txParams.to) {
       authorization.rememberAutoApprove = permissionKey;
     }
@@ -499,6 +546,16 @@ async function approveDappTx() {
       // The user discarded the Safe transaction — that IS the rejection.
       rejectDappTx();
       closeDappTx();
+      return;
+    }
+    // The fee is above the threshold at the press: nothing was signed, and
+    // the approval asks again with main's verdict.
+    if (dappTxFeeCheck?.askAgain(err)) {
+      if (dappTxApproveBtn) {
+        dappTxApproveBtn.disabled = false;
+        dappTxApproveBtn.textContent = dappTxFeeCheck.confirmLabel(DAPP_TX_CONFIRM_LABEL);
+      }
+      setDappTxCancelEnabled(true);
       return;
     }
     console.error('[WalletUI] dApp transaction failed:', err);
@@ -682,6 +739,7 @@ function closeDappTx() {
     walletState.identityView?.classList.remove('hidden');
   }
   dappTxPending = null;
+  dappTxFeeCheck?.reset();
   hideDappTxError();
   if (dappTxPasswordInput) dappTxPasswordInput.value = '';
   if (dappTxAutoApproveCheckbox) dappTxAutoApproveCheckbox.checked = false;

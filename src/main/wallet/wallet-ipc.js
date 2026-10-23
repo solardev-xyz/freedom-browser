@@ -32,6 +32,13 @@ const {
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
 const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
+const {
+  FEE_CHECK_ASK_AGAIN,
+  FEE_CHECK_NOT_AUTO_APPROVED,
+  checkFees,
+  checkAtApproval,
+  feeCheckError,
+} = require('./fee-check');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 /**
@@ -174,6 +181,26 @@ function authorizeSigning(authorization, kind, accountIndex, payload, autoApprov
   throw notAuthorized('no confirmation token');
 }
 
+// The confirmations whose transaction main signs with the fees the user saw:
+// the fee check at confirmation runs for them (design 0005, A). A phone
+// account's payment is not among them in effect: the phone picks its own
+// fees, signs and broadcasts, and main signs nothing (phoneSigner).
+const FEE_CHECKED_KINDS = new Set([
+  CONFIRM_KINDS.WALLET_SEND,
+  CONFIRM_KINDS.DAPP_SEND,
+  CONFIRM_KINDS.INTENT_REPLACE,
+]);
+
+/** Whether `walletIndex` is a phone account, which signs and pays itself. */
+function phoneSigner(walletIndex) {
+  if (!Number.isInteger(walletIndex)) return false;
+  try {
+    return typeof getSigner(walletIndex)?.sendTransaction === 'function';
+  } catch {
+    return false;
+  }
+}
+
 async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
   // A dApp send's turn among its site's sends (auto-approve-pause.js), left
   // once its payment is committed, or here when it fails first.
@@ -195,6 +222,13 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
       dapp ? { ...tx, origin: site } : tx,
       dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null
     );
+    // A send approved without the user is judged at this moment by the fee
+    // check (design 0005, A): one that can't be compared, is one endpoint's
+    // word, or is above the threshold goes to the user instead.
+    if (how === 'auto-approved' && !phoneSigner(walletIndex)) {
+      const verdict = await checkAtApproval(tx);
+      if (!verdict.autoApprove) throw feeCheckError(FEE_CHECK_NOT_AUTO_APPROVED, verdict);
+    }
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
       // committed (auto-approve-pause.js). A silent send doesn't wait for
@@ -239,8 +273,14 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
   } catch (err) {
     console.error(`[WalletIPC] ${kind} transaction failed:`, err);
     // A send that got as far as an intent reports it (its id, outcome and a
-    // summary), so the screen can offer to send those same bytes again.
-    return { success: false, error: err.message, ...intentFailure(err) };
+    // summary), so the screen can offer to send those same bytes again. One
+    // its fee check refused carries the verdict.
+    return {
+      success: false,
+      error: err.message,
+      ...intentFailure(err),
+      ...(err.feeCheck ? { feeCheck: err.feeCheck } : {}),
+    };
   } finally {
     release?.();
   }
@@ -404,12 +444,38 @@ function registerWalletIpc() {
     }
   });
 
+  // The fee check of a transaction about to be shown for confirmation
+  // (design 0005, A): the most it can cost and how its fee compares with
+  // today's network fee, from evidence main keeps for up to 60 s.
+  ipcMain.handle('wallet:fee-check', async (_event, tx) => {
+    try {
+      return { success: true, feeCheck: await checkFees(tx) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Issue a confirmation token for a request the user just confirmed on an
   // approval screen (O-7). The signing handler below it will sign exactly
   // this request, once. A wallet send binds the account active right now.
-  ipcMain.handle('wallet:confirm-signing', (_event, kind, accountIndex, payload) => {
+  //
+  // A transaction's confirmation is also the moment of its approval for the
+  // fee check (design 0005, A): judged against evidence at most 60 s old, a
+  // send above the threshold gets no token unless the user confirmed it
+  // again (`options.feeAcknowledged`), and the screen asks again with the
+  // verdict it gets back.
+  ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload, options) => {
     try {
       const index = kind === CONFIRM_KINDS.WALLET_SEND ? getActiveWalletIndex() : accountIndex;
+      if (FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index)) {
+        const verdict = await checkAtApproval(payload, {
+          acknowledged: options?.feeAcknowledged === true,
+        });
+        if (verdict.askAgain) {
+          const error = feeCheckError(FEE_CHECK_ASK_AGAIN, verdict);
+          return { success: false, error: error.message, code: error.code, feeCheck: verdict };
+        }
+      }
       const { token, expiresAt } = issueConfirmation(kind, index, payload);
       return { success: true, token, expiresAt };
     } catch (err) {

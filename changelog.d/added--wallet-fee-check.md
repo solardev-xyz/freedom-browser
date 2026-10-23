@@ -1,0 +1,2 @@
+- Before signing a payment, the wallet shows the most its network fee can cost and how it compares with today's fee ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A fee far above today's asks again, and "Always allow" asks too when a fee can't be compared

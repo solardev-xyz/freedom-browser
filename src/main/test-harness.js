@@ -570,6 +570,31 @@ function installUpdaterRecorder() {
   };
 }
 
+// The fee check at confirmation (freedom-core design 0005, A) compares a
+// send's fee with today's network fee, which it reads from the core's
+// `chain.fee_reference`: the live chain. In test mode the evidence is a
+// fixture instead, by default a fee of 1 gwei from two endpoints, the gas
+// price the specs' stubs quote, so their sends are "a fee like today's"
+// whatever the live chain says. A spec sets another with
+// `setFeeReferenceFixture` (null restores the default).
+const DEFAULT_FEE_REFERENCE = Object.freeze({
+  header: null,
+  lowest_priority: null,
+  quote: {
+    type: 'legacy',
+    gasPrice: '1000000000',
+    effectiveGasPrice: '1000000000',
+    source: 'direct',
+    verified: false,
+    answered: 2,
+  },
+});
+let feeReferenceFixture = DEFAULT_FEE_REFERENCE;
+
+function installFeeReferenceFixture() {
+  globalThis.__FREEDOM_TEST_FEE_REFERENCE__ = async () => feeReferenceFixture;
+}
+
 // Expose a synchronous shim on the main-process global so the Playwright
 // runner can drive fixtures via `electronApp.evaluate(() => globalThis
 // .__FREEDOM_TEST_HARNESS__.setContentFixture(...))` without an IPC
@@ -587,6 +612,12 @@ function exposeGlobalShim() {
       probeFixtures.set(hash, outcome ?? { ok: true });
     },
     resetFixtures,
+    // The fee check's evidence (see installFeeReferenceFixture). Evidence is
+    // kept for up to 60 s, so a new fixture clears what was kept.
+    setFeeReferenceFixture: (reply) => {
+      feeReferenceFixture = reply ?? DEFAULT_FEE_REFERENCE;
+      require('./wallet/fee-check')._shared.clear();
+    },
     // Profile-launch recording (see installProfileLaunchRecorder). Specs read
     // these to confirm a profile "open"/switch fired for the expected id.
     profileLaunches: () => profileLaunches.map((entry) => ({ ...entry })),
@@ -671,6 +702,7 @@ function installTestHarness({ defaultSession }) {
   installProfileDeleteSimulator();
   installExternalProtocolRecorder();
   installUpdaterRecorder();
+  installFeeReferenceFixture();
   exposeGlobalShim();
   return true;
 }

@@ -61,6 +61,10 @@ const DAPP_TX_ELEMENT_IDS = [
   'dapp-tx-approve',
   'dapp-tx-auto-approve-row',
   'dapp-tx-auto-approve',
+  'dapp-tx-fee-max',
+  'dapp-tx-fee-note',
+  'dapp-tx-fee-warning',
+  'dapp-tx-fee-warning-text',
 ];
 
 const LEDGER_INDEX = 1000000;
@@ -77,7 +81,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function loadDappTx() {
+async function loadDappTx({ type = 'ledger' } = {}) {
   jest.resetModules();
 
   const elementsById = Object.fromEntries(
@@ -117,6 +121,17 @@ async function loadDappTx() {
       confirmSigning,
       dappSendTransaction: jest.fn(() => send.promise),
       intentResend: jest.fn(),
+      // The fee check at confirmation (design 0005, A): a fee like today's.
+      feeCheck: jest.fn().mockResolvedValue({
+        success: true,
+        feeCheck: {
+          maxCost: '21000000000000',
+          comparable: true,
+          ratio: '1',
+          above: false,
+          autoApprove: true,
+        },
+      }),
     },
   };
 
@@ -128,6 +143,7 @@ async function loadDappTx() {
     }),
     bypassUnlockGateForSafe: jest.fn(() => false),
     isSafeAccount: jest.fn(() => false),
+    accountType: jest.fn(() => type),
     renderSafeFeePayer: jest.fn(),
     truncateAddress: jest.fn((address) => address),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
@@ -677,5 +693,100 @@ describe('Confirm again after a failed dApp send (5)', () => {
     await flush();
     await flush();
     expect(elements['dapp-tx-approve'].disabled).toBe(true);
+  });
+});
+
+describe('dapp-tx: the fee check at confirmation (design 0005, A)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const ABOVE = {
+    maxCost: '420000000000000',
+    comparable: true,
+    ratio: '20',
+    above: true,
+    autoApprove: false,
+  };
+  const shown = (element) => !element.classList.contains('hidden');
+  const press = async (elements) => {
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+  };
+
+  test('the approval shows the most the transaction can cost, and how its fee compares', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    await openApproval();
+    expect(window.wallet.feeCheck).toHaveBeenCalledWith({
+      chainId: 8453,
+      gasLimit: '21000',
+      gasPrice: '1000000000',
+    });
+    expect(elements['dapp-tx-fee-max'].textContent).toBe('Up to 0.000021 ETH');
+    expect(elements['dapp-tx-fee-note'].textContent).toBe("About 1× today's network fee");
+    expect(shown(elements['dapp-tx-fee-warning'])).toBe(false);
+    await press(elements);
+    expect(confirmSigning.mock.calls[0]).toHaveLength(3);
+  });
+
+  test('a fee far above today’s is confirmed twice before anything is signed', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    window.wallet.feeCheck.mockResolvedValue({ success: true, feeCheck: ABOVE });
+    await openApproval();
+    expect(shown(elements['dapp-tx-fee-warning'])).toBe(true);
+    expect(elements['dapp-tx-fee-warning-text'].textContent).toBe(
+      "This network fee is 20× today's network fee."
+    );
+    await press(elements);
+    expect(confirmSigning).not.toHaveBeenCalled();
+    expect(elements['dapp-tx-approve'].textContent).toBe('Send anyway');
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalledWith(
+      'dapp-send',
+      LEDGER_INDEX,
+      expect.objectContaining({ gasPrice: '1000000000', origin: 'https://app.example' }),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalled();
+  });
+
+  test('a fee newly above at the press: nothing signed, and the approval asks again', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    await openApproval();
+    confirmSigning.mockResolvedValueOnce({
+      success: false,
+      code: 'FEE_CHECK_ASK_AGAIN',
+      error: "The network fee is 20× today's network fee. Confirm it again to send.",
+      feeCheck: { ...ABOVE, askAgain: true },
+    });
+    await press(elements);
+    expect(window.wallet.dappSendTransaction).not.toHaveBeenCalled();
+    expect(elements['dapp-tx-approve'].textContent).toBe('Send anyway');
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    expect(elements['dapp-tx-reject'].disabled).toBe(false);
+    // No error: the approval asks.
+    expect(elements['dapp-tx-error'].textContent).toBe('');
+    expect(elements['dapp-tx-fee-warning-text'].textContent).toBe(
+      "This network fee is 20× today's network fee. Check the fee, then press Send anyway to pay it."
+    );
+    await press(elements);
+    expect(confirmSigning).toHaveBeenLastCalledWith(
+      'dapp-send',
+      LEDGER_INDEX,
+      expect.any(Object),
+      { feeAcknowledged: true }
+    );
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a phone picks and pays its own fee: there is none to check', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx({ type: 'remote' });
+    await openApproval();
+    expect(window.wallet.feeCheck).not.toHaveBeenCalled();
+    expect(shown(elements['dapp-tx-fee-max'])).toBe(false);
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalled();
   });
 });
