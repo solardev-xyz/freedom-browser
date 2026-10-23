@@ -368,6 +368,242 @@ describe('payment-history (sqlite)', () => {
       expect(mod.getById(row.id).status).toBe('pending');
     });
 
+    // The clock repollPending reads; tests step it past the confirm window.
+    let clock;
+    function useClock(start = 1_000_000) {
+      clock = start;
+      jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    }
+    afterEach(() => { jest.restoreAllMocks(); });
+
+    // #749: a dropped transaction never gets a receipt; once another
+    // transaction takes its nonce the row resolves instead of staying
+    // pending forever. One sighting is not enough: a later sweep, at least
+    // DROPPED_CONFIRM_MS on, must see it again.
+    test('resolves a row whose nonce another transaction took as dropped', async () => {
+      useClock();
+      const dropped = mod.append({
+        kind: 'safe-send', chainId: 1, txHash: '0xdropped', amount: '1',
+        metadata: { safeAddress: '0xsafe', txFrom: FROM_ADDR, txNonce: 0 },
+      });
+      const resend = mod.append({
+        kind: 'wallet-send', chainId: 1, txHash: '0xresend', amount: '1',
+        metadata: { txFrom: FROM_ADDR, txNonce: 0 },
+      });
+      const fakeStatus = jest.fn(async (txHash) => (
+        txHash === '0xresend' ? { status: 'confirmed', gasUsed: '21000' } : { status: 'dropped' }
+      ));
+
+      await expect(mod.repollPending(fakeStatus)).resolves.toEqual({
+        resolved: 1, stillPending: 1, errors: 0,
+      });
+      expect(fakeStatus).toHaveBeenCalledWith('0xdropped', 1, { from: FROM_ADDR, nonce: 0, sweep: true });
+      expect(mod.getById(dropped.id)).toMatchObject({
+        status: 'pending',
+        metadata: { safeAddress: '0xsafe', txDroppedSeenAt: clock },
+      });
+      expect(mod.getById(resend.id).status).toBe('confirmed');
+
+      clock += mod.DROPPED_CONFIRM_MS;
+      await expect(mod.repollPending(fakeStatus)).resolves.toEqual({
+        resolved: 1, stillPending: 0, errors: 0,
+      });
+      const row = mod.getById(dropped.id);
+      expect(row.status).toBe('dropped');
+      expect(row.confirmedAt).toEqual(expect.any(Number));
+      // The row's own metadata survives the status change.
+      expect(row.metadata).toMatchObject({
+        safeAddress: '0xsafe',
+        txNonce: 0,
+        failureReason: 'nonce used by another transaction',
+      });
+    });
+
+    // R3-M2: the sighting is written after the status lookup resolves; a
+    // finaliser that ran meanwhile must not have its metadata overwritten
+    // with the sweep's stale snapshot.
+    test('a sighting does not overwrite a row finalised during its lookup', async () => {
+      useClock();
+      const row = mod.append({
+        kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1',
+        metadata: { txFrom: FROM_ADDR, txNonce: 0 },
+      });
+      await mod.repollPending(async () => {
+        mod.markFailed(row.id, { reason: 'reverted' });
+        return { status: 'dropped' };
+      });
+      const after = mod.getById(row.id);
+      expect(after.status).toBe('failed');
+      expect(after.metadata).toEqual({ failureReason: 'reverted' });
+      expect(after.metadata.txDroppedSeenAt).toBeUndefined();
+    });
+
+    // R4-M1: the confirming sweep's 'dropped' answer is also stale once
+    // its lookup resolves; a final status written meanwhile stands.
+    test.each([
+      ['confirmed', (id) => mod.markConfirmed(id, { gasUsed: '21000' }), { txFrom: FROM_ADDR, txNonce: 0 }],
+      ['failed', (id) => mod.markFailed(id, { reason: 'reverted' }), { failureReason: 'reverted' }],
+    ])('a confirming sweep does not overwrite a row %s during its lookup', async (status, finalise, metadata) => {
+      useClock();
+      const row = mod.append({
+        kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1',
+        metadata: { txFrom: FROM_ADDR, txNonce: 0 },
+      });
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      const seenAt = mod.getById(row.id).metadata.txDroppedSeenAt;
+      clock += mod.DROPPED_CONFIRM_MS;
+      await expect(mod.repollPending(async () => {
+        finalise(row.id);
+        return { status: 'dropped' };
+      })).resolves.toEqual({ resolved: 0, stillPending: 0, errors: 0 });
+      const after = mod.getById(row.id);
+      expect(after.status).toBe(status);
+      expect(after.metadata).toEqual(status === 'confirmed'
+        ? { ...metadata, txDroppedSeenAt: seenAt }
+        : metadata);
+    });
+
+    test('markDropped leaves a row that is no longer pending alone', () => {
+      const row = mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      mod.markConfirmed(row.id, {});
+      expect(mod.markDropped(row.id)).toBeNull();
+      expect(mod.getById(row.id).status).toBe('confirmed');
+    });
+
+    test('a pending answer clears the sighting without dropping concurrent metadata', async () => {
+      useClock();
+      const row = mod.append({
+        kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1',
+        metadata: { txFrom: FROM_ADDR, txNonce: 0 },
+      });
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      await mod.repollPending(async () => {
+        mod.update(row.id, { metadata: { ...mod.getById(row.id).metadata, note: 'added' } });
+        return { status: 'pending' };
+      });
+      expect(mod.getById(row.id).metadata).toEqual({ txFrom: FROM_ADDR, txNonce: 0, note: 'added' });
+    });
+
+    test('a second sighting inside the confirm window leaves the row pending', async () => {
+      useClock();
+      const row = mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      const fn = async () => ({ status: 'dropped' });
+      await mod.repollPending(fn);
+      const firstSeen = clock;
+      clock += mod.DROPPED_CONFIRM_MS - 1;
+      await expect(mod.repollPending(fn)).resolves.toMatchObject({ resolved: 0, stillPending: 1 });
+      // The window still counts from the first sighting.
+      expect(mod.getById(row.id)).toMatchObject({
+        status: 'pending', metadata: { txDroppedSeenAt: firstSeen },
+      });
+      clock += 1;
+      await expect(mod.repollPending(fn)).resolves.toMatchObject({ resolved: 1 });
+      expect(mod.getById(row.id).status).toBe('dropped');
+    });
+
+    // A lagging endpoint read a just-mined transaction as dropped once; the
+    // next read that sees it pending again must reset, not confirm, that.
+    test('a pending answer between sightings starts the window over', async () => {
+      useClock();
+      const row = mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      clock += 1000;
+      await mod.repollPending(async () => ({ status: 'pending' }));
+      expect(mod.getById(row.id).metadata?.txDroppedSeenAt).toBeUndefined();
+      clock += mod.DROPPED_CONFIRM_MS;
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      expect(mod.getById(row.id)).toMatchObject({
+        status: 'pending', metadata: { txDroppedSeenAt: clock },
+      });
+    });
+
+    test('a waiting sighting schedules its own confirming sweep', async () => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+      try {
+        const row = mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+        const fn = jest.fn(async () => ({ status: 'dropped' }));
+        await mod.repollPending(fn);
+        expect(mod.getById(row.id).status).toBe('pending');
+        expect(fn).toHaveBeenCalledTimes(1);
+
+        jest.advanceTimersByTime(mod.DROPPED_CONFIRM_MS);
+        for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+        expect(fn).toHaveBeenCalledTimes(2);
+        expect(mod.getById(row.id).status).toBe('dropped');
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('a dropped row is final and is not polled again', async () => {
+      useClock();
+      mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      clock += mod.DROPPED_CONFIRM_MS;
+      await mod.repollPending(async () => ({ status: 'dropped' }));
+      const fn = jest.fn();
+      await expect(mod.repollPending(fn)).resolves.toEqual({ resolved: 0, stillPending: 0, errors: 0 });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    test('a row recorded without a sender nonce is polled without one', async () => {
+      mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      const fn = jest.fn(async () => ({ status: 'pending' }));
+      await mod.repollPending(fn);
+      expect(fn).toHaveBeenCalledWith('0xa', 1, { from: undefined, nonce: undefined, sweep: true });
+    });
+
+    test('a call during a sweep queues one more sweep after it, shared by every caller', async () => {
+      mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      const releases = [];
+      const fn = jest.fn(() => new Promise((resolve) => { releases.push(resolve); }));
+      const first = mod.repollPending(fn);
+      const second = mod.repollPending(fn);
+      const third = mod.repollPending(fn);
+      expect(second).not.toBe(first);
+      expect(third).toBe(second);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(fn).toHaveBeenCalledTimes(1);
+      // The running sweep read the row before the chain moved.
+      releases[0]({ status: 'pending' });
+      await expect(first).resolves.toMatchObject({ resolved: 0, stillPending: 1 });
+      await new Promise((resolve) => setImmediate(resolve));
+      // The queued sweep re-reads it, now that the nonce has moved.
+      expect(fn).toHaveBeenCalledTimes(2);
+      releases[1]({ status: 'confirmed' });
+      await expect(second).resolves.toMatchObject({ resolved: 1, stillPending: 0 });
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    // The running sweep has settled but the queued one has not started yet:
+    // a caller in that gap joins the queued sweep instead of starting a third.
+    test('a call between a sweep settling and the queued one starting joins the queued one', async () => {
+      mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      const releases = [];
+      const fn = jest.fn(() => new Promise((resolve) => { releases.push(resolve); }));
+      const first = mod.repollPending(fn);
+      const second = mod.repollPending(fn);
+      await new Promise((resolve) => setImmediate(resolve));
+      releases[0]({ status: 'pending' });
+      await first;
+      const late = mod.repollPending(fn);
+      expect(late).toBe(second);
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+      releases[1]({ status: 'confirmed' });
+      await second;
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    test('a queued sweep still runs when the sweep before it fails', async () => {
+      mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      const first = mod.repollPending(() => { throw new Error('boom'); });
+      const second = mod.repollPending(async () => ({ status: 'confirmed' }));
+      await first;
+      await expect(second).resolves.toMatchObject({ resolved: 1 });
+    });
+
     test('pending rows with no txHash are skipped, not polled', async () => {
     mod.append({ kind: 'wallet-send', chainId: 1, amount: '1' }); // no txHash
       const fn = jest.fn();

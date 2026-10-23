@@ -279,13 +279,16 @@
         background: #f85149;
       }
       /* Couldn't confirm (unconfirmed): a payment closed by hand, whether
-         it paid unknown. Muted like no receipt, and settled. */
+         it paid unknown. Dropped: never mined, its nonce taken by another
+         transaction. Both muted like no receipt, and settled. */
       .status-no-receipt,
+      .status-dropped,
       .status-unconfirmed {
         background: rgba(110, 118, 129, 0.18);
         color: var(--pay-status-none);
       }
       .status-no-receipt::before,
+      .status-dropped::before,
       .status-unconfirmed::before {
         background: #8b949e;
       }

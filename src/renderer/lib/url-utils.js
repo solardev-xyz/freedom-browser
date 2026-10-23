@@ -474,6 +474,43 @@ export const applyEnsNamePreservation = (displayUrl, knownEnsNames) => {
   return derived;
 };
 
+/**
+ * The name identity of a DNS-named ENS site loaded over IPNS.
+ *
+ * A DNS name with an ENS contenthash (`example.com`) cannot load as
+ * `ipns://example.com` — that form means DNSLink — so navigation loads its
+ * resolved key (`ipns://<key>/…`) and displays `ens://example.com/…`
+ * (`buildEnsDisplayUri`). The committed page URL therefore carries the key,
+ * not the name. Map it back to `ens://<name>/…` when `knownEnsNames` has
+ * the key — as the resolver emitted it (base58), or in the libp2p-key
+ * base36 form `formatIpfsUrl` canonicalises it to before loading — so the
+ * page keeps the same dApp permission key its address-bar display always
+ * gave it. Exact comparison: a case-folded base58 key is a different key.
+ * ENS-host names (`name.eth`) load under their own name and never need
+ * this; anything else passes through unchanged.
+ *
+ * @param {string} displayUrl - a committed page URL
+ * @param {Map} knownEnsNames - Map of hash/CID/key -> name
+ * @returns {string}
+ */
+export const applyDnsNameIdentity = (displayUrl, knownEnsNames) => {
+  if (!displayUrl || !knownEnsNames || knownEnsNames.size === 0) return displayUrl;
+  const match = displayUrl.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
+  if (!match) return displayUrl;
+  const host = match[1];
+  let name = knownEnsNames.get(host);
+  if (!name) {
+    for (const [key, candidate] of knownEnsNames) {
+      if (ipnsMhToCidV1Base36(key) === host) {
+        name = candidate;
+        break;
+      }
+    }
+  }
+  if (!name || isDwebNameHost(name) || !isPotentialEnsName(name)) return displayUrl;
+  return `ens://${name}${displayUrl.slice(match[0].length)}`;
+};
+
 export const deriveDisplayValue = (
   url,
   bzzRoutePrefix,

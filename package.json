@@ -89,6 +89,7 @@
     "appId": "baby.freedom.browser",
     "productName": "Freedom",
     "afterPack": "./scripts/after-pack.js",
+    "afterSign": "./scripts/after-sign.js",
     "electronFuses": {
       "runAsNode": true,
       "enableCookieEncryption": false,
@@ -129,7 +130,7 @@
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
-      "notarize": true,
+      "notarize": false,
       "files": [
         "src/**/*",
         "package.json",
