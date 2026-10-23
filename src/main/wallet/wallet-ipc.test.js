@@ -222,7 +222,7 @@ describe('signing handlers require a main-side confirmation', () => {
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
       sitePaymentWaiting.mockResolvedValue(true);
       const result = await handlers['wallet:dapp-send-transaction'](
-        {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
       expect(result).toMatchObject({
         success: false,
         code: 'SIGNING_NOT_CONFIRMED',
@@ -251,14 +251,14 @@ describe('signing handlers require a main-side confirmation', () => {
         return { hash: '0xhash' };
       });
       await expect(
-        handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
+        handlers['wallet:dapp-send-transaction'](AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 })
       ).resolves.toMatchObject({ success: true });
       expect(leave).toHaveBeenCalled();
 
       leave.mockClear();
       signAndRecord.mockRejectedValue(new Error('vault locked'));
       await expect(
-        handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
+        handlers['wallet:dapp-send-transaction'](AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 })
       ).resolves.toMatchObject({ success: false });
       expect(leave).toHaveBeenCalled();
     });
@@ -283,7 +283,7 @@ describe('signing handlers require a main-side confirmation', () => {
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
       takeSiteTurn.mockRejectedValue(Object.assign(new Error('busy'), { code: 'SITE_TURN_BUSY' }));
       await expect(
-        handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
+        handlers['wallet:dapp-send-transaction'](AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 })
       ).resolves.toMatchObject({
         success: false,
         code: 'SIGNING_NOT_CONFIRMED',
@@ -323,7 +323,7 @@ describe('signing handlers require a main-side confirmation', () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
       sitePaymentWaiting.mockResolvedValue(true);
       const result = await handlers['wallet:dapp-send-transaction'](
-        {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
       // Refused as before: no rule, and nothing said of a pause.
       expect(result).toMatchObject({
         success: false,
@@ -341,7 +341,7 @@ describe('signing handlers require a main-side confirmation', () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
       const mismatched = await handlers['wallet:dapp-send-transaction'](
-        {}, TX, 2, { origin: 'https://other.example' }, { autoApprove: SITE });
+        AUTO, TX, 2, { origin: 'https://other.example' }, { autoApprove: SITE, webContentsId: 12 });
       expect(mismatched).toMatchObject({
         success: false,
         code: 'SIGNING_NOT_CONFIRMED',
@@ -352,7 +352,7 @@ describe('signing handlers require a main-side confirmation', () => {
 
       // The same site, as a page path: recorded under its permission key.
       await handlers['wallet:dapp-send-transaction'](
-        {}, TX, 2, { origin: `${SITE}/swap` }, { autoApprove: SITE });
+        AUTO, TX, 2, { origin: `${SITE}/swap` }, { autoApprove: SITE, webContentsId: 12 });
       expect(signAndRecord).toHaveBeenCalledWith(
         TX,
         signer,
@@ -361,7 +361,7 @@ describe('signing handlers require a main-side confirmation', () => {
       );
 
       // No context origin at all: the authorized site.
-      await handlers['wallet:dapp-send-transaction']({}, TX, 2, {}, { autoApprove: SITE });
+      await handlers['wallet:dapp-send-transaction'](AUTO, TX, 2, {}, { autoApprove: SITE, webContentsId: 12 });
       expect(signAndRecord).toHaveBeenLastCalledWith(
         TX,
         signer,

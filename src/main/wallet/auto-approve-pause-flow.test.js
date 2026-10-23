@@ -17,8 +17,35 @@ const mockFeeQuote = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn(), removeHandler: jest.fn() },
-  webContents: { getAllWebContents: () => [] },
+  webContents: {
+    getAllWebContents: () => [],
+    // Each site's tab (#764: an auto-approve is checked against the
+    // requesting guest's own page), a guest of the chrome window (id 1).
+    fromId: (id) => {
+      const url = mockGuestUrls[id];
+      return url
+        ? { id, hostWebContents: { id: 1 }, getURL: () => url, isDestroyed: () => false }
+        : null;
+    },
+  },
 }));
+const mockGuestUrls = {
+  21: 'https://swap.example/app',
+  22: 'https://other.example/app',
+  23: 'https://plain.example/app',
+};
+// The chrome window's IPC event, and each site's guest.
+const CHROME_EVENT = { sender: { id: 1 } };
+const GUEST_OF = {
+  'https://swap.example': 21,
+  'https://other.example': 22,
+  'https://plain.example': 23,
+};
+// An auto-approve as the renderer sends it: the site, and its tab.
+const fromTab = (authorization) =>
+  authorization?.autoApprove !== undefined
+    ? { ...authorization, webContentsId: GUEST_OF[authorization.autoApprove] }
+    : authorization;
 jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({}));
 jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
@@ -132,11 +159,11 @@ function start() {
     // A send the renderer made as auto-approved.
     autoSend: (site) =>
       handlers['wallet:dapp-send-transaction'](
-        {},
+        CHROME_EVENT,
         tx,
         index[site],
         { origin: site },
-        { autoApprove: site }
+        fromTab({ autoApprove: site })
       ),
     // A send the user confirmed on the prompt.
     // A send the user confirmed on the prompt (by default on the site's
@@ -150,7 +177,7 @@ function start() {
         origin: site,
       });
       return handlers['wallet:dapp-send-transaction'](
-        {},
+        CHROME_EVENT,
         payment,
         account,
         { origin: site },
@@ -451,11 +478,11 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     const running = start();
     const send = (context, authorization, index = 0) =>
       running.handlers['wallet:dapp-send-transaction'](
-        {},
+        CHROME_EVENT,
         running.tx,
         index,
         context,
-        authorization
+        fromTab(authorization)
       );
 
     // Signed under swap's rule, recorded as another site's: refused.
@@ -505,7 +532,12 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
 
     await expect(
-      running.handlers['wallet:sign-message']({}, 'hello', 0, { autoApprove: SWAP })
+      running.handlers['wallet:sign-message'](
+        CHROME_EVENT,
+        'hello',
+        0,
+        fromTab({ autoApprove: SWAP })
+      )
     ).resolves.toMatchObject({ success: true, signature: expect.stringMatching(/^0x/) });
   });
 });

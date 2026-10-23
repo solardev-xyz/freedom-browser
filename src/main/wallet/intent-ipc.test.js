@@ -18,7 +18,19 @@ const mockFeeQuote = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn() },
-  webContents: { getAllWebContents: () => [] },
+  webContents: {
+    getAllWebContents: () => [],
+    // The requesting tab (#764): guest 12, on the approved site.
+    fromId: (id) =>
+      id === 12
+        ? {
+            id,
+            hostWebContents: { id: 1 },
+            getURL: () => 'https://approved.test/app',
+            isDestroyed: () => false,
+          }
+        : null,
+  },
 }));
 jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({}));
@@ -105,7 +117,9 @@ function start() {
   require('./wallet-ipc').registerWalletIpc();
   const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
   return {
-    dappSend: handlers['wallet:dapp-send-transaction'],
+    // Sent by the chrome window (#764 checks the requesting guest is its own).
+    dappSend: (_event, ...args) =>
+      handlers['wallet:dapp-send-transaction']({ sender: { id: 1 } }, ...args),
     walletSend: handlers['wallet:send-transaction'],
     store: require('./intent-store').getIntentStore(),
     safe: require('./safe/safe-executor'),
@@ -151,7 +165,7 @@ function authorize(running, how, walletIndex, tx) {
           origin: SITE,
         }).token,
       }
-    : { autoApprove: SITE };
+    : { autoApprove: SITE, webContentsId: 12 };
 }
 
 const call = (chainId) => ({
