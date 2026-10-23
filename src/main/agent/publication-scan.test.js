@@ -352,4 +352,30 @@ describe('metadata stripping', () => {
     const { findings } = preparePublication({ kind: 'folder', name: 'site', files: [{ path: 'bundle.js', bytes: bundle }] });
     expect(findings).toEqual([expect.objectContaining({ path: 'bundle.js', rule: 'stripe-secret-key', blocking: true })]);
   });
+
+  // An open-ended `{n,}` quantifier made V8's regexp engine push one
+  // backtrack entry per character, so a token-shaped run of ~8M characters
+  // threw "Maximum call stack size exceeded" and failed the whole publication.
+  test('a token-shaped run of millions of characters is scanned, not a stack overflow', () => {
+    const run = 'Ab3dE9gHk2'.repeat(1_000_000); // 10M characters, no placeholder look
+    const long = {
+      'openai-api-key': join('sk-', run),
+      'github-token': join('ghp_', run),
+      'slack-token': join('xoxb-', run),
+      jwt: join('eyJ', run, '.', run.slice(0, 20), '.', run.slice(0, 20)),
+      'stripe-secret-key': join('sk_live_', run),
+      'slack-webhook': join('https://hooks.slack.com/services/', run),
+      'discord-webhook': join('https://discord.com/api/webhooks/12345/', run),
+      'rpc-url-key': join('https://eth-mainnet.g.alchemy.com/v2/', run),
+    };
+    for (const [id, value] of Object.entries(long)) {
+      const rule = RULES.find(item => item.id === id);
+      expect([id, [...rule.matches(` ${value} `)].map(match => match.value.length)]).toEqual([id, [value.length]]);
+    }
+    // The reported case: an `eyJ` run with no dots, in a real publication.
+    const runOnly = Buffer.from(` eyJ${run}`);
+    expect(() => historyContainsSecret(runOnly)).not.toThrow();
+    expect(preparePublication({ kind: 'file', name: 'blob.txt', data: runOnly }).findings).toEqual([]);
+    expect(historyContainsSecret(long.jwt)).toBe(true);
+  });
 });

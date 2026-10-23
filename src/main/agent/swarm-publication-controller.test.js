@@ -599,4 +599,22 @@ describe('SwarmPublicationController pre-publish scan', () => {
     expect(sent).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]));
     expect(requestApproval.mock.calls[0][0].publication.bytes).toBe(sent.length);
   });
+
+  test('the scan is awaited with the caller signal; Stop while it runs cancels before approval', async () => {
+    const scanning = deferred();
+    const preparePublication = jest.fn(() => scanning.promise);
+    const { controller, dependencies } = createController({ preparePublication });
+    const stop = new AbortController();
+    const requestApproval = jest.fn();
+    const publication = controller.publish({ workspacePath: 'dist' }, { requestApproval, signal: stop.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(preparePublication).toHaveBeenCalledWith(expect.objectContaining({ kind: 'folder' }), { signal: stop.signal });
+    stop.abort();
+    const abortError = new Error('PublicationScan prepare aborted');
+    abortError.name = 'AbortError';
+    scanning.reject(abortError);
+    await expect(publication).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+  });
 });

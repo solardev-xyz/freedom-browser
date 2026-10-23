@@ -29,7 +29,7 @@ const PLACEHOLDER =
   /your[_ -]|example|placeholder|changeme|change[_-]me|dummy|sample|redacted|insert|replace[_-]?me|<|>|\.\.\.|…|\{\{|\$\{|process\.env/i;
 
 function placeholderValue(value) {
-  return PLACEHOLDER.test(value) || /(.)\1{7,}/.test(value) || /x{6,}/i.test(value);
+  return PLACEHOLDER.test(value) || /(.)\1{7}/.test(value) || /x{6}/i.test(value);
 }
 
 function lowEntropyHex(hex) {
@@ -119,13 +119,13 @@ const RULES = Object.freeze([
   { id: 'aws-access-key', kind: 'secret', label: 'AWS access key',
     matches: regexRule(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/, value => !placeholderValue(value)) },
   { id: 'openai-api-key', kind: 'secret', label: 'OpenAI-style API key',
-    matches: regexRule(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/, value => !placeholderValue(value)) },
+    matches: regexRule(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*/, value => !placeholderValue(value)) },
   { id: 'github-token', kind: 'secret', label: 'GitHub token',
-    matches: regexRule(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/, value => !placeholderValue(value)) },
+    matches: regexRule(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20}[A-Za-z0-9_]*/, value => !placeholderValue(value)) },
   { id: 'slack-token', kind: 'secret', label: 'Slack token',
-    matches: regexRule(/\bxox[baprs]-[A-Za-z0-9-]{10,}/, value => !placeholderValue(value)) },
+    matches: regexRule(/\bxox[baprs]-[A-Za-z0-9-]{10}[A-Za-z0-9-]*/, value => !placeholderValue(value)) },
   { id: 'jwt', kind: 'secret', label: 'JSON Web Token',
-    matches: regexRule(/\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}/) },
+    matches: regexRule(/\beyJ[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*/) },
   { id: 'url-credentials', kind: 'secret', label: 'Password in a URL',
     matches: regexRule(
       /\b(?:https?|wss?|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?):\/\/[^\s/:@'"<>]+:(?<v>[^\s/@'"<>]+)@/i,
@@ -133,11 +133,11 @@ const RULES = Object.freeze([
   { id: 'credential-assignment', kind: 'secret', label: 'Password or key assignment',
     matches: function* matches(text) {
       yield* regexRule(
-        /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["'](?<v>[^"'\r\n]{8,})["']/i,
+        /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["'](?<v>[^"'\r\n]{8}[^"'\r\n]*)["']/i,
         value => !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(value) && !placeholderValue(value)
       )(text);
       yield* regexRule(
-        /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*(?<v>[A-Za-z0-9_+/.=-]{8,})\s*(?:#.*)?$/im,
+        /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*(?<v>[A-Za-z0-9_+/.=-]{8}[A-Za-z0-9_+/.=-]*)\s*(?:#.*)?$/im,
         value => !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(value) && !placeholderValue(value)
       )(text);
     } },
@@ -149,21 +149,21 @@ const RULES = Object.freeze([
       !lowEntropyHex(value) && KEY_CONTEXT.test(lineAt(text, index).replace(/[0-9a-fA-F]{64}/g, ''))) },
   { id: 'bip39-seed-phrase', kind: 'secret', label: 'Wallet recovery phrase', matches: seedPhraseMatches },
   { id: 'keystore-json', kind: 'secret', label: 'Encrypted wallet keystore',
-    matches: regexRule(/"ciphertext"\s*:\s*"[0-9a-fA-F]{32,}"/, (value, text) =>
+    matches: regexRule(/"ciphertext"\s*:\s*"[0-9a-fA-F]{32}[0-9a-fA-F]*"/, (value, text) =>
       /"kdf"\s*:\s*"(?:scrypt|pbkdf2)"/i.test(text) && /"(?:crypto|Crypto)"\s*:/.test(text)) },
   { id: 'rpc-url-key', kind: 'secret', label: 'RPC URL with an embedded key',
     matches: regexRule(
-      /\b(?:https?|wss?):\/\/(?:[a-z0-9-]+\.infura\.io\/(?:v3|ws\/v3)\/[0-9a-f]{32}|[a-z0-9-]+\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{20,}|(?:[a-z0-9-]+\.)+quiknode\.pro\/[0-9a-f]{20,}|rpc\.ankr\.com\/[a-z0-9_]+\/[0-9a-f]{40,})/i,
+      /\b(?:https?|wss?):\/\/(?:[a-z0-9-]+\.infura\.io\/(?:v3|ws\/v3)\/[0-9a-f]{32}|[a-z0-9-]+\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*|(?:[a-z0-9-]+\.)+quiknode\.pro\/[0-9a-f]{20}[0-9a-f]*|rpc\.ankr\.com\/[a-z0-9_]+\/[0-9a-f]{40}[0-9a-f]*)/i,
       value => !placeholderValue(value)) },
   // Payment, cloud and messaging services.
   { id: 'stripe-secret-key', kind: 'secret', label: 'Stripe secret key',
-    matches: regexRule(/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/, value => !placeholderValue(value)) },
+    matches: regexRule(/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16}[A-Za-z0-9]*\b/, value => !placeholderValue(value)) },
   { id: 'google-api-key', kind: 'secret', label: 'Google API key',
     matches: regexRule(/\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/, value => !placeholderValue(value)) },
   { id: 'slack-webhook', kind: 'secret', label: 'Slack webhook URL',
-    matches: regexRule(/https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_/+-]{20,}/, value => !placeholderValue(value)) },
+    matches: regexRule(/https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_/+-]{20}[A-Za-z0-9_/+-]*/, value => !placeholderValue(value)) },
   { id: 'discord-webhook', kind: 'secret', label: 'Discord webhook URL',
-    matches: regexRule(/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5,}\/[A-Za-z0-9_-]{30,}/, value => !placeholderValue(value)) },
+    matches: regexRule(/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5}\d*\/[A-Za-z0-9_-]{30}[A-Za-z0-9_-]*/, value => !placeholderValue(value)) },
   { id: 'twilio-api-key', kind: 'secret', label: 'Twilio API key',
     matches: regexRule(/\bSK[0-9a-fA-F]{32}\b/, value => !lowEntropyHex(value.slice(2))) },
   { id: 'sendgrid-api-key', kind: 'secret', label: 'SendGrid API key',

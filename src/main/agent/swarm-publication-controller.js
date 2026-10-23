@@ -3,7 +3,8 @@
 const crypto = require('crypto');
 const path = require('path');
 const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
-const { MAX_FINDINGS, preparePublication, publicationScanSummary } = require('./publication-scan');
+const { MAX_FINDINGS, publicationScanSummary } = require('./publication-scan');
+const { preparePublicationOffThread } = require('./publication-scan-host');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
 
@@ -205,6 +206,8 @@ class SwarmPublicationController {
     this.progressTimeoutMs = options.progressTimeoutMs || DEFAULT_PROGRESS_TIMEOUT_MS;
     this.postageReadiness = options.postageReadiness || null;
     this.store = options.store || null;
+    // Off the main thread: the scan reads every byte of up to 50 MiB.
+    this.preparePublication = options.preparePublication || preparePublicationOffThread;
     this.now = options.now || Date.now;
     this.jobTimeoutMs = options.jobTimeoutMs || 10 * 60_000;
     this.readinessPollMs = options.readinessPollMs || 5_000;
@@ -256,8 +259,9 @@ class SwarmPublicationController {
             contentType: input.contentType,
           };
     let scan;
-    try { scan = preparePublication(sourceDescriptor); }
+    try { scan = await this.preparePublication(sourceDescriptor, { signal: context.signal }); }
     catch (error) {
+      if (context.signal?.aborted) throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
       throw new AutomationError(['PUBLICATION_EMPTY', 'PUBLICATION_TOO_MANY_FINDINGS'].includes(error?.code) ? ERROR_CODES.INVALID_ARGUMENT : ERROR_CODES.CAPABILITY_UNAVAILABLE,
         safeMessage(error, 'Freedom could not check the publication before upload'));
     }

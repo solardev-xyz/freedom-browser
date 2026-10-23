@@ -75,14 +75,14 @@ function historyPathReason(value, includeGenerated = false) {
 function historyContainsSecret(value) {
   const text = typeof value === 'string' ? value : value.toString('utf8');
   if (
-    /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20,}|\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}/.test(
+    /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*|\beyJ[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*/.test(
       text
     )
   )
     return true;
   if (/https?:\/\/[^\s/:]+:[^\s/@]+@/i.test(text)) return true;
   const assignments =
-    /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["']([^"'\r\n]{8,})["']/gi;
+    /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["']([^"'\r\n]{8}[^"'\r\n]*)["']/gi;
   for (const match of text.matchAll(assignments)) {
     if (
       !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(
@@ -92,7 +92,7 @@ function historyContainsSecret(value) {
       return true;
   }
   const bareAssignments =
-    /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*([A-Za-z0-9_+/.=-]{8,})\s*(?:#.*)?$/gim;
+    /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*([A-Za-z0-9_+/.=-]{8}[A-Za-z0-9_+/.=-]*)\s*(?:#.*)?$/gim;
   for (const match of text.matchAll(bareAssignments)) {
     if (!/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(match[1])) return true;
   }
