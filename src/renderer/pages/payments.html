@@ -285,14 +285,23 @@
       .status-no-receipt::before {
         background: #8b949e;
       }
-      /* Taken: another transaction used the payment's nonce, so it may or
-         may not have happened. A warning, settled: amber, no pulse. */
+      /* Taken: another transaction from the account used the payment's
+         nonce, so it will never go through (the other may have made the same
+         payment). A warning, settled: amber, no pulse. */
       .status-taken {
         background: rgba(245, 158, 11, 0.12);
         color: var(--pay-status-pending);
       }
       .status-taken::before {
         background: #d29922;
+      }
+      /* What a status means, under its pill (a taken payment's). */
+      .status-note {
+        margin: 6px 0 0;
+        max-width: 260px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--pay-muted);
       }
       @keyframes pulse {
         0%,

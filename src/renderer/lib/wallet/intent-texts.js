@@ -3,10 +3,14 @@
  * records): what a send's outcome means, the labels, and the words on the
  * buttons and warnings that offer to send a payment again or replace it.
  *
- * One module so the product decisions D9/D10 (still open) are a one-file
- * change. The defaults follow the 5.4 plan: an outcome is described, never
- * called a failure, and nothing says "Please try again": a retry sends the
- * same signed payment again, at its one nonce, and can't pay twice.
+ * One module, so the product decisions D9 to D11 are a one-file change.
+ * They are settled as written here: an outcome is described, never called
+ * a failure, and nothing says "Please try again". A retry sends the same
+ * signed payment again, at its one nonce, and can't pay twice.
+ *
+ * The payments page (pages/scripts/payments.js) is a classic script that
+ * can't import this module. It keeps a copy of the final labels and of
+ * TAKEN_EXPLANATION, and pages/payments.test.js holds the copy equal.
  */
 
 /** What happened to a send, by outcome (D9). */
@@ -30,13 +34,28 @@ export function outcomeText(outcome, reasonClass) {
   return OUTCOME_TEXT[outcome] ?? null;
 }
 
-/** Labels of a held payment's state (D10). */
+/**
+ * Labels of a payment's state (D10). `confirmed`, `failed` and `taken` are
+ * read at the finalized block (intent-labels.js: paid, failed, taken), and
+ * the payments page shows them for a settled payment. `pending` is a held
+ * one's.
+ */
 export const LABELS = Object.freeze({
   pending: 'Pending',
   confirmed: 'Confirmed (final)',
   failed: 'Failed on chain',
   taken: 'Taken',
 });
+
+/**
+ * Shown with "Taken" (D10). Another transaction of the sender used the
+ * payment's nonce on the finalized chain, so none of the payment's own
+ * transactions can be mined. That other transaction may be this same
+ * payment, signed elsewhere (design 0005, "Labels, not permissions").
+ */
+export const TAKEN_EXPLANATION =
+  "Another transaction from this account used this payment's place in the queue, so this " +
+  'payment will never go through. That transaction may have done the same thing.';
 
 /**
  * A held payment's line in the list, by where it stands. `absent`: one
@@ -53,6 +72,13 @@ export const ATTENTION_TEXT = Object.freeze({
 
 // What would settle the payment lies too deep below the finalized block to
 // verify (intent-labels.js): it stays waiting.
+//
+// Not yet, pending freedom-core #112 (design 0005, #94): evidence the wallet
+// can't reach becomes "Couldn't confirm", shown with the payment's hashes
+// and an explorer link, and a manual close is offered once the verified
+// nonce at a finalized block is past the payment's. The new state's text
+// goes here, next to the observation it replaces (`attentionText`). The
+// manual close's label goes in LABELS, and in the payments page's copy.
 export const UNVERIFIABLE_TEXT = 'Too old to check on chain';
 
 export function attentionText(summary) {
