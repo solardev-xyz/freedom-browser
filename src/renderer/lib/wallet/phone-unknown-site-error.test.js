@@ -9,14 +9,20 @@
 // and bridge; the renderer's session broker (over a scripted openlv session)
 // and dApp approval. Mocked: chain data, permissions, and the phone itself.
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { Wallet } = require('ethers');
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
 
 // Main's IPC registry, and the chrome window's webContents (id 7).
 const mockMain = { handle: new Map(), on: new Map() };
 const mockWebContents = { id: 7, isDestroyed: () => false, send: jest.fn() };
+// The wallet's records (intent store, payment history) live in a scratch
+// profile per test.
+let mockUserData;
 jest.mock('electron', () => ({
-  app: { getPath: () => require('os').tmpdir() },
+  app: { getPath: () => mockUserData },
   ipcMain: {
     handle: (channel, handler) => mockMain.handle.set(channel, handler),
     on: (channel, handler) => mockMain.on.set(channel, handler),
@@ -358,6 +364,7 @@ async function startAutoApproved(options = {}) {
 }
 
 beforeEach(() => {
+  mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-unknown-'));
   for (const level of ['log', 'warn', 'error'])
     jest.spyOn(console, level).mockImplementation(() => {});
 });
@@ -368,6 +375,7 @@ afterEach(() => {
   mockAutoApprove = false;
   delete global.window;
   delete global.document;
+  fs.rmSync(mockUserData, { recursive: true, force: true });
 });
 
 describe("a site's answer when its phone payment's outcome is unknown (D13)", () => {
