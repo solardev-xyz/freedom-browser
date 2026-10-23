@@ -64,7 +64,11 @@ function releaseFixture(tag = TEST_TAG) {
   const downloads = fetcher.TARGETS.map((target) => {
     const version = tag.replace(/^ipfsd-/, '');
     const name = `freedom-ipfsd-${version}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
-    return { name, browser_download_url: `https://assets.example/${name}`, body: Buffer.from(name) };
+    return {
+      name,
+      browser_download_url: `https://assets.example/${name}`,
+      body: Buffer.from(name),
+    };
   });
   const sums = downloads.map((a) => `${hash(a.body)}  ${a.name}\n`).join('');
   const release = {
