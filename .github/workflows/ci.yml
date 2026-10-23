@@ -472,8 +472,9 @@ jobs:
   # The native smoke against the freedom-ipfsd service, the default
   # (freedom-core design 0007, step 6), as freedom-ipfs-native-addon runs it
   # against the add-on: the production FreedomIpfsdNode on the pinned release
-  # binary, with the same checks, retrieving a real IPNS page, and on linux
-  # #102's fan-out.
+  # binary, with the same checks (the identity CID bafkqaaa served locally,
+  # then an immutable /ipfs/<cid> from the live network, whose network-only
+  # failures are a ::warning::, #747), and on linux #102's fan-out.
   freedom-ipfsd-smoke:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -520,8 +521,9 @@ jobs:
         env:
           FREEDOM_IPFS_BACKEND: service
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
-          FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
-          FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
+          # The live-network leg fetches an immutable /ipfs/<cid> and turns a
+          # network-only failure into a ::warning:: (see the script header and
+          # #747); load/start/local-content failures still fail the job.
 
       - name: Smoke test issue #102 high-fanout IPFS page (freedom-ipfsd)
         if: matrix.target == 'linux-x64'
@@ -530,6 +532,9 @@ jobs:
           FREEDOM_IPFS_BACKEND: service
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
+          # `1` = warn mode: the root page fetch retries and turns network
+          # weather into a ::warning:: like the live leg; gateway_busy during
+          # the fan-out still fails the job (#747).
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
   # Whether a pull request touches what the IPFS cost measurement measures:
