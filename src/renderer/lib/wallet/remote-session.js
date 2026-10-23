@@ -16,10 +16,11 @@
  * A payment (eth_sendTransaction) is signed and broadcast by the phone
  * itself. Once its request has gone to the phone, no new code is minted
  * for it: a second session would ask the phone to pay again while the
- * first request may still be approved. Main is told just before the
- * request goes (`remoteSigner.requestSent`), so that a lost answer from
- * then on is reported as unknown, never as failed (freedom-core design
- * 0005, "Retrying an intent").
+ * first request may still be approved. Main must allow the request first
+ * (`remoteSigner.requestSent`, answered): it marks a live job as possibly
+ * sent, so that a lost answer from then on is reported as unknown, never
+ * as failed (freedom-core design 0005, "Retrying an intent"), and refuses
+ * a job it has already given up on, which then sends nothing.
  */
 
 // Public signaling relays, in preference order (the spec default
@@ -350,10 +351,21 @@ export function createRemoteSessionBroker({
         }
       }
 
-      // From here on the phone may hold the request: tell main first, so a
-      // payment's lost answer is unknown rather than failed.
+      // Ask main before the request goes. Main marks the job as possibly
+      // sent and says yes, or says no for a job it has already given up on
+      // (its timeout). Only after a yes, and if this attempt is still the
+      // current one, does the request go: from then on a payment's lost
+      // answer is unknown, never failed. No new code is offered from here.
       entry.requestSent = true;
-      if (kind === 'signing') remoteSigner.requestSent?.(jobId);
+      if (kind === 'signing') {
+        const admitted = await Promise.race([remoteSigner.requestSent(jobId), aborted]);
+        if (stale()) return;
+        if (!admitted?.allowed) {
+          // Main has given up on the job: nothing goes to the phone.
+          if (settle(jobId)) emit({ jobId, kind, phase: 'aborted', method });
+          return;
+        }
+      }
       emit({ jobId, kind, phase: 'awaiting-approval', method });
       const { result, error } = unwrapResponse(
         await Promise.race([session.send({ method, params }), aborted]),

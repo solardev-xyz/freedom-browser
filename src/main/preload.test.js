@@ -130,6 +130,7 @@ describe('preload', () => {
     expect(exposures.electronAPI.platform).toBe(process.platform);
 
     const invokeCases = [
+      [exposures.remoteSigner, 'requestSent', ['job-1'], 'remote-signer:request-sent', [{ jobId: 'job-1' }]],
       [exposures.electronAPI, 'setBzzBase', [11, 'http://127.0.0.1:1633/bzz/hash/'], IPC.BZZ_SET_BASE, [{ webContentsId: 11, baseUrl: 'http://127.0.0.1:1633/bzz/hash/' }]],
       [exposures.electronAPI, 'clearBzzBase', [11], IPC.BZZ_CLEAR_BASE, [{ webContentsId: 11 }]],
       [exposures.electronAPI, 'startSwarmProbe', ['a'.repeat(64), '/index.html'], IPC.BZZ_START_PROBE, [{ hash: 'a'.repeat(64), path: '/index.html' }]],
@@ -253,7 +254,6 @@ describe('preload', () => {
       [exposures.electronAPI, 'restartAndInstallUpdate', [], 'update:restart-and-install', []],
       [exposures.electronAPI, 'checkForUpdates', [], 'update:check', []],
       [exposures.remoteSigner, 'respond', [{ jobId: 'job-1', result: '0x01' }], 'remote-signer:response', [{ jobId: 'job-1', result: '0x01' }]],
-      [exposures.remoteSigner, 'requestSent', ['job-1'], 'remote-signer:request-sent', [{ jobId: 'job-1' }]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of sendCases) {

@@ -639,9 +639,10 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   },
   // Job outcome: { jobId, result } or { jobId, error: {code, message} }.
   respond: (payload) => ipcRenderer.send('remote-signer:response', payload),
-  // The job's request is about to go to the phone: from here on, a
-  // payment's lost answer means its outcome is unknown.
-  requestSent: (jobId) => ipcRenderer.send('remote-signer:request-sent', { jobId }),
+  // Ask main to let the job's request go to the phone: resolves
+  // { allowed }. Main marks an allowed payment possibly sent, so from then
+  // on its lost answer means the outcome is unknown.
+  requestSent: (jobId) => ipcRenderer.invoke('remote-signer:request-sent', { jobId }),
   // Persist a phone account discovered via eth_requestAccounts.
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
 });
