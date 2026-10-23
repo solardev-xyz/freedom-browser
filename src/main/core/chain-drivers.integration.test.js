@@ -368,6 +368,9 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
       ['effectiveGasPrice', '16'],
       ['source', 'direct'],
       ['verified', false],
+      // 0.7.0 (freedom-core #179): Direct combines up to three endpoints'
+      // quotes and says how many answered; this world has one.
+      ['answered', 1],
     ]);
   });
 });

@@ -52,6 +52,7 @@ const METHOD_CLASSES = Object.freeze({
   'vault.reconcile': VAULT,
   'nodes.write_identity': VAULT,
   'nodes.op_status': VAULT,
+  'nodes.seal_radicle_key': IMMEDIATE,
   'keys.generate_mnemonic': IMMEDIATE,
   'keys.validate_mnemonic': IMMEDIATE,
   'keys.addresses': IMMEDIATE,
@@ -77,6 +78,7 @@ const METHOD_CLASSES = Object.freeze({
   'chain.availability': IMMEDIATE,
   'chain.request': SESSION,
   'chain.fee_quote': SESSION,
+  'chain.fee_reference': SESSION,
   'chain.broadcast': SESSION,
   'chain.html': SESSION,
 });

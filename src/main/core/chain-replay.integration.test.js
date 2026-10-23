@@ -698,6 +698,14 @@ const relabelled = (level) => (_call, result) => {
   if (level) want.value.trust.level = level;
   return want;
 };
+/** A Direct fee quote (deviation `fee-combination`, freedom-core #179):
+ * the reference's quote, with the count of endpoints whose quotes Direct
+ * combined appended, as the core reports it. */
+const answeredBy = (count) => (_call, result) => {
+  const want = recorded(result);
+  want.value.answered = count;
+  return want;
+};
 /**
  * Where a deviation changes the result, by scenario: its name, and what
  * main's callers get instead. That is a function of the call and the
@@ -773,6 +781,18 @@ const DEVIATIONS = new Map([
       }),
     ],
   ],
+  // freedom-core #179: Direct asks up to three endpoints for a fee quote at
+  // once and combines their quotes; the reference asked one at a time. Here
+  // secondary, asked with primary, is a request the reference never made,
+  // and this ledger fails those, so primary's quote stands alone. The core's
+  // own replay (replay.rs) answers it from the world's script and combines
+  // both (answered: 2).
+  ['router-fee-quote-direct-same-endpoint', ['fee-combination', answeredBy(1)]],
+  // b is asked at once with a: a's unparseable hint fails a, and b's legacy
+  // quote stands alone.
+  ['boundary-fee-direct-priority-unparseable', ['fee-combination', answeredBy(1)]],
+  // b is asked at once with a: a fails, and b's legacy quote stands.
+  ['boundary-fee-direct-gas-price-fails-first', ['fee-combination', answeredBy(1)]],
   // freedom-core #108: a quorum with m = 1 is one endpoint's answer, which
   // the router called verified. The same requests and results, labelled as
   // Direct would label a: unverified, then user-configured once a source
