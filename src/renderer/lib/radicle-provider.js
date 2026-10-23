@@ -9,13 +9,14 @@
  */
 
 import { getPermissionKey } from './dapp-provider.js';
-import { getDisplayUrlForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, isTabAgentOwned } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import {
   showRadicleConnect,
   showRadicleSeedApproval,
   showRadicleUnseedApproval,
   showRadicleSigningApproval,
+  showRadicleSignedWriteApproval,
   dismissRadicleConsent,
 } from './radicle-consent.js';
 
@@ -29,13 +30,16 @@ const ERRORS = {
 // Each takes a per-repo consent prompt (unless auto-approve is on).
 const NODE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
-const SIGNING_METHODS = new Set([
-  'radicle_getIdentity',
+// Signing-tier methods that sign and publish with the user's node identity
+// (radicle_getIdentity only discloses it).
+const SIGNED_WRITE_METHODS = new Set([
   'radicle_createIssue',
   'radicle_commentIssue',
   'radicle_editIssueState',
   'radicle_commentPatch',
 ]);
+
+const SIGNING_METHODS = new Set(['radicle_getIdentity', ...SIGNED_WRITE_METHODS]);
 
 // Per-webview navigation generation, bumped on every committed navigation
 // and on webview destruction. Requests capture the generation on arrival;
@@ -113,15 +117,23 @@ async function handleRadicleRequest(webview, request) {
       // policy the user chose — and a connected origin can enumerate
       // targets through radicle_listSeededRepos — so neither may run off
       // the lightweight connection grant alone.
+      // A tab in Agent custody is always prompted (as dapp-provider.js does
+      // for wallet rules); main refuses an automatic one on its own custody
+      // reading, so the request names its guest and the path it took.
       await requirePermission(permissionKey);
-      const autoApproved = await window.radiclePermissions.getAutoApprove(permissionKey, 'node');
+      const autoApproved =
+        Boolean(await window.radiclePermissions.getAutoApprove(permissionKey, 'node')) &&
+        isTabAgentOwned?.(Number(webview.dataset?.tabId)) !== true;
       if (!autoApproved) {
         const showApproval =
           method === 'radicle_seed' ? showRadicleSeedApproval : showRadicleUnseedApproval;
         await showApproval(permissionKey, params?.rid ?? '', webview);
       }
       assertSameDocument();
-      result = await forwardToMain(method, params, permissionKey);
+      result = await forwardToMain(method, params, permissionKey, {
+        webContentsId: guestIdOf(webview),
+        approval: autoApproved ? 'auto' : 'user',
+      });
     } else if (SIGNING_METHODS.has(method)) {
       await requirePermission(permissionKey);
       const hasGrant = await window.radiclePermissions.hasSigningGrant(permissionKey);
@@ -133,7 +145,22 @@ async function handleRadicleRequest(webview, request) {
         await window.radiclePermissions.grantSigning(permissionKey);
       }
       assertSameDocument();
-      result = await forwardToMain(method, params, permissionKey);
+      if (!SIGNED_WRITE_METHODS.has(method)) {
+        result = await forwardToMain(method, params, permissionKey);
+      } else {
+        // The grant answers a write without a prompt, except on a tab in
+        // Agent custody: there the user approves each write's content
+        // (main refuses a grant-answered write on its own custody reading).
+        const prompted = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
+        if (prompted) {
+          await showRadicleSignedWriteApproval(permissionKey, method, params, webview);
+          assertSameDocument();
+        }
+        result = await forwardToMain(method, params, permissionKey, {
+          webContentsId: guestIdOf(webview),
+          approval: prompted ? 'user' : 'auto',
+        });
+      }
     } else {
       // Remaining connection-tier methods: getNodeStatus, listSeededRepos,
       // sync, getSeedStatus, disconnect.
@@ -187,8 +214,18 @@ async function requirePermission(permissionKey) {
   }
 }
 
-async function forwardToMain(method, params, permissionKey) {
-  const response = await window.radicleProvider.execute(method, params, permissionKey);
+function guestIdOf(webview) {
+  try {
+    return webview.getWebContentsId?.();
+  } catch {
+    return undefined;
+  }
+}
+
+async function forwardToMain(method, params, permissionKey, meta) {
+  const response = await (meta
+    ? window.radicleProvider.execute(method, params, permissionKey, meta)
+    : window.radicleProvider.execute(method, params, permissionKey));
   if (response.error) throw response.error;
   return response.result;
 }

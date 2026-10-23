@@ -1,0 +1,1 @@
+- Domain registration, renewal and website/address/text records for .eth, .wei and .gwei through Freedom Agent and the built-in wallet ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))

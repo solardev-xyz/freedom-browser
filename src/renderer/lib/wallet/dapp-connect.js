@@ -10,9 +10,10 @@ import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
 import {
   getActiveWebview,
+  getActiveDisplayUrl,
   emitAccountsChanged,
+  getPermissionKey,
   getNavigationGeneration,
-  permissionKeyForWebview,
 } from '../dapp-provider.js';
 import { registerDappPrompt, isDappPromptShowing, requestPendingError } from './dapp-prompt-guard.js';
 import { showDappPermissions } from './permission-manage.js';
@@ -369,25 +370,28 @@ function rejectDappConnect() {
   console.log('[WalletUI] dApp connection rejected');
 }
 
-/**
- * Update the connection banner for the current tab
- */
+// Counts banner updates: only the latest one paints.
 let bannerUpdate = 0;
 
+/**
+ * Update the connection banner for the current tab *
+ * The banner always describes the visible tab's committed page, never the
+ * address bar (a draft) and never a site named by the caller that is not
+ * on screen: a caller's `permissionKey` names the site whose state just
+ * changed — a grant made for a background tab's request, say (#764) — and
+ * is only a refresh hint, ignored unless it is the visible tab's own key.
+ */
 export async function updateConnectionBanner(permissionKey = null) {
   if (!dappConnectionBanner) return;
 
-  // The banner belongs to the active tab, keyed by its committed URL (never
-  // the editable address bar). An update for another site (a background
-  // tab's connection) leaves it alone.
-  const activeKey = permissionKeyForWebview(getActiveWebview());
+  const activeKey = getPermissionKey(getActiveDisplayUrl());
   if (permissionKey && permissionKey !== activeKey) return;
   permissionKey = activeKey;
-  // Only the latest update paints, and only while the same site is active,
+  // Only the latest update paints, and only while the same site is visible,
   // whatever order the awaits finish in.
   const update = ++bannerUpdate;
   const current = () =>
-    update === bannerUpdate && permissionKeyForWebview(getActiveWebview()) === permissionKey;
+    update === bannerUpdate && getPermissionKey(getActiveDisplayUrl()) === permissionKey;
 
   if (!permissionKey) {
     dappConnectionBanner.classList.add('hidden');
@@ -439,15 +443,19 @@ export async function disconnectDapp(permissionKey = null) {
     await window.dappPermissions.revokePermission(key);
     console.log('[WalletUI] Disconnected dApp:', key);
 
-    // Clear the banner only if it still shows the disconnected site.
-    if (currentBannerPermissionKey === key) {
+    // The banner shows the visible tab's site; a key from the permissions
+    // list can name a site in another tab, whose revocation must leave the
+    // visible site's banner alone.
+    if (key === currentBannerPermissionKey) {
       dappConnectionBanner?.classList.add('hidden');
       currentBannerPermissionKey = null;
     }
 
-    // Tell the active tab only if it is the site that was disconnected.
+    // Only the visible page can be told — and only when it is the site
+    // that was disconnected (a key from the permissions list can name a
+    // site in another tab).
     const webview = getActiveWebview();
-    if (webview && permissionKeyForWebview(webview) === key) {
+    if (webview && getPermissionKey(getActiveDisplayUrl()) === key) {
       emitAccountsChanged(webview, []);
     }
   } catch (err) {

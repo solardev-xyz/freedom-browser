@@ -125,7 +125,7 @@ const updateVersionFromDiagnostics = (diagnostics) => {
   if (state.ipfsVersionFetched) return;
   const version = readNativeVersion(diagnostics);
   if (version) {
-    state.ipfsVersionValue = `Freedom IPFS v${version}`;
+    state.ipfsVersionValue = `Freedom IPFS ${version}`;
     state.ipfsVersionFetched = true;
   }
   if (ipfsVersionText) ipfsVersionText.textContent = versionText(state.ipfsVersionValue);

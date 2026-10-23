@@ -21,6 +21,7 @@ const createElectronApi = () => {
     handlers,
     api: {
       setWindowTitle: jest.fn(),
+      bindAutomationTab: jest.fn(),
       updateTabMenuState: jest.fn(),
       closeWindow: jest.fn(),
       getWebviewPreloadPath: jest.fn().mockResolvedValue('/tmp/webview-preload.js'),
@@ -41,6 +42,7 @@ const createElectronApi = () => {
       onHardReload: register('hardReload'),
       onNextTab: register('nextTab'),
       onPrevTab: register('prevTab'),
+      onSelectTab: register('selectTab'),
       onMoveTabLeft: register('moveTabLeft'),
       onMoveTabRight: register('moveTabRight'),
       onReopenClosedTab: register('reopenClosedTab'),
@@ -60,6 +62,7 @@ const createWebview = (createdWebviews) => {
     removeEventListener(event, handler);
   });
   webview._devToolsOpen = false;
+  webview.getWebContentsId = jest.fn(() => createdWebviews.length + 41);
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => false);
   webview.canGoForward = jest.fn(() => false);
@@ -83,7 +86,7 @@ const buildTabContextMenu = () => {
   const tabContextMenu = createElement('div', { classes: ['hidden'] });
   const actions = {};
 
-  ['close', 'close-others', 'close-right', 'pin'].forEach((action) => {
+  ['close', 'close-others', 'close-right', 'pin', 'claim-agent-tab'].forEach((action) => {
     const button = createElement('button');
     button.dataset.action = action;
     tabContextMenu.appendChild(button);
@@ -101,7 +104,9 @@ const loadTabsModule = async (options = {}) => {
 
   const createdWebviews = [];
   const { api: electronAPI, handlers: electronHandlers } = createElectronApi();
+  const tabBarHome = createElement('div');
   const tabBar = createElement('div');
+  tabBarHome.appendChild(tabBar);
   const newTabBtn = createElement('button');
   const webviewContainer = createElement('div');
   const bzzWebview = createElement('webview');
@@ -215,6 +220,7 @@ const loadTabsModule = async (options = {}) => {
     createdWebviews,
     elements: {
       tabBar,
+      tabBarHome,
       newTabBtn,
       webviewContainer,
       tabContextMenu,
@@ -240,6 +246,58 @@ const findTabElement = (tabBar, tabId) =>
   tabBar.children.find((child) => child.dataset.tabId === tabId) || null;
 
 describe('tabs ui behavior', () => {
+  test('viewer tabs create no guest or automation binding and survive tab-strip projection', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const page = ctx.mod.getActiveTab();
+    const count = ctx.createdWebviews.length;
+    const content = createElement('section');
+    const onClose = jest.fn();
+    const viewer = ctx.mod.createWorkspaceViewerTab({ key: 'changes', conversationId: 'one', title: 'Changes', content, onClose });
+    expect(viewer.webview).toBeNull();
+    expect(ctx.mod.getActiveWebview()).toBeNull();
+    expect(ctx.createdWebviews).toHaveLength(count);
+    expect(ctx.electronAPI.bindAutomationTab).not.toHaveBeenCalled();
+    expect(ctx.mod.getOpenTabs().some((tab) => tab.id === viewer.id)).toBe(false);
+    expect(ctx.mod.getTabPresentation().find((tab) => tab.id === viewer.id)).toMatchObject({ kind: 'workspace-viewer', conversationId: 'one', isActive: true, url: '' });
+    const right = createElement('div');
+    ctx.mod.setTabStripProjection({ container: right, tabIds: [page.id, viewer.id] });
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    expect(content.parentNode).toBe(ctx.elements.webviewContainer);
+    ctx.mod.setTabStripProjection();
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    ctx.mod.switchTab(page.id);
+    expect(content.classList.contains('hidden')).toBe(true);
+    ctx.mod.switchTab(viewer.id);
+    expect(content.classList.contains('hidden')).toBe(false);
+    expect(page.webview.classList.contains('hidden')).toBe(true);
+    ctx.mod.closeTab(viewer.id);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(content.parentNode).toBeNull();
+    expect(ctx.mod.getActiveTab().id).toBe(page.id);
+    ctx.mod.reopenLastClosedTab();
+    expect(ctx.mod.getTabs()).toHaveLength(1);
+  });
+
+  test('viewer identity is conversation-specific and address-bar focus creates a page', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const args = { key: 'changes', conversationId: 'one', title: 'Changes', content: createElement('section') };
+    const first = ctx.mod.createWorkspaceViewerTab(args);
+    expect(ctx.mod.createWorkspaceViewerTab(args)).toBe(first);
+    const second = ctx.mod.createWorkspaceViewerTab({ ...args, conversationId: 'two', content: createElement('section') });
+    expect(second.id).not.toBe(first.id);
+    ctx.electronHandlers.focusAddressBar();
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(4);
+    ctx.mod.switchTab(first.id);
+    const shortcuts = await import('./shortcuts.js');
+    shortcuts.configureShortcuts({ platform: 'linux', overrides: {} });
+    ctx.windowHandlers.keydown({ ctrlKey: true, metaKey: false, key: 'l', preventDefault: jest.fn() });
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(5);
+  });
+
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
@@ -248,7 +306,8 @@ describe('tabs ui behavior', () => {
   });
 
   test('initializes tabs and supports tab lifecycle helpers', async () => {
-    const { mod, electronAPI, createdWebviews, pageContextMenuMocks } = await loadTabsModule();
+    const { mod, electronAPI, createdWebviews, elements, pageContextMenuMocks } =
+      await loadTabsModule();
     const onWebviewEvent = jest.fn();
 
     mod.setWebviewEventHandler(onWebviewEvent);
@@ -280,6 +339,41 @@ describe('tabs ui behavior', () => {
       expect.objectContaining({ tabId: secondTab.id, isNewTab: false })
     );
 
+    mod.setAgentControlledTab(secondTab.id);
+    const controlledTabElement = findTabElement(elements.tabBar, secondTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    expect(controlledTabElement.querySelector('.tab-agent-badge').textContent).toBe('Agent');
+    mod.switchTab(initialTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    mod.setAgentControlledTab(null);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(false);
+
+    const claimAgentTab = jest.fn();
+    const custodyListener = jest.fn();
+    mod.setAgentTabClaimHandler(claimAgentTab);
+    mod.subscribeAgentTabCustody(custodyListener);
+    mod.setAgentTabCustody([
+      {
+        rendererTabId: secondTab.id,
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_test',
+      },
+    ]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(true);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(true);
+    controlledTabElement
+      .querySelector('.tab-agent-badge')
+      .dispatch('click', { stopPropagation: jest.fn() });
+    expect(claimAgentTab).toHaveBeenCalledWith(secondTab.id);
+    expect(custodyListener).toHaveBeenLastCalledWith([
+      expect.objectContaining({ rendererTabId: secondTab.id, custody: 'agent' }),
+    ]);
+    mod.setAgentTabCustody([]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(false);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(false);
+    mod.switchTab(secondTab.id);
+
     mod.moveTab('left');
     expect(mod.getTabs().map((tab) => tab.id)).toEqual([secondTab.id, initialTab.id, thirdTab.id]);
 
@@ -290,10 +384,54 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(secondTab.id);
 
     expect(mod.getOpenTabs()).toEqual([
-      { id: secondTab.id, url: secondTab.url, title: secondTab.title, isActive: true },
-      { id: initialTab.id, url: initialTab.url, title: initialTab.title, isActive: false },
-      { id: thirdTab.id, url: thirdTab.url, title: thirdTab.title, isActive: false },
+      {
+        id: secondTab.id,
+        url: secondTab.url,
+        title: secondTab.title,
+        favicon: '',
+        isLoading: true,
+        isActive: true,
+      },
+      {
+        id: initialTab.id,
+        url: initialTab.url,
+        title: initialTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
+      {
+        id: thirdTab.id,
+        url: thirdTab.url,
+        title: thirdTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
     ]);
+  });
+
+  test('projects the canonical tab strip into Agent-first and restores it', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+    const initialTab = mod.getActiveTab();
+    const taskTab = mod.createTab('https://task.example');
+    const workspaceStripHost = createElement('div');
+
+    mod.setTabStripProjection({
+      container: workspaceStripHost,
+      tabIds: [taskTab.id],
+    });
+
+    expect(workspaceStripHost.children).toContain(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(true);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
+
+    mod.setTabStripProjection();
+
+    expect(elements.tabBarHome.children[0]).toBe(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(false);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
   });
 
   test('createTab loads file:// homeUrl directly without going through onLoadTarget', async () => {
@@ -326,6 +464,26 @@ describe('tabs ui behavior', () => {
       expect(createdWebviews[1].getAttribute('src')).toBe(productionHomeUrl);
 
       // No deferred onLoadTarget dispatch for direct URLs.
+      jest.runAllTimers();
+      expect(onLoadTarget).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('createTab loads only well-formed isolated preview URLs directly', async () => {
+    const { mod, createdWebviews } = await loadTabsModule({
+      homeUrl: 'file:///app/pages/home.html',
+    });
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    const previewUrl = `freedom-preview://${'a'.repeat(40)}/index.html`;
+
+    jest.useFakeTimers();
+    try {
+      await mod.initTabs();
+      mod.createTab(previewUrl);
+      expect(createdWebviews.at(-1).getAttribute('src')).toBe(previewUrl);
       jest.runAllTimers();
       expect(onLoadTarget).not.toHaveBeenCalled();
     } finally {
@@ -491,6 +649,10 @@ describe('tabs ui behavior', () => {
     webview.dispatch('did-fail-load', { errorCode: -1 });
     webview.dispatch('did-navigate-in-page', { url: 'https://loaded.example#hash' });
     webview.dispatch('dom-ready');
+    expect(electronAPI.bindAutomationTab).toHaveBeenCalledWith(
+      activeTab.id,
+      webview.getWebContentsId()
+    );
 
     activeTab.favicon = 'data:favicon';
     activeTab.title = 'Old Title';
@@ -894,6 +1056,77 @@ describe('tabs ui behavior', () => {
     expect(lastWindowLoad.mod.getActiveTab()).toBeNull();
   });
 
+  // #584: the app menu's History > Recently Closed rows come from this push
+  // and name the entry to reopen.
+  test('pushes closed tabs to the menu and reopens the one a menu row names', async () => {
+    const { mod, electronAPI, electronHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const first = mod.createTab('https://first.example');
+    const second = mod.createTab('https://second.example');
+    mod.closeTab(first.id);
+    mod.closeTab(second.id);
+
+    const state = electronAPI.updateTabMenuState.mock.calls.at(-1)[0];
+    expect(state.hasClosedTabs).toBe(true);
+    expect(state.closedTabs.map((entry) => entry.url)).toEqual([
+      'https://first.example',
+      'https://second.example',
+    ]);
+    const [firstEntry, secondEntry] = state.closedTabs;
+    expect(firstEntry.id).not.toBe(secondEntry.id);
+    expect(secondEntry.closedAt).toBeGreaterThanOrEqual(firstEntry.closedAt);
+
+    // The menu row for the older entry reopens that one, not the newest.
+    electronHandlers.reopenClosedTab(firstEntry.id);
+    expect(mod.getActiveTab().url).toBe('https://first.example');
+    const after = electronAPI.updateTabMenuState.mock.calls.at(-1)[0];
+    expect(after.closedTabs.map((entry) => entry.url)).toEqual(['https://second.example']);
+
+    // A stale row (already reopened) does nothing.
+    const count = mod.getTabs().length;
+    electronHandlers.reopenClosedTab(firstEntry.id);
+    expect(mod.getTabs()).toHaveLength(count);
+
+    // Reopen Closed Tab (no id) still takes the most recent.
+    electronHandlers.reopenClosedTab(undefined);
+    expect(mod.getActiveTab().url).toBe('https://second.example');
+  });
+
+  test("the menu push carries the active tab's Back/Forward availability", async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const tab = mod.createTab('https://nav.example');
+    tab.webview.canGoBack = jest.fn(() => true);
+    tab.webview.canGoForward = jest.fn(() => {
+      throw new Error('not attached');
+    });
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: true, canGoForward: false })
+    );
+  });
+
+  // R1-F1: History > Back/Forward and View > Reload go disabled with the
+  // toolbar buttons while the active tab is in Agent custody.
+  test('the menu push disables Back/Forward/Reload for an Agent-owned tab', async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const tab = mod.createTab('https://nav.example');
+    tab.webview.canGoBack = jest.fn(() => true);
+    tab.webview.canGoForward = jest.fn(() => true);
+    mod.setAgentTabCustody([{ rendererTabId: tab.id, provenance: 'agent', custody: 'agent' }]);
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: false, canGoForward: false, canReload: false })
+    );
+    mod.setAgentTabCustody([]);
+    mod.pushTabMenuState();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ canGoBack: true, canGoForward: true, canReload: true })
+    );
+  });
+
   // #580: a page's `window.close()` makes the <webview> fire `close`, and
   // Electron destroys the guest right after while leaving the element up.
   test('a page that closes itself closes its tab, and the window with its last tab', async () => {
@@ -1137,6 +1370,116 @@ describe('tabs ui behavior', () => {
     expect(firstTab.webview.closeDevTools.mock.calls.length).toBe(devtoolsCloseBefore + 1);
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('DevTools opened');
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('DevTools closed');
+  });
+
+  // #717: Cmd/Ctrl+1…8 select a tab by position, Cmd/Ctrl+9 the last one.
+  // Main claims the chord and sends `tab:select` (tab-switch-keys.js); the
+  // chrome's own keydown listener is the fallback. Both move focus to the
+  // page like every other keyboard switch (#304).
+  describe('select tab by position (#717)', () => {
+    const setup = async (count) => {
+      const loaded = await loadTabsModule();
+      const { configureShortcuts } = await import('./shortcuts.js');
+      configureShortcuts({ platform: 'linux', overrides: {} });
+      await loaded.mod.initTabs();
+      const tabs = [loaded.mod.getActiveTab()];
+      // Real pages, not the new-tab page (which focuses the address bar).
+      tabs[0].url = 'https://tab1.example';
+      for (let i = 2; i <= count; i += 1)
+        tabs.push(loaded.mod.createTab(`https://tab${i}.example`));
+      loaded.mod.switchTab(tabs[0].id);
+      return { ...loaded, tabs };
+    };
+    const ctrlDigit = (digit, extra = {}) => ({
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      key: String(digit),
+      code: `Digit${digit}`,
+      preventDefault: jest.fn(),
+      ...extra,
+    });
+
+    test('the tab:select message selects by position, last, and ignores out of range', async () => {
+      const { mod, tabs, electronHandlers } = await setup(3);
+      const focus = tabs.map((tab) => jest.spyOn(tab.webview, 'focus'));
+
+      electronHandlers.selectTab(2);
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+      expect(focus[1]).toHaveBeenCalledTimes(1);
+
+      electronHandlers.selectTab('last');
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+      expect(focus[2]).toHaveBeenCalledTimes(1);
+
+      // Fewer tabs than the position: nothing happens.
+      electronHandlers.selectTab(5);
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+      for (const bad of [0, -1, 1.5, '1', undefined]) electronHandlers.selectTab(bad);
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      electronHandlers.selectTab(1);
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+    });
+
+    test('the chrome keydown fallback answers Ctrl+1…8 and Ctrl+9', async () => {
+      const { mod, tabs, windowHandlers } = await setup(3);
+
+      const two = ctrlDigit(2);
+      windowHandlers.keydown(two);
+      expect(two.preventDefault).toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+
+      windowHandlers.keydown(ctrlDigit(9));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      windowHandlers.keydown(ctrlDigit(5));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      windowHandlers.keydown(ctrlDigit(1));
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+
+      // Linux also takes Alt+1…9, as Chrome does (the renderer platform is
+      // linux under jest).
+      windowHandlers.keydown(ctrlDigit(3, { ctrlKey: false, altKey: true }));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+
+      // Exact modifiers: Ctrl+Shift+2 is not Ctrl+2.
+      windowHandlers.keydown(ctrlDigit(2, { shiftKey: true, key: '@' }));
+      expect(mod.getActiveTab().id).toBe(tabs[2].id);
+    });
+
+    test('binds the physical digit key, so AZERTY reaches it unshifted', async () => {
+      const { mod, tabs, windowHandlers } = await setup(6);
+      // French AZERTY: the unshifted Digit2 key types 'é'.
+      windowHandlers.keydown(ctrlDigit(2, { key: 'é' }));
+      expect(mod.getActiveTab().id).toBe(tabs[1].id);
+      windowHandlers.keydown(ctrlDigit(9, { key: 'ç' }));
+      expect(mod.getActiveTab().id).toBe(tabs[5].id);
+
+      // …except Digit6, which types '-' there: that press is Zoom Out's.
+      windowHandlers.keydown(ctrlDigit(1, { key: '&' }));
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+      const azerty6 = ctrlDigit(6, { key: '-' });
+      windowHandlers.keydown(azerty6);
+      expect(azerty6.preventDefault).not.toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+      // The US-layout Ctrl+6 still selects tab 6.
+      windowHandlers.keydown(ctrlDigit(6));
+      expect(mod.getActiveTab().id).toBe(tabs[5].id);
+    });
+
+    test("keeps the Czech Ctrl+1 press (key '+') for tab 1, not Zoom In's alias", async () => {
+      const { mod, tabs, windowHandlers } = await setup(3);
+      mod.switchTab(tabs[2].id);
+      // Czech's unshifted `1` key types `+`: only Zoom In's fixed `Plus`
+      // alias, which does not outrank Select Tab 1 (Zoom In keeps `=`).
+      const czech1 = ctrlDigit(1, { key: '+' });
+      windowHandlers.keydown(czech1);
+      expect(czech1.preventDefault).toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+    });
   });
 
   test('forwards update-target-url and link-status:zone for the active tab only', async () => {

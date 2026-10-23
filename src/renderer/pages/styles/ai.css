@@ -1,0 +1,479 @@
+/* Provider forms share the internal Settings palette, never chrome's glass. */
+#ai-dictation-settings {
+  display: grid;
+  --agent-bubble-agent: var(--bg-card);
+  --muted: var(--text-muted);
+  gap: 24px;
+  margin: 0;
+  max-height: none;
+}
+/* The grid's own gap spaces the intro from the first group. */
+#ai-dictation-settings > .section-description {
+  margin-bottom: 0;
+}
+#voice[hidden],
+#voice:has(#ai-dictation-settings[hidden]),
+:is(#ai, #providers, #voice) [hidden],
+:is(#ai, #providers, #voice) .hidden {
+  display: none !important;
+}
+/* A page's intro reads like every other section's: the 12 px muted
+   `.row-help` line under the heading, 16 px above the first card. */
+:is(#ai, #providers, #voice) .section-description {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0 16px;
+}
+/* The subpage heading takes focus on a route change so screen readers
+   announce the page; like `.layout`, it is not a control, so no ring. */
+:is(#providers, #voice) .section-title[tabindex='-1']:focus {
+  outline: none;
+}
+#ai-provider-settings {
+  margin-top: 0;
+}
+#ai-provider-settings h3 {
+  font-size: 16px;
+  margin: 16px 0 8px;
+}
+#ai-provider-settings h4 {
+  font-size: 13px;
+  margin: 0;
+}
+:is(#ai, #providers, #voice) .agent-setup-intro p,
+:is(#ai, #providers, #voice) .agent-catalog-status,
+:is(#ai, #providers, #voice) .agent-subscription-note,
+:is(#ai, #providers, #voice) .agent-provider-models-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+:is(#ai, #providers, #voice) .agent-field {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  font-size: 13px;
+}
+:is(#ai, #providers, #voice) .agent-field > span {
+  font-weight: 600;
+}
+/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius). */
+:is(#ai, #providers, #voice) input:not([type='checkbox']),
+:is(#ai, #providers, #voice) textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+:is(#ai, #providers, #voice) input[type='url'],
+:is(#ai, #providers, #voice) input[type='password'],
+:is(#ai, #providers, #voice) textarea {
+  font-family: var(--font-mono);
+}
+:is(#ai, #providers, #voice) input:focus-visible,
+:is(#ai, #providers, #voice) textarea:focus-visible,
+:is(#ai, #providers, #voice) button:focus-visible,
+:is(#ai, #providers, #voice) summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+:is(#ai, #providers, #voice) .agent-button,
+:is(#ai, #providers, #voice) .agent-text-button {
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+:is(#ai, #providers, #voice) .agent-button:not(.secondary) {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+:is(#ai, #providers, #voice) .agent-text-button {
+  border-color: transparent;
+  color: var(--accent);
+}
+/* Destructive, the way Settings' `.btn.danger` is: outlined in --danger. */
+:is(#ai, #providers, #voice) .agent-button.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+:is(#ai, #providers, #voice) .agent-button.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  filter: none;
+}
+/* The in-page confirmation a Disconnect asks for before deleting anything. */
+#providers .agent-disconnect-confirm {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  font-size: 13px;
+  line-height: 1.6;
+}
+#providers .agent-disconnect-confirm p {
+  margin: 0;
+}
+#providers .agent-disconnect-confirm .agent-config-actions {
+  margin: 10px 0 0;
+}
+:is(#ai, #providers, #voice) .agent-button:hover,
+:is(#ai, #providers, #voice) .agent-text-button:hover {
+  filter: brightness(1.1);
+}
+:is(#ai, #providers, #voice) button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+:is(#providers, #voice) .agent-connected-provider-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+:is(#providers, #voice) .agent-connected-provider,
+#providers .agent-provider-choice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+:is(#providers, #voice) .agent-connected-provider:hover,
+#providers .agent-provider-choice:hover {
+  background: var(--bg-card-hover);
+}
+:is(#providers, #voice) .agent-connected-provider-copy,
+#providers .agent-provider-choice-copy {
+  display: grid;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+:is(#providers, #voice) .agent-connected-provider-copy span,
+#providers .agent-provider-choice-copy > span,
+#providers .agent-provider-method-state {
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+:is(#providers, #voice) .agent-provider-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+}
+:is(#providers, #voice) .agent-provider-logo {
+  max-width: 32px;
+  max-height: 32px;
+  object-fit: contain;
+}
+#providers .agent-provider-logo-light {
+  display: var(--light-only-display);
+}
+#providers .agent-provider-logo-dark {
+  display: var(--dark-only-display);
+}
+#providers .agent-provider-group-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 24px 0 10px;
+}
+#providers .agent-provider-group {
+  display: grid;
+  gap: 8px;
+}
+#providers .agent-provider-method {
+  margin: 12px 0;
+}
+#providers .agent-provider-indicator.active,
+#providers .agent-provider-method-state.active {
+  color: var(--accent);
+}
+#providers .agent-card-heading,
+#providers .agent-provider-models-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+:is(#providers, #voice) .agent-badge {
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+:is(#providers, #voice) .agent-badge.active {
+  color: var(--success);
+}
+#providers .agent-provider-models {
+  margin: 24px 0;
+}
+#providers .agent-provider-models-refresh,
+#providers .agent-model-star {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+#providers .agent-provider-models-refresh svg {
+  width: 18px;
+  height: 18px;
+}
+#providers .agent-provider-models-list {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+#providers .agent-provider-models-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+#providers .agent-provider-models-list li:last-child {
+  border-bottom: 0;
+}
+#providers .agent-provider-models-list li > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#providers .agent-model-privacy {
+  display: inline-flex;
+  gap: 6px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+#providers .agent-model-privacy-symbol {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  cursor: help;
+}
+#providers .agent-model-privacy-symbol svg {
+  width: 100%;
+  height: 100%;
+}
+#providers .agent-model-privacy-detail {
+  margin-top: 8px;
+}
+#providers .agent-provider-advanced {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+#providers summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+:is(#providers, #voice) .agent-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+:is(#providers, #voice) .agent-message {
+  font-size: 13px;
+  line-height: 1.6;
+}
+:is(#providers, #voice) .error {
+  color: var(--danger);
+}
+#providers .agent-compatibility,
+#providers .agent-auth-code {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: 10px;
+  padding: 16px;
+  margin: 16px 0;
+}
+#providers .agent-auth-code {
+  display: grid;
+  gap: 12px;
+}
+#providers .agent-auth-code strong {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.1em;
+}
+#ai .ai-next-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+#ai .ai-next-step .row-help {
+  flex: 1;
+  min-width: 180px;
+}
+
+:is(#ai, #voice) .toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  z-index: 1;
+}
+:is(#ai, #voice) .toggle:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 20px;
+}
+
+#providers .agent-settings-model-name button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+#providers .agent-settings-model-name button[aria-pressed='true'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Keep the new selected entry above AA on its accent-tinted background. */
+.nav-item[data-target='ai'].active {
+  color: var(--accent-strong);
+}
+
+/* AI uses the same list-to-detail navigation as Networks. */
+.ai-settings-links .net-row {
+  text-decoration: none;
+}
+.ai-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ai-breadcrumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.ai-breadcrumbs a:hover {
+  text-decoration: underline;
+}
+.ai-breadcrumbs a:focus-visible,
+.ai-settings-links a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#providers #agent-provider-list-back,
+#providers #agent-provider-detail-back,
+#providers #agent-provider-form-heading {
+  display: none;
+}
+
+#voice .section-description,
+#voice .subsection-title,
+#voice .agent-connected-provider-list {
+  margin: 0;
+}
+.voice-settings-group {
+  display: grid;
+  gap: 12px;
+}
+#voice .agent-button {
+  width: fit-content;
+  text-decoration: none;
+}
+#voice .voice-service {
+  text-decoration: none;
+}
+#voice .voice-service .agent-badge {
+  font-size: 12px;
+}
+#voice .voice-service:focus-visible,
+#voice a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#voice .agent-provider-avatar svg {
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+}
+.voice-service-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+}
+.voice-service-summary p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+.voice-service-summary strong {
+  font-size: 14px;
+}
+#voice .agent-message:empty {
+  display: none;
+}
+.voice-download-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.voice-empty {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  #voice .voice-service {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #voice .voice-service .agent-badge {
+    white-space: normal;
+  }
+  #voice .row {
+    flex-wrap: wrap;
+  }
+  #voice .row-control {
+    min-width: 0;
+  }
+}

@@ -6,11 +6,15 @@ jest.mock('electron', () => ({
     },
     removeHandler: () => {},
   },
+  dialog: { showOpenDialog: (...args) => mockShowOpenDialog(...args) },
+  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
 }));
+const mockShowOpenDialog = jest.fn();
 
 const mockUploadData = jest.fn();
 const mockUploadFile = jest.fn();
 const mockUploadFilesFromDirectory = jest.fn();
+const mockUploadCollection = jest.fn();
 const mockRetrieveTag = jest.fn();
 const mockGetPostageBatches = jest.fn();
 
@@ -23,6 +27,7 @@ jest.mock('@ethersphere/bee-js', () => ({
       upload: mockUploadFile,
     },
     collection: {
+      upload: mockUploadCollection,
       uploadFromDirectory: mockUploadFilesFromDirectory,
     },
     tag: {
@@ -67,14 +72,48 @@ jest.mock('fs/promises', () => ({
 
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { normalizeUploadResult, normalizeTag, registerPublishIpc, USER_ORIGIN } = require('./publish-service');
+const {
+  normalizeUploadResult,
+  normalizeTag,
+  publishCollection,
+  registerPublishIpc,
+  USER_ORIGIN,
+} = require('./publish-service');
 
 registerPublishIpc();
 
+// A stand-in webContents: the pick tokens are bound to sender.id.
+function makeSender(id = 1) {
+  const listeners = {};
+  return {
+    id,
+    once: (name, fn) => {
+      listeners[name] = fn;
+    },
+    emit: (name) => listeners[name]?.(),
+  };
+}
+const SENDER = makeSender(1);
+
 async function invokeIpc(channel, ...args) {
+  return invokeIpcFrom(SENDER, channel, ...args);
+}
+
+async function invokeIpcFrom(sender, channel, ...args) {
   const handler = ipcHandlers[channel];
   if (!handler) throw new Error(`No handler for ${channel}`);
-  return handler({}, ...args);
+  return handler({ sender }, ...args);
+}
+
+// Run the native picker (stubbed to choose `chosenPath`) and return its token.
+async function pick(kind, chosenPath, sender = SENDER) {
+  mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [chosenPath] });
+  const result = await invokeIpcFrom(
+    sender,
+    kind === 'file' ? 'swarm:pick-file' : 'swarm:pick-directory'
+  );
+  expect(result.success).toBe(true);
+  return result.token;
 }
 
 function makeRef(hex) {
@@ -117,10 +156,12 @@ describe('publish-service', () => {
 
   describe('normalizeTag', () => {
     test('computes progress from sent count and done flag', () => {
-      expect(normalizeTag({ uid: 1, split: 100, synced: 75, seen: 80, stored: 90, sent: 85 })).toEqual({
+      expect(
+        normalizeTag({ uid: 1, split: 100, synced: 75, seen: 10, stored: 90, sent: 85 })
+      ).toEqual({
         tagUid: 1,
         split: 100,
-        seen: 80,
+        seen: 10,
         stored: 90,
         sent: 85,
         synced: 75,
@@ -129,7 +170,7 @@ describe('publish-service', () => {
       });
     });
 
-    test('marks done when sent >= split', () => {
+    test('marks done when acknowledged and already-seen chunks cover split', () => {
       const tag = normalizeTag({ uid: 2, split: 10, synced: 5, seen: 10, stored: 10, sent: 10 });
       expect(tag.done).toBe(true);
       expect(tag.progress).toBe(100);
@@ -139,6 +180,49 @@ describe('publish-service', () => {
       const tag = normalizeTag({ uid: 3, split: 0, synced: 0 });
       expect(tag.progress).toBe(0);
       expect(tag.done).toBe(false);
+    });
+  });
+
+  describe('publishCollection', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    test('uploads exact in-memory files without a staging directory', async () => {
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch4', 1000000000, 86400)]);
+      mockUploadCollection.mockResolvedValue({
+        reference: makeRef('collectionref'),
+        tagUid: 40,
+      });
+      const files = [
+        { path: 'index.html', bytes: Buffer.from('<main>Hello</main>') },
+        { path: 'assets/app.js', bytes: Buffer.from('ready();') },
+      ];
+
+      const result = await publishCollection(files, {});
+
+      expect(result).toEqual({
+        reference: 'collectionref',
+        bzzUrl: 'bzz://collectionref',
+        tagUid: 40,
+        batchIdUsed: 'batch4',
+        bytesSize: Buffer.byteLength('<main>Hello</main>ready();'),
+      });
+      expect(mockUploadCollection).toHaveBeenCalledWith(
+        'batch4',
+        [
+          expect.objectContaining({ path: 'index.html', size: 18, file: expect.any(Object) }),
+          expect.objectContaining({ path: 'assets/app.js', size: 8, file: expect.any(Object) }),
+        ],
+        expect.objectContaining({ pin: true, deferred: true, indexDocument: 'index.html' })
+      );
+      const uploaded = mockUploadCollection.mock.calls[0][1];
+      await expect(uploaded[0].file.arrayBuffer()).resolves.toEqual(
+        Uint8Array.from(files[0].bytes).buffer
+      );
+      await expect(uploaded[1].file.arrayBuffer()).resolves.toEqual(
+        Uint8Array.from(files[1].bytes).buffer
+      );
     });
   });
 
@@ -175,9 +259,7 @@ describe('publish-service', () => {
 
     test('swarm:publish-data marks history entry as failed on upload error', async () => {
       const { addEntry, updateEntry } = require('./publish-history');
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch1', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch1', 1000000000, 86400)]);
       mockUploadFile.mockRejectedValue(new Error('Bee upload failed'));
 
       const result = await invokeIpc('swarm:publish-data', 'test');
@@ -220,6 +302,15 @@ describe('publish-service', () => {
       expect(result.needsStorage).toBe(true);
     });
 
+    test('swarm:publish-data offers storage recovery when existing batches are full', async () => {
+      mockGetPostageBatches.mockResolvedValue([makeBatch('full', 0, 86400)]);
+      const result = await invokeIpc('swarm:publish-data', 'test');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('enough capacity');
+      expect(result.needsStorage).toBe(true);
+      expect(mockUploadFile).not.toHaveBeenCalled();
+    });
+
     test('swarm:publish-data rejects empty input', async () => {
       const result = await invokeIpc('swarm:publish-data', null);
       expect(result.success).toBe(false);
@@ -230,15 +321,14 @@ describe('publish-service', () => {
       fs.existsSync.mockReturnValue(true);
       fs.statSync.mockReturnValue({ size: 5000, isDirectory: () => false });
       fs.createReadStream.mockReturnValue(mockStream);
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch2', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch2', 1000000000, 86400)]);
       mockUploadFile.mockResolvedValue({
         reference: makeRef('fileref456'),
         tagUid: 20,
       });
 
-      const result = await invokeIpc('swarm:publish-file', '/tmp/test.txt');
+      const token = await pick('file', '/tmp/test.txt');
+      const result = await invokeIpc('swarm:publish-file', token);
       expect(result.success).toBe(true);
       expect(result.reference).toBe('fileref456');
       expect(fs.createReadStream).toHaveBeenCalledWith('/tmp/test.txt');
@@ -253,9 +343,50 @@ describe('publish-service', () => {
     test('swarm:publish-file rejects missing file', async () => {
       fs.existsSync.mockReturnValue(false);
 
-      const result = await invokeIpc('swarm:publish-file', '/tmp/nonexistent.txt');
+      const token = await pick('file', '/home/u/docs/nonexistent.txt');
+      const result = await invokeIpc('swarm:publish-file', token);
       expect(result.success).toBe(false);
-      expect(result.error).toContain('not found');
+      expect(result.error).toBe('File not found: nonexistent.txt');
+      expect(result.error).not.toContain('/home/u');
+    });
+
+    test('swarm:publish-directory reports a missing folder by name only', async () => {
+      fs.existsSync.mockReturnValue(false);
+
+      const token = await pick('directory', '/home/u/sites/blog');
+      const result = await invokeIpc('swarm:publish-directory', token);
+      expect(result).toEqual({ success: false, error: 'Directory not found: blog' });
+    });
+
+    test('swarm:publish-directory resolves by name only when the folder vanishes between the checks', async () => {
+      fs.existsSync.mockReturnValue(true);
+      fs.statSync.mockImplementationOnce(() => {
+        throw Object.assign(
+          new Error("ENOENT: no such file or directory, stat '/home/u/sites/blog'"),
+          { code: 'ENOENT', syscall: 'stat', path: '/home/u/sites/blog' }
+        );
+      });
+
+      const token = await pick('directory', '/home/u/sites/blog');
+      const result = await invokeIpc('swarm:publish-directory', token);
+      expect(result).toEqual({ success: false, error: 'Directory not found: blog' });
+    });
+
+    test('an fs error during publish (file vanished after the check) never returns the absolute path', async () => {
+      fs.existsSync.mockReturnValue(true);
+      const enoent = Object.assign(
+        new Error("ENOENT: no such file or directory, stat '/home/u/docs/x.txt'"),
+        { code: 'ENOENT', syscall: 'stat', path: '/home/u/docs/x.txt' }
+      );
+      fs.statSync.mockImplementationOnce(() => { throw enoent; });
+
+      const token = await pick('file', '/home/u/docs/x.txt');
+      const result = await invokeIpc('swarm:publish-file', token);
+      expect(result).toEqual({ success: false, error: 'Could not read "x.txt" (ENOENT)' });
+      expect(require('./publish-history').updateEntry).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ status: 'failed', errorMessage: 'Could not read "x.txt" (ENOENT)' })
+      );
     });
 
     test('swarm:publish-directory uploads with auto index.html detection', async () => {
@@ -273,15 +404,14 @@ describe('publish-service', () => {
         { name: 'style.css', isDirectory: () => false, isFile: () => true },
       ]);
       fsp.stat.mockResolvedValue({ size: 1000 });
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch3', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch3', 1000000000, 86400)]);
       mockUploadFilesFromDirectory.mockResolvedValue({
         reference: makeRef('dirref789'),
         tagUid: 30,
       });
 
-      const result = await invokeIpc('swarm:publish-directory', '/tmp/site');
+      const token = await pick('directory', '/tmp/site');
+      const result = await invokeIpc('swarm:publish-directory', token);
       expect(result.success).toBe(true);
       expect(result.reference).toBe('dirref789');
       expect(mockUploadFilesFromDirectory).toHaveBeenCalledWith(
@@ -295,12 +425,123 @@ describe('publish-service', () => {
       );
     });
 
+    test('the pickers answer with a token and a name, never the path', async () => {
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/home/u/notes.txt'] });
+      const result = await invokeIpc('swarm:pick-file');
+      expect(result).toEqual({ success: true, token: expect.stringMatching(/^[0-9a-f]{64}$/), name: 'notes.txt' });
+      expect(JSON.stringify(result)).not.toContain('/home/u');
+      expect(mockShowOpenDialog).toHaveBeenLastCalledWith(undefined, expect.objectContaining({ properties: ['openFile'] }));
+
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/home/u/site'] });
+      const dir = await invokeIpc('swarm:pick-directory');
+      expect(dir.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(mockShowOpenDialog).toHaveBeenLastCalledWith(undefined, expect.objectContaining({ properties: ['openDirectory'] }));
+    });
+
+    test('a cancelled pick returns no token', async () => {
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      expect(await invokeIpc('swarm:pick-file')).toEqual({ success: true, token: null });
+    });
+
+    test('a pick without a sender id mints nothing', async () => {
+      const result = await ipcHandlers['swarm:pick-file']({});
+      expect(result.success).toBe(false);
+      expect(mockShowOpenDialog).not.toHaveBeenCalled();
+    });
+
+    describe('publish handlers accept only a pick token', () => {
+      const publishHistory = require('./publish-history');
+
+      beforeEach(() => {
+        fs.existsSync.mockReturnValue(true);
+        fs.statSync.mockReturnValue({ size: 5, isDirectory: () => true });
+        mockGetPostageBatches.mockResolvedValue([makeBatch('b', 1000000000, 86400)]);
+        mockUploadFile.mockResolvedValue({ reference: makeRef('ref'), tagUid: 1 });
+        mockUploadFilesFromDirectory.mockResolvedValue({ reference: makeRef('ref'), tagUid: 1 });
+        jest.clearAllMocks();
+      });
+
+      const expectNothingPublished = () => {
+        expect(publishHistory.addEntry).not.toHaveBeenCalled();
+        expect(mockUploadFile).not.toHaveBeenCalled();
+        expect(mockUploadFilesFromDirectory).not.toHaveBeenCalled();
+        expect(fs.createReadStream).not.toHaveBeenCalled();
+      };
+
+      test.each([
+        ['swarm:publish-file', '/home/u/.ssh/id_ed25519'],
+        ['swarm:publish-directory', '/home/u/.ssh'],
+      ])('%s refuses a raw filesystem path', async (channel, rawPath) => {
+        const result = await invokeIpc(channel, rawPath);
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/choose the file or folder again/i);
+        expectNothingPublished();
+      });
+
+      test.each([['swarm:publish-file'], ['swarm:publish-directory']])(
+        '%s refuses a missing token',
+        async (channel) => {
+          const result = await invokeIpc(channel, undefined);
+          expect(result.success).toBe(false);
+          expectNothingPublished();
+        }
+      );
+
+      test('a token publishes once; reusing it is refused', async () => {
+        const token = await pick('file', '/home/u/a.txt');
+        expect((await invokeIpc('swarm:publish-file', token)).success).toBe(true);
+        jest.clearAllMocks();
+        const again = await invokeIpc('swarm:publish-file', token);
+        expect(again.success).toBe(false);
+        expectNothingPublished();
+      });
+
+      test('a token from another sender is refused', async () => {
+        const token = await pick('file', '/home/u/a.txt', makeSender(2));
+        const result = await invokeIpc('swarm:publish-file', token);
+        expect(result.success).toBe(false);
+        expectNothingPublished();
+      });
+
+      test('an expired token is refused', async () => {
+        const { TOKEN_TTL_MS } = require('./publish-pick-tokens');
+        const realNow = Date.now;
+        const start = realNow();
+        Date.now = () => start;
+        try {
+          const token = await pick('directory', '/home/u/site');
+          Date.now = () => start + TOKEN_TTL_MS + 1;
+          const result = await invokeIpc('swarm:publish-directory', token);
+          expect(result.success).toBe(false);
+          expectNothingPublished();
+        } finally {
+          Date.now = realNow;
+        }
+      });
+
+      test('a file token cannot publish a directory', async () => {
+        const token = await pick('file', '/home/u');
+        const result = await invokeIpc('swarm:publish-directory', token);
+        expect(result.success).toBe(false);
+        expectNothingPublished();
+      });
+
+      test('tokens die with the webContents that picked', async () => {
+        const sender = makeSender(3);
+        const token = await pick('file', '/home/u/a.txt', sender);
+        sender.emit('destroyed');
+        const result = await invokeIpcFrom(sender, 'swarm:publish-file', token);
+        expect(result.success).toBe(false);
+        expectNothingPublished();
+      });
+    });
+
     test('swarm:get-upload-status returns normalized tag', async () => {
       mockRetrieveTag.mockResolvedValue({
         uid: 42,
         split: 200,
         synced: 150,
-        seen: 180,
+        seen: 10,
         stored: 190,
         sent: 170,
       });

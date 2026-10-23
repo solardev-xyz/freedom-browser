@@ -107,6 +107,51 @@ describe('history', () => {
     expect(mod.getHistoryCount()).toBe(0);
   });
 
+  // #584: the app menu's Recently Visited list re-reads on these, so a
+  // removed or cleared page leaves the menu at once.
+  test('notifies change listeners on add, remove and clear, not on a no-op remove', () => {
+    const { mod } = loadHistoryModule({ userDataDir });
+    historyModule = mod;
+    const listener = jest.fn();
+    const unsubscribe = mod.onHistoryChanged(listener);
+
+    const entry = mod.addHistoryEntry({
+      url: 'https://example.com',
+      title: 'E',
+      protocol: 'https',
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    expect(mod.removeHistoryEntry(entry.id + 999)).toBe(false);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    expect(mod.removeHistoryEntry(entry.id)).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    mod.clearHistory();
+    expect(listener).toHaveBeenCalledTimes(3);
+
+    unsubscribe();
+    mod.addHistoryEntry({ url: 'https://example.org', title: 'O', protocol: 'https' });
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  test('a throwing change listener does not break the write or other listeners', () => {
+    const { mod } = loadHistoryModule({ userDataDir });
+    historyModule = mod;
+    const good = jest.fn();
+    mod.onHistoryChanged(() => {
+      throw new Error('boom');
+    });
+    mod.onHistoryChanged(good);
+
+    expect(() =>
+      mod.addHistoryEntry({ url: 'https://example.com', title: 'E', protocol: 'https' })
+    ).not.toThrow();
+    expect(good).toHaveBeenCalledTimes(1);
+    expect(mod.getHistoryCount()).toBe(1);
+  });
+
   test('registers IPC handlers for history workflows', async () => {
     const ipcMain = createIpcMainMock();
     const { mod } = loadHistoryModule({ userDataDir, ipcMain });

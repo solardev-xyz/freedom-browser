@@ -36,6 +36,19 @@ const historyClearBtn = document.getElementById('publish-history-clear');
 
 let progressPollTimeout = null;
 let lastResult = null;
+let textPublishInFlight = false;
+
+// Cmd+Enter on macOS, Ctrl+Enter elsewhere, publishes the text area like the
+// Publish button (#720). Plain Enter, and Enter with any other modifier, still
+// edits the text.
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent || '');
+const PUBLISH_SHORTCUT_LABEL = IS_MAC ? '\u2318\u21a9' : 'Ctrl+Enter';
+
+function isPublishShortcut(event) {
+  if (event.key !== 'Enter' || event.isComposing) return false;
+  if (event.altKey || event.shiftKey) return false;
+  return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+}
 
 // ============================================
 // Init
@@ -52,6 +65,12 @@ function init() {
   publishFolderBtn?.addEventListener('click', handlePublishFolder);
   publishTextBtn?.addEventListener('click', showTextInput);
   textSubmitBtn?.addEventListener('click', handlePublishText);
+  if (textSubmitBtn) textSubmitBtn.title = `Publish (${PUBLISH_SHORTCUT_LABEL})`;
+  textArea?.addEventListener('keydown', (event) => {
+    if (!isPublishShortcut(event)) return;
+    event.preventDefault();
+    handlePublishText();
+  });
   textCancelBtn?.addEventListener('click', resetToActions);
   publishAnotherBtn?.addEventListener('click', resetToActions);
   errorRetryBtn?.addEventListener('click', resetToActions);
@@ -153,14 +172,14 @@ async function handlePublishFile() {
   try {
     const picked = await swarm.pickFileForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading file\u2026', 0);
 
-    const result = await swarm.publishFilePath(picked.path);
+    const result = await swarm.publishFilePath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
@@ -181,14 +200,14 @@ async function handlePublishFolder() {
   try {
     const picked = await swarm.pickDirectoryForPublish();
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
-    if (!picked?.path) return; // User cancelled
+    if (!picked?.token) return; // User cancelled
 
     if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading folder\u2026', 0);
 
-    const result = await swarm.publishDirectoryPath(picked.path);
+    const result = await swarm.publishDirectoryPath(picked.token);
 
     if (!result?.success) {
       showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
@@ -207,8 +226,9 @@ async function handlePublishFolder() {
 
 async function handlePublishText() {
   const text = textArea?.value;
-  if (!text) return;
+  if (!text || textPublishInFlight) return;
 
+  textPublishInFlight = true;
   try {
     if (!(await ensurePublishReady())) return;
 
@@ -225,6 +245,8 @@ async function handlePublishText() {
     showResult(result);
   } catch (err) {
     showError(err.message || 'Publish failed.');
+  } finally {
+    textPublishInFlight = false;
   }
 }
 
@@ -296,6 +318,23 @@ function showError(message, { offerSetup = false } = {}) {
   showView('error');
   if (errorText) errorText.textContent = message;
   errorSetupBtn?.classList.toggle('hidden', !offerSetup);
+  if (offerSetup) void explainSetupWithoutWallet(message);
+}
+
+// The publish setup lives in the wallet sidebar, which the Identity & Wallet
+// feature flag gates: with it off, the button would open nothing (#719), so
+// say where to turn it on instead, as the Settings row does.
+async function explainSetupWithoutWallet(message) {
+  let settings;
+  try {
+    settings = await window.freedomAPI?.getSettings?.();
+  } catch {
+    return;
+  }
+  if (!settings || settings.enableIdentityWallet === true) return;
+  if (errorText?.textContent !== message) return; // A newer error is up.
+  errorSetupBtn?.classList.add('hidden');
+  errorText.textContent = `${message} Enable Identity & Wallet under Advanced to publish on Swarm.`;
 }
 
 async function copyToClipboard(text) {

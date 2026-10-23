@@ -194,7 +194,7 @@ describe('ipfs-ui', () => {
     expect(ctx.ipfsApi.getStatus).toHaveBeenCalledWith({ nodeStats: true });
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('3');
     expect(ctx.elements.ipfsDataRead.textContent).toBe('1.5 KB');
-    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS v0.4.1');
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS 0.4.1');
     expect(ctx.state.ipfsVersionFetched).toBe(true);
     expect(ctx.state.ipfsInfoInterval).toBe(2);
     expect(ctx.setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 1000);
@@ -206,7 +206,7 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsInfoPanel.classList.contains('visible')).toBe(false);
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('0');
     expect(ctx.elements.ipfsDataRead.textContent).toBe('');
-    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS v0.4.1');
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS 0.4.1');
   });
 
   test('updates IPFS status lines, toggle state, and running transitions', async () => {
@@ -673,7 +673,7 @@ describe('ipfs-ui', () => {
     await statsPoll();
     await flushMicrotasks();
 
-    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS v0.4.2');
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS 0.4.2');
     expect(ctx.state.ipfsVersionFetched).toBe(true);
   });
 

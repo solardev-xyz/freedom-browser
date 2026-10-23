@@ -6,7 +6,11 @@
  */
 
 const log = require('../logger');
-const { signAndSendTransaction, waitForTransaction } = require('./transaction-service');
+const {
+  signAndSendTransaction,
+  waitForTransaction,
+  getTransactionStatus,
+} = require('./transaction-service');
 const paymentHistory = require('../payment-history');
 const { KINDS, STATUSES } = paymentHistory;
 
@@ -16,6 +20,16 @@ const { KINDS, STATUSES } = paymentHistory;
 function toAtomicDecimal(value) {
   if (value === undefined || value === null || value === '') return '0';
   return BigInt(value).toString(10);
+}
+
+// The signing account and nonce, so repollPending can tell a transaction
+// that will never be mined (its nonce taken by another) from one still
+// waiting. Phone wallets pick their own nonce and report none.
+function withSentFields(metadata, response) {
+  if (typeof response.from !== 'string' || !Number.isSafeInteger(response.nonce)) {
+    return metadata;
+  }
+  return { ...(metadata || {}), txFrom: response.from, txNonce: response.nonce };
 }
 
 /**
@@ -54,7 +68,7 @@ async function signAndRecord(params, signer, context) {
       asset: context.asset ?? null,
       amount: toAtomicDecimal(context.amount ?? params.value),
       origin: context.origin ?? null,
-      metadata: context.metadata,
+      metadata: withSentFields(context.metadata, response),
     });
   } catch (err) {
     log.error('[TxRecorder] failed to record pending row:', err.message);
@@ -78,8 +92,17 @@ async function signAndRecord(params, signer, context) {
     })
     .catch((err) => {
       // A timeout doesn't mean the tx failed; leave the row pending and
-      // let repollPending sort it out on next boot.
+      // let repollPending sort it out (below, and on next boot).
       log.warn(`[TxRecorder] waitForTransaction failed for row ${row.id}: ${err.message}`);
+    })
+    // A mined transaction can be what makes an older row final: a re-send on
+    // the same nonce leaves the original 'dropped' (#749). Sweep now rather
+    // than on next boot; this row too, if it timed out above. The sweep
+    // records that first sighting and confirms it on a sweep it schedules
+    // itself DROPPED_CONFIRM_MS later (payment-history).
+    .then(() => paymentHistory.repollPending(getTransactionStatus))
+    .catch((err) => {
+      log.warn(`[TxRecorder] payment-history repoll failed: ${err.message}`);
     });
 
   return { ...response, recorded: true, paymentId: row.id };

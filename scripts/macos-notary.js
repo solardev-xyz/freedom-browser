@@ -221,6 +221,14 @@ function findMacApps() {
   return appPaths;
 }
 
+// Apple's ticket service drops connections now and then (#757); the shared
+// script retries each staple/validate with growing pauses before failing.
+function stapleWithRetry(action, targetPath) {
+  run('bash', [path.join(__dirname, 'staple-with-retry.sh'), action, targetPath], {
+    stdio: 'inherit',
+  });
+}
+
 function stapleAccepted() {
   const receipts = readReceipts();
   const updatedReceipts = receipts.map(refreshStatus);
@@ -247,15 +255,15 @@ function stapleAccepted() {
     }
 
     console.log(`Stapling ${receipt.artifactName}...`);
-    run('xcrun', ['stapler', 'staple', receipt.artifactPath], { stdio: 'inherit' });
-    run('xcrun', ['stapler', 'validate', receipt.artifactPath], { stdio: 'inherit' });
+    stapleWithRetry('staple', receipt.artifactPath);
+    stapleWithRetry('validate', receipt.artifactPath);
   }
 
   const appPaths = findMacApps();
   for (const appPath of appPaths) {
     console.log(`Stapling ${path.basename(appPath)}...`);
-    run('xcrun', ['stapler', 'staple', appPath], { stdio: 'inherit' });
-    run('xcrun', ['stapler', 'validate', appPath], { stdio: 'inherit' });
+    stapleWithRetry('staple', appPath);
+    stapleWithRetry('validate', appPath);
   }
 }
 

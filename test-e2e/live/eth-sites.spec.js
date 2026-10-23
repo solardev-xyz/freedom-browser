@@ -15,6 +15,8 @@
 //   7. Navigate to `apoorv.gwei` (GNS-hosted site), assert it resolves through
 //      a supported name transport and renders the live portfolio content.
 
+const fs = require('fs');
+const path = require('path');
 const {
   test,
   expect,
@@ -162,6 +164,82 @@ const waitForWebviewCondition = (window, snippet, message) =>
     })
     .toBeTruthy();
 
+// On failure, keep the native IPFS node's own view of what happened next to
+// the trace and screenshot (#700: a 502 "no HTTP-capable providers found" on
+// vitalik.eth left nothing but the error page to go on). Written under the
+// test's output dir, which the e2e-ant job uploads as `e2e-ant-traces`:
+//   - ipfs-status.json: window.ipfs.getStatus() — manager state, the addon's
+//     native gateway stats (routing/provider counters) and progress snapshot,
+//     and the addon version/build info;
+//   - ipfs-main.log: the main-process log lines that mention IPFS/IPNS;
+//   - main.log: the whole main-process log, for anything the filter misses.
+// Every read is best-effort and bounded, so collecting evidence can neither
+// hang the teardown nor replace the test's own failure.
+const EVIDENCE_TIMEOUT_MS = 10_000;
+const IPFS_LOG_LINE = /\bipfs\b|\bipns\b|freedom-ipfs/i;
+
+const withTimeout = (promise, label) => {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), EVIDENCE_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
+const collectIpfsEvidence = async ({ electronApp, window }, testInfo) => {
+  const problems = [];
+  const write = async (name, body, contentType) => {
+    const file = testInfo.outputPath(name);
+    fs.writeFileSync(file, body);
+    await testInfo.attach(name, { path: file, contentType });
+  };
+
+  try {
+    const status = await withTimeout(
+      window.evaluate(() => window.ipfs.getStatus()),
+      'window.ipfs.getStatus()'
+    );
+    const diagnostics = { ...(status?.diagnostics || {}) };
+    // The addon hands these over as JSON strings; parse them so the file
+    // reads as one document instead of escaped blobs.
+    for (const key of ['nativeGatewayStats', 'progress', 'nativeBuildInfo']) {
+      if (typeof diagnostics[key] !== 'string') continue;
+      try {
+        diagnostics[key] = JSON.parse(diagnostics[key]);
+      } catch {
+        // Keep the raw string.
+      }
+    }
+    await write(
+      'ipfs-status.json',
+      JSON.stringify({ ...status, diagnostics }, null, 2),
+      'application/json'
+    );
+  } catch (err) {
+    problems.push(`IPFS status: ${err.message}`);
+  }
+
+  try {
+    const userData = await withTimeout(
+      electronApp.evaluate(() => process.env.FREEDOM_TEST_USER_DATA),
+      'reading FREEDOM_TEST_USER_DATA'
+    );
+    // logger.js appends info lines off the main thread; give the last ones
+    // a moment to land before reading.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const mainLog = fs.readFileSync(path.join(userData, 'logs', 'main.log'), 'utf8');
+    const ipfsLines = mainLog.split('\n').filter((line) => IPFS_LOG_LINE.test(line));
+    await write('ipfs-main.log', `${ipfsLines.join('\n')}\n`, 'text/plain');
+    await write('main.log', mainLog, 'text/plain');
+  } catch (err) {
+    problems.push(`main log: ${err.message}`);
+  }
+
+  if (problems.length > 0) {
+    console.warn(`[eth-sites] IPFS evidence incomplete: ${problems.join('; ')}`);
+  }
+};
+
 // Binary preconditions are evaluated at describe-load (before any
 // fixture runs). The previous in-test `test.skip` / `expect` form let
 // Playwright launch Electron *first* and only then notice the missing
@@ -178,6 +256,13 @@ test.describe('live cold-start sites', () => {
     !HAS_IPFS_NATIVE_ADDON,
     `Live E2E needs the freedom-ipfs native addon at ${IPFS_NATIVE_ADDON_PATH}. Run \`npm run ipfs:download\` to fetch it.`
   );
+
+  // afterEach rather than a try/catch in the test body: it also runs when the
+  // test hits its overall timeout, and still before the fixtures quit the app.
+  test.afterEach(async ({ electronApp, window }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    await collectIpfsEvidence({ electronApp, window }, testInfo);
+  });
 
   test('cold-start: Bee reaches peers, native IPFS starts, ENS, WNS, and GNS sites render', async ({
     window,

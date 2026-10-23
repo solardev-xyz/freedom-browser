@@ -1,0 +1,3 @@
+- Set Up Publishing on the Publish page opens the publishing setup again, on a profile with no identity too ([#719](https://github.com/solardev-xyz/freedom-browser/issues/719))
+  - With no identity yet the click did nothing; it now opens the sidebar on Set Up Your Identity and continues to the storage plans once that is done
+  - With Identity & Wallet turned off, the page says where to turn it on instead of showing a button that cannot work

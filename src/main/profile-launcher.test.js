@@ -251,5 +251,105 @@ describe('profile launcher', () => {
       expect(result.launch).toBeUndefined();
       expect(spawn).not.toHaveBeenCalled();
     });
+
+    describe('GNOME Wayland: switching to a running profile through xdg-open (#142)', () => {
+      const running = () => jest.fn(() => ({ id: 'work', userDataDir: '/p/work', isLocked: true }));
+
+      test('goes through xdg-open when that path applies, without the file hand-off', async () => {
+        const switchViaXdgOpen = jest.fn(async () => true);
+        const requestFocus = jest.fn();
+        const spawn = jest.fn();
+        const result = await openOrFocusProfile(activeProfile, 'Work', {
+          getFocusTarget: running(),
+          switchViaXdgOpen,
+          requestFocus,
+          spawn,
+        });
+        expect(result).toEqual({ focused: true });
+        // The catalog's target (canonical id, its dir for the ack), not the
+        // caller's input.
+        expect(switchViaXdgOpen).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'work', userDataDir: '/p/work' })
+        );
+        expect(requestFocus).not.toHaveBeenCalled();
+        expect(spawn).not.toHaveBeenCalled();
+      });
+
+      test('falls back to the file hand-off when it does not apply or fails', async () => {
+        const switchViaXdgOpen = jest.fn(async () => false);
+        const requestFocus = jest.fn(() => ({ ok: true, nonce: 'n' }));
+        const result = await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: running(),
+          switchViaXdgOpen,
+          requestFocus,
+          spawn: jest.fn(),
+        });
+        expect(result).toEqual({ focused: true });
+        expect(switchViaXdgOpen).toHaveBeenCalledTimes(1);
+        expect(requestFocus).toHaveBeenCalledTimes(1);
+      });
+
+      test('an unconfirmed xdg-open switch falls back to the file, which reports it', async () => {
+        const switchViaXdgOpen = jest.fn(async () => false);
+        const requestFocus = jest.fn(async () => ({
+          ok: false,
+          requestWritten: true,
+          timedOut: true,
+          error: 'The running profile did not respond',
+        }));
+        const spawn = jest.fn();
+        const result = await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: running(),
+          switchViaXdgOpen,
+          requestFocus,
+          spawn,
+        });
+        expect(result).toEqual({ focused: false, error: 'The running profile did not respond' });
+        expect(requestFocus).toHaveBeenCalledTimes(1);
+        expect(spawn).not.toHaveBeenCalled();
+      });
+
+      test('an --open-settings switch keeps to the file hand-off', async () => {
+        const switchViaXdgOpen = jest.fn(async () => true);
+        const requestFocus = jest.fn(() => ({ ok: true, nonce: 'n' }));
+        await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: running(),
+          switchViaXdgOpen,
+          requestFocus,
+          spawn: jest.fn(),
+          openSettings: true,
+        });
+        expect(switchViaXdgOpen).not.toHaveBeenCalled();
+        expect(requestFocus).toHaveBeenCalledWith(expect.any(Object), { openSettings: true });
+      });
+
+      test('a profile that is not running is cold-started, not switched to', async () => {
+        const switchViaXdgOpen = jest.fn(async () => true);
+        const result = await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: jest.fn(() => ({ id: 'work', userDataDir: '/p/work', isLocked: false })),
+          switchViaXdgOpen,
+          requestFocus: jest.fn(),
+          spawn: jest.fn(() => ({ unref: jest.fn() })),
+          execPath: '/electron',
+          platform: 'linux',
+        });
+        expect(result.focused).toBe(false);
+        expect(result.launch).toBeDefined();
+        expect(switchViaXdgOpen).not.toHaveBeenCalled();
+      });
+
+      test('the default decision is inert outside packaged Linux Wayland', async () => {
+        // No injected switchViaXdgOpen: the real one runs against the jest
+        // electron mock (isPackaged: false) and must leave the file path alone.
+        const requestFocus = jest.fn(() => ({ ok: true, nonce: 'n' }));
+        const result = await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: running(),
+          requestFocus,
+          spawn: jest.fn(),
+        });
+        expect(result).toEqual({ focused: true });
+        expect(requestFocus).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 });

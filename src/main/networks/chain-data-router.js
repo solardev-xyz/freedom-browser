@@ -169,6 +169,28 @@ const MAX_MYOTIS_IN_FLIGHT = 1;
 const MAX_MYOTIS_QUEUED = 16;
 const MAX_COLIBRI_IN_FLIGHT = 8;
 const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
+// Colibri proves that a transaction is in a block; it cannot prove one is
+// absent or still pending. Asked for a hash its prover has not seen (a send
+// not mined yet, a dropped one, a pending one), Colibri 3.0.2's verifier spins
+// for 4-10 s of CPU and then traps with "memory access out of bounds"
+// (#750, reproduced 2026-10-19 against mainnet1.colibri-proof.tech). Two of
+// those at once keep its worker from answering the host's liveness ping, so
+// the host kills the worker and every request on it, verifiable or not. So
+// these lookups ask the RPC sources after Colibri first, and only a
+// transaction they report as mined goes on to Colibri for its proof (see
+// txLookupNeedsProof and request()).
+const TX_LOOKUP_METHODS = new Set(['eth_getTransactionReceipt', 'eth_getTransactionByHash']);
+// Per (chain, method) backoff from the verifier itself faulting (a WASM trap,
+// or its worker replaced under the request), whoever asked: wallet-internal
+// reads carry no routing context, so the per-app adaptive state above never
+// sees them. COLIBRI_FAULT_THRESHOLD faults within COLIBRI_FAULT_WINDOW_MS
+// keep Colibri out of that method on that chain for the next cooldown step;
+// a Colibri answer for it clears the record. Process-local, like the rest.
+const COLIBRI_FAULT_WINDOW_MS = 60_000;
+const COLIBRI_FAULT_THRESHOLD = 2;
+const COLIBRI_FAULT_COOLDOWNS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+const COLIBRI_FAULT_PATTERN =
+  /memory access out of bounds|(?:^|: )unreachable(?: executed)?$|retired after a trap|Colibri worker replaced/i;
 const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
 
 // These are deliberately process-local. A source that struggles with one
@@ -178,6 +200,8 @@ const adaptiveSourceState = new Map();
 const myotisSlots = new Map();
 const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
+// `${chainId} ${method}` -> { faults: [timestamps], strikes, coolUntil }
+const colibriFaults = new Map();
 // What each RPC endpoint can serve for a range-capped log scan (callers that
 // pass rangeCapOf, i.e. the bundled Ant node's eth_getLogs through its bridge):
 // `${chainId} ${url}` -> { refusedFrom, capUntil, slowFrom, slowUntil,
@@ -445,6 +469,7 @@ function clearAdaptiveRoutingForTest() {
   myotisSlots.clear();
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
+  colibriFaults.clear();
   logRangeState.clear();
   logIndexCoolUntil.clear();
   logIndexPairCoolUntil.clear();
@@ -781,7 +806,66 @@ function optionalNativeResult(payload, ...keys) {
   return null;
 }
 
-function feeQuote(source, gasPriceValue, priorityValue = null) {
+// The smallest tip a quote signs with. A tip of a few thousand wei is no
+// reason for a builder to include a transaction, and a quote whose fee cap
+// sits on the base fee is dropped as soon as the base fee rises (#749).
+// 0.05 gwei is far below what a congested mainnet asks and still a real tip.
+const MIN_PRIORITY_FEE_WEI = 50_000_000n;
+// A legacy gasPrice is paid in full, so it gets a smaller margin than the 2x
+// base-fee cap of a type-2 quote: 25% covers two blocks of maximum EIP-1559
+// base-fee growth (1.125^2), or a market move on a chain without one.
+const LEGACY_GAS_PRICE_HEADROOM_PERCENT = 125n;
+
+function maxBigInt(a, b) {
+  return a > b ? a : b;
+}
+
+// The block's base fee, or null when the block has none (a chain without
+// EIP-1559). Anything else is an invalid answer, not a missing feature.
+function blockBaseFee(block) {
+  if (!block || typeof block !== 'object') {
+    throw new SourceUnavailableError('latest block is missing');
+  }
+  if (block.baseFeePerGas == null) return null;
+  const baseFee = BigInt(block.baseFeePerGas);
+  if (baseFee < 0n) throw new SourceUnavailableError('latest block has a negative base fee');
+  return baseFee;
+}
+
+function eip1559Quote(baseFee, priority, metadata) {
+  const tip = maxBigInt(priority, MIN_PRIORITY_FEE_WEI);
+  return {
+    type: 'eip1559',
+    baseFee: baseFee.toString(),
+    maxPriorityFeePerGas: tip.toString(),
+    // The base fee can rise 12.5% per block between quoting and inclusion, so
+    // the signed cap needs headroom the quoted gas price does not have. Two
+    // full blocks of growth is the market preset the wallet has always used.
+    maxFeePerGas: (baseFee * 2n + tip).toString(),
+    effectiveGasPrice: (baseFee + tip).toString(),
+    ...metadata,
+  };
+}
+
+function legacyQuote(gasPrice, metadata) {
+  const signed = gasPrice * LEGACY_GAS_PRICE_HEADROOM_PERCENT / 100n + MIN_PRIORITY_FEE_WEI;
+  return {
+    type: 'legacy',
+    gasPrice: signed.toString(),
+    // A legacy transaction pays its whole gasPrice, headroom included.
+    effectiveGasPrice: signed.toString(),
+    ...metadata,
+  };
+}
+
+// Builds a fee quote from one source's answers. `getBlock` is asked for that
+// source's latest block only when the priority-fee hint is missing or cannot
+// form a valid type-2 transaction: the block's base fee then prices a type-2
+// quote itself, and only a block without one (a chain without EIP-1559) makes
+// the quote legacy. A legacy quote always carries headroom; signing the raw
+// eth_gasPrice put the fee cap on the base fee, and the transaction was
+// dropped the moment the base fee rose (#749).
+async function feeQuote(source, gasPriceValue, priorityValue = null, getBlock = null) {
   const gasPrice = BigInt(gasPriceValue);
   if (gasPrice <= 0n) throw new Error(`${source} returned a non-positive gas price`);
 
@@ -789,45 +873,42 @@ function feeQuote(source, gasPriceValue, priorityValue = null) {
     source,
     verified: source === 'myotis' || source === 'colibri' || source === 'quorum',
   };
-  if (priorityValue == null) {
-    return {
-      type: 'legacy',
-      gasPrice: gasPrice.toString(),
-      effectiveGasPrice: gasPrice.toString(),
-      ...metadata,
-    };
-  }
 
-  const priority = BigInt(priorityValue);
+  const priority = priorityValue == null ? null : BigInt(priorityValue);
   // A provider can implement both methods yet return fee hints that cannot
-  // form a valid type-2 transaction. Keep the usable gas price from that same
-  // source and fall back to a legacy transaction instead of combining it with
-  // another provider's priority fee.
-  if (priority < 0n || priority > gasPrice) {
+  // form a valid type-2 transaction (Colibri's verified priority fee is
+  // 1 gwei while mainnet's gas price is a fraction of that). Never combine
+  // the hint with another provider's gas price. The block that prices an
+  // unusable hint comes from `getBlock`: the same source for Colibri and
+  // Direct, but the router's other sources for Myotis, which serves no
+  // blocks (see getFeeQuote).
+  if (priority != null && priority >= 0n && priority <= gasPrice) {
+    return eip1559Quote(gasPrice - priority, priority, metadata);
+  }
+  if (priority != null) {
     log.verbose(
       `[chain-data] ${source} returned an inconsistent fee quote ` +
-        `(gasPrice=${gasPrice}, priorityFee=${priority}); using legacy fees`
+        `(gasPrice=${gasPrice}, priorityFee=${priority}); pricing from the latest block`
     );
-    return {
-      type: 'legacy',
-      gasPrice: gasPrice.toString(),
-      effectiveGasPrice: gasPrice.toString(),
-      ...metadata,
-    };
   }
+  if (!getBlock) throw new SourceUnavailableError(`${source} has no priority fee and no block to price from`);
 
-  const baseFee = gasPrice - priority;
-  return {
-    type: 'eip1559',
-    baseFee: baseFee.toString(),
-    maxPriorityFeePerGas: priority.toString(),
-    // The base fee can rise 12.5% per block between quoting and inclusion, so
-    // the signed cap needs headroom the quoted gas price does not have. Two
-    // full blocks of growth is the market preset the wallet has always used.
-    maxFeePerGas: (baseFee * 2n + priority).toString(),
-    effectiveGasPrice: gasPrice.toString(),
-    ...metadata,
-  };
+  let baseFee;
+  try {
+    baseFee = blockBaseFee(await getBlock());
+  } catch (err) {
+    // Whether the chain has a base fee is unknown, so this is not a quote to
+    // prefer over another source's. The caller keeps it as the last resort.
+    const fallback = new SourceUnavailableError(
+      `${source} has no usable priority fee and its latest block failed: ${err.message}`
+    );
+    fallback.legacyFallback = legacyQuote(gasPrice, metadata);
+    throw fallback;
+  }
+  if (baseFee == null) return legacyQuote(gasPrice, metadata);
+  // The source's own gas price minus the base fee is its tip suggestion.
+  const suggested = gasPrice > baseFee ? gasPrice - baseFee : 0n;
+  return eip1559Quote(baseFee, suggested, metadata);
 }
 
 // Freedom requests Myotis account reads at the verified head. Although ABI 32
@@ -1027,9 +1108,96 @@ async function requestViaMyotis(
   );
 }
 
+// What a caller (a dApp through wallet:chain-request, an onchain app, Ant)
+// may see of a Colibri failure. The SDK's transport errors carry the server
+// URL (the prover's, or a beacon/RPC endpoint's) and the request payload in
+// their text ("Error in rpc call eth_call[…] : Request to https://… with
+// payload {…} failed: fetch failed"), and a prover URL can hold credentials
+// once it is user-entered or keyed (#681). Its `request()` gives every failure
+// it cannot classify a catch-all code: -32603 for a transport or prover
+// failure, 4900 for an HTTP error or "All nodes failed". Those, and errors
+// with no numeric code at all (the worker host's own), become a fixed message.
+// That includes text Colibri forwarded from an upstream RPC under -32603
+// without revert data (e.g. eth_estimateGas's "insufficient funds"): the SDK
+// gives no way to tell it apart from its own transport text, so it goes too.
+// An error with its own code (3 revert, 4200 unsupported, …) or with revert
+// `data` is an answer the caller can act on and passes through unchanged.
+//
+// The detail goes to the log at `verbose` (console with DEBUG only, never the
+// on-disk main.log a bug report attaches), with every URL replaced by <url>
+// (a prover URL can carry user:token or a key path) and capped like every
+// other source failure the router logs. It fires before later sources are
+// tried, so it must stay cheap on a prover that is down for every call.
+const COLIBRI_CATCH_ALL_CODES = new Set([-32603, 4900]);
+const COLIBRI_GENERIC_ERROR = 'Colibri request failed';
+
+function colibriLogDetail(err) {
+  return safeErrorMessage({
+    message: (err?.message || String(err)).replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, '<url>'),
+  });
+}
+
+function colibriCallerError(err, chainId, method) {
+  if (typeof err?.data === 'string') return err;
+  if (typeof err?.code === 'number' && !COLIBRI_CATCH_ALL_CODES.has(err.code)) return err;
+  log.verbose(`[chain-data] ${chainId} ${method} colibri error replaced for the caller: ${colibriLogDetail(err)}`);
+  const safe = new Error(COLIBRI_GENERIC_ERROR);
+  if (typeof err?.code === 'number') safe.code = err.code;
+  // The adaptive routing reads the raw text (an execution limit demotes
+  // Colibri for the route), so carry its verdict instead of the text.
+  const kind = failureKind(err);
+  if (kind) safe.failureKind = kind;
+  return safe;
+}
+
+const colibriFaultKey = (chainId, method) => `${Number(chainId)} ${method}`;
+
+// A request the worker host failed only because another one trapped or
+// overran on its worker (colibri-worker-host.js marks it) is no fault of its
+// own method's.
+function isColibriFault(err) {
+  if (err?.colibriBystander) return false;
+  return err?.name === 'RuntimeError' ||
+    COLIBRI_FAULT_PATTERN.test(String(err?.message || ''));
+}
+
+function colibriBackedOff(chainId, method, now = Date.now()) {
+  return (colibriFaults.get(colibriFaultKey(chainId, method))?.coolUntil || 0) > now;
+}
+
+function noteColibriAnswer(chainId, method) {
+  colibriFaults.delete(colibriFaultKey(chainId, method));
+}
+
+function noteColibriFault(chainId, method, now = Date.now()) {
+  const key = colibriFaultKey(chainId, method);
+  const state = colibriFaults.get(key) || { faults: [], strikes: 0, coolUntil: 0 };
+  // Requests already in flight when the backoff started still land here.
+  if (state.coolUntil > now) return;
+  state.faults = state.faults.filter((at) => now - at < COLIBRI_FAULT_WINDOW_MS);
+  state.faults.push(now);
+  if (state.faults.length >= COLIBRI_FAULT_THRESHOLD) {
+    const cooldownMs = COLIBRI_FAULT_COOLDOWNS_MS[
+      Math.min(state.strikes, COLIBRI_FAULT_COOLDOWNS_MS.length - 1)
+    ];
+    state.strikes += 1;
+    state.faults = [];
+    state.coolUntil = now + cooldownMs;
+    log.warn(`[chain-data] chain ${Number(chainId)} ${method}: the Colibri verifier faulted ` +
+      `${COLIBRI_FAULT_THRESHOLD} times within ${COLIBRI_FAULT_WINDOW_MS / 1000}s; ` +
+      `not asking Colibri for it for ${cooldownMs / 1000}s`);
+  }
+  colibriFaults.set(key, state);
+}
+
 async function requestColibri(chainId, method, params, routeKey = null, deadlineMs = null) {
   if (!sourceServesMethod('colibri', method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
+  }
+  if (colibriBackedOff(chainId, method)) {
+    throw new SourceUnavailableError(
+      `Colibri backed off for ${method} after repeated verifier faults`
+    );
   }
   if (!registry.getEndpoints(chainId, 'prover').length) {
     throw new SourceUnavailableError('No Colibri prover configured');
@@ -1050,9 +1218,21 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   // A prover call is never left unbounded: without a fall-through budget it
   // still has to settle inside the chain's configured timeout.
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
-  const requestPromise = Promise.resolve().then(() =>
-    requestViaColibri(chainId, method, params, { deadlineMs: budgetMs })
-  );
+  const requestPromise = Promise.resolve()
+    .then(() => requestViaColibri(chainId, method, params, { deadlineMs: budgetMs }))
+    .then(
+      (result) => {
+        noteColibriAnswer(chainId, method);
+        return result;
+      },
+      (err) => {
+        // Seen here even when the caller's deadline already moved it on: the
+        // worker host settles every request, if only when it replaces the
+        // worker (colibri-worker-host.js).
+        if (isColibriFault(err)) noteColibriFault(chainId, method);
+        throw colibriCallerError(err, chainId, method);
+      }
+    );
   colibriInFlight.add(requestPromise);
   colibriInFlightByRoute.set(inFlightKey, routeInFlight + 1);
   const release = () => {
@@ -1711,6 +1891,7 @@ async function requestDirectFeeQuote(chainId) {
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   let lastError;
+  let legacyFallback = null;
   for (const url of urls) {
     try {
       const gasPrice = await requestRpcUrl(url, 'eth_gasPrice', [], timeoutMs);
@@ -1723,11 +1904,15 @@ async function requestDirectFeeQuote(chainId) {
         // Legacy transactions remain valid when this endpoint does not expose
         // an EIP-1559 priority-fee hint.
       }
-      return feeQuote('direct', gasPrice, priority);
+      return await feeQuote('direct', gasPrice, priority, () =>
+        requestRpcUrl(url, 'eth_getBlockByNumber', ['latest', false], timeoutMs)
+      );
     } catch (err) {
       lastError = err;
+      legacyFallback ||= err.legacyFallback || null;
     }
   }
+  if (legacyFallback && lastError) lastError.legacyFallback ||= legacyFallback;
   throw lastError || new SourceUnavailableError('All RPC endpoints failed');
 }
 
@@ -1866,6 +2051,32 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
   }
 }
 
+// A transaction lookup Colibri is in the read order for (TX_LOOKUP_METHODS)
+// moves Colibri to the end of the order (see request()), so the sources after
+// it answer first. Nothing proves an absence or a pending transaction, so
+// their null (not found) or pending (no block yet) answer is final, labelled
+// with the source that gave it. A mined transaction is then asked of Colibri,
+// whose proof replaces that answer; if Colibri fails, the answer already in
+// hand is returned instead of asking the later sources a second time. When
+// every later source failed, Colibri is simply the last source left.
+//
+// Trust model (#750): before, Colibri answered first and a null it could not
+// prove fell through to the RPCs anyway (after a 4-10 s trap). A null or
+// pending answer is now whatever the first later source to answer says. From
+// the quorum that is m-of-k agreement; from Direct it is one endpoint's word,
+// labelled `verified: false`, so with the quorum unavailable a lagging Direct
+// endpoint can report a mined transaction as unknown until it catches up,
+// where Colibri used to prove the receipt. A caller polling for a receipt
+// (the usual reason to ask) gets it on a later poll; one that must not act on
+// an unverified absence checks `verified`.
+function txLookupNeedsProof(method, result) {
+  if (result === null || result === undefined) return false;
+  if (method === 'eth_getTransactionByHash') {
+    return result.blockNumber != null && result.blockHash != null;
+  }
+  return true;
+}
+
 async function request(
   chainId,
   method,
@@ -1946,6 +2157,9 @@ async function request(
   let directAttemptedUrls = [];
   let directUnansweredUrls = [];
   const keeper = createErrorKeeper(rankError);
+  // A transaction lookup's deferred Colibri, and the unproven answer of a
+  // later source waiting for its proof (see txLookupNeedsProof).
+  const txLookup = { colibriDeferred: false, unverified: null };
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     signal?.throwIfAborted();
     const source = order[sourceIndex];
@@ -1954,6 +2168,19 @@ async function request(
       : null;
     if (adaptiveSourceUnavailable(routeKey)) {
       failures.push(`${source}: temporarily bypassed for this app workload`);
+      continue;
+    }
+    if (
+      source === 'colibri' && TX_LOOKUP_METHODS.has(method) &&
+      !txLookup.colibriDeferred && sourceIndex + 1 < order.length
+    ) {
+      // Ask the later sources first; Colibri is asked last (see
+      // txLookupNeedsProof), and every failure lands in this one request's
+      // report.
+      txLookup.colibriDeferred = true;
+      order.splice(sourceIndex, 1);
+      order.push('colibri');
+      sourceIndex -= 1;
       continue;
     }
     const directAnsweredBy = {};
@@ -1978,11 +2205,32 @@ async function request(
         allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
         deadlineMs: sourceDeadlineMs(Number(chainId), {
           interactive,
-          hasFallbackSource: sourceIndex + 1 < order.length,
+          // A deferred Colibri at the end of the order is no fallback for the
+          // sources before it: it is only asked to prove a mined transaction
+          // they report, and asked for an unknown or pending one it traps.
+          // Cutting their budget for it would trade an RPC answer for that.
+          hasFallbackSource: (txLookup.colibriDeferred && source !== 'colibri'
+            ? sourceIndex + 2 < order.length
+            : sourceIndex + 1 < order.length) || txLookup.unverified !== null,
         }),
       });
       signal?.throwIfAborted();
       const result = includeTrust ? sourceResult.result : sourceResult;
+      if (
+        txLookup.colibriDeferred && source !== 'colibri' &&
+        txLookupNeedsProof(method, result)
+      ) {
+        // Mined: hold this answer and go straight to Colibri for its proof.
+        recordAdaptiveSuccess(routeKey);
+        txLookup.unverified = {
+          result,
+          source,
+          verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+          ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
+        };
+        sourceIndex = order.length - 2;
+        continue;
+      }
       if (SOURCE_CAPABILITIES[source]?.logResults === 'may-truncate') {
         await checkLogTruncation(source, Number(chainId), method, params, result, {
           signal,
@@ -2023,7 +2271,14 @@ async function request(
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
-      if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
+      // A deferred Colibri keeps the precedence it had when it was asked
+      // first: a later source's own error is what the caller sees.
+      if (
+        !(err instanceof SourceUnavailableError) &&
+        !(source === 'colibri' && txLookup.colibriDeferred && lastRpcError)
+      ) {
+        lastRpcError = err;
+      }
       // Quorum already reported each member's failure; its own aggregate is
       // not an upstream error. The blockscout source's failures say nothing
       // about the caller's query (requestLogIndex): the quorum after it
@@ -2040,6 +2295,8 @@ async function request(
       if (keeper.final && !(directFallback && order[sourceIndex + 1] === 'direct')) break;
     }
   }
+  // Colibri could not prove the mined transaction a later source reported.
+  if (txLookup.unverified) return txLookup.unverified;
   if (keeper.error) throw keeper.error;
   if (lastRpcError) throw lastRpcError;
   throw new Error(
@@ -2057,6 +2314,7 @@ async function getFeeQuote(chainId) {
       : DEFAULT_NON_MYOTIS_READ_ORDER);
   const failures = [];
   let lastRpcError = null;
+  let legacyFallback = null;
 
   for (const source of order) {
     try {
@@ -2069,7 +2327,26 @@ async function getFeeQuote(chainId) {
           'maxPriorityFeePerGasWei',
           'maxPriorityFeePerGas'
         );
-        return feeQuote(source, gasPrice, priority);
+        // Myotis serves no blocks, so this is the one source whose quote can
+        // mix providers: Myotis's gas price with a base fee read through the
+        // router's other sources (Colibri, quorum, Direct). That is safe to
+        // sign: maxFeePerGas = 2 * baseFee + tip covers the base fee doubling,
+        // so a block a little behind or ahead of Myotis's head still prices a
+        // transaction that can be included; only the tip derives from Myotis.
+        // A complete Myotis quote (priority within gas price) uses no block.
+        // When one is used, the quote names the source that read it and is
+        // only as verified as that read.
+        let blockRead = null;
+        const quote = await feeQuote(source, gasPrice, priority, async () => {
+          blockRead = await request(chainId, 'eth_getBlockByNumber', ['latest', false]);
+          return blockRead.result;
+        });
+        if (!blockRead) return quote;
+        return {
+          ...quote,
+          baseFeeSource: blockRead.source,
+          verified: quote.verified && blockRead.verified === true,
+        };
       }
 
       if (source === 'direct') return await requestDirectFeeQuote(chainId);
@@ -2079,11 +2356,16 @@ async function getFeeQuote(chainId) {
       try {
         priority = await requestSource(source, chainId, 'eth_maxPriorityFeePerGas', []);
       } catch {
-        // Preserve source coherence by using this source's gas price as a
-        // legacy quote rather than asking the next source for half a quote.
+        // Preserve source coherence: this source's own latest block prices
+        // the quote rather than the next source's half of one.
       }
-      return feeQuote(source, gasPrice, priority);
+      return await feeQuote(source, gasPrice, priority, () =>
+        requestSource(source, chainId, 'eth_getBlockByNumber', ['latest', false])
+      );
     } catch (err) {
+      // A source whose block could not be read leaves a headroomed legacy
+      // quote; it is used only if no source can price a type-2 one.
+      legacyFallback ||= err.legacyFallback || null;
       failures.push(`${source}: ${err.message}`);
       // Keep a real node error (with its JSON-RPC code/data) so the caller
       // sees it rather than a stringified aggregate — same as request().
@@ -2092,6 +2374,10 @@ async function getFeeQuote(chainId) {
     }
   }
 
+  if (legacyFallback) {
+    log.verbose(`[chain-data] ${chainId} fee quote fell back to legacy fees (${failures.join('; ')})`);
+    return legacyFallback;
+  }
   if (lastRpcError) throw lastRpcError;
   throw new Error(`All chain sources failed for fee quote (${failures.join('; ')})`);
 }

@@ -80,9 +80,9 @@ describe('shortcut registry', () => {
         .join(' ');
 
     // Entries whose Settings label legitimately keeps an inner capital (a
-    // product or protocol name). Empty today — every label is plain prose —
-    // and an entry only belongs here with a proper noun to point at.
-    const PROPER_NOUNS = new Set();
+    // product or protocol name), and only with a proper noun to point at:
+    // Agent is the product name of Freedom Agent, not a generic noun.
+    const PROPER_NOUNS = new Set(['view.toggleAgent']);
 
     const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
 
@@ -121,6 +121,100 @@ describe('shortcut registry', () => {
     expect(getAliasAccelerators('tab.close', 'darwin')).toEqual([]);
     expect(getAliasAccelerators('tab.next', 'darwin')).toEqual(['Ctrl+Tab', 'Cmd+Shift+]']);
     expect(getAliasAccelerators('tab.next', 'linux')).toEqual(['Ctrl+Tab']);
+  });
+});
+
+describe('select tab by position (#717)', () => {
+  const { findConflict: conflictOf, formatAccelerator: format } = require('./shortcuts');
+  const SELECT_IDS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `tab.select${n}`);
+  const ALL_IDS = [...SELECT_IDS, 'tab.selectLast'];
+  const primaryKey = { linux: 'ctrlKey', win32: 'ctrlKey', darwin: 'metaKey' };
+  const matchingIds = (event, platform) =>
+    SHORTCUTS.filter((entry) =>
+      [getDefaultAccelerator(entry, platform), ...getAliasAccelerators(entry, platform)].some(
+        (accelerator) => eventMatchesAccelerator(event, accelerator, platform)
+      )
+    ).map((entry) => entry.id);
+
+  test('registers tab.select1…8 and tab.selectLast as remappable Tabs entries', () => {
+    ALL_IDS.forEach((id) => {
+      const entry = getShortcutById(id);
+      expect(entry).toMatchObject({ category: 'Tabs', editable: true, context: 'renderer' });
+    });
+    SELECT_IDS.forEach((id, index) => {
+      const n = index + 1;
+      expect(getShortcutById(id)).toMatchObject({
+        description: `Select Tab ${n}`,
+        settingsLabel: `Select tab ${n}`,
+        defaultAccelerator: `CmdOrCtrl+${n}`,
+      });
+    });
+    expect(getShortcutById('tab.selectLast')).toMatchObject({
+      description: 'Select Last Tab',
+      settingsLabel: 'Select last tab',
+      defaultAccelerator: 'CmdOrCtrl+9',
+    });
+    // Listed with the other tab shortcuts, in position order.
+    const tabIds = SHORTCUTS.filter((entry) => entry.category === 'Tabs').map((entry) => entry.id);
+    expect(tabIds.slice(-ALL_IDS.length)).toEqual(ALL_IDS);
+  });
+
+  test('Alt+1…9 are fixed aliases on Linux only', () => {
+    ALL_IDS.forEach((id, index) => {
+      expect(getAliasAccelerators(id, 'linux')).toEqual([`Alt+${index + 1}`]);
+      expect(getAliasAccelerators(id, 'win32')).toEqual([]);
+      expect(getAliasAccelerators(id, 'darwin')).toEqual([]);
+    });
+    expect(format(getDefaultAccelerator('tab.select3', 'darwin'), 'darwin')).toBe('⌘3');
+    expect(format(getDefaultAccelerator('tab.selectLast', 'win32'), 'win32')).toBe('Ctrl+9');
+  });
+
+  test('each press selects exactly one position, by the physical digit key', () => {
+    for (const platform of PLATFORMS) {
+      for (let n = 1; n <= 9; n += 1) {
+        const us = keyEvent({ key: String(n), code: `Digit${n}`, [primaryKey[platform]]: true });
+        expect(matchingIds(us, platform)).toEqual([ALL_IDS[n - 1]]);
+      }
+      // French AZERTY: the unshifted digit row types & é " ' ( - è _ ç.
+      const azerty = { 1: '&', 2: 'é', 3: '"', 4: "'", 5: '(', 7: 'è', 8: '_', 9: 'ç' };
+      for (const [n, key] of Object.entries(azerty)) {
+        const press = keyEvent({ key, code: `Digit${n}`, [primaryKey[platform]]: true });
+        expect(matchingIds(press, platform)).toEqual([ALL_IDS[n - 1]]);
+      }
+      // …but the `6` key types '-', which is Zoom Out's press too; the
+      // dispatchers hand it to Zoom Out (tab-switch-keys.js, tabs.js).
+      const azerty6 = keyEvent({ key: '-', code: 'Digit6', [primaryKey[platform]]: true });
+      expect(matchingIds(azerty6, platform)).toEqual(['tab.select6', 'page.zoomOut']);
+      // Czech: the unshifted digit row types + ě š č ř ž ý á í. Only the `1`
+      // key's `+` is also another binding — Zoom In's fixed `Plus` alias,
+      // which does not outrank Select Tab 1 (tab-switch-keys.js, tabs.js).
+      const czech = { 2: 'ě', 3: 'š', 4: 'č', 5: 'ř', 6: 'ž', 7: 'ý', 8: 'á', 9: 'í' };
+      for (const [n, key] of Object.entries(czech)) {
+        const press = keyEvent({ key, code: `Digit${n}`, [primaryKey[platform]]: true });
+        expect(matchingIds(press, platform)).toEqual([ALL_IDS[n - 1]]);
+      }
+      const czech1 = keyEvent({ key: '+', code: 'Digit1', [primaryKey[platform]]: true });
+      expect(matchingIds(czech1, platform)).toEqual(['tab.select1', 'page.zoomIn']);
+    }
+    // Alt+digit on Linux, nowhere else.
+    const alt4 = keyEvent({ key: '4', code: 'Digit4', altKey: true });
+    expect(matchingIds(alt4, 'linux')).toEqual(['tab.select4']);
+    expect(matchingIds(alt4, 'win32')).toEqual([]);
+  });
+
+  test('get conflict checks like every other entry', () => {
+    // Another shortcut cannot take Ctrl+2 or the Linux Alt+2 alias…
+    expect(conflictOf('tab.new', 'Ctrl+2', {}, 'linux')).toMatchObject({
+      id: 'tab.select2',
+      fixed: false,
+    });
+    expect(conflictOf('tab.new', 'Alt+2', {}, 'linux')).toMatchObject({
+      id: 'tab.select2',
+      fixed: true,
+    });
+    // …and a select entry cannot take another's binding.
+    expect(conflictOf('tab.select1', 'Ctrl+T', {}, 'linux')).toMatchObject({ id: 'tab.new' });
+    expect(conflictOf('tab.select1', 'Ctrl+Alt+1', {}, 'linux')).toBeNull();
   });
 });
 
@@ -699,6 +793,27 @@ describe('findConflict', () => {
     expect(findConflict('tab.close', 'Ctrl+T', {}, 'win32')?.id).toBe('tab.new');
     expect(findConflict('tab.close', 'Ctrl+T', {}, 'darwin')).toBeNull();
   });
+
+  test('AI shortcuts claim no chord while AI is off', () => {
+    const { sanitizeOverrides, isShortcutActive } = require('./shortcuts');
+    expect(SHORTCUTS.filter((entry) => entry.requiresAi).map((entry) => entry.id)).toEqual([
+      'view.toggleAgent',
+      'agent.startDictation',
+    ]);
+    expect(isShortcutActive('view.toggleAgent', { aiEnabled: false })).toBe(false);
+    expect(isShortcutActive('view.toggleAgent')).toBe(true);
+    expect(isShortcutActive('tab.new', { aiEnabled: false })).toBe(true);
+
+    expect(findConflict('tab.new', 'Ctrl+K', {}, 'linux')?.id).toBe('view.toggleAgent');
+    expect(findConflict('tab.new', 'Ctrl+K', {}, 'linux', { aiEnabled: false })).toBeNull();
+    expect(findConflict('tab.new', 'Ctrl+Enter', {}, 'linux', { aiEnabled: false })).toBeNull();
+
+    // Off: both survive, the AI remap untouched for when AI is back.
+    const both = { 'tab.new': 'Ctrl+Shift+Y', 'view.toggleAgent': 'Ctrl+Shift+Y' };
+    expect(sanitizeOverrides(both, 'linux', { aiEnabled: false })).toEqual(both);
+    // On: the same pair cannot both fire on one press.
+    expect(sanitizeOverrides(both, 'linux')).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
+  });
 });
 
 describe('docs/features.md keyboard shortcut list', () => {
@@ -1128,8 +1243,35 @@ describe('conflicts are judged per keypress, like the matcher (#205)', () => {
         }
       }
       // The Nordic Ctrl++ press (key '+', code 'Minus'); see the zoom
-      // reachability tests above.
-      expect(collisions).toEqual(['page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-']);
+      // reachability tests above. On macOS, also the German-layout Cmd++
+      // press (key '+', code 'BracketRight') against Forward's Cmd+] (#584).
+      // Forward is menu-only, so no renderer keydown matcher compares the
+      // two; macOS menus match key equivalents on the typed character ('+'
+      // here), so that press should reach Zoom In alone. Not probed on a real
+      // Mac (2026-10); Chrome binds the same two chords on macOS.
+      // And the French AZERTY Cmd/Ctrl+6 press (key '-', code 'Digit6')
+      // against Zoom Out's `-` (#717): the digit row is shifted there, so the
+      // tab-select bindings match on the physical Digit6 code while Zoom Out
+      // matches the typed '-'. Zoom Out keeps that press — a select-tab
+      // binding stands down whenever the press also matches another shortcut
+      // (tab-switch-keys.js and the tabs.js keydown fallback, both pinned in
+      // their own tests) — since `6` is the only main-row `-` on AZERTY.
+      // tab-switch-keys.js also sends Zoom Out's message itself, since from
+      // a focused page the menu's Ctrl+- never fires for that key.
+      // The Czech Ctrl+1 press (key '+', code 'Digit1') against Zoom In's
+      // `Plus` alias: Select Tab 1 keeps it, since only another entry's own
+      // binding outranks a select-tab binding, and Zoom In keeps `=` on Czech.
+      // And the Czech Ctrl+= press (key '=', code 'Minus'): Zoom In's `=` on
+      // the US `-` position, the same shape as the Nordic `+`; the zoom
+      // keydown chain (menus.js) tries Zoom In first.
+      const expected = [
+        'tab.select1 CmdOrCtrl+1 ~ page.zoomIn CmdOrCtrl+Plus',
+        'tab.select6 CmdOrCtrl+6 ~ page.zoomOut CmdOrCtrl+-',
+        'page.zoomIn CmdOrCtrl+= ~ page.zoomOut CmdOrCtrl+-',
+        'page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-',
+      ];
+      if (platform === 'darwin') expected.push('page.zoomIn CmdOrCtrl+Plus ~ nav.forward Cmd+]');
+      expect(collisions).toEqual(expected);
     }
   });
 });

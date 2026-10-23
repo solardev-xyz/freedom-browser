@@ -119,6 +119,15 @@ body.private-window .permission-btn.primary:hover {
   color: var(--bg);
 }
 
+/* The "Open without gateway" pill (#70) sits on the address bar, which keeps
+   its dark fill in a private window; its light-theme black hover tint would
+   vanish there, so it gets the dark-theme one back. */
+body.private-window .gateway-offer-pill:hover,
+body.private-window .gateway-offer-pill[aria-expanded='true'] {
+  /* theme-literal: the dark-theme hover tint gateway-offer.css gives the pill */
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* Toggles: light-theme.css pins a white knob and a pale grey track on the
    Nodes menu's switches and the sidebar's `.toggle-switch`, where a dark-theme
    private window paints them from --text and --border. Hand those back so a

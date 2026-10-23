@@ -7,6 +7,11 @@
       content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; object-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <title>Payments</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMiIgeT0iNiIgd2lkdGg9IjIwIiBoZWlnaHQ9IjEyIiByeD0iMiIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjIiLz48cGF0aCBkPSJNNiAxMmguMDFNMTggMTJoLjAxIi8+PC9zdmc+"
+    />
     <link rel="stylesheet" href="styles/theme.css" />
     <style>
       html,
@@ -273,11 +278,13 @@
       .status-failed::before {
         background: #f85149;
       }
-      .status-no-receipt {
+      .status-no-receipt,
+      .status-dropped {
         background: rgba(110, 118, 129, 0.18);
         color: var(--pay-status-none);
       }
-      .status-no-receipt::before {
+      .status-no-receipt::before,
+      .status-dropped::before {
         background: #8b949e;
       }
       @keyframes pulse {

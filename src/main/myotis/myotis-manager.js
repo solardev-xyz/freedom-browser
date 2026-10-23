@@ -16,7 +16,7 @@ const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const seedPins = require('./seed-pins');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.14';
+const MYOTIS_VERSION = '0.1.16';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -715,16 +715,33 @@ async function feeEstimate(chainId = 1) {
 
 const MAX_REJECTION_REASON = 300;
 
+// Engine-supplied refusal text, whitespace-collapsed and capped before it
+// becomes an error message a dApp sees; `fallback` when it is empty or absent.
+// Shared by both definite refusals below (ABI 36 `rejected`, ABI 44 -32602).
+function boundedReason(value, fallback) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().replace(/\s+/g, ' ').slice(0, MAX_REJECTION_REASON)
+    : fallback;
+}
+
 // ABI 36: the engine judged the transaction on freshly verified state (sender
 // cannot pay, or its nonce is used) and did NOT broadcast it. That is a
 // definite answer, not an uncertain outcome: geth's txpool verdict under -32000.
 function broadcastRejected(result) {
-  const reason = typeof result.reason === 'string' && result.reason.trim()
-    ? result.reason.trim().replace(/\s+/g, ' ').slice(0, MAX_REJECTION_REASON)
-    : 'transaction rejected before broadcast';
-  const error = new Error(reason);
+  const error = new Error(boundedReason(result.reason, 'transaction rejected before broadcast'));
   error.code = -32000;
   error.myotisRefusal = 'rejected';
+  return error;
+}
+
+// ABI 44 (biafra23/myotis#616/#621): bytes that are no transaction Myotis
+// relays (undecodable, no sender recovered, a signature peers refuse, a blob
+// transaction) get the permanent -32602 envelope and are never gossiped. Like
+// `rejected`, nothing was sent, so the wallet must not be told to reconcile.
+function broadcastRefused(result) {
+  const error = new Error(boundedReason(result.error, 'invalid raw transaction'));
+  error.code = -32602;
+  error.myotisRefusal = 'invalid-params';
   return error;
 }
 
@@ -732,6 +749,7 @@ async function sendRawTransaction(rawTransaction, chainId = 1) {
   const instance = runningInstance(chainId);
   const result = await instance.client.request('broadcast', [rawTransaction]);
   if (result && !result.error && result.status === 'rejected') throw broadcastRejected(result);
+  if (result?.error && result.code === -32602) throw broadcastRefused(result);
   if (!result || result.error || ['error', 'unavailable'].includes(result.status) || !(result.txHash || result.result)) {
     const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
     error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
@@ -802,7 +820,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 38,
+    abi: 47,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,

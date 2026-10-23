@@ -42,6 +42,8 @@ const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, get
 const {
   publishChunk,
   readChunk,
+  readDataRoot,
+  readData,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
@@ -55,6 +57,7 @@ const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-
 const { isNoUsableBatchError } = require('./batch-errors');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
+const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -145,6 +148,7 @@ const KNOWN_METHODS = [
   'swarm_listFeeds',
   'swarm_publishChunk',
   'swarm_readChunk',
+  'swarm_readData',
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
@@ -186,6 +190,39 @@ function notAuthorized(reason) {
       data: { reason },
     },
   };
+}
+
+// Methods a site's auto-approve rule (publish, feeds, signing, messaging)
+// may let run without a prompt. The renderer reports the path it took in
+// `meta.approval` ('user' after a prompt, 'auto' when a rule answered) and
+// names the requesting guest in `meta.webContentsId`; main's own custody
+// reading decides whether an automatic path may run. A guest in Agent
+// custody, or an automatic request main cannot attribute to a guest of the
+// sending window, is refused — the same refusal wallet-ipc.js applies to
+// dApp auto-approve rules.
+const AUTO_APPROVABLE_METHODS = new Set([
+  'swarm_publishData',
+  'swarm_publishFiles',
+  'swarm_publishChunk',
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_getSigningIdentity',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
+]);
+
+function agentCustodyRefusal(sender, method, meta) {
+  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
+  const webContentsId = meta?.webContentsId;
+  if (
+    isAgentPageId(webContentsId) ||
+    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
+  ) {
+    return notAuthorized('agent_custody');
+  }
+  return null;
 }
 
 function notConnected() {
@@ -295,12 +332,39 @@ function consumePermissionFreeReadBudget(origin, { requests = 0, bytes = 0 } = {
   permissionFreeReadBuckets.set(origin, bucket);
 
   if (bucket.requests > budget.maxRequests || bucket.bytes > budget.maxBytes) {
-    return invalidParams('Permission-free read budget exceeded', 'rate_limited', {
-      windowMs: budget.windowMs,
-      maxRequests: budget.maxRequests,
-      maxBytes: budget.maxBytes,
-    });
+    return readBudgetExceeded(budget);
   }
+  return null;
+}
+
+function readBudgetExceeded(budget) {
+  return invalidParams('Permission-free read budget exceeded', 'rate_limited', {
+    windowMs: budget.windowMs,
+    maxRequests: budget.maxRequests,
+    maxBytes: budget.maxBytes,
+  });
+}
+
+/**
+ * Reserve `bytes` of the origin's current read window up front, or refuse
+ * without reserving anything. Unlike consumePermissionFreeReadBudget, which
+ * charges after the fact, the check and the charge happen in one synchronous
+ * step, so concurrent reads cannot all pass a "does it still fit" check and
+ * then each pay for a download only one of them may return.
+ */
+function reservePermissionFreeReadBytes(origin, bytes) {
+  const budget = getReadBudget(origin);
+  const now = Date.now();
+  const existing = permissionFreeReadBuckets.get(origin);
+  const bucket = existing && now - existing.startedAt < budget.windowMs
+    ? existing
+    : { startedAt: now, requests: 0, bytes: 0 };
+
+  if (bucket.bytes + bytes > budget.maxBytes) {
+    return readBudgetExceeded(budget);
+  }
+  bucket.bytes += bytes;
+  permissionFreeReadBuckets.set(origin, bucket);
   return null;
 }
 
@@ -309,9 +373,11 @@ function consumePermissionFreeReadBudget(origin, { requests = 0, bytes = 0 } = {
  * @param {string} method
  * @param {*} params
  * @param {string} origin - Normalized origin from renderer
- * @param {{ webContentsId?: number }} [meta] - Renderer-supplied routing info
- *   (trusted like origin — the renderer is Freedom's own code). Only
- *   swarm_subscribe uses it, to target message delivery at the webview.
+ * @param {{ webContentsId?: number, approval?: 'user'|'auto' }} [meta] -
+ *   Renderer-supplied routing info (trusted like origin — the renderer is
+ *   Freedom's own code). swarm_subscribe uses webContentsId to target
+ *   message delivery at the webview; the IPC handler checks both fields
+ *   against Agent custody first (agentCustodyRefusal).
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -338,6 +404,10 @@ async function executeSwarmMethod(method, params, origin, meta) {
 
     if (method === 'swarm_readChunk') {
       return handleReadChunk(params, normalizedOrigin);
+    }
+
+    if (method === 'swarm_readData') {
+      return handleReadData(params, normalizedOrigin);
     }
 
     if (method === 'swarm_readSingleOwnerChunk') {
@@ -562,6 +632,16 @@ async function handlePublishData(params, origin) {
   }
 }
 
+// Windows device names: a path segment named one of these (any case, with or
+// without an extension, trailing dots/spaces ignored) opens the device instead
+// of a file in the temp directory publishFilesFromContent writes to.
+const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
+
+function isWindowsReservedName(segment) {
+  const stem = segment.split('.')[0].replace(/[ .]+$/, '');
+  return WINDOWS_RESERVED_NAMES.test(stem);
+}
+
 /**
  * Validate a virtual path for manifest inclusion.
  * @returns {{ valid: boolean, message?: string }}
@@ -580,6 +660,10 @@ function validateVirtualPath(p) {
   if (p.startsWith('/')) {
     return { valid: false, message: 'Leading slash is not allowed' };
   }
+  // A colon names a drive or an NTFS alternate data stream on Windows.
+  if (p.includes(':')) {
+    return { valid: false, message: 'Colons are not allowed' };
+  }
   // Check for control characters and null bytes
   for (let i = 0; i < p.length; i++) {
     if (p.charCodeAt(i) < 32) {
@@ -593,6 +677,15 @@ function validateVirtualPath(p) {
     }
     if (seg === '.' || seg === '..') {
       return { valid: false, message: '"." and ".." segments are not allowed' };
+    }
+    // Win32 path normalization trims a trailing dot or space from every
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
+    // temp directory) and '.. ' would trim toward '..'.
+    if (/[. ]$/.test(seg)) {
+      return { valid: false, message: 'Path segments may not end in a dot or space' };
+    }
+    if (isWindowsReservedName(seg)) {
+      return { valid: false, message: `"${seg}" is a reserved device name on Windows` };
     }
   }
   return { valid: true };
@@ -834,6 +927,75 @@ async function handleReadChunk(params, origin) {
     return { result };
   } catch (err) {
     log.error(`[SwarmProvider] readChunk failed for ${origin}:`, err.message);
+    return mapChunkReadError(err);
+  }
+}
+
+/**
+ * Handle swarm_readData: permission-free read of a whole blob, joined by the
+ * node. One request against the read budget, like swarm_readChunk, and bytes
+ * against the shared byte budget. The root chunk is charged as soon as it is
+ * read, whatever happens next. A blob larger than the origin's whole byte
+ * budget can never be returned, so it is refused with data_too_large from the
+ * root chunk's span, before the node joins it. A blob that does not fit in
+ * its root chunk has its full size reserved before the join, atomically, so
+ * concurrent reads cannot each start a join the window has no room for; one
+ * that does not fit what is left is rate_limited without downloading. The
+ * reservation stands if the join then fails, since the node may already have
+ * fetched most of it. A reservation is charged to the window it was made in;
+ * when the window resets, a join still running from the old window no longer
+ * counts, so the bound is bytes started per window, not bytes in flight.
+ */
+async function handleReadData(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  // 32 bytes only: an encrypted reference (64 bytes, 128 hex) is refused here
+  // too, as Freedom does not decrypt blobs for pages yet.
+  const referenceError = validateHexString(params.reference, 32, 'invalid_reference', 'reference');
+  if (referenceError) return referenceError;
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const root = await readDataRoot(params.reference);
+    // The root chunk came off the network: charge it before any refusal.
+    const rootBudgetError = consumePermissionFreeReadBudget(origin, { bytes: root.chunkBytes });
+
+    const budget = getReadBudget(origin);
+    if (root.size > BigInt(budget.maxBytes)) {
+      const actual = root.size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(root.size) : root.size;
+      return invalidParams(
+        `Data exceeds the maximum read size of ${budget.maxBytes} bytes`,
+        'data_too_large',
+        { limit: budget.maxBytes, actual }
+      );
+    }
+    if (rootBudgetError) return rootBudgetError;
+
+    // A blob held in its root chunk is that chunk's payload: already paid
+    // for. A larger one is charged its size in all (the root counts towards
+    // it), reserved now, before the node joins it.
+    const size = Number(root.size);
+    if (size > root.chunkBytes) {
+      const reserveError = reservePermissionFreeReadBytes(origin, size - root.chunkBytes);
+      if (reserveError) return reserveError;
+    }
+
+    const result = await readData(params.reference, root);
+    return { result };
+  } catch (err) {
+    log.error(`[SwarmProvider] readData failed for ${origin}:`, err.message);
     return mapChunkReadError(err);
   }
 }
@@ -2037,9 +2199,10 @@ function registerSwarmProviderIpc() {
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
 
-  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (_event, args) => {
+  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
-    return executeSwarmMethod(method, params, origin, meta);
+    return agentCustodyRefusal(event?.sender, method, meta) ||
+      executeSwarmMethod(method, params, origin, meta);
   });
 
   log.info('[SwarmProvider] IPC handler registered');

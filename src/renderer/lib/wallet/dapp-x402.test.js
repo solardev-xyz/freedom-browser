@@ -254,6 +254,9 @@ async function loadDappX402(options = {}) {
   jest.resetModules();
 
   const document = createDocument(dappX402ElementIds);
+  document.querySelectorAll = jest.fn((selector) =>
+    selector === 'webview' ? options.webviews || [] : []
+  );
   const identityView = new FakeElement();
   const approvalNeededHandlers = [];
   const approvalResultHandlers = [];
@@ -332,6 +335,9 @@ async function loadDappX402(options = {}) {
     showX402Permissions: updatePermissionSubscreen,
   }));
   jest.doMock('./balance-display.js', () => ({ refreshBalances }));
+  jest.doMock('../dapp-provider.js', () => ({
+    getActivePageUrl: jest.fn(() => ''),
+  }));
   jest.doMock('./vault-unlock.js', () => ({
     showVaultUnlock: jest.fn().mockResolvedValue(undefined),
   }));
@@ -757,5 +763,97 @@ describe('dapp-x402 approval card lifecycle', () => {
 
     expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({ webContentsId: 7 });
     expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(true);
+  });
+
+  // A mainFrame Cancel must step back through goBackInHistory, not a
+  // main-process goBack(): the gateway offer (#70) reads the traversal
+  // count to keep a gateway page reached by Back where it is.
+  const fakeWebview = (webContentsId, { canGoBack = true } = {}) => ({
+    getWebContentsId: () => webContentsId,
+    canGoBack: jest.fn(() => canGoBack),
+    goBack: jest.fn(),
+  });
+
+  const cancelMainFrameCard = async (ctx) => {
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+    await ctx.elements['x402-approval-reject'].fire('click');
+    await flushMicrotasks();
+  };
+
+  test('Cancel on a mainFrame card goes back through the traversal helper', async () => {
+    const other = fakeWebview(3);
+    const paying = fakeWebview(7);
+    const unattached = {
+      getWebContentsId: () => {
+        throw new Error('not attached');
+      },
+    };
+    const ctx = await loadDappX402({ webviews: [unattached, other, paying] });
+    const traversal = await import('../history-traversal.js');
+
+    await cancelMainFrameCard(ctx);
+
+    expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({
+      webContentsId: 7,
+      navigate: false,
+    });
+    expect(paying.goBack).toHaveBeenCalledTimes(1);
+    expect(other.goBack).not.toHaveBeenCalled();
+    expect(traversal.historyTraversalRequestCount(paying)).toBe(1);
+    expect(traversal.consumeHistoryTraversal(paying)).toBe(true);
+  });
+
+  test('Cancel leaves the navigation to main when the guest has no history', async () => {
+    const paying = fakeWebview(7, { canGoBack: false });
+    const ctx = await loadDappX402({ webviews: [paying] });
+
+    await cancelMainFrameCard(ctx);
+
+    expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({ webContentsId: 7 });
+    expect(paying.goBack).not.toHaveBeenCalled();
+  });
+});
+
+describe('disconnectX402', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.HTMLInputElement = originalHtmlInputElement;
+    jest.restoreAllMocks();
+  });
+
+  // A key from the permissions list can name an origin in another tab:
+  // revoking it must leave the visible origin's auto-pay banner alone.
+  test('hides the banner only when the revoked origin is the one it shows', async () => {
+    const ctx = await loadDappX402();
+    const provider = await import('../dapp-provider.js');
+    provider.getActivePageUrl.mockReturnValue('https://visible.example/page');
+    ctx.electronAPI.x402GetAllPermissions.mockResolvedValue({
+      success: true,
+      permissions: [{
+        origin: 'https://visible.example',
+        asset: '0xUSDC',
+        chainId: 8453,
+        capAmount: '10000000',
+        spentAmount: '0',
+      }],
+    });
+    const banner = ctx.elements['x402-connection-banner'];
+
+    await ctx.mod.updateX402ConnectionBanner();
+    expect(banner.classList.contains('hidden')).toBe(false);
+
+    await ctx.mod.disconnectX402('https://background.example');
+    expect(ctx.electronAPI.x402RevokeAllForOrigin).toHaveBeenCalledWith({ origin: 'https://background.example' });
+    expect(banner.classList.contains('hidden')).toBe(false);
+
+    await ctx.mod.disconnectX402('https://visible.example');
+    expect(banner.classList.contains('hidden')).toBe(true);
   });
 });

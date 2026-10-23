@@ -1036,7 +1036,9 @@ async function handleSendContinue() {
 
 // Ask main for the primary Ethereum name set for an address. Returns one of:
 //   { name, trust }                          forward-verified primary name
-//   { warning: 'unverified', claimedName }   primary claim doesn't forward-verify
+//   { warning: 'unverified', claimedName, cause }
+//                                            primary claim isn't verified; `cause`
+//                                            is 'unnormalized' or null
 //   null                                     no reverse record / hard error
 // Never throws — the review flow isn't blocked by a reverse-lookup failure.
 async function lookupPrimaryNameForAddress(address, chainId = sendTxState.chainId || 1) {
@@ -1048,7 +1050,11 @@ async function lookupPrimaryNameForAddress(address, chainId = sendTxState.chainI
       return { name: result.name, trust: result.trust || null };
     }
     if (result?.reason === 'UNVERIFIED') {
-      return { warning: 'unverified', claimedName: result.claimedName || null };
+      return {
+        warning: 'unverified',
+        claimedName: result.claimedName || null,
+        cause: result.unverifiedCause || null,
+      };
     }
     return null;
   } catch {
@@ -1191,7 +1197,7 @@ function populateSendReview() {
 
 function renderRecipientReview(container, address, resolution) {
   if (resolution.warning === 'unverified') {
-    renderRecipientUnverified(container, address, resolution.claimedName);
+    renderRecipientUnverified(container, address, resolution.claimedName, resolution.cause);
     return;
   }
 
@@ -1220,12 +1226,12 @@ function renderRecipientReview(container, address, resolution) {
 // The claim is untrusted, so we don't display it as text — only as a
 // tooltip on the warning glyph, so a phisher can't slip a misleading
 // name onto the review screen.
-function renderRecipientUnverified(container, address, claimedName) {
+function renderRecipientUnverified(container, address, claimedName, cause = null) {
   // Address inherits monospace + 11px from the parent .send-review-address
   // class on #send-review-to — no per-span styling needed for the bare case.
   container.replaceChildren(
     document.createTextNode(address),
-    buildRecipientWarning(describeUnverifiedReverse(claimedName)),
+    buildRecipientWarning(describeUnverifiedReverse(claimedName, cause)),
   );
 }
 

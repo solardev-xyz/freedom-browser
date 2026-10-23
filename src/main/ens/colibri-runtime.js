@@ -53,7 +53,10 @@ process.env.C4_DISABLE_NATIVE = '1';
 // `eth_getTransactionReceipt` / `eth_getTransactionByHash` for a hash the
 // prover's chain has not seen (a just-broadcast transaction, or anything on a
 // local fork) ends in "memory access out of bounds". In the app that was a
-// main-process SIGSEGV on the first receipt poll after a send.
+// main-process SIGSEGV on the first receipt poll after a send. (Still so in
+// 3.0.2, re-checked 2026-10-19 against the mainnet prover, after 4-10 s of
+// verifier CPU; since #750 the chain-data router asks Colibri only about
+// transactions an RPC already reports as mined.)
 //
 // `--wasm-enforce-bounds-checks` makes V8 compile explicit checks even though a
 // trap handler is available, so the trap is thrown as a `RuntimeError` and the

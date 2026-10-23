@@ -5,7 +5,23 @@ const { loadNativeBinding, isNativeBindingAvailable } = require('./freedom-ipfs-
 
 const BUFFER_SIZE = 64 * 1024;
 const ATTEMPT_TIMEOUT_MS = 30_000;
+// err.code on the rejection when ATTEMPT_TIMEOUT_MS passes with no response
+// headers, so callers (the CI smoke) can tell it from other request errors.
+const REQUEST_TIMEOUT_CODE = 'FREEDOM_IPFS_NATIVE_REQUEST_TIMEOUT';
 const REQUEST_QUEUE_TIMEOUT_MS = 15_000;
+// Delegated routers the node asks for content providers (and IPNS records),
+// comma-separated. The addon queries every entry in parallel and merges the
+// answers. An empty string would leave it on its single built-in default
+// (delegated-ipfs.dev); when that one lookup failed from some networks, the
+// DHT fallback found no usable provider and pages 502'd with "no HTTP-capable
+// providers found". cid.contact is the second, independent index (#700).
+// Known cost (freedom-ipfs v0.4.6): the same list also feeds IPNS, and the
+// addon's DelegatedIpnsResolver reports "not found" if any endpoint 404s.
+// cid.contact always 404s IPNS, so when delegated-ipfs.dev is unreachable an
+// /ipns/<key> load fails as "name not found" instead of as a network error.
+// Diagnostics only (nothing is negatively cached); tracked upstream in
+// https://github.com/solardev-xyz/freedom-ipfs/issues/30.
+const DELEGATED_ROUTERS = 'https://delegated-ipfs.dev/routing/v1,https://cid.contact/routing/v1';
 // How long stopDispatcher() waits for the worker to acknowledge a stop before
 // resorting to terminate(), and how long it then waits for the thread to end
 // once it has acknowledged. The acknowledgement is what proves no
@@ -83,16 +99,31 @@ class NativeGatewayController {
       this.rejectResponse = reject;
     });
 
-    this.abortListener = () => this.cancel();
-    if (signal) {
-      if (signal.aborted) this.cancel();
-      else signal.addEventListener('abort', this.abortListener, { once: true });
-    }
-
     this.timeout = setTimeout(() => {
       this.cancel();
-      this.fail(new Error('freedom-ipfs native request timeout'));
+      const err = new Error('freedom-ipfs native request timeout');
+      err.code = REQUEST_TIMEOUT_CODE;
+      this.fail(err);
     }, ATTEMPT_TIMEOUT_MS);
+
+    // An abort ends the request at once, before or after the headers, and
+    // frees its handle: the add-on answers a cancel with EVENT_CANCELLED
+    // alone, which settles nothing on its own.
+    // A paused body would never read its READ_CANCELLED either.
+    this.abortListener = () => {
+      this.cancel();
+      this.fail(
+        new Error(
+          this.responseSettled
+            ? 'freedom-ipfs native request cancelled'
+            : 'freedom-ipfs native request aborted'
+        )
+      );
+    };
+    if (signal) {
+      if (signal.aborted) this.abortListener();
+      else signal.addEventListener('abort', this.abortListener, { once: true });
+    }
   }
 
   handleEvent(events) {
@@ -133,8 +164,11 @@ class NativeGatewayController {
           pull: () => {
             this.drain();
           },
+          // The consumer is gone: no read will ever see READ_CANCELLED, so
+          // free the handle here.
           cancel: () => {
             this.cancel();
+            this.finish();
           },
         })
       : null;
@@ -366,7 +400,7 @@ class FreedomIpfsNativeNode {
     try {
       ok = await asyncLifecycleExport(addon, 'nodeStartNativeGatewayOnlineAsync')(
         handle,
-        '',
+        DELEGATED_ROUTERS,
         addon.constants.ROUTING_MODE_AUTO,
         0,
         3,
@@ -383,6 +417,7 @@ class FreedomIpfsNativeNode {
     }
     this.nodeHandle = handle;
     this.startDispatcher();
+    log.info(`[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`);
     return true;
   }
 
@@ -563,6 +598,10 @@ class FreedomIpfsNativeNode {
         new Error(this.failureError || 'freedom-ipfs native node is unavailable')
       );
     }
+    // Aborted already (say, while its name resolved): start nothing.
+    if (signal?.aborted) {
+      return Promise.reject(new Error('freedom-ipfs native request aborted'));
+    }
     const requestId = this.nextRequestId++;
     const requestJson = JSON.stringify({
       method,
@@ -576,7 +615,8 @@ class FreedomIpfsNativeNode {
       return Promise.reject(new Error('freedom-ipfs native request could not be started'));
     }
     const controller = new NativeGatewayController(this, handle, method, signal);
-    this.requests.set(controller.handleKey, controller);
+    // One that ended while it was built has freed its handle already.
+    if (!controller.terminated) this.requests.set(controller.handleKey, controller);
     return controller.responsePromise;
   }
 
@@ -595,7 +635,9 @@ module.exports = {
   FreedomIpfsNativeNode,
   NativeGatewayController,
   ATTEMPT_TIMEOUT_MS,
+  REQUEST_TIMEOUT_CODE,
   REQUEST_QUEUE_TIMEOUT_MS,
+  DELEGATED_ROUTERS,
   DISPATCHER_STOP_TIMEOUT_MS,
   DISPATCHER_EXIT_GRACE_MS,
 };

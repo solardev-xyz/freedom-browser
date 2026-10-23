@@ -124,7 +124,7 @@ describe('runUpdateOnce', () => {
     const opts = io({ readFeed: async () => signedManifest(1) });
     await runUpdateOnce(opts);
     expect(opts.downloadBlob).toHaveBeenCalledTimes(1);
-    expect(opts.downloadBlob).toHaveBeenCalledWith(REF_ADS);
+    expect(opts.downloadBlob).toHaveBeenCalledWith(REF_ADS, expect.anything());
     expect(fs.existsSync(path.join(root, 'updated', 'easyprivacy.txt'))).toBe(false);
   });
 
@@ -200,7 +200,7 @@ describe('runUpdateOnce', () => {
     // Only the missing privacy list is fetched — the applied ads copy is
     // reused after hash verification, not re-downloaded.
     expect(opts.downloadBlob).toHaveBeenCalledTimes(1);
-    expect(opts.downloadBlob).toHaveBeenCalledWith(REF_PRIV);
+    expect(opts.downloadBlob).toHaveBeenCalledWith(REF_PRIV, expect.anything());
     expect(fs.readFileSync(path.join(root, 'updated', 'easylist.txt'))).toEqual(ADS);
     expect(fs.readFileSync(path.join(root, 'updated', 'easyprivacy.txt'))).toEqual(PRIV);
   });
@@ -256,6 +256,58 @@ describe('runUpdateOnce', () => {
     expect(opts.activate).not.toHaveBeenCalled();
   });
 
+  test('a feed read that never answers ends the cycle as feed_unavailable', async () => {
+    const opts = io({ readFeed: () => new Promise(() => {}), timeoutMs: 20 });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'feed_unavailable' });
+    expect(opts.downloadBlob).not.toHaveBeenCalled();
+  });
+
+  test('a list download that never answers ends the cycle, leaving prior state', async () => {
+    const opts = io({
+      readFeed: async () => signedManifest(2),
+      downloadBlob: jest.fn(() => new Promise(() => {})),
+      timeoutMs: 20,
+    });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'download_failed', reason: 'ads' });
+    expect(fs.existsSync(path.join(root, 'updated'))).toBe(false);
+    expect(opts.activate).not.toHaveBeenCalled();
+  });
+
+  test('a slow list download that keeps making progress is not cut off', async () => {
+    // Each list takes 3x the timeout in total, but never goes 20 ms silent.
+    const opts = io({
+      readFeed: async () => signedManifest(2),
+      downloadBlob: jest.fn(async (ref, { progress }) => {
+        for (let i = 0; i < 6; i += 1) {
+          await new Promise((r) => setTimeout(r, 10));
+          progress();
+        }
+        return blobFor(ref);
+      }),
+      timeoutMs: 20,
+    });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'applied', version: 2 });
+  });
+
+  test('a download that goes quiet after some progress is aborted', async () => {
+    let signal;
+    const opts = io({
+      readFeed: async () => signedManifest(2),
+      downloadBlob: jest.fn((ref, ctx) => {
+        signal = ctx.signal;
+        ctx.progress();
+        return new Promise(() => {});
+      }),
+      timeoutMs: 20,
+    });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'download_failed', reason: 'ads' });
+    expect(signal.aborted).toBe(true);
+  });
+
   test('rolls back to last-known-good when the engine rebuild fails', async () => {
     // First: a good apply at version 2.
     await runUpdateOnce(io({ readFeed: async () => signedManifest(2) }));
@@ -285,5 +337,70 @@ describe('runUpdateOnce', () => {
     loadSettings.mockReturnValue({ adblockEnabled: false });
     const result = await runUpdateOnce(io({ readFeed: async () => signedManifest(1) }));
     expect(result).toEqual({ status: 'disabled' });
+  });
+});
+
+describe('default list download (bee-js stream)', () => {
+  const http = require('http');
+  const { Bee } = require('@ethersphere/bee-js');
+  const { _defaultDownloadBlob } = require('./update-manager');
+
+  // Serves /bytes/<ref> as `chunks` pieces, `gapMs` apart; with `stallAfter`,
+  // stops writing (keeps the connection open) after that many pieces.
+  async function trickleServer({ chunks, gapMs, stallAfter = Infinity }) {
+    const closed = [];
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      let sent = 0;
+      const tick = () => {
+        if (sent >= chunks) return res.end();
+        if (sent >= stallAfter) return;
+        res.write(Buffer.from(`chunk${sent}\n`));
+        sent += 1;
+        setTimeout(tick, gapMs);
+      };
+      tick();
+      res.on('close', () => closed.push(res.writableEnded));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const bee = new Bee(`http://127.0.0.1:${server.address().port}`);
+    return { bee, closed, close: () => new Promise((r) => server.close(r)) };
+  }
+
+  // Mirrors runUpdateOnce: an inactivity timer reset by progress().
+  function watch(ms) {
+    const controller = new AbortController();
+    let timer;
+    const progress = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(new Error('idle')), ms);
+    };
+    progress();
+    return { signal: controller.signal, progress, stop: () => clearTimeout(timer) };
+  }
+
+  test('streams a slow-but-steady body past the timeout', async () => {
+    const srv = await trickleServer({ chunks: 8, gapMs: 25 });
+    const w = watch(100); // whole body takes ~200 ms
+    try {
+      const blob = await _defaultDownloadBlob(REF_ADS, w, srv.bee);
+      expect(blob.toString()).toBe([...Array(8).keys()].map((i) => `chunk${i}\n`).join(''));
+    } finally {
+      w.stop();
+      await srv.close();
+    }
+  });
+
+  test('an abort mid-body rejects and closes the connection', async () => {
+    const srv = await trickleServer({ chunks: 8, gapMs: 10, stallAfter: 2 });
+    const w = watch(80);
+    try {
+      await expect(_defaultDownloadBlob(REF_ADS, w, srv.bee)).rejects.toThrow();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(srv.closed).toEqual([false]); // closed by us, before the server ended it
+    } finally {
+      w.stop();
+      await srv.close();
+    }
   });
 });

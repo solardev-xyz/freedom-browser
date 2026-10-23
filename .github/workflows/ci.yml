@@ -57,6 +57,10 @@ on:
         description: 'Run real Myotis reads on all platforms (requires fresh checkpoints; never accepts stale-anchor risk)'
         type: boolean
         default: false
+      renderer_baselines:
+        description: 'Capture every Linux renderer surface alongside comparisons (artifacts only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -118,7 +122,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -162,12 +166,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -193,7 +197,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: coverage/
@@ -216,12 +220,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -234,10 +238,49 @@ jobs:
       - name: Run migration + profile suites
         run: npm run test:migration
 
+  # Independent of the long native sandbox build: prove both a positive
+  # network control and the isolated preview boundary on every desktop OS.
+  e2e-preview-network:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: ./.github/actions/install-linux-native-deps
+        if: runner.os == 'Linux'
+      - uses: ./.github/actions/install-node-deps
+      - uses: ./.github/actions/install-playwright-deps
+        if: runner.os == 'Linux'
+      - name: Qualify preview network isolation against owned listeners
+        shell: bash
+        run: |
+          node -e "require('electron')"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Retain Chromium's process sandbox on this disposable runner.
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+            xvfb-run -a node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          else
+            node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          fi
+
   # freedom-ipfs native addon smoke for every desktop addon target currently
   # published in the pinned prebuilt manifest. This downloads the real release
-  # artifact, loads it in Node, starts native freedom-ipfs, and retrieves a real
-  # IPNS page through the native request API.
+  # artifact, loads it in Node, starts native freedom-ipfs, serves the identity
+  # CID bafkqaaa locally (no network), and fetches an immutable /ipfs/<cid>
+  # through the native request API (no IPNS lookup; network-only failures of
+  # that live leg are a ::warning::, see #747).
   freedom-ipfs-native-addon:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -258,12 +301,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -287,8 +330,9 @@ jobs:
         run: npm run ipfs:native:smoke
         env:
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
-          FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
-          FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
+          # The live-network leg fetches an immutable /ipfs/<cid> and turns a
+          # network-only failure into a ::warning:: (see the script header and
+          # #747); load/start/local-content failures still fail the job.
 
       - name: Smoke test issue #102 high-fanout IPFS page
         if: matrix.target == 'linux-x64'
@@ -296,6 +340,9 @@ jobs:
         env:
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
+          # `1` = warn mode: the root page fetch retries and turns network
+          # weather into a ::warning:: like the live leg; gateway_busy during
+          # the fan-out still fails the job (#747).
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
   # libradicle is the ONLY Radicle runtime — there is no executable fallback —
@@ -331,12 +378,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -378,12 +425,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -427,12 +474,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -515,12 +562,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -565,7 +612,7 @@ jobs:
 
       - name: Restore Myotis sync snapshot
         id: myotis-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/myotis-data
           key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -636,14 +683,14 @@ jobs:
 
       - name: Save Myotis sync snapshot
         if: always() && steps.myotis-snapshot.outputs.present == 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/myotis-data
           key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: myotis-native-e2e-${{ matrix.target }}-traces
           path: |
@@ -659,6 +706,9 @@ jobs:
   # #319 lesson: specs no job listed shipped their regressions green). Keep
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
+  # e2e-not-in-ci: agent-ollama-live.spec.js — requires an explicitly configured local Ollama model; exercised manually
+  # e2e-not-in-ci: claude-subscription.spec.js — opt-in qualification with a locally authenticated Claude subscription
+  # e2e-not-in-ci: claude-subscription-spike.spec.js — opt-in experiment using an authenticated local Claude subscription; no account credentials in CI
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
@@ -696,12 +746,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -738,7 +788,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-settings-traces
           path: |
@@ -761,12 +811,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -785,7 +835,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-shortcuts-zoom-traces
           path: |
@@ -814,12 +864,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -891,6 +941,8 @@ jobs:
   # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
   # guard that keeps web content off the local Ant API keys on the requesting
   # frame and webContents type, which only a real tab `<webview>` produces.
+  # `user-agent.spec.js` (#471) reads the User-Agent a real tab guest, its
+  # worker and a private window's partition send, which a unit test can't see.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -899,12 +951,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -918,7 +970,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -932,11 +984,13 @@ jobs:
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
             test-e2e/popup-close.spec.js \
-            test-e2e/ant-api-guard.spec.js
+            test-e2e/ant-api-guard.spec.js \
+            test-e2e/user-agent.spec.js \
+            test-e2e/browser-fullscreen.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-tabs-traces
           path: |
@@ -973,6 +1027,10 @@ jobs:
   # trust levels: status sentence and row sequences, click-to-copy of the
   # full value, one click from an open menu to the popover, and the shield
   # giving way to the neutral globe on an internal page.
+  # `gateway-offer.spec.js` (#70) drives the "Open without gateway" pill for
+  # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
+  # opens the native address with path/query/fragment, and the opt-in
+  # "always" redirect leaves a gateway page reached by Back alone.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -981,12 +1039,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1009,11 +1067,12 @@ jobs:
             test-e2e/chrome-page-spoof.spec.js \
             test-e2e/tez-unverified.spec.js \
             test-e2e/tez-head-conflict.spec.js \
-            test-e2e/ens-trust-popover.spec.js
+            test-e2e/ens-trust-popover.spec.js \
+            test-e2e/gateway-offer.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-address-bar-ens-traces
           path: |
@@ -1034,8 +1093,14 @@ jobs:
   # drives the Nodes tab's Browsing Credit group through node states the
   # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
   # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
-  # offering a plan while Ant is still rediscovering the wallet's batches. The
-  # anvil-backed Safe specs run in `e2e-safe` below.
+  # offering a plan while Ant is still rediscovering the wallet's batches, and
+  # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
+  # Publishing button opening it, identity or not.
+  # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
+  # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
+  # tab's wallet requests attributed to its own site, with a real vault and
+  # the real main-side signing check. The anvil-backed Safe specs run in
+  # `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1044,12 +1109,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1067,17 +1132,20 @@ jobs:
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
+            test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/safe-send-chain.spec.js \
             test-e2e/publisher-identity-selector.spec.js \
             test-e2e/browsing-credit.spec.js \
-            test-e2e/publish-setup-rediscovery.spec.js
+            test-e2e/publish-setup-rediscovery.spec.js \
+            test-e2e/publish-page-setup.spec.js \
+            test-e2e/publish-text-shortcut.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-wallet-traces
           path: |
@@ -1113,12 +1181,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1172,7 +1240,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-safe-traces
           path: |
@@ -1180,6 +1248,155 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-agent:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run agent E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/ai-onboarding.spec.js \
+            test-e2e/agent-examples.spec.js \
+            test-e2e/agent-dictation.spec.js \
+            test-e2e/agent-cancellation.spec.js \
+            test-e2e/agent-evaluation.spec.js \
+            test-e2e/agent-product-qualification.spec.js \
+            test-e2e/agent-sidebar.spec.js \
+            test-e2e/agent-preview-isolation.spec.js \
+            test-e2e/agent-preview-dns-prefetch.spec.js \
+            test-e2e/agent-review-layout.spec.js \
+            test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
+            test-e2e/pdf-processor.spec.js \
+            test-e2e/workspace-viewers.spec.js
+      - name: Upload software rendering profile
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-software-video-profile-${{ github.job }}
+          path: test-results/**/software-video-scroll-profile.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-agent-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-automation:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run automation E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/automation-dialog.spec.js \
+            test-e2e/automation-frame-interaction.spec.js \
+            test-e2e/automation-frame-observation.spec.js \
+            test-e2e/automation-frame-prototype.spec.js \
+            test-e2e/automation-kernel.spec.js \
+            test-e2e/automation-native-dialog.spec.js \
+            test-e2e/automation-observation.spec.js \
+            test-e2e/automation-page-tools.spec.js \
+            test-e2e/automation-recovery.spec.js \
+            test-e2e/automation-runtime.spec.js \
+            test-e2e/automation-visual-interaction.spec.js \
+            test-e2e/automation-visual-prototype.spec.js \
+            test-e2e/freedom-cli.spec.js
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-automation-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The Agent security regressions that only macOS can run (#778): the S1
+  # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
+  # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
+  # `process.platform === 'darwin'`, so every other runner skips them, and a
+  # skipped test is green. The checker runs the seatbelt, secure-files and
+  # native-supervisor suites with `--json` and fails unless every one of their
+  # tests passed, none skipped, with each macOS-only test passing by name; its
+  # header lists those tests and why. `scripts/ci/macos-security-tests.test.js`
+  # (in `test`, on Linux) keeps that list in step with the sources. Pure jest:
+  # no display, no Electron, no built supervisor.
+  agent-macos-jest:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      # secure-files.test.js's "kernel identity ..." case resolves the real
+      # workspace supervisor through `resolveMacosSupervisor`, which reads
+      # `out/macos-supervisor/<arch>/`. `ignore-scripts` skips `prestart`, so
+      # build it here from the repository-owned source with the runner's
+      # Apple toolchain (no installer is launched).
+      - name: Build the macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+
+      - name: Run the macOS-only security suites, refusing any skip
+        run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
 
   # Browser chrome around the page that only a real window can exercise, and
   # that `e2e-tabs` (already the longest e2e job) has no room for: the find
@@ -1189,7 +1406,8 @@ jobs:
   # focus ring every chrome text field draws (`chrome-input-focus`, #246),
   # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
   # and the download shelf, whose dismissed card must stay dismissed for the
-  # rest of the transfer (`downloads`, #309).
+  # rest of the transfer (`downloads`, #309), and the application menu's
+  # History menu, which reads private-window state (`history-menu`, #584).
   e2e-chrome:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1198,12 +1416,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1217,20 +1435,32 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads E2E
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/find-in-page.spec.js \
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
+            test-e2e/page-providers-early.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
-            test-e2e/downloads.spec.js
+            test-e2e/downloads.spec.js \
+            test-e2e/agent-review-layout.spec.js \
+            test-e2e/history-menu.spec.js
+
+      - name: Upload software rendering profile
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-software-video-profile-${{ github.job }}
+          path: test-results/**/software-video-scroll-profile.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-chrome-traces
           path: |
@@ -1258,12 +1488,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1316,7 +1546,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-onboarding-identity-${{ matrix.os }}-traces
           path: |
@@ -1340,12 +1570,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1372,7 +1602,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-ipfs-quit-traces
           path: |
@@ -1395,12 +1625,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1438,7 +1668,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-ant-traces
           path: |
@@ -1461,12 +1691,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1487,7 +1717,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-adblock-traces
           path: |
@@ -1510,12 +1740,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1543,7 +1773,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-chrome-webstore-traces
           path: |
@@ -1565,12 +1795,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1597,7 +1827,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-address-bar-clipboard-${{ matrix.os }}-traces
           path: |
@@ -1628,12 +1858,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1651,12 +1881,14 @@ jobs:
 
       # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
       # through CDP into the renderer and never reaches a menu accelerator.
+      # setxkbmap (x11-xkb-utils) switches the xvfb display to the French and
+      # Czech layouts for the select-tab layout presses (#717).
       # Through the shared apt wrapper, like every other apt call on Linux CI.
       - name: Install xdotool
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool x11-xkb-utils
 
       - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
@@ -1669,7 +1901,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-close-tab-shortcut-${{ matrix.os }}-traces
           path: |
@@ -1693,12 +1925,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1725,7 +1957,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-profiles-${{ matrix.os }}-traces
           path: |
@@ -1751,7 +1983,7 @@ jobs:
       renderer: ${{ steps.filter.outputs.renderer }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -1801,12 +2033,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1825,7 +2057,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-theme-parity-traces
           path: |
@@ -1851,12 +2083,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -1871,11 +2103,25 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Compare renderer screenshots
+        env:
+          FREEDOM_CAPTURE_RENDERER_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.renderer_baselines && '1' || '0' }}
         run: xvfb-run -a npm run test:e2e:screenshots
+
+      # Capture never replaces comparison or writes the committed references.
+      # Candidates require inspection and a later commit to adopt.
+
+      - name: Upload Linux baseline candidates
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.renderer_baselines }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renderer-baseline-candidates
+          path: test-results/**/baseline-candidates/*.png
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload screenshot diffs
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: renderer-screenshots-diff
           path: |
@@ -1885,7 +2131,7 @@ jobs:
           retention-days: 14
 
   # Static analysis of the workflows and composite actions themselves (#633,
-  # #637): an unpinned `uses:`, a checkout that keeps the token in .git/config,
+  # #637): an unpinned `uses:`, a checkout that persists the git token,
   # a cache restored into a release build, template injection and the rest of
   # zizmor's audits. Accepted findings are listed, with reasons, in
   # .github/zizmor.yml; anything else fails here. Ungated like `test`: it reads
@@ -1900,7 +2146,7 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1927,7 +2173,10 @@ jobs:
     if: always()
     needs:
       [
+        agent-macos-jest,
         code-changed,
+        e2e-agent,
+        e2e-automation,
         e2e-adblock,
         e2e-address-bar-clipboard,
         e2e-address-bar-ens,
@@ -1938,6 +2187,7 @@ jobs:
         e2e-ipfs-quit,
         e2e-onboarding-identity,
         e2e-profiles,
+        e2e-preview-network,
         e2e-renderer-screenshots,
         e2e-safe,
         e2e-settings,

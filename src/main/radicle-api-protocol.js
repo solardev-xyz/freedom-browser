@@ -38,6 +38,7 @@ const embedded = require('./radicle-embedded');
 const { isDisabledForProfile } = require('./radicle-manager');
 const { registerWebRequestHandler } = require('./webrequest-dispatcher');
 const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
+const { internalPageFileForUrl } = require('./ipc-sender-policy');
 
 const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 // Repo metadata reads in flight at once for the `/api/v1/repos` listing.
@@ -59,17 +60,16 @@ const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 // `fetch('radapi://local/api/v1/repos')` from any page reads the body.
 // The initiating frame's URL, taken from the network layer before the
 // handler runs, is the only value the main process can trust here.
-const INTERNAL_PAGE_SUFFIX = '/src/renderer/pages/rad-browser.html';
+//
+// The match is ipc-sender-policy's exact one: the frame's resolved file
+// path must sit directly in this checkout's (or this app.asar's)
+// `renderer/pages` directory, never a suffix test. A local file saved as
+// `…/src/renderer/pages/rad-browser.html` anywhere else on disk and opened
+// as file:// is not the viewer (#662).
+const INTERNAL_PAGE_FILE = 'rad-browser.html';
 
 function isInternalPageUrl(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== 'string') return false;
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== 'file:') return false;
-    return decodeURIComponent(parsed.pathname).replace(/\\/g, '/').endsWith(INTERNAL_PAGE_SUFFIX);
-  } catch {
-    return false;
-  }
+  return internalPageFileForUrl(rawUrl) === INTERNAL_PAGE_FILE;
 }
 
 /**

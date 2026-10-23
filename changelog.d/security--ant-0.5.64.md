@@ -1,2 +1,0 @@
-- Updated bundled nodes:
-  - [Ant](https://github.com/freedom-hq/ant) 0.5.61 to 0.5.64: pages inside a Swarm site load on a fresh node even when the site's root is only stored as a replica

@@ -21,6 +21,10 @@ const HANDLED_NONCE_MEMORY = 256;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 1800;
 const DEFAULT_MAX_REQUEST_AGE_MS = 10000;
+// How long a second launch waits for the running profile to answer an
+// instance-lock probe (requestInstanceLockProbeSync). The watcher polls every
+// DEFAULT_POLL_INTERVAL_MS, so a responsive process answers well inside this.
+const DEFAULT_PROBE_TIMEOUT_MS = 1000;
 
 function getProfileFocusPaths(profile) {
   if (!profile?.userDataDir) {
@@ -101,11 +105,12 @@ function makeNonce() {
 // Writes the request's own file (what this build's watcher reads), then the
 // shared legacy file (what an older running build reads). Only the first has
 // to succeed for the request to count as written.
-function writeRequest(paths, request) {
+function writeRequest(paths, request, { legacy = true } = {}) {
   if (!isValidNonce(request.nonce)) {
     throw new Error('Invalid focus request nonce');
   }
   writeJsonAtomic(requestFileFor(paths, request.nonce), request);
+  if (!legacy) return;
   try {
     writeJsonAtomic(paths.requestPath, request);
   } catch {
@@ -260,7 +265,51 @@ async function requestProfileFocusAsyncAwait(profile, options = {}) {
   };
 }
 
-const KNOWN_REQUEST_TYPES = new Set(['focus-window', 'quit-app']);
+// Linux (#142): ask the running profile, before this launch calls
+// app.requestSingleInstanceLock(), whether it listens on its single-instance
+// lock *and* its main thread is answering right now. That call is not safe to
+// make blind: Chromium's ProcessSingleton waits up to 20 s for the holder's UI
+// thread to acknowledge, then SIGKILLs it and reports this launch as the new
+// owner. A profile showing a modal dialog.showErrorBox, or one whose main
+// thread is busy, would be killed by a dock click. The watcher answers this
+// probe from that same main thread, so an answer is evidence it will also
+// acknowledge the hand-over; no answer within the timeout (a blocked process,
+// or a build that predates the probe and so never listens on the lock) means
+// the caller uses the focus-request file instead, which never kills anything.
+//
+// The probe goes into its own request file only, never the shared legacy file
+// an older running build reads, so it can't overwrite another launch's
+// request there. Returns true only on an ack saying the lock is held.
+function requestInstanceLockProbeSync(profile, options = {}) {
+  const paths = getProfileFocusPaths(profile);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? 25;
+  const nonce = options.nonce || makeNonce();
+  const request = {
+    type: 'instance-lock-probe',
+    nonce,
+    profileId: profile.id || null,
+    requestedAtMs: Date.now(),
+    pid: process.pid,
+  };
+  try {
+    writeRequest(paths, request, { legacy: false });
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const ack = takeAck(paths, nonce);
+    if (ack) return ack.ok === true && ack.instanceLock === true;
+    sleepSync(pollIntervalMs);
+  }
+  // Unanswered: take the request back so a watcher that wakes up later does
+  // not answer a probe nobody is waiting for.
+  removeFileQuietly(requestFileFor(paths, nonce));
+  return false;
+}
+
+const KNOWN_REQUEST_TYPES = new Set(['focus-window', 'quit-app', 'instance-lock-probe']);
 
 // Fire-and-forget request asking an already-running profile process to quit
 // (so its profile lock releases). Used when deleting a profile that is open in
@@ -302,6 +351,9 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
   const paths = getProfileFocusPaths(profile);
   const logger = options.logger || console;
   const onQuit = options.onQuit || null;
+  // Whether this process listens on its single-instance lock (Linux, #142);
+  // the answer to an instance-lock probe.
+  const isListeningOnInstanceLock = options.isListeningOnInstanceLock || (() => false);
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const maxRequestAgeMs = options.maxRequestAgeMs ?? DEFAULT_MAX_REQUEST_AGE_MS;
 
@@ -324,12 +376,16 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
       error: result.error || null,
       handledAtMs: Date.now(),
       pid: process.pid,
+      ...(result.instanceLock !== undefined ? { instanceLock: result.instanceLock } : {}),
     };
     try {
       writeJsonAtomic(ackFileFor(paths, request.nonce), ack);
     } catch (error) {
       logger.warn?.('[profile-focus] Failed to write focus acknowledgement:', error.message);
     }
+    // A probe's answer is for its own requester only; the shared file is what
+    // an older build's requester reads as the latest focus ack.
+    if (request.type === 'instance-lock-probe') return;
     // Shared copy for requesters from an older build, and for a reader that
     // only wants "the latest ack".
     try {
@@ -393,12 +449,23 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
   };
 
   const handleRequest = async (request) => {
+    if (request.type === 'instance-lock-probe') {
+      let instanceLock;
+      try {
+        instanceLock = isListeningOnInstanceLock() === true;
+      } catch {
+        instanceLock = false;
+      }
+      writeAck(request, { ok: true, instanceLock });
+      return;
+    }
     try {
       if (request.type === 'quit-app') {
         // Ack before the process winds down so the requester gets a fast
         // confirmation; it still waits on the lock release for the real signal.
         await (onQuit ? onQuit(request) : Promise.resolve());
       } else {
+        if (options.allowFocus === false) throw new Error('This profile is held by an automation runtime. Stop that runtime or open a different profile.');
         await onFocusWindow(request);
       }
       writeAck(request, { ok: true });
@@ -452,6 +519,7 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
 
 module.exports = {
   DEFAULT_MAX_REQUEST_AGE_MS,
+  DEFAULT_PROBE_TIMEOUT_MS,
   FOCUS_ACK_DIR,
   FOCUS_REQUEST_DIR,
   DEFAULT_POLL_INTERVAL_MS,
@@ -462,6 +530,7 @@ module.exports = {
   readProfileFocusAck,
   requestProfileFocusAsyncAwait,
   requestProfileFocusSync,
+  requestInstanceLockProbeSync,
   requestProfileQuitAsync,
   startProfileFocusRequestWatcher,
 };

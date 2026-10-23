@@ -211,9 +211,11 @@ describe('FreedomIpfsNativeNode', () => {
     expect(node.nodeHandle).toBe('0');
   });
 
-  test('starts native gateway with a request queue timeout', async () => {
+  test('starts native gateway with both delegated routers and a request queue timeout', async () => {
     const binding = createBindingMock();
-    const { FreedomIpfsNativeNode, REQUEST_QUEUE_TIMEOUT_MS } = loadModule(binding);
+    const { FreedomIpfsNativeNode, REQUEST_QUEUE_TIMEOUT_MS, DELEGATED_ROUTERS } =
+      loadModule(binding);
+    const log = require('../logger');
     const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
 
     await expect(node.start()).resolves.toBe(true);
@@ -224,13 +226,22 @@ describe('FreedomIpfsNativeNode', () => {
     );
     expect(binding.nodeStartNativeGatewayOnlineAsync).toHaveBeenCalledWith(
       '1',
-      '',
+      DELEGATED_ROUTERS,
       binding.constants.ROUTING_MODE_AUTO,
       0,
       3,
       0,
       REQUEST_QUEUE_TIMEOUT_MS
     );
+    expect(log.info).toHaveBeenCalledWith(
+      `[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`
+    );
+    // #700: an empty list leaves the addon on its single built-in router;
+    // pin both entries so a revert to '' (or a dropped router) fails here.
+    expect(DELEGATED_ROUTERS.split(',')).toEqual([
+      'https://delegated-ipfs.dev/routing/v1',
+      'https://cid.contact/routing/v1',
+    ]);
   });
 
   test('rejects invalid native request handles without registering a controller', async () => {
@@ -247,13 +258,16 @@ describe('FreedomIpfsNativeNode', () => {
   test('cancels a timed-out request before freeing the native handle', async () => {
     jest.useFakeTimers();
     const binding = createBindingMock();
-    const { FreedomIpfsNativeNode, ATTEMPT_TIMEOUT_MS } = loadModule(binding);
+    const { FreedomIpfsNativeNode, ATTEMPT_TIMEOUT_MS, REQUEST_TIMEOUT_CODE } = loadModule(binding);
     const node = createStartedNode(FreedomIpfsNativeNode);
 
     const responsePromise = node.request({ path: '/ipfs/bafy', headers: new Headers() });
     jest.advanceTimersByTime(ATTEMPT_TIMEOUT_MS);
 
     await expect(responsePromise).rejects.toThrow('freedom-ipfs native request timeout');
+    // The CI smoke keys its network-weather classification on this code.
+    expect(REQUEST_TIMEOUT_CODE).toBe('FREEDOM_IPFS_NATIVE_REQUEST_TIMEOUT');
+    await expect(responsePromise).rejects.toMatchObject({ code: REQUEST_TIMEOUT_CODE });
     expect(binding.gatewayRequestCancel).toHaveBeenCalledWith('1', '2');
     expect(binding.gatewayRequestFree).toHaveBeenCalledWith('1', '2');
     expect(binding.gatewayRequestCancel.mock.invocationCallOrder[0]).toBeLessThan(
@@ -533,7 +547,7 @@ describe('FreedomIpfsNativeNode', () => {
       await flush();
       expect(binding.nodeStartNativeGatewayOnlineAsync).toHaveBeenCalledWith(
         '7',
-        '',
+        'https://delegated-ipfs.dev/routing/v1,https://cid.contact/routing/v1',
         binding.constants.ROUTING_MODE_AUTO,
         0,
         3,

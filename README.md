@@ -19,6 +19,7 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 - Integrated Ant (Swarm), freedom-ipfs, Radicle, experimental Myotis, and Tor components with per-profile configuration.
 - ENS, WNS, GNS, and Tezos Domains resolution, including `.eth`, `.box`, `.wei`, `.gwei`, and `.tez` names.
 - Tabs, sidebar, bookmarks, history, downloads, find-in-page, shortcuts, themes, permissions, and automatic updates.
+- Freedom Agent for browser research and local project work, with connected models, helpers, and permission controls.
 - Ad blocking with signed list updates and per-site allowlisting.
 - Wallet and dApp flows, x402 payments, hardware-wallet support, and Swarm/Radicle provider APIs.
 - Custom protocol origins so decentralized applications can use relative assets, storage, service workers, and range requests naturally.
@@ -74,11 +75,12 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 
 - [Documentation index](docs/README.md)
 - [Development](docs/development.md)
-- [Configuration](docs/configuration.md)
+- [Configuration](docs/configuration.md), including the [command-line flags](docs/configuration.md#command-line-flags) (`--profile`, `--profile-dir`, `FREEDOM_PROFILE`, links to open)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Swarm content retrieval and migration](docs/protocols/swarm.md)
 - [IPFS/IPNS content retrieval and migration](docs/protocols/ipfs.md)
 - [Contract-hosted applications (ERC-8244)](docs/protocols/onchain-apps.md)
+- [Swarm provider API](docs/swarm-provider-api.md)
 - [Radicle provider API](docs/radicle-provider-api.md)
 - [Native IPFS desktop integration](docs/freedom-ipfs-native-desktop.md)
 - [Changelog](CHANGELOG.md)
@@ -86,5 +88,7 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request. It explains issue scope, local verification, commit conventions, licensing, and the policy for AI-assisted contributions.
+
+For questions, ideas, or to talk through a larger change before you build it, join the [Freedom Browser Telegram group](https://t.me/freedom_browser).
 
 Freedom Browser is available under the [Mozilla Public License 2.0](LICENSE). Third-party notices are recorded in [NOTICES](NOTICES).

@@ -6,6 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
 const { normalizeCacheBytes } = require('./swarm/ant-cache');
+const { refusedSettingsKeys, describeSender } = require('./ipc-sender-policy');
 
 // Apply theme to nativeTheme so webviews get correct prefers-color-scheme
 function applyNativeTheme(theme) {
@@ -33,6 +34,8 @@ const REMOVED_KEYS = new Set(['enableRadicleIntegration', 'antNodeMode', 'beeNod
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
+  enableAi: false,
+  aiInvitationDismissed: false,
   enableIdentityWallet: true,
   startAntAtLaunch: true,
   // Bee's `swap-enable` for the bundled Swarm node (#488): pay peers with
@@ -75,6 +78,14 @@ const DEFAULT_SETTINGS = {
   // endpoints, prover, quorum params) lives in the network registry —
   // this is the one ENS-navigation setting kept here.
   blockUnverifiedEns: true,
+  // "Always open without gateway" (#70): when true, a page on an ENS/Swarm
+  // gateway (vitalik.eth.limo, vitalik.bzz.link, <cid>.bzz.link, …) that has
+  // a native version opens that `ipfs://` / `bzz://` address instead. Off by
+  // default — without it the address bar only *offers* the native version
+  // (the "Open without gateway" pill) and never rewrites a URL itself. Set
+  // from that pill's popover, the trust popover, or Settings → Networks →
+  // Name Resolution.
+  openWithoutGateway: false,
   // Experimental: when true, IPFS request progress phases ("Finding
   // providers…", "Searching the DHT…", etc.) are surfaced in the link
   // hover preview bar during ipfs:// / ipns:// loads. Off by default so the
@@ -238,6 +249,8 @@ function loadSettings() {
         }
       }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
+      cachedSettings.enableAi = parsed.enableAi === true;
+      cachedSettings.aiInvitationDismissed = parsed.aiInvitationDismissed === true;
     } else {
       cachedSettings = { ...DEFAULT_SETTINGS };
     }
@@ -257,7 +270,7 @@ function loadSettings() {
   cachedSettings.shortcutOverrides = sanitizeOverrides(
     cachedSettings.shortcutOverrides,
     process.platform,
-    { onDrop: recordRevertedOverrides(reverted) }
+    { onDrop: recordRevertedOverrides(reverted), aiEnabled: cachedSettings.enableAi === true }
   );
   revertedShortcutOverrides = reverted;
 
@@ -303,10 +316,16 @@ function saveSettings(newSettings) {
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;
+    // AI shortcuts take no part in the conflict pass while AI is off (see
+    // sanitizeOverrides), so a save is judged against the AI state it leaves.
+    const aiEnabled =
+      typeof newSettings?.enableAi === 'boolean' ? newSettings.enableAi : previous.enableAi === true;
 
     if (newSettings && typeof newSettings === 'object') {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
+
+        if (['enableAi', 'aiInvitationDismissed'].includes(key) && typeof newSettings[key] !== 'boolean') continue;
 
         if (key === 'shortcutOverrides') {
           // The conflict pass has to run here too, not just at load: this is
@@ -319,6 +338,7 @@ function saveSettings(newSettings) {
           const dropped = {};
           const sanitized = sanitizeOverrides(newSettings[key], process.platform, {
             onDrop: recordRevertedOverrides(dropped),
+            aiEnabled,
           });
           const overridesChanged =
             JSON.stringify(sanitized) !== JSON.stringify(previous[key] || {});
@@ -363,6 +383,21 @@ function saveSettings(newSettings) {
       }
     }
 
+    // Turning AI on brings Show Agent and Start dictation back, and with
+    // them their chords: a shortcut remapped onto one of those while AI was
+    // off now collides, so settle it the way a load would, visibly.
+    if (merged.enableAi === true && previous.enableAi !== true) {
+      const dropped = {};
+      const settled = sanitizeOverrides(merged.shortcutOverrides, process.platform, {
+        onDrop: recordRevertedOverrides(dropped),
+        aiEnabled: true,
+      });
+      if (Object.keys(dropped).length > 0) {
+        merged.shortcutOverrides = settled;
+        revertedShortcutOverrides = { ...revertedShortcutOverrides, ...dropped };
+      }
+    }
+
     if (!changed) return true;
 
     const filePath = getSettingsPath();
@@ -400,7 +435,14 @@ function registerSettingsIpc() {
     return loadSettings();
   });
 
-  ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
+  ipcMain.handle(IPC.SETTINGS_SAVE, (event, newSettings) => {
+    // Refuse the whole save rather than drop the key: the caller learns it
+    // failed, and nothing else in the same request is half-applied.
+    const refused = refusedSettingsKeys(event, newSettings);
+    if (refused.length > 0) {
+      log.warn(`[settings] refused ${refused.join(', ')} from ${describeSender(event)}`);
+      return false;
+    }
     return saveSettings(newSettings);
   });
 

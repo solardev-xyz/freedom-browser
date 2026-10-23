@@ -1,0 +1,2 @@
+- Updated bundled nodes:
+  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.5 to 0.4.6: a malicious IPFS provider can no longer exhaust the browser's memory over QUIC, plus fixes for seven further dependency advisories ([#659](https://github.com/solardev-xyz/freedom-browser/issues/659))

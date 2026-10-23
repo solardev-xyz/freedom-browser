@@ -16,9 +16,10 @@ import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { confirmSigning } from './wallet/signing-confirmation.js';
 import { getPermissionKey } from './origin-utils.js';
-import { parseOnchainAppUrl } from './url-utils.js';
+import { parseOnchainAppUrl, applyDnsNameIdentity } from './url-utils.js';
+import { state } from './state.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
-import { getDisplayUrlForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, isTabAgentOwned } from './tabs.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -95,6 +96,27 @@ const READ_ONLY_METHODS = [
   'web3_clientVersion',
   'web3_sha3',
 ];
+const AGENT_WALLET_METHODS = new Set([
+  'eth_requestAccounts',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+]);
+
+async function offerAgentWalletRequest(webview, method, params, displayUrl, permissionKey) {
+  if (!AGENT_WALLET_METHODS.has(method)) return { handled: false };
+  const rendererTabId = Number(webview?.dataset?.tabId);
+  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return { handled: false };
+  const chainId = parseInt(await getCurrentChainId(webview), 16);
+  const response = await window.electronAPI?.handleAgentWalletRequest?.(rendererTabId, {
+    method,
+    params,
+    displayUrl,
+    permissionKey,
+    chainId,
+  });
+  return response && typeof response === 'object' ? response : { handled: false };
+}
 
 /**
  * Get or create provider state for a webview
@@ -122,13 +144,41 @@ function getOnchainApp(webview) {
 }
 
 /**
- * The URL a request is keyed by: the requesting tab's committed display URL
- * (e.g. ipfs://QmXxx, vitalik.eth, https://example.com). Never the address
- * bar: it shows the active tab, which need not be the requester, and may
- * hold an unsubmitted draft.
+ * The user-facing identity of the page in `webview` — the site a request
+ * from that webview is attributed to (permission key, prompts, auto-approve).
+ *
+ * Always the *requesting* webview's own committed URL (its tab's
+ * `committedDisplayUrl`, which keeps ENS/bzz/ipfs names), never the address
+ * bar: `#address-input` shows the visible tab — or a half-typed draft — so
+ * reading it let a background tab's request borrow the visible site's
+ * connection and auto-approve rules (#764). A DNS-named ENS site over IPNS
+ * commits as `ipns://<key>`; `applyDnsNameIdentity` maps it back to the
+ * `ens://<name>` its address bar shows, so it keeps the key its grants were
+ * stored under (main cross-checks that name against the guest's key).
  */
 function getRequestDisplayUrl(webview) {
-  return getOnchainApp(webview)?.url || getDisplayUrlForWebview(webview);
+  return getOnchainApp(webview)?.url ||
+    applyDnsNameIdentity(getDisplayUrlForWebview(webview), state.knownEnsNames);
+}
+
+/**
+ * The dApp identity of the visible tab's committed page ('' when none) —
+ * the same derivation a request from that tab is keyed on. For chrome that
+ * describes the visible tab's dApp connection (the banner) — never for
+ * attributing a request; use the requesting webview for that.
+ */
+export function getActiveDisplayUrl() {
+  return activeWebview ? getRequestDisplayUrl(activeWebview) : '';
+}
+
+/**
+ * The visible tab's committed page URL ('' when none), read exactly as
+ * `swarm-provider.js` reads it for a request: without the dApp-only
+ * DNS-name mapping above, since the Swarm provider and main's x402
+ * attribution both key on the page URL itself.
+ */
+export function getActivePageUrl() {
+  return activeWebview ? getDisplayUrlForWebview(activeWebview) : '';
 }
 
 // Methods that act for the site: without a committed URL a page has no
@@ -175,8 +225,8 @@ async function handleProviderRequest(webview, request) {
 
   console.log('[DappProvider] handleProviderRequest:', { id, method, params });
 
-  // Get the display URL from address bar and derive permission key
-  // This replaces the raw origin (which is 127.0.0.1 for IPFS/Swarm pages)
+  // The requesting webview's own committed page identity, never the address
+  // bar's (#764) — a background tab's request is attributed to its own site.
   const displayUrl = getRequestDisplayUrl(webview);
   const permissionKey = getPermissionKey(displayUrl);
 
@@ -193,6 +243,21 @@ async function handleProviderRequest(webview, request) {
 
     if (!permissionKey && SITE_METHODS.has(method)) {
       throw { ...ERRORS.UNAUTHORIZED, message: 'This page has no address to connect from yet' };
+    }
+
+    const agentWallet = await offerAgentWalletRequest(
+      webview,
+      method,
+      params,
+      displayUrl,
+      permissionKey
+    );
+    if (getNavigationGeneration(webview) !== generation) return;
+    if (agentWallet.handled) {
+      if (agentWallet.error) throw agentWallet.error;
+      result = agentWallet.result;
+      sendProviderResponse(webview, id, result, null);
+      return;
     }
 
     // Handle different method categories
@@ -257,14 +322,14 @@ async function handleProviderRequest(webview, request) {
       // Auto-approve only for contract calls with a matching rule (never
       // plain ETH transfers, never Safes — their sends are a multi-step
       // signature ceremony, not a background signature)
-      if (!isSafeAccount(permission.walletIndex) && selector && txParams?.to
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && !isSafeAccount(permission.walletIndex) && selector && txParams?.to
         && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId)
       ) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
         }
-        result = await autoApproveTx(permission, txParams, chainId, permissionKey);
+        result = await autoApproveTx(permission, txParams, chainId, permissionKey, webview);
       } else {
         result = await showDappTxApproval(webview, permissionKey, txParams, chainId);
       }
@@ -278,7 +343,7 @@ async function handleProviderRequest(webview, request) {
         parseInt(await getCurrentChainId(webview), 16);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
-      if (permission.autoApprove?.signing) {
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && permission.autoApprove?.signing) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
@@ -330,7 +395,7 @@ function assertSafeOnGnosis(permission, chainId, verb) {
  * Send a transaction without showing the approval UI (auto-approved).
  * Handles gas estimation and signing via wallet IPC.
  */
-async function autoApproveTx(permission, txParams, chainId, permissionKey) {
+async function autoApproveTx(permission, txParams, chainId, permissionKey, webview) {
   const walletIndex = permission.walletIndex;
 
   // Resolve sender address and gas price in parallel
@@ -374,13 +439,14 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey) {
     tx.gasPrice = gasPrices.gasPrice;
   }
 
-  // No confirmation token: main signs only if its own reading of this
-  // site's auto-approve rules covers this exact transaction.
+  // No confirmation token: main signs only if the requesting guest's own
+  // page belongs to this site and its own reading of the site's
+  // auto-approve rules covers this exact transaction.
   const result = await window.wallet.dappSendTransaction(
     tx,
     walletIndex,
     buildDappTxContext(permissionKey, txParams),
-    { autoApprove: permissionKey }
+    { autoApprove: permissionKey, webContentsId: webviewContentsId(webview) }
   );
   if (!result.success) throw new Error(result.error || 'Transaction failed');
   if (result.recorded === false) {
@@ -410,12 +476,15 @@ async function autoApproveSign(permission, method, params, permissionKey, webvie
  *
  * Manual approval (the default) is called the moment the user presses
  * Sign: it asks main for a confirmation token bound to exactly this
- * message. `{ autoApproved: true }` sends none — main then checks the
- * site's signing auto-approve itself (security audit O-7).
+ * message. `{ autoApproved: true }` sends none — main then checks that
+ * the requesting webview's page belongs to `site` (#764) and the site's
+ * signing auto-approve itself (security audit O-7).
  */
 async function executeSign(method, params, walletIndex, site, webview, { autoApproved = false } = {}) {
   const authorize = (kind, payload) =>
-    autoApproved ? { autoApprove: site } : confirmSigning(kind, walletIndex, payload);
+    autoApproved
+      ? { autoApprove: site, webContentsId: webviewContentsId(webview) }
+      : confirmSigning(kind, walletIndex, payload);
   if (isSafeAccount(walletIndex)) {
     return signViaSafeAccount(method, params, walletIndex, site, webview,
       await authorize('safe-message', { method, params }));
@@ -620,7 +689,8 @@ export function setupWebviewProvider(webview) {
 export function setActiveWebview(webview) {
   activeWebview = webview;
 
-  // Update connection banners after a small delay to allow address bar to update
+  // Repaint the connection banners for the newly visible tab (they read its
+  // committed page identity via getActiveDisplayUrl)
   setTimeout(() => {
     updateConnectionBanner();
     updateSwarmConnectionBanner();
@@ -686,12 +756,7 @@ export function broadcastProviderEvent(event, data) {
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js
-/** The permission key a webview's requests are filed under. */
-function permissionKeyForWebview(webview) {
-  return webview ? getPermissionKey(getRequestDisplayUrl(webview)) : null;
-}
-
-export { getPermissionKey, executeSign, getNavigationGeneration, permissionKeyForWebview };
+export { getPermissionKey, executeSign, getNavigationGeneration };
 
 // Export state for wallet UI to access
 export const walletState = {

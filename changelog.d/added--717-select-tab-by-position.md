@@ -1,0 +1,4 @@
+- `Cmd+1` to `Cmd+8` (`Ctrl+1` to `Ctrl+8` on Windows and Linux) jump to that tab, and `Cmd+9` / `Ctrl+9` to the last tab, as in Chrome ([#717](https://github.com/solardev-xyz/freedom-browser/issues/717))
+  - Linux also accepts `Alt+1` to `Alt+9`
+  - They work while a page has focus, and the page you land on gets the keyboard
+  - Remappable under Settings > Shortcuts

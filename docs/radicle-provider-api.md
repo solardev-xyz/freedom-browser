@@ -35,8 +35,10 @@ The provider exists for everything that is **not** a public read:
 
 ## Provider object
 
-Injected into the page realm of every web page before `DOMContentLoaded`,
-alongside `window.swarm`:
+Installed in the page's main world of every web page's top frame before any
+of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
+A page's Content Security Policy does not affect it. It is not installed in
+private windows, in sub-frames, or on Freedom's internal pages.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>
@@ -87,6 +89,9 @@ provider:
    First call MAY prompt; rejection → 4001. Writes sign with the user's
    node identity — there are no per-origin sub-identities in v1 (a forge
    wants you to be _you_; see Design decisions).
+   On a tab Freedom Agent holds, the grant does not answer a write on its
+   own: each write prompts with its content, and main refuses one the
+   renderer reports as grant-answered (`4100`, reason `agent_custody`).
 
 Auto-approve per origin and per tier MAY be offered, revocable at any
 time, mirroring the Swarm provider's `{ publish, feeds, signing }` model

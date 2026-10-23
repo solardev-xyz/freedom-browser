@@ -64,6 +64,9 @@ module.exports = {
   ENS_RESOLVE_REVERSE: 'ens:resolve-reverse',
   ENS_INVALIDATE_CONTENT: 'ens:invalidate-content',
 
+  // "Open without gateway" offer for an ENS/Swarm gateway URL (#70)
+  GATEWAY_OFFER: 'gateway:offer',
+
   // Contract-hosted application provenance (host chrome only)
   ONCHAIN_APP_GET_PROVENANCE: 'onchain-app:get-provenance',
 
@@ -94,6 +97,9 @@ module.exports = {
   // Settings > Shortcuts arming/disarming a recording, so the browser-process
   // tab-switch keys (tab-switch-keys.js) let the chord reach the page.
   SHORTCUTS_SET_RECORDING: 'shortcuts:set-recording',
+  // A tab page's digit-row keydown it did not cancel (webview-preload.js), so
+  // tab-switch-keys.js can zoom where the menu accelerator cannot.
+  PAGE_UNHANDLED_KEY: 'page:unhandled-key',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
@@ -108,6 +114,9 @@ module.exports = {
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_TOGGLE_FULLSCREEN: 'window:toggle-fullscreen',
+  // main → chrome: the window entered (true) or left (false) full screen;
+  // the chrome hides itself while it is (browser-fullscreen.js, #78).
+  WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
   WINDOW_NEW: 'window:new',
   // Private windows (ephemeral, non-persisted partition per window)
   WINDOW_NEW_PRIVATE: 'window:new-private',
@@ -156,6 +165,8 @@ module.exports = {
   DOWNLOADS_CANCEL: 'downloads:cancel',
   DOWNLOADS_OPEN_FILE: 'downloads:open-file',
   DOWNLOADS_SHOW_IN_FOLDER: 'downloads:show-in-folder',
+  DOWNLOADS_OPEN_ARTIFACT: 'downloads:open-artifact',
+  DOWNLOADS_SHOW_ARTIFACT_IN_FOLDER: 'downloads:show-artifact-in-folder',
   DOWNLOADS_REMOVE: 'downloads:remove',
   DOWNLOADS_CLEAR: 'downloads:clear',
   // Main→renderer, sent to the download's owning window only — drives the
@@ -177,6 +188,79 @@ module.exports = {
   GET_ETHEREUM_INJECT_SOURCE: 'internal:get-ethereum-inject-source',
   OPEN_URL_IN_NEW_TAB: 'internal:open-url-in-new-tab',
   SIDEBAR_OPEN_PUBLISH_SETUP: 'sidebar:open-publish-setup',
+
+  // Automation IPC is restricted to the trusted browser chrome renderer.
+  AUTOMATION_BIND_TAB: 'automation:bind-tab',
+  // Main → trusted browser chrome renderer, with a renderer → main result.
+  // The request targets an already-bound numeric renderer tab; page content
+  // never receives either channel.
+  AUTOMATION_NAVIGATE: 'automation:navigate',
+  AUTOMATION_NAVIGATE_RESULT: 'automation:navigate-result',
+  AUTOMATION_STOP_LOADING: 'automation:stop-loading',
+  AUTOMATION_CREATE_TAB: 'automation:create-tab',
+  AUTOMATION_CREATE_TAB_RESULT: 'automation:create-tab-result',
+  AUTOMATION_CLOSE_TAB: 'automation:close-tab',
+  AUTOMATION_CLOSE_TAB_RESULT: 'automation:close-tab-result',
+  AUTOMATION_FOCUS_TAB: 'automation:focus-tab',
+  AUTOMATION_FOCUS_TAB_RESULT: 'automation:focus-tab-result',
+
+  // Embedded agent IPC is available only through the trusted chrome preload.
+  AGENT_OPEN: 'agent:open',
+  AGENT_PROVIDER_CHANGED_EVENT: 'agent:provider:changed',
+  AGENT_START: 'agent:start',
+  AGENT_STEER: 'agent:steer',
+  AGENT_PAUSE: 'agent:pause',
+  AGENT_RESUME: 'agent:resume',
+  AGENT_STOP: 'agent:stop',
+  AGENT_APPROVAL_DECIDE: 'agent:approval:decide',
+  AGENT_WALLET_REQUEST: 'agent:wallet:request',
+  AGENT_GET_STATE: 'agent:get-state',
+  AGENT_PAGE_ACTIONS: 'agent:page-actions',
+  AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
+  AGENT_HELPER_REPORTS: 'agent:helper-reports',
+  AGENT_HISTORY_LIST: 'agent:history:list',
+  AGENT_HISTORY_OPEN: 'agent:history:open',
+  AGENT_HISTORY_RENAME: 'agent:history:rename',
+  AGENT_HISTORY_DELETE: 'agent:history:delete',
+  AGENT_ATTACHMENTS_PICK_FILES: 'agent:attachments:pick-files',
+  AGENT_ATTACHMENTS_DROP_FILES: 'agent:attachments:drop-files',
+  AGENT_ATTACHMENTS_PICK_FOLDER: 'agent:attachments:pick-folder',
+  AGENT_ATTACHMENTS_REMOVE: 'agent:attachments:remove',
+  AGENT_ATTACHMENTS_REVOKE: 'agent:attachments:revoke',
+  AGENT_ATTACHMENTS_PREVIEW: 'agent:attachments:preview',
+  AGENT_PRIVACY_SETTINGS_SET: 'agent:privacy-settings:set',
+  AGENT_APPROVAL_MODE_SET: 'agent:approval-mode:set',
+  AGENT_TAB_CLAIM: 'agent:tab:claim',
+  AGENT_WORKSPACE_HISTORY: 'agent:workspace:history',
+  AGENT_WORKSPACE_INSPECT: 'agent:workspace:inspect',
+  AGENT_PROJECT_ACCESS: 'agent:project:access',
+  AGENT_PROCESS_STOP: 'agent:process:stop',
+  AGENT_PROCESS_PREVIEW_OPEN: 'agent:process:preview-open',
+  AGENT_PUBLICATION_OPEN: 'agent:publication:open',
+  AGENT_EVENT: 'agent:event',
+  AGENT_DICTATION_STATE: 'agent:dictation:state',
+  AGENT_DICTATION_CHOOSE: 'agent:dictation:choose',
+  AGENT_DICTATION_INSTALL: 'agent:dictation:install',
+  AGENT_DICTATION_BEGIN: 'agent:dictation:begin',
+  AGENT_DICTATION_APPEND: 'agent:dictation:append',
+  AGENT_DICTATION_FINISH: 'agent:dictation:finish',
+  AGENT_DICTATION_CANCEL: 'agent:dictation:cancel',
+  AGENT_DICTATION_EVENT: 'agent:dictation:event',
+  AGENT_MCP_CONNECTIONS: 'agent:mcp:connections',
+  AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
+  AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
+  AGENT_PROVIDER_REFRESH_MODELS: 'agent:provider:refresh-models',
+  AGENT_PROVIDER_SET_PREFERENCES: 'agent:provider:set-preferences',
+  AGENT_PROVIDER_TEST_CONNECTION: 'agent:provider:test-connection',
+  AGENT_PROVIDER_CONFIGURE_HOSTED: 'agent:provider:configure-hosted',
+  AGENT_PROVIDER_CONFIGURE_OLLAMA: 'agent:provider:configure-ollama',
+  AGENT_PROVIDER_LOGIN_SUBSCRIPTION: 'agent:provider:login-subscription',
+  AGENT_PROVIDER_CANCEL_LOGIN: 'agent:provider:cancel-login',
+  AGENT_PROVIDER_SUBMIT_LOGIN: 'agent:provider:submit-login',
+  AGENT_PROVIDER_AUTH_EVENT: 'agent:provider:auth-event',
+  AGENT_PROVIDER_SELECT_MODEL: 'agent:provider:select-model',
+  AGENT_PROVIDER_REMOVE: 'agent:provider:remove',
+  AGENT_PROVIDER_CLEAR: 'agent:provider:clear',
 
   // Favicons
   FAVICON_GET: 'favicon:get',
@@ -200,6 +284,9 @@ module.exports = {
   // Tab navigation
   TAB_NEXT: 'tab:next',
   TAB_PREV: 'tab:prev',
+  // Select a tab by position (Cmd/Ctrl+1…8) or the last tab (Cmd/Ctrl+9);
+  // payload is the 1-based position or 'last' (#717).
+  TAB_SELECT: 'tab:select',
   TAB_MOVE_LEFT: 'tab:move-left',
   TAB_MOVE_RIGHT: 'tab:move-right',
   TAB_REOPEN_CLOSED: 'tab:reopen-closed',

@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 74,
+  "total": 75,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -72,6 +72,14 @@
       "el": "button#dapp-tx-approve.dapp-tx-approve-btn",
       "text": "Confirm",
       "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "error page",
+      "theme": "dark",
+      "el": "button#retry-btn.button-primary",
+      "text": "Try again",
+      "ratio": 4.29,
       "bar": 4.5
     },
     {
@@ -150,7 +158,7 @@
       "surface": "nodes menu",
       "theme": "light",
       "el": "span#myotis-version-text",
-      "text": "Myotis v0.1.7",
+      "text": "Myotis 0.1.7",
       "ratio": 3.85,
       "bar": 4.5
     },
@@ -158,7 +166,7 @@
       "surface": "nodes menu",
       "theme": "light",
       "el": "span#radicle-version-text",
-      "text": "libradicle v0.7.1",
+      "text": "libradicle 0.7.1",
       "ratio": 3.85,
       "bar": 4.5
     },

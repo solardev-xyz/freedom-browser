@@ -365,7 +365,7 @@ test('the auto-retry count carries over only within a streak', async ({
 
 // Who started the retry decides whether the streak continues: the error
 // page's own auto-retry carries an exhausted count on, but the toolbar Reload
-// and the page context menu's Reload are explicit retries like Try Again and
+// and the page context menu's Reload are explicit retries like Try again and
 // start over with a countdown.
 test('the error page retrying itself keeps the streak; the toolbar or context-menu Reload starts a new one', async ({
   electronApp,
@@ -467,7 +467,7 @@ test('going Back onto a retrying error page does not restart the countdown', asy
     })
     .toBe(true);
   await expect(back.locator('#auto-retry')).toHaveText(
-    'Not trying again automatically. Use Try Again to retry.'
+    'Not trying again automatically. Use Try again to retry.'
   );
   await expect(back.locator('#auto-retry-stop')).toBeHidden();
   // The forward entry is still there to go to.

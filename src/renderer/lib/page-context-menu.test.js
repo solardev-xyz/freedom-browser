@@ -514,6 +514,36 @@ describe('page-context-menu', () => {
     expect(activeWebview.reloadIgnoringCache).not.toHaveBeenCalled();
   });
 
+  // R1-F1: Back/Forward/Reload from the page menu must not navigate a tab the
+  // Agent owns, the same as the toolbar buttons and the app menu.
+  test('Back/Forward/Reload do nothing while the active tab is Agent-owned', async () => {
+    const { mod, pageContextMenu, activeWebview } = await loadPageContextMenuModule();
+    const onReload = jest.fn();
+    let agentOwned = true;
+    await mod.initPageContextMenu({ onReload, isActiveTabAgentOwned: () => agentOwned });
+    activeWebview.canGoBack = jest.fn(() => true);
+    activeWebview.canGoForward = jest.fn(() => true);
+    activeWebview.goBack = jest.fn();
+    activeWebview.goForward = jest.fn();
+
+    for (const action of ['back', 'forward', 'reload']) {
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+      await triggerMenuAction(pageContextMenu, action);
+    }
+    expect(activeWebview.goBack).not.toHaveBeenCalled();
+    expect(activeWebview.goForward).not.toHaveBeenCalled();
+    expect(onReload).not.toHaveBeenCalled();
+
+    agentOwned = false;
+    for (const action of ['back', 'forward', 'reload']) {
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+      await triggerMenuAction(pageContextMenu, action);
+    }
+    expect(activeWebview.goBack).toHaveBeenCalledTimes(1);
+    expect(activeWebview.goForward).toHaveBeenCalledTimes(1);
+    expect(onReload).toHaveBeenCalledTimes(1);
+  });
+
   test('dispatches page and link actions through menu clicks', async () => {
     const { mod, pageContextMenu, activeWebview, electronAPI, pushDebug, backdrop, urlUtils } =
       await loadPageContextMenuModule();
@@ -1068,5 +1098,78 @@ describe('page-context-menu', () => {
 
     expect(pageContextMenu.style.left).toBe('35px');
     expect(pageContextMenu.style.top).toBe('50px');
+  });
+
+  // #731: the guest reports clientX/clientY in its own (zoomed) CSS pixels,
+  // the webview rect is in the chrome's — the offset into the webview must be
+  // scaled by the page zoom factor or the menu drifts away from the cursor.
+  test.each([
+    ['zoomed in', 1.5, 25 + 100 * 1.5, 35 + 80 * 1.5],
+    ['zoomed out', 0.75, 25 + 100 * 0.75, 35 + 80 * 0.75],
+    ['at 100%', 1, 125, 115],
+  ])('places the menu at the cursor when the page is %s', async (_label, zoom, left, top) => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    const webviewHandlers = {};
+    const webview = {
+      addEventListener: jest.fn((event, handler) => {
+        webviewHandlers[event] = handler;
+      }),
+      getBoundingClientRect: jest.fn(() => ({ left: 25, top: 35 })),
+      getZoomFactor: jest.fn(() => zoom),
+    };
+    mod.setupWebviewContextMenu(webview);
+
+    pageContextMenu.getBoundingClientRect.mockReturnValueOnce({
+      left: 0,
+      top: 0,
+      right: 25,
+      bottom: 25,
+      width: 25,
+      height: 25,
+    });
+    webviewHandlers['ipc-message']({
+      channel: 'context-menu',
+      args: [{ x: 100, y: 80, pageUrl: 'https://example.com/zoomed' }],
+    });
+
+    expect(webview.getZoomFactor).toHaveBeenCalled();
+    expect(pageContextMenu.style.left).toBe(`${left}px`);
+    expect(pageContextMenu.style.top).toBe(`${top}px`);
+  });
+
+  test('falls back to an unscaled offset when the zoom factor cannot be read', async () => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    const webviewHandlers = {};
+    const webview = {
+      addEventListener: jest.fn((event, handler) => {
+        webviewHandlers[event] = handler;
+      }),
+      getBoundingClientRect: jest.fn(() => ({ left: 25, top: 35 })),
+      // Electron throws here on a webview that is not dom-ready yet.
+      getZoomFactor: jest.fn(() => {
+        throw new Error('not attached');
+      }),
+    };
+    mod.setupWebviewContextMenu(webview);
+
+    pageContextMenu.getBoundingClientRect.mockReturnValueOnce({
+      left: 0,
+      top: 0,
+      right: 25,
+      bottom: 25,
+      width: 25,
+      height: 25,
+    });
+    webviewHandlers['ipc-message']({
+      channel: 'context-menu',
+      args: [{ x: 100, y: 80, pageUrl: 'https://example.com/zoomed' }],
+    });
+
+    expect(pageContextMenu.style.left).toBe('125px');
+    expect(pageContextMenu.style.top).toBe('115px');
   });
 });

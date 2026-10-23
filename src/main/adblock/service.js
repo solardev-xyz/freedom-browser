@@ -11,8 +11,9 @@
  * Filter lists are read from artifacts directories: a `manifest.json`
  * naming one ABP-syntax list file per category (see the desktop target
  * of freedom-adblock-service). Directories are layered per category — a
- * landed Swarm update over the bundled floor — so an update carrying only
- * some categories never shadows the bundled lists for the rest. Engine
+ * landed Swarm update over the bundled floor, unless the floor is newer — so
+ * an update carrying only some categories never shadows the bundled lists for
+ * the rest. Engine
  * builds happen off the request hot path and are swapped atomically; until
  * the first build completes, requests pass through.
  *
@@ -162,7 +163,8 @@ function parseFrameUrl(url) {
 
 /**
  * Where the Swarm update-manager writes downloaded lists, when present and
- * valid. Preferred over the bundled floor so live updates take effect.
+ * valid. Preferred over the bundled floor so live updates take effect, unless
+ * it is older than the floor (see withoutOutdatedUpdate).
  * Returns null when no verified update has landed.
  */
 function getUpdatedArtifactsDir() {
@@ -198,7 +200,8 @@ function getBundledArtifactsDir() {
  * An update dir only carries the categories that were enabled when it was
  * downloaded, so it is layered over — never substituted for — the floor:
  * enabling a category after an update landed still blocks with that
- * category's bundled list until the feed copy is backfilled.
+ * category's bundled list until the feed copy is backfilled. An update older
+ * than the floor is skipped altogether (resolveArtifacts).
  */
 function getArtifactDirs() {
   if (artifactsDirOverride) return [artifactsDirOverride];
@@ -228,6 +231,49 @@ async function readManifest(dir) {
 }
 
 /**
+ * Drop a landed Swarm update that is older than the lists bundled with this
+ * build. Both are snapshots of the same upstream lists, so the newer one
+ * serves: after an app update ships fresher lists, an update downloaded weeks
+ * before (or while the feed was stalled) must not shadow them until the next
+ * feed check lands, which with the Swarm node off is never. Compared by when
+ * each was made: the floor's `fetchedAt` against the update's `version`,
+ * which update-manager sets to the feed manifest's `generated_at`.
+ *
+ * The update stays on disk: its feedVersion still gates the next feed check,
+ * and a feed version newer than the floor is layered over it again. A missing
+ * or unparseable date on either side keeps the update on top.
+ */
+// The last bundled-vs-update pair logged, so the notice appears once per pair
+// rather than on every resolveArtifacts call (toggles, allowlist refreshes).
+let loggedOutdatedUpdate = null;
+
+function withoutOutdatedUpdate(layers, floorDir) {
+  const floor = layers.find((layer) => layer.dir === floorDir);
+  const bundledAt = parseManifestDate(floor?.manifest.fetchedAt);
+  if (bundledAt === null) return layers;
+  return layers.filter(({ dir, manifest }) => {
+    if (dir === floorDir) return true;
+    const generatedAt = parseManifestDate(manifest.version);
+    if (generatedAt === null || generatedAt >= bundledAt) return true;
+    const key = `${floor.manifest.fetchedAt}|${dir}|${manifest.version}|${manifest.feedVersion}`;
+    if (key === loggedOutdatedUpdate) return false;
+    loggedOutdatedUpdate = key;
+    log.info(
+      `[adblock] the bundled filter lists (${floor.manifest.fetchedAt}) are newer than the ` +
+        `Swarm update (${manifest.version}, feed version ${manifest.feedVersion}); ` +
+        'using the bundled lists'
+    );
+    return false;
+  });
+}
+
+function parseManifestDate(value) {
+  if (typeof value !== 'string') return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+
+/**
  * Merge the layers' manifests into one per-category view: each category is
  * served by the highest-precedence layer carrying it, and every entry keeps
  * the dir + bundle version it came from (needed for reads and the cache key).
@@ -236,12 +282,17 @@ async function readManifest(dir) {
  *   layer has a readable manifest at all.
  */
 async function resolveArtifacts() {
+  const dirs = getArtifactDirs();
+  const layers = [];
+  for (const dir of dirs) {
+    const manifest = await readManifest(dir);
+    if (manifest) layers.push({ dir, manifest });
+  }
   const categories = {};
   let version = null;
   const resources = [];
-  for (const dir of getArtifactDirs()) {
-    const manifest = await readManifest(dir);
-    if (!manifest) continue;
+  // The floor is always the last dir (the pinned dir is its own floor).
+  for (const { dir, manifest } of withoutOutdatedUpdate(layers, dirs[dirs.length - 1])) {
     if (version === null) version = manifest.version;
     for (const [category, entry] of Object.entries(manifest.categories || {})) {
       if (!categories[category]) {
@@ -812,6 +863,7 @@ function getEnabledFeedCategories() {
 /** Test-only: clear module state between suites. */
 function _resetAdblockForTests() {
   artifactsDirOverride = null;
+  loggedOutdatedUpdate = null;
   installed = false;
   cacheDir = null;
   engine = null;

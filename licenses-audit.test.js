@@ -60,6 +60,19 @@ const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs
  * licenses-audit.json's `dependencies`; `pin` says where the version lives.
  */
 const EXTRA_RESOURCES = {
+  'out/dictation-runtime/${os}-${arch}/': {
+    thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
+    noticeMatch: /^whisper\.cpp$/m,
+    pin: { file: 'src/shared/dictation-runtime.js', re: /WHISPER_VERSION = '([^']+)'/ },
+  },
+  'out/windows-workspace/${arch}/': {
+    thirdParty: true, label: 'Codex Windows sandbox', auditName: 'codex-windows-sandbox',
+    noticeMatch: /^Codex Windows sandbox$/m,
+    pin: { file: 'scripts/build-windows-workspace.js', re: /const REVISION = '([^']+)'/ },
+    platformClaims: [{ file: 'NOTICES', line: /^ {2}Windows only\. Freedom builds the sandbox library.*$/m }],
+  },
+  'out/macos-supervisor/${arch}/': { firstParty: true, label: 'Freedom workspace supervisor' },
+  'out/linux-workspace-owner/${arch}/': { firstParty: true, label: 'Freedom workspace owner' },
   'ant-bin/${os}-${arch}/': {
     thirdParty: true,
     label: 'Ant',
@@ -183,6 +196,29 @@ const VENDOR_FILES = {
  * every `auditName` in licenses-audit.json.
  */
 const SRC_ASSETS = {
+  'src/main/agent/': {
+    thirdParty: true,
+    label: 'optional local dictation notices',
+    auditName: 'optional local dictation notices',
+    noticeMatch: /^Optional local dictation downloads$/m,
+    files: ['dictation-local-notices.txt'],
+  },
+  'src/main/agent/workspace-execution/native/windows/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter manifest",
+  },
+  'src/main/agent/workspace-execution/native/windows/src/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter source",
+  },
+  'src/renderer/assets/provider-logos/': {
+    thirdParty: true,
+    label: 'model provider marks',
+    auditName: 'model provider marks',
+    noticeMatch: /^Model provider marks$/m,
+  },
+  'src/main/agent/workspace-execution/native/': {
+    thirdParty: false,
+    label: "Freedom's own workspace supervisor sources",
+  },
   'src/main/myotis/native/': {
     thirdParty: false,
     label: "Freedom's own Myotis supervisor sources",
@@ -303,7 +339,8 @@ function shippedSrcFiles() {
       const child = `${rel}/${entry.name}`;
       if (entry.isDirectory()) {
         if (entry.name !== 'coverage') walk(child);
-      } else if (!child.endsWith('.test.js')) {
+      } else if (!child.endsWith('.test.js') && entry.name !== '.DS_Store') {
+        // electron-builder excludes Finder metadata through its default file matcher.
         files.push(child);
       }
     }
@@ -336,7 +373,9 @@ describe('bundled-component inventory', () => {
   it('classifies every non-source file the src/**/* pattern ships', () => {
     for (const file of shippedSrcAssets()) {
       const dir = `${path.dirname(file)}/`;
-      expect({ file, classified: dir in SRC_ASSETS }).toEqual({ file, classified: true });
+      const meta = SRC_ASSETS[dir];
+      const classified = Boolean(meta && (!meta.files || meta.files.includes(path.basename(file))));
+      expect({ file, classified }).toEqual({ file, classified: true });
     }
   });
 

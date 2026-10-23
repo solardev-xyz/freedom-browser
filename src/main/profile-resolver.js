@@ -18,6 +18,12 @@ const {
   waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
 const { isProfileLocked } = require('./profile-lock');
+const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
+
+// A launch carrying an `x-freedom-profile:` switch (profile-switch-scheme.js)
+// that names no registered profile. index.js exits quietly on it: whatever
+// sent it gets neither a window nor a new profile.
+const PROFILE_SWITCH_REJECTED = 'PROFILE_SWITCH_REJECTED';
 
 // Pre-profile dev builds wrote node/identity data directly into the repo
 // checkout (`<repoRoot>/bee-data`, `identity-data`, etc.). The profile system
@@ -38,6 +44,7 @@ const LEGACY_DEV_DATA_DIRS = [
   'tor-data',
 ];
 const LEGACY_DEV_DATA_WARNING_FILE = 'legacy-dev-data-warning.json';
+const AUTOMATION_PROFILE_ID = 'automation';
 
 let activeProfile = null;
 
@@ -125,6 +132,43 @@ function resolveFallbackProfileId(appRoot) {
   return ids[0] || null;
 }
 
+function findRegisteredProfile(appRoot, profileId) {
+  try {
+    return (loadCatalog(appRoot).profiles || []).find((profile) => profile?.id === profileId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function rejectProfileSwitch(reason) {
+  const error = new Error(`Refused an x-freedom-profile switch to ${reason}`);
+  error.code = PROFILE_SWITCH_REJECTED;
+  throw error;
+}
+
+function isRunning(isLocked, profile) {
+  try {
+    return isLocked(profile) === true;
+  } catch {
+    return false;
+  }
+}
+
+// The profile an `x-freedom-profile:<id>` launch switches to: `id` only when
+// it is a canonical id already registered in the catalog *and* that profile is
+// open right now. The scheme exists to raise a running profile; anything that
+// can run xdg-open (a page in another browser included) may send it, so it
+// must not cold-start one, with its nodes. Anything else is refused rather
+// than mapped to some other profile or created.
+function resolveProfileSwitchId(appRoot, profileSwitch, { isDev = false, isLocked = isProfileLocked } = {}) {
+  const record = profileSwitch.id ? findRegisteredProfile(appRoot, profileSwitch.id) : null;
+  if (!record?.dir) rejectProfileSwitch('an unknown profile');
+  if (!isRunning(isLocked, { id: record.id, userDataDir: record.dir, isDev })) {
+    rejectProfileSwitch(`"${record.id}", which is not open`);
+  }
+  return record.id;
+}
+
 function hasRegisteredProfiles(appRoot) {
   try {
     return (loadCatalog(appRoot).profiles || []).length > 0;
@@ -177,10 +221,23 @@ function resolveProfile(app, options = {}) {
   const appRoot = isDev
     ? resolveDevAppRoot(app, env, repoRoot)
     : app.getPath('userData');
+  // An explicit --profile wins over an `x-freedom-profile:` switch; xdg-open,
+  // the only thing that sends one, never passes both.
+  const explicitProfile = getArgValue(argv, 'profile');
+  const profileSwitch = explicitProfile
+    ? null
+    : parseProfileSwitchArgv(argv, { platform: options.platform || process.platform });
+  const switchId = profileSwitch
+    ? resolveProfileSwitchId(appRoot, profileSwitch, {
+        isDev,
+        isLocked: options.isProfileLocked || isProfileLocked,
+      })
+    : null;
   const profileInput =
-    getArgValue(argv, 'profile') ||
+    explicitProfile ||
+    switchId ||
     env.FREEDOM_PROFILE ||
-    resolveLastOpenedProfileId(appRoot) ||
+    (argv.includes('--runtime') ? AUTOMATION_PROFILE_ID : resolveLastOpenedProfileId(appRoot)) ||
     resolveFallbackProfileId(appRoot) ||
     DEFAULT_PROFILE_ID;
   const profileId = sanitizeProfileId(profileInput);
@@ -205,11 +262,15 @@ function resolveProfile(app, options = {}) {
     checkoutHash,
     defaultProfileDir,
     dev: isDev,
-    markOpened: true,
+    // A switch hands over to the open profile and exits: it is not an
+    // opening of its own, so it leaves "last opened" (what a plain `freedom`
+    // launch picks) alone.
+    markOpened: !switchId,
     now: options.now,
   });
 
   return {
+    ...(switchId ? { switchOnly: true } : {}),
     id: metadata.id,
     displayName: metadata.displayName,
     source: 'catalog',
@@ -453,7 +514,9 @@ async function deleteProfileForActiveApp(profileId, expectedDisplayName) {
 }
 
 module.exports = {
+  AUTOMATION_PROFILE_ID,
   LEGACY_DEV_DATA_DIRS,
+  PROFILE_SWITCH_REJECTED,
   LEGACY_DEV_DATA_WARNING_FILE,
   applyProfile,
   createProfileForActiveApp,

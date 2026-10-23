@@ -1,12 +1,148 @@
 /**
- * Tests for the dApp Connect prompt: one approval at a time across the
- * wallet's dApp prompts (dapp-approval-slot.js).
+ * Tests for the dApp Connect prompt and the connection banner. The Connect,
+ * Sign and Send prompts share the sidebar: while one shows an undecided
+ * request, a newcomer is refused (dapp-prompt-guard.js).
  */
 
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
 
 const originalWindow = global.window;
 const originalDocument = global.document;
+
+class FakeClassList {
+  constructor() {
+    this.classes = new Set();
+  }
+
+  add(...names) {
+    for (const name of names) this.classes.add(name);
+  }
+
+  remove(...names) {
+    for (const name of names) this.classes.delete(name);
+  }
+
+  contains(name) {
+    return this.classes.has(name);
+  }
+
+  toggle(name, force) {
+    const shouldAdd = force === undefined ? !this.classes.has(name) : !!force;
+    if (shouldAdd) this.classes.add(name);
+    else this.classes.delete(name);
+    return shouldAdd;
+  }
+}
+
+class FakeElement {
+  constructor() {
+    this.classList = new FakeClassList();
+    this.textContent = '';
+  }
+
+  addEventListener() {}
+}
+
+const elementIds = [
+  'dapp-connection-banner',
+  'dapp-connection-site',
+  'dapp-connection-wallet',
+  'dapp-connection-disconnect',
+  'dapp-auto-approve-badge',
+  'dapp-connection-manage',
+];
+
+async function loadDappConnect({ activeDisplayUrl = '', activeWebview = null } = {}) {
+  jest.resetModules();
+
+  const elements = {};
+  for (const id of elementIds) {
+    elements[id] = new FakeElement();
+    elements[id].classList.add('hidden');
+  }
+  global.document = {
+    getElementById: jest.fn((id) => elements[id] || null),
+    addEventListener: jest.fn(),
+  };
+  global.window = {
+    dappPermissions: {
+      getPermission: jest.fn().mockResolvedValue({ walletIndex: 0, autoApprove: {} }),
+      revokePermission: jest.fn().mockResolvedValue({ success: true }),
+    },
+    wallet: {
+      getDerivedWallets: jest.fn().mockResolvedValue({ success: true, wallets: [{ index: 0, name: 'Main' }] }),
+    },
+  };
+
+  const provider = {
+    getActiveWebview: jest.fn(() => activeWebview),
+    getActiveDisplayUrl: jest.fn(() => activeDisplayUrl),
+    emitAccountsChanged: jest.fn(),
+    getPermissionKey: jest.fn((url) => url || null),
+    getNavigationGeneration: jest.fn(() => 0),
+  };
+  jest.doMock('./wallet-state.js', () => ({
+    walletState: {},
+    registerScreenHider: jest.fn(),
+    hideAllSubscreens: jest.fn(),
+  }));
+  jest.doMock('../sidebar.js', () => ({ open: jest.fn(), isVisible: jest.fn(() => true) }));
+  jest.doMock('../dapp-provider.js', () => provider);
+  jest.doMock('./permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
+
+  const mod = await import('./dapp-connect.js');
+  mod.initDappConnect();
+  return { mod, elements, provider };
+}
+
+describe('dApp connection banner', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  // A key from the permissions list (permission-manage.js) can name a site in
+  // another tab: revoking it must leave the visible, still-connected site's
+  // banner and page alone. Revoking the visible site hides the banner and
+  // tells its page.
+  test('disconnecting another site leaves the visible site\'s banner and page alone', async () => {
+    const visible = {};
+    const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth', activeWebview: visible });
+    const banner = ctx.elements['dapp-connection-banner'];
+
+    await ctx.mod.updateConnectionBanner();
+    expect(banner.classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['dapp-connection-site'].textContent).toBe('visible.eth');
+
+    await ctx.mod.disconnectDapp('background.eth');
+    expect(global.window.dappPermissions.revokePermission).toHaveBeenCalledWith('background.eth');
+    expect(banner.classList.contains('hidden')).toBe(false);
+    expect(ctx.provider.emitAccountsChanged).not.toHaveBeenCalled();
+
+    await ctx.mod.disconnectDapp('visible.eth');
+    expect(banner.classList.contains('hidden')).toBe(true);
+    expect(ctx.provider.emitAccountsChanged).toHaveBeenCalledWith(visible, []);
+  });
+
+  test('the banner\'s own Disconnect (no key) revokes the site it shows', async () => {
+    const visible = {};
+    const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth', activeWebview: visible });
+    const banner = ctx.elements['dapp-connection-banner'];
+
+    await ctx.mod.updateConnectionBanner();
+    await ctx.mod.disconnectDapp();
+    expect(global.window.dappPermissions.revokePermission).toHaveBeenCalledWith('visible.eth');
+    expect(banner.classList.contains('hidden')).toBe(true);
+  });
+
+  test('a refresh hint for a site that is not on screen paints nothing', async () => {
+    const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth' });
+    await ctx.mod.updateConnectionBanner('background.eth');
+    expect(global.window.dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(ctx.elements['dapp-connection-banner'].classList.contains('hidden')).toBe(true);
+  });
+});
 
 const DAPP_CONNECT_ELEMENT_IDS = [
   'address-input',
@@ -36,7 +172,7 @@ function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadDappConnect() {
+async function loadDappConnectPrompt() {
   jest.resetModules();
 
   const elementsById = Object.fromEntries(
@@ -75,9 +211,10 @@ async function loadDappConnect() {
   const emitAccountsChanged = jest.fn();
   jest.doMock('../dapp-provider.js', () => ({
     getActiveWebview: jest.fn(() => provider.active),
+    getActiveDisplayUrl: jest.fn(() => provider.keys.get(provider.active) ?? ''),
+    getPermissionKey: jest.fn((url) => url || null),
     emitAccountsChanged,
     getNavigationGeneration: jest.fn((wv) => provider.generations.get(wv) ?? 0),
-    permissionKeyForWebview: jest.fn((wv) => provider.keys.get(wv) ?? null),
   }));
   jest.doMock('./permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
   jest.doMock('../url-utils.js', () => ({ parseOnchainAppUrl: jest.fn(() => null) }));
@@ -123,7 +260,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test('a newcomer never replaces the site on screen', async () => {
-    const { elements, grantPermission, openConnect, guard } = await loadDappConnect();
+    const { elements, grantPermission, openConnect, guard } = await loadDappConnectPrompt();
     const first = openConnect('https://app.example');
     expect(guard.isDappPromptShowing()).toBe(true);
 
@@ -139,7 +276,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test('a prompt another screen hid holds off nothing', async () => {
-    const { openConnect, hideForOtherScreen } = await loadDappConnect();
+    const { openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
     openConnect('https://app.example');
 
     hideForOtherScreen();
@@ -147,7 +284,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test('while the grant is written, there is no way out and no second grant', async () => {
-    const { elements, grantPermission, openConnect } = await loadDappConnect();
+    const { elements, grantPermission, openConnect } = await loadDappConnectPrompt();
     let finishGrant;
     grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
     const first = openConnect('https://app.example');
@@ -167,7 +304,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test('a failed grant answers the dApp', async () => {
-    const { elements, grantPermission, openConnect } = await loadDappConnect();
+    const { elements, grantPermission, openConnect } = await loadDappConnectPrompt();
     grantPermission.mockRejectedValueOnce(new Error('disk full'));
     const first = openConnect('https://app.example');
 
@@ -177,7 +314,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test("a grant's events reach only the document that asked", async () => {
-    const { elements, grantPermission, openConnect, provider } = await loadDappConnect();
+    const { elements, grantPermission, openConnect, provider } = await loadDappConnectPrompt();
     let finishGrant;
     grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
     const first = openConnect('https://app.example');
@@ -191,28 +328,8 @@ describe('dapp-connect prompt', () => {
     expect(first.webview.send).not.toHaveBeenCalled();
   });
 
-  test("the banner follows the active tab's committed site, never the address bar", async () => {
-    const { mod, elements, provider, tab } = await loadDappConnect();
-    window.dappPermissions.getPermission.mockImplementation(async (key) =>
-      key === 'https://app.example' ? { walletIndex: 0 } : null
-    );
-    window.wallet = { getDerivedWallets: jest.fn(async () => ({ success: true, wallets: [{ index: 0, name: 'Main' }] })) };
-    provider.active = tab('https://other.example');
-    elements['address-input'].value = 'https://app.example';
-
-    await mod.updateConnectionBanner();
-    expect(elements['dapp-connection-banner'].classList.contains('hidden')).toBe(true);
-    // A background tab's connection doesn't repaint the active tab's banner.
-    await mod.updateConnectionBanner('https://app.example');
-    expect(elements['dapp-connection-banner'].classList.contains('hidden')).toBe(true);
-
-    provider.active = tab('https://app.example');
-    await mod.updateConnectionBanner();
-    expect(elements['dapp-connection-site'].textContent).toBe('https://app.example');
-  });
-
   test("an earlier request's favicon never lands on a later one", async () => {
-    const { elements, openConnect } = await loadDappConnect();
+    const { elements, openConnect } = await loadDappConnectPrompt();
     let faviconA;
     window.electronAPI = {
       getCachedFavicon: jest
@@ -230,7 +347,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test("a stale banner lookup never repaints a newer one", async () => {
-    const { mod, elements, provider, tab } = await loadDappConnect();
+    const { mod, elements, provider, tab } = await loadDappConnectPrompt();
     let failA;
     window.wallet = { getDerivedWallets: jest.fn(async () => ({ success: true, wallets: [{ index: 0, name: 'Main' }] })) };
     window.dappPermissions.getPermission
@@ -245,18 +362,5 @@ describe('dapp-connect prompt', () => {
     failA(new Error('lookup failed'));
     await stale;
     expect(elements['dapp-connection-banner'].classList.contains('hidden')).toBe(false);
-  });
-
-  test('disconnect tells the active tab only if it is the disconnected site', async () => {
-    const { mod, provider, tab, emitAccountsChanged } = await loadDappConnect();
-    window.dappPermissions.revokePermission = jest.fn(async () => ({ success: true }));
-    provider.active = tab('https://other.example');
-
-    await mod.disconnectDapp('https://app.example');
-    expect(emitAccountsChanged).not.toHaveBeenCalled();
-
-    provider.active = tab('https://app.example');
-    await mod.disconnectDapp('https://app.example');
-    expect(emitAccountsChanged).toHaveBeenCalledWith(provider.active, []);
   });
 });

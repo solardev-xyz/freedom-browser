@@ -38,9 +38,11 @@ const STATUSES = Object.freeze({
   FAILED: 'failed',
   SETTLED: 'settled',
   NO_RECEIPT: 'no-receipt',
+  // Never mined, and never can be: another transaction took its nonce.
+  DROPPED: 'dropped',
 });
 const FINAL_STATUSES = new Set([
-  STATUSES.CONFIRMED, STATUSES.FAILED, STATUSES.SETTLED, STATUSES.NO_RECEIPT,
+  STATUSES.CONFIRMED, STATUSES.FAILED, STATUSES.SETTLED, STATUSES.NO_RECEIPT, STATUSES.DROPPED,
 ]);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 
@@ -63,6 +65,7 @@ function getDb() {
 }
 
 function closeDb() {
+  cancelDroppedConfirm();
   if (db) {
     log.info('[PaymentHistory] Closing database');
     db.close();
@@ -387,6 +390,21 @@ function markFailed(id, { reason, gasUsed, gasPrice } = {}) {
   });
 }
 
+// Merges into the row's metadata rather than replacing it: a Safe row's
+// own metadata must survive the status change. Only a row still pending
+// is marked: the sweep decides 'dropped' from a lookup it awaited, and a
+// concurrent finaliser (tx-recorder's markConfirmed/markFailed) may have
+// written the row's final status meanwhile; that status stands. The read
+// and the write run in one synchronous step, so nothing lands between.
+function markDropped(id) {
+  const existing = getById(id);
+  if (!existing || existing.status !== STATUSES.PENDING) return null;
+  return update(id, {
+    status: STATUSES.DROPPED,
+    metadata: { ...(existing.metadata || {}), failureReason: 'nonce used by another transaction' },
+  });
+}
+
 // Filter keys the store accepts; anything else is silently dropped so the
 // renderer can pass through UI state without breaking. Clamping `limit`
 // and `offset` guards against a runaway page-size request pulling the
@@ -465,33 +483,139 @@ function removeById(id) {
 
 /**
  * Re-poll every `pending` row's status. For each row, the caller-supplied
- * `getStatusFn(txHash, chainId)` is awaited; if it returns a final status
+ * `getStatusFn(txHash, chainId, sent)` is awaited; if it returns a final status
  * the row is updated. Anything that throws or stays pending is left alone.
+ * `sent` is `{ from, nonce }` as the row's metadata recorded them at send
+ * time (tx-recorder), so a transaction whose nonce another transaction has
+ * since taken resolves as 'dropped' instead of staying pending forever.
  *
  * Exposed as an explicit function (not auto-run on open) so callers can
- * trigger it once the provider stack is up. PH2 will wire this from
- * `index.js` after the wallet bootstrap finishes.
+ * trigger it once the provider stack is up: `index.js` at boot, and
+ * tx-recorder whenever one of its transactions resolves.
  *
- * @param {(txHash:string, chainId:number) => Promise<{status:string, gasUsed?:string, gasPrice?:string}>} getStatusFn
+ * A call while a sweep is running cannot just join it: that sweep may have
+ * read (or already checked) a row before the chain moved, e.g. before the
+ * re-send that leaves the row 'dropped' was mined. So it queues one more
+ * sweep to start once the running one ends, and resolves with that. Every
+ * call made before the queued sweep starts shares it (including one landing
+ * after the running sweep settled but before the queued one began), so a
+ * burst of settled transactions still polls each row at most twice.
+ *
+ * 'dropped' is final, but one sighting of it is not proof: the nonce and
+ * receipt reads behind it can be answered by different endpoints of one
+ * source (quorum members, Direct's URL list), one of them lagging, which
+ * reads a just-mined transaction as dropped. So the first sighting is only
+ * recorded on the row (`txDroppedSeenAt`) and the row stays pending; a sweep
+ * at least DROPPED_CONFIRM_MS later that sees it again marks it dropped. Any
+ * 'pending' answer in between clears the sighting. When a sighting is
+ * waiting, a confirming sweep is scheduled, so it does not wait for the next
+ * transaction or boot.
+ *
+ * @param {(txHash:string, chainId:number, sent:{from?:string, nonce?:number}) => Promise<{status:string, gasUsed?:string, gasPrice?:string}>} getStatusFn
  * @returns {Promise<{ resolved:number, stillPending:number, errors:number }>}
  */
-async function repollPending(getStatusFn) {
+// Long enough for a lagging endpoint to catch up (10 mainnet blocks,
+// 24 on Gnosis); short enough that a dropped row resolves in the same session.
+const DROPPED_CONFIRM_MS = 2 * 60 * 1000;
+let repollInFlight = null;
+let repollQueued = null;
+let confirmTimer = null;
+function repollPending(getStatusFn) {
+  // Not started yet, so it reads every row after this call: join it.
+  if (repollQueued) return repollQueued;
+  if (!repollInFlight) return startRepoll(getStatusFn);
+  repollQueued = repollInFlight
+    .catch(() => { /* the caller of that sweep sees its error */ })
+    .then(() => {
+      repollQueued = null;
+      return startRepoll(getStatusFn);
+    });
+  return repollQueued;
+}
+
+function startRepoll(getStatusFn) {
+  const sweep = repollPendingOnce(getStatusFn).finally(() => {
+    if (repollInFlight === sweep) repollInFlight = null;
+  });
+  repollInFlight = sweep;
+  return sweep;
+}
+
+function scheduleDroppedConfirm(getStatusFn, delayMs) {
+  if (confirmTimer) return;
+  confirmTimer = setTimeout(() => {
+    confirmTimer = null;
+    repollPending(getStatusFn).catch((err) => {
+      log.warn(`[PaymentHistory] dropped-confirm sweep failed: ${err.message}`);
+    });
+  }, Math.max(1000, delayMs));
+  confirmTimer.unref?.();
+}
+
+function cancelDroppedConfirm() {
+  if (confirmTimer) clearTimeout(confirmTimer);
+  confirmTimer = null;
+}
+
+function rowMetadata(row) {
+  try { return row.metadata ? JSON.parse(row.metadata) : null; } catch { return null; }
+}
+
+// Re-reads the row rather than reusing the sweep's snapshot: the status
+// lookup awaited in between, and a concurrent finaliser (tx-recorder's
+// markFailed with its failureReason) may have written the row meanwhile.
+// A row no longer pending is left alone.
+function setDroppedSeenAt(row, seenAt) {
+  const current = getStatements().getById.get(row.id);
+  if (!current || current.status !== STATUSES.PENDING) return;
+  const metadata = { ...(rowMetadata(current) || {}) };
+  if (seenAt === null) delete metadata.txDroppedSeenAt;
+  else metadata.txDroppedSeenAt = seenAt;
+  update(row.id, { metadata });
+}
+
+function sentFields(row) {
+  const metadata = rowMetadata(row);
+  return {
+    from: typeof metadata?.txFrom === 'string' ? metadata.txFrom : undefined,
+    nonce: Number.isSafeInteger(metadata?.txNonce) ? metadata.txNonce : undefined,
+    sweep: true,
+  };
+}
+
+async function repollPendingOnce(getStatusFn) {
   const pending = getStatements().getPending.all();
   let resolved = 0;
   let stillPending = 0;
   let errors = 0;
+  let nextConfirmIn = null;
 
   for (const row of pending) {
     if (!row.tx_hash) { stillPending++; continue; }
     try {
-      const r = await getStatusFn(row.tx_hash, row.chain_id);
-      if (r?.status === STATUSES.CONFIRMED) {
+      const r = await getStatusFn(row.tx_hash, row.chain_id, sentFields(row));
+      const seenAt = rowMetadata(row)?.txDroppedSeenAt;
+      if (r?.status === STATUSES.DROPPED) {
+        const now = Date.now();
+        if (Number.isFinite(seenAt) && now - seenAt >= DROPPED_CONFIRM_MS) {
+          if (markDropped(row.id)) resolved++;
+          continue;
+        }
+        if (!Number.isFinite(seenAt) || seenAt > now) setDroppedSeenAt(row, now);
+        const waitMs = Number.isFinite(seenAt) && seenAt <= now
+          ? DROPPED_CONFIRM_MS - (now - seenAt)
+          : DROPPED_CONFIRM_MS;
+        nextConfirmIn = nextConfirmIn === null ? waitMs : Math.min(nextConfirmIn, waitMs);
+        stillPending++;
+      } else if (r?.status === STATUSES.CONFIRMED) {
         markConfirmed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
         resolved++;
       } else if (r?.status === STATUSES.FAILED) {
         markFailed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
         resolved++;
       } else {
+        // Not seen dropped this time: a later sighting starts over.
+        if (r?.status === STATUSES.PENDING && seenAt !== undefined) setDroppedSeenAt(row, null);
         stillPending++;
       }
     } catch (err) {
@@ -501,6 +625,7 @@ async function repollPending(getStatusFn) {
   }
 
   if (resolved > 0) log.info(`[PaymentHistory] repoll resolved ${resolved} pending row(s)`);
+  if (nextConfirmIn !== null) scheduleDroppedConfirm(getStatusFn, nextConfirmIn);
   return { resolved, stillPending, errors };
 }
 
@@ -558,12 +683,14 @@ module.exports = {
   update,
   markConfirmed,
   markFailed,
+  markDropped,
   getRecent,
   getById,
   getCount,
   clear,
   removeById,
   repollPending,
+  DROPPED_CONFIRM_MS,
   registerPaymentHistoryIpc,
   _migrateFromJsonForTest: migrateFromJson,
 };
