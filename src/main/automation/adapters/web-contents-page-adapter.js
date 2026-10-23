@@ -69,18 +69,38 @@ async function settleScroll(readScroll, before, limit = SCROLL_SETTLE_LIMIT_MS) 
 // capture-phase listener in the automation world counts trusted wheel events
 // reaching the target's document (`wheelProbe`), and the resend happens only
 // when that count is still zero after the full limit, after the target and
-// point are checked again. Limits: a page listener registered earlier on the
-// same window that calls stopImmediatePropagation() hides the wheel from the
-// probe (so it is treated as lost and resent once); and a wheel that is
-// neither dispatched nor applied for the whole limit, then arrives late, can
-// still land next to its resend. `attempts` reports how many wheels were
-// sent and `delivered` whether the page received one.
+// point are checked again.
+//
+// A wheel over a child frame (an embedded map or video inside the scroll
+// target) is dispatched to that frame's document, not the target's, so the
+// probe cannot see it (and cannot reach a cross-origin frame at all).
+// inspectScrollReference therefore prefers a point that is not over a child
+// frame; when every eligible point is, it flags the point `childFrame`, the
+// caller passes `observable: false`, and an unmoved target is reported with
+// `delivered: null` (unknown) and never resent. A recheck that only finds a
+// child-frame point also skips the resend.
+//
+// Remaining limits: a page listener registered earlier on the same window
+// that calls stopImmediatePropagation() hides the wheel from the probe (so
+// it is treated as lost and resent once); and a wheel that is neither
+// dispatched nor applied for the whole limit, then arrives late, can still
+// land next to its resend. `attempts` reports how many wheels were sent and
+// `delivered` whether the page received one (`null`: not observable).
 //
 // `deadline` (optional, a Date.now() value) bounds the whole operation: a
 // frame action runs inside the frame observer's connection budget, which two
 // full settle limits would overrun. The resend is skipped when too little of
 // it is left, and its settle is shortened to what remains.
-async function wheelScroll({ before, point, send, readScroll, probe, recheck, deadline = Infinity }) {
+async function wheelScroll({
+  before,
+  point,
+  observable = true,
+  send,
+  readScroll,
+  probe,
+  recheck,
+  deadline = Infinity,
+}) {
   const unchanged = (after) => after.x === before.x && after.y === before.y;
   const remaining = () => Math.min(SCROLL_SETTLE_LIMIT_MS, deadline - Date.now());
   const attempt = async (at) => {
@@ -92,6 +112,8 @@ async function wheelScroll({ before, point, send, readScroll, probe, recheck, de
     let { after, settled } = await attempt(point);
     let attempts = 1;
     let delivered = !unchanged(after) || (await probe('read')).count > 0;
+    // Over a child frame a zero count proves nothing: delivery is unknown.
+    if (!delivered && !observable) return { after, settled, attempts, delivered: null };
     if (!delivered && remaining() >= SCROLL_RESEND_MIN_SETTLE_MS) {
       const next = await recheck();
       if (next && remaining() >= SCROLL_RESEND_MIN_SETTLE_MS) {
@@ -269,11 +291,17 @@ function inspectScrollReference(ref, direction, requirePoint = true) {
     const right = Math.min(frameWindow.innerWidth, rect.right);
     const bottom = Math.min(frameWindow.innerHeight, rect.bottom);
     if (right - left < 2 || bottom - top < 2) return { ok: false, reason: 'not_interactable' };
+    let framedPoint = null;
     for (const fy of [0.5, 0.15, 0.85]) {
       for (const fx of [0.5, 0.15, 0.85]) {
         let x = Math.floor(left + (right - left) * fx);
         let y = Math.floor(top + (bottom - top) * fy);
         let hit = deepestHit(element.ownerDocument, x, y);
+        // A wheel over a child frame is dispatched to that frame's document,
+        // which the delivery probe cannot see (and, cross-origin, cannot reach).
+        const overChildFrame = ['IFRAME', 'FRAME', 'EMBED', 'OBJECT'].includes(
+          hit?.tagName?.toUpperCase()
+        );
         let nearest = null;
         while (hit) {
           if (readScrollState(hit)[axis]) {
@@ -301,10 +329,15 @@ function inspectScrollReference(ref, direction, requirePoint = true) {
           if (deepestHit(view.document, x, y) !== frame) usable = false;
         }
         if (usable && x >= 0 && y >= 0 && x < view.innerWidth && y < view.innerHeight) {
-          return { ok: true, scroll, point: { x: Math.round(x), y: Math.round(y) } };
+          const found = { x: Math.round(x), y: Math.round(y) };
+          if (!overChildFrame) return { ok: true, scroll, point: found };
+          framedPoint ??= found;
         }
       }
     }
+    // Only points over a child frame: still usable, but the wheel's delivery
+    // cannot be observed there, so the caller must not resend it.
+    if (framedPoint) return { ok: true, scroll, point: framedPoint, childFrame: true };
     return { ok: false, reason: 'not_interactable' };
   } catch {
     return { ok: false, reason: 'changed' };
@@ -1518,6 +1551,7 @@ class WebContentsPageAdapter extends EventEmitter {
           before,
           deadline: (session.deadline ?? Infinity) - FRAME_SCROLL_BUDGET_MARGIN_MS,
           point: root,
+          observable: !state.childFrame,
           send: (at) =>
             session.mouse({
               type: 'mouseWheel',
@@ -1533,7 +1567,7 @@ class WebContentsPageAdapter extends EventEmitter {
           },
           recheck: async () => {
             const again = await read(true);
-            if (again.boundary) return null;
+            if (again.boundary || again.childFrame) return null;
             const retryPoint = await point(again.point);
             await confirm();
             return retryPoint;
@@ -1718,6 +1752,7 @@ class WebContentsPageAdapter extends EventEmitter {
     const { after, settled, attempts, delivered } = await wheelScroll({
       before: start,
       point: confirmed.point,
+      observable: !confirmed.childFrame,
       send: (at) =>
         this.webContents.sendInputEvent({
           type: 'mouseWheel',
@@ -1741,7 +1776,7 @@ class WebContentsPageAdapter extends EventEmitter {
       recheck: async () => {
         this.#requireReference(ref, true);
         const again = await inspect(true);
-        if (again.boundary) return null;
+        if (again.boundary || again.childFrame) return null;
         if ((this.webContents.getZoomFactor?.() || 1) !== zoom) throw this.#staleReferenceError();
         return again.point;
       },

@@ -400,6 +400,14 @@ for (const mode of ['desktop', 'hidden']) {
       #content { height: 1500px; width: 900px } #blocked { height: 120px; width: 300px; overflow: auto }</style>
       <div id="list" aria-label="Results list"><div id="content">Items</div></div>
       <div id="blocked" aria-label="Wheel blocked"><div style="height:1000px">Blocked</div></div>
+      <div id="embedded" aria-label="Embedded map" style="width:300px;height:120px;overflow:auto">
+        <iframe id="map" style="display:block;border:0;width:300px;height:1000px"
+          srcdoc="<script>globalThis.wheels = 0; addEventListener('wheel', e => { e.preventDefault(); wheels += 1 }, {passive:false})</script>"></iframe>
+      </div>
+      <div id="beside" aria-label="Beside map" style="width:300px;height:120px;overflow:auto">
+        <div style="height:1000px"><iframe id="side" style="border:0;width:60px;height:1000px"
+          srcdoc="<script>globalThis.wheels = 0; addEventListener('wheel', e => { e.preventDefault(); wheels += 1 }, {passive:false})</script>"></iframe></div>
+      </div>
       <button>Ordinary button</button><div style="height:3500px">Long page</div>
       <script>
         document.addEventListener('wheel', event => { document.body.dataset.trusted = String(event.isTrusted) });
@@ -457,6 +465,30 @@ for (const mode of ['desktop', 'hidden']) {
         return guest.executeJavaScript('globalThis.blockedWheels');
       }, FIXTURE_URL)
     ).toBe(1);
+    // Every point inside "Embedded map" is over its iframe: the embed's own
+    // document receives and consumes the wheel, which the probe cannot see,
+    // so it is sent once and its delivery reported as unknown.
+    const frameWheels = (id) =>
+      electronApp.evaluate(
+        async ({ webContents }, [url, frameId]) => {
+          const guest = webContents.getAllWebContents().find((entry) => entry.getURL() === url);
+          return guest.executeJavaScript(
+            `document.getElementById(${JSON.stringify(frameId)}).contentWindow.wheels`
+          );
+        },
+        [FIXTURE_URL, id]
+      );
+    expect(await scroll(named(first, 'Embedded map').ref, 'down')).toMatchObject({
+      ok: true,
+      result: { moved: false, outcome: 'no_movement', attempts: 1, delivered: null },
+    });
+    expect(await frameWheels('map')).toBe(1);
+    // With room beside the iframe, the wheel goes there instead and scrolls.
+    expect(await scroll(named(first, 'Beside map').ref, 'down')).toMatchObject({
+      ok: true,
+      result: { moved: true, attempts: 1, delivered: true },
+    });
+    expect(await frameWheels('side')).toBe(0);
     expect(await scroll(named(first, 'Ordinary button').ref, 'down')).toMatchObject({
       ok: false,
       error: { code: 'ELEMENT_NOT_INTERACTABLE' },

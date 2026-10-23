@@ -143,6 +143,28 @@ describe('wheelScroll', () => {
     expect(Date.now() - started).toBeLessThanOrEqual(4_050);
   });
 
+  test('an unobservable wheel over a child frame is never resent and reports delivery unknown', async () => {
+    // The embed's own document received (and consumed) it; the probe cannot see that.
+    const { options } = harness({ apply: () => ({}) });
+    options.observable = false;
+    await expect(run(wheelScroll(options))).resolves.toMatchObject({
+      attempts: 1,
+      delivered: null,
+    });
+    expect(options.send).toHaveBeenCalledTimes(1);
+    expect(options.recheck).not.toHaveBeenCalled();
+    expect(options.probe).toHaveBeenLastCalledWith('disarm');
+  });
+
+  test('an unobservable wheel that moved the target is still delivered', async () => {
+    const { options } = harness({ apply: () => ({ moveTo: { x: 0, y: 400 } }) });
+    options.observable = false;
+    await expect(run(wheelScroll(options))).resolves.toMatchObject({
+      attempts: 1,
+      delivered: true,
+    });
+  });
+
   test('a failed recheck sends nothing more and still disarms the probe', async () => {
     const { options } = harness({ apply: () => ({}) });
     options.recheck.mockRejectedValueOnce(new Error('stale'));
@@ -185,7 +207,7 @@ class FakeWebContents extends EventEmitter {
 }
 
 // Routes isolated-world calls by the function they invoke.
-function pageAdapter({ wheelReceived }) {
+function pageAdapter({ wheelReceived, childFrame = false }) {
   const webContents = new FakeWebContents();
   let probeCount = 0;
   webContents.sendInputEvent.mockImplementation(() => {
@@ -200,6 +222,7 @@ function pageAdapter({ wheelReceived }) {
       return {
         ok: true,
         point: { x: 5, y: 5 },
+        ...(childFrame ? { childFrame: true } : {}),
         scroll: {
           x: 0,
           y: 0,
@@ -249,6 +272,16 @@ describe('WebContentsPageAdapter.scroll wheel resend', () => {
       }
     );
     expect(webContents.sendInputEvent).toHaveBeenCalledTimes(2);
+  });
+
+  test('a wheel sent over a child frame is not sent twice', async () => {
+    const { webContents, adapter } = pageAdapter({ wheelReceived: false, childFrame: true });
+    await adapter.snapshot();
+    await expect(run(adapter.scroll('ref_viewport', { direction: 'down' }))).resolves.toMatchObject(
+      { outcome: 'no_movement', attempts: 1, delivered: null }
+    );
+    expect(webContents.sendInputEvent).toHaveBeenCalledTimes(1);
+    expect(webContents.sendInputEvent.mock.calls[0][0]).not.toHaveProperty('childFrame');
   });
 
   test('a zoom change before the resend makes the reference stale instead of sending again', async () => {
