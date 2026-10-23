@@ -589,8 +589,15 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context, authorization),
   signMessage: (message, walletIndex, authorization) =>
     ipcRenderer.invoke('wallet:sign-message', message, walletIndex, authorization),
-  signTypedData: (typedData, walletIndex, authorization) =>
-    ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex, authorization),
+  // `context.chainId`: the dApp's active chain, for an auto-approved
+  // request's view (freedom-core #88).
+  signTypedData: (typedData, walletIndex, authorization, context) =>
+    ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex, authorization, context),
+  // What a request signs, for its prompt (#88): the core's view of typed
+  // data, and the bytes a personal_sign sends.
+  typedDataView: (typedData, chainId) =>
+    ipcRenderer.invoke('wallet:typed-data-view', typedData, chainId),
+  messageView: (message) => ipcRenderer.invoke('wallet:message-view', message),
 
   // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
   proxyRpc: (rpcUrl, method, params) =>

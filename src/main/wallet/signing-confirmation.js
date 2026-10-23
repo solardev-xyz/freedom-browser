@@ -27,7 +27,12 @@
  *     key), which it must have: the payment is recorded under it, and
  *     "Always allow" pauses for that site while the payment waits.
  *   - sign-message / sign-typed-data: the account and a SHA-256 digest of
- *     the message / typed data (canonical JSON, key order ignored).
+ *     the message / typed data (canonical JSON, key order ignored). A
+ *     sign-typed-data token also carries the EIP-712 hash of the data, as
+ *     the identity core computed it when the user confirmed (freedom-core
+ *     #88): spending the token hands it back, and a vault account's
+ *     signature passes it to the core as `expected_hash`, so the core signs
+ *     nothing but the confirmed digest.
  *   - safe-send: the Safe, chainId, to, value, data of the SafeTx, and the
  *     site a dApp's SafeTx is for (`origin`, as a permission key), or none
  *     for the wallet's own: adding, removing or changing it refuses.
@@ -84,7 +89,7 @@ const MAX_CLOSE_HASHES = 64;
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
 
-const outstanding = new Map(); // token -> { kind, digest, expiresAt }
+const outstanding = new Map(); // token -> { kind, digest, expiresAt, bound }
 let now = () => Date.now();
 
 function notConfirmed(reason) {
@@ -316,14 +321,26 @@ function pruneExpired() {
   }
 }
 
+/** A 0x-prefixed 32-byte hash, lowercase. */
+function digestHex(value) {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error('Invalid typed data hash');
+  }
+  return value.toLowerCase();
+}
+
 /**
  * Issue a single-use confirmation token for exactly this request.
  * Throws on a malformed request (nothing is issued).
  *
+ * @param {object} [bound] - facts main computed for the request, handed
+ *   back when the token is spent: `{ hash }` for sign-typed-data, the
+ *   core's EIP-712 hash of the data (required there).
  * @returns {{token: string, expiresAt: number}}
  */
-function issueConfirmation(kind, accountIndex, payload) {
+function issueConfirmation(kind, accountIndex, payload, bound = {}) {
   const digest = digestFor(kind, accountIndex, payload);
+  const kept = kind === KINDS.SIGN_TYPED_DATA ? { hash: digestHex(bound?.hash) } : {};
   pruneExpired();
   while (outstanding.size >= MAX_OUTSTANDING) {
     // Map iteration order is insertion order: drop the oldest.
@@ -331,7 +348,7 @@ function issueConfirmation(kind, accountIndex, payload) {
   }
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = now() + CONFIRMATION_TTL_MS;
-  outstanding.set(token, { kind, digest, expiresAt });
+  outstanding.set(token, { kind, digest, expiresAt, bound: kept });
   return { token, expiresAt };
 }
 
@@ -340,6 +357,8 @@ function issueConfirmation(kind, accountIndex, payload) {
  * token on every presentation. Throws (code SIGNING_NOT_CONFIRMED) unless
  * the token was issued for this kind and this exact request and has not
  * expired.
+ *
+ * @returns {object} what was bound with it (`{ hash }` for sign-typed-data)
  */
 function consumeConfirmation(token, kind, accountIndex, payload) {
   if (typeof token !== 'string' || token.length === 0) {
@@ -362,6 +381,7 @@ function consumeConfirmation(token, kind, accountIndex, payload) {
   if (entry.kind !== kind || entry.digest !== digest) {
     throw notConfirmed('request differs from what was confirmed');
   }
+  return { ...entry.bound };
 }
 
 function _reset() {

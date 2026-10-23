@@ -296,10 +296,14 @@ async function dappTxApproval({ win }) {
 async function dappSign({ win }) {
   await win.evaluate(async () => {
     const dappSign = await import('./lib/wallet/dapp-sign.js');
-    dappSign.showDappSignApproval({}, 'https://swap.example', 'personal_sign', [
-      '0x48656c6c6f2046726565646f6d',
-      '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
-    ]);
+    // What main hands the screen for this message (wallet:message-view).
+    dappSign.showDappSignApproval(
+      {},
+      'https://swap.example',
+      'personal_sign',
+      ['0x48656c6c6f2046726565646f6d', '0x209693Bc6afc0C5328bA36FaF03C514EF312287C'],
+      { message: { hex: '0x48656c6c6f2046726565646f6d', rawHash: false } }
+    );
   });
   await win.waitForTimeout(600);
 }

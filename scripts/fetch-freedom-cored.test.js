@@ -7,12 +7,20 @@ const { PassThrough } = require('stream');
 jest.mock('https');
 jest.mock('child_process', () => ({ execFileSync: jest.fn() }));
 
-const envKeys = ['FREEDOM_CORE_RELEASE_TAG', 'FREEDOM_CORE_REPO', 'GITHUB_TOKEN', 'GH_TOKEN'];
+// GITHUB_ACTIONS too: in CI the fetch verifies build provenance with gh
+// (scripts/ci/verify-core-provenance.test.js), which these tests don't run.
+const envKeys = [
+  'GITHUB_ACTIONS',
+  'FREEDOM_CORE_RELEASE_TAG',
+  'FREEDOM_CORE_REPO',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+];
 const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'v0.1.0-test';
-const PINNED_TAG = 'cored-v0.6.0';
+const PINNED_TAG = 'cored-v0.7.0';
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 let fetcher;
 let https;

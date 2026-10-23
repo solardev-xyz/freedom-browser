@@ -60,7 +60,35 @@ jest.mock('../tx-recorder', () => ({
 }));
 jest.mock('../../identity-manager', () => ({
   getWalletRecord: (index) => mockWalletRecords[index] || null,
+  isHardwareWalletIndex: () => false,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+}));
+// The real signer seam (../signers), for the device owners' tests at the
+// end: its Ledger and phone backends sign with the owners' test keys and
+// record when they are asked, and the core is the simulated one.
+const mockCore = { calls: [] };
+const mockDeviceAsked = jest.fn();
+const mockDeviceBackend = (record) => {
+  const owner = require('./__tests__/helpers/test-owners').createTestSigner(record.index);
+  return {
+    ...owner,
+    signMessage: jest.fn(),
+    signTypedData: async (typed) => {
+      mockDeviceAsked(record.index, mockCore.calls.filter(([method]) => method === 'typed_data.hash').length);
+      return owner.signTypedData(typed);
+    },
+  };
+};
+jest.mock('../ledger/signer', () => ({ createLedgerBackend: (record) => mockDeviceBackend(record) }));
+jest.mock('../remote/signer', () => ({ createRemoteBackend: (record) => mockDeviceBackend(record) }));
+jest.mock('../../core/vault-backend', () => ({
+  vaultBackend: require('../../../../test/helpers/simulated-vault-core').simulatedVaultBackend(
+    {
+      isUnlocked: () => true,
+      exportPrivateKey: () => require('./__tests__/helpers/test-owners').OWNER_KEYS[0],
+    },
+    mockCore
+  ),
 }));
 jest.mock('../provider-manager', () => ({
   getEip1193Provider: () => {
@@ -237,6 +265,45 @@ describe('collectOwnerSignature', () => {
     await expect(collectOwnerSignature({ typedData, ownerIndex: 0 })).rejects.toThrow(
       /signature.*does not match/i
     );
+  });
+
+  // Review of #799 (round 1): a SafeTx is main's own typed data, with no
+  // confirmed hash. Through the real signer seam, a Ledger or phone owner
+  // signs it only after the core has hashed and checked it.
+  describe.each([
+    ['Ledger', 2],
+    ['phone', 4],
+  ])('a %s owner, through the real signer', (_device, ownerIndex) => {
+    const { vaultBackend } = require('../../core/vault-backend');
+
+    beforeEach(() => {
+      mockCore.calls = [];
+      mockDeviceAsked.mockClear();
+      mockGetSigner.mockImplementationOnce((index) => jest.requireActual('../signers').getSigner(index));
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    test('the core hashes the SafeTx before the device signs it', async () => {
+      const signature = await collectOwnerSignature({ typedData, ownerIndex });
+      expect(signature.signer).toBe(ownerWallet(ownerIndex).address);
+      expect(mockDeviceAsked).toHaveBeenCalledWith(ownerIndex, 1);
+      const [[, hashed]] = mockCore.calls.filter(([method]) => method === 'typed_data.hash');
+      expect(TypedDataEncoder.hash(hashed.domain, hashed.types, hashed.message)).toBe(
+        TypedDataEncoder.hash(typedData.domain, withoutDomainType(typedData.types), typedData.message)
+      );
+      expect(mockCore.calls.filter(([method]) => method === 'sign.typed_data')).toEqual([]);
+    });
+
+    test('a SafeTx the core refuses never reaches the device', async () => {
+      jest.spyOn(vaultBackend, 'typedDataHash').mockRejectedValueOnce(
+        Object.assign(new Error('invalid typed data'), { code: 'invalid_argument' })
+      );
+      await expect(collectOwnerSignature({ typedData, ownerIndex })).rejects.toThrow('invalid typed data');
+      expect(mockDeviceAsked).not.toHaveBeenCalled();
+    });
   });
 
   test('propagates signer errors (device rejection)', async () => {

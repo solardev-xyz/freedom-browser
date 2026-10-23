@@ -16,7 +16,6 @@ import { isSafeAccount, accountType, GNOSIS_CHAIN_ID } from './wallet/wallet-uti
 import { fetchFeeCheck, FEE_CHECK_NOT_AUTO_APPROVED } from './wallet/fee-check.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { confirmSigning } from './wallet/signing-confirmation.js';
-import { signsRawHash } from './wallet/personal-sign.js';
 import { PHONE_OUTCOME_UNKNOWN, siteOutcomeUnknownError } from './wallet/intent-texts.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl, applyDnsNameIdentity } from './url-utils.js';
@@ -293,22 +292,30 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
-      const chainId = getOnchainApp(webview)?.chainId || permission.chainId ||
-        parseInt(await getCurrentChainId(webview), 16);
-      assertSafeOnGnosis(permission, chainId, 'sign');
+      // The chain this page sees: what eth_chainId answers it
+      // (getCurrentChainId), pinned to an onchain app's own chain, never
+      // the chain saved with the grant, which the chrome's chain switcher
+      // doesn't update. A Safe signs only there on Gnosis, and typed data
+      // is compared with it: the view, the auto-approve decision and
+      // main's check all use it (freedom-core #88).
+      const activeChainId = parseInt(await getCurrentChainId(webview), 16);
+      assertSafeOnGnosis(permission, activeChainId, 'sign');
 
-      // A personal_sign of exactly 32 bytes always prompts, with its
-      // warning: its signature can be a Swarm feed update (#89). Main
-      // refuses to auto-approve it too.
-      const alwaysPrompt = method === 'personal_sign' && signsRawHash(params?.[0]);
-      if (permission.autoApprove?.signing && !alwaysPrompt) {
+      // What the request signs, from main, before any prompt and for every
+      // account kind (freedom-core #88): a request main can't show fails
+      // here. A warned one always prompts, even under signing
+      // auto-approve: a personal_sign of exactly 32 bytes (#89), or typed
+      // data naming another primary type, another chain or none (#88).
+      // Main refuses to auto-approve those too.
+      const prepared = await prepareSignature(method, params, activeChainId);
+      if (permission.autoApprove?.signing && !prepared.warned) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
         }
-        result = await autoApproveSign(permission, method, params, permissionKey, webview);
+        result = await autoApproveSign(permission, method, params, permissionKey, webview, activeChainId);
       } else {
-        result = await showDappSignApproval(webview, permissionKey, method, params);
+        result = await showDappSignApproval(webview, permissionKey, method, params, prepared);
       }
     } else if (method === 'eth_sign') {
       // Deprecated and dangerous - reject
@@ -437,12 +444,39 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey, webvi
 }
 
 /**
+ * What a signing request signs, as main reads it, for its prompt (#88):
+ * the bytes a personal_sign sends, or the identity core's view of typed
+ * data (its hash, view and warnings), compared with the dApp's chain. The
+ * chain names are for the warnings, best effort.
+ */
+async function prepareSignature(method, params, chainId) {
+  if (method === 'personal_sign') {
+    const message = await window.wallet.messageView(params?.[0]);
+    if (!message?.success) throw new Error(message?.error || 'This message can’t be shown');
+    return { message, chainId, warned: Boolean(message.rawHash) };
+  }
+  const typedData = await window.wallet.typedDataView(params?.[1], chainId);
+  if (!typedData?.success) throw new Error(typedData?.error || 'This typed data can’t be shown');
+  let chains = {};
+  if (typedData.warnings.includes('chain-mismatch')) {
+    try {
+      const listed = await window.networks?.getChains?.();
+      if (listed?.success) chains = listed.chains;
+    } catch {
+      // Named by id alone.
+    }
+  }
+  return { typedData, chainId, chains, warned: typedData.warnings.length > 0 };
+}
+
+/**
  * Sign a message without showing the approval UI (auto-approved).
  * Accepts the already-fetched permission object to avoid redundant IPC.
  */
-async function autoApproveSign(permission, method, params, permissionKey, webview) {
+async function autoApproveSign(permission, method, params, permissionKey, webview, chainId) {
   const signature = await executeSign(method, params, permission.walletIndex, permissionKey, webview, {
     autoApproved: true,
+    chainId,
   });
   window.dappPermissions.updateLastUsed(permissionKey);
   return signature;
@@ -459,7 +493,7 @@ async function autoApproveSign(permission, method, params, permissionKey, webvie
  * the requesting webview's page belongs to `site` (#764) and the site's
  * signing auto-approve itself (security audit O-7).
  */
-async function executeSign(method, params, walletIndex, site, webview, { autoApproved = false } = {}) {
+async function executeSign(method, params, walletIndex, site, webview, { autoApproved = false, chainId } = {}) {
   const authorize = (kind, payload) =>
     autoApproved
       ? { autoApprove: site, webContentsId: webviewContentsId(webview) }
@@ -473,8 +507,10 @@ async function executeSign(method, params, walletIndex, site, webview, { autoApp
     result = await window.wallet.signMessage(params[0], walletIndex,
       await authorize('sign-message', params[0]));
   } else if (method === 'eth_signTypedData_v4') {
+    // The confirmation binds the digest main hashed for this data; an
+    // auto-approved request is viewed again in main, against this chain.
     result = await window.wallet.signTypedData(params[1], walletIndex,
-      await authorize('sign-typed-data', params[1]));
+      await authorize('sign-typed-data', params[1]), { chainId });
   } else {
     throw new Error(`Unsupported signing method: ${method}`);
   }
