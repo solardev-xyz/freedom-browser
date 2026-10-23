@@ -247,7 +247,12 @@ module.exports = {
   AGENT_DICTATION_CANCEL: 'agent:dictation:cancel',
   AGENT_DICTATION_EVENT: 'agent:dictation:event',
   AGENT_MCP_CONNECTIONS: 'agent:mcp:connections',
-  AGENT_WEBMCP_LAUNCH_STATE: 'agent:webmcp:launch-state',
+  // Not AGENT_-prefixed on purpose: when Agent storage cannot open,
+  // registerUnavailableAgentIpc claims every AGENT_* request channel, but this
+  // one belongs to main/index.js and answers whether storage opened or not.
+  // Under an AGENT_ key the second registration threw during bootstrap and the
+  // browser never opened (#803).
+  WEBMCP_LAUNCH_STATE: 'agent:webmcp:launch-state',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
   AGENT_PROVIDER_REFRESH_MODELS: 'agent:provider:refresh-models',

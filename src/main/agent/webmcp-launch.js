@@ -35,7 +35,7 @@ function webMcpEnabledAtLaunch() {
 // the answer is about this launch, not the stored setting, which can flip
 // either way after start (#803).
 function registerWebMcpLaunchIpc(ipcMain) {
-  ipcMain.handle(IPC.AGENT_WEBMCP_LAUNCH_STATE, () => ({ enabledAtLaunch }));
+  ipcMain.handle(IPC.WEBMCP_LAUNCH_STATE, () => ({ enabledAtLaunch }));
 }
 
 module.exports = {

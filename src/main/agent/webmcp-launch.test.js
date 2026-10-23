@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const IPC = require('../../shared/ipc-channels');
 const { WEBVIEW_CHANNEL_TIERS, TIER } = require('../ipc-sender-policy');
+const { registerUnavailableAgentIpc } = require('./ipc');
 const {
   webMcpBlinkFeatures,
   recordWebMcpLaunch,
@@ -42,7 +43,7 @@ describe('webMcpBlinkFeatures', () => {
   test('Settings reads this launch\'s decision, not the stored setting', async () => {
     const handlers = new Map();
     registerWebMcpLaunchIpc({ handle: (channel, fn) => handlers.set(channel, fn) });
-    const read = handlers.get(IPC.AGENT_WEBMCP_LAUNCH_STATE);
+    const read = handlers.get(IPC.WEBMCP_LAUNCH_STATE);
     recordWebMcpLaunch(null);
     expect(await read()).toEqual({ enabledAtLaunch: false });
     recordWebMcpLaunch('WebMCP');
@@ -51,7 +52,24 @@ describe('webMcpBlinkFeatures', () => {
     expect(source).toMatch(/registerWebMcpLaunchIpc\(ipcMain\);/);
   });
 
+  test('still answers when Agent storage is unavailable, without a second handler', async () => {
+    // Electron's ipcMain.handle throws on a second handler for one channel; a
+    // throw here aborted bootstrap and the browser never opened (#803).
+    const handlers = new Map();
+    const ipcMain = {
+      handle(channel, fn) {
+        if (handlers.has(channel)) throw new Error(`Attempted to register a second handler for '${channel}'`);
+        handlers.set(channel, fn);
+      },
+      removeHandler: (channel) => handlers.delete(channel),
+    };
+    registerUnavailableAgentIpc({ ipcMain, isTrustedSender: () => true });
+    expect(() => registerWebMcpLaunchIpc(ipcMain)).not.toThrow();
+    recordWebMcpLaunch('WebMCP');
+    expect(await handlers.get(IPC.WEBMCP_LAUNCH_STATE)()).toEqual({ enabledAtLaunch: true });
+  });
+
   test('only the Settings page may ask', () => {
-    expect(WEBVIEW_CHANNEL_TIERS.get(IPC.AGENT_WEBMCP_LAUNCH_STATE)).toBe(TIER.SETTINGS);
+    expect(WEBVIEW_CHANNEL_TIERS.get(IPC.WEBMCP_LAUNCH_STATE)).toBe(TIER.SETTINGS);
   });
 });
