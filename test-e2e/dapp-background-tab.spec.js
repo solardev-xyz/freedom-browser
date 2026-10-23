@@ -16,7 +16,9 @@ const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
-const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
+// The JS identity stack is the core's now; its frozen reference writes the
+// vault the core reads (as the other wallet fixtures do).
+const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
 
 const VAULT_PASSWORD = 'Freedom-E2E-Attribution-2026!';
 const TRUSTED_URL = `bzz://${'a'.repeat(64)}/`;
