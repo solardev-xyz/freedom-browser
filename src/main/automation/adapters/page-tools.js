@@ -6,6 +6,13 @@ const {
   supportedPageToolSchema,
   matchesPageToolArguments,
 } = require('../contract/page-tool-schema');
+const { webMcpEnabledAtLaunch } = require('../../agent/webmcp-launch');
+
+// Shown instead of a bare "unavailable" when this launch never enabled WebMCP:
+// AI was turned on after Freedom started, so no page can expose tools until the
+// next start (#803; see agent/webmcp-launch.js).
+const RESTART_REQUIRED_MESSAGE =
+  'Page tools need a restart: AI was turned on after Freedom started. Tell the user to restart Freedom to use page tools, and continue with normal browser tools for now.';
 
 // This function runs only in our isolated world. Never fall back to a website's
 // polyfill or inject model-provided JavaScript into the page's main world.
@@ -13,9 +20,12 @@ const {
 // closures. The VM protocol tests and Electron tests exercise the actual body.
 /* istanbul ignore next */
 async function pageToolsBridge(action, input = {}) {
+  // An insecure page never gets WebMCP, restart or not, so it is reported apart
+  // from a missing API (which a launch without WebMCP explains, #803).
+  if (!isSecureContext) return { available: false, tools: [], insecureContext: true };
   const context = document.modelContext;
-  if (!context?.getTools || !context?.executeTool || !isSecureContext)
-    return { available: false, tools: [] };
+  if (!context?.getTools || !context?.executeTool)
+    return { available: false, tools: [], apiMissing: true };
   const state = (globalThis.__FREEDOM_PAGE_TOOLS__ ||= (() => {
     const value = { revision: 0, tools: new Map(), job: null };
     context.addEventListener('toolchange', () => {
@@ -262,15 +272,23 @@ class PageTools {
     const tools = (result.tools || []).filter((tool) => supportedPageToolSchema(tool.inputSchema));
     const unsupportedSchemas = (result.tools?.length || 0) - tools.length;
     for (const tool of tools) this.references.set(tool.toolRef, { identity, ...tool });
+    // Only a secure page that lacks the API altogether: a restart cannot help an
+    // insecure page, nor a page that refused discovery for its own reasons.
+    const restart =
+      result.apiMissing === true && webMcpEnabledAtLaunch() === false
+        ? { restartRequired: true, message: RESTART_REQUIRED_MESSAGE }
+        : {};
     if (result.execution && this.execution?.identity === identity)
       this.execution.result = result.execution;
+    const { apiMissing: _apiMissing, ...answer } = result;
     return {
-      ...result,
+      ...answer,
       tools,
       unsupportedSchemas,
       truncated: result.truncated || unsupportedSchemas > 0,
       execution: this.execution?.result || null,
       untrusted: true,
+      ...restart,
     };
   }
 
@@ -391,4 +409,4 @@ class PageTools {
   }
 }
 
-module.exports = { PageTools, pageToolsBridge };
+module.exports = { PageTools, pageToolsBridge, RESTART_REQUIRED_MESSAGE };
