@@ -519,6 +519,72 @@ describe('Confirm again after a failed dApp send (5)', () => {
     expect(window.wallet.intentResend).not.toHaveBeenCalled();
   });
 
+  // D13: a phone signs and broadcasts itself, so its lost answer leaves the
+  // payment possibly sent; confirming again would ask the phone to pay again.
+  test("a phone's lost answer disables Confirm and says to check the phone first", async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    const { settled } = await openApproval();
+    const message =
+      "No answer came back from your phone, so it's unknown whether this payment was sent. " +
+      "Check your phone's wallet before you try again.";
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: false, code: 'REMOTE_OUTCOME_UNKNOWN', error: message });
+    await flush();
+    await flush();
+
+    expect(elements['dapp-tx-error'].textContent).toBe(message);
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(elements['dapp-tx-approve'].textContent).toBe('Confirm');
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledTimes(1);
+    expect(settled.state).toBe('pending');
+  });
+
+  // D13: a site told "rejected" (4001) may send the request again, and the
+  // phone could pay twice. Leaving the approval tells it the outcome is
+  // unknown instead.
+  test.each(['dapp-tx-reject', 'dapp-tx-back'])(
+    'after a lost answer, leaving with %s tells the site the outcome is unknown, never 4001',
+    async (button) => {
+      const { elements, send, openApproval } = await loadDappTx();
+      const { settled, promise } = await openApproval();
+      elements['dapp-tx-approve'].dispatch('click');
+      send.resolve({ success: false, code: 'REMOTE_OUTCOME_UNKNOWN', error: 'lost' });
+      await flush();
+      await flush();
+
+      elements[button].dispatch('click');
+      await promise;
+      expect(settled).toEqual({
+        state: 'rejected',
+        value: {
+          code: -32603,
+          message:
+            "The payment's outcome is unknown: it may have been sent. Check the wallet before retrying.",
+          data: { outcome: 'unknown' },
+        },
+      });
+    }
+  );
+
+  test("the phone's own rejection is still 4001: nothing was sent", async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    const { settled, promise } = await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({
+      success: false,
+      code: 'REMOTE_USER_REJECTED',
+      error: 'Request rejected on your phone.',
+    });
+    await flush();
+    await flush();
+
+    elements['dapp-tx-reject'].dispatch('click');
+    await promise;
+    expect(settled.value).toEqual({ code: 4001, message: 'User rejected the request' });
+  });
+
   // 709-B1: an approval that left a held payment only ever sends that
   // payment again; it never signs a new one, whatever a resend's reply.
   async function refusedApproval() {

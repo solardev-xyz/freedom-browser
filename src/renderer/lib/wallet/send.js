@@ -22,7 +22,13 @@ import {
 import { isPotentialEnsName } from '../origin-utils.js';
 import { createTab } from '../tabs.js';
 import { bindExplorerLink } from './explorer-link.js';
-import { outcomeText, heldWarning, ACTIONS, RESULT_TITLES } from './intent-texts.js';
+import {
+  outcomeText,
+  heldWarning,
+  ACTIONS,
+  RESULT_TITLES,
+  PHONE_OUTCOME_UNKNOWN,
+} from './intent-texts.js';
 import { waitingPaymentBehind, describePayment } from './held-payments.js';
 import { resendHeldPayment } from './intent-resend.js';
 
@@ -497,10 +503,12 @@ function showSendSuccessView(explorerUrl, outcome) {
 /**
  * @param {string} message - the error's text
  * @param {{ outcome?: string, reasonClass?: string, intentId?: string,
- *   intent?: object|null, closed?: boolean }} [failure] what main reported
- *   of the payment. A held intent: Retry sends it again. An intent named
- *   but no longer held, or unknown to main (`closed`): Retry closes the
- *   screen. Only a failure with no payment at all goes back to the form.
+ *   intent?: object|null, closed?: boolean, code?: string }} [failure] what
+ *   main reported of the payment. A held intent: Retry sends it again. An
+ *   intent named but no longer held, or unknown to main (`closed`): Retry
+ *   closes the screen. So does a phone's payment whose outcome is unknown:
+ *   trying again would ask the phone to pay a second time. Only a failure
+ *   with no payment at all goes back to the form.
  */
 function showSendErrorView(message, failure = {}) {
   sendInputView?.classList.add('hidden');
@@ -509,10 +517,12 @@ function showSendErrorView(message, failure = {}) {
   sendSuccessView?.classList.add('hidden');
   sendErrorView?.classList.remove('hidden');
 
+  const unknown = failure.code === PHONE_OUTCOME_UNKNOWN;
   const title = sendErrorView?.querySelector('.send-error-title');
   if (title) {
-    title.textContent =
-      failure.outcome === 'rejected'
+    title.textContent = unknown
+      ? RESULT_TITLES.unknown
+      : failure.outcome === 'rejected'
         ? RESULT_TITLES.refused
         : failure.outcome === 'not_sent'
           ? RESULT_TITLES.notSent
@@ -524,7 +534,7 @@ function showSendErrorView(message, failure = {}) {
   }
   const named = Boolean(failure.intent?.intentId ?? failure.intentId);
   sendFailedIntent = failure.intent?.state === 'held' ? failure.intent : null;
-  sendPaymentClosed = !sendFailedIntent && (named || Boolean(failure.closed));
+  sendPaymentClosed = !sendFailedIntent && (named || Boolean(failure.closed) || unknown);
   if (sendRetryBtn) {
     sendRetryBtn.textContent = sendFailedIntent
       ? ACTIONS.sendAgain
@@ -542,6 +552,7 @@ function failureOf(result) {
     reasonClass: result.reasonClass,
     intentId: result.intentId,
     intent: result.intent,
+    code: result.code,
   };
 }
 

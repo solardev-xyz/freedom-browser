@@ -15,6 +15,7 @@ import { buildDappTxContext, extractSelector } from './wallet/dapp-tx.js';
 import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { confirmSigning } from './wallet/signing-confirmation.js';
+import { PHONE_OUTCOME_UNKNOWN, siteOutcomeUnknownError } from './wallet/intent-texts.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl } from './url-utils.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
@@ -367,6 +368,9 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey) {
     buildDappTxContext(permissionKey, txParams),
     { autoApprove: permissionKey }
   );
+  // A phone account's payment whose answer was lost may have been sent: the
+  // site hears that the outcome is unknown, as from the approval (D13).
+  if (!result.success && result.code === PHONE_OUTCOME_UNKNOWN) throw siteOutcomeUnknownError();
   if (!result.success) throw new Error(result.error || 'Transaction failed');
   if (result.recorded === false) {
     console.warn('[DappProvider] Auto-approved transaction broadcast but payment history did not record:', result.recordError);

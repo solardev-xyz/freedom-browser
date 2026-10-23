@@ -23,7 +23,12 @@ import {
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
-import { outcomeText, ACTIONS } from './intent-texts.js';
+import {
+  outcomeText,
+  ACTIONS,
+  PHONE_OUTCOME_UNKNOWN,
+  siteOutcomeUnknownError,
+} from './intent-texts.js';
 import { resendHeldPayment } from './intent-resend.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
@@ -471,6 +476,7 @@ async function approveDappTx() {
           reasonClass: result.reasonClass,
           intentId: result.intentId,
           intent: result.intent,
+          code: result.code,
         },
       });
     }
@@ -504,6 +510,13 @@ async function approveDappTx() {
     } else if (failure.intentId || failure.intent) {
       // A payment main names but no longer holds: nothing to confirm again.
       request.paymentClosed = true;
+    } else if (failure.code === PHONE_OUTCOME_UNKNOWN) {
+      // The phone may have sent it: confirming again would ask the phone to
+      // pay a second time. The text asks the user to check the phone first,
+      // and the site, once this approval closes, hears that the outcome is
+      // unknown, never that it was rejected.
+      request.paymentClosed = true;
+      request.outcomeUnknown = true;
     }
     showDappTxError(
       outcomeText(failure.outcome, failure.reasonClass) || err.message || 'Transaction failed'
@@ -645,9 +658,19 @@ function buildSafeDappDisplay(txParams, value, site) {
   };
 }
 
+/**
+ * Answer the site when the user leaves the approval (Reject, Back): 4001,
+ * unless the phone may have sent the payment. Then the site hears that the
+ * outcome is unknown, so it doesn't send the request again as if nothing
+ * had happened (D13).
+ */
 function rejectDappTx() {
   if (dappTxPending?.reject) {
-    dappTxPending.reject({ code: 4001, message: 'User rejected the request' });
+    dappTxPending.reject(
+      dappTxPending.outcomeUnknown
+        ? siteOutcomeUnknownError()
+        : { code: 4001, message: 'User rejected the request' }
+    );
   }
 }
 
