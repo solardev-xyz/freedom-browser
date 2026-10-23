@@ -1120,6 +1120,35 @@ describe('Freedom agent IPC', () => {
     });
   });
 
+  test('passes publication card choices as bounded string lists', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Publish' });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'], publicationFix: { paths: ['x'] } });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: false,
+      publicationFix: { paths: ['app.js'] }, publicationAcknowledged: ['finding_1'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: false, publicationFix: { paths: ['app.js'] },
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [{ path: 'x' }] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+    const wide = Array.from({ length: 200 }, (_, index) => `k${index}.js`);
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: wide });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: wide,
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [...wide, 'one-too-many.js'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+  });
+
   test('passes only the supported conversation workspace-permission grant', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
