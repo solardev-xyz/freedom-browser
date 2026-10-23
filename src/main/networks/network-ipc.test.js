@@ -20,6 +20,9 @@ function loadNetworkIpc(options = {}) {
     resetEndpointSourceCoverage: jest.fn(() => ({ success: true })),
     addCustomChain: jest.fn(() => ({ success: true, chainId: '777' })),
     removeCustomChain: jest.fn(() => ({ success: true })),
+    validateRpcUrl: jest.fn((url) =>
+      typeof url === 'string' && url.startsWith('https://') ? null : 'RPC URL must use https://'
+    ),
     ...(options.registry || {}),
   };
   const tokenRegistry = {
@@ -30,7 +33,12 @@ function loadNetworkIpc(options = {}) {
   };
   const providerManager = { clearProviderCache: jest.fn() };
   const ensResolver = { invalidateCachedProvider: jest.fn() };
-  const chain = { chainSettingsChanged: jest.fn() };
+  // Each endpoint answers the chain it is saved for, unless a test says.
+  const chain = {
+    chainSettingsChanged: jest.fn(),
+    checkEndpointChain: jest.fn(async (chainId) => chainId),
+    ...(options.chain || {}),
+  };
   const settingsStore = {
     loadSettings: jest.fn(() => ({ theme: 'system' })),
   };
@@ -136,6 +144,85 @@ describe('network-ipc', () => {
     expect(ctx.ensResolver.invalidateCachedProvider).not.toHaveBeenCalled();
     expect(ctx.chain.chainSettingsChanged).not.toHaveBeenCalled();
     expect(ctx.send).not.toHaveBeenCalled();
+  });
+
+  // Design 0005, "Endpoints serve their chain" (#93): a user's RPC source
+  // is asked eth_chainId before it is saved.
+  describe("upsert-source checks the endpoint's chain", () => {
+    const source = (coverage) => ({ role: 'rpc', keyed: false, coverage });
+
+    test('an endpoint that answers another chain refuses the save, saying so', async () => {
+      const ctx = loadNetworkIpc({
+        registry: {
+          getNetwork: jest.fn((cid) => (String(cid) === '1' ? { name: 'Ethereum' } : null)),
+        },
+        chain: { checkEndpointChain: jest.fn(async () => 100) },
+      });
+      const result = await ctx.ipcMain.invoke(
+        'networks:upsert-source',
+        'user-1',
+        source({ 1: 'https://gnosis.example' })
+      );
+      expect(result).toEqual({
+        success: false,
+        error: 'This endpoint serves another chain (chain ID 100), not Ethereum. Check the URL.',
+      });
+      expect(ctx.chain.checkEndpointChain).toHaveBeenCalledWith(1, 'https://gnosis.example');
+      expect(ctx.registry.upsertEndpointSource).not.toHaveBeenCalled();
+      expect(ctx.chain.chainSettingsChanged).not.toHaveBeenCalled();
+    });
+
+    test('a check that merely fails saves it: it stays out until a retry succeeds', async () => {
+      const ctx = loadNetworkIpc({ chain: { checkEndpointChain: jest.fn(async () => null) } });
+      await expect(
+        ctx.ipcMain.invoke(
+          'networks:upsert-source',
+          'user-1',
+          source({ 1: 'https://down.example' })
+        )
+      ).resolves.toEqual({ success: true });
+      expect(ctx.registry.upsertEndpointSource).toHaveBeenCalled();
+      expect(ctx.chain.chainSettingsChanged).toHaveBeenCalled();
+    });
+
+    test('an endpoint that answers its chain saves', async () => {
+      const ctx = loadNetworkIpc();
+      await expect(
+        ctx.ipcMain.invoke('networks:upsert-source', 'user-1', source({ 100: 'https://g.example' }))
+      ).resolves.toEqual({ success: true });
+      expect(ctx.chain.checkEndpointChain).toHaveBeenCalledWith(100, 'https://g.example');
+    });
+
+    test('every chain a source covers is checked; one mismatch refuses it', async () => {
+      const ctx = loadNetworkIpc({
+        chain: { checkEndpointChain: jest.fn(async (chainId) => (chainId === 8453 ? 1 : chainId)) },
+      });
+      const result = await ctx.ipcMain.invoke(
+        'networks:upsert-source',
+        'user-1',
+        source({ 1: 'https://a.example', 8453: 'https://b.example' })
+      );
+      expect(result).toMatchObject({
+        success: false,
+        error: expect.stringContaining('chain ID 1'),
+      });
+      expect(ctx.chain.checkEndpointChain).toHaveBeenCalledTimes(2);
+    });
+
+    test("a prover, or a URL that won't validate, isn't asked", async () => {
+      const ctx = loadNetworkIpc();
+      await ctx.ipcMain.invoke('networks:upsert-source', 'p', {
+        role: 'prover',
+        keyed: false,
+        coverage: { 1: 'https://prover.example' },
+      });
+      await ctx.ipcMain.invoke(
+        'networks:upsert-source',
+        'bad',
+        source({ 1: 'http://rpc.example' })
+      );
+      expect(ctx.chain.checkEndpointChain).not.toHaveBeenCalled();
+    });
   });
 
   test('reset-source-coverage refreshes downstream consumers', async () => {

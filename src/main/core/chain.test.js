@@ -1,7 +1,13 @@
 const { CoreClient, ShellError } = require('./core-client');
 const { registerNamingShell } = require('./naming-shell');
 const { registerNamingVerified } = require('./naming-verified');
-const { attachChain, detachChain, chainDriver, chainSettingsChanged } = require('./chain');
+const {
+  attachChain,
+  detachChain,
+  chainDriver,
+  chainSettingsChanged,
+  checkEndpointChain,
+} = require('./chain');
 const { NOT_SENT } = require('./chain-shell');
 const { ChainConfig } = require('./chain-config');
 const { ChainDriver } = require('./chain-driver');
@@ -105,4 +111,21 @@ test('a registry change and a Myotis transition reach the configuration', () => 
   const [onTransition] = myotis.onAvailabilityTransition.mock.calls.at(-1);
   onTransition({ chainId: 100, ready: true });
   expect(availability).toHaveBeenCalledTimes(1);
+});
+
+// Design 0005, "Endpoints serve their chain" (#93): a source being saved is
+// asked its chain through the running configuration's checks, which keep
+// the answer for the snapshot; with no core, through main's transport alone.
+test("a source being saved is asked its chain through the configuration's checks", async () => {
+  const { attachment } = attached();
+  expect(attachment.config.checks).toBeTruthy();
+  attachment.config.checks.ask = jest.fn(async () => 100);
+  await expect(checkEndpointChain(100, 'https://mine.example')).resolves.toBe(100);
+  expect(attachment.config.checks.ask).toHaveBeenCalledWith('https://mine.example');
+
+  detachChain();
+  const { netGatewayFetch } = require('../ipfs/gateway-transport');
+  netGatewayFetch.mockRejectedValueOnce(new Error('offline'));
+  await expect(checkEndpointChain(100, 'https://mine.example')).resolves.toBeNull();
+  expect(netGatewayFetch).toHaveBeenCalled();
 });

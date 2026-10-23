@@ -129,6 +129,8 @@ describeIfHtml('the web3: handler through the real core (design 0006, chain.html
       client,
       sources: { registry, myotis: { NETWORKS: new Map() }, logIndexUrls: {} },
       log: quietLog,
+      // The endpoints are scripted: none is asked its chain.
+      checks: null,
     });
     const broadcasts = new BroadcastRecords();
     const exchanges = [];

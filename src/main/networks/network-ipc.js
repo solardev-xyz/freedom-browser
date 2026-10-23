@@ -45,6 +45,35 @@ function refreshAfterRpcManagerMutation(result) {
   return result;
 }
 
+/**
+ * A user's RPC source must serve the chains it is saved for (freedom-core
+ * design 0005, "Endpoints serve their chain"): each of its endpoints is
+ * asked `eth_chainId` before the save. One that answers another chain
+ * refuses the save; one whose check merely fails (down, a timeout) doesn't,
+ * and stays out of the configuration until a retry succeeds. Null when the
+ * source may be saved, else the error to show.
+ */
+async function servesItsChains(source) {
+  if (source?.role !== 'rpc' || !source.coverage || typeof source.coverage !== 'object') {
+    return null;
+  }
+  const { checkEndpointChain } = require('../core/chain');
+  const checks = Object.entries(source.coverage)
+    .filter(([cid, url]) => /^[0-9]+$/.test(cid) && registry.validateRpcUrl(url) === null)
+    .map(async ([cid, url]) => {
+      const chainId = Number(cid);
+      const served = await checkEndpointChain(chainId, url);
+      return served === null || served === chainId ? null : { chainId, served };
+    });
+  const mismatch = (await Promise.all(checks)).find(Boolean);
+  if (!mismatch) return null;
+  const name = registry.getNetwork(mismatch.chainId)?.name || `chain ${mismatch.chainId}`;
+  return (
+    `This endpoint serves another chain (chain ID ${mismatch.served}), not ${name}. ` +
+    'Check the URL.'
+  );
+}
+
 // The full config view: every network plus every endpoint source, with
 // keyed providers tagged by whether an API key is configured.
 function getConfig() {
@@ -87,7 +116,9 @@ function registerNetworkConfigIpc() {
     return { success: true };
   });
 
-  ipcMain.handle('networks:upsert-source', (_event, id, source) => {
+  ipcMain.handle('networks:upsert-source', async (_event, id, source) => {
+    const error = await servesItsChains(source);
+    if (error) return { success: false, error };
     const result = registry.upsertEndpointSource(id, source);
     if (result?.success === false) return result;
     refreshDownstream();
