@@ -37,6 +37,13 @@ const SCROLL_SETTLE_LIMIT_MS = 2_500;
 // period before any movement is therefore not "settled"; only a target that
 // never moves (it blocks wheel input, or the wheel was lost) waits out the
 // limit and reports `no_movement` with `settled: false`.
+//
+// A wheel can also be lost outright: on the macOS CI runner the first wheel
+// on a freshly loaded page has failed to move it within the whole limit
+// (run 39881059597). A wheel that measured no movement at all for the full
+// limit is therefore sent once more, after its target and point are checked
+// again; by then a merely late one would have moved, so this cannot double a
+// scroll. `attempts` reports how many wheels were sent.
 async function settleScroll(readScroll, before) {
   const started = Date.now();
   let changedAt = null;
@@ -1422,16 +1429,26 @@ class WebContentsPageAdapter extends EventEmitter {
           )
         );
         const delta = (forward ? 1 : -1) * distance;
-        await session.mouse({
-          type: 'mouseWheel',
-          ...root,
-          deltaX: horizontal ? delta : 0,
-          deltaY: horizontal ? 0 : delta,
-        });
-        const { after, settled } = await settleScroll(
-          async () => (await read(false)).scroll,
-          before
-        );
+        const wheel = async (at) => {
+          await session.mouse({
+            type: 'mouseWheel',
+            ...at,
+            deltaX: horizontal ? delta : 0,
+            deltaY: horizontal ? 0 : delta,
+          });
+          return settleScroll(async () => (await read(false)).scroll, before);
+        };
+        let { after, settled } = await wheel(root);
+        let attempts = 1;
+        if (after.x === before.x && after.y === before.y) {
+          const again = await read(true);
+          if (!again.boundary) {
+            const retryPoint = await point(again.point);
+            await confirm();
+            ({ after, settled } = await wheel(retryPoint));
+            attempts = 2;
+          }
+        }
         const moved = after.x !== before.x || after.y !== before.y;
         return {
           ref,
@@ -1441,6 +1458,7 @@ class WebContentsPageAdapter extends EventEmitter {
           before,
           after,
           settled,
+          attempts,
           deltaX: after.x - before.x,
           deltaY: after.y - before.y,
         };
@@ -1605,18 +1623,27 @@ class WebContentsPageAdapter extends EventEmitter {
       Math.floor(Math.min(remaining, pages * (horizontal ? start.width : start.height)))
     );
     const delta = (forward ? -1 : 1) * distance;
-    this.webContents.sendInputEvent({
-      type: 'mouseWheel',
-      ...confirmed.point,
-      deltaX: horizontal ? delta : 0,
-      deltaY: horizontal ? 0 : delta,
-      hasPreciseScrollingDeltas: true,
-      canScroll: true,
-    });
-    const { after, settled } = await settleScroll(
-      async () => (await inspect(false)).scroll,
-      start
-    );
+    const wheel = (at) => {
+      this.webContents.sendInputEvent({
+        type: 'mouseWheel',
+        ...at,
+        deltaX: horizontal ? delta : 0,
+        deltaY: horizontal ? 0 : delta,
+        hasPreciseScrollingDeltas: true,
+        canScroll: true,
+      });
+      return settleScroll(async () => (await inspect(false)).scroll, start);
+    };
+    let { after, settled } = await wheel(confirmed.point);
+    let attempts = 1;
+    // A wheel lost outright; see settleScroll.
+    if (after.x === start.x && after.y === start.y) {
+      const again = await inspect(true);
+      if (!again.boundary) {
+        ({ after, settled } = await wheel(again.point));
+        attempts = 2;
+      }
+    }
     const moved = after.x !== start.x || after.y !== start.y;
     return {
       ref,
@@ -1624,6 +1651,7 @@ class WebContentsPageAdapter extends EventEmitter {
       moved,
       outcome: moved ? 'moved' : 'no_movement',
       settled,
+      attempts,
       before: start,
       after,
       deltaX: after.x - start.x,
