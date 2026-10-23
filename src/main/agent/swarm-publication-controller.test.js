@@ -555,6 +555,13 @@ describe('SwarmPublicationController pre-publish scan', () => {
     await expect(createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } }).controller
       .publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'approved', publicationExclusions: ['missing.js'] }) }))
       .rejects.toMatchObject({ code: ERROR_CODES.INVALID_ARGUMENT });
+    // More than 100 flagged files can all be excluded (up to the 200-finding cap).
+    const many = [{ path: 'index.html', bytes: Buffer.from('hi') },
+      ...Array.from({ length: 150 }, (_, index) => ({ path: `k${index}.js`, bytes: Buffer.from(`k="${STRIPE}"`) }))];
+    const wide = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(many)) } });
+    await wide.controller.publish({ workspacePath: 'dist' }, { requestApproval: async () =>
+      ({ status: 'approved', publicationExclusions: many.slice(1).map(file => file.path) }) });
+    expect(wide.dependencies.publishCollection).toHaveBeenCalledWith([many[0]], expect.anything());
   });
 
   test('Ask Agent to fix returns rule names and paths only, and the next attempt scans the new snapshot', async () => {

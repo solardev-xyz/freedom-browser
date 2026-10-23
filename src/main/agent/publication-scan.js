@@ -17,8 +17,9 @@ const { wordlist: BIP39_ENGLISH } = require('@scure/bip39/wordlists/english.js')
 const { historyContainsSecret } = require('./workspace-history-policy');
 
 const MAX_FINDINGS = 200;
-const MAX_FINDINGS_PER_FILE = 25;
-const MAX_SCANNED_TEXT_BYTES = 8 * 1024 * 1024;
+// Caps warnings only: every secret in a file is listed, because one the card
+// never shows could not be held back (capFindings refuses more than MAX_FINDINGS).
+const MAX_WARNINGS_PER_FILE = 25;
 const BIP39_WORDS = new Set(BIP39_ENGLISH);
 const MIN_SEED_WORDS = 12;
 
@@ -219,25 +220,33 @@ function redact(ruleId, value) {
   return `${value.slice(0, shown)}${'•'.repeat(8)} (${value.length} characters)`;
 }
 
+// Every byte that will be uploaded is scanned, however large the file and
+// whether or not it looks like text: a key pasted into a database file or
+// after the first megabytes of a bundle is published all the same.
 function textOf(bytes) {
-  if (typeof bytes === 'string') return bytes;
+  if (typeof bytes === 'string') return { text: bytes, binary: false };
   if (!Buffer.isBuffer(bytes) && !(bytes instanceof Uint8Array)) return null;
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (buffer.length > MAX_SCANNED_TEXT_BYTES) return buffer.subarray(0, MAX_SCANNED_TEXT_BYTES).toString('utf8');
-  // Binary files (images, fonts, archives) carry no readable credential the
-  // rules can recognise; metadata in images is handled by stripImageMetadata.
-  if (buffer.subarray(0, 8192).includes(0)) return null;
-  return buffer.toString('utf8');
+  // A NUL early on means binary (images, fonts, databases, archives). It is
+  // read as latin1, one character per byte, so an ASCII credential embedded
+  // anywhere in it is still seen; only the secret rules run there, since
+  // personal-data patterns in random bytes would be noise.
+  if (buffer.subarray(0, 8192).includes(0)) return { text: buffer.toString('latin1'), binary: true };
+  return { text: buffer.toString('utf8'), binary: false };
 }
 
-function scanText(filePath, text) {
+function scanText(filePath, text, { secretsOnly = false } = {}) {
   const findings = [];
   const seen = new Set();
+  let warnings = 0;
   for (const rule of RULES) {
+    if (secretsOnly && rule.kind !== 'secret') continue;
     for (const match of rule.matches(text)) {
       const key = `${rule.id}:${match.index}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      if (rule.kind !== 'secret' && warnings >= MAX_WARNINGS_PER_FILE) continue;
+      if (rule.kind !== 'secret') warnings++;
       findings.push({
         path: filePath,
         kind: rule.kind,
@@ -247,7 +256,6 @@ function scanText(filePath, text) {
         excerpt: redact(rule.id, match.value),
         blocking: rule.kind === 'secret',
       });
-      if (findings.length >= MAX_FINDINGS_PER_FILE) return findings;
     }
   }
   // A key assigned to PRIVATE_KEY = '…' is one value: report the specific rule.
@@ -263,6 +271,11 @@ function scanText(filePath, text) {
       excerpt: 'Value hidden', blocking: true });
   }
   return findings.sort((left, right) => (left.line || 0) - (right.line || 0));
+}
+
+function scanBytes(filePath, bytes) {
+  const decoded = textOf(bytes);
+  return decoded ? scanText(filePath, decoded.text, { secretsOnly: decoded.binary }) : [];
 }
 
 // --- Metadata stripping (lossless: container metadata only, pixels untouched) ---
@@ -315,7 +328,13 @@ function stripJpeg(buffer) {
     if (buffer[offset] !== 0xff || offset + 1 >= buffer.length) return null;
     const marker = buffer[offset + 1];
     if (marker === 0xff) { kept.push(buffer.subarray(offset, offset + 1)); offset += 1; continue; }
-    if (marker === 0xd9 || marker === 0xda) { kept.push(buffer.subarray(offset)); break; }
+    if (marker === 0xd9) {
+      // EOI ends the image. Anything after it (a Motion Photo's video, an
+      // MPF secondary image, a vendor trailer) is not part of the picture.
+      kept.push(buffer.subarray(offset, offset + 2));
+      if (offset + 2 < buffer.length) changed = true;
+      break;
+    }
     if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) { kept.push(buffer.subarray(offset, offset + 2)); offset += 2; continue; }
     if (offset + 4 > buffer.length) return null;
     const length = buffer.readUInt16BE(offset + 2);
@@ -333,6 +352,19 @@ function stripJpeg(buffer) {
     if (drop) changed = true;
     else kept.push(segment);
     offset += 2 + length;
+    if (marker === 0xda) {
+      // Entropy-coded scan data runs to the next marker that is neither a
+      // stuffed 0xFF00 nor a restart marker. Progressive JPEGs carry more
+      // segments (DHT, SOS, and possibly APPn/COM) between scans, so the
+      // walk continues there instead of keeping everything after the first SOS.
+      let end = offset;
+      while (end + 1 < buffer.length &&
+        !(buffer[end] === 0xff && buffer[end + 1] !== 0x00 && buffer[end + 1] !== 0xff &&
+          !(buffer[end + 1] >= 0xd0 && buffer[end + 1] <= 0xd7))) end++;
+      if (end + 1 >= buffer.length) end = buffer.length;
+      kept.push(buffer.subarray(offset, end));
+      offset = end;
+    }
   }
   if (!changed) return buffer;
   if (orientation && orientation !== 1) {
@@ -491,10 +523,7 @@ function preparePublication(source) {
       error.code = 'PUBLICATION_EMPTY';
       throw error;
     }
-    for (const file of files) {
-      const text = textOf(file.bytes);
-      if (text !== null) findings.push(...scanText(file.path, text));
-    }
+    for (const file of files) findings.push(...scanBytes(file.path, file.bytes));
     prepared = Object.freeze({ ...source, files: Object.freeze(files),
       bytes: files.reduce((total, file) => total + file.bytes.byteLength, 0) });
   } else if (source.kind === 'file') {
@@ -502,8 +531,7 @@ function preparePublication(source) {
     const result = sanitizeFile(filePath, source.data, { removable: false });
     if (result.stripped) stripped.push({ path: filePath, reason: result.stripped });
     if (result.finding) findings.push(result.finding);
-    const text = textOf(result.bytes);
-    if (text !== null) findings.push(...scanText(filePath, text));
+    findings.push(...scanBytes(filePath, result.bytes));
     prepared = Object.freeze({ ...source, data: result.bytes, bytes: result.bytes.byteLength });
   } else {
     findings.push(...scanText('Text', String(source.text ?? '')));

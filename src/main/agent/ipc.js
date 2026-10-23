@@ -626,12 +626,12 @@ function registerFreedomAgentIpc(options = {}) {
     let decision = payload.approved;
     const stringArray = (value, max) => Array.isArray(value) && value.length <= max &&
       value.every(item => typeof item === 'string' && item.length <= 1_024) ? [...value] : null;
-    const publicationFixPaths = stringArray(payload.publicationFix?.paths, 100);
+    const publicationFixPaths = stringArray(payload.publicationFix?.paths, 200);
     if (!payload.approved && publicationFixPaths?.length) {
       decision = { approved: false, publicationFix: { paths: publicationFixPaths } };
     }
     if (payload.approved) {
-      const publicationExclusions = stringArray(payload.publicationExclusions, 100);
+      const publicationExclusions = stringArray(payload.publicationExclusions, 200);
       const publicationAcknowledged = stringArray(payload.publicationAcknowledged, 200);
       const walletIndex =
         Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0

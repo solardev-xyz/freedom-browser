@@ -1138,6 +1138,15 @@ describe('Freedom agent IPC', () => {
     await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
       publicationExclusions: [{ path: 'x' }] });
     expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+    const wide = Array.from({ length: 200 }, (_, index) => `k${index}.js`);
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: wide });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: wide,
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [...wide, 'one-too-many.js'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
   });
 
   test('passes only the supported conversation workspace-permission grant', async () => {

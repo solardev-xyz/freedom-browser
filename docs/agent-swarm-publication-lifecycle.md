@@ -19,19 +19,24 @@ bytes are the uploaded bytes:
 - Metadata is removed losslessly and listed as such: `*.map` files and
   `Thumbs.db`/`desktop.ini` are left out of folder publications;
   `sourceMappingURL` comments are removed from `.js`/`.mjs`/`.cjs`/`.css`;
-  EXIF/XMP/IPTC/comment segments are removed from JPEG (orientation is kept in
-  a minimal EXIF block), text/time/eXIf chunks from PNG, EXIF/XMP chunks from
+  EXIF/XMP/IPTC/comment segments are removed from JPEG, including any between
+  progressive scans, along with bytes after the end-of-image marker (a Motion
+  Photo's video, vendor trailers); orientation is kept in a minimal EXIF block.
+  Text/time/eXIf chunks are removed from PNG, EXIF/XMP chunks from
   WebP. Pixel data is copied unchanged. An image whose container cannot be
   parsed is left untouched and reported as a metadata warning.
-- Text files are scanned with named rules: PEM private keys, cloud/API tokens
+- Every file is scanned in full, whatever its size, with named rules: PEM private keys, cloud/API tokens
   (AWS, OpenAI-style, GitHub, Slack, Stripe, Google, Twilio, SendGrid), JWTs,
   passwords in URLs and key assignments, Ethereum private keys on a line that
   names a key, BIP-39 recovery phrases (12 or more consecutive wordlist words),
   Web3 keystore JSON, RPC URLs with embedded Infura/Alchemy/QuickNode/Ankr keys,
   Slack/Discord webhooks; and, as warnings, email addresses, `+`-prefixed phone
   numbers, checksum-valid IBANs and street addresses. The older
-  `historyContainsSecret` check still runs as a backstop. Binary files are not
-  text-scanned. Rules are written against each provider's documented format
+  `historyContainsSecret` check still runs as a backstop. Binary files
+  (a NUL in the first 8 KiB) are read byte for byte and checked for secrets
+  only, not personal data. Every secret is listed; only warnings are capped at
+  25 per file and 200 per publication, and more than 200 secrets refuses the
+  publication outright. Rules are written against each provider's documented format
   rather than vendored from gitleaks (RE2 syntax, mostly unrelated services).
 
 Findings carry a redacted excerpt for the card. Secrets block: "Publish

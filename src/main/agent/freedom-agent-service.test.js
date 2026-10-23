@@ -2619,6 +2619,18 @@ describe('FreedomAgentService', () => {
     await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['app.js'] } })).resolves.toBe(true);
     await expect(decision).resolves.toEqual({ status: 'declined', publicationFix: { paths: ['app.js'] } });
 
+    // A folder can list up to 1,000 files; a finding in any of them, and
+    // well over 100 of them, must still be excludable from the card.
+    publication.files = Array.from({ length: 1_000 }, (_, index) => ({ path: `f${index}.js`, bytes: 1 }));
+    publication.findings = Array.from({ length: 150 }, (_, index) => ({ id: `finding_${index + 1}`, path: `f${index + 850}.js`,
+      kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 1, excerpt: 'sk_liv••••', blocking: true }));
+    ({ decision, approval } = ask());
+    expect(approval.publication.files).toHaveLength(1_000);
+    const late = publication.findings.map(finding => finding.path);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: [...late, 'missing.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: late })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: late });
+
     await service.stop('run_test');
     await service.waitForIdle();
   });

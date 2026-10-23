@@ -218,6 +218,32 @@ describe('metadata stripping', () => {
     expect(stripImageMetadata(jpegWithExif(1).file)).toEqual(Buffer.concat([Buffer.from([0xff, 0xd8]), app0, scan]));
   });
 
+  test('JPEG: walks every scan, dropping APPn/COM between progressive scans and bytes after EOI', () => {
+    const { app0 } = jpegWithExif(1);
+    const segment = (marker, payload) => {
+      const header = Buffer.from([0xff, marker, 0, 0]);
+      header.writeUInt16BE(payload.length + 2, 2);
+      return Buffer.concat([header, Buffer.from(payload, 'latin1')]);
+    };
+    // Scan data with a stuffed 0xFF00 and a restart marker, which are image data.
+    const scan1 = Buffer.concat([segment(0xda, '\x01\x02'), Buffer.from([0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33])]);
+    const dht = segment(0xc4, '\x00\x01');
+    const scan2 = Buffer.concat([segment(0xda, '\x03\x04'), Buffer.from([0x44, 0x55])]);
+    const eoi = Buffer.from([0xff, 0xd9]);
+    const file = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, scan1,
+      segment(0xe1, 'http://ns.adobe.com/xap/1.0/\0<gps>48.1</gps>'), dht, segment(0xfe, 'owner name'),
+      scan2, eoi, Buffer.from('ftypmp42 motion photo video by owner')]);
+    const stripped = stripImageMetadata(file);
+    expect(stripped).toEqual(Buffer.concat([Buffer.from([0xff, 0xd8]), app0, scan1, dht, scan2, eoi]));
+    expect(stripped.includes(Buffer.from('owner'))).toBe(false);
+    expect(stripped.includes(Buffer.from('gps'))).toBe(false);
+    const result = preparePublication({ kind: 'file', name: 'photo.jpg', data: file });
+    expect(result.stripped).toEqual([{ path: 'photo.jpg', reason: expect.stringContaining('metadata') }]);
+    // A clean single-scan file without anything to drop is returned as is.
+    const clean = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, scan1, eoi]);
+    expect(stripImageMetadata(clean)).toBe(clean);
+  });
+
   test('PNG: drops text, time and eXIf chunks only', () => {
     const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const ihdr = pngChunk('IHDR', Buffer.alloc(13, 1));
@@ -293,8 +319,37 @@ describe('metadata stripping', () => {
       .toThrow(expect.objectContaining({ code: 'PUBLICATION_TOO_MANY_FINDINGS' }));
   });
 
-  test('binary files are not text-scanned', () => {
-    const binary = Buffer.concat([Buffer.from([0]), Buffer.from(join('sk_live_', '51HqLyjWDarjtT1zdp7dc9a'))]);
-    expect(preparePublication({ kind: 'file', name: 'font.woff2', data: binary }).findings).toEqual([]);
+  test('every secret in a file is listed; only warnings are capped per file', () => {
+    const keys = Array.from({ length: 30 }, (_, index) =>
+      join('sk_live_', '51HqLyjWDarjtT1zdp7dc', String(index).padStart(3, 'q'))).join('\n');
+    const secrets = scanText('keys.js', keys);
+    expect(secrets).toHaveLength(30);
+    expect(secrets.every(finding => finding.blocking)).toBe(true);
+    const mixed = scanText('mixed.html', `${'alice.smith@proton.me\n'.repeat(40)}${keys}`);
+    expect(mixed.filter(finding => finding.blocking)).toHaveLength(30);
+    expect(mixed.filter(finding => !finding.blocking)).toHaveLength(25);
+  });
+
+  test('binary files are still scanned for secrets, but not for personal data', () => {
+    const key = join('sk-proj-', 'Ab3dEf6hIj9kLm2nOp5qRs8tUv');
+    const db = Buffer.concat([Buffer.from([0, 1, 2, 3]), Buffer.from(key), Buffer.from([0xc3, 0]),
+      Buffer.from(' alice.smith@proton.me ')]);
+    expect(historyContainsSecret(db)).toBe(true);
+    for (const [name, source] of [
+      ['file', { kind: 'file', name: 'data.db', data: db }],
+      ['folder', { kind: 'folder', name: 'site', files: [{ path: 'data.db', bytes: db }] }],
+    ]) {
+      const { findings } = preparePublication(source);
+      expect([name, findings.map(finding => [finding.rule, finding.blocking])]).toEqual([name, [['openai-api-key', true]]]);
+    }
+    const clean = Buffer.concat([Buffer.from([0]), Buffer.from('woff2 glyph table')]);
+    expect(preparePublication({ kind: 'file', name: 'font.woff2', data: clean }).findings).toEqual([]);
+  });
+
+  test('a secret past the first 8 MiB of a large file is still found', () => {
+    const stripe = join('sk_live_', '51HqLyjWDarjtT1zdp7dc9a');
+    const bundle = Buffer.concat([Buffer.alloc(9 * 1024 * 1024, 'a;\n'), Buffer.from(`\nconst k = "${stripe}";\n`)]);
+    const { findings } = preparePublication({ kind: 'folder', name: 'site', files: [{ path: 'bundle.js', bytes: bundle }] });
+    expect(findings).toEqual([expect.objectContaining({ path: 'bundle.js', rule: 'stripe-secret-key', blocking: true })]);
   });
 });

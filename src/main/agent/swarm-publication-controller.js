@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
-const { preparePublication, publicationScanSummary } = require('./publication-scan');
+const { MAX_FINDINGS, preparePublication, publicationScanSummary } = require('./publication-scan');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
 
@@ -108,7 +108,7 @@ function stringList(value, max) {
 function resolveScan(scan, decision) {
   const choice = decision && typeof decision === 'object' ? decision : {};
   if (choice.status !== 'approved' && choice.publicationFix) {
-    const fixPaths = stringList(choice.publicationFix.paths, 100);
+    const fixPaths = stringList(choice.publicationFix.paths, MAX_FINDINGS);
     const requested = scan.findings.filter(finding => fixPaths.includes(finding.path));
     if (!requested.length) throw publicationDeclined('The user declined the Swarm publication');
     const lines = requested.slice(0, 40).map(finding =>
@@ -119,8 +119,8 @@ function resolveScan(scan, decision) {
   }
   if (!approved(decision)) return null;
   const sourceKind = scan.source.kind;
-  const excludedPaths = stringList(choice.publicationExclusions, 100);
-  const acknowledged = new Set(stringList(choice.publicationAcknowledged, 200));
+  const excludedPaths = stringList(choice.publicationExclusions, MAX_FINDINGS);
+  const acknowledged = new Set(stringList(choice.publicationAcknowledged, MAX_FINDINGS));
   if (excludedPaths.length && sourceKind !== 'folder') {
     throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Only files inside a folder publication can be excluded');
   }
