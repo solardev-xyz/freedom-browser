@@ -6690,6 +6690,27 @@
   gap: 8px;
 }
 
+/* A Couldn't confirm payment's hashes, each with its explorer link. */
+.held-payment-hashes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.held-payment-hash {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.held-payment-hash code {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
 /* The send review's warning that a payment would wait behind a held one. */
 .send-held-warning {
   margin: 16px 0 0;

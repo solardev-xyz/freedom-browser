@@ -73,6 +73,42 @@ const STUCK = held({
   replacement: 'speed-up',
 });
 const REPLACEMENT_FEES = { gasPrice: '2200000000' };
+// Couldn't confirm (freedom-core design 0005, "State history", #94): a day
+// of passes that couldn't read their labels. One the network shows used
+// its place in the queue, replaced once; one whose place couldn't be read.
+const hashOf = (byte) => `0x${byte.repeat(32)}`;
+const explorerOf = (hash) => `https://basescan.org/tx/${hash}`;
+const USED = held({
+  intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a10',
+  nonce: 10,
+  hash: hashOf('b2'),
+  createdAt: MINUTES_AGO(26 * 60),
+  attention: 'uncertain',
+  lastOutcome: { outcome: 'uncertain' },
+  replacement: null,
+  couldntConfirm: {
+    since: Date.now() - 25 * 60 * 60 * 1000,
+    closable: true,
+    hashes: [
+      { hash: hashOf('b1'), explorerUrl: explorerOf(hashOf('b1')) },
+      { hash: hashOf('b2'), explorerUrl: explorerOf(hashOf('b2')) },
+    ],
+  },
+});
+const UNREAD = held({
+  intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a11',
+  nonce: 11,
+  hash: hashOf('c1'),
+  createdAt: MINUTES_AGO(25 * 60),
+  attention: 'uncertain',
+  lastOutcome: { outcome: 'uncertain' },
+  replacement: 'speed-up',
+  couldntConfirm: {
+    since: Date.now() - 24.5 * 60 * 60 * 1000,
+    closable: false,
+    hashes: [{ hash: hashOf('c1'), explorerUrl: explorerOf(hashOf('c1')) }],
+  },
+});
 
 function stubMainIpc(electronApp, intents) {
   return electronApp.evaluate(
@@ -233,6 +269,79 @@ test('waiting payments are listed, sent again and replaced, each confirmed as it
   ]);
   expect(calls.replacements).toEqual([
     { intentId: UNDERPRICED.intentId, fees: REPLACEMENT_FEES, authorization: confirmation },
+  ]);
+});
+
+test("a payment the wallet couldn't confirm lists its hashes; closing it asks once more, then closes it", async ({
+  electronApp,
+  window,
+}) => {
+  await stubMainIpc(electronApp, [USED, UNREAD]);
+  await electronApp.evaluate(
+    ({ ipcMain }, intents) => {
+      const replace = (channel, handler) => {
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, handler);
+      };
+      globalThis.__intents = intents;
+      globalThis.__closes = [];
+      replace('wallet:intents-list', () => ({ success: true, intents: globalThis.__intents }));
+      replace('wallet:intent-close', (_event, intentId, authorization) => {
+        globalThis.__closes.push({ intentId, authorization });
+        globalThis.__intents = globalThis.__intents.filter(
+          (intent) => intent.intentId !== intentId
+        );
+        return { success: true, intentId };
+      });
+    },
+    [USED, UNREAD]
+  );
+  await showIdentity(window);
+  await window.click('#held-payments-row');
+  await expect(window.locator('#held-payments-list .held-payment-row')).toHaveCount(2);
+
+  // Its place in the queue used: its hashes, each with its explorer link,
+  // and only Close.
+  const used = rowOf(window, USED);
+  await expect(used).toContainText("Couldn't confirm");
+  await expect(used).toContainText('nonce 10');
+  await expect(used).toContainText("We couldn't confirm whether this payment went through.");
+  await expect(used.locator('.held-payment-hash code')).toHaveText([
+    '0xb1b1b1b1…b1b1b1b1',
+    '0xb2b2b2b2…b2b2b2b2',
+  ]);
+  const links = used.locator('a[data-explorer]');
+  await expect(links).toHaveCount(2);
+  expect(await links.evaluateAll((all) => all.map((link) => link.href))).toEqual(
+    USED.couldntConfirm.hashes.map(({ explorerUrl }) => explorerUrl)
+  );
+  await expect(used.locator('[data-action="close"]')).toHaveText('Close payment');
+  await expect(used.locator('[data-action="resend"]')).toHaveCount(0);
+  await expect(used.locator('[data-action="replace"]')).toHaveCount(0);
+  // Its place unread: no Close, and still Send again and Speed up.
+  const unread = rowOf(window, UNREAD);
+  await expect(unread).toContainText("Couldn't confirm");
+  await expect(unread.locator('[data-action="close"]')).toHaveCount(0);
+  await expect(unread.locator('[data-action="resend"]')).toHaveText('Send again');
+  await expect(unread.locator('[data-action="replace"]')).toHaveText('Speed up');
+  await shootBothThemes(window, 'held-payments-couldnt-confirm');
+
+  await used.locator('[data-action="close"]').click();
+  await expect(used).toContainText(
+    "We couldn't confirm whether this payment went through. It can no longer be sent. " +
+      'Check the explorer to see what happened.'
+  );
+  await shootBothThemes(window, 'held-payments-close-confirm');
+  expect(await electronApp.evaluate(() => globalThis.__closes)).toEqual([]);
+
+  await used.locator('[data-action="confirm-close"]').click();
+  await expect(window.locator('#held-payments-list .held-payment-row')).toHaveCount(1);
+  await expect(window.locator('#held-payments-count')).toHaveText('1');
+  expect(await electronApp.evaluate(() => globalThis.__closes)).toEqual([
+    {
+      intentId: USED.intentId,
+      authorization: { confirmation: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    },
   ]);
 });
 

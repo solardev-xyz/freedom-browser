@@ -28,13 +28,25 @@
  *   main, and nothing above it waits for its nonce. An intent recovered from
  *   disk is never voided; a crash or a restored older copy of this file can
  *   hide a handoff.
+ * - **retire**: the user closed an intent shown as *Couldn't confirm*
+ *   (design 0005, "State history", #94), once a verified read showed its
+ *   nonce used at a finalized block (`block`): none of its transactions can
+ *   be mined. Under the account's reservation lock, as a void is, and
+ *   conditional on the hashes the user saw. It closes the intent like a
+ *   settlement, its bytes forgotten, and keeps its hashes, also in its
+ *   tombstone: whether it paid is unconfirmed.
+ * - **track**: what the finality tracker keeps of a held intent across
+ *   restarts: its bracket (the last finalized block, number and hash, where
+ *   a verified read saw its nonce unused) and since when its passes
+ *   couldn't read a label (`unread_since`). Not owed: when there is no room
+ *   even after compacting, it is refused, and the tracker keeps what it had.
  *
  * Every line carries the run of main that wrote it (RUN_ID, one per
  * process).
  *
- * An intent is held from its first commit until it settles or is voided.
- * Its nonce stays reserved while it is held: a new intent goes above every
- * held nonce of its account (nonce-reservations.js).
+ * An intent is held from its first commit until it settles, is voided or
+ * is retired. Its nonce stays reserved while it is held: a new intent goes
+ * above every held nonce of its account (nonce-reservations.js).
  *
  * **Compaction** (at startup, after a void, and when room is needed)
  * rewrites the file from the state, with two more line types:
@@ -46,10 +58,10 @@
  *   Memory folds the finished ones the same way once the file has them, so
  *   neither grows with a long run of sends. Loading folds every handoff into
  *   the summary: an earlier run's handoff only ever counts as possibly sent.
- * - **tombstone**: a settled or voided intent, without its bytes: its id,
- *   account, nonce and how it closed. Closed is final: a commit or a handoff
- *   of a closed id is refused, and a late outcome for it is ignored, across
- *   reloads and compactions. The newest LIMITS.tombstones are kept; an
+ * - **tombstone**: a settled, voided or retired intent, without its bytes:
+ *   its id, account, nonce and how it closed, and a retired one's hashes.
+ *   Closed is final: a commit or a handoff of a closed id is refused, and a
+ *   late outcome for it is ignored, across reloads and compactions. The newest LIMITS.tombstones are kept; an
  *   older id is unknown, so nothing can be sent for it either, and it can't
  *   come back: the store names every new intent itself.
  *
@@ -104,7 +116,7 @@ const RUN_ID = crypto.randomUUID();
 
 const OUTCOMES = new Set(['sent', 'uncertain', 'rejected', 'not_sent']);
 const LABELS = new Set(['paid', 'failed', 'taken']);
-const CLOSED = new Set(['settled', 'voided']);
+const CLOSED = new Set(['settled', 'voided', 'retired']);
 const TRANSACTION_TYPES = new Set([0, 2]);
 const ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
@@ -159,8 +171,20 @@ const TERMINAL_LINE_MAX = Math.max(
     hash: LONGEST.hash,
     block: LONGEST.time,
   }),
-  lineBytes({ type: 'void', run: LONGEST.id, at: LONGEST.time, intent_id: LONGEST.id })
+  lineBytes({ type: 'void', run: LONGEST.id, at: LONGEST.time, intent_id: LONGEST.id }),
+  lineBytes({
+    type: 'retire',
+    run: LONGEST.id,
+    at: LONGEST.time,
+    intent_id: LONGEST.id,
+    block: LONGEST.time,
+  })
 );
+// The tracker's state of a held intent at its widest, as a snapshot sizes it.
+const WIDEST_TRACK = {
+  bracket: { number: LONGEST.time, hash: LONGEST.hash },
+  unread_since: LONGEST.time,
+};
 
 function intentError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -183,6 +207,49 @@ function storeFull() {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Why a closed intent takes nothing more, for the user.
+function closedText(state) {
+  if (state === 'voided') return 'This payment was voided.';
+  if (state === 'retired') return 'This payment was closed.';
+  return 'This payment is already settled.';
+}
+
+// The tracker's state in a `track` or `held` line; absent is none.
+function trackOf(record) {
+  let bracket = null;
+  if (record.bracket !== undefined && record.bracket !== null) {
+    if (!isPlainObject(record.bracket)) throw invalid('bad bracket');
+    bracket = {
+      number: requireCount(record.bracket.number, 'bracket block'),
+      hash: requireHex(record.bracket.hash, HASH_PATTERN, 'bracket hash'),
+    };
+  }
+  const since = record.unread_since;
+  const unreadSince =
+    since === undefined || since === null ? null : requireCount(since, 'unread time');
+  return { bracket, unreadSince };
+}
+
+// A held intent's tracked state as its snapshot carries it: only what is set.
+function trackRecord(intent) {
+  return {
+    ...(intent.bracket ? { bracket: { ...intent.bracket } } : {}),
+    ...(intent.unreadSince !== null ? { unread_since: intent.unreadSince } : {}),
+  };
+}
+
+// A write's condition: the intent has exactly `hashes`, checked in line
+// with its other writes.
+function sameHashes(hashes, message) {
+  const expected = hashes.map((h) => String(h).toLowerCase());
+  return (intent) => {
+    const now = intent.hashes.map((entry) => entry.hash);
+    if (now.length !== expected.length || now.some((h, i) => h !== expected[i])) {
+      throw intentError('INTENT_CHANGED', message);
+    }
+  };
 }
 
 function requireId(value, what) {
@@ -357,8 +424,11 @@ function view(intent) {
     })),
     handoffCount: tally.count,
     possiblySent: tally.possiblySent,
+    bracket: intent.bracket && { ...intent.bracket },
+    unreadSince: intent.unreadSince,
     settlement: intent.settlement && { ...intent.settlement },
     voidedAt: intent.voidedAt,
+    retirement: intent.retirement && { ...intent.retirement },
     createdAt: intent.createdAt,
     updatedAt: intent.updatedAt,
   };
@@ -419,10 +489,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
   function requireHeld(intent, mode) {
     if (intent.state === 'held') return;
     if (!mode.live) throw invalid(`intent ${intent.id} is ${intent.state}`);
-    throw intentError(
-      'INTENT_NOT_HELD',
-      intent.state === 'voided' ? 'This payment was voided.' : 'This payment is already settled.'
-    );
+    throw intentError('INTENT_NOT_HELD', closedText(intent.state));
   }
 
   function requireRun(record) {
@@ -447,21 +514,27 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       // Handoffs folded away: earlier runs', and this run's finished ones
       // once compacted.
       summary: { count: 0, possiblySent: false },
+      // The finality tracker's: see `track`.
+      bracket: null,
+      unreadSince: null,
       settlement: null,
       voidedAt: null,
+      retirement: null,
       closedAt: null,
       createdAt: at,
       updatedAt: at,
     };
   }
 
-  // Settled or voided: what it was, without its bytes. Its open handoffs'
-  // outcomes are no longer owed (a late one is ignored).
+  // Settled, voided or retired: what it was, without its bytes. Its open
+  // handoffs' outcomes are no longer owed (a late one is ignored).
   function close(intent, at) {
     const tally = handoffTally(intent);
     intent.summary = { count: tally.count, possiblySent: tally.possiblySent };
     intent.handoffs = new Map();
     intent.hashes = intent.hashes.map((entry) => ({ ...entry, raw: null, fields: null }));
+    intent.bracket = null;
+    intent.unreadSince = null;
     intent.closedAt = at;
     intent.updatedAt = at;
   }
@@ -612,6 +685,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       throw invalid(`intent ${id} has a bad handoff summary`);
     }
     requireCount(summary.count, 'handoff count');
+    const tracked = trackOf(record);
     if (intents.has(id)) throw invalid(`intent ${id} is already committed`);
     const context = normalizeContext(record.context);
     checkNewIntent({ chainId, sender, nonce, context }, mode);
@@ -628,12 +702,15 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       });
       intent.hashes = hashes;
       intent.summary = { count: summary.count, possiblySent: summary.possibly_sent };
+      intent.bracket = tracked.bracket;
+      intent.unreadSince = tracked.unreadSince;
       intents.set(id, intent);
       unrecovered.push({ intent, entry: latest });
     };
   }
 
   // A closed intent, as compaction keeps it: final, and without its bytes.
+  // A retired one keeps its hashes.
   function prepareTombstone(record, mode) {
     if (mode.live) throw invalid('a tombstone is written by compaction only');
     const id = requireId(record.intent_id, 'intent id');
@@ -642,8 +719,19 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     const nonce = requireCount(record.nonce, 'nonce');
     if (!CLOSED.has(record.closed)) throw invalid('bad closed state');
     const settled = record.closed === 'settled';
+    const retired = record.closed === 'retired';
     if (settled ? !LABELS.has(record.label) : record.label !== undefined) {
       throw invalid('bad label');
+    }
+    let hashes = [];
+    if (retired) {
+      if (!Array.isArray(record.hashes) || record.hashes.length === 0) {
+        throw invalid(`retired intent ${id} lists no hashes`);
+      }
+      hashes = record.hashes.map((hash) => requireHex(hash, HASH_PATTERN, 'hash'));
+      if (new Set(hashes).size !== hashes.length) throw invalid(`intent ${id} lists a hash twice`);
+    } else if (record.hashes !== undefined) {
+      throw invalid(`${record.closed} intent ${id} keeps no hashes`);
     }
     if (intents.has(id)) throw invalid(`intent ${id} is already committed`);
     return () => {
@@ -659,8 +747,18 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       });
       intent.state = record.closed;
       intent.closedAt = record.at;
+      intent.hashes = hashes.map((hash, index) => ({
+        hash,
+        raw: null,
+        via: index === 0 ? 'original' : 'replacement',
+        fields: null,
+        at: null,
+        run: null,
+      }));
       if (settled) {
         intent.settlement = { label: record.label, hash: null, block: null, at: record.at };
+      } else if (retired) {
+        intent.retirement = { block: null, at: record.at };
       } else {
         intent.voidedAt = record.at;
       }
@@ -816,6 +914,40 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     };
   }
 
+  // Closing by hand (design 0005, "State history"): the caller checked the
+  // verified nonce at a finalized block is past the intent's; the store
+  // checks the lock, and, in line with every other write, the hashes.
+  function prepareRetire(record, mode, lock) {
+    const intent = requireIntent(requireId(record.intent_id, 'intent id'));
+    requireRun(record);
+    if (mode.live && !holdsAccountLock(lock, intent.chainId, intent.sender)) {
+      throw intentError(
+        'INTENT_LOCK_REQUIRED',
+        "Closing a payment needs its account's reservation lock."
+      );
+    }
+    requireHeld(intent, mode);
+    const block = requireCount(record.block, 'block');
+    return () => {
+      intent.state = 'retired';
+      intent.retirement = { block, at: record.at };
+      close(intent, record.at);
+    };
+  }
+
+  // The tracker's state of a held intent. Nothing else about the intent
+  // changes, its `updatedAt` included (the tracker's schedule reads it).
+  function prepareTrack(record, mode) {
+    const intent = requireIntent(requireId(record.intent_id, 'intent id'));
+    requireRun(record);
+    requireHeld(intent, mode);
+    const tracked = trackOf(record);
+    return () => {
+      intent.bracket = tracked.bracket;
+      intent.unreadSince = tracked.unreadSince;
+    };
+  }
+
   const PREPARE = {
     commit: prepareCommit,
     held: prepareHeldSnapshot,
@@ -824,6 +956,8 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     outcome: prepareOutcome,
     settle: prepareSettle,
     void: prepareVoid,
+    retire: prepareRetire,
+    track: prepareTrack,
   };
 
   function prepare(record, mode, lock) {
@@ -868,6 +1002,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
               intent.summary.possiblySent ||
               finished.some((handoff) => handoff.outcome.outcome !== 'not_sent'),
           },
+      ...(sizing ? WIDEST_TRACK : trackRecord(intent)),
     };
   }
 
@@ -881,6 +1016,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       nonce: intent.nonce,
       closed: intent.state,
       ...(intent.state === 'settled' ? { label: intent.settlement.label } : {}),
+      ...(intent.state === 'retired' ? { hashes: intent.hashes.map((entry) => entry.hash) } : {}),
     };
   }
 
@@ -1046,7 +1182,26 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     };
   }
 
+  // A track line: not owed, and it never grows the budget (a snapshot is
+  // sized with the widest tracked state), so it only has to fit, after
+  // compacting if needed.
+  async function admitTrack(record) {
+    const fits = () => journal.size + lineBytes(record) + owed() <= limits.journalBytes;
+    if (fits()) return;
+    try {
+      await compactNow();
+    } catch (error) {
+      throw intentError(
+        'INTENT_WRITE_FAILED',
+        "Could not save the wallet's payment record.",
+        error
+      );
+    }
+    if (!fits()) throw storeFull();
+  }
+
   async function admit(record) {
+    if (record.type === 'track') return admitTrack(record);
     const { budgetBefore, budgetAfter, owedAfter } = admission(record);
     // A line that grows the budget past the limit is refused: a new intent,
     // a replacement, or an extra open handoff that would spend another
@@ -1167,8 +1322,9 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
   }
 
   // Check, admit, append, then apply: the state changes only once the line
-  // is on disk. A prepare that returns null writes nothing.
-  async function write(record, lock, { admitted = false, expect = null } = {}) {
+  // is on disk. A prepare that returns null writes nothing. A quiet write
+  // tells no listener.
+  async function write(record, lock, { admitted = false, expect = null, quiet = false } = {}) {
     await load();
     return serialize(async () => {
       // A condition on the intent as it stands now, in line with every
@@ -1187,7 +1343,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
         );
       }
       apply();
-      notify(record.intent_id);
+      if (!quiet) notify(record.intent_id);
       return intents.get(record.intent_id);
     });
   }
@@ -1215,8 +1371,10 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     load,
 
     /**
-     * Call `listener(intentId)` after every change written to the records.
-     * Returns a function that stops it.
+     * Call `listener(intentId)` after every change written to the records,
+     * but the tracker's own (`track`): it changes nothing a listener shows,
+     * and the tracker announces what its reads saw itself. Returns a
+     * function that stops it.
      */
     onChange(listener) {
       listeners.add(listener);
@@ -1279,7 +1437,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     /**
      * Record that bytes of the intent are about to go to a broadcaster. Send
      * them only once this resolves, and record the outcome against the
-     * handoff it returns. Refused for a settled or voided intent; writes are
+     * handoff it returns. Refused for a closed intent; writes are
      * serialized, so a void and a handoff can't both pass.
      *
      * @param {string} intentId
@@ -1353,16 +1511,10 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
         block,
       });
       const expect = hashes
-        ? (intent) => {
-            const read = hashes.map((h) => String(h).toLowerCase());
-            const now = intent.hashes.map((entry) => entry.hash);
-            if (now.length !== read.length || now.some((h, i) => h !== read[i])) {
-              throw intentError(
-                'INTENT_CHANGED',
-                'The payment changed while it was being checked; it will be checked again.'
-              );
-            }
-          }
+        ? sameHashes(
+            hashes,
+            'The payment changed while it was being checked; it will be checked again.'
+          )
         : null;
       return view(await write(record, null, { expect }));
     },
@@ -1379,6 +1531,51 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       const intent = await write(record, lock);
       await serialize(() => compactQuietly('after a void'));
       return view(intent);
+    },
+
+    /**
+     * Close a held intent by hand (design 0005, "State history"): final,
+     * its bytes forgotten, its hashes kept. Only under the account's lock
+     * (the token `withAccountLock` gave you), and only for the hashes the
+     * user saw: if the intent has others by the time this is written (a
+     * replacement, even one still being written), nothing is written and
+     * this throws INTENT_CHANGED. The caller checks that a verified read
+     * showed the intent's nonce used at the finalized block `block`.
+     *
+     * @param {object} retirement
+     * @param {string} retirement.intentId
+     * @param {number} retirement.block
+     * @param {string[]} retirement.hashes
+     * @param {object} lock
+     */
+    async retire({ intentId, block, hashes }, lock) {
+      if (!Array.isArray(hashes) || hashes.length === 0) {
+        throw invalid('closing a payment names the hashes the user saw');
+      }
+      const record = stamp('retire', { intent_id: intentId, block });
+      const expect = sameHashes(
+        hashes,
+        'The payment changed since it was shown; it was not closed. Check it again.'
+      );
+      return view(await write(record, lock, { expect }));
+    },
+
+    /**
+     * Keep the finality tracker's state of a held intent: its bracket
+     * (`{ number, hash }` or null) and since when its label couldn't be
+     * read (ms, or null). Refused for an intent no longer held, and, when
+     * there is no room even after compacting, with INTENT_STORE_FULL.
+     */
+    async track({ intentId, bracket = null, unreadSince = null }) {
+      const record = stamp('track', {
+        intent_id: intentId,
+        bracket: bracket && {
+          number: bracket.number,
+          hash: typeof bracket.hash === 'string' ? bracket.hash.toLowerCase() : bracket.hash,
+        },
+        unread_since: unreadSince,
+      });
+      return view(await write(record, null, { admitted: true, quiet: true }));
     },
 
     /** Why the intent can't be voided now, or null if it can (lock aside). */
@@ -1466,6 +1663,7 @@ module.exports = {
     outcome: OUTCOME_LINE_MAX,
     terminal: TERMINAL_LINE_MAX,
   }),
+  closedText,
   createIntentStore,
   getIntentStore,
 };

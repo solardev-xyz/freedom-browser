@@ -1819,3 +1819,315 @@ test("voiding a chain's last held intent releases its verified headers, at once 
   expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
   tracker.stop();
 });
+
+// freedom-core design 0005, "State history" (#94): the tracker's bracket
+// and day count kept with the record, and closing by hand.
+describe('state history (#94)', () => {
+  const BRACKET = { number: 120, hash: `0x${'c0'.repeat(32)}` };
+
+  describe("the tracker's state", () => {
+    test('kept with the record across restarts and compactions, quietly, and without counting as activity', async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 7 });
+      const heard = jest.fn();
+      first.store.onChange(heard);
+      const tracked = await first.store.track({
+        intentId: intent.intentId,
+        bracket: { number: BRACKET.number, hash: BRACKET.hash.toUpperCase().replace('0X', '0x') },
+        unreadSince: 1234,
+      });
+      expect(tracked).toMatchObject({ bracket: BRACKET, unreadSince: 1234 });
+      expect(tracked.updatedAt).toBe(intent.updatedAt);
+      expect(heard).not.toHaveBeenCalled();
+      expect((await records()).at(-1)).toMatchObject({
+        type: 'track',
+        intent_id: intent.intentId,
+        bracket: BRACKET,
+        unread_since: 1234,
+      });
+
+      // Replayed after a restart, then carried by the compacted snapshot.
+      let running = await started();
+      expect(running.store.get(intent.intentId)).toMatchObject({
+        state: 'held',
+        bracket: BRACKET,
+        unreadSince: 1234,
+      });
+      expect(await records()).toEqual([
+        expect.objectContaining({ type: 'held', bracket: BRACKET, unread_since: 1234 }),
+      ]);
+      running = await started();
+      expect(running.store.get(intent.intentId)).toMatchObject({
+        bracket: BRACKET,
+        unreadSince: 1234,
+      });
+
+      // Cleared: the snapshot carries nothing.
+      await running.store.track({ intentId: intent.intentId, bracket: null, unreadSince: null });
+      await running.store.compact();
+      expect((await records())[0]).not.toHaveProperty('bracket');
+      expect((await records())[0]).not.toHaveProperty('unread_since');
+    });
+
+    test("a held intent's budget has room for its widest tracked state", async () => {
+      const { store, mod } = await started();
+      const intent = await commitNew(store, { nonce: 7 });
+      const { budget } = store.usage();
+      const widest = Number.MAX_SAFE_INTEGER;
+      await store.track({
+        intentId: intent.intentId,
+        bracket: { number: widest, hash: BRACKET.hash },
+        unreadSince: widest,
+      });
+      await store.compact();
+      expect(store.usage().budget).toBe(budget);
+      // The file is the intent's snapshot alone, within what its budget
+      // keeps for it beside its owed lines.
+      const { terminal, handoff, outcome } = mod.LINE_MAX;
+      expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(
+        budget - terminal - handoff - outcome
+      );
+    });
+
+    test('refused for an intent no longer held, and for a malformed bracket', async () => {
+      const { store } = await started();
+      const intent = await commitNew(store, { nonce: 7 });
+      await expect(
+        store.track({ intentId: intent.intentId, bracket: { number: -1, hash: BRACKET.hash } })
+      ).rejects.toMatchObject({ code: 'INTENT_INVALID' });
+      await expect(
+        store.track({ intentId: intent.intentId, bracket: { number: 1, hash: '0x12' } })
+      ).rejects.toMatchObject({ code: 'INTENT_INVALID' });
+      await store.settle({ intentId: intent.intentId, label: 'taken', hash: null, block: 1 });
+      await expect(
+        store.track({ intentId: intent.intentId, bracket: BRACKET })
+      ).rejects.toMatchObject({ code: 'INTENT_NOT_HELD' });
+    });
+
+    test('a track line for a closed intent is damage on reload', async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 7 });
+      await first.store.settle({ intentId: intent.intentId, label: 'taken', hash: null, block: 1 });
+      const { RUN_ID } = first.mod;
+      fs.appendFileSync(
+        filePath(),
+        encodeLine({ type: 'track', run: RUN_ID, at: 5, intent_id: intent.intentId, bracket: null })
+      );
+      const { store } = await started();
+      expect(store.quarantined).toMatchObject({ reason: expect.stringContaining('is settled') });
+    });
+
+    test('never past the journal bound: compacted to make room, else refused, and the intent can still be sent', async () => {
+      // Room for one intent's budget and a little more.
+      const scratch = await started();
+      await commitNew(scratch.store, { nonce: 0 });
+      const perIntent = scratch.store.usage().budget;
+      fs.rmSync(filePath());
+
+      const limits = { journalBytes: perIntent + 600, readBytes: perIntent * 8 };
+      const { store } = await started({ limits });
+      const intent = await commitNew(store, { nonce: 0 });
+      for (let pass = 0; pass < 40; pass += 1) {
+        await store.track({
+          intentId: intent.intentId,
+          bracket: { number: 1000 + pass, hash: BRACKET.hash },
+          unreadSince: pass,
+        });
+        expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
+      }
+      expect(store.get(intent.intentId).bracket.number).toBe(1039);
+      // A send again still fits.
+      await expect(store.handoff(intent.intentId)).resolves.toMatchObject({ hash: intent.hash });
+      expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
+      const reloaded = await started({ limits });
+      expect(reloaded.store.quarantined).toBeNull();
+      expect(reloaded.store.get(intent.intentId).bracket.number).toBe(1039);
+    });
+  });
+
+  describe('closing by hand', () => {
+    const retireUnderLock = (running, intent, hashes = [intent.hash], block = 3000) =>
+      underLock(running.reservations, intent, (lock) =>
+        running.store.retire({ intentId: intent.intentId, block, hashes }, lock)
+      );
+
+    test('retired: final, its bytes forgotten, its hashes kept, across restarts and compactions', async () => {
+      let running = await started();
+      const intent = await commitNew(running.store, { nonce: 7 });
+      const bump = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+      await running.store.commit({
+        intentId: intent.intentId,
+        chainId: CHAIN,
+        sender: ALICE.address,
+        nonce: 7,
+        ...bump,
+        via: 'replacement',
+      });
+      const hashes = [intent.hash, bump.hash];
+      await running.store.track({ intentId: intent.intentId, bracket: BRACKET, unreadSince: 5 });
+      const closed = await retireUnderLock(running, intent, hashes);
+      expect(closed).toMatchObject({
+        state: 'retired',
+        raw: null,
+        // What the tracker kept goes with the bytes.
+        bracket: null,
+        unreadSince: null,
+        retirement: { block: 3000, at: expect.any(Number) },
+        hashes: hashes.map((hash) => expect.objectContaining({ hash, raw: null })),
+      });
+      expect(running.store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
+      await expect(running.store.handoff(intent.intentId)).rejects.toMatchObject({
+        code: 'INTENT_NOT_HELD',
+        message: 'This payment was closed.',
+      });
+
+      for (let restart = 0; restart < 3; restart += 1) {
+        running = await started();
+        expect(running.store.quarantined).toBeNull();
+        expect(running.store.get(intent.intentId)).toMatchObject({
+          state: 'retired',
+          raw: null,
+          hashes: hashes.map((hash) => expect.objectContaining({ hash })),
+        });
+        await expect(running.store.handoff(intent.intentId)).rejects.toMatchObject({
+          code: 'INTENT_NOT_HELD',
+        });
+      }
+      expect(await records()).toEqual([
+        {
+          type: 'tombstone',
+          at: expect.any(Number),
+          intent_id: intent.intentId,
+          chain_id: CHAIN,
+          sender: ALICE.address.toLowerCase(),
+          nonce: 7,
+          closed: 'retired',
+          hashes,
+        },
+      ]);
+      expect(fs.readFileSync(filePath(), 'utf8')).not.toContain(bump.raw.slice(2));
+    });
+
+    test("needs the account's lock token", async () => {
+      const { store } = await started();
+      const intent = await commitNew(store, { nonce: 7 });
+      await expect(
+        store.retire({ intentId: intent.intentId, block: 1, hashes: [intent.hash] })
+      ).rejects.toMatchObject({ code: 'INTENT_LOCK_REQUIRED' });
+      await expect(
+        store.retire(
+          { intentId: intent.intentId, block: 1, hashes: [intent.hash] },
+          { chainId: CHAIN, sender: intent.sender }
+        )
+      ).rejects.toMatchObject({ code: 'INTENT_LOCK_REQUIRED' });
+      expect(store.get(intent.intentId).state).toBe('held');
+    });
+
+    test('only for the hashes the user saw: a replacement committed meanwhile, one still being written included, closes nothing', async () => {
+      const running = await started();
+      const intent = await commitNew(running.store, { nonce: 7 });
+      const bump = await sign({ nonce: 7, maxFeePerGas: 3_000_000_000n });
+      // The replacement's commit is queued first, still being written,
+      // when the close is written.
+      const replacing = running.store.commit({
+        intentId: intent.intentId,
+        chainId: CHAIN,
+        sender: ALICE.address,
+        nonce: 7,
+        ...bump,
+        via: 'replacement',
+      });
+      const closing = retireUnderLock(running, intent);
+      await expect(closing).rejects.toMatchObject({ code: 'INTENT_CHANGED' });
+      await replacing;
+      expect(running.store.get(intent.intentId)).toMatchObject({ state: 'held', hash: bump.hash });
+      expect((await records()).map((record) => record.type)).toEqual(['commit', 'commit']);
+      // Without the hashes it closes nothing either.
+      await expect(retireUnderLock(running, intent, [])).rejects.toMatchObject({
+        code: 'INTENT_INVALID',
+      });
+    });
+
+    test('durable: with a crash at each step and a restart, it is still held or retired with its hashes, never revived', async () => {
+      const first = await started();
+      const intent = await commitNew(first.store, { nonce: 7 });
+      const before = fs.readFileSync(filePath());
+      // Retired, as a settlement is, with no compaction after it: its line
+      // is the file's last.
+      await retireUnderLock(first, intent);
+      const after = fs.readFileSync(filePath());
+      expect((await records()).at(-1)).toMatchObject({ type: 'retire', block: 3000 });
+      const line = after.subarray(before.length);
+
+      const outcomes = new Set();
+      // A crash partway through the line's append: before its first byte,
+      // torn (inside its header, its checksum and its record, and one byte
+      // short of whole), whole without its newline, and whole.
+      const lengths = [0, 1, 20, 60, 120, Math.floor(line.length / 2), line.length - 2];
+      for (const length of [...lengths, line.length - 1, line.length]) {
+        fs.writeFileSync(filePath(), Buffer.concat([before, line.subarray(0, length)]));
+        const { store } = await started();
+        expect(store.quarantined).toBeNull();
+        const state = store.get(intent.intentId);
+        if (length >= line.length - 1) {
+          expect(state).toMatchObject({ state: 'retired', hashes: [{ hash: intent.hash }] });
+        } else {
+          expect(state).toMatchObject({ state: 'held', raw: intent.raw });
+        }
+        outcomes.add(state.state);
+        // Whatever it found, a restart after that finds the same.
+        expect((await started()).store.get(intent.intentId).state).toBe(state.state);
+      }
+      expect([...outcomes].sort()).toEqual(['held', 'retired']);
+
+      // A crash during the compaction after it: the temp file written, the
+      // rename never made.
+      fs.writeFileSync(filePath(), after);
+      fs.writeFileSync(`${filePath()}.compact-crash.tmp`, 'partial');
+      const { store } = await started();
+      expect(store.get(intent.intentId)).toMatchObject({
+        state: 'retired',
+        hashes: [{ hash: intent.hash }],
+      });
+      expect(fs.existsSync(`${filePath()}.compact-crash.tmp`)).toBe(false);
+    }, 30000);
+
+    test('a failed write closes nothing', async () => {
+      const running = await started();
+      const intent = await commitNew(running.store, { nonce: 7 });
+      jest
+        .spyOn(require('fs/promises'), 'open')
+        .mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
+      await expect(retireUnderLock(running, intent)).rejects.toMatchObject({
+        code: 'INTENT_WRITE_FAILED',
+      });
+      expect(running.store.get(intent.intentId)).toMatchObject({ state: 'held', raw: intent.raw });
+      expect((await started()).store.get(intent.intentId).state).toBe('held');
+    });
+
+    test('a tombstone of a retired intent must keep its hashes, and only a retired one has them', async () => {
+      for (const [closed, extra] of [
+        ['retired', {}],
+        ['retired', { hashes: [] }],
+        ['retired', { hashes: ['0x12'] }],
+        ['voided', { hashes: [`0x${'ab'.repeat(32)}`] }],
+      ]) {
+        fs.writeFileSync(
+          filePath(),
+          encodeLine({
+            type: 'tombstone',
+            at: 1,
+            intent_id: 'intent-retired-1',
+            chain_id: CHAIN,
+            sender: ALICE.address.toLowerCase(),
+            nonce: 7,
+            closed,
+            ...extra,
+          })
+        );
+        const { store } = await started();
+        expect(store.quarantined).not.toBeNull();
+      }
+    });
+  });
+});

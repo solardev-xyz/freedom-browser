@@ -224,11 +224,13 @@ async function replaceAndRecord(intentId, fees, signer) {
   });
 }
 
-// A settled intent's history status, by its label at the finalized block.
+// A settled intent's history status, by its label at the finalized block,
+// and a closed one's: closed by hand, whether it paid unconfirmed.
 const SETTLED_STATUS = Object.freeze({
   paid: STATUSES.CONFIRMED,
   failed: STATUSES.FAILED,
   taken: STATUSES.TAKEN,
+  closed: STATUSES.UNCONFIRMED,
 });
 
 // The history row of an intent, by its id: this run's, or an earlier one's.
@@ -247,13 +249,15 @@ function rowOfIntent(intent) {
 /**
  * An intent's label at the finalized block, in its history row: paid as
  * `confirmed`, failed as `failed`, taken as `taken`, naming the included
- * transaction, with `metadata.finality`. An intent with no row (its send
- * failed before one was written, though its bytes went out) gets one now,
- * so a payment that happened is never missing from the history.
- * Best-effort, like every history write: returns the row, or null.
+ * transaction, with `metadata.finality`; and an intent closed by hand
+ * (label `closed`, at the finalized block where its nonce was seen used)
+ * as `unconfirmed`. An intent with no row (its send failed before one was
+ * written, though its bytes went out) gets one now, so a payment that
+ * happened is never missing from the history. Best-effort, like every
+ * history write: returns the row, or null.
  *
  * @param {object} intent - the intent's view, read before it settled
- * @param {{label: 'paid'|'failed'|'taken', hash: string|null, block: number}} settlement
+ * @param {{label: 'paid'|'failed'|'taken'|'closed', hash: string|null, block: number}} settlement
  */
 function recordSettlement(intent, { label, hash, block }) {
   const status = SETTLED_STATUS[label];
