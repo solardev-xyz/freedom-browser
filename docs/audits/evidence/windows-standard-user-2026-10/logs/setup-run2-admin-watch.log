@@ -1,0 +1,3 @@
+
+2026-10-23T16:48:00.7345506+00:00 pid=3024 owner=FREEDOM-E2E-WIN\tester token=elevated session=1 parent=6796 modules=40 netapi32/fwpuclnt=[C:\WINDOWS\SYSTEM32\netapi32.dll, C:\WINDOWS\SYSTEM32\fwpuclnt.dll] outside-System32=[C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\freedom-windows-sandbox-setup.exe]
+2026-10-23T16:48:01.0233902+00:00 pid=3024 owner=FREEDOM-E2E-WIN\tester token=elevated session=1 parent=6796 modules=40 netapi32/fwpuclnt=[C:\WINDOWS\SYSTEM32\netapi32.dll, C:\WINDOWS\SYSTEM32\fwpuclnt.dll] outside-System32=[C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\freedom-windows-sandbox-setup.exe]
