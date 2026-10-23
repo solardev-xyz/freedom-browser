@@ -15,7 +15,9 @@
  * chain's endpoints. R is, at the moment it is judged:
  *   1. **Verified:** the header has a base fee B and its timestamp is within
  *      60 s of this clock, either way: R = 2·B + the lowest priority fee
- *      among B's quotes, or 2·B when none gave one.
+ *      among B's quotes (floored, as every quote's tip is), or
+ *      2·B + MIN_PRIORITY_FEE_WEI when none gave one: what any type-2 quote
+ *      signs at that base fee.
  *   2. **Combined quote:** otherwise, B's combined quote when it is at most
  *      60 s old, counted from the moment its request was sent: its
  *      `maxFeePerGas`, or its `gasPrice` if legacy. With `answered: 1` it is
@@ -51,6 +53,13 @@ const chainData = require('../networks/chain-data');
  * above this multiple of the reference is asked again and never
  * auto-approved. Tuned against measured fee spikes before release. */
 const FEE_CHECK_MULTIPLE = 3n;
+
+/** The tip floor every quote signs: the core's `MIN_PRIORITY_FEE_WEI`
+ * (freedom-core design 0005, Fee quotes: main's #749 headroom), 0.05 gwei.
+ * R carries it where B's quotes gave no priority fee, so a floored quote on
+ * a chain with a tiny base fee isn't judged against an R without it
+ * (design 0005, A: The headroom and R). */
+const MIN_PRIORITY_FEE_WEI = 50_000_000n;
 
 /** The most a header or a quote may be aged when it is judged, and the most
  * evidence may be aged before it is gathered again. */
@@ -138,7 +147,7 @@ function referenceFee(evidence, { wallNow, monotonicNow }) {
     const headerAgeMs = Math.abs(wallNow - Number(header.timestamp) * 1000);
     if (headerAgeMs <= EVIDENCE_MAX_AGE_MS) {
       reference = {
-        fee: 2n * header.baseFee + (evidence.lowestPriority ?? 0n),
+        fee: 2n * header.baseFee + (evidence.lowestPriority ?? MIN_PRIORITY_FEE_WEI),
         basis: 'header',
         oneEndpoint: false,
       };
@@ -353,6 +362,7 @@ function feeNotShownError() {
 
 module.exports = {
   FEE_CHECK_MULTIPLE,
+  MIN_PRIORITY_FEE_WEI,
   EVIDENCE_MAX_AGE_MS,
   EVIDENCE_DEADLINE_MS,
   FEE_CHECK_ASK_AGAIN,

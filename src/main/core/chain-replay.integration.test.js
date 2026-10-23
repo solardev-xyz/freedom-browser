@@ -793,6 +793,35 @@ const DEVIATIONS = new Map([
   ['boundary-fee-direct-priority-unparseable', ['fee-combination', answeredBy(1)]],
   // b is asked at once with a: a fails, and b's legacy quote stands.
   ['boundary-fee-direct-gas-price-fails-first', ['fee-combination', answeredBy(1)]],
+  // freedom-core #198 (main's #749 headroom, as freedom-core 0005 amends
+  // B): the reference's quotes are its patched router's, so they carry the
+  // headroom, and in these Direct's quote is the reply. Where Direct asks
+  // more than one endpoint, each request the reference never made fails
+  // here, as above, so the endpoint the reference asked stands alone: its
+  // patched quote, with answered: 1. replay.rs answers those requests from
+  // the world's script and combines what they give.
+  //
+  // The quorum's block disagrees, so the walk reaches Direct with three
+  // endpoints; b and c, asked with a, fail.
+  ['boundary-fee-quorum-priority-disagrees', ['fee-combination', answeredBy(1)]],
+  // Both endpoints asked: secondary fails, primary's quote stands.
+  ['fee-headroom-direct-same-endpoint', ['fee-combination', answeredBy(1)]],
+  // Primary priced from its own block; secondary, asked with it, fails.
+  ['fee-headroom-direct-block', ['fee-combination', answeredBy(1)]],
+  // A block without a base fee: legacy at 125% + the floor.
+  ['fee-headroom-legacy-chain', ['fee-combination', answeredBy(1)]],
+  // Colibri's block fails, and Direct's quote wins over its last resort.
+  // B's header read through Colibri fails, as Colibri's block did.
+  ['fee-headroom-later-type-2-wins', ['fee-combination', answeredBy(1)]],
+  // Primary fails at its block, secondary outright: primary's last resort.
+  ['fee-headroom-direct-last-resort', ['fee-combination', answeredBy(1)]],
+  // freedom-core #189 (main's #752): Colibri's own error, with no RPC
+  // error to prefer, reaches the caller in the core's fixed text, which is
+  // main's too since #681; the pinned router rethrows the adapter's.
+  [
+    'tx-lookup-all-sources-fail',
+    ['adapter-error-text', [[1, 0, failed('Colibri request failed')]]],
+  ],
   // freedom-core #108: a quorum with m = 1 is one endpoint's answer, which
   // the router called verified. The same requests and results, labelled as
   // Direct would label a: unverified, then user-configured once a source

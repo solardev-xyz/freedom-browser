@@ -7,6 +7,7 @@
 
 const {
   FEE_CHECK_MULTIPLE,
+  MIN_PRIORITY_FEE_WEI,
   EVIDENCE_MAX_AGE_MS,
   EVIDENCE_DEADLINE_MS,
   FEE_CHECK_ASK_AGAIN,
@@ -68,10 +69,39 @@ describe('R, the reference fee', () => {
     ).toEqual({ fee: 21n * GWEI, basis: 'header', oneEndpoint: false });
   });
 
-  test("all of B's quotes legacy on an EIP-1559 chain: R is 2·B", () => {
+  test("all of B's quotes legacy on an EIP-1559 chain: R is 2·B + the tip floor", () => {
+    expect(MIN_PRIORITY_FEE_WEI).toBe(50_000_000n);
     expect(
       reference(reply({ base: gwei(10), priority: null, combined: legacyQuote(gwei(30)) }))
-    ).toEqual({ fee: 20n * GWEI, basis: 'header', oneEndpoint: false });
+    ).toEqual({ fee: 20n * GWEI + MIN_PRIORITY_FEE_WEI, basis: 'header', oneEndpoint: false });
+    // None of B's quotes answered: the same.
+    expect(reference(reply({ base: gwei(10) }))).toEqual({
+      fee: 20n * GWEI + MIN_PRIORITY_FEE_WEI,
+      basis: 'header',
+      oneEndpoint: false,
+    });
+  });
+
+  test('a tiny base fee: floored quotes are judged against an R that carries the floor', () => {
+    // Design 0005, A: The headroom and R. A base fee of 0.001 gwei and a
+    // market tip of 0.001 gwei: every quote signs M = 2·0.001 + 0.05 gwei.
+    const base = 1_000_000n;
+    const signed = 2n * base + MIN_PRIORITY_FEE_WEI;
+    const tx = send({
+      type: 2,
+      maxFeePerGas: signed.toString(),
+      maxPriorityFeePerGas: MIN_PRIORITY_FEE_WEI.toString(),
+    });
+    // B's lowest priority is a floored tip, so R is what the quote signs.
+    const floored = reference(
+      reply({ base: base.toString(), priority: MIN_PRIORITY_FEE_WEI.toString() })
+    );
+    expect(floored.fee).toBe(signed);
+    expect(judgeFees(tx, floored)).toMatchObject({ ratio: '1', above: false });
+    // All legacy: 2·B + the floor, the same.
+    const legacy = reference(reply({ base: base.toString(), combined: legacyQuote(gwei(1), 3) }));
+    expect(legacy.fee).toBe(signed);
+    expect(judgeFees(tx, legacy).above).toBe(false);
   });
 
   test("a legacy chain: no base fee, so the combined quote's gas price", () => {
@@ -155,10 +185,12 @@ describe('R, the reference fee', () => {
   });
 
   test('R of 0 is no reference', () => {
-    expect(reference(reply({ base: '0', priority: null }))).toBeNull();
+    expect(reference(reply({ base: '0', priority: '0' }))).toBeNull();
     expect(reference(reply({ combined: legacyQuote('0') }))).toBeNull();
     // A base fee of 0 with a priority fee is a reference.
     expect(reference(reply({ base: '0', priority: '1' })).fee).toBe(1n);
+    // And without one, the floor any type-2 quote signs.
+    expect(reference(reply({ base: '0', priority: null })).fee).toBe(MIN_PRIORITY_FEE_WEI);
   });
 
   test("one endpoint's quote is marked as such", () => {
@@ -220,7 +252,7 @@ describe('judging a send', () => {
   });
 
   test('no reference: the most shown, "couldn\'t compare", never auto-approved', () => {
-    for (const none of [null, reference(reply({ base: '0' }))]) {
+    for (const none of [null, reference(reply({ base: '0', priority: '0' }))]) {
       expect(judgeFees(send({ gasPrice: gwei(20) }), none)).toEqual({
         maxCost: (21_000n * 20n * GWEI).toString(),
         comparable: false,

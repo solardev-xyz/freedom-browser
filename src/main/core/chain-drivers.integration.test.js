@@ -412,12 +412,16 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
     expect(typeError.message).toBe("Cannot read properties of null (reading 'error')");
     x.world.answer = (body) => ({ result: body.method === 'eth_gasPrice' ? '0x10' : '0x2' });
     const quote = await chainData.getFeeQuote(1);
+    // Main's #749 headroom (freedom-core #198): a 2 wei tip is floored at
+    // the fee check's MIN_PRIORITY_FEE_WEI, the core's one constant, and the
+    // fee cap is 2·base + tip.
+    const { MIN_PRIORITY_FEE_WEI } = require('../wallet/fee-check');
     expect(Object.entries(quote)).toEqual([
       ['type', 'eip1559'],
       ['baseFee', '14'],
-      ['maxPriorityFeePerGas', '2'],
-      ['maxFeePerGas', '30'],
-      ['effectiveGasPrice', '16'],
+      ['maxPriorityFeePerGas', String(MIN_PRIORITY_FEE_WEI)],
+      ['maxFeePerGas', String(28n + MIN_PRIORITY_FEE_WEI)],
+      ['effectiveGasPrice', String(14n + MIN_PRIORITY_FEE_WEI)],
       ['source', 'direct'],
       ['verified', false],
       // 0.7.0 (freedom-core #179): Direct combines up to three endpoints'
