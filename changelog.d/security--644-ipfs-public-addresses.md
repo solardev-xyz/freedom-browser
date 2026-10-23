@@ -1,0 +1,3 @@
+- The built-in IPFS node refuses untrusted peers and providers at addresses Freedom identifies as local, on your network or this computer ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Reasoning: an IPFS page could otherwise point the node at them
+  - On IPv6-only networks with NAT64, IPv6 connections can wait while Freedom learns the network's prefixes

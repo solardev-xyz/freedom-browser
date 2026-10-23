@@ -53,7 +53,7 @@
     },
     {
       "name": "freedom-ipfsd",
-      "version": "ipfsd-v0.2.0",
+      "version": "ipfsd-v0.2.1",
       "type": "binary",
       "scope": "runtime",
       "source": {
@@ -78,7 +78,7 @@
         },
         {
           "kind": "copyleft",
-          "details": "Statically links attohttpc 0.30.1 (MPL-2.0), unmodified: the one weak-copyleft crate in ipfsd-v0.2.0's THIRD-PARTY-NOTICES on every platform, as in ipfsd-v0.1.1's and ipfsd-v0.1.0's, which list no GPL or LGPL crate. MPL-2.0 is file-level copyleft, so it reaches no other code, but the binary distributes it in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The audit's 'unmodified, no obligation beyond notice' reading for the npm MPL-2.0 packages does not cover this binary. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9, the checksum freedom-ipfsd's Cargo.lock records at ipfsd-v0.1.0, ipfsd-v0.1.1 and ipfsd-v0.2.0), and the repository https://github.com/sbstp/attohttpc. Since ipfsd-v0.1.1 the release's own THIRD-PARTY-NOTICES names the same source (freedom-core #145); NOTICES keeps its pointer as Freedom's own attribution.",
+          "details": "Statically links attohttpc 0.30.1 (MPL-2.0), unmodified: the one weak-copyleft crate in ipfsd-v0.2.1's THIRD-PARTY-NOTICES on every platform, as in ipfsd-v0.2.0's, ipfsd-v0.1.1's and ipfsd-v0.1.0's, which list no GPL or LGPL crate. MPL-2.0 is file-level copyleft, so it reaches no other code, but the binary distributes it in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The audit's 'unmodified, no obligation beyond notice' reading for the npm MPL-2.0 packages does not cover this binary. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9, the checksum freedom-ipfsd's Cargo.lock records at ipfsd-v0.1.0, ipfsd-v0.1.1, ipfsd-v0.2.0 and ipfsd-v0.2.1), and the repository https://github.com/sbstp/attohttpc. Since ipfsd-v0.1.1 the release's own THIRD-PARTY-NOTICES names the same source (freedom-core #145); NOTICES keeps its pointer as Freedom's own attribution.",
           "recommended_fix": "Keep the NOTICES source pointer. On every ipfsd pin bump, re-read the release's crate list for MPL-2.0 crates and point NOTICES at the exact versions it links."
         },
         {
