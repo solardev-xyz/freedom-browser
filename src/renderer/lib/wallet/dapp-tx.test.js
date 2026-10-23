@@ -342,6 +342,34 @@ describe('dapp-tx approval lifecycle', () => {
     expect(rememberedRules()).toEqual(['https://app.example']);
   });
 
+  // Review of #788, round 3: a dApp's Safe transaction is confirmed for the
+  // site, which main records its payment under (D12).
+  test("a Safe account's transaction is confirmed for the site that asked", async () => {
+    const { elements, confirmSigning, openApproval, txParams } = await loadDappTx();
+    const utils = await import('./wallet-utils.js');
+    utils.isSafeAccount.mockReturnValue(true);
+    window.addEventListener = jest.fn();
+    window.removeEventListener = jest.fn();
+    window.wallet.safeSend = jest.fn(async () => ({
+      success: true,
+      state: { safeTxHash: '0x' + '5a'.repeat(32) },
+    }));
+    await openApproval({ requestChainId: 100 });
+
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    await flush();
+
+    const safeTx = { to: txParams.to, value: '0', data: txParams.data };
+    expect(confirmSigning).toHaveBeenCalledWith('safe-send', LEDGER_INDEX, {
+      tx: safeTx,
+      chainId: 100,
+      origin: 'https://app.example',
+    });
+    const [, , display] = window.wallet.safeSend.mock.calls[0];
+    expect(display.site).toBe('https://app.example');
+  });
+
   test('every Confirm mints a fresh confirmation for exactly the transaction it sends', async () => {
     const { elements, send, confirmSigning, openApproval } = await loadDappTx();
     const first = await openApproval();

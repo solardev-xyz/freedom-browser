@@ -580,7 +580,8 @@ async function sendViaSafeAccount(walletIndex, txParams, site, chainId) {
     // The app's chain, resolved by the provider — main refuses a chain the
     // Safe does not live on rather than executing the calldata elsewhere.
     chainId,
-    await confirmSigning('safe-send', walletIndex, { tx: safeTx, chainId })
+    // Confirmed for this site, which main records its payment under.
+    await confirmSigning('safe-send', walletIndex, { tx: safeTx, chainId, origin: site })
   );
   if (!started.success) {
     throw new Error(started.error || 'Transaction failed');

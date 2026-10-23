@@ -24,50 +24,89 @@
  * committed between a silent send's reading of Payments waiting and its
  * own commit: two silent requests sent together give one payment, and a
  * payment the user confirms meanwhile pauses the silent one. A confirmed
- * send is never refused by the pause; it only waits its turn.
+ * send is never refused by the pause; it only waits its turn. The wait is
+ * bounded, as an account lock's is, and so is the queue; a silent send
+ * doesn't queue at all (takeSiteTurn).
  */
 
 const log = require('../logger');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
-// Per site, the end of its queue of dApp sends, and how many are in it.
-const queues = new Map();
+const { WAIT_TIMEOUT_MS } = require('./nonce-reservations');
+
+// A site's sends waiting for its turn, at most. More are refused at once.
+const MAX_WAITING = 8;
+
+// Site → its turn: held while the site is in the map, with the sends
+// waiting for it in order.
+const turns = new Map();
 
 /** The permission key a site compares as, or '' for none. */
 function siteKey(origin) {
   return typeof origin === 'string' ? normalizeOrigin(origin) : '';
 }
 
-/**
- * Wait for the site's turn among its dApp sends. Resolves with `leave`,
- * to be called once the send's payment is committed or the send has
- * failed; calling it again does nothing. A send without a site has no
- * turn to wait for.
- *
- * @param {string} origin the site's permission key
- * @returns {Promise<() => void>}
- */
-function takeSiteTurn(origin) {
-  const site = siteKey(origin);
-  if (!site) return Promise.resolve(() => {});
-  const queue = queues.get(site) ?? { last: Promise.resolve(), size: 0 };
-  queues.set(site, queue);
-  queue.size += 1;
+function turnBusyError() {
+  const error = new Error(
+    'Another payment for this site is waiting for approval. Try again once it is done.'
+  );
+  error.code = 'SITE_TURN_BUSY';
+  return error;
+}
+
+// Hands the turn straight to the next send waiting, so no newcomer can take
+// it in between; the turn is free once no one waits.
+function leaveOnce(site, turn) {
   let left = false;
-  let markLeft;
-  const done = new Promise((resolve) => {
-    markLeft = resolve;
-  });
-  const leave = () => {
+  return () => {
     if (left) return;
     left = true;
-    markLeft();
-    queue.size -= 1;
-    if (queue.size === 0 && queues.get(site) === queue) queues.delete(site);
+    const next = turn.waiting.shift();
+    if (!next) {
+      turns.delete(site);
+      return;
+    }
+    clearTimeout(next.timer);
+    next.resolve(leaveOnce(site, turn));
   };
-  const turn = queue.last.then(() => leave);
-  queue.last = done;
-  return turn;
+}
+
+/**
+ * Wait for the site's turn among its dApp sends. Resolves with `leave`, to
+ * be called once the send's payment is committed or the send has failed;
+ * calling it again does nothing. The send holding the turn is never cut
+ * short (it may be waiting for a device), but a send waiting for it gives
+ * up after `waitMs` (the account lock's wait), and only MAX_WAITING may
+ * wait at once: either way it fails with SITE_TURN_BUSY, leaving the order
+ * of the others as it was. A send that mustn't wait (`wait: false`, a
+ * silent one: it would only be refused once the payment ahead is waiting)
+ * fails at once while the turn is taken. A send without a site has no turn
+ * to wait for.
+ *
+ * @param {string} origin the site's permission key
+ * @param {{ wait?: boolean, waitMs?: number }} [options]
+ * @returns {Promise<() => void>}
+ */
+function takeSiteTurn(origin, { wait = true, waitMs = WAIT_TIMEOUT_MS } = {}) {
+  const site = siteKey(origin);
+  if (!site) return Promise.resolve(() => {});
+  const turn = turns.get(site);
+  if (!turn) {
+    const fresh = { waiting: [] };
+    turns.set(site, fresh);
+    return Promise.resolve(leaveOnce(site, fresh));
+  }
+  if (!wait || turn.waiting.length >= MAX_WAITING) return Promise.reject(turnBusyError());
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, timer: null };
+    waiter.timer = setTimeout(() => {
+      const index = turn.waiting.indexOf(waiter);
+      if (index !== -1) turn.waiting.splice(index, 1);
+      reject(turnBusyError());
+    }, waitMs);
+    waiter.timer.unref?.();
+    turn.waiting.push(waiter);
+  });
 }
 
 /**
@@ -84,7 +123,7 @@ function takeSiteTurn(origin) {
 async function transactionAutoApprovePaused(origin) {
   const site = siteKey(origin);
   if (!site) return false;
-  if (queues.has(site)) return true;
+  if (turns.has(site)) return true;
   return paymentWaiting(site);
 }
 
@@ -116,4 +155,9 @@ async function paymentWaiting(site) {
   );
 }
 
-module.exports = { sitePaymentWaiting, takeSiteTurn, transactionAutoApprovePaused };
+module.exports = {
+  MAX_WAITING,
+  sitePaymentWaiting,
+  takeSiteTurn,
+  transactionAutoApprovePaused,
+};

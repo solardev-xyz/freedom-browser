@@ -210,8 +210,8 @@ describe('signing handlers require a main-side confirmation', () => {
           'auto-approve is paused while a payment this site requested is waiting'
         ),
       });
-      // Read in the site's turn, which it then leaves.
-      expect(takeSiteTurn).toHaveBeenCalledWith(SITE);
+      // Read in the site's turn, which it doesn't wait for, then leaves.
+      expect(takeSiteTurn).toHaveBeenCalledWith(SITE, { wait: false });
       expect(sitePaymentWaiting).toHaveBeenCalledWith(SITE);
       expect(leave).toHaveBeenCalled();
       expect(signAndRecord).not.toHaveBeenCalled();
@@ -252,8 +252,43 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { confirmation });
       expect(result).toMatchObject({ success: true, hash: '0xhash' });
       // It waits its turn, but the pause never refuses it.
-      expect(takeSiteTurn).toHaveBeenCalledWith(SITE);
+      expect(takeSiteTurn).toHaveBeenCalledWith(SITE, { wait: true });
       expect(sitePaymentWaiting).not.toHaveBeenCalled();
+    });
+
+    // Review of #788, round 3: a silent send doesn't queue for the site's
+    // turn; a confirmed one's wait is bounded, and its error says why.
+    test("a silent send finding the site's turn taken is paused at once", async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+      takeSiteTurn.mockRejectedValue(Object.assign(new Error('busy'), { code: 'SITE_TURN_BUSY' }));
+      await expect(
+        handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
+      ).resolves.toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+        error: expect.stringContaining('auto-approve is paused'),
+      });
+      expect(sitePaymentWaiting).not.toHaveBeenCalled();
+      expect(signAndRecord).not.toHaveBeenCalled();
+    });
+
+    test("a confirmed send that waited too long for the site's turn fails, saying so", async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      takeSiteTurn.mockRejectedValue(
+        Object.assign(new Error('Another payment for this site is waiting for approval.'), {
+          code: 'SITE_TURN_BUSY',
+        })
+      );
+      const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
+      await expect(
+        handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { confirmation })
+      ).resolves.toMatchObject({
+        success: false,
+        code: 'SITE_TURN_BUSY',
+        error: 'Another payment for this site is waiting for approval.',
+      });
+      expect(signAndRecord).not.toHaveBeenCalled();
     });
 
     test('a wallet send has no site and no turn', async () => {
@@ -456,6 +491,41 @@ describe('signing handlers require a main-side confirmation', () => {
       const wrongChain = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 1, { confirmation: again });
       expect(wrongChain).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(startSafeSend).toHaveBeenCalledTimes(1);
+    });
+
+    // Review of #788, round 3: a dApp's SafeTx is confirmed for its site,
+    // which its payment is recorded under and whose turn it takes (D12).
+    test("codex r3: a dApp's SafeTx confirmation binds its site", async () => {
+      const send = async (minted, display) =>
+        handlers['wallet:safe-send']({}, 7, SAFE_TX, display, 100, {
+          confirmation: await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100, ...minted }),
+        });
+
+      // Changed, added or removed between the confirmation and the send.
+      for (const [minted, display] of [
+        [{ origin: SITE }, { site: 'https://other.example' }],
+        [{}, { site: SITE }],
+        [{ origin: SITE }, {}],
+      ]) {
+        await expect(send(minted, display)).resolves.toMatchObject({
+          success: false,
+          code: 'SIGNING_NOT_CONFIRMED',
+        });
+      }
+      expect(startSafeSend).not.toHaveBeenCalled();
+
+      // The same site: the SafeTx starts, recording it as a permission key.
+      await expect(
+        send({ origin: SITE }, { site: `${SITE}/swap`, label: 'a contract call' })
+      ).resolves.toMatchObject({ success: true });
+      expect(startSafeSend).toHaveBeenLastCalledWith(
+        expect.objectContaining({ display: { site: SITE, label: 'a contract call' } })
+      );
+      // The wallet's own SafeTx has no site on either side.
+      await expect(send({}, { recipientName: null })).resolves.toMatchObject({ success: true });
+      expect(startSafeSend).toHaveBeenLastCalledWith(
+        expect.objectContaining({ display: { recipientName: null } })
+      );
     });
 
     test('a locked vault reaches the renderer as VAULT_LOCKED, whatever the core calls it', async () => {

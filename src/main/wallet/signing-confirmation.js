@@ -28,7 +28,9 @@
  *     "Always allow" pauses for that site while the payment waits.
  *   - sign-message / sign-typed-data: the account and a SHA-256 digest of
  *     the message / typed data (canonical JSON, key order ignored).
- *   - safe-send: the Safe, chainId, to, value, data of the SafeTx.
+ *   - safe-send: the Safe, chainId, to, value, data of the SafeTx, and the
+ *     site a dApp's SafeTx is for (`origin`, as a permission key), or none
+ *     for the wallet's own: adding, removing or changing it refuses.
  *   - safe-message: the Safe and a digest of the dApp's {method, params}.
  *   - intent-resend: one held wallet intent as the user saw it: its id,
  *     chainId, sender, nonce and the hash of the signed bytes to be sent
@@ -139,6 +141,11 @@ function txHash(value) {
   return value.toLowerCase();
 }
 
+/** A Safe payment's site, if it has one (a dApp's), as its permission key. */
+function optionalSite(value) {
+  return value === undefined || value === null ? null : site(value);
+}
+
 /** A dApp payment's site, as its permission key: required. */
 function site(value) {
   const key = typeof value === 'string' ? normalizeOrigin(value) : '';
@@ -230,6 +237,7 @@ function bindingFor(kind, accountIndex, payload) {
         to: address(tx.to, 'to'),
         value: quantity(tx.value, 'value') ?? '0',
         data: hexData(tx.data),
+        origin: optionalSite(payload.origin),
       };
     }
     case KINDS.INTENT_RESEND: {

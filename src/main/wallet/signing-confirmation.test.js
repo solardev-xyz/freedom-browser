@@ -172,6 +172,30 @@ describe('signing-confirmation', () => {
     ).not.toThrow();
   });
 
+  // Review of #788, round 3: a dApp's SafeTx binds its site; the wallet's
+  // own has none.
+  test('codex r3: a safe-send binds its site if it has one', () => {
+    const SITE = 'https://swap.example';
+    const SAFE = { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 };
+    const issue = (origin) =>
+      issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) }).token;
+    const use = (token, origin) =>
+      consumeConfirmation(token, KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) });
+
+    expect(() => use(issue(SITE), `${SITE}/swap`)).not.toThrow();
+    expect(() => use(issue(undefined), undefined)).not.toThrow();
+    for (const [issued, used] of [
+      [SITE, 'https://other.example'],
+      [undefined, SITE],
+      [SITE, undefined],
+    ]) {
+      expect(refusal(() => use(issue(issued), used)).code).toBe(NOT_CONFIRMED);
+    }
+    expect(() => issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, origin: '' })).toThrow(
+      'A dApp payment needs the site it is for'
+    );
+  });
+
   test('equivalent encodings of the same transaction match', () => {
     const { token } = issueConfirmation(KINDS.WALLET_SEND, 0, TX);
     expect(() =>

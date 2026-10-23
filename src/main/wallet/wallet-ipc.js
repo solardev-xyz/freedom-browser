@@ -197,14 +197,19 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     );
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
-      // committed (auto-approve-pause.js). In its turn, a silent send stops
-      // if one of the site's payments is waiting; a confirmed one goes on.
-      release = await takeSiteTurn(site);
-      if (how === 'auto-approved' && (await sitePaymentWaiting(site))) {
-        throw notAuthorized(
-          'auto-approve is paused while a payment this site requested is waiting'
-        );
+      // committed (auto-approve-pause.js). A silent send doesn't wait for
+      // one: with another of the site's payments under way, it is paused.
+      // In its turn, it stops if one of the site's payments is waiting; a
+      // confirmed one goes on.
+      const silent = how === 'auto-approved';
+      const paused = () =>
+        notAuthorized('auto-approve is paused while a payment this site requested is waiting');
+      try {
+        release = await takeSiteTurn(site, { wait: !silent });
+      } catch (err) {
+        throw silent && err.code === 'SITE_TURN_BUSY' ? paused() : err;
       }
+      if (silent && (await sitePaymentWaiting(site))) throw paused();
     }
     const result = await signAndRecord(
       tx,
@@ -554,9 +559,21 @@ function registerWalletIpc() {
       // the vault owners' signatures, and every later board step
       // (safe-sign, safe-execute) only acts on this main-held, confirmed
       // SafeTx. There is no auto-approve for Safe sends.
-      authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId }, null);
+      //
+      // A dApp's SafeTx is confirmed for its site (`display.site`): its
+      // payment is recorded under that site and takes the site's turn
+      // (D12), so the token binds it. A wallet's own SafeTx has none.
+      const site = display?.site ?? undefined;
+      authorizeSigning(
+        authorization,
+        CONFIRM_KINDS.SAFE_SEND,
+        safeIndex,
+        { tx, chainId, origin: site },
+        null
+      );
+      const bound = site === undefined ? display : { ...display, site: normalizeOrigin(site) };
       const { startSafeSend } = require('./safe/safe-transactions');
-      return startSafeSend({ safeIndex, tx, display, chainId });
+      return startSafeSend({ safeIndex, tx, display: bound, chainId });
     })
   );
 
