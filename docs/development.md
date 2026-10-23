@@ -56,9 +56,48 @@ Linux, or an **x64 MSVC developer shell** on Windows. No compiler is downloaded
 by the helper build. `npm run build` and `npm run dist` build it before binary
 checks, including each requested macOS architecture. Foreign targets require
 helpers built on the target host and placed in `myotis-bin/<os>-<arch>/`.
-Windows helper compilation/runtime remains unqualified for this candidate;
-missing tooling is a build blocker, not authorization to omit the helper.
+The standalone Windows Node-only supervisor checks passed at `fa14433f`;
+that is not Electron or packaged-app qualification for this merged branch.
+Missing tooling is a build blocker, not authorization to omit the helper.
+On the Agent branch, macOS `npm start` prepares both native supervisors through
+`scripts/prepare-native-supervisors.js`; Linux/Windows development retains the
+explicit Myotis build command. The same hook prepares both packaging inputs,
+and `scripts/sign-native-supervisors.js` composes workspace manifest sealing
+with the Myotis helper's restricted entitlements.
 See [Myotis isolation and qualification](myotis-process-isolation.md).
+
+### Experimental Windows Agent workspace backend
+
+On the Agent Windows branch, build the native workspace helpers on Windows with
+`npm run build:windows-workspace`. This requires an installed MSVC C++ toolchain
+and Rust 1.95 (the pinned source's toolchain); `FREEDOM_CARGO` can select an existing
+Cargo executable. The build downloads checksum-pinned Codex sandbox source and
+uses its locked dependencies. It builds only the sandbox adapter/setup/runner,
+not the Codex agent CLI. Packaging runs this build hook automatically; this
+experimental hook currently requires a native Windows host.
+
+First use requires one-time administrator provisioning of Freedom's restricted
+accounts and network rules. Workloads subsequently run without administrator
+rights. Windows confines writes but permits broad reads. Strictly offline shell
+commands are unavailable: ordinary commands require the existing direct-network
+grant, exact command/directory for allow-once or broader conversation scope when
+selected. Fixed built-in file operations use a separate internal helper path and
+do not acquire an implicit network grant. The workspace approval explains these
+differences from macOS/Linux. Missing helpers
+or incomplete setup fail closed. MXC is not currently selected.
+
+After setup, use a standard-user desktop session (or an existing interactive task
+for that user) for the synthetic qualification scripts:
+
+```powershell
+node scripts/qualify-windows-workspace.js --root C:\freedom-test\qualification
+$env:ELECTRON_RUN_AS_NODE = '1'
+$env:NODE_ENV = 'test'
+& .\node_modules\electron\dist\electron.exe scripts/qualify-windows-controller.js --root C:\freedom-test\qualification
+```
+
+The scripts retain their fixtures and JSONL results. This does not replace the
+packaged-app, first-use UI and installer checks recorded in the Agent roadmap.
 
 ## Repository layout
 
@@ -199,3 +238,14 @@ ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.a
 ```
 
 Surrounding whitespace in the value is ignored. `0`, `false`, `no`, `off` (any case) or an empty value read the same as leaving the variable unset: the dev updater stays off. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
+
+### Local dictation runtime
+
+Development startup and packaging build the offline whisper.cpp CLI from pinned
+source. Install CMake 3.16+ and a C++ toolchain (Xcode command-line tools on macOS,
+MSVC Build Tools on Windows, or a C++ compiler and Make on Linux). Run
+`npm run build:dictation` to prepare it explicitly; set `CMAKE` to an executable
+path if needed. The cached artifact is checked before requiring the compiler.
+Users of packaged Freedom download only the optional speech model, and need none
+of these tools. See [local dictation](agent-dictation.md#on-this-device) for pins,
+privacy boundaries, and qualification.

@@ -47,6 +47,32 @@ describe('signAndSendTransaction (signer-based)', () => {
     });
   });
 
+  it('keeps sensitive domain calldata out of transaction errors and logs', async () => {
+    const secret = 'private-registration-preimage-fixture';
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockBroadcastRawTransaction.mockRejectedValue(new Error(secret));
+    try {
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, signer)).rejects.toThrow('saved operation');
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(secret);
+    } finally { errorLog.mockRestore(); }
+  });
+
+  it('distinguishes a local signing refusal from an uncertain broadcast without retaining its cause', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const refusingSigner = { ...signer, signTransaction: async () => { throw new Error('private-device-error-fixture'); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, refusingSigner)).rejects.toMatchObject({ code: 'DOMAIN_NOT_BROADCAST' });
+      expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain('private-device-error-fixture');
+    } finally { errorLog.mockRestore(); }
+  });
+
   it('fetches the nonce for the signer address, signs, and broadcasts', async () => {
     const result = await signAndSendTransaction(
       {
@@ -191,6 +217,28 @@ describe('signAndSendTransaction (signer-based)', () => {
         signer,
       ),
     ).rejects.toThrow('Insufficient funds for transaction');
+  });
+
+  it.each([
+    ['a phone rejection', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a phone rejection after an earlier attempt reached the phone', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a wrong-account refusal after an earlier attempt reached the phone', { code: 'REMOTE_WRONG_ACCOUNT', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a phone rejection with no attempt record', { code: 'REMOTE_USER_REJECTED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['no window for the QR', { code: 'REMOTE_NO_UI', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout before the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a cancel before the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout after the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a cancel after the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a bad phone response', { code: 'REMOTE_BAD_RESPONSE', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['an uncoded failure', {}, 'DOMAIN_BROADCAST_UNKNOWN'],
+  ])('classifies %s from a phone wallet', async (_label, fields, expected) => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const phone = { ...signer, sendTransaction: async () => { throw Object.assign(new Error('phone'), fields); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', chainId: 1, redactErrors: true,
+      }, phone)).rejects.toMatchObject({ code: expected });
+    } finally { errorLog.mockRestore(); }
   });
 
   describe('signer sendTransaction capability (device broadcasts itself)', () => {

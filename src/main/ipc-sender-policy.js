@@ -25,6 +25,7 @@
  *       INTERNAL the top frame of one of our internal pages
  *                (`renderer/pages/<file>` from internal-pages.json);
  *       SETTINGS the top frame of settings.html;
+ *       AGENT_LAUNCHER settings.html or home.html (open the UI only);
  *       PROFILE_MANAGER settings.html or profiles.html.
  *     `ipc-sender-policy.test.js` parses webview-preload.js and fails if a
  *     channel is added there without a tier here, or given a different tier.
@@ -55,6 +56,7 @@ const TIER = Object.freeze({
   PUBLIC: 'public',
   INTERNAL: 'internal',
   SETTINGS: 'settings',
+  AGENT_LAUNCHER: 'agent-launcher',
   PROFILE_MANAGER: 'profile-manager',
 });
 
@@ -145,6 +147,24 @@ const INTERNAL_CHANNELS = [
 
 // freedomAPI methods wrapped in guardSettingsPage.
 const SETTINGS_CHANNELS = [
+  'agent:dictation:state',
+  'agent:dictation:choose',
+  'agent:dictation:install',
+  'agent:dictation:cancel',
+  'agent:provider:get-status',
+  'agent:provider:get-catalog',
+  'agent:provider:refresh-models',
+  'agent:provider:set-preferences',
+  'agent:provider:test-connection',
+  'agent:provider:configure-hosted',
+  'agent:provider:configure-ollama',
+  'agent:provider:login-subscription',
+  'agent:provider:cancel-login',
+  'agent:provider:submit-login',
+  'agent:provider:select-model',
+  'agent:provider:remove',
+  'agent:provider:clear',
+
   'adblock:add-allowlist-host',
   'adblock:remove-allowlist-host',
   'ant:cache-clear',
@@ -181,6 +201,7 @@ const WEBVIEW_CHANNEL_TIERS = new Map([
   ...INTERNAL_CHANNELS.map((c) => [c, TIER.INTERNAL]),
   ...SETTINGS_CHANNELS.map((c) => [c, TIER.SETTINGS]),
   ...PROFILE_MANAGER_CHANNELS.map((c) => [c, TIER.PROFILE_MANAGER]),
+  ['agent:open', TIER.AGENT_LAUNCHER],
 ]);
 
 function senderType(event) {
@@ -246,6 +267,13 @@ function internalPageFileOf(event) {
  */
 function isSenderAllowed(channel, event) {
   if (isChromeSender(event)) return true;
+  // The isolated PDF worker is a separate BrowserWindow, not chrome or a tab.
+  // Only its result channel crosses this boundary; PdfProcessor additionally
+  // matches the live window and job ID before accepting a result.
+  if (channel === 'agent:pdf-processor:result') {
+    return senderType(event) === 'window' &&
+      topFrameFilePath(event) === path.join(PAGES_DIR, 'pdf-processor.html');
+  }
   const tier = WEBVIEW_CHANNEL_TIERS.get(channel);
   if (!tier) return false;
   // Read-only bootstrap answers, safe for anyone. Not narrowed to webviews:
@@ -257,8 +285,28 @@ function isSenderAllowed(channel, event) {
   if (!file) return false;
   if (tier === TIER.INTERNAL) return true;
   if (tier === TIER.SETTINGS) return file === SETTINGS_FILE;
+  if (tier === TIER.AGENT_LAUNCHER) return file === SETTINGS_FILE || file === internalPages.routable.home;
   if (tier === TIER.PROFILE_MANAGER) return file === SETTINGS_FILE || file === PROFILES_FILE;
   return false;
+}
+
+// Settings keys `settings:save` takes only from particular pages (or the
+// chrome). The channel itself is INTERNAL, but the AI master switch is the
+// consent step for Freedom Agent: it is turned on in Settings, so a script
+// running in any other internal page (an XSS in history, say) must not be able
+// to opt the user in. The start page writes `aiInvitationDismissed` only.
+const SETTINGS_KEY_WRITERS = new Map([['enableAi', new Set([SETTINGS_FILE])]]);
+
+/**
+ * @returns {string[]} the keys of `settings` that `event`'s sender may not
+ *   write over `settings:save`; empty when the whole save is allowed.
+ */
+function refusedSettingsKeys(event, settings) {
+  if (!settings || typeof settings !== 'object' || isChromeSender(event)) return [];
+  const file = internalPageFileOf(event);
+  return [...SETTINGS_KEY_WRITERS]
+    .filter(([key, files]) => Object.prototype.hasOwnProperty.call(settings, key) && !files.has(file))
+    .map(([key]) => key);
 }
 
 function describeSender(event) {
@@ -355,6 +403,8 @@ module.exports = {
   installIpcSenderPolicy,
   isSenderAllowed,
   isChromeSender,
+  refusedSettingsKeys,
+  describeSender,
   internalPageFileForUrl,
   isChromeIndexUrl,
   TIER,

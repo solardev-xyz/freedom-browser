@@ -1,0 +1,272 @@
+'use strict';
+
+const vm = require('vm');
+const { PageTools } = require('./page-tools');
+
+function fixture({ manual = false, timeoutMs = 500 } = {}) {
+  const context = new EventTarget();
+  const window = {};
+  const tool = {
+    name: 'echo',
+    description: 'Echo a value',
+    window,
+    inputSchema: JSON.stringify({ type: 'object', properties: { value: { type: 'string' } } }),
+  };
+  context.getTools = jest.fn(async () => [tool, { ...tool, name: 'child_tool', window: {} }]);
+  context.executeTool = jest.fn(async (_tool, args) => args);
+  const isolate = vm.createContext({
+    document: {
+      modelContext: context,
+      forms: manual
+        ? [
+            {
+              getAttribute: () => 'echo',
+              hasAttribute: () => false,
+              action: 'https://example.test/',
+              method: 'post',
+            },
+          ]
+        : [],
+    },
+    window,
+    isSecureContext: true,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+  });
+  let identity = 'document_one';
+  const evaluate = (fn, args) =>
+    vm.runInContext(`(${fn.toString()})(...${JSON.stringify(args)})`, isolate);
+  const page = new PageTools({
+    evaluate,
+    identity: () => identity,
+    url: () => 'https://example.test/',
+    timeoutMs,
+  });
+  return {
+    page,
+    context,
+    tool,
+    isolate,
+    navigate: () => {
+      identity = 'document_two';
+      page.invalidate();
+    },
+  };
+}
+
+async function request(page) {
+  const { tools } = await page.list();
+  const input = { toolRef: tools[0].toolRef, arguments: { value: 'hello' } };
+  return { input, execution: { expectedPageTool: JSON.stringify(await page.inspect(input)) } };
+}
+
+test('native discovery excludes frames and exposes bounded untrusted schemas', async () => {
+  const { page, tool } = fixture();
+  expect(await page.list()).toMatchObject({
+    available: true,
+    untrusted: true,
+    tools: [{ name: 'echo' }],
+  });
+  tool.description = 'a'.repeat(2_001);
+  expect(await page.list()).toMatchObject({ tools: [], truncated: true });
+});
+
+test.each(['', '  ', 'pay\u202eement', 'pay\u200bment', 'pay\nment', 'pay\u{E0061}', 'pay\u180e', 'pay\ufff9', 'pay\u2028', null, 42])('refuses malformed or invisible-control tool names: %p', async name => {
+  const { page, tool } = fixture(); tool.name = name;
+  expect(await page.list()).toMatchObject({ tools: [], truncated: true });
+});
+
+test('retains international names behind opaque references', async () => {
+  const { page, tool } = fixture(); tool.name = '検索';
+  const result = await page.list();
+  expect(result.tools[0].name).toBe('検索');
+  expect(result.tools[0].toolRef).not.toContain('検索');
+});
+
+test('unsupported contexts have no executable fallback', async () => {
+  const { page, isolate } = fixture();
+  vm.runInContext('document.modelContext = undefined', isolate);
+  expect(await page.list()).toMatchObject({ available: false, tools: [] });
+});
+
+test('document.domain discovery rejection is unavailable and invalidates old references', async () => {
+  const { page, context } = fixture();
+  const { input, execution } = await request(page);
+  context.getTools.mockRejectedValue(new DOMException(
+    'document.modelContext cannot be used when document.domain is enabled.',
+    'SecurityError'
+  ));
+  expect(await page.preview()).toMatchObject({ tools: [] });
+  expect(await page.list()).toMatchObject({
+    available: false,
+    tools: [],
+    message: 'WebMCP unavailable on this page. Continue with normal browser tools.',
+  });
+  await expect(page.call(input, execution)).rejects.toMatchObject({ code: 'STALE_ELEMENT_REFERENCE' });
+  expect(context.executeTool).not.toHaveBeenCalled();
+});
+
+test.each([
+  new Error('Discovery failed'),
+  new DOMException('Another security failure', 'SecurityError'),
+  new Error('document.modelContext cannot be used when document.domain is enabled.'),
+])('other discovery errors remain visible: %s', async (error) => {
+  const { page, context } = fixture();
+  context.getTools.mockRejectedValue(error);
+  await expect(page.list()).rejects.toBe(error);
+  await expect(page.preview()).rejects.toBe(error);
+});
+
+test('exact approval binds document, definition and arguments', async () => {
+  const { page, context } = fixture();
+  const { input, execution } = await request(page);
+  await expect(page.call(input)).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+  await expect(
+    page.call({ ...input, arguments: { value: 'changed' } }, execution)
+  ).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+  expect(context.executeTool).not.toHaveBeenCalled();
+  expect(await page.call(input, execution)).toMatchObject({
+    status: 'completed',
+    output: '{"value":"hello"}',
+    untrusted: true,
+  });
+  expect(context.executeTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(['event', 'definition', 'navigation', 'rediscovery', 'stop'])(
+  '%s invalidates an approved reference before execution',
+  async (change) => {
+    const { page, context, tool, navigate } = fixture();
+    const { input, execution } = await request(page);
+    if (change === 'event') context.dispatchEvent(new Event('toolchange'));
+    if (change === 'definition') tool.description = 'Replaced';
+    if (change === 'navigation') navigate();
+    if (change === 'rediscovery') await page.list();
+    if (change === 'stop') page.cancel();
+    await expect(page.call(input, execution)).rejects.toMatchObject({
+      code: 'STALE_ELEMENT_REFERENCE',
+    });
+    expect(context.executeTool).not.toHaveBeenCalled();
+  }
+);
+
+test('stop forwards abort but does not promise to undo website effects', async () => {
+  const { page, context } = fixture();
+  let signal;
+  context.executeTool.mockImplementation((_tool, _args, options) => {
+    signal = options.signal;
+    return new Promise(() => {});
+  });
+  const { input, execution } = await request(page);
+  const abort = new AbortController();
+  const pending = page.call(input, { ...execution, signal: abort.signal });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  abort.abort();
+  expect(await pending).toMatchObject({ status: 'cancelled', mayHaveChanged: true });
+  expect(signal.aborted).toBe(true);
+});
+
+test('timeout and navigation never replay a potentially applied call', async () => {
+  const { page, context, navigate } = fixture({ timeoutMs: 60 });
+  context.executeTool.mockImplementation(() => new Promise(() => {}));
+  let args = await request(page);
+  expect(await page.call(args.input, args.execution)).toMatchObject({
+    status: 'timed_out',
+    mayHaveChanged: true,
+  });
+  args = await request(page);
+  const pending = page.call(args.input, args.execution);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  navigate();
+  expect(await pending).toMatchObject({ status: 'outcome_unknown', mayHaveChanged: true });
+  expect(context.executeTool).toHaveBeenCalledTimes(2);
+  // Dispose the still-live isolated document in this simulated navigation.
+  await page.bridge('cancel');
+});
+
+test('a decoy same-name form cannot promise manual submission or a different destination', async () => {
+  const { page, context } = fixture({ manual: true });
+  context.executeTool.mockResolvedValue('{"submitted":true}');
+  const { input, execution } = await request(page);
+  const metadata = await page.inspect(input);
+  expect(metadata).not.toHaveProperty('manualSubmit');
+  expect(metadata).not.toHaveProperty('formAction');
+  expect(await page.call(input, execution)).toMatchObject({ status: 'completed' });
+  expect(await page.list()).toMatchObject({
+    execution: { status: 'completed', output: '{"submitted":true}' },
+  });
+  expect(context.executeTool).toHaveBeenCalledTimes(1);
+});
+
+test('a genuinely pending native tool stays pollable without a manual-submission assurance', async () => {
+  const { page, context } = fixture({ manual: true });
+  let finish;
+  context.executeTool.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { input, execution } = await request(page);
+  expect(await page.call(input, execution)).toMatchObject({ status: 'running' });
+  finish('submitted by the user');
+  await Promise.resolve();
+  expect((await page.list()).execution).toMatchObject({ status: 'completed', output: 'submitted by the user' });
+  expect(context.executeTool).toHaveBeenCalledTimes(1);
+});
+
+test('large output is bounded and raw website exceptions are not propagated', async () => {
+  const { page, context } = fixture();
+  context.executeTool.mockResolvedValue('x'.repeat(40_000));
+  let args = await request(page);
+  const result = await page.call(args.input, args.execution);
+  expect(result.output).toHaveLength(32_768);
+  expect(result.outputTruncated).toBe(true);
+  context.executeTool.mockRejectedValue(new Error('Untrusted error body'));
+  args = await request(page);
+  expect(await page.call(args.input, args.execution)).toMatchObject({
+    status: 'failed',
+    errorCategory: 'ToolError',
+  });
+});
+
+test('chrome preview filters unsupported tools without invalidating agent approval references', async () => {
+  const { page, context, tool } = fixture();
+  const { input, execution } = await request(page);
+  context.getTools.mockResolvedValue([tool, { ...tool, name: 'unsupported', inputSchema: JSON.stringify({ $ref: '#/definitions/input' }) }]);
+  const preview = await page.preview();
+  expect(preview.tools).toEqual([{ name: tool.name, description: tool.description }]);
+  expect(preview.truncated).toBe(true);
+  expect(preview.tools[0]).not.toHaveProperty('toolRef');
+  expect(context.executeTool).not.toHaveBeenCalled();
+  expect(JSON.stringify(await page.inspect(input))).toBe(execution.expectedPageTool);
+  expect((await page.call(input, execution)).status).toBe('completed');
+});
+
+test('chrome preview rejects results from a replaced document', async () => {
+  const { page, context, navigate } = fixture();
+  let finish;
+  context.getTools.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = page.preview();
+  navigate();
+  finish([]);
+  await expect(pending).rejects.toMatchObject({ code: 'STALE_ELEMENT_REFERENCE' });
+});
+
+// Guard: the adapter has no manual-submission state (S6), so no runtime code,
+// approval card or model prompt may describe one.
+test('no source still emits, renders or prompts about a manual-submission state', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.resolve(__dirname, '../../..');
+  const offenders = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== 'vendor') visit(file); continue; }
+      if (!/\.(js|mjs|html)$/.test(entry.name) || entry.name.endsWith('.test.js')) continue;
+      // The literal tokens, and the prose a model prompt would use for them.
+      if (/awaiting_user|manualSubmit|awaiting manual|manual (?:form )?submission/i.test(fs.readFileSync(file, 'utf8'))) {
+        offenders.push(path.relative(root, file));
+      }
+    }
+  };
+  visit(root);
+  expect(offenders).toEqual([]);
+});

@@ -8,7 +8,8 @@
 //
 // It uses the real `build` config from package.json, `files` lists included,
 // and drops only what cannot run on a linux host for another platform:
-// native rebuilds (every native dependency ships prebuilds), signing, fuses
+// native rebuilds (every native dependency ships prebuilds), the beforePack
+// supervisor compilation (requires the target OS), signing, fuses
 // (@electron/fuses cannot flip a mac binary from linux), and the rest of
 // scripts/after-pack.js (the Windows VC++ runtime bundling needs the
 // redistributable). Release builds still run the same check from
@@ -33,6 +34,7 @@ const pkg = require(path.join(root, 'package.json'));
 const config = {
   ...pkg.build,
   npmRebuild: false,
+  beforePack: null,
   electronFuses: null,
   mac: { ...pkg.build.mac, identity: null, notarize: false },
   directories: { ...pkg.build.directories, output: path.join('dist', 'asar-check') },

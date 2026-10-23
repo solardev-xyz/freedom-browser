@@ -465,6 +465,7 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
         // confirmation; it still waits on the lock release for the real signal.
         await (onQuit ? onQuit(request) : Promise.resolve());
       } else {
+        if (options.allowFocus === false) throw new Error('This profile is held by an automation runtime. Stop that runtime or open a different profile.');
         await onFocusWindow(request);
       }
       writeAck(request, { ok: true });

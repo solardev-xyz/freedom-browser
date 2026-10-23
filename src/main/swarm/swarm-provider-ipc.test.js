@@ -365,6 +365,51 @@ describe('swarm-provider-ipc', () => {
       mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
+    test('Agent custody refuses an auto-approved write; a prompted one runs', async () => {
+      const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+      const chrome = { id: 1 };
+      const guest = { ...fakeWebContents(), hostWebContents: chrome };
+      mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
+      mockPublishData.mockResolvedValue({ reference: 'abc', bzzUrl: 'bzz://abc', tagUid: null, batchIdUsed: 'b' });
+      const handler = ipcHandlers['swarm:provider-execute'];
+      const call = (method, meta) => handler(
+        { sender: chrome },
+        { method, params: { data: 'x', contentType: 'text/plain' }, origin: 'myapp.eth', meta }
+      );
+      setAgentPageCustody(guest, true);
+      try {
+        for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
+          const refused = await call('swarm_publishData', meta);
+          expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+        }
+        const send = await call('swarm_sendPss', { webContentsId: 9, approval: 'auto' });
+        expect(send.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+        expect(mockPublishData).not.toHaveBeenCalled();
+
+        mockPreFlightOk();
+        const prompted = await call('swarm_publishData', { webContentsId: 9, approval: 'user' });
+        expect(prompted.result).toEqual({ reference: 'abc', bzzUrl: 'bzz://abc' });
+      } finally {
+        setAgentPageCustody(guest, false);
+      }
+
+      mockPreFlightOk();
+      const owned = await call('swarm_publishData', { webContentsId: 9, approval: 'auto' });
+      expect(owned.result).toEqual({ reference: 'abc', bzzUrl: 'bzz://abc' });
+      // An automatic request main cannot tie to a guest of this window is refused.
+      for (const meta of [{ approval: 'auto' }, { webContentsId: 10, approval: 'auto' }]) {
+        const refused = await call('swarm_publishData', meta);
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      }
+      const otherWindow = await handler(
+        { sender: { id: 2 } },
+        { method: 'swarm_publishData', params: { data: 'x' }, origin: 'myapp.eth', meta: { webContentsId: 9, approval: 'auto' } }
+      );
+      expect(otherWindow.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      expect(mockPublishData).toHaveBeenCalledTimes(2);
+    });
+
     test('a batch the network does not know yet is node-not-ready, not an internal error', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockPreFlightOk();

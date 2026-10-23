@@ -65,6 +65,7 @@ let closeBtn = null;
 // never imports tabs.js — tabs.js imports us for the per-tab hooks, and
 // importing back would create a cycle.
 let getActiveWebview = null;
+let restorePageFocus = null;
 
 // Per-tab find state, keyed by the tab's <webview> element. The key is the
 // webview rather than a tab id because every hook tabs.js calls already has
@@ -394,11 +395,12 @@ export const closeFindBar = () => {
   }
   paintResult(null);
   findBarEl.hidden = true;
-  // Focus returns to the searched page (Chrome restores focus to the page
-  // content when the find session ends).
+  // Normally return to the searched page. The host can route focus to an
+  // interaction boundary instead while automation controls that page.
   if (webview) {
     try {
-      webview.focus();
+      if (restorePageFocus) restorePageFocus(webview);
+      else webview.focus();
     } catch {
       // Webview may already be detached (tab closed mid-session).
     }
@@ -491,8 +493,9 @@ export const notifyFindBarTabClosed = (webview) => {
   }
 };
 
-export const initFindBar = ({ getActiveWebview: getWebview } = {}) => {
+export const initFindBar = ({ getActiveWebview: getWebview, restoreFocus } = {}) => {
   getActiveWebview = getWebview || null;
+  restorePageFocus = typeof restoreFocus === 'function' ? restoreFocus : null;
   sessions.clear();
   findBarEl = document.getElementById('find-bar');
   findInput = document.getElementById('find-bar-input');

@@ -57,6 +57,7 @@ const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-
 const { isNoUsableBatchError } = require('./batch-errors');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
+const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -189,6 +190,39 @@ function notAuthorized(reason) {
       data: { reason },
     },
   };
+}
+
+// Methods a site's auto-approve rule (publish, feeds, signing, messaging)
+// may let run without a prompt. The renderer reports the path it took in
+// `meta.approval` ('user' after a prompt, 'auto' when a rule answered) and
+// names the requesting guest in `meta.webContentsId`; main's own custody
+// reading decides whether an automatic path may run. A guest in Agent
+// custody, or an automatic request main cannot attribute to a guest of the
+// sending window, is refused — the same refusal wallet-ipc.js applies to
+// dApp auto-approve rules.
+const AUTO_APPROVABLE_METHODS = new Set([
+  'swarm_publishData',
+  'swarm_publishFiles',
+  'swarm_publishChunk',
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_getSigningIdentity',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
+]);
+
+function agentCustodyRefusal(sender, method, meta) {
+  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
+  const webContentsId = meta?.webContentsId;
+  if (
+    isAgentPageId(webContentsId) ||
+    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
+  ) {
+    return notAuthorized('agent_custody');
+  }
+  return null;
 }
 
 function notConnected() {
@@ -339,9 +373,11 @@ function reservePermissionFreeReadBytes(origin, bytes) {
  * @param {string} method
  * @param {*} params
  * @param {string} origin - Normalized origin from renderer
- * @param {{ webContentsId?: number }} [meta] - Renderer-supplied routing info
- *   (trusted like origin — the renderer is Freedom's own code). Only
- *   swarm_subscribe uses it, to target message delivery at the webview.
+ * @param {{ webContentsId?: number, approval?: 'user'|'auto' }} [meta] -
+ *   Renderer-supplied routing info (trusted like origin — the renderer is
+ *   Freedom's own code). swarm_subscribe uses webContentsId to target
+ *   message delivery at the webview; the IPC handler checks both fields
+ *   against Agent custody first (agentCustodyRefusal).
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -2163,9 +2199,10 @@ function registerSwarmProviderIpc() {
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
 
-  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (_event, args) => {
+  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
-    return executeSwarmMethod(method, params, origin, meta);
+    return agentCustodyRefusal(event?.sender, method, meta) ||
+      executeSwarmMethod(method, params, origin, meta);
   });
 
   log.info('[SwarmProvider] IPC handler registered');

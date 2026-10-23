@@ -19,7 +19,7 @@ import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl, applyDnsNameIdentity } from './url-utils.js';
 import { state } from './state.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
-import { getDisplayUrlForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, isTabAgentOwned } from './tabs.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -96,6 +96,27 @@ const READ_ONLY_METHODS = [
   'web3_clientVersion',
   'web3_sha3',
 ];
+const AGENT_WALLET_METHODS = new Set([
+  'eth_requestAccounts',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+]);
+
+async function offerAgentWalletRequest(webview, method, params, displayUrl, permissionKey) {
+  if (!AGENT_WALLET_METHODS.has(method)) return { handled: false };
+  const rendererTabId = Number(webview?.dataset?.tabId);
+  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return { handled: false };
+  const chainId = parseInt(await getCurrentChainId(webview), 16);
+  const response = await window.electronAPI?.handleAgentWalletRequest?.(rendererTabId, {
+    method,
+    params,
+    displayUrl,
+    permissionKey,
+    chainId,
+  });
+  return response && typeof response === 'object' ? response : { handled: false };
+}
 
 /**
  * Get or create provider state for a webview
@@ -209,6 +230,21 @@ async function handleProviderRequest(webview, request) {
   try {
     let result;
 
+    const agentWallet = await offerAgentWalletRequest(
+      webview,
+      method,
+      params,
+      displayUrl,
+      permissionKey
+    );
+    if (getNavigationGeneration(webview) !== generation) return;
+    if (agentWallet.handled) {
+      if (agentWallet.error) throw agentWallet.error;
+      result = agentWallet.result;
+      sendProviderResponse(webview, id, result, null);
+      return;
+    }
+
     // Handle different method categories
     if (method === 'eth_chainId') {
       result = await getCurrentChainId(webview);
@@ -269,7 +305,7 @@ async function handleProviderRequest(webview, request) {
       // Auto-approve only for contract calls with a matching rule (never
       // plain ETH transfers, never Safes — their sends are a multi-step
       // signature ceremony, not a background signature)
-      if (!isSafeAccount(permission.walletIndex) && selector && txParams?.to
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && !isSafeAccount(permission.walletIndex) && selector && txParams?.to
         && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId)
       ) {
         const vaultStatus = await window.identity?.getStatus?.();
@@ -290,7 +326,7 @@ async function handleProviderRequest(webview, request) {
         parseInt(await getCurrentChainId(webview), 16);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
-      if (permission.autoApprove?.signing) {
+      if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && permission.autoApprove?.signing) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);

@@ -217,6 +217,15 @@ visibly; a repeat sweep rewrites ~14 files by 1–2/255 of gradient dithering, s
 byte equality is not the bar. See the header of
 `test-e2e/renderer-screenshots.spec.js`.
 
+When a Linux machine is unavailable, dispatch `ci.yml` on the review branch
+with `renderer_baselines=true`. The `renderer-baseline-candidates` artifact
+contains a fresh render of every surface in both themes. Capture still runs the
+ordinary comparisons, including failures, and never changes the references in
+Git. Inspect candidates against the committed images, adopt only intended visible
+changes, and let the ordinary
+pull-request comparison validate the resulting commit. Never adopt macOS renders
+as Linux references.
+
 ## Checks before opening or approving a PR that touches the renderer
 
 1. Run the tour from `.claude/skills/run-freedom/` in both themes, or at

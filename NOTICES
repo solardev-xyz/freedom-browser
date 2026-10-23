@@ -2,7 +2,7 @@ Third-Party Notices
 
 This software includes the following third-party components.
 
-Every component listed here ships inside the packaged application. The
+The bundled components listed below ship inside the packaged application. The
 inventory is derived from `package.json`'s `build.extraResources` (the
 external binaries and native addons under `resources/`) and from what
 `build.files`' `src/**/*` pattern commits into `app.asar` — the pre-built
@@ -13,7 +13,37 @@ packaging step: run `npm test` before you build, because packaging itself
 refuses only one thing, a missing `LICENSES.chromium.html`
 (`scripts/build.js`).
 
+Optional local dictation downloads
+  Whisper model: MIT, https://github.com/openai/whisper
+  The model downloads only when the user selects local dictation. Its license
+  accompanies the model as NOTICES.txt. Runtime and model license texts are
+  included in src/main/agent/dictation-local-notices.txt.
+
 == External binaries and native addons (resources/) ==
+
+whisper.cpp
+  License: MIT; bundled miniaudio: MIT-0; stb_vorbis: MIT
+  https://github.com/ggml-org/whisper.cpp
+  Freedom builds version 1.9.5 from checksum-pinned source. The offline CLI,
+  ggml, and decoder utilities are built together. Full license texts ship
+  in resources/dictation-runtime/NOTICES.txt. No Python runtime is bundled.
+
+Codex Windows sandbox
+  License: Apache-2.0
+  https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/windows-sandbox-rs
+  Windows only. Freedom builds the sandbox library and helpers with separate
+  Freedom accounts, mutexes, firewall rules and helper names. The wrapper is
+  Freedom's own MPL-2.0 code. Upstream LICENSE and NOTICE accompany the binaries.
+  CODEX-DEPENDENCIES.txt and CODEX-DEPENDENCIES.json in resources/windows-workspace/
+  contain the selected Rust dependency notices, authors and exact source links.
+
+  Upstream NOTICE:
+  OpenAI Codex
+  Copyright 2025 OpenAI
+
+  This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+  Copyright (c) 2016-2022 Florian Dehau
+  Copyright (c) 2023-2025 The Ratatui Developers
 
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
@@ -207,6 +237,13 @@ Chain and token marks (sidebar and wallet icons)
   Freedom ships them only to identify the chain or token each labels, and
   claims no ownership of them. No per-mark redistribution terms have been
   confirmed; see LICENSE_AUDIT.md.
+
+Model provider marks
+  The marks under `src/renderer/assets/provider-logos/` belong to OpenAI,
+  Anthropic, xAI, Meta, OpenRouter, Venice, NEAR AI and Ollama. They identify
+  their provider integrations; Freedom claims no ownership. Official source
+  URLs are recorded in that directory's README.md. Per-mark redistribution
+  terms have not been independently confirmed.
 
 Everything else committed under `src/` — the internal-page artwork and
 wordmark in `src/renderer/pages/images/`, and the Myotis supervisor

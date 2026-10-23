@@ -102,6 +102,10 @@ const element = (tagName, attrs = '') => {
   }
   const node = {
     tagName,
+    getAttribute(name) {
+      const match = attrs.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+      return match ? decode(match[1]) : null;
+    },
     id: (attrs.match(/\bid="([^"]*)"/) || [])[1] || '',
     classList: { contains: (name) => classes.has(name) },
     style,
@@ -177,7 +181,7 @@ const NAV_LABELS = Object.fromEntries(
 // `data-title` to be named by until then (Chains, RPC Providers).
 const PANEL_TAGS = [
   ...SOURCE.matchAll(
-    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?>/g
+    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?[^>]*>/g
   ),
 ];
 const PANEL_NAV = Object.fromEntries(PANEL_TAGS.map(([, id, nav]) => [id, nav]));
@@ -209,8 +213,8 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(18);
-    expect(Object.keys(NAV_LABELS)).toHaveLength(10);
+    expect(sections).toHaveLength(21);
+    expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
 
@@ -237,13 +241,49 @@ describe('the markup reader these tests are built on', () => {
   });
 });
 
+// The AI subpages ship `hidden` (AI is off by default) and agent-settings.js
+// lifts that once AI is on; this flips the parsed markup the same way.
+const AI_PAGES = ['providers', 'voice'];
+function withAi(enabled, run) {
+  const pages = CONTENT.children.filter((child) => AI_PAGES.includes(child.id));
+  const before = pages.map((page) => page.hidden);
+  pages.forEach((page) => {
+    page.hidden = !enabled;
+  });
+  try {
+    return run();
+  } finally {
+    pages.forEach((page, i) => {
+      page.hidden = before[i];
+    });
+  }
+}
+
 describe('buildSettingsSearchIndex', () => {
+  test('finds nothing on the AI subpages while AI is off, and all of it once on', () => {
+    const aiResults = () =>
+      ['dictation', 'language', 'audio privacy', 'models & providers'].flatMap((query) =>
+        search(query).filter((result) => AI_PAGES.includes(result.sectionId))
+      );
+    // Shipped markup is the AI-off state.
+    expect(AI_PAGES.map((id) => CONTENT.children.find((child) => child.id === id).hidden)).toEqual(
+      [true, true]
+    );
+    expect(aiResults()).toEqual([]);
+    // The AI entry itself stays findable: it is where AI is turned on.
+    expect(labelsOf(search('enable ai'))).toContain('Enable AI features');
+    expect(withAi(true, () => labelsOf(aiResults()))).toEqual(
+      expect.arrayContaining(['Voice dictation', 'Language', 'Audio privacy', 'Models & providers'])
+    );
+  });
+
+
   test('indexes one entry per section, named by its own heading', () => {
-    const sections = index().filter(isSectionEntry);
+    const sections = withAi(true, () => index().filter(isSectionEntry));
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(17);
+    expect(sections).toHaveLength(20);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -259,6 +299,32 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
     expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
     expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
+    expect(named('voice')).toMatchObject({
+      label: 'Voice dictation',
+      section: 'AI › Voice dictation',
+    });
+  });
+
+  test('keeps a provider catalogue searchable while its detail heading changes', () => {
+    const content = parseFragment(
+      '<section class="section" id="providers" data-search-title="Models &amp; providers"><h2 class="section-title">Ollama</h2></section>'
+    );
+    expect(buildSettingsSearchIndex(content, { groups: { providers: 'AI' } })[0]).toMatchObject({
+      sectionId: 'providers',
+      label: 'Models & providers',
+      section: 'AI › Models & providers',
+    });
+  });
+
+  test('keeps the service detail route for a preference revealed from another section', () => {
+    const content = parseFragment(
+      '<section class="section" id="voice"><h2 class="section-title">Voice dictation</h2><div class="row" data-settings-route="ai/voice/openrouter"><p class="row-label">Audio privacy</p></div></section>'
+    );
+    expect(
+      buildSettingsSearchIndex(content).find(
+        (entry) => entry.label === 'Audio privacy'
+      )
+    ).toMatchObject({ sectionId: 'voice', route: 'ai/voice/openrouter' });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {

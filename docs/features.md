@@ -182,11 +182,62 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
+  - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
+  - `Cmd+Enter` / `Ctrl+Enter`: Start dictation (only with the Agent composer focused; does not send the prompt). This and Show Agent exist only while AI is on (Settings → AI): with AI off they are not listed in Settings > Shortcuts, do nothing, and leave their keys free for other shortcuts; a remap of either is kept for when AI is turned back on
   - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
+
+## Freedom Agent
+
+AI is off by default for each profile. Enable it in **Settings → AI**
+(`freedom://settings/ai`), then connect your own model provider or a local Ollama
+model there. The start page offers a dismissible invitation to try it. Once
+enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to research pages, compare sources,
+or work on a project. Conversations appear over the page; Agent-first mode gives
+the conversation the full window.
+
+A new chat offers starting prompts below the composer for a game, personal
+website, source comparison or project review. Choosing one starts that task
+immediately with any attached files. You can also write your own prompt. Publishing
+and purchases keep their normal approval steps.
+
+- **Browser work:** Agent uses conversation-owned tabs and can delegate independent
+  work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **What's new:** A compact glass list on the built-in start page currently highlights
+  Freedom Agent. The Freedom Agent row shows On/Off and opens Agent when enabled or AI
+  Settings when disabled. Viewing a highlight does not enable AI or start a task.
+- **Project work:** Create a managed workspace or attach an existing folder read-only.
+  Grant editing separately. Drag files into the composer to attach them to a prompt.
+  File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **AI settings:** Provider connections, model discovery, favourites and the default
+  model for new chats live in Settings → AI. An existing conversation keeps its
+  model. Turning AI off stops Agent work and pending approvals, hides Agent entry
+  points and prevents model requests; it keeps chats, connections, attachments and
+  projects. Already-running preview servers keep running. Dispatched external
+  effects are not undone. Turning it back on restores access.
+- **Connections and permissions:** Manage MCP services from the composer's `+` menu.
+  Permission controls govern consequential actions and command access. The conversation
+  privacy panel reports provider settings and the evidence available for that conversation.
+- **Voice dictation:** The composer microphone shows words or phrases while you
+  speak, with a microphone-driven spectrum. Escape finishes and keeps the text; Return
+  finishes transcription and sends the complete prompt. It starts immediately with a supported connected API
+  service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
+  or the microphone's options. Audio privacy is separate from chat-model privacy.
+  See [dictation setup and draft limitations](agent-dictation.md).
+- **Domain skills (experimental):** Inspect and quote .eth/.wei/.gwei names, register
+  or renew through wallet approvals, and manage website/address/text records.
+  [Scope, supported contracts and qualification](domain-management.md).
+- **Windows projects:** First use requires administrator setup of restricted execution
+  accounts and network rules. Subsequent commands run without administrator rights.
+  Windows confines writes but allows broader file reads than the macOS and Linux
+  backends. Strictly offline shell commands are unavailable: commands require the
+  existing direct-network approval, once for the exact command and directory or
+  for the conversation if that scope is chosen. Built-in read, write, search and
+  history tools remain available. Commands use PowerShell, including `npm.cmd`
+  and `npx.cmd`. Browser networking is independent of command permissions.
 
 ## Bookmarks
 
@@ -306,3 +357,23 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Profile-Aware Radicle Errors**: Opening `rad://` while Radicle is disabled for the profile shows "Radicle Disabled for This Profile" and points to **Settings → Nodes**; opening it while the node is stopped shows "Cannot Connect to Radicle Node" and points to the Nodes menu.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
+
+
+### Experimental Claude subscription connection
+
+The Agent's Anthropic setup also offers an installed Claude Code connection for
+personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
+normal tools, approvals, helpers, codemode and conversation UI. Managed installations
+are not supported. See [setup and qualification](agent-claude-subscription.md).
+
+### Experimental custom AI connections
+
+**Settings → AI → Add provider → OpenAI-compatible** connects a custom Chat Completions
+endpoint using an optional API key. Models can be discovered or entered manually;
+multiple connections appear independently in the model picker. Saved keys are
+encrypted, and model limits/capabilities can be configured in connection settings.
+After connecting, an optional compatibility check tests streaming chat and a
+synthetic tool round trip for the selected model. It discloses possible token
+charges and allows retrying or continuing despite failure. Privacy guarantees
+remain unknown unless independently established. See
+[setup and qualification](agent-openai-compatible-spike.md).

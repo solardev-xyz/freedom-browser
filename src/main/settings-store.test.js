@@ -37,6 +37,8 @@ describe('settings-store', () => {
     expect(mod.loadSettings()).toEqual(
       expect.objectContaining({
         theme: 'system',
+        enableAi: false,
+        aiInvitationDismissed: false,
         enableIdentityWallet: true,
         startAntAtLaunch: true,
         startIpfsAtLaunch: true,
@@ -56,6 +58,19 @@ describe('settings-store', () => {
     );
     expect(mod.loadSettings()).not.toHaveProperty('antNodeMode');
     expect(nativeTheme.themeSource).toBe('system');
+  });
+
+  test.each([undefined, 'true', 1, null, false])('AI requires an explicit boolean opt-in (stored %p)', value => {
+    fs.writeFileSync(path.join(userDataDir, 'settings.json'), JSON.stringify({ enableAi: value }));
+    const { mod } = loadSettingsStore({ userDataDir });
+    expect(mod.loadSettings().enableAi).toBe(false);
+    mod.saveSettings({ enableAi: true, aiInvitationDismissed: true });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    mod.saveSettings({ enableAi: 'false', aiInvitationDismissed: 0 });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    mod.saveSettings({ enableAi: false });
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
   });
 
   test('merges persisted settings with defaults and applies the saved theme', () => {
@@ -508,6 +523,60 @@ describe('settings-store', () => {
     expect(mod.getRevertedShortcutOverrides()).toEqual({});
   });
 
+  test('AI off frees the AI shortcuts\' chords and keeps their remaps for when AI is back', () => {
+    const agentChord = process.platform === 'darwin' ? 'Cmd+K' : 'Ctrl+K';
+    fs.writeFileSync(
+      path.join(userDataDir, 'settings.json'),
+      JSON.stringify({
+        enableAi: false,
+        // Show Agent was moved to Ctrl+Shift+Y while AI was on; then AI went
+        // off and New Tab took both Show Agent chords.
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': 'Ctrl+Shift+Y' },
+      }),
+      'utf-8'
+    );
+    const { mod } = loadSettingsStore({ userDataDir });
+
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': 'Ctrl+Shift+Y',
+    });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
+    // A remap onto Show Agent's default while AI is off is not a conflict.
+    expect(
+      mod.saveSettings({
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': agentChord },
+      })
+    ).toBe(true);
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': agentChord,
+    });
+
+    // Turning AI on brings Show Agent's remap back untouched; New Tab is on
+    // a chord nothing else uses now, so it stays too.
+    expect(mod.saveSettings({ enableAi: true })).toBe(true);
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'view.toggleAgent': 'Ctrl+Shift+Y',
+      'tab.new': agentChord,
+    });
+
+    // Off again, New Tab takes Show Agent's remapped chord; on again, that
+    // collision is settled visibly rather than both firing on one press.
+    expect(mod.saveSettings({ enableAi: false })).toBe(true);
+    expect(
+      mod.saveSettings({
+        shortcutOverrides: { 'view.toggleAgent': 'Ctrl+Shift+Y', 'tab.new': 'Ctrl+Shift+Y' },
+      })
+    ).toBe(true);
+    expect(mod.saveSettings({ enableAi: true })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.shortcutOverrides).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({
+      'tab.new': { accelerator: 'Ctrl+Shift+Y', conflictId: 'view.toggleAgent', conflict: 'Show Agent' },
+    });
+  });
+
   test('registers IPC handlers for loading and saving settings', async () => {
     const ipcMain = createIpcMainMock();
     const { mod, nativeTheme } = loadSettingsStore({ userDataDir, ipcMain });
@@ -523,6 +592,41 @@ describe('settings-store', () => {
     await expect(ipcMain.invoke(IPC.SETTINGS_SAVE, { theme: 'dark' })).resolves.toBe(true);
 
     expect(nativeTheme.themeSource).toBe('dark');
+  });
+
+  // #777: the AI master switch is the consent step, so only Settings (or the
+  // chrome) may write it; the start page may still dismiss its invitation.
+  test('only Settings or the chrome can change enableAi over IPC', async () => {
+    const { pathToFileURL } = require('url');
+    const { CHROME_INDEX, PAGES_DIR } = require('./ipc-sender-policy');
+    const ipcMain = createIpcMainMock();
+    const { mod, logger } = loadSettingsStore({ userDataDir, ipcMain });
+    mod.registerSettingsIpc();
+    const save = ipcMain.handlers.get(IPC.SETTINGS_SAVE);
+    const sender = (type, file) => {
+      const mainFrame = { url: pathToFileURL(file).href };
+      return { sender: { getType: () => type, mainFrame }, senderFrame: mainFrame };
+    };
+    const page = (name) => sender('webview', path.join(PAGES_DIR, name));
+
+    for (const name of ['home.html', 'history.html', 'downloads.html', 'error.html']) {
+      expect(save(page(name), { enableAi: true })).toBe(false);
+      // Nothing else in a refused request is applied either.
+      expect(save(page(name), { enableAi: true, showBookmarkBar: true })).toBe(false);
+    }
+    expect(mod.loadSettings()).toMatchObject({ enableAi: false, showBookmarkBar: false });
+    expect(fs.existsSync(path.join(userDataDir, 'settings.json'))).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith('[settings] refused enableAi from webview/file');
+
+    expect(save(page('home.html'), { aiInvitationDismissed: true })).toBe(true);
+    expect(save(page('history.html'), { showBookmarkBar: true })).toBe(true);
+    expect(mod.loadSettings()).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
+
+    expect(save(page('settings.html'), { enableAi: true })).toBe(true);
+    expect(mod.loadSettings().enableAi).toBe(true);
+    expect(save(page('history.html'), { enableAi: false })).toBe(false);
+    expect(save(sender('window', CHROME_INDEX), { enableAi: false })).toBe(true);
+    expect(mod.loadSettings().enableAi).toBe(false);
   });
 
   // #233: the sandboxed webview preload reads the Appearance theme

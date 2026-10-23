@@ -57,6 +57,10 @@ on:
         description: 'Run real Myotis reads on all platforms (requires fresh checkpoints; never accepts stale-anchor risk)'
         type: boolean
         default: false
+      renderer_baselines:
+        description: 'Capture every Linux renderer surface alongside comparisons (artifacts only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -233,6 +237,43 @@ jobs:
 
       - name: Run migration + profile suites
         run: npm run test:migration
+
+  # Independent of the long native sandbox build: prove both a positive
+  # network control and the isolated preview boundary on every desktop OS.
+  e2e-preview-network:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: ./.github/actions/install-linux-native-deps
+        if: runner.os == 'Linux'
+      - uses: ./.github/actions/install-node-deps
+      - uses: ./.github/actions/install-playwright-deps
+        if: runner.os == 'Linux'
+      - name: Qualify preview network isolation against owned listeners
+        shell: bash
+        run: |
+          node -e "require('electron')"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Retain Chromium's process sandbox on this disposable runner.
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+            xvfb-run -a node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          else
+            node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          fi
 
   # freedom-ipfs native addon smoke for every desktop addon target currently
   # published in the pinned prebuilt manifest. This downloads the real release
@@ -665,6 +706,9 @@ jobs:
   # #319 lesson: specs no job listed shipped their regressions green). Keep
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
+  # e2e-not-in-ci: agent-ollama-live.spec.js — requires an explicitly configured local Ollama model; exercised manually
+  # e2e-not-in-ci: claude-subscription.spec.js — opt-in qualification with a locally authenticated Claude subscription
+  # e2e-not-in-ci: claude-subscription-spike.spec.js — opt-in experiment using an authenticated local Claude subscription; no account credentials in CI
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
@@ -1205,6 +1249,155 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-agent:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run agent E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/ai-onboarding.spec.js \
+            test-e2e/agent-examples.spec.js \
+            test-e2e/agent-dictation.spec.js \
+            test-e2e/agent-cancellation.spec.js \
+            test-e2e/agent-evaluation.spec.js \
+            test-e2e/agent-product-qualification.spec.js \
+            test-e2e/agent-sidebar.spec.js \
+            test-e2e/agent-preview-isolation.spec.js \
+            test-e2e/agent-preview-dns-prefetch.spec.js \
+            test-e2e/agent-review-layout.spec.js \
+            test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
+            test-e2e/pdf-processor.spec.js \
+            test-e2e/workspace-viewers.spec.js
+      - name: Upload software rendering profile
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-software-video-profile-${{ github.job }}
+          path: test-results/**/software-video-scroll-profile.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-agent-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-automation:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run automation E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/automation-dialog.spec.js \
+            test-e2e/automation-frame-interaction.spec.js \
+            test-e2e/automation-frame-observation.spec.js \
+            test-e2e/automation-frame-prototype.spec.js \
+            test-e2e/automation-kernel.spec.js \
+            test-e2e/automation-native-dialog.spec.js \
+            test-e2e/automation-observation.spec.js \
+            test-e2e/automation-page-tools.spec.js \
+            test-e2e/automation-recovery.spec.js \
+            test-e2e/automation-runtime.spec.js \
+            test-e2e/automation-visual-interaction.spec.js \
+            test-e2e/automation-visual-prototype.spec.js \
+            test-e2e/freedom-cli.spec.js
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-automation-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The Agent security regressions that only macOS can run (#778): the S1
+  # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
+  # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
+  # `process.platform === 'darwin'`, so every other runner skips them, and a
+  # skipped test is green. The checker runs the seatbelt, secure-files and
+  # native-supervisor suites with `--json` and fails unless every one of their
+  # tests passed, none skipped, with each macOS-only test passing by name; its
+  # header lists those tests and why. `scripts/ci/macos-security-tests.test.js`
+  # (in `test`, on Linux) keeps that list in step with the sources. Pure jest:
+  # no display, no Electron, no built supervisor.
+  agent-macos-jest:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      # secure-files.test.js's "kernel identity ..." case resolves the real
+      # workspace supervisor through `resolveMacosSupervisor`, which reads
+      # `out/macos-supervisor/<arch>/`. `ignore-scripts` skips `prestart`, so
+      # build it here from the repository-owned source with the runner's
+      # Apple toolchain (no installer is launched).
+      - name: Build the macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+
+      - name: Run the macOS-only security suites, refusing any skip
+        run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
+
   # Browser chrome around the page that only a real window can exercise, and
   # that `e2e-tabs` (already the longest e2e job) has no room for: the find
   # bar against a real guest's find-in-page results (`find-in-page`), the tab
@@ -1253,7 +1446,17 @@ jobs:
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
             test-e2e/downloads.spec.js \
+            test-e2e/agent-review-layout.spec.js \
             test-e2e/history-menu.spec.js
+
+      - name: Upload software rendering profile
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-software-video-profile-${{ github.job }}
+          path: test-results/**/software-video-scroll-profile.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1900,7 +2103,21 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Compare renderer screenshots
+        env:
+          FREEDOM_CAPTURE_RENDERER_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.renderer_baselines && '1' || '0' }}
         run: xvfb-run -a npm run test:e2e:screenshots
+
+      # Capture never replaces comparison or writes the committed references.
+      # Candidates require inspection and a later commit to adopt.
+
+      - name: Upload Linux baseline candidates
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.renderer_baselines }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renderer-baseline-candidates
+          path: test-results/**/baseline-candidates/*.png
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload screenshot diffs
         if: failure()
@@ -1956,7 +2173,10 @@ jobs:
     if: always()
     needs:
       [
+        agent-macos-jest,
         code-changed,
+        e2e-agent,
+        e2e-automation,
         e2e-adblock,
         e2e-address-bar-clipboard,
         e2e-address-bar-ens,
@@ -1967,6 +2187,7 @@ jobs:
         e2e-ipfs-quit,
         e2e-onboarding-identity,
         e2e-profiles,
+        e2e-preview-network,
         e2e-renderer-screenshots,
         e2e-safe,
         e2e-settings,
