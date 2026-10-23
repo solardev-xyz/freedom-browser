@@ -478,11 +478,9 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(mockLedgerBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
 
     // JSON-string typed data reaches the backend parsed
-    await signer.signTypedData('{"domain":{},"types":{},"message":{}}');
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(
-      { domain: {}, types: {}, message: {} },
-      { expectedHash: undefined }
-    );
+    const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
+    await signer.signTypedData(JSON.stringify(typed));
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
   });
 
   // freedom-core #88: a device signs what it shows, so main checks the
@@ -566,5 +564,107 @@ describe('getSigner (remote-backed dispatch)', () => {
     const signer = getSigner(4);
     await signer.signMessage('0x48656c6c6f');
     expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
+  });
+});
+
+// Review of #799 (round 1): main's own typed data (a Safe owner's SafeTx or
+// SafeMessage, an x402 payment) comes with no confirmed hash, and a device
+// signs it with ethers' encoder. The core still hashes and checks it first,
+// as it does a dApp's, and nothing reaches the device when it refuses.
+describe("getSigner: main's own typed data on a device", () => {
+  const { generateTypedData, getEip712MessageTypes } = require('@safe-global/protocol-kit');
+  const { vaultBackend } = require('../core/vault-backend');
+  const SAFE = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  const jsonSafe = (value) =>
+    JSON.parse(JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? Number(v) : v)));
+  const PAYLOADS = {
+    // As safe-executor's hashSafeTransaction builds it.
+    SafeTx: () =>
+      jsonSafe(
+        generateTypedData({
+          safeAddress: SAFE,
+          safeVersion: '1.4.1',
+          chainId: 100n,
+          data: {
+            to: SAFE, value: '1000', data: '0x', operation: 0, safeTxGas: '0', baseGas: '0',
+            gasPrice: '0', gasToken: ZERO, refundReceiver: ZERO, nonce: 0,
+          },
+        })
+      ),
+    // As safe-messages' startSafeMessage builds it.
+    SafeMessage: () => ({
+      types: getEip712MessageTypes('1.4.1'),
+      domain: { chainId: 100, verifyingContract: SAFE },
+      primaryType: 'SafeMessage',
+      message: { message: '0x' + '22'.repeat(32) },
+    }),
+    // An x402 (EIP-3009) payment authorization, as @x402/evm builds it.
+    TransferWithAuthorization: () => ({
+      domain: { name: 'USD Coin', version: '2', chainId: 8453, verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
+      types: {
+        TransferWithAuthorization: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'validAfter', type: 'uint256' },
+          { name: 'validBefore', type: 'uint256' },
+          { name: 'nonce', type: 'bytes32' },
+        ],
+      },
+      primaryType: 'TransferWithAuthorization',
+      message: {
+        from: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+        to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+        value: '10000', validAfter: '0', validBefore: '1900000000', nonce: '0x' + '33'.repeat(32),
+      },
+    }),
+  };
+  const DEVICES = {
+    ledger: [{ index: 1000000, name: 'My Stax', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'ledger' }, mockLedgerBackend],
+    phone: [{ index: 1000001, name: 'My Phone', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'remote' }, mockRemoteBackend],
+  };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe.each(Object.keys(DEVICES))('on a %s', (device) => {
+    const [record, backend] = DEVICES[device];
+
+    beforeEach(() => {
+      mockGetWalletRecord.mockReturnValue(record);
+      backend.signTypedData.mockReset();
+    });
+
+    test.each(Object.keys(PAYLOADS))('%s: the core hashes it before the device is asked', async (primaryType) => {
+      const typed = PAYLOADS[primaryType]();
+      let hashedFirst;
+      backend.signTypedData.mockImplementation(async () => {
+        hashedFirst = coreCalls('typed_data.hash').length === 1;
+        return '0xsig712';
+      });
+      await expect(getSigner(record.index).signTypedData(typed)).resolves.toBe('0xsig712');
+      expect(hashedFirst).toBe(true);
+      const [[, hashed]] = coreCalls('typed_data.hash');
+      expect(hashed).toEqual({
+        domain: typed.domain,
+        types: { [primaryType]: typed.types[primaryType] },
+        message: typed.message,
+      });
+      expect(backend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+      // Nothing of the vault's: no key, no vault signature.
+      expect(coreCalls('sign.typed_data')).toEqual([]);
+    });
+
+    test.each(Object.keys(PAYLOADS))('%s: data the core refuses never reaches the device', async (primaryType) => {
+      jest.spyOn(vaultBackend, 'typedDataHash').mockRejectedValueOnce(
+        Object.assign(new Error('invalid typed data'), { code: 'invalid_argument' })
+      );
+      await expect(getSigner(record.index).signTypedData(PAYLOADS[primaryType]())).rejects.toThrow(
+        'invalid typed data'
+      );
+      expect(backend.signTypedData).not.toHaveBeenCalled();
+    });
   });
 });

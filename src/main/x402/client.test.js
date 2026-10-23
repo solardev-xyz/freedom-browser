@@ -19,11 +19,24 @@ jest.mock('../core/vault-backend', () => ({
     mockCore
   ),
 }));
+const mockGetWalletRecord = jest.fn(() => null);
 jest.mock('../identity-manager', () => ({
-  getWalletRecord: jest.fn(() => null),
+  getWalletRecord: (...args) => mockGetWalletRecord(...args),
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
+// A Ledger or phone account: the device signs with its own key (another
+// well-known test key), and the test records when it is asked.
+const DEVICE_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+const mockDevice = { signTypedData: jest.fn() };
+const mockDeviceBackend = () => ({
+  getAddress: async () => new (require('ethers').Wallet)(DEVICE_KEY).address,
+  signTransaction: jest.fn(),
+  signMessage: jest.fn(),
+  signTypedData: (...args) => mockDevice.signTypedData(...args),
+});
+jest.mock('../wallet/ledger/signer', () => ({ createLedgerBackend: () => mockDeviceBackend() }));
+jest.mock('../wallet/remote/signer', () => ({ createRemoteBackend: () => mockDeviceBackend() }));
 jest.mock('../vault-timer', () => ({
   resetVaultAutoLockTimer: mockResetVaultAutoLockTimer,
 }));
@@ -34,6 +47,7 @@ const {
 } = require('./client');
 
 beforeEach(() => {
+  mockGetWalletRecord.mockReset().mockReturnValue(null);
   mockIdentity.isUnlocked.mockReturnValue(true);
   mockIdentity.exportPrivateKey.mockReturnValue(TEST_PRIVATE_KEY);
   mockResetVaultAutoLockTimer.mockClear();
@@ -189,5 +203,74 @@ describe('createX402Client', () => {
     const [, , data, expectedHash] = signs[0];
     expect(mockCore.calls).toContainEqual(['typed_data.hash', data]);
     expect(expectedHash).toBe(TypedDataEncoder.hash(data.domain, data.types, data.message));
+  });
+});
+
+// Review of #799 (round 1): a payment from a Ledger or phone account is
+// typed data main builds, with no confirmed hash. The core hashes and checks
+// it before the device is asked, and a refusal leaves the device untouched.
+describe.each([
+  ['ledger', { index: 1000000, name: 'My Stax', type: 'ledger' }],
+  ['phone', { index: 1000001, name: 'My Phone', type: 'remote' }],
+])('createX402Client on a %s account', (_device, record) => {
+  const { vaultBackend } = require('../core/vault-backend');
+  const { withoutDomainType } = require('../wallet/signing-utils');
+  const deviceWallet = new Wallet(DEVICE_KEY);
+  const paymentRequired = {
+    x402Version: 2,
+    resource: 'https://api.example/article',
+    accepts: [
+      {
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+        maxTimeoutSeconds: 60,
+        resource: 'https://api.example/article',
+        extra: { name: 'USD Coin', version: '2' },
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    mockGetWalletRecord.mockReturnValue({ ...record, address: deviceWallet.address });
+    mockDevice.signTypedData.mockReset();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('the core hashes the authorization before the device signs it', async () => {
+    let hashedFirst;
+    mockDevice.signTypedData.mockImplementation(async ({ domain, types, message }) => {
+      hashedFirst = mockCore.calls.filter(([method]) => method === 'typed_data.hash').length === 1;
+      return deviceWallet.signTypedData(domain, withoutDomainType(types), message);
+    });
+    const client = await createX402Client(record.index);
+    expect(client.address).toBe(deviceWallet.address);
+    const result = await client.createPaymentPayload(paymentRequired);
+
+    expect(hashedFirst).toBe(true);
+    expect(mockDevice.signTypedData).toHaveBeenCalledTimes(1);
+    const [[signed]] = mockDevice.signTypedData.mock.calls;
+    const [[, hashed]] = mockCore.calls.filter(([method]) => method === 'typed_data.hash');
+    expect(hashed.message).toMatchObject({ from: deviceWallet.address, value: '10000' });
+    expect(TypedDataEncoder.hash(hashed.domain, hashed.types, hashed.message)).toBe(
+      TypedDataEncoder.hash(signed.domain, withoutDomainType(signed.types), signed.message)
+    );
+    // Nothing of the vault's: no key, no vault signature.
+    expect(mockCore.calls.filter(([method]) => method === 'sign.typed_data')).toEqual([]);
+    expect(result.payload.authorization).toMatchObject({ from: deviceWallet.address, value: '10000' });
+  });
+
+  test('an authorization the core refuses never reaches the device', async () => {
+    jest.spyOn(vaultBackend, 'typedDataHash').mockRejectedValueOnce(
+      Object.assign(new Error('invalid typed data'), { code: 'invalid_argument' })
+    );
+    const client = await createX402Client(record.index);
+    await expect(client.createPaymentPayload(paymentRequired)).rejects.toThrow('invalid typed data');
+    expect(mockDevice.signTypedData).not.toHaveBeenCalled();
   });
 });

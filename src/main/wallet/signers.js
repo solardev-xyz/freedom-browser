@@ -188,16 +188,18 @@ function getSigner(walletIndex) {
     /**
      * `expectedHash`: the hash the user confirmed (#88). The core refuses a
      * vault signature over anything else. A device signs what it shows, so
-     * for one main checks the request's hash against it first: a request
-     * that changed after the confirmation fails, and nothing is signed.
+     * for one the core hashes and checks every request first, main's own
+     * typed data (SafeTx, SafeMessage, x402) included: data the core
+     * refuses, or a request that changed after its confirmation, fails
+     * before the device is asked, and nothing is signed.
      */
     signTypedData: async (typedData, { expectedHash } = {}) => {
       const normalized = normalizeTypedData(typedData);
       // Every backend: the Ledger and phone ones walk the types with ethers.
       assertBoundedTypeGraph(normalized?.types);
-      if (expectedHash !== undefined && !vaultSigned) {
+      if (!vaultSigned) {
         const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
-        if (hash !== expectedHash) {
+        if (expectedHash !== undefined && hash !== expectedHash) {
           throw new Error('The typed data changed after it was confirmed');
         }
       }
