@@ -215,10 +215,20 @@ async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, 
 
   const fees = await getGasPrices(chainId);
 
-  if (fees.type === 'eip1559' && isPositiveFee(fees.maxFeePerGas) && isPositiveFee(fees.maxPriorityFeePerGas)) {
-    return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
-  }
-  if (isPositiveFee(fees.gasPrice)) {
+  // The quote already carries the headroom (chain-data-router's feeQuote):
+  // a type-2 cap of 2x base fee + tip, and on a chain without EIP-1559 a
+  // legacy gasPrice above eth_gasPrice. Sign those as quoted; an EIP-1559
+  // quote that cannot form a valid transaction is never downgraded to a
+  // legacy gasPrice here (#749).
+  if (fees.type === 'eip1559') {
+    if (
+      isPositiveFee(fees.maxFeePerGas) &&
+      isPositiveFee(fees.maxPriorityFeePerGas) &&
+      BigInt(fees.maxPriorityFeePerGas) <= BigInt(fees.maxFeePerGas)
+    ) {
+      return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
+    }
+  } else if (isPositiveFee(fees.gasPrice)) {
     return { gasPrice: fees.gasPrice };
   }
 
@@ -879,13 +889,33 @@ async function signAndSendTransaction(
  * Get transaction status/receipt
  * @param {string} txHash - Transaction hash
  * @param {number} chainId - Chain ID
+ * @param {Object} [sent] - What the transaction was signed with, when known
+ * @param {string} [sent.from] - Signing account
+ * @param {number} [sent.nonce] - Nonce it was signed with; with `from`, lets
+ *   a transaction that can no longer be mined report 'dropped' rather than
+ *   'pending' forever
+ * @param {boolean} [sent.sweep] - Set by payment-history's background sweep.
+ *   Its rows are mostly hashes no source has a receipt for (still pending,
+ *   dropped, or pre-change rows that can never resolve), and Colibri traps on
+ *   an unknown hash, retiring its worker each time (see
+ *   nonceTakenByAnotherTransaction). A sweep re-polls those rows on every
+ *   send and every confirm timer, so it reads receipts without Colibri;
+ *   quorum still verifies the answer.
  * @returns {Promise<Object>} Transaction status
  */
-async function getTransactionStatus(txHash, chainId) {
+async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = false } = {}) {
   try {
-    const { result: receipt } = await chainData.request(chainId, 'eth_getTransactionReceipt', [txHash]);
+    const { result: receipt } = await chainData.request(
+      chainId,
+      'eth_getTransactionReceipt',
+      [txHash],
+      sweep ? { excludeSources: ['colibri'] } : undefined
+    );
 
     if (!receipt) {
+      if (await nonceTakenByAnotherTransaction(txHash, chainId, from, nonce)) {
+        return { status: 'dropped', hash: txHash, nonce };
+      }
       return {
         status: 'pending',
         hash: txHash,
@@ -910,6 +940,74 @@ async function getTransactionStatus(txHash, chainId) {
       error: err.message,
     };
   }
+}
+
+/**
+ * A transaction with no receipt is either still waiting or will never be
+ * mined. It can never be mined once its sender's mined nonce has moved past
+ * it: some other transaction took that nonce (a re-send, a replacement, or
+ * this one dropped and the slot reused). Re-check the receipt after reading
+ * the nonce, since this transaction may itself be what moved it in between.
+ *
+ * 'dropped' is final, so the nonce and the receipt that decide it must come
+ * from one source's view of the chain. Routed independently, a source whose
+ * head is ahead (Myotis serves the nonce but no receipts) could report the
+ * nonce moved by this very transaction while a lagging source still has no
+ * receipt for it, marking a mined transaction dropped. So the nonce is read
+ * from a source that also serves receipts, and the receipt re-check is
+ * pinned to that same source; if it cannot answer, nothing is decided.
+ *
+ * "Serves receipts" means it can answer "no receipt" for a hash it has never
+ * seen. Colibri cannot: its verifier traps ('memory access out of bounds',
+ * colibri-stateless 3.0.2) on an unknown hash instead of returning null. The
+ * first receipt read above falls past that trap to the next source, but a
+ * re-check pinned to Colibri has nowhere to fall, so a dropped transaction
+ * could never be decided on a Colibri chain. Neither Myotis nor Colibri
+ * answers the nonce read for that reason.
+ *
+ * Even one source is not one consistent view: quorum members and Direct's
+ * URL list can answer the two reads from different endpoints, one lagging.
+ * So this verdict is only a sighting; payment-history marks a row dropped
+ * once a later sweep sees it again (see repollPending).
+ */
+async function nonceTakenByAnotherTransaction(txHash, chainId, from, nonce) {
+  if (typeof from !== 'string' || !Number.isSafeInteger(nonce) || nonce < 0) return false;
+  const { result: count, source } = await chainData.request(
+    chainId,
+    'eth_getTransactionCount',
+    [from, 'latest'],
+    { excludeSources: sourcesWithoutReceipts() }
+  );
+  if (BigInt(count) <= BigInt(nonce)) return false;
+  if (typeof source !== 'string') return false;
+  const { result: receipt, source: receiptSource } = await chainData.request(
+    chainId,
+    'eth_getTransactionReceipt',
+    [txHash],
+    { excludeSources: allSourcesBut(source) }
+  );
+  // Defensive: the router honours excludeSources, but a different source's
+  // empty answer must never decide a final status.
+  if (receiptSource !== source) return false;
+  return !receipt;
+}
+
+function knownSources() {
+  return Object.keys(chainData.SOURCE_CAPABILITIES || {});
+}
+
+// Myotis answers account reads from its verified head but serves no
+// receipts; Colibri throws rather than answering null for an unknown hash.
+const SOURCES_WITHOUT_NULL_RECEIPTS = ['myotis', 'colibri'];
+function sourcesWithoutReceipts() {
+  return [...SOURCES_WITHOUT_NULL_RECEIPTS, ...knownSources().filter((source) =>
+    !SOURCES_WITHOUT_NULL_RECEIPTS.includes(source) &&
+    chainData.SOURCE_CAPABILITIES[source]?.unsupported?.has?.('eth_getTransactionReceipt')
+  )];
+}
+
+function allSourcesBut(source) {
+  return knownSources().filter((other) => other !== source);
 }
 
 /**

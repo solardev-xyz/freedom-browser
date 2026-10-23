@@ -116,6 +116,10 @@ const loadNavigationModule = async (options = {}) => {
   // navigation.js only reaches into wallet-ui.js for the ethereum: tip-link
   // send flow; the reason constants mirror the real module so the refusal
   // messages are asserted against the same strings production compares.
+  // The "always open without gateway" Back guard (#70) is dropped by every
+  // user-driven loadTarget; the module itself is covered by
+  // gateway-offer-ui.test.js.
+  const gatewayOfferUiMocks = { noteUserNavigation: jest.fn() };
   const walletUiMocks = {
     openSendFlow: jest.fn(() => 'ok'),
     SEND_FLOW_OK: 'ok',
@@ -526,6 +530,7 @@ const loadNavigationModule = async (options = {}) => {
   jest.doMock('./page-urls.js', () => pageUrlsMocks);
   jest.doMock('./ipfs-progress-status.js', () => ipfsProgressMocks);
   jest.doMock('./wallet-ui.js', () => walletUiMocks);
+  jest.doMock('./gateway-offer-ui.js', () => gatewayOfferUiMocks);
 
   // Pin the shortcut matcher to Linux semantics (Ctrl-based combos) so the
   // keyboard-shortcut assertions below don't depend on the host platform.
@@ -542,6 +547,7 @@ const loadNavigationModule = async (options = {}) => {
     githubBridgeUiMocks,
     ipfsProgressMocks,
     walletUiMocks,
+    gatewayOfferUiMocks,
     tabsMocks,
     navigationUtilsMocks,
     urlUtilsMocks,
@@ -1704,6 +1710,30 @@ describe('navigation', () => {
       ctx.mod.loadTarget('freedom://settings');
       await flushMicrotasks();
       expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    // #70: typing or bookmarking a gateway address again is never the
+    // unmarked Back the "always open without gateway" guard protects, so
+    // every user-driven navigation drops it for the tab it navigates; the
+    // page's own navigations and loadTarget's continuations leave it.
+    test('a user-driven navigation ends the gateway redirect guard for its tab', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      const { noteUserNavigation } = ctx.gatewayOfferUiMocks;
+      const webview = ctx.activeRef.tab.webview;
+      const gateway = 'https://vitalik.eth.limo/';
+
+      ctx.mod.loadTarget(gateway, null, null, { pageInitiated: true });
+      ctx.mod.loadTarget(gateway, null, null, { continuesNavigation: true });
+      ctx.mod.loadTarget(gateway, null, null, { keepsAddressBarEdit: true });
+      expect(noteUserNavigation).not.toHaveBeenCalled();
+
+      ctx.mod.loadTarget(gateway, null, null, { commitsAddressBar: true });
+      ctx.mod.loadTarget(gateway); // a bookmark
+      expect(noteUserNavigation).toHaveBeenCalledTimes(2);
+      expect(noteUserNavigation).toHaveBeenNthCalledWith(1, webview);
+      expect(noteUserNavigation).toHaveBeenNthCalledWith(2, webview);
     });
 
     // …with one exception: the draft the user *committed*. Typing

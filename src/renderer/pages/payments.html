@@ -278,11 +278,13 @@
       .status-failed::before {
         background: #f85149;
       }
-      .status-no-receipt {
+      .status-no-receipt,
+      .status-dropped {
         background: rgba(110, 118, 129, 0.18);
         color: var(--pay-status-none);
       }
-      .status-no-receipt::before {
+      .status-no-receipt::before,
+      .status-dropped::before {
         background: #8b949e;
       }
       /* Taken: another transaction from the account used the payment's

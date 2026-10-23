@@ -10,6 +10,7 @@ const fields = {
   startMyotis: $('start-myotis-at-launch'),
   startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
   unverifiedEnsAction: $('unverified-ens-action'),
+  openWithoutGateway: $('open-without-gateway'),
   askWhereToSave: $('ask-where-to-save'),
   startRadicle: $('start-radicle-at-launch'),
   enableTor: $('enable-tor-integration'),
@@ -1736,6 +1737,7 @@ const currentFormState = () => ({
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
   autoUpdate: fields.autoUpdate.checked,
   blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
+  openWithoutGateway: fields.openWithoutGateway.checked,
   adblockEnabled: fields.adblockEnabled.checked,
   adblockAds: fields.adblockAds.checked,
   adblockPrivacy: fields.adblockPrivacy.checked,
@@ -1761,6 +1763,7 @@ const applyFormState = (settings) => {
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
+  fields.openWithoutGateway.checked = settings.openWithoutGateway === true;
   fields.adblockEnabled.checked = settings.adblockEnabled !== false;
   fields.adblockAds.checked = settings.adblockAds !== false;
   fields.adblockPrivacy.checked = settings.adblockPrivacy !== false;
@@ -2258,6 +2261,7 @@ fields.enableIdentity.addEventListener('change', save);
 fields.showIpfsProgressStatus.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);
 fields.unverifiedEnsAction.addEventListener('change', save);
+fields.openWithoutGateway.addEventListener('change', save);
 fields.adblockEnabled.addEventListener('change', () => {
   applyAdblockGating();
   save();

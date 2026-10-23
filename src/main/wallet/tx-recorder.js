@@ -11,6 +11,7 @@ const {
   resendIntent,
   replaceIntent,
   waitForTransaction,
+  getTransactionStatus,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
 const paymentHistory = require('../payment-history');
@@ -42,9 +43,28 @@ function pollReceipt(rowId, hash, chainId) {
     })
     .catch((err) => {
       // A timeout doesn't mean the tx failed; leave the row pending and
-      // let repollPending sort it out on next boot.
+      // let repollPending sort it out (below, and on next boot).
       log.warn(`[TxRecorder] waitForTransaction failed for row ${rowId}: ${err.message}`);
+    })
+    // A mined transaction can be what makes an older row final: a re-send on
+    // the same nonce leaves the original 'dropped' (#749). Sweep now rather
+    // than on next boot; this row too, if it timed out above. The sweep
+    // records that first sighting and confirms it on a sweep it schedules
+    // itself DROPPED_CONFIRM_MS later (payment-history).
+    .then(() => paymentHistory.repollPending(getTransactionStatus))
+    .catch((err) => {
+      log.warn(`[TxRecorder] payment-history repoll failed: ${err.message}`);
     });
+}
+
+// The signing account and nonce, so repollPending can tell a transaction
+// that will never be mined (its nonce taken by another) from one still
+// waiting. Phone wallets pick their own nonce and report none.
+function withSentFields(metadata, response) {
+  if (typeof response.from !== 'string' || !Number.isSafeInteger(response.nonce)) {
+    return metadata;
+  }
+  return { ...(metadata || {}), txFrom: response.from, txNonce: response.nonce };
 }
 
 // History rows this run wrote, by intent id: any later reply for the
@@ -143,13 +163,13 @@ function recordSend(response, row) {
       written =
         paymentHistory.update(existing.id, {
           txHash: response.hash,
-          metadata: metadataFor(existing.metadata, response),
+          metadata: withSentFields(metadataFor(existing.metadata, response), response),
         }) ?? existing;
     } else {
       written = paymentHistory.append({
         ...row,
         txHash: response.hash,
-        metadata: metadataFor(row.metadata, response),
+        metadata: withSentFields(metadataFor(row.metadata, response), response),
       });
     }
     if (response.intentId) rowsByIntent.set(response.intentId, written.id);

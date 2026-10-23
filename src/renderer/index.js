@@ -61,6 +61,7 @@ import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initPopupBlockerUi, closePopupBlockedPopover } from './lib/popup-blocker-ui.js';
+import { initGatewayOfferUi, closeGatewayOfferPopover } from './lib/gateway-offer-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -175,6 +176,7 @@ const onAnyMenuOpening = () => {
   closeTrustPopover();
   closePermissionPopover();
   closePopupBlockedPopover();
+  closeGatewayOfferPopover();
   closeGithubBridgePanel();
 };
 setOnMenuOpening(onAnyMenuOpening);
@@ -735,6 +737,7 @@ const closeAllOverlays = () => {
   closeTrustPopover();
   closePermissionPopover();
   closePopupBlockedPopover();
+  closeGatewayOfferPopover();
   closeGithubBridgePanel();
 };
 
@@ -856,6 +859,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   initNavigation(); // Sets up event handler with tabs module
   initSitePermissionsUi(); // Permission prompt + address-bar indicator
   initPopupBlockerUi(); // Pop-up-blocked address-bar icon (#442)
+  // "Open without gateway" pill (#70). Before initTabs, so the first tab's
+  // webview is watched too. The pill's open is a chrome action on the active
+  // tab; the "always" redirect is the tab's own navigation continuing, so it
+  // leaves an address-bar draft alone like any page-driven one.
+  initGatewayOfferUi({
+    navigate: (url, webview, { auto }) =>
+      loadTarget(url, null, webview, auto ? { pageInitiated: true } : {}),
+  });
   initLinkStatus();
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page

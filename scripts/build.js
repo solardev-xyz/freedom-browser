@@ -13,7 +13,7 @@
  *   --arm64, --x64          Target architecture (can specify both; defaults vary by platform)
  *   --dist                  Create distributable (default: unpacked build via --dir)
  *   --unsigned              Skip code signing (macOS only)
- *   --no-notarize           Disable built-in notarization (macOS dist only)
+ *   --no-notarize           Skip notarizing and stapling (macOS; see scripts/after-sign.js)
  *   --verbose               Enable electron-builder debug output
  *
  * Environment (see scripts/publish-channel.js):
@@ -104,7 +104,9 @@ if (dist && process.env.FREEDOM_ALLOW_INTERIM_BRIDGE !== '1') {
 const CHROMIUM_NOTICES = 'node_modules/electron/dist/LICENSES.chromium.html';
 const chromiumNoticesPath = path.join(__dirname, '..', CHROMIUM_NOTICES);
 if (!fs.existsSync(chromiumNoticesPath)) {
-  console.log(`\n→ ${CHROMIUM_NOTICES} is missing; running electron's installer to fetch the dist\n`);
+  console.log(
+    `\n→ ${CHROMIUM_NOTICES} is missing; running electron's installer to fetch the dist\n`
+  );
   try {
     execSync('node node_modules/electron/install.js', {
       stdio: 'inherit',
@@ -145,10 +147,6 @@ if (unsigned && platform === 'mac') {
   builderArgs.push('-c.mac.identity=null');
 }
 
-if (noNotarize && platform === 'mac' && dist) {
-  builderArgs.push('-c.mac.notarize=false');
-}
-
 // Update feed overrides (dist only — an unpacked build publishes nothing).
 // Unset, this is the stable feed from package.json plus the Windows
 // `latest-win-<arch>` channel pin this line has always applied. The release
@@ -160,6 +158,12 @@ if (dist) {
 
 // 3. Environment
 const env = { ...process.env };
+
+// `build.mac.notarize` is off; scripts/after-sign.js notarizes and staples
+// instead (#757) and reads this to skip both.
+if (noNotarize && platform === 'mac') {
+  env.FREEDOM_SKIP_NOTARIZE = '1';
+}
 
 if (verbose) {
   env.DEBUG =

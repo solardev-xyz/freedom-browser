@@ -236,8 +236,10 @@ jobs:
 
   # freedom-ipfs native addon smoke for every desktop addon target currently
   # published in the pinned prebuilt manifest. This downloads the real release
-  # artifact, loads it in Node, starts native freedom-ipfs, and retrieves a real
-  # IPNS page through the native request API. The add-on is the rollback now
+  # artifact, loads it in Node, starts native freedom-ipfs, serves the identity
+  # CID bafkqaaa locally (no network), and fetches an immutable /ipfs/<cid>
+  # through the native request API (no IPNS lookup; network-only failures of
+  # that live leg are a ::warning::, see #747). The add-on is the rollback now
   # (freedom-core design 0007, Rollback): every step selects it with
   # FREEDOM_IPFS_BACKEND=addon, as a development build does.
   freedom-ipfs-native-addon:
@@ -290,8 +292,9 @@ jobs:
         env:
           FREEDOM_IPFS_BACKEND: addon
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
-          FREEDOM_IPFS_NATIVE_SMOKE_PATH: /ipns/ipfs.tech/
-          FREEDOM_IPFS_NATIVE_SMOKE_EXPECT: ipfs
+          # The live-network leg fetches an immutable /ipfs/<cid> and turns a
+          # network-only failure into a ::warning:: (see the script header and
+          # #747); load/start/local-content failures still fail the job.
 
       # A development build runs the add-on under freedom-ipfsd's hold-lock
       # on its data directory (design 0007, Rollback): with the binary here,
@@ -322,6 +325,9 @@ jobs:
           FREEDOM_IPFS_BACKEND: addon
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
+          # `1` = warn mode: the root page fetch retries and turns network
+          # weather into a ::warning:: like the live leg; gateway_busy during
+          # the fan-out still fails the job (#747).
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
   # The same IPFS backend contract against the freedom-ipfsd service process,
@@ -1303,6 +1309,10 @@ jobs:
   # trust levels: status sentence and row sequences, click-to-copy of the
   # full value, one click from an open menu to the popover, and the shield
   # giving way to the neutral globe on an internal page.
+  # `gateway-offer.spec.js` (#70) drives the "Open without gateway" pill for
+  # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
+  # opens the native address with path/query/fragment, and the opt-in
+  # "always" redirect leaves a gateway page reached by Back alone.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1348,7 +1358,8 @@ jobs:
             test-e2e/chrome-page-spoof.spec.js \
             test-e2e/tez-unverified.spec.js \
             test-e2e/tez-head-conflict.spec.js \
-            test-e2e/ens-trust-popover.spec.js
+            test-e2e/ens-trust-popover.spec.js \
+            test-e2e/gateway-offer.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1380,7 +1391,11 @@ jobs:
   # signed payment, authorized as itself, rather than signing a second, and
   # `held-payments.spec.js` does the same from the list of payments waiting,
   # replaces one with a higher fee, and warns on a send that would wait
-  # behind one. The anvil-backed Safe specs run in `e2e-safe` below.
+  # behind one. `publish-text-shortcut.spec.js` (#720) pins the page's
+  # Cmd/Ctrl+Enter text publish. `dapp-background-tab.spec.js` (#764) keeps a
+  # background tab's wallet requests attributed to its own site, with a real
+  # vault and the real main-side signing check. The anvil-backed Safe specs
+  # run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1421,6 +1436,7 @@ jobs:
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
+            test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
@@ -1430,7 +1446,8 @@ jobs:
             test-e2e/publish-setup-rediscovery.spec.js \
             test-e2e/publish-page-setup.spec.js \
             test-e2e/send-intent-retry.spec.js \
-            test-e2e/held-payments.spec.js
+            test-e2e/held-payments.spec.js \
+            test-e2e/publish-text-shortcut.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
