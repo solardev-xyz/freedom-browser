@@ -46,8 +46,10 @@ async function openedFilePath(handle) {
   });
 }
 
-async function readWindowsWorkspaceFile(root, relative, maximum) {
-  const runtime = await resolveWindowsSandbox();
+// `options` reaches resolveWindowsSandbox (e.g. an installed build's helper
+// directory for scripts/qualify-windows-workspace.js --runtime).
+async function readWindowsWorkspaceFile(root, relative, maximum, options = {}) {
+  const runtime = await resolveWindowsSandbox(options);
   const result = await runWindowsSandbox(runtime, { version: 1, operation: 'read-file', backend: 'elevated',
     home: path.join(process.env.LOCALAPPDATA || os.homedir(), 'FreedomBrowser', 'Sandbox'),
     workspace: root, readPath: relative, maxReadBytes: maximum },
