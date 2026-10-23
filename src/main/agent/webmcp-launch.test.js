@@ -2,7 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { webMcpBlinkFeatures, recordWebMcpLaunch, webMcpEnabledAtLaunch } = require('./webmcp-launch');
+const IPC = require('../../shared/ipc-channels');
+const { WEBVIEW_CHANNEL_TIERS, TIER } = require('../ipc-sender-policy');
+const {
+  webMcpBlinkFeatures,
+  recordWebMcpLaunch,
+  webMcpEnabledAtLaunch,
+  registerWebMcpLaunchIpc,
+} = require('./webmcp-launch');
 
 describe('webMcpBlinkFeatures', () => {
   test('enables WebMCP only for a launch with AI explicitly on, without the testing API', () => {
@@ -30,5 +37,21 @@ describe('webMcpBlinkFeatures', () => {
     expect(webMcpEnabledAtLaunch()).toBe(false);
     recordWebMcpLaunch(webMcpBlinkFeatures({ enableAi: true }));
     expect(webMcpEnabledAtLaunch()).toBe(true);
+  });
+
+  test('Settings reads this launch\'s decision, not the stored setting', async () => {
+    const handlers = new Map();
+    registerWebMcpLaunchIpc({ handle: (channel, fn) => handlers.set(channel, fn) });
+    const read = handlers.get(IPC.AGENT_WEBMCP_LAUNCH_STATE);
+    recordWebMcpLaunch(null);
+    expect(await read()).toEqual({ enabledAtLaunch: false });
+    recordWebMcpLaunch('WebMCP');
+    expect(await read()).toEqual({ enabledAtLaunch: true });
+    const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+    expect(source).toMatch(/registerWebMcpLaunchIpc\(ipcMain\);/);
+  });
+
+  test('only the Settings page may ask', () => {
+    expect(WEBVIEW_CHANNEL_TIERS.get(IPC.AGENT_WEBMCP_LAUNCH_STATE)).toBe(TIER.SETTINGS);
   });
 });

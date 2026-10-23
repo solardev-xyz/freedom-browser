@@ -10,8 +10,15 @@ const providerMessage = document.getElementById('agent-provider-message');
 const next = document.getElementById('ai-next-step');
 const open = document.getElementById('ai-open-agent');
 // Page tools (WebMCP) are decided once per launch (main/agent/webmcp-launch.js),
-// so turning AI on here offers the same restart the title-bar row does (#803).
+// so AI on in a launch that started without them offers the same restart the
+// title-bar row does (#803). Keyed on what this launch decided, not on the
+// toggle: reopening Settings still offers it, and turning AI off and on again
+// in a launch that has page tools does not. null (unknown) offers nothing.
 const restart = document.getElementById('enable-ai-restart');
+let webMcpAtLaunch = null;
+const renderRestart = () => {
+  restart.hidden = !(enabled && webMcpAtLaunch === false);
+};
 let enabled = false;
 let revision = 0;
 let pending = false;
@@ -169,8 +176,8 @@ function apply(settings) {
   document.getElementById('voice').hidden = !enabled;
   note.hidden = enabled;
   updateNext(providerUi.state.providerStatus);
+  renderRestart();
   if (!enabled) {
-    restart.hidden = true;
     dictation.cancel();
     revision += 1;
     loaded = false;
@@ -189,7 +196,6 @@ toggle.addEventListener('change', async () => {
   try {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
     apply(await api.getSettings());
-    restart.hidden = !requested;
     if (!requested) status.textContent = 'AI is off. Chats, connections and projects are kept.';
   } catch {
     toggle.checked = enabled;
@@ -233,6 +239,13 @@ window.addEventListener(
   },
   { once: true }
 );
+api
+  .getWebMcpLaunchState?.()
+  .then((state) => {
+    webMcpAtLaunch = typeof state?.enabledAtLaunch === 'boolean' ? state.enabledAtLaunch : null;
+    renderRestart();
+  })
+  .catch(() => {});
 api
   .getSettings()
   .then(apply)

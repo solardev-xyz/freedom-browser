@@ -118,6 +118,38 @@ describe('a launch without WebMCP (AI turned on after start, #803)', () => {
     expect(result).not.toHaveProperty('message');
   });
 
+  test('an insecure page gets no restart hint, since a restart would not help it', async () => {
+    recordWebMcpLaunch(null);
+    const { page, isolate } = fixture();
+    vm.runInContext('document.modelContext = undefined; isSecureContext = false', isolate);
+    const result = await page.list();
+    expect(result).toMatchObject({ available: false, tools: [], insecureContext: true });
+    expect(result).not.toHaveProperty('restartRequired');
+    expect(result).not.toHaveProperty('message');
+  });
+
+  test('a page refusing discovery for its own reasons keeps its own message', async () => {
+    recordWebMcpLaunch(null);
+    const { page, context } = fixture();
+    context.getTools.mockRejectedValue(new DOMException(
+      'document.modelContext cannot be used when document.domain is enabled.',
+      'SecurityError'
+    ));
+    const result = await page.list();
+    expect(result).toMatchObject({
+      available: false,
+      message: 'WebMCP unavailable on this page. Continue with normal browser tools.',
+    });
+    expect(result).not.toHaveProperty('restartRequired');
+  });
+
+  test('the internal apiMissing marker never reaches the model', async () => {
+    recordWebMcpLaunch('WebMCP');
+    const { page, isolate } = fixture();
+    vm.runInContext('document.modelContext = undefined', isolate);
+    expect(await page.list()).not.toHaveProperty('apiMissing');
+  });
+
   test('an unrecorded launch claims nothing', async () => {
     jest.isolateModules(() => {
       expect(require('../../agent/webmcp-launch').webMcpEnabledAtLaunch()).toBeNull();

@@ -247,6 +247,7 @@ module.exports = {
   AGENT_DICTATION_CANCEL: 'agent:dictation:cancel',
   AGENT_DICTATION_EVENT: 'agent:dictation:event',
   AGENT_MCP_CONNECTIONS: 'agent:mcp:connections',
+  AGENT_WEBMCP_LAUNCH_STATE: 'agent:webmcp:launch-state',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
   AGENT_PROVIDER_REFRESH_MODELS: 'agent:provider:refresh-models',

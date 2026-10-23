@@ -507,7 +507,11 @@ const {
 } = require('./automation/runtime');
 const { createFreedomAgentRuntime } = require('./agent/runtime');
 const { PREVIEW_PARTITION, isolatePreviewNetwork } = require('./agent/workspace-preview-network');
-const { webMcpBlinkFeatures, recordWebMcpLaunch } = require('./agent/webmcp-launch');
+const {
+  webMcpBlinkFeatures,
+  recordWebMcpLaunch,
+  registerWebMcpLaunchIpc,
+} = require('./agent/webmcp-launch');
 let agentPreviewNetwork;
 const { getAgentDataDir } = require('./profile-paths');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
@@ -589,6 +593,7 @@ async function bootstrap() {
     onNewPrivateWindow: createPrivateWindow,
   });
   registerSettingsIpc();
+  registerWebMcpLaunchIpc(ipcMain);
   registerAdblockIpc();
   registerShortcutsIpc();
   registerBookmarksIpc();

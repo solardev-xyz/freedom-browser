@@ -772,8 +772,10 @@ export function createAgentProviderUi(options = {}) {
 
   // A catalog refresh says so only when someone asked for it, and only for a
   // moment: a page opened on a day-old catalog refreshes in the background with
-  // no status line, and a clicked refresh's "refreshed" clears itself (#803).
-  // Failures stay until the next action, like every other error here.
+  // no status line, not even when it fails (the previous catalog stays in use,
+  // and nobody asked), and a clicked refresh's "refreshed" clears itself
+  // (#803). A clicked refresh's failure stays until the next action, like every
+  // other error here.
   const TRANSIENT_MESSAGE_MS = 4000;
   let transientTimer = null;
   function setTransientMessage(element, text) {
@@ -794,14 +796,15 @@ export function createAgentProviderUi(options = {}) {
         elements.apiKey.value || undefined
       );
       if (!response?.ok) {
-        setMessage(
-          elements.providerMessage,
-          responseMessage(
-            response,
-            'Could not refresh models. Your previous catalog is still available.'
-          ),
-          true
-        );
+        if (!background)
+          setMessage(
+            elements.providerMessage,
+            responseMessage(
+              response,
+              'Could not refresh models. Your previous catalog is still available.'
+            ),
+            true
+          );
         return;
       }
       state.providerCatalog = response.catalog;
@@ -812,11 +815,12 @@ export function createAgentProviderUi(options = {}) {
       if (!background) setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
       return true;
     } catch {
-      setMessage(
-        elements.providerMessage,
-        'Could not refresh models. Your previous catalog is still available.',
-        true
-      );
+      if (!background)
+        setMessage(
+          elements.providerMessage,
+          'Could not refresh models. Your previous catalog is still available.',
+          true
+        );
     } finally {
       elements.modelRefresh.disabled = false;
     }

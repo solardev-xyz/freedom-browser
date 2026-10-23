@@ -1,5 +1,7 @@
 'use strict';
 
+const IPC = require('../../shared/ipc-channels');
+
 // Chromium's native WebMCP (`document.modelContext`) is experimental in the
 // pinned Electron runtime, and only Freedom Agent's page tools use it. With AI
 // off nothing in Freedom reads it, so exposing it to every page would only add
@@ -29,4 +31,16 @@ function webMcpEnabledAtLaunch() {
   return enabledAtLaunch;
 }
 
-module.exports = { webMcpBlinkFeatures, recordWebMcpLaunch, webMcpEnabledAtLaunch };
+// Settings asks this to decide whether turning AI on still needs a restart:
+// the answer is about this launch, not the stored setting, which can flip
+// either way after start (#803).
+function registerWebMcpLaunchIpc(ipcMain) {
+  ipcMain.handle(IPC.AGENT_WEBMCP_LAUNCH_STATE, () => ({ enabledAtLaunch }));
+}
+
+module.exports = {
+  webMcpBlinkFeatures,
+  recordWebMcpLaunch,
+  webMcpEnabledAtLaunch,
+  registerWebMcpLaunchIpc,
+};

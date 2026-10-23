@@ -130,8 +130,10 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
 // for good, including after a refresh nobody asked for.
 test('a catalog refresh reports itself only when asked for, and only briefly', async ({ window }) => {
   const modelRequests = [];
+  let failing = false;
   const server = http.createServer((req, res) => {
     if (req.url.endsWith('/models')) modelRequests.push(req.url);
+    if (failing) { res.writeHead(503); res.end(); return; }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ data: [{ id: 'fast' }] }));
   });
@@ -164,5 +166,17 @@ test('a catalog refresh reports itself only when asked for, and only briefly', a
     await expect.poll(() => modelRequests.length).toBe(2);
     await expect(providerPage.locator('#agent-model-refresh')).toBeEnabled();
     await expect(message).toHaveText('');
+
+    // Nor when that background refresh fails (provider down, offline): the
+    // previous catalog stays in use and nobody asked.
+    failing = true;
+    await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
+    await providerPage.locator('#agent-connected-provider-list').getByRole('button', { name: /Refresh fixture/ }).click();
+    await expect.poll(() => modelRequests.length).toBe(3);
+    await expect(providerPage.locator('#agent-model-refresh')).toBeEnabled();
+    await expect(message).toHaveText('');
+    // A clicked refresh that fails still says so.
+    await providerPage.locator('#agent-model-refresh').click();
+    await expect(message).toHaveText(/^Could not /);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

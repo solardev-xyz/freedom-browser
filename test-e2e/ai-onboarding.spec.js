@@ -70,6 +70,15 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
   await expect(page.locator('#enable-ai-restart')).toBeVisible();
+  // The button follows this launch, not the click: reopened, Settings still
+  // offers the restart this launch needs.
+  await page.evaluate(() => {
+    window.__beforeReload = true;
+    location.reload();
+  });
+  await expect.poll(() => page.evaluate(() => !window.__beforeReload && document.readyState === 'complete').catch(() => false)).toBe(true);
+  await expect(page.locator('#enable-ai')).toBeChecked();
+  await expect(page.locator('#enable-ai-restart')).toBeVisible();
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await expect(page.locator('#agent-provider-add')).toBeVisible();
   await page.locator('#agent-provider-add').click();
@@ -169,6 +178,18 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   // above waits the same way.
   await guest(restarted, 'home');
   expect(await modelContext(restarted)).toEqual([true, 'object']);
+  // This launch has page tools, so Settings offers no restart, not even after
+  // turning AI off and on again (#803).
+  const restartedChrome = restarted.windows().find(page => page.url().endsWith('/renderer/index.html'));
+  const restartedSettings = await settings(restarted, restartedChrome);
+  await expect(restartedSettings.locator('#enable-ai')).toBeChecked();
+  await expect(restartedSettings.locator('#enable-ai-restart-help')).toBeVisible();
+  await expect(restartedSettings.locator('#enable-ai-restart')).toBeHidden();
+  await restartedSettings.locator('#enable-ai').uncheck();
+  await expect(restartedChrome.locator('#agent-toggle-btn')).toBeHidden();
+  await restartedSettings.locator('#enable-ai').check();
+  await expect(restartedChrome.locator('#agent-toggle-btn')).toBeVisible();
+  await expect(restartedSettings.locator('#enable-ai-restart')).toBeHidden();
 });
 
 test('What’s new remains discoverable with AI enabled and fits both themes at narrow widths', async ({ electronApp, window }, testInfo) => {
