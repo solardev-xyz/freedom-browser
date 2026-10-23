@@ -356,13 +356,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Verify freedom-cored's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Download freedom-ipfsd binaries
         # Packaged beside freedom-cored, and required by check-binaries.
         # Same bounded watchdog as the Ant download.
@@ -371,13 +364,6 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Verify freedom-ipfsd's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       # fetch-freedom-ipfs-native.js downloads release assets directly and
       # makes no API calls, so it needs no token.
@@ -657,13 +643,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Verify freedom-cored's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Download freedom-ipfsd binaries
         # Packaged beside freedom-cored, and required by check-binaries.
         # Same bounded watchdog as the Ant download.
@@ -672,13 +651,6 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Verify freedom-ipfsd's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -1304,13 +1276,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Verify freedom-cored's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Download freedom-ipfsd binaries
         # Packaged beside freedom-cored, and required by check-binaries.
         # Same bounded watchdog as the Ant download.
@@ -1319,13 +1284,6 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-ipfsd.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Verify freedom-ipfsd's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js ipfsd
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -1763,13 +1721,6 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Verify freedom-cored's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Run the full harness E2E suite
         run: xvfb-run -a npm run test:e2e

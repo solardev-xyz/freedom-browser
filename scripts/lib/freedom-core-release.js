@@ -14,6 +14,18 @@
  * the tag family it accepts and the env var that overrides the pin. The
  * fetching, verifying and installing is this module's, so they cannot drift
  * apart.
+ *
+ * In GitHub Actions (`GITHUB_ACTIONS=true`), the fetch also verifies the
+ * build provenance of what it downloads (freedom-core design 0001,
+ * "Packaging and release"): `SHA256SUMS`, once its digest is checked, and
+ * each archive, once its checksum is, before anything is extracted. Each
+ * must carry a build-provenance attestation from freedom-core's release
+ * workflow for the binary (`provenanceWorkflow`), at exactly the release's
+ * tag, built on a GitHub-hosted runner; `gh attestation verify`, the
+ * runner's CLI, checks it. A missing `gh`, a missing token or a failed check
+ * fails the fetch, and nothing in CI turns the check off: however a workflow
+ * runs the fetch, what it installs was verified. Outside CI nothing changes:
+ * the SHA-256 pins are the local check, and no Sigstore dependency is taken.
  */
 
 const fs = require('fs');
@@ -23,6 +35,9 @@ const { execFileSync } = require('child_process');
 const { fetchJson, downloadToFile, TIMEOUTS } = require('./fetch-with-retry');
 
 const DEFAULT_REPO = 'solardev-xyz/freedom-core';
+// Whose release workflow must have built what CI installs. A FREEDOM_CORE_REPO
+// override changes where a fetch looks, never whose attestation it accepts.
+const PROVENANCE_REPO = DEFAULT_REPO;
 const API_HOST = 'api.github.com';
 // Shipped beside the binary in every archive: the notices of the third-party
 // code it statically links (crates, and the Rust toolchain's runtime).
@@ -55,6 +70,27 @@ function parseChecksums(text) {
   return map;
 }
 
+/** Whether this run is in GitHub Actions, where provenance is always verified. */
+function inCi() {
+  return process.env.GITHUB_ACTIONS === 'true';
+}
+
+/** `gh attestation verify`'s arguments for `file` of a release at `tag`. */
+function attestationArgs(file, tag, provenanceWorkflow) {
+  return [
+    'attestation',
+    'verify',
+    file,
+    '--repo',
+    PROVENANCE_REPO,
+    '--signer-workflow',
+    `${PROVENANCE_REPO}/.github/workflows/${provenanceWorkflow}`,
+    '--source-ref',
+    `refs/tags/${tag}`,
+    '--deny-self-hosted-runners',
+  ];
+}
+
 /** Sends the token only to GitHub's API host, never across a redirect. */
 function releaseRequestHeaders(url) {
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -79,7 +115,7 @@ function releaseRequestHeaders(url) {
  * @param {string} options.tagPrefix     dropped from a tag to name its archives
  * @param {string} options.provenanceWorkflow  the freedom-core workflow that
  *   builds and attests this binary's releases; CI verifies their build
- *   provenance against it (scripts/ci/verify-core-provenance.js)
+ *   provenance against it
  */
 function createReleaseFetcher({
   binary,
@@ -126,6 +162,29 @@ function createReleaseFetcher({
     });
   }
 
+  /**
+   * Checks with `gh attestation verify` that `file`, of the release at
+   * `tag`, was built by freedom-core's `provenanceWorkflow`. Throws if it
+   * wasn't, or if `gh` can't run.
+   */
+  function verifyProvenance(file, tag) {
+    console.log(`Verifying the build provenance of ${path.basename(file)}...`);
+    try {
+      execFileSync('gh', attestationArgs(file, tag, provenanceWorkflow), { stdio: 'inherit' });
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        throw new Error(
+          `gh is not installed: CI verifies the build provenance of ${binary} with gh attestation verify`,
+          { cause: err }
+        );
+      }
+      throw new Error(
+        `The build provenance of ${path.basename(file)} (${binary} ${tag}) did not verify: ${err.message}`,
+        { cause: err }
+      );
+    }
+  }
+
   /** Exact names exclude sidecars, wrong releases and ambiguous keyword matches. */
   function assetFor(assets, target, tag = RELEASE_TAG) {
     const name = `${binary}-${archiveVersion(tag)}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
@@ -134,8 +193,27 @@ function createReleaseFetcher({
     return matches[0];
   }
 
-  async function main({ outputDir = OUTPUT_DIR } = {}) {
+  /**
+   * Fetches, verifies and installs the release into `outputDir`. In CI the
+   * build provenance is verified as well; `verifyProvenance: true` asks for
+   * that outside CI too, and nothing turns it off in CI.
+   */
+  async function main({ outputDir = OUTPUT_DIR, verifyProvenance: verifying = false } = {}) {
     try {
+      const provenance = inCi() || verifying === true;
+      if (provenance) {
+        if (!provenanceWorkflow) throw new Error(`${binary} names no provenance workflow`);
+        if (RELEASE_TAG === 'latest') {
+          throw new Error(
+            `Refusing ${binary} at latest: build provenance is verified against a tag`
+          );
+        }
+        if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
+          throw new Error(
+            `Verifying the build provenance of ${binary} needs GH_TOKEN or GITHUB_TOKEN for gh`
+          );
+        }
+      }
       console.log(`Fetching ${binary} release info from ${CORE_REPO} @ ${RELEASE_TAG}...`);
       const release = await fetchRelease();
       if (
@@ -172,6 +250,7 @@ function createReleaseFetcher({
             'skipping the pinned digest check (local testing only).'
         );
       }
+      if (provenance) verifyProvenance(sumsPath, release.tag_name);
       const checksums = parseChecksums(fs.readFileSync(sumsPath, 'utf-8'));
       const downloads = TARGETS.map((target) => {
         const asset = assetFor(assets, target, release.tag_name);
@@ -199,6 +278,7 @@ function createReleaseFetcher({
               `Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`
             );
           }
+          if (provenance) verifyProvenance(archive, release.tag_name);
           const binName = target.exe ? `${binary}.exe` : binary;
           const isWindows = process.platform === 'win32';
           const tarBin = isWindows
@@ -263,16 +343,14 @@ function createReleaseFetcher({
     parseChecksums,
     assetFor,
     archiveVersion,
-    sha256File,
     TARGETS,
     NOTICE_FILES,
     CORE_REPO,
     PINNED_RELEASE_TAG,
-    PINNED_SHA256SUMS_DIGEST,
     RELEASE_TAG,
     binary,
     provenanceWorkflow,
   };
 }
 
-module.exports = { createReleaseFetcher };
+module.exports = { createReleaseFetcher, attestationArgs, inCi, PROVENANCE_REPO };

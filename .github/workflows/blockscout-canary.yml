@@ -57,13 +57,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Verify freedom-cored's build provenance
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/ci/verify-core-provenance.js cored
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Check the core's Blockscout pairing
         # The check bounds itself at 5 minutes.
         timeout-minutes: 6
