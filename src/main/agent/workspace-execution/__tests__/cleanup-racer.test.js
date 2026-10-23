@@ -27,9 +27,14 @@ afterEach(async () => {
 // The shape S1 replaced: decide by `lstat`, then act on the path afterwards.
 // Anything that resolves `sub/<name>` after the racer swapped the link in
 // deletes the outside file of that name.
+// It yields between looks: a synchronous spin on `lstat` kept a CPU busy and,
+// on a loaded CI runner, starved the racer process of the time to put its
+// directory back, so the walk ran out of time without ever catching it (the
+// `test` job of run 39881059597).
+const PATH_WALK_MS = 20_000;
 const pathWalkingCleanup = (names) => async (target) => {
   const sub = path.join(target, SUBDIRECTORY);
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + PATH_WALK_MS;
   while (Date.now() < deadline) {
     let stats;
     try {
@@ -38,7 +43,10 @@ const pathWalkingCleanup = (names) => async (target) => {
       await sleep(0);
       continue;
     }
-    if (!stats.isDirectory()) continue;
+    if (!stats.isDirectory()) {
+      await sleep(0);
+      continue;
+    }
     await sleep(2);
     for (const name of names) {
       try {
@@ -133,6 +141,8 @@ test('reports the outside files a path-walking cleanup deleted through the link'
     outside: path.join(fixture, 'outside'),
     names,
     linkType,
+    // Outlast the walk, so the racer is still swapping whenever it looks.
+    maxMs: PATH_WALK_MS + 5_000,
     cleanup: async (target) => {
       if (!walked) {
         walked = true;
