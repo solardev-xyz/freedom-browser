@@ -1,0 +1,112 @@
+[
+  {
+    "ghsa_id": "GHSA-jr5w-w6x2-84p9",
+    "cve_id": null,
+    "html_url": "https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9",
+    "summary": "Mitigation for compromised eMudhra intermediate certificates",
+    "severity": "high",
+    "published_at": "2026-10-22T04:37:15Z",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 45.0.0-alpha.1, < 45.0.0-beta.6",
+        "patched_versions": "45.0.0-beta.6"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 44.0.0-alpha.1, < 44.9.1",
+        "patched_versions": "44.9.1"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 43.0.0-alpha.1, < 43.8.1",
+        "patched_versions": "43.8.1"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": "< 42.11.16",
+        "patched_versions": "42.11.16"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-2p8c-gr87-2676",
+    "cve_id": "CVE-2026-113796",
+    "html_url": "https://github.com/electron/electron/security/advisories/GHSA-2p8c-gr87-2676",
+    "summary": "SameSite cookie restrictions are not applied to windows opened from links",
+    "severity": "medium",
+    "published_at": "2026-10-15T22:04:51Z",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 45.0.0-alpha.1, < 45.0.0-alpha.6",
+        "patched_versions": "45.0.0-alpha.6"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 44.0.0-alpha.1, < 44.3.0",
+        "patched_versions": "44.3.0"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 43.0.0-alpha.1, < 43.7.0",
+        "patched_versions": "43.7.0"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": "< 42.11.3",
+        "patched_versions": "42.11.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-22mq-c535-7vv9",
+    "cve_id": null,
+    "html_url": "https://github.com/electron/electron/security/advisories/GHSA-22mq-c535-7vv9",
+    "summary": "Out-of-package denial-of-service for CommonJS Electron apps packaged with ASAR",
+    "severity": "medium",
+    "published_at": "2026-10-15T21:30:18Z",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 36.0.0-alpha.1, < 36.0.0-alpha.5",
+        "patched_versions": "36.0.0-alpha.5"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "electron"
+        },
+        "vulnerable_version_range": ">= 35.0.0-alpha.1, < 35.1.0",
+        "patched_versions": "35.1.0"
+      }
+    ]
+  }
+]
