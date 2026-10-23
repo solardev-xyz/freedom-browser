@@ -15,9 +15,10 @@ const path = require('path');
 const { Wallet } = require('ethers');
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
 
-// Main's IPC registry, and the chrome window's webContents (id 7).
+// Main's IPC registry, a fresh one per test (startPhone).
 const mockMain = { handle: new Map(), on: new Map() };
-const mockWebContents = { id: 7, isDestroyed: () => false, send: jest.fn() };
+// The chrome window's webContents, a fresh one per test (startPhone).
+const mockWindow = { webContents: null };
 // The wallet's records (intent store, payment history) live in a scratch
 // profile per test.
 let mockUserData;
@@ -29,7 +30,7 @@ jest.mock('electron', () => ({
     removeHandler: () => {},
   },
   BrowserWindow: {
-    getFocusedWindow: () => ({ webContents: mockWebContents }),
+    getFocusedWindow: () => mockWindow,
     getAllWindows: () => [],
   },
   webContents: { getAllWebContents: () => [] },
@@ -108,6 +109,18 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const settle = async (rounds = 20) => {
   for (let i = 0; i < rounds; i += 1) await flush();
 };
+// Until `condition` holds. The flows read the wallet's records from disk
+// on the way, so a fixed number of turns of the event loop isn't enough;
+// a flow that outlived its test would also run on into the next one.
+const until = async (condition, what) => {
+  for (let i = 0; i < 20000; i += 1) {
+    if (condition()) return;
+    await flush();
+  }
+  throw new Error(`timed out waiting for ${what}`);
+};
+const shown = (ctx) =>
+  until(() => ctx.elements['dapp-tx-error'].textContent !== '', 'the approval to show the outcome');
 
 // The phone's side of openlv: links at once, answers the network switch,
 // and answers the payment only as `answer` says (by default, never).
@@ -156,8 +169,11 @@ function scriptedOpenlv(answer = () => new Promise(() => {})) {
  */
 async function startPhone({ answer, holdRequestSent = null, holdAbort = false } = {}) {
   jest.resetModules();
-  mockMain.handle.clear();
-  mockMain.on.clear();
+  // Each test's main gets its own IPC registry: a flow of an earlier test
+  // can only ever reach that test's handlers.
+  const registry = { handle: new Map(), on: new Map() };
+  mockMain.handle = registry.handle;
+  mockMain.on = registry.on;
 
   const { createRemoteBackend } = require('../../../main/wallet/remote/signer');
   mockSigners = {
@@ -166,12 +182,14 @@ async function startPhone({ answer, holdRequestSent = null, holdAbort = false } 
   require('../../../main/wallet/remote/bridge').registerRemoteSignerIpc();
   require('../../../main/wallet/wallet-ipc').registerWalletIpc();
   const chrome = { sender: { id: 7 } };
-  const invoke = (channel, ...args) => mockMain.handle.get(channel)(chrome, ...args);
-  const fromChrome = (channel, payload) => mockMain.on.get(channel)(chrome, payload);
+  const invoke = (channel, ...args) => registry.handle.get(channel)(chrome, ...args);
+  const fromChrome = (channel, payload) => registry.on.get(channel)(chrome, payload);
 
   const held = { requestSent: [], abort: [] };
   const toRenderer = {};
-  mockWebContents.send.mockReset().mockImplementation((channel, payload) => {
+  const webContents = { id: 7, isDestroyed: () => false, send: jest.fn() };
+  mockWindow.webContents = webContents;
+  webContents.send.mockImplementation((channel, payload) => {
     const deliver = () => setImmediate(() => toRenderer[channel]?.(payload));
     if (holdAbort && channel === 'remote-signer:abort') held.abort.push(deliver);
     else deliver();
@@ -302,9 +320,12 @@ async function start(options = {}) {
     );
   await settle();
   elements['dapp-tx-approve'].dispatch('click');
-  await settle();
-  if (!options.holdRequestSent) {
+  if (options.holdRequestSent) {
+    await until(() => phone.phoneGot().length === 1, 'the network switch');
+    await settle();
+  } else {
     // The payment request is on the phone now.
+    await until(() => phone.phoneGot().length === 2, 'the payment request on the phone');
     expect(phone.phoneGot()).toEqual(['wallet_switchEthereumChain', 'eth_sendTransaction']);
   }
   return { ...phone, elements, site, answered };
@@ -355,11 +376,11 @@ async function startAutoApproved(options = {}) {
       },
     ],
   });
-  await settle(40);
   const pageGot = () =>
     webview.send.mock.calls
       .filter(([channel]) => channel === 'dapp:provider-response')
       .map(([, response]) => response);
+  await until(() => pageGot().length > 0, "the page's answer");
   return { ...phone, pageGot };
 }
 
@@ -382,7 +403,7 @@ describe("a site's answer when its phone payment's outcome is unknown (D13)", ()
   test('the user stops waiting: Reject tells the site the outcome is unknown, never 4001', async () => {
     const { elements, broker, jobs, site, answered } = await start();
     broker.cancelJob(jobs.find((event) => event.phase === 'qr').jobId);
-    await settle();
+    await shown({ elements });
 
     expect(elements['dapp-tx-error'].textContent).toMatch(/unknown whether this payment was sent/);
     expect(elements['dapp-tx-approve'].disabled).toBe(true);
@@ -397,7 +418,7 @@ describe("a site's answer when its phone payment's outcome is unknown (D13)", ()
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
     const { elements, site, answered } = await start();
     jest.advanceTimersByTime(5 * 60 * 1000 + 1);
-    await settle();
+    await shown({ elements });
 
     expect(elements['dapp-tx-approve'].disabled).toBe(true);
     elements['dapp-tx-back'].dispatch('click');
@@ -409,7 +430,7 @@ describe("a site's answer when its phone payment's outcome is unknown (D13)", ()
     const { elements, site, answered } = await start({
       answer: async () => ({ error: { code: 4001, message: 'User denied.' } }),
     });
-    await settle();
+    await shown({ elements });
 
     expect(elements['dapp-tx-error'].textContent).toBe('Request rejected on your phone.');
     expect(elements['dapp-tx-approve'].disabled).toBe(false);
@@ -435,7 +456,7 @@ describe("the request goes only with main's leave (787-M1)", () => {
     jest.advanceTimersByTime(FIVE_MINUTES);
     await settle();
     ctx.deliver.requestSent();
-    await settle();
+    await shown(ctx);
 
     // Main had given up, so it refused: the payment never reached the phone.
     expect(ctx.phoneGot()).toEqual(['wallet_switchEthereumChain']);
@@ -450,7 +471,7 @@ describe("the request goes only with main's leave (787-M1)", () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
     const ctx = await start({ holdAbort: true });
     jest.advanceTimersByTime(FIVE_MINUTES);
-    await settle();
+    await shown(ctx);
 
     expect(ctx.elements['dapp-tx-approve'].disabled).toBe(true);
     ctx.deliver.abort();
@@ -466,8 +487,7 @@ describe("the request goes only with main's leave (787-M1)", () => {
     // the way back while main times out and its abort lands first.
     const ctx = await start({ holdRequestSent: 'answer' });
     jest.advanceTimersByTime(FIVE_MINUTES);
-    await settle();
-    expect(ctx.jobs.some((event) => event.phase === 'aborted')).toBe(true);
+    await until(() => ctx.jobs.some((event) => event.phase === 'aborted'), "main's abort");
     ctx.deliver.requestSent();
     await settle();
 
@@ -498,7 +518,7 @@ describe("the phone's error answers to a payment on it (787-M2)", () => {
           return reply;
         },
       });
-      await settle();
+      await shown(ctx);
       expect(ctx.elements['dapp-tx-error'].textContent).toMatch(
         /unknown whether this payment was sent/
       );
@@ -517,7 +537,7 @@ describe("the phone's error answers to a payment on it (787-M2)", () => {
     'the explicit refusal %s is an answer: nothing was sent',
     async (code) => {
       const ctx = await start({ answer: async () => ({ error: { code, message: 'refused' } }) });
-      await settle();
+      await shown(ctx);
       expect(ctx.elements['dapp-tx-error'].textContent).toBe('refused');
       expect(ctx.elements['dapp-tx-approve'].disabled).toBe(false);
       ctx.elements['dapp-tx-reject'].dispatch('click');
