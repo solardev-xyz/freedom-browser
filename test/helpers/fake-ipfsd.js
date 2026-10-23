@@ -8,8 +8,9 @@
  * `fakeIpfsd(script)` returns a `spawn` for `FreedomIpfsdNode` and the
  * children it spawned. Each child answers what the script says, by method
  * (`hello`, `start`, `stop`, `stats`, `request`), and the default otherwise:
- * a persistent process's hello, `{ instance }` for start and stop, a stats
- * reply, and `ipfs.shutdown` exits 0. A handler gets the message and the
+ * its process's hello (`helloFor`: the kind and the `--network` policy it
+ * was spawned with, and a confinement report), `{ instance }` for start and
+ * stop, a stats reply, and `ipfs.shutdown` exits 0. A handler gets the message and the
  * child, and answers through it:
  * - `child.result(id, result)`, `child.error(id, code, message)`;
  * - `child.head(id, { status, headers, body })`, then `child.body(id,
@@ -20,7 +21,8 @@
  * Each child records `requests` (in order), `cancels` and the credit it got.
  *
  * An `ipfs.start` the real service refuses is refused here too, before any
- * script sees it: `startRefusal` holds the rules it applies.
+ * script sees it: `startRefusal` holds the rules it applies, under the
+ * child's own policy (`child.network`).
  */
 
 const { EventEmitter } = require('events');
@@ -37,14 +39,19 @@ const json = (value) => Buffer.from(JSON.stringify(value));
 
 /**
  * Why the real freedom-ipfsd would refuse `ipfs.start`'s `params`
- * (`invalid_argument`, its message), or null. Its rules that main's params
- * could meet: `socks5` takes only delegated or offline routing (decision
- * D6, freedom-ipfsd's params.rs), and `routing.doh_endpoint` is required
+ * (`invalid_argument`, its message), or null, in a process under `network`.
+ * Its rules that main's params could meet: no `network` member, which is
+ * the process's (`--network`, freedom-core design 0010), so an unknown one;
+ * `socks5` takes only delegated or offline routing (decision D6,
+ * freedom-ipfsd's params.rs); and `routing.doh_endpoint` is required
  * (decision D9).
  */
-function startRefusal(params) {
+function startRefusal(params, network = { mode: 'direct' }) {
   const routing = params?.routing ?? {};
-  if (params?.network?.mode === 'socks5' && !['delegated', 'offline'].includes(routing.mode)) {
+  if (params && 'network' in params) {
+    return 'params are malformed: a member is missing, unknown or of the wrong type';
+  }
+  if (network?.mode === 'socks5' && !['delegated', 'offline'].includes(routing.mode)) {
     return 'network mode socks5 takes routing mode delegated or offline';
   }
   if (typeof routing.doh_endpoint !== 'string') {
@@ -53,12 +60,44 @@ function startRefusal(params) {
   return null;
 }
 
+/** The confinement a fake process reports (freedom-core design 0010). */
+const CONFINEMENT = Object.freeze({
+  mechanism: 'landlock-4+seccomp',
+  files: 'enforced',
+  exec: 'enforced',
+  ipc: 'partial',
+  network: 'none',
+  gaps: ['signals'],
+  reasons: {},
+  resolution: 'system',
+});
+
 const HELLO = Object.freeze({
   protocol: 1,
   service_version: '0.1.0',
   freedom_ipfs: { version: '0.4.6', git_commit: '0bb3e995a9f3da7d2df30939115cfee9b21bd212' },
   kind: 'persistent',
+  network: { mode: 'direct' },
+  confinement: CONFINEMENT,
 });
+
+/** The policy `--network` names in `args`, as hello reports it, or null. */
+function networkOf(args = []) {
+  const value = args[args.indexOf('--network') + 1];
+  if (args.indexOf('--network') < 0 || typeof value !== 'string') return null;
+  if (value === 'direct') return { mode: 'direct' };
+  const socks = /^socks5:(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(value);
+  return socks ? { mode: 'socks5', ip: socks[1] ?? socks[2], port: Number(socks[3]) } : null;
+}
+
+/** The hello a process spawned with `args` answers: its kind and policy. */
+function helloFor(args = []) {
+  return {
+    ...HELLO,
+    kind: args.includes('--ephemeral') ? 'ephemeral' : 'persistent',
+    network: networkOf(args) ?? HELLO.network,
+  };
+}
 
 /** A stats reply as the service writes it, with `gateway` overrides. */
 function statsResult(gateway = {}) {
@@ -88,6 +127,8 @@ class FakeIpfsdChild extends EventEmitter {
     super();
     this.script = script;
     this.args = args;
+    // The policy it was spawned under (`--network`).
+    this.network = networkOf(args);
     this.pid = pid;
     this.stdout = new PassThrough();
     this.stderr = new PassThrough();
@@ -129,7 +170,8 @@ class FakeIpfsdChild extends EventEmitter {
     this.requests.push(message);
     this.sender.request(message.id);
     const method = message.method.replace(/^ipfs\./, '');
-    const refusal = method === 'start' ? startRefusal(message.params) : null;
+    const refusal =
+      method === 'start' ? startRefusal(message.params, this.network ?? undefined) : null;
     if (refusal) {
       this.error(message.id, 'invalid_argument', refusal);
       return;
@@ -141,7 +183,7 @@ class FakeIpfsdChild extends EventEmitter {
     }
     switch (method) {
       case 'hello':
-        this.result(message.id, HELLO);
+        this.result(message.id, helloFor(this.args));
         break;
       case 'start':
       case 'stop':
@@ -269,4 +311,12 @@ function fakeIpfsd(script = {}) {
   return { spawn, children, spawned, script };
 }
 
-module.exports = { fakeIpfsd, statsResult, startRefusal, HELLO };
+module.exports = {
+  fakeIpfsd,
+  statsResult,
+  startRefusal,
+  helloFor,
+  networkOf,
+  HELLO,
+  CONFINEMENT,
+};

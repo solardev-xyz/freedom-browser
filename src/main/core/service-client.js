@@ -13,7 +13,8 @@
  * - events from the process;
  * - restarts after 0.5 s, 2 s, then 10 s, until three crashes within 60 s;
  * - no restart after a protocol mismatch, a requested stop, or the exit
- *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held).
+ *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held, 77
+ *   confinement).
  *
  * **Generations.** Each child is one `Generation` record: its pending
  * requests, its writer budget, its decoder, stderr and timers. Its lifecycle
@@ -110,10 +111,12 @@ const RESTART_DELAYS_MS = [500, 2_000, 10_000];
 const CRASH_WINDOW_MS = 60_000;
 const MAX_CRASHES_IN_WINDOW = 3;
 // sysexits codes after which the process must not be restarted: usage (64),
-// storage or refused filesystem (74), lock held by another process (75).
-// 76 (protocol) is restarted under the crash policy, unless the handshake
-// reported a protocol mismatch.
-const NO_RESTART_EXIT_CODES = new Set([64, 74, 75]);
+// storage or refused filesystem (74), lock held by another process (75), and
+// 77, the service refusing its own confinement (freedom-core design 0010: a
+// thread or descriptor it didn't expect, or its rules refused), which a
+// restart would meet again. 76 (protocol) is restarted under the crash
+// policy, unless the handshake reported a protocol mismatch.
+const NO_RESTART_EXIT_CODES = new Set([64, 74, 75, 77]);
 // Admission limits per generation. Control frames (hello, shutdown) don't
 // count, so they always get through.
 const MAX_PENDING = 256;

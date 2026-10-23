@@ -20,6 +20,7 @@ const { PrivateInstances } = require('./ipfs/freedom-ipfsd-private');
 const { IpfsNetwork } = require('./ipfs/ipfs-network');
 const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
+const { ipfsGrantRefusal } = require('./service-grant');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -822,6 +823,9 @@ async function doStartIpfs(requestedAt = stopsRequested) {
           lockDir: getLockDir(),
           shellVersion: app.getVersion(),
           network: ipfsNetwork,
+          // freedom-core design 0010, "Main's check": the data directory may
+          // not be, contain, or lie inside another component's or profile's.
+          checkGrant: () => ipfsGrantRefusal(dataDir),
           onFailure,
           onChange: (state, changedNode) => handleServiceNodeChange(state, changedNode),
         })
@@ -848,7 +852,9 @@ async function doStartIpfs(requestedAt = stopsRequested) {
     const started = await node.start();
     if (takenOver()) return;
     if (!started) {
-      updateState(STATUS.ERROR, 'Failed to start freedom-ipfs native node');
+      // The service node's own reason where it has one: a refused grant or
+      // confinement (freedom-core design 0010), or today's text.
+      updateState(STATUS.ERROR, node.failureReason || 'Failed to start freedom-ipfs native node');
       setStatusMessage('ipfs', 'Node failed to start');
       return;
     }
@@ -887,8 +893,14 @@ async function doStartIpfs(requestedAt = stopsRequested) {
 // The service node went down for a restart, or came back (freedom-core
 // design 0007, "Crashes, hangs and restarts"): STARTING meanwhile, so plans
 // get the 503 of a node that isn't up, as at launch. Giving up is a failure
-// (handleNativeNodeFailure).
+// (handleNativeNodeFailure). A node that waits for Tor's endpoint, with no
+// process spawned (design 0010: the policy is the process's), says so while
+// it stays STARTING.
 function handleServiceNodeChange(state, node) {
+  if (state === 'waiting') {
+    if (node === activeNode || node === startingNode) setStatusMessage('ipfs', 'Waiting for Tor');
+    return;
+  }
   if (node !== activeNode) return;
   if (state === 'restarting' && currentState === STATUS.RUNNING) {
     setStatusMessage('ipfs', 'Node restarting');

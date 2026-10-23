@@ -266,6 +266,42 @@ async function prepareRadicleDataDir() {
   return ensureDir(radicleDir);
 }
 
+// Each managed component's data directory: its default name under a
+// profile's userData directory, and the variable that overrides it.
+const COMPONENT_DATA_DIRS = Object.freeze({
+  identity: ['identity', 'FREEDOM_IDENTITY_DATA'],
+  bee: ['bee-data', 'FREEDOM_BEE_DATA'],
+  ant: ['ant-data', 'FREEDOM_ANT_DATA'],
+  ipfs: ['ipfs-data', 'FREEDOM_IPFS_DATA'],
+  myotis: ['myotis', 'MYOTIS_DATA_DIR'],
+  tor: ['tor-data', 'FREEDOM_TOR_DATA'],
+  radicle: ['radicle-data', 'FREEDOM_RADICLE_DATA'],
+});
+
+/**
+ * Where each managed component keeps its data, as the getters above resolve
+ * it but without creating anything: the protected roots of freedom-core
+ * design 0010's grant check (`service-grant.js`).
+ *
+ * - Without `userDataDir`: the active profile's, with this process's
+ *   overrides (`FREEDOM_IPFS_DATA`, …).
+ * - With it: another profile's, at their default names (an override is this
+ *   process's alone).
+ *
+ * `radicleHomes` is where catalog profiles' short Radicle homes live (one
+ * per slot: `<appRoot>/R`, or a dev checkout's `R/<hash>`), or null.
+ */
+function getComponentDataDirs(userDataDir = null) {
+  const root = userDataDir ?? app.getPath('userData');
+  const dirs = {};
+  for (const [component, [name, override]] of Object.entries(COMPONENT_DATA_DIRS)) {
+    dirs[component] = (!userDataDir && process.env[override]) || path.join(root, name);
+  }
+  const catalogRadicle = userDataDir ? null : getCatalogRadicleDataDir(getActiveProfile());
+  dirs.radicleHomes = catalogRadicle ? path.dirname(catalogRadicle) : null;
+  return dirs;
+}
+
 function getQuickUnlockCredentialPath() {
   return path.join(getIdentityDataDir(), 'quick-unlock.dat');
 }
@@ -290,6 +326,7 @@ module.exports = {
   createProfileTempDir,
   getAntDataDir,
   getBeeDataDir,
+  getComponentDataDirs,
   getIdentityDataDir,
   getIpfsDataDir,
   getMyotisDataDir,

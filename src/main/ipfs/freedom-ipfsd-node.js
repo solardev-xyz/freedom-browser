@@ -4,16 +4,20 @@
  * `FreedomIpfsNativeNode`, whose surface it keeps for ipfs-manager.js. It
  * runs the one persistent instance; private windows' instances are step 7.
  *
- * - **Start** (0007, "Startup and shutdown"): spawn, `ipfs.hello`, then
- *   `ipfs.start` with today's configuration sent explicitly (0007, Parity),
- *   under the network policy `network` says now (`ipfs-network.js`): while
- *   it says none (IPFS through Tor, and no endpoint from Tor yet), nothing
- *   is started and the node stays `starting`, until it says one:
- *   automatic routing over the two delegated routers, a 3 s DHT query
+ * - **Start** (0007, "Startup and shutdown"): the grant check
+ *   (`checkGrant`, freedom-core design 0010, "Main's check"), then spawn
+ *   under the network policy `network` says now (`ipfs-network.js`), as
+ *   `--network`; `ipfs.hello`, which must report that policy and the
+ *   confinement the process got; then `ipfs.start` with today's
+ *   configuration sent explicitly (0007, Parity): automatic routing over the
+ *   two delegated routers (delegated only under `socks5`), a 3 s DHT query
  *   timeout and 32 providers, 8 header permits and the 15 s queue, and the
  *   add-on's store, `<ipfs-data>/freedom-ipfs/freedom-ipfs.sqlite3`, with
  *   its 256 MiB target. The node is running once the instance's first
- *   `ipfs.stats` has answered.
+ *   `ipfs.stats` has answered. While the policy says none (IPFS through
+ *   Tor, and no endpoint from Tor yet), nothing is spawned: the node stays
+ *   `starting`, and tells the manager it waits (`onChange('waiting')`),
+ *   until the policy says one.
  * - **Instance IDs** (0007, "Instance IDs"): `p-1`, `p-2`, … from a counter
  *   per process generation, never reused. `capture()` binds the generation
  *   and the instance serving now; a request on a pair that has been retired
@@ -37,15 +41,21 @@
  *   as a crash too, and is replaced in the same process after the back-off.
  *   Three in 60 s stop the process, and so does an `ipfs.start` that fails:
  *   the manager is told (`onFailure`), and shows today's text.
- * - **A change of network policy** (0007, "Changing the policy"; step 8,
- *   B3): the profile's setting, or Tor's endpoint moving. The instance is
- *   retired at once (its requests fail with today's text, and nothing more
- *   is sent for it), torn down (`ipfs.stop`, whose reply proves that
- *   nothing it admitted outlives it: the service revokes its network
- *   first), and a new one starts under the new policy, under a new ID. If
- *   the teardown isn't proven within 5 s, the process restarts, and its
- *   next generation's instance starts under the new policy. Tor going down
- *   is no change: the policy stays, and IPFS fails closed.
+ * - **A change of network policy** (0007, "Changing the policy"; design
+ *   0010, "The network policy and the lifecycle"): the profile's setting, or
+ *   Tor's endpoint moving. The policy is the process's, so the change is a
+ *   new process: the generation is retired at once (every captured pair
+ *   fails with today's text, and nothing more is sent to it), the process
+ *   is shut down (`ipfs.shutdown`, and a kill 5 s later), and once it has
+ *   exited a new one is spawned under the policy then in force, its
+ *   instance under a new ID. Nothing admitted under the old policy
+ *   outlives it, because its process has exited. The respawn has no
+ *   back-off and counts as no crash. The setting turned on while Tor offers
+ *   no endpoint yet ends a `direct` process too, and nothing is spawned
+ *   until Tor offers one. Tor going down under `socks5` is no change: the
+ *   policy stays, and IPFS fails closed.
+ * - **Exit 77** (design 0010): the service refused its own confinement. It
+ *   isn't restarted, and the node fails with a text that says so.
  * - **Stop** (0007, "Stopping the process"): the instance is retired, then
  *   `ipfs.shutdown`, which tears down every instance and exits 0; the
  *   process is killed 5 s after it if still there.
@@ -55,8 +65,13 @@ const fs = require('fs');
 const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
 const { isObject } = require('../core/service-client');
-const { IpfsdClient, getIpfsdBinaryPath, persistentArgs } = require('./ipfsd-client');
-const { DIRECT, samePolicy } = require('./ipfs-network');
+const {
+  IpfsdClient,
+  confinementLog,
+  getIpfsdBinaryPath,
+  persistentArgs,
+} = require('./ipfsd-client');
+const { DIRECT, supersedes } = require('./ipfs-network');
 const {
   ATTEMPT_TIMEOUT_MS,
   DELEGATED_ROUTERS,
@@ -75,9 +90,6 @@ const DHT_MAX_PROVIDERS = 32;
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const MAX_CONCURRENT_REQUESTS = 8;
 const HEALTH_INTERVAL_MS = 5_000;
-/** How long a policy change waits for the old instance's teardown to be
- * proven before the process restarts (0007, "Changing the policy"). */
-const POLICY_CHANGE_PROOF_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
 // The service proves an instance's teardown within 5 s, or exits 70.
 const UNAVAILABLE = 'ipfs_unavailable';
@@ -95,6 +107,10 @@ const BUSY = 'freedom-ipfs native node is busy';
 const EXITED = 'freedom-ipfs service exited';
 const RETIRED = 'freedom-ipfs instance retired repeatedly';
 const START_FAILED = 'Failed to start freedom-ipfs native node';
+// freedom-core design 0010: exit 77, and main's check before a spawn.
+const CONFINEMENT_REFUSED = 'freedom-ipfs service refused its confinement';
+const GRANT_REFUSED = "freedom-ipfs data directory overlaps another component's directory";
+const GRANT_UNCHECKED = "freedom-ipfs data directory couldn't be checked";
 
 /** The service's `busy` (0007, Errors): the executor answers it 503. */
 class BackendBusy extends Error {
@@ -175,9 +191,11 @@ function nativeBody(body) {
  * configuration, sent explicitly (0007, Parity), the same for the profile's
  * instance and a private window's: automatic routing over the two delegated
  * routers, a 3 s DHT query timeout and 32 providers, 8 header permits and
- * the gateway's queue; under `network`. Under `socks5`, routing is the
- * delegated routers only: the service takes no other (decision D6), since
- * the light DHT would dial dozens of peers per query, each through Tor.
+ * the gateway's queue. The network policy is the process's (`--network`),
+ * which `ipfs.start` no longer carries (design 0010). Under `socks5`,
+ * routing is the delegated routers only: the service takes no other
+ * (decision D6), since the light DHT would dial dozens of peers per query,
+ * each through Tor.
  */
 function instanceParams(
   instance,
@@ -199,7 +217,6 @@ function instanceParams(
       max_concurrent_requests: MAX_CONCURRENT_REQUESTS,
       request_queue_timeout_ms: requestQueueTimeoutMs,
     },
-    network,
   };
 }
 
@@ -247,8 +264,10 @@ class FreedomIpfsdNode {
    * @param {object} [options.network] - the network policy
    *   (`ipfs-network.js`): `current()` and `subscribe(listener)`;
    *   `direct` without one
+   * @param {Function} [options.checkGrant] - () => null if the data
+   *   directory may be granted to the process, or why not (design 0010,
+   *   "Main's check"; `service-grant.js`)
    * @param {string} [options.command] - the binary (`getIpfsdBinaryPath()`)
-   * @param {string[]} [options.args] - its arguments (`persistentArgs`)
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
    * @param {object} [options.log]
    * @param {string} [options.shellVersion]
@@ -264,8 +283,8 @@ class FreedomIpfsdNode {
     onFailure = null,
     onChange = null,
     network = DIRECT,
+    checkGrant = null,
     command = null,
-    args = null,
     spawn = spawnProcess,
     log = defaultLog,
     shellVersion,
@@ -279,14 +298,17 @@ class FreedomIpfsdNode {
     this.onFailure = onFailure;
     this.onChange = onChange;
     this.network = network;
-    // The generation whose instance waits for a network policy; the
-    // subscription to the policy's changes; and a policy change waiting
-    // for the old instance's teardown: { gen, timer }.
-    this.waitingFor = null;
+    this.checkGrant = checkGrant;
+    // Whether nothing is spawned for want of a network policy; the
+    // subscription to the policy's changes; and a policy change's stop of
+    // the old process, which the next spawn follows.
+    this.waitingForNetwork = false;
     this.unsubscribeNetwork = null;
     this.changing = null;
+    // Why the node failed, for the manager: one of the fixed texts.
+    this.failureReason = null;
     this.command = command ?? getIpfsdBinaryPath();
-    this.args = args ?? persistentArgs({ dataDir, lockDir });
+    this.argsFor = (policy) => persistentArgs({ dataDir, lockDir, network: policy });
     this.spawn = spawn;
     this.log = log;
     this.shellVersion = shellVersion;
@@ -332,15 +354,27 @@ class FreedomIpfsdNode {
       name: 'freedom-ipfs',
       version: hello.freedom_ipfs.version,
       git_commit: hello.freedom_ipfs.git_commit,
-      service: { name: 'freedom-ipfsd', version: hello.service_version, kind: hello.kind },
+      service: {
+        name: 'freedom-ipfsd',
+        version: hello.service_version,
+        kind: hello.kind,
+        network: hello.network,
+        confinement: hello.confinement,
+      },
     });
   }
 
+  /** The confinement the process got (design 0010, "Reporting"), or null. */
+  get confinement() {
+    return this.serviceHello?.confinement ?? null;
+  }
+
   /**
-   * Spawns the service and starts the instance. Resolves true once it is
-   * running, through any restarts on the way; false if it gave up (three
-   * crashes in 60 s, an exit that isn't retried, a refused handshake or a
-   * failed `ipfs.start`) or was stopped first.
+   * Checks the grant, spawns the service and starts the instance. Resolves
+   * true once it is running, through any restarts and policy changes on the
+   * way; false if it gave up (a grant refused, three crashes in 60 s, an
+   * exit that isn't retried, a refused handshake or a failed `ipfs.start`;
+   * `failureReason` says which) or was stopped first.
    */
   start() {
     if (this.started) return this.started;
@@ -349,10 +383,48 @@ class FreedomIpfsdNode {
     this.started = new Promise((resolve) => {
       this.resolveStart = resolve;
     });
+    // Nothing is spawned unless the check passes (design 0010, "Main's
+    // check"): a check that throws refuses too. The reason is fixed text,
+    // never a path.
+    let refused;
+    let reason = GRANT_REFUSED;
+    try {
+      refused = this.checkGrant?.() ?? null;
+    } catch (err) {
+      refused = `the check failed: ${err?.code || err?.name || 'error'}`;
+      reason = GRANT_UNCHECKED;
+    }
+    if (refused) {
+      this.log.error('[IPFS] freedom-ipfs data directory refused', { reason: refused });
+      this.state = 'failed';
+      this.failureReason = reason;
+      this.settleStart(false);
+      return this.started;
+    }
+    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
+    this.pollTimer = this.setTimer(() => this.poll(), HEALTH_INTERVAL_MS);
+    this.pollTimer?.unref?.();
+    this.spawnUnder(this.network.current());
+    return this.started;
+  }
+
+  /**
+   * Spawns a process under `network`, a client and generations of its own
+   * (design 0010: the policy is the process's). With no policy (IPFS through
+   * Tor, and no endpoint from Tor yet), nothing is spawned, and nothing
+   * falls back to `direct`: the node waits for one.
+   */
+  spawnUnder(network) {
+    if (!network) {
+      this.waitForNetwork();
+      return;
+    }
+    this.waitingForNetwork = false;
     const client = new IpfsdClient({
       spawn: this.spawn,
       command: this.command,
-      args: this.args,
+      argsFor: this.argsFor,
+      network,
       log: this.log,
       shellVersion: this.shellVersion,
       now: this.now,
@@ -360,17 +432,13 @@ class FreedomIpfsdNode {
       clearTimer: this.clearTimer,
     });
     this.client = client;
-    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
     client.on('ready', (hello) => this.onReady(client, hello));
-    client.on('exit', () => this.onExit(client));
-    client.on('failed', () => this.onClientFailed(client));
+    client.on('exit', (exit) => this.onExit(client, exit));
+    client.on('failed', (reason) => this.onClientFailed(client, reason));
     client.on('event', (name, data) => this.onEvent(client, name, data));
-    this.pollTimer = this.setTimer(() => this.poll(), HEALTH_INTERVAL_MS);
-    this.pollTimer?.unref?.();
     // Readiness is the instance's: the handshake's own failures arrive as
     // events.
     client.start().catch(() => {});
-    return this.started;
   }
 
   /**
@@ -385,10 +453,13 @@ class FreedomIpfsdNode {
 
   async stopNode() {
     this.state = 'stopping';
+    const changing = this.changing;
     this.cancelTimers();
     this.retire();
     this.settleStart(false);
-    await this.client?.stop();
+    // A policy change's stop of the old process, too: the node is stopped
+    // once no process of it is left.
+    await Promise.all([this.client?.stop(), changing]);
     this.state = 'stopped';
   }
 
@@ -500,6 +571,8 @@ class FreedomIpfsdNode {
   onReady(client, hello) {
     if (client !== this.client || this.stopping || this.state === 'failed') return;
     this.serviceHello = hello;
+    // What the process got (design 0010, "Reporting"): logged at each spawn.
+    this.log.info('[IPFS] freedom-ipfsd confinement', confinementLog(hello.confinement));
     this.startInstance(client.current);
   }
 
@@ -519,19 +592,12 @@ class FreedomIpfsdNode {
     );
   }
 
-  /**
-   * `ipfs.start` for a new instance on `gen`, if it still serves, under
-   * the network policy now. With none yet, the start waits for one.
-   */
+  /** `ipfs.start` for a new instance on `gen`, if it still serves, under
+   * its process's policy. */
   startInstance(gen) {
     const client = this.client;
-    if (this.stopping || this.state === 'failed' || !client.serves(gen)) return;
-    const network = this.network.current();
-    if (!network) {
-      this.waitForNetwork(gen);
-      return;
-    }
-    this.waitingFor = null;
+    if (this.stopping || this.state === 'failed' || !client?.serves(gen)) return;
+    const network = client.network;
     const starting = { gen, instance: this.nextInstanceId(gen), live: false, network };
     this.starting = starting;
     client.startInstance(gen, this.startParams(starting.instance, network)).then(
@@ -541,74 +607,67 @@ class FreedomIpfsdNode {
   }
 
   /**
-   * The instance of `gen` waits for a network policy: IPFS routes through
-   * Tor, which offers no endpoint yet. Nothing is started meanwhile, and
-   * nothing falls back to `direct`.
+   * Nothing is spawned for want of a network policy: IPFS routes through
+   * Tor, which offers no endpoint yet. The manager hears it once
+   * (`onChange('waiting')`), and nothing falls back to `direct`.
    */
-  waitForNetwork(gen) {
-    if (this.waitingFor === null) {
-      this.log.info('[IPFS] freedom-ipfs waits for Tor\'s SOCKS endpoint');
-    }
-    this.waitingFor = gen;
+  waitForNetwork() {
+    if (this.waitingForNetwork) return;
+    this.waitingForNetwork = true;
+    this.log.info("[IPFS] freedom-ipfs waits for Tor's SOCKS endpoint");
+    this.notify('waiting');
   }
 
   /**
-   * The network policy may have changed: a waiting instance may start, and
-   * one running or starting under another policy restarts under the new
-   * one. No policy now (Tor down) changes nothing: the old one stays, and
-   * IPFS fails closed.
+   * The network policy may have changed: a node waiting for one spawns, and
+   * a process the policy now supersedes (`supersedes`) is replaced by one
+   * under it, or by none while there is none. Tor going down under `socks5`
+   * changes nothing: the policy stays, and IPFS fails closed. A change
+   * already replacing the process spawns under the policy in force once the
+   * old one has exited.
    */
   onNetworkChange() {
     if (this.stopping || this.state === 'failed' || this.changing) return;
     const next = this.network.current();
-    if (!next) return;
-    if (this.waitingFor !== null) {
-      if (!this.starting) this.startInstance(this.waitingFor);
+    if (!this.client) {
+      if (next && this.waitingForNetwork) this.spawnUnder(next);
       return;
     }
-    const running = this.pair ?? this.starting;
-    if (running && !samePolicy(running.network, next)) this.changePolicy(running);
+    if (supersedes(next, this.client.network)) this.changePolicy();
   }
 
   /**
-   * 0007, "Changing the policy": `running` is retired at once, torn down,
-   * and a new instance starts under the policy then in force once the
-   * teardown is proven, or on the next process if it isn't within 5 s.
+   * 0007, "Changing the policy"; design 0010: the generation is retired at
+   * once, so every captured pair fails and nothing more is sent to it; the
+   * process is shut down (`ipfs.shutdown`, a kill 5 s later); and once it has
+   * exited, a new one is spawned under the policy then in force, with no
+   * back-off and no crash counted. The old client's events reach nothing
+   * from here on.
    */
-  changePolicy(running) {
-    const { gen, instance } = running;
-    this.log.info('[IPFS] the network policy changed: the freedom-ipfs instance restarts', {
-      instance,
-    });
+  changePolicy() {
+    const old = this.client;
+    this.log.info('[IPFS] the network policy changed: the freedom-ipfs process restarts');
     this.retire();
     this.goDown();
-    const change = { gen, timer: null };
-    this.changing = change;
-    const done = (proven) => {
+    // A retired instance's back-off restart is the old process's.
+    if (this.restartTimer) {
+      this.clearTimer(this.restartTimer);
+      this.restartTimer = null;
+    }
+    this.client = null;
+    const change = old.stop().then(() => {
       if (this.changing !== change) return;
       this.changing = null;
-      this.clearTimer(change.timer);
-      // Its process ended meanwhile: that ended the instance, and the next
-      // generation starts one.
-      if (this.stopping || this.state === 'failed' || !this.client.serves(gen)) return;
-      if (proven) {
-        this.startInstance(gen);
-        return;
-      }
-      this.log.warn('[IPFS] freedom-ipfs teardown unproven after a policy change: restarting');
-      this.client.end(this.client.current, 'policy');
-    };
-    change.timer = this.setTimer(() => done(false), POLICY_CHANGE_PROOF_MS);
-    this.client.stopInstance(gen, instance).then(
-      () => done(true),
-      () => done(false)
-    );
+      if (this.stopping || this.state === 'failed') return;
+      this.spawnUnder(this.network.current());
+    });
+    this.changing = change;
   }
 
   onInstanceStarted(starting) {
     if (this.starting !== starting) return;
     this.starting = null;
-    if (!this.client.serves(starting.gen)) return;
+    if (!this.client?.serves(starting.gen)) return;
     starting.live = true;
     this.pair = starting;
     this.log.info('[IPFS] freedom-ipfs instance started', { instance: starting.instance });
@@ -678,8 +737,9 @@ class FreedomIpfsdNode {
 
   /** The process ended: the client restarts it after its back-off, or
    * gives up. */
-  onExit(client) {
+  onExit(client, exit) {
     if (client !== this.client) return;
+    this.lastExit = exit ?? null;
     this.retire();
     if (this.restartTimer) {
       this.clearTimer(this.restartTimer);
@@ -689,9 +749,11 @@ class FreedomIpfsdNode {
     this.goDown();
   }
 
-  onClientFailed(client) {
+  onClientFailed(client, reason) {
     if (client !== this.client || this.stopping) return;
-    this.giveUp(EXITED);
+    // Exit 77: the service refused its own confinement (design 0010), which
+    // no restart changes.
+    this.giveUp(reason === 'exit code 77' ? CONFINEMENT_REFUSED : EXITED);
   }
 
   /** A running node goes down until a new instance is live. */
@@ -706,9 +768,10 @@ class FreedomIpfsdNode {
     if (this.state === 'failed' || this.stopping) return;
     const wasStarting = this.state === 'starting';
     this.state = 'failed';
+    this.failureReason = reason;
     this.retire();
     this.cancelTimers();
-    this.client.stop();
+    this.client?.stop();
     if (wasStarting) {
       this.settleStart(false);
       return;
@@ -730,7 +793,6 @@ class FreedomIpfsdNode {
     }
     this.pair = null;
     this.starting = null;
-    this.waitingFor = null;
   }
 
   cancelTimers() {
@@ -738,7 +800,6 @@ class FreedomIpfsdNode {
       if (this[name]) this.clearTimer(this[name]);
       this[name] = null;
     }
-    if (this.changing) this.clearTimer(this.changing.timer);
     this.changing = null;
     this.unsubscribeNetwork?.();
     this.unsubscribeNetwork = null;
@@ -771,7 +832,9 @@ module.exports = {
   ABORTED,
   TIMEOUT,
   EXITED,
+  CONFINEMENT_REFUSED,
+  GRANT_REFUSED,
+  GRANT_UNCHECKED,
   HEALTH_INTERVAL_MS,
   STATS_FRESH_MS,
-  POLICY_CHANGE_PROOF_MS,
 };

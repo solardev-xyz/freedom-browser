@@ -1,3 +1,4 @@
 - IPFS runs in a process of its own instead of inside the browser ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
   - An IPFS fault no longer takes the browser down, and the node restarts by itself
   - IPFS doesn't start when its data is on a network drive
+  - On Linux the IPFS process runs in a sandbox, writing only its own data and starting no programs, and the IPFS panel's Sandbox row shows how much of it the system allows

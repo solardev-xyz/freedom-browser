@@ -22,9 +22,11 @@
  *   flight): the previous occupant's teardown, if its slot came from an
  *   eviction or a stop; a network policy (`ipfs-network.js`), the
  *   profile's: while it has none (IPFS through Tor, and no endpoint from
- *   Tor yet), the start waits for one, and nothing falls back to `direct`;
- *   the process, spawned on demand with `ipfs.hello`; then `ipfs.start` for
- *   a memory store of 32 MiB, under a new ID, with that policy. Each
+ *   Tor yet), the start waits for one, nothing is spawned, and nothing
+ *   falls back to `direct`; the process, spawned on demand under that
+ *   policy (`--network`, freedom-core design 0010) with `ipfs.hello`, which
+ *   must report it; then `ipfs.start` for a memory store of 32 MiB, under a
+ *   new ID. Each
  *   waiter has its own signal and its own `headers_ms`, which covers the
  *   start: the request gets what is left. One waiter's abort or deadline
  *   rejects that waiter only. The start is the instance's, and goes when its
@@ -35,14 +37,18 @@
  *   nothing reaches a retired or evicted ID. A start already sent is
  *   stopped with `ipfs.stop`, whose reply proves the teardown: its slot is
  *   drained only then, and a start that takes it waits for that.
- * - **A change of network policy** (0007, "Changing the policy"; step 8,
- *   B3): every instance started or starting under another policy is
- *   retired at once (its requests fail, nothing more is sent for it) and
- *   torn down (`ipfs.stop`, whose reply proves it); its partition's next
- *   request starts one under the new policy. If those teardowns aren't
- *   proven within 5 s, the process is stopped, and the next request spawns
- *   it again. Tor going down is no change: the policy stays, and IPFS fails
- *   closed.
+ * - **A change of network policy** (0007, "Changing the policy"; design
+ *   0010, "The network policy and the lifecycle"): the policy is the
+ *   process's, so the process is shut down (`ipfs.shutdown`), and every
+ *   instance whose start was sent to it is retired at once (its requests
+ *   fail, and nothing more is sent for it). Nothing admitted under the old
+ *   policy outlives its process. A start not sent yet picks the policy
+ *   again, waiting if there is none now, and goes on in a process spawned
+ *   under it, once the old one has exited; the next request of a retired
+ *   instance's partition starts it cold, under a new ID. The respawn has no
+ *   back-off and counts as no crash. The setting turned on while Tor offers
+ *   no endpoint yet ends a `direct` process too. Tor going down under
+ *   `socks5` is no change: the policy stays, and IPFS fails closed.
  * - **Closing a partition** (`close`, from `closeDwebSession`) retires its
  *   instance, so the leases it still holds pin nothing. A closed partition
  *   is never served again.
@@ -58,8 +64,8 @@
  *   start waiting, and goes with the last of them. The record outlives the
  *   process's idle shutdowns, so a crash on first use can't loop: three
  *   within 60 s fail the private instances until the manager starts them
- *   anew, and so do the exits that are never retried (64, 74, 75, a
- *   protocol mismatch). The shared client restarts on its own; this stops
+ *   anew, and so do the exits that are never retried (64, 74, 75, 77 for a
+ *   refused confinement, a protocol mismatch). The shared client restarts on its own; this stops
  *   it from within its exit instead ("stopping is sticky"), and starts it
  *   again on demand.
  * - **A start the service refuses** for anything but memory (`storage`: a
@@ -81,7 +87,12 @@ const {
   NO_RESTART_EXIT_CODES,
   RESTART_DELAYS_MS,
 } = require('../core/service-client');
-const { IpfsdClient, ephemeralArgs, getIpfsdBinaryPath } = require('./ipfsd-client');
+const {
+  IpfsdClient,
+  confinementLog,
+  ephemeralArgs,
+  getIpfsdBinaryPath,
+} = require('./ipfsd-client');
 const { ATTEMPT_TIMEOUT_MS, REQUEST_QUEUE_TIMEOUT_MS } = require('./freedom-ipfs-native-node');
 const {
   BackendBusy,
@@ -93,9 +104,8 @@ const {
   ABORTED,
   TIMEOUT,
   EXITED,
-  POLICY_CHANGE_PROOF_MS,
 } = require('./freedom-ipfsd-node');
-const { DIRECT, samePolicy } = require('./ipfs-network');
+const { DIRECT, samePolicy, supersedes } = require('./ipfs-network');
 
 /** The most instances the ephemeral process holds (0007, Bounds). */
 const MAX_INSTANCES = 8;
@@ -128,7 +138,6 @@ class PrivateInstances {
    *   (`ipfs-network.js`): `current()` and `subscribe(listener)`;
    *   `direct` without one
    * @param {string} [options.command] - the binary (`getIpfsdBinaryPath()`)
-   * @param {string[]} [options.args] - its arguments (`ephemeralArgs()`)
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
    * @param {object} [options.log]
    * @param {Function} [options.now]
@@ -140,7 +149,6 @@ class PrivateInstances {
     requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
     network = DIRECT,
     command = null,
-    args = null,
     spawn = spawnProcess,
     log = defaultLog,
     now = Date.now,
@@ -157,7 +165,8 @@ class PrivateInstances {
       kind: 'ephemeral',
       spawn,
       command: command ?? getIpfsdBinaryPath(),
-      args: args ?? ephemeralArgs(),
+      // Each process under the policy its life was spawned for.
+      argsFor: (policy) => ephemeralArgs({ network: policy }),
       log,
       shellVersion,
       now,
@@ -185,9 +194,6 @@ class PrivateInstances {
     this.failed = false;
     this.stopped = false;
     this.stopping = null;
-    // Each policy change still waiting for its teardowns' proof: its own
-    // teardowns, and its own 5 s timer.
-    this.changeProofs = new Set();
     this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
   }
 
@@ -233,8 +239,6 @@ class PrivateInstances {
     if (!this.stopped) {
       this.stopped = true;
       this.unsubscribeNetwork();
-      for (const proof of this.changeProofs) this.clearTimer(proof.timer);
-      this.changeProofs.clear();
       this.retireAll();
       this.stopping = this.stopProcess();
     }
@@ -242,49 +246,33 @@ class PrivateInstances {
   }
 
   /**
-   * The network policy may have changed: every instance started or
-   * starting under another one is retired and torn down, and if that isn't
-   * proven within 5 s the process is stopped. Each change's teardowns have
-   * their own 5 s, however many changes come before they are proven, and
-   * its deadline stops only the process they are in. No policy now (Tor
-   * down) changes nothing.
+   * The network policy may have changed (design 0010: the process's): a
+   * process the policy now supersedes (`supersedes`), spawned or waiting to
+   * be, is replaced. Tor going down under `socks5` changes nothing.
    */
   onNetworkChange() {
-    if (!this.up) return;
+    if (!this.up || !this.life) return;
     const next = this.network.current();
-    if (!next) return;
-    const changed = this.slots
-      .map((slot) => slot.occupant)
-      .filter((occupant) => occupant?.network && !samePolicy(occupant.network, next));
-    if (changed.length === 0) return;
-    this.log.info('[IPFS] the network policy changed: private freedom-ipfs instances restart', {
-      instances: changed.length,
+    if (!supersedes(next, this.life.network)) return;
+    this.log.info('[IPFS] the network policy changed: the private freedom-ipfs process restarts', {
+      instances: this.slots.filter((slot) => slot.occupant).length,
     });
-    for (const instance of changed) this.retire(instance);
-    // This change's teardowns: each is unproven while its slot still
-    // drains it (its stop's outcome, or the process's end, clears it).
-    const teardowns = changed
-      .map(({ slot }) => ({ slot, drained: slot.draining }))
-      .filter(({ drained }) => drained);
-    // The process those teardowns are in. Once it is stopping, by another
-    // change's deadline or otherwise, this change has nothing left to stop,
-    // and a process that comes after it is no concern of this change.
+    this.replaceProcess();
+  }
+
+  /**
+   * Shuts the process down, and retires every instance whose start was sent
+   * to it, so nothing admitted under its policy outlives it. A start not
+   * sent yet sees its process `replaced`, and picks the policy again.
+   */
+  replaceProcess() {
     const life = this.life;
-    if (teardowns.length === 0 || !life) return;
-    const unproven = () => teardowns.some(({ slot, drained }) => slot.draining === drained);
-    const proof = { timer: null };
-    proof.timer = this.setTimer(() => {
-      this.changeProofs.delete(proof);
-      if (!this.up || this.life !== life || !unproven()) return;
-      this.log.warn('[IPFS] private freedom-ipfs teardown unproven after a policy change');
-      this.life = null;
-      this.shutdown = this.stopProcess();
-    }, POLICY_CHANGE_PROOF_MS);
-    this.changeProofs.add(proof);
-    // Proven: this change's timer goes, and only this change's.
-    Promise.all(teardowns.map(({ drained }) => drained)).then(() => {
-      if (this.changeProofs.delete(proof)) this.clearTimer(proof.timer);
-    });
+    life.replaced = true;
+    this.life = null;
+    for (const { occupant } of this.slots) {
+      if (occupant?.sent) this.retire(occupant, { stop: false });
+    }
+    this.shutdown = this.stopProcess();
   }
 
   // ---- instances and their slots ----
@@ -305,6 +293,8 @@ class PrivateInstances {
       state: 'reserved',
       gen: null,
       id: null,
+      // Whether its ipfs.start went out (its fence passed).
+      sent: false,
       flight: null,
       // Rejects when it is retired: its waiters fail at once.
       gone: null,
@@ -469,20 +459,23 @@ class PrivateInstances {
       await this.backoff(instance);
     }
     if (instance.state !== 'starting') throw notRunning();
-    await this.networkFor(instance);
-    if (instance.state !== 'starting') throw notRunning();
-    const gen = await this.process();
-    if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
-    const id = this.nextInstanceId(gen);
-    // The policy again, after the process came up: it may have changed or
-    // gone meanwhile. The one sent is the one in force at the send: the
-    // fence reads it in the send's turn. A change after the pick sends
-    // nothing, and the start picks again, waiting if there is none now;
-    // only a retirement or the process's end ends it, and each waiter's
-    // own deadline bounds its wait.
+    // The policy, then the process under it. A change before the start is
+    // sent replaces that process (`replaceProcess`): the start picks again,
+    // waiting if there is none now. Only a retirement or a crash ends it,
+    // and each waiter's own deadline bounds its wait.
     for (;;) {
       const network = await this.networkFor(instance);
+      if (instance.state !== 'starting') throw notRunning();
+      const life = this.lifeUnder(network);
+      let gen;
+      try {
+        gen = await life.ready;
+      } catch (err) {
+        if (life.replaced && instance.state === 'starting') continue;
+        throw err;
+      }
       if (instance.state !== 'starting' || !this.client.serves(gen)) throw notRunning();
+      const id = this.nextInstanceId(gen);
       instance.gen = gen;
       instance.id = id;
       this.byId.set(id, instance);
@@ -490,26 +483,21 @@ class PrivateInstances {
         id,
         { kind: 'memory', max_bytes: MEMORY_STORE_BYTES },
         this.requestQueueTimeoutMs,
-        network
+        life.network
       );
-      let moved = false;
       try {
         await this.client.startInstance(gen, params, {
+          // Read in the send's turn: a replaced process gets nothing more.
           fence: () => {
-            if (instance.state !== 'starting') return false;
-            moved = !samePolicy(this.network.current(), network);
-            // The policy it is started under, recorded as it is sent: a
-            // change from it retires it.
-            if (!moved) instance.network = network;
-            return !moved;
+            if (instance.state !== 'starting' || life.replaced) return false;
+            instance.sent = true;
+            return true;
           },
         });
         return;
       } catch (err) {
-        // Fenced on the policy alone, nothing sent: the instance is still
-        // starting on a process that serves, so it picks again, as it was
-        // before this send.
-        if (moved && instance.state === 'starting' && this.client.serves(gen)) {
+        // Not sent, its process replaced: it picks again, as before.
+        if (!instance.sent && life.replaced && instance.state === 'starting') {
           this.byId.delete(id);
           instance.id = null;
           instance.gen = null;
@@ -612,16 +600,18 @@ class PrivateInstances {
 
   // ---- the process ----
 
-  /** The process's generation once it has answered `ipfs.hello`: spawned
-   * now, after the stop of the one before and any back-off. */
-  process() {
+  /** The life of the process under `network`, whose `ready` is its
+   * generation once it has answered `ipfs.hello`: spawned now, after the
+   * stop of the one before. One under another policy is replaced first. */
+  lifeUnder(network) {
+    if (this.life && !samePolicy(this.life.network, network)) this.replaceProcess();
     if (!this.life) {
-      const life = { spawned: false };
+      const life = { spawned: false, replaced: false, network };
       life.ready = this.spawn(life);
       life.ready.catch(() => {});
       this.life = life;
     }
-    return this.life.ready;
+    return this.life;
   }
 
   async spawn(life) {
@@ -629,12 +619,17 @@ class PrivateInstances {
     if (this.life !== life || !this.up) throw notRunning();
     this.stopAsked = false;
     life.spawned = true;
+    // Its policy for its life (design 0010): no process runs now.
+    this.client.setNetwork(life.network);
+    let hello;
     try {
-      await this.client.start();
+      hello = await this.client.start();
     } catch (err) {
       if (this.life === life) this.life = null;
       throw err;
     }
+    // What the process got (design 0010, "Reporting"): logged at each spawn.
+    this.log.info('[IPFS] private freedom-ipfsd confinement', confinementLog(hello.confinement));
     const gen = this.client.current;
     if (this.life !== life || !this.client.serves(gen)) throw notRunning();
     return gen;
@@ -665,10 +660,11 @@ class PrivateInstances {
       // Its teardowns ended with it.
       slot.draining = null;
       // A crash retires every instance, pending ones too, waiting for a
-      // teardown it ended or the process it took. An idle shutdown's end
-      // leaves the ones reserved since to start in the next process.
+      // teardown it ended or the process it took. The end of a shutdown
+      // main asked for (idle, or a change of policy) leaves the ones whose
+      // start wasn't sent to start in the next process.
       const occupant = slot.occupant;
-      if (occupant && (occupant.gen || !asked)) {
+      if (occupant && (occupant.sent || !asked)) {
         this.retire(occupant, { stop: false, error: exited });
       }
     }

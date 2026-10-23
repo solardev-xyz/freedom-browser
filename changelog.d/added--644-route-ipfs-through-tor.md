@@ -2,4 +2,5 @@
   - Content loads more slowly, and the node finds it only through delegated routing, without QUIC
   - The profile's node and each private window's use Tor circuits of their own
   - Needs Tor enabled for `.onion` sites, and while Tor isn't running the node doesn't connect rather than going direct
+  - Until Tor is up the node waits for it, showing Waiting for Tor, and switching the setting restarts the node
   - An external IPFS gateway, chosen under Settings > Nodes, isn't covered by it

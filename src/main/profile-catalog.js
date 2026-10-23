@@ -555,6 +555,17 @@ function listProfileDirs(appRoot) {
     }));
 }
 
+/**
+ * Every profile's userData directory the app root holds: the catalog's
+ * records, and the profile directories it doesn't list. The grant check's
+ * other profiles (freedom-core design 0010, `service-grant.js`).
+ */
+function listProfileUserDataDirs(appRoot) {
+  const dirs = new Set(loadCatalog(appRoot).profiles.map((record) => path.resolve(record.dir)));
+  for (const { dir } of listProfileDirs(appRoot)) dirs.add(path.resolve(dir));
+  return [...dirs];
+}
+
 function isPathInside(parentDir, childPath) {
   const relative = path.relative(path.resolve(parentDir), path.resolve(childPath));
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -1427,6 +1438,7 @@ module.exports = {
   hashPath,
   importProfile,
   listProfileSummaries,
+  listProfileUserDataDirs,
   loadCatalog,
   renameProfile,
   readProfileMetadata,

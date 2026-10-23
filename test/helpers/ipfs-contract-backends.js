@@ -404,7 +404,17 @@ async function loadIpfsdBackend({ router, routers = [router], freshStats = true 
         clearService: jest.fn(),
       }),
       [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
-      [path.join(SRC, 'profile-paths.js')]: () => ({ getIpfsDataDir: () => dataDir }),
+      [path.join(SRC, 'profile-paths.js')]: () => ({
+        getIpfsDataDir: () => dataDir,
+        // The grant check's roots (design 0010): the other components, beside
+        // the data directory in the temporary root.
+        getComponentDataDirs: () => ({
+          identity: path.join(root, 'identity'),
+          ipfs: dataDir,
+          tor: path.join(root, 'tor-data'),
+          radicleHomes: null,
+        }),
+      }),
       [path.join(SRC, 'core', 'naming.js')]: () => ({
         namingDriver: () => createFakeDwebDriver(),
       }),

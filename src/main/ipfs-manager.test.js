@@ -170,6 +170,8 @@ function loadIpfsManagerModule(options = {}) {
         this.settleStart?.(false);
         return this.shutdown;
       });
+      // Why a start failed, when the node knows (design 0010's refusals).
+      this.failureReason = options.serviceFailureReason ?? null;
       this.capture = jest.fn(() => this.pair);
       this.request = jest.fn(async () => new Response('service-body', { status: 200 }));
       this.isHealthy = jest.fn(() => options.isHealthy !== false);
@@ -3241,6 +3243,42 @@ describe('the freedom-ipfsd backend (the default)', () => {
     } else {
       expect(ctx.log.warn).not.toHaveBeenCalled();
     }
+  });
+
+  // freedom-core design 0010: main checks the data directory before the
+  // spawn, and a refusal says why.
+  test('the node gets the grant check, and a start it fails shows its reason', async () => {
+    const reason = "freedom-ipfs data directory overlaps another component's directory";
+    const ctx = loadIpfsManagerModule({ serviceStartOk: false, serviceFailureReason: reason });
+    ctx.mod.registerIpfsIpc();
+
+    const result = await ctx.ipcMain.invoke(IPC.IPFS_START);
+
+    expect(typeof ctx.serviceInstances[0].config.checkGrant).toBe('function');
+    expect(result).toEqual({ status: 'error', error: reason });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
+  });
+
+  test("a node waiting for Tor's endpoint stays starting, and says so", async () => {
+    const ctx = loadIpfsManagerModule({
+      serviceStartPending: true,
+      settings: { routeIpfsThroughTor: true },
+    });
+    ctx.mod.registerIpfsIpc();
+
+    ctx.mod.startIpfs();
+    await new Promise((resolve) => setImmediate(resolve));
+    const node = ctx.serviceInstances[0];
+    node.config.onChange('waiting', node);
+
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Waiting for Tor');
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'starting',
+    });
+    // A node that is neither starting nor serving says nothing.
+    ctx.setStatusMessage.mockClear();
+    node.config.onChange('waiting', {});
+    expect(ctx.setStatusMessage).not.toHaveBeenCalled();
   });
 
   test('no binary: an error, and nothing spawned', async () => {

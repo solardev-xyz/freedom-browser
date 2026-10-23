@@ -6,6 +6,7 @@ const {
   deleteProfile,
   ensureProfile,
   getCatalogLockPaths,
+  listProfileUserDataDirs,
   loadCatalog,
   saveCatalog,
   updateProfileNodeConfig,
@@ -548,6 +549,18 @@ describe('profile catalog', () => {
     );
     expect(catalog.profiles).toHaveLength(1);
     expect(catalog.profiles[0].slot).toBe(7);
+  });
+
+  test("lists every profile's userData directory: the catalog's, and those it doesn't list", () => {
+    const appRoot = track(makeTempDir());
+    ensureProfile(appRoot, 'work');
+    const stray = path.join(appRoot, 'Profiles', 'stray');
+    fs.mkdirSync(stray, { recursive: true });
+    const dirs = listProfileUserDataDirs(appRoot);
+    expect(dirs).toEqual(
+      expect.arrayContaining([path.join(appRoot, 'Profiles', 'work'), stray])
+    );
+    expect(new Set(dirs).size).toBe(dirs.length);
   });
 
   test('refuses to launch an unregistered profile directory without metadata', () => {

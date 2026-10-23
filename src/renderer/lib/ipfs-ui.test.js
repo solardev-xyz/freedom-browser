@@ -39,6 +39,7 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsToggleSwitch = createElement('div');
   const ipfsActiveRequestsCount = createElement('span');
   const ipfsDataRead = createElement('span');
+  const ipfsSandboxText = createElement('span');
   const ipfsPeersCount = createElement('span');
   const ipfsBandwidth = createElement('span');
   const ipfsVersionText = createElement('span');
@@ -57,6 +58,7 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-toggle-switch': ipfsToggleSwitch,
       'ipfs-active-requests-count': ipfsActiveRequestsCount,
       'ipfs-data-read': ipfsDataRead,
+      'ipfs-sandbox-text': ipfsSandboxText,
       'ipfs-peers-count': ipfsPeersCount,
       'ipfs-bandwidth': ipfsBandwidth,
       'ipfs-version-text': ipfsVersionText,
@@ -141,6 +143,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfsToggleSwitch,
       ipfsActiveRequestsCount,
       ipfsDataRead,
+      ipfsSandboxText,
       ipfsPeersCount,
       ipfsBandwidth,
       ipfsVersionText,
@@ -207,6 +210,72 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('0');
     expect(ctx.elements.ipfsDataRead.textContent).toBe('');
     expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS 0.4.1');
+  });
+
+  // freedom-core design 0010, "Reporting": the service's confinement, off
+  // the build info, in the panel's Sandbox row.
+  test("shows the service's sandbox, with each property in its title", async () => {
+    const confinement = {
+      mechanism: 'landlock-4+seccomp',
+      files: 'enforced',
+      exec: 'enforced',
+      ipc: 'partial',
+      network: 'none',
+      gaps: ['signals'],
+      resolution: 'system',
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      statusResult: {
+        status: 'running',
+        error: null,
+        diagnostics: {
+          nativeBuildInfo: JSON.stringify({
+            name: 'freedom-ipfs',
+            version: '0.4.1',
+            service: { name: 'freedom-ipfsd', confinement },
+          }),
+          nativeGatewayStats: JSON.stringify({ active_native_handles: 0, bytes_read: 0 }),
+        },
+      },
+    });
+
+    ctx.mod.initIpfsUi();
+    ctx.mod.startIpfsInfoPolling();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(ctx.elements.ipfsSandboxText.textContent).toBe('Partial');
+    expect(ctx.elements.ipfsSandboxText.title).toBe(
+      [
+        'Files: enforced',
+        'Programs: enforced',
+        'Local IPC: partial',
+        'Network: none',
+        'Open: signals',
+        'Mechanism: landlock-4+seccomp',
+      ].join('\n')
+    );
+
+    ctx.mod.stopIpfsInfoPolling();
+    expect(ctx.elements.ipfsSandboxText.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsSandboxText.title).toBe('');
+  });
+
+  test('names the sandbox Enforced, Partial, Unavailable or Unknown', async () => {
+    const { mod } = await loadIpfsModule();
+    const all = { files: 'enforced', exec: 'enforced', ipc: 'enforced', network: 'enforced' };
+    expect(mod.sandboxLabel({ mechanism: 'landlock-6+seccomp', ...all })).toBe('Enforced');
+    // `none`: the policy asks for no rule there (direct mode's network).
+    expect(mod.sandboxLabel({ mechanism: 'seatbelt', ...all, network: 'none' })).toBe('Enforced');
+    expect(mod.sandboxLabel({ mechanism: 'landlock-1', ...all, ipc: 'unavailable' })).toBe(
+      'Partial'
+    );
+    expect(mod.sandboxLabel({ mechanism: 'landlock-4', ...all, files: 'blocked' })).toBe('Partial');
+    expect(mod.sandboxLabel({ mechanism: 'none', files: 'unavailable' })).toBe('Unavailable');
+    expect(mod.sandboxLabel(null)).toBe('Unknown');
+    expect(mod.sandboxDetail(null)).toBe('');
   });
 
   test('updates IPFS status lines, toggle state, and running transitions', async () => {
@@ -325,9 +394,7 @@ describe('ipfs-ui', () => {
     // The binary probe resolved last and must not have re-disabled the switch.
     expect(ctx.elements.ipfsToggleBtn.classList.contains('disabled')).toBe(false);
     expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBeUndefined();
-    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe(
-      'Using an external IPFS gateway'
-    );
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe('Using an external IPFS gateway');
 
     ctx.elements.ipfsToggleBtn.dispatch('click');
     await flushMicrotasks();

@@ -118,6 +118,41 @@ describe('profile paths', () => {
     expect(paths.getRadicleDataDir()).toBe(radicleDir);
   });
 
+  test("lists each component's data directory without creating any, this profile's overrides included", () => {
+    const userDataDir = track(createTempUserDataDir());
+    const ipfsDir = path.join(track(createTempUserDataDir()), 'elsewhere');
+    process.env.FREEDOM_IPFS_DATA = ipfsDir;
+    const paths = loadPaths(userDataDir);
+
+    expect(paths.getComponentDataDirs()).toEqual({
+      identity: path.join(userDataDir, 'identity'),
+      bee: path.join(userDataDir, 'bee-data'),
+      ant: path.join(userDataDir, 'ant-data'),
+      ipfs: ipfsDir,
+      myotis: path.join(userDataDir, 'myotis'),
+      tor: path.join(userDataDir, 'tor-data'),
+      radicle: path.join(userDataDir, 'radicle-data'),
+      radicleHomes: null,
+    });
+    expect(fs.existsSync(ipfsDir)).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'identity'))).toBe(false);
+
+    // Another profile's: its default names, the override this process's alone.
+    const other = path.join(userDataDir, 'other');
+    expect(paths.getComponentDataDirs(other)).toMatchObject({
+      ipfs: path.join(other, 'ipfs-data'),
+      radicleHomes: null,
+    });
+  });
+
+  test("a catalog profile's short Radicle homes are listed by their slot's parent", () => {
+    const appRoot = path.join(track(createTempUserDataDir()), 'Freedom');
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    const activeProfile = { source: 'catalog', appRoot, metadata: { slot: 2 } };
+    const paths = loadPaths(userDataDir, { activeProfile });
+    expect(paths.getComponentDataDirs().radicleHomes).toBe(path.join(appRoot, 'R'));
+  });
+
   test('uses an app-owned short Radicle home for catalog profiles', async () => {
     const tempRoot = track(path.join('/tmp', `freedom-profile-paths-${Date.now()}`));
     fs.mkdirSync(tempRoot, { recursive: true });

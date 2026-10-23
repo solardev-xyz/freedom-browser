@@ -23,6 +23,8 @@ const {
   START_DEADLINE_MS,
   STOP_DEADLINE_MS,
   STATS_WATCHDOG_MS,
+  confinementLog,
+  validConfinement,
 } = require('./ipfsd-client');
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -40,11 +42,26 @@ afterEach(() => {
   else process.env.FREEDOM_IPFSD_PATH = originalPath;
 });
 
+const DIRECT = { mode: 'direct' };
+const SOCKS5 = { mode: 'socks5', ip: '127.0.0.1', port: 9150 };
+// What freedom-core design 0010 has the service report.
+const CONFINEMENT = {
+  mechanism: 'landlock-4+seccomp',
+  files: 'enforced',
+  exec: 'enforced',
+  ipc: 'partial',
+  network: 'none',
+  gaps: ['signals'],
+  reasons: {},
+  resolution: 'system',
+};
 const HELLO = {
   protocol: 1,
   service_version: '0.1.0',
   freedom_ipfs: { version: '0.4.6', git_commit: '0bb3e995a9f3da7d2df30939115cfee9b21bd212' },
   kind: 'persistent',
+  network: DIRECT,
+  confinement: CONFINEMENT,
 };
 
 test.each([
@@ -72,26 +89,69 @@ test.each([
   expect(getIpfsdBinaryPath()).toBe(path.join(process.resourcesPath, 'freedom-ipfsd', binary));
 });
 
-test("the persistent process: serve, the profile's data directory, the lock directory and main's PID", () => {
-  expect(persistentArgs({ dataDir: 'data', lockDir: 'locks', parentPid: 42 })).toEqual([
+test("the persistent process: serve, the profile's data directory, the lock directory, the policy and main's PID", () => {
+  expect(
+    persistentArgs({ dataDir: 'data', lockDir: 'locks', network: DIRECT, parentPid: 42 })
+  ).toEqual([
     'serve',
     '--data-dir',
     'data',
     '--lock-dir',
     'locks',
+    '--network',
+    'direct',
     '--parent-pid',
     '42',
   ]);
-  expect(persistentArgs({ dataDir: 'd', lockDir: 'l' }).at(-1)).toBe(String(process.pid));
+  expect(persistentArgs({ dataDir: 'd', lockDir: 'l', network: DIRECT }).at(-1)).toBe(
+    String(process.pid)
+  );
+  // An IPv6 proxy goes in brackets (freedom-core design 0007, "Spawn").
+  expect(
+    persistentArgs({
+      dataDir: 'd',
+      lockDir: 'l',
+      network: { mode: 'socks5', ip: '::1', port: 9150 },
+    }).slice(5, 7)
+  ).toEqual(['--network', 'socks5:[::1]:9150']);
+  expect(() => persistentArgs({ dataDir: 'd', lockDir: 'l', network: null })).toThrow(
+    'no network policy'
+  );
 });
 
-test("the ephemeral process: serve --ephemeral and main's PID, with no data or lock directory", () => {
-  expect(ephemeralArgs({ parentPid: 42 })).toEqual(['serve', '--ephemeral', '--parent-pid', '42']);
-  expect(ephemeralArgs().at(-1)).toBe(String(process.pid));
+test("the ephemeral process: serve --ephemeral, the policy and main's PID, with no data or lock directory", () => {
+  expect(ephemeralArgs({ network: SOCKS5, parentPid: 42 })).toEqual([
+    'serve',
+    '--ephemeral',
+    '--network',
+    'socks5:127.0.0.1:9150',
+    '--parent-pid',
+    '42',
+  ]);
+  expect(ephemeralArgs({ network: DIRECT }).at(-1)).toBe(String(process.pid));
+});
+
+test('the client spawns under the policy it holds, set only while no process runs', async () => {
+  const argsFor = (network) => ephemeralArgs({ network, parentPid: 1 });
+  const client = new IpfsdClient({ kind: 'ephemeral', spawn: jest.fn(), command: 'x', argsFor });
+  // No policy, no process: start refuses, and nothing is spawned.
+  await expect(client.start()).rejects.toMatchObject({ code: 'ipfs_unavailable' });
+  client.setNetwork(SOCKS5);
+  expect(client.network).toEqual(SOCKS5);
+  expect(client.args).toEqual(argsFor(SOCKS5));
+  client.current = {};
+  expect(() => client.setNetwork(DIRECT)).toThrow('a freedom-ipfsd process is running');
+  expect(client.network).toEqual(SOCKS5);
 });
 
 test("ipfs.start and ipfs.stop: their params, their hang watchdogs, and a start's fence", () => {
-  const client = new IpfsdClient({ kind: 'ephemeral', spawn: jest.fn(), command: 'x', args: [] });
+  const client = new IpfsdClient({
+    kind: 'ephemeral',
+    spawn: jest.fn(),
+    command: 'x',
+    argsFor: () => [],
+    network: DIRECT,
+  });
   const requestTo = jest.spyOn(client, 'requestTo').mockResolvedValue({});
   const gen = {};
   const fence = () => true;
@@ -119,7 +179,7 @@ test("ipfs.start and ipfs.stop: their params, their hang watchdogs, and a start'
 });
 
 test('the handshake asks for stream frames, and grants them', () => {
-  const service = ipfsdService('persistent');
+  const service = ipfsdService('persistent', { network: DIRECT });
   expect(service.helloMethod).toBe('ipfs.hello');
   expect(service.helloParams({ shellVersion: '0.9.0' })).toEqual({
     protocol: 1,
@@ -138,12 +198,21 @@ test('the handshake asks for stream frames, and grants them', () => {
   expect(STATS_WATCHDOG_MS).toBe(20_000);
 });
 
-test("a valid hello: its public part; the wrong process's or a malformed one is refused", () => {
-  expect(validHello(HELLO, 'persistent')).toEqual(HELLO);
-  expect(ipfsdService('persistent').validHello(HELLO)).toEqual(HELLO);
+test("a valid hello: its public part; the wrong process's or policy's, or a malformed one, is refused", () => {
+  expect(validHello(HELLO, 'persistent', DIRECT)).toEqual(HELLO);
+  expect(ipfsdService('persistent', { network: DIRECT }).validHello(HELLO)).toEqual(HELLO);
   expect(
-    validHello({ ...HELLO, freedom_ipfs: { version: '0.4.6' }, extra: 1 }, 'persistent')
+    validHello({ ...HELLO, freedom_ipfs: { version: '0.4.6' }, extra: 1 }, 'persistent', DIRECT)
   ).toEqual({ ...HELLO, freedom_ipfs: { version: '0.4.6', git_commit: null } });
+  // The policy the service reports back, read as it reads it: an
+  // IPv4-mapped address is the IPv4 address it maps (design 0010).
+  expect(
+    validHello({ ...HELLO, network: SOCKS5 }, 'persistent', {
+      mode: 'socks5',
+      ip: '::ffff:127.0.0.1',
+      port: 9150,
+    })
+  ).toMatchObject({ network: { mode: 'socks5', ip: '::ffff:127.0.0.1', port: 9150 } });
 
   for (const refused of [
     null,
@@ -155,13 +224,58 @@ test("a valid hello: its public part; the wrong process's or a malformed one is 
     { ...HELLO, freedom_ipfs: null },
     { ...HELLO, freedom_ipfs: { version: 7 } },
     { ...HELLO, freedom_ipfs: { version: '0.4.6', git_commit: 'not hex' } },
+    // Another policy than main passed, or none.
+    { ...HELLO, network: SOCKS5 },
+    { ...HELLO, network: undefined },
+    { ...HELLO, network: { mode: 'direct', extra: 1 } },
+    // No confinement report, or a malformed one.
+    { ...HELLO, confinement: undefined },
+    { ...HELLO, confinement: { ...CONFINEMENT, files: 'mostly' } },
+    { ...HELLO, confinement: { ...CONFINEMENT, mechanism: 'Landlock 4' } },
+    { ...HELLO, confinement: { ...CONFINEMENT, gaps: 'signals' } },
   ]) {
-    expect(validHello(refused, 'persistent')).toBeNull();
+    expect(validHello(refused, 'persistent', DIRECT)).toBeNull();
   }
-  expect(validHello({ ...HELLO, kind: 'ephemeral' }, 'ephemeral')).toMatchObject({
+  expect(
+    validHello({ ...HELLO, network: SOCKS5 }, 'persistent', { ...SOCKS5, port: 9050 })
+  ).toBeNull();
+  expect(validHello({ ...HELLO, kind: 'ephemeral' }, 'ephemeral', DIRECT)).toMatchObject({
     kind: 'ephemeral',
   });
-  expect(() => ipfsdService('other')).toThrow('unknown freedom-ipfsd process');
+  expect(() => ipfsdService('other', { network: DIRECT })).toThrow('unknown freedom-ipfsd process');
+});
+
+test('the confinement report: its public part, and what a log line carries', () => {
+  const report = {
+    ...CONFINEMENT,
+    reasons: { network: 'TCP rules need Landlock ABI 4', other: 'dropped' },
+    extra: 1,
+  };
+  expect(validConfinement(report)).toEqual({
+    ...CONFINEMENT,
+    reasons: { network: 'TCP rules need Landlock ABI 4' },
+  });
+  // Off Linux in direct mode, no resolution.
+  expect(validConfinement({ ...CONFINEMENT, resolution: undefined })).toMatchObject({
+    resolution: null,
+  });
+  for (const refused of [
+    null,
+    { ...CONFINEMENT, resolution: 'dns' },
+    { ...CONFINEMENT, reasons: { files: 7 } },
+    { ...CONFINEMENT, gaps: Array(17).fill('signals') },
+  ]) {
+    expect(validConfinement(refused)).toBeNull();
+  }
+  expect(confinementLog({ ...CONFINEMENT, reasons: { files: 'a path' } })).toEqual({
+    mechanism: 'landlock-4+seccomp',
+    files: 'enforced',
+    exec: 'enforced',
+    ipc: 'partial',
+    network: 'none',
+    gaps: ['signals'],
+    resolution: 'system',
+  });
 });
 
 test("outside Electron (a script), `require('electron')` has no app: the dev path, and the override", () => {
