@@ -139,17 +139,20 @@ function start() {
         { autoApprove: site }
       ),
     // A send the user confirmed on the prompt.
-    confirmedSend: async (site) => {
-      const { token } = await handlers['wallet:confirm-signing']({}, 'dapp-send', index[site], {
-        ...tx,
+    // A send the user confirmed on the prompt (by default on the site's
+    // account and chain).
+    confirmedSend: async (site, { account = index[site], chainId = CHAIN } = {}) => {
+      const payment = { ...tx, chainId };
+      const { token } = await handlers['wallet:confirm-signing']({}, 'dapp-send', account, {
+        ...payment,
         maxFeePerGas: undefined,
         maxPriorityFeePerGas: undefined,
         origin: site,
       });
       return handlers['wallet:dapp-send-transaction'](
         {},
-        tx,
-        index[site],
+        payment,
+        account,
         { origin: site },
         {
           confirmation: token,
@@ -263,6 +266,135 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   // Review of #788, finding 1: the pause can't be passed twice at once.
+  // Review of #788, round 2, finding 2: a dApp payment always has a site.
+  test('codex r2: a dapp confirmation without a site is refused', async () => {
+    const running = start();
+    for (const origin of [undefined, null, '']) {
+      const minted = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
+        ...running.tx,
+        origin,
+      });
+      expect(minted).toMatchObject({ success: false });
+      expect(minted.token).toBeUndefined();
+    }
+    expect(signed()).toBe(0);
+  });
+
+  // Review of #788, round 2, finding 1: every dApp send of a site takes the
+  // site's turn until its payment is committed, so no payment of the site
+  // can be committed between a silent send's read and its own commit.
+  async function holdRecordsRead() {
+    const intentIpc = require('./intent-ipc');
+    const real = intentIpc.waitingIntents;
+    let finish;
+    const started = new Promise((resolve) => {
+      intentIpc.waitingIntents = jest.fn(async () => {
+        resolve();
+        await new Promise((go) => {
+          finish = go;
+        });
+        intentIpc.waitingIntents = real;
+        return real();
+      });
+    });
+    return { started, finish: () => finish() };
+  }
+
+  function holdSigner(account, wallet) {
+    let sign;
+    const atSigner = new Promise((reached) => {
+      mockSigners[account].signTransaction.mockImplementationOnce(
+        (transaction) =>
+          new Promise((resolve) => {
+            sign = () => resolve(wallet.signTransaction(transaction));
+            reached();
+          })
+      );
+    });
+    return { atSigner, sign: () => sign() };
+  }
+
+  const settle = async () => {
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  test('codex r2: a confirmed payment cannot cross a silent send between its read and its commit', async () => {
+    const running = start();
+    const read = await holdRecordsRead();
+    const silent = running.autoSend(SWAP);
+    await read.started;
+
+    // The user confirms another payment of the site meanwhile: it waits for
+    // the silent send's turn, and commits nothing yet.
+    const confirmed = running.confirmedSend(SWAP);
+    await settle();
+    await running.store.ready;
+    expect(running.store.held()).toEqual([]);
+
+    read.finish();
+    const [first, second] = [await silent, await confirmed];
+    expect(first).toMatchObject({ success: true, nonce: 7 });
+    // The confirmed payment, never refused by the pause, commits after.
+    expect(second).toMatchObject({ success: true, nonce: 8 });
+    expect(signed()).toBe(2);
+  });
+
+  test('codex r2: a silent send waiting behind a confirmed one is refused once it commits', async () => {
+    const running = start();
+    const device = holdSigner(0, ALICE);
+    const confirmed = running.confirmedSend(SWAP);
+    await device.atSigner;
+
+    const silent = running.autoSend(SWAP);
+    await settle();
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+
+    device.sign();
+    await expect(confirmed).resolves.toMatchObject({ success: true });
+    await expect(silent).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining('auto-approve is paused'),
+    });
+    expect(signed()).toBe(1);
+  });
+
+  test('the turn is left at the commit: a slow broadcast holds no one up', async () => {
+    const running = start();
+    let broadcast;
+    const atBroadcast = new Promise((reached) => {
+      mockBroadcast.mockImplementationOnce((_chainId, raw) => {
+        reached();
+        return new Promise((resolve) => {
+          broadcast = () => resolve({ result: keccak256(raw), source: 'direct' });
+        });
+      });
+    });
+    const first = running.confirmedSend(SWAP);
+    await atBroadcast;
+    // The first payment is committed, its broadcast still out: the next one
+    // of the site commits and sends meanwhile.
+    await expect(running.confirmedSend(SWAP)).resolves.toMatchObject({ success: true, nonce: 8 });
+    broadcast();
+    await expect(first).resolves.toMatchObject({ success: true, nonce: 7 });
+  });
+
+  test("codex r2: the turn is the site's, across accounts and chains", async () => {
+    const running = start();
+    // Confirmed on account 1 (Bob) on chain 100; silent on account 0 (Alice)
+    // on chain 1. Their account locks are separate; the site's turn is not.
+    const device = holdSigner(1, BOB);
+    const confirmed = running.confirmedSend(SWAP, { account: 1, chainId: 100 });
+    await device.atSigner;
+    const silent = running.autoSend(SWAP);
+    await settle();
+
+    device.sign();
+    await expect(confirmed).resolves.toMatchObject({ success: true, from: BOB.address });
+    await expect(silent).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    expect(mockSigners[0].signTransaction).not.toHaveBeenCalled();
+  });
+
   test('codex: concurrent silent sends of one site: one signs, the other is refused', async () => {
     const running = start();
     const [first, second] = await Promise.all([running.autoSend(SWAP), running.autoSend(SWAP)]);

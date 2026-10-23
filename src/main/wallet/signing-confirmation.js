@@ -24,8 +24,8 @@
  *     gasPrice). A wallet-send binds the account that is active when the
  *     user confirms; switching accounts before the send refuses it. A
  *     dapp-send also binds the site it is for (`origin`, as a permission
- *     key): the payment is recorded under it, and "Always allow" pauses
- *     for that site while the payment waits.
+ *     key), which it must have: the payment is recorded under it, and
+ *     "Always allow" pauses for that site while the payment waits.
  *   - sign-message / sign-typed-data: the account and a SHA-256 digest of
  *     the message / typed data (canonical JSON, key order ignored).
  *   - safe-send: the Safe, chainId, to, value, data of the SafeTx.
@@ -139,9 +139,11 @@ function txHash(value) {
   return value.toLowerCase();
 }
 
-/** A site as its permission key, or null for none. */
+/** A dApp payment's site, as its permission key: required. */
 function site(value) {
-  return (typeof value === 'string' && normalizeOrigin(value)) || null;
+  const key = typeof value === 'string' ? normalizeOrigin(value) : '';
+  if (!key) throw new Error('A dApp payment needs the site it is for');
+  return key;
 }
 
 function chain(value) {

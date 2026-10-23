@@ -17,18 +17,21 @@
  * between the prompt and the silent send) and main's own check of an
  * auto-approved send (wallet-ipc.js), so neither can skip the pause.
  *
- * An auto-approved send is admitted before it signs, and holds its site's
- * admission until its send settles: by then its payment, if it made one, is
- * in the records, held and waiting. Meanwhile the site counts as paused, so
- * two silent requests sent together can't both pass the check before
- * either payment is committed.
+ * Every dApp send of a site takes the site's turn, one at a time, from
+ * before the pause is read until its payment is committed to the records
+ * (or its send fails first): confirmed sends too, and on any account or
+ * chain, since the pause is the site's. So no payment of the site can be
+ * committed between a silent send's reading of Payments waiting and its
+ * own commit: two silent requests sent together give one payment, and a
+ * payment the user confirms meanwhile pauses the silent one. A confirmed
+ * send is never refused by the pause; it only waits its turn.
  */
 
 const log = require('../logger');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
-// Sites with an auto-approved send admitted and not yet settled.
-const admitted = new Set();
+// Per site, the end of its queue of dApp sends, and how many are in it.
+const queues = new Map();
 
 /** The permission key a site compares as, or '' for none. */
 function siteKey(origin) {
@@ -36,11 +39,44 @@ function siteKey(origin) {
 }
 
 /**
+ * Wait for the site's turn among its dApp sends. Resolves with `leave`,
+ * to be called once the send's payment is committed or the send has
+ * failed; calling it again does nothing. A send without a site has no
+ * turn to wait for.
+ *
+ * @param {string} origin the site's permission key
+ * @returns {Promise<() => void>}
+ */
+function takeSiteTurn(origin) {
+  const site = siteKey(origin);
+  if (!site) return Promise.resolve(() => {});
+  const queue = queues.get(site) ?? { last: Promise.resolve(), size: 0 };
+  queues.set(site, queue);
+  queue.size += 1;
+  let left = false;
+  let markLeft;
+  const done = new Promise((resolve) => {
+    markLeft = resolve;
+  });
+  const leave = () => {
+    if (left) return;
+    left = true;
+    markLeft();
+    queue.size -= 1;
+    if (queue.size === 0 && queues.get(site) === queue) queues.delete(site);
+  };
+  const turn = queue.last.then(() => leave);
+  queue.last = done;
+  return turn;
+}
+
+/**
  * Whether `origin` has a payment in Payments waiting: a held intent it
  * requested that no receipt has shown mined, by the list's own rule
- * (intent-ipc.js `waitingIntents`), or an auto-approved send admitted and
- * not settled yet. Records that can't be read pause it: the prompt is the
- * safe reading.
+ * (intent-ipc.js `waitingIntents`), or a dApp send of the site under way
+ * that hasn't committed yet. The renderer asks this before choosing the
+ * silent path. Records that can't be read pause it: the prompt is the safe
+ * reading.
  *
  * @param {string} origin the site's permission key
  * @returns {Promise<boolean>}
@@ -48,34 +84,21 @@ function siteKey(origin) {
 async function transactionAutoApprovePaused(origin) {
   const site = siteKey(origin);
   if (!site) return false;
-  if (admitted.has(site)) return true;
+  if (queues.has(site)) return true;
   return paymentWaiting(site);
 }
 
 /**
- * Admit an auto-approved send of `origin`, unless the site is paused. The
- * admission is taken before the records are read, so a second send of the
- * site arriving meanwhile is refused. Release it once the send settles
- * (signed and recorded, or failed).
+ * Whether a silent send of `origin` must stop: one of the site's payments
+ * is in Payments waiting. Read in the send's own turn, so no same-site
+ * commit can land between this and the send's.
  *
  * @param {string} origin the site's permission key
- * @returns {Promise<(() => void) | null>} the release, or null when paused
+ * @returns {Promise<boolean>}
  */
-async function admitAutoApprovedTransaction(origin) {
+async function sitePaymentWaiting(origin) {
   const site = siteKey(origin);
-  if (!site || admitted.has(site)) return null;
-  admitted.add(site);
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    admitted.delete(site);
-  };
-  if (await paymentWaiting(site)) {
-    release();
-    return null;
-  }
-  return release;
+  return site ? paymentWaiting(site) : false;
 }
 
 async function paymentWaiting(site) {
@@ -93,4 +116,4 @@ async function paymentWaiting(site) {
   );
 }
 
-module.exports = { admitAutoApprovedTransaction, transactionAutoApprovePaused };
+module.exports = { sitePaymentWaiting, takeSiteTurn, transactionAutoApprovePaused };

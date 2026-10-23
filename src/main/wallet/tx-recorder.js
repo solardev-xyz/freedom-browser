@@ -107,16 +107,18 @@ function metadataFor(metadata, response) {
  *                                      kept with the intent so a replacement
  *                                      can find its signer. Main's own
  *                                      callers only, like `intentKey`.
+ * @param {() => void} [options.onCommitted] see signAndSendTransaction
  */
 async function signAndRecord(
   params,
   signer,
   context,
-  { intentKey = null, walletIndex = null } = {}
+  { intentKey = null, walletIndex = null, onCommitted = null } = {}
 ) {
   const response = await signAndSendTransaction(params, signer, {
     intentKey,
     context: { kind: context.kind, origin: context.origin, walletIndex },
+    onCommitted,
   });
   return recordSend(response, {
     kind: context.kind,

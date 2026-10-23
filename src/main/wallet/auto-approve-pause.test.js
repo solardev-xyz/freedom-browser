@@ -6,7 +6,8 @@ jest.mock('./intent-ipc', () => ({ waitingIntents: () => mockWaiting() }));
 jest.mock('../logger', () => ({ warn: jest.fn() }));
 
 const {
-  admitAutoApprovedTransaction,
+  sitePaymentWaiting,
+  takeSiteTurn,
   transactionAutoApprovePaused,
 } = require('./auto-approve-pause');
 
@@ -59,56 +60,61 @@ describe('transactionAutoApprovePaused', () => {
   });
 });
 
-// Review of #788: two silent requests of a site sent together must not both
-// pass the check before either payment is in the records.
-describe('admitAutoApprovedTransaction', () => {
+// Review of #788: no payment of a site may be committed between a silent
+// send's reading of Payments waiting and its own commit. A site's dApp
+// sends take turns, from before that reading until each one's commit.
+describe("a site's turns", () => {
   const SITE = 'https://swap.example';
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-  test('one admission per site at a time: the site is paused until it is released', async () => {
-    const release = await admitAutoApprovedTransaction(SITE);
-    expect(release).toEqual(expect.any(Function));
-    await expect(admitAutoApprovedTransaction(`${SITE}/trade`)).resolves.toBeNull();
+  test('one send of a site at a time, in order; other sites are not held up', async () => {
+    const order = [];
+    const first = await takeSiteTurn(SITE);
+    const second = takeSiteTurn(`${SITE}/trade`).then((leave) => {
+      order.push('second');
+      return leave;
+    });
+    const third = takeSiteTurn(SITE).then((leave) => {
+      order.push('third');
+      return leave;
+    });
+    const other = await takeSiteTurn('https://other.example');
+    await flush();
+    expect(order).toEqual([]);
+
+    first();
+    first(); // leaving twice is harmless: the queue still counts the others
+    (await second)();
+    const lastLeave = await third;
     await expect(transactionAutoApprovePaused(SITE)).resolves.toBe(true);
-    // Other sites are not held up.
-    const other = await admitAutoApprovedTransaction('https://other.example');
-    expect(other).toEqual(expect.any(Function));
+    lastLeave();
+    expect(order).toEqual(['second', 'third']);
+    await expect(transactionAutoApprovePaused(SITE)).resolves.toBe(false);
     other();
+  });
 
-    release();
-    release(); // twice is harmless
+  test('the site reads as paused while one of its sends is queued or under way', async () => {
+    const leave = await takeSiteTurn(SITE);
+    await expect(transactionAutoApprovePaused(SITE)).resolves.toBe(true);
+    await expect(transactionAutoApprovePaused('https://other.example')).resolves.toBe(false);
+    leave();
     await expect(transactionAutoApprovePaused(SITE)).resolves.toBe(false);
-    const again = await admitAutoApprovedTransaction(SITE);
-    expect(again).toEqual(expect.any(Function));
-    again();
   });
 
-  test('two admissions started together: only the first is admitted', async () => {
-    let read;
-    mockWaiting.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          read = () => resolve([]);
-        })
-    );
-    const first = admitAutoApprovedTransaction(SITE);
-    const second = admitAutoApprovedTransaction(SITE);
-    await expect(second).resolves.toBeNull();
-    read();
-    const release = await first;
-    expect(release).toEqual(expect.any(Function));
-    release();
-  });
-
-  test('a waiting payment, or records that cannot be read, admit nothing and hold nothing', async () => {
+  test("in its turn, a send reads only the records: its own turn doesn't pause it", async () => {
+    const leave = await takeSiteTurn(SITE);
+    await expect(sitePaymentWaiting(SITE)).resolves.toBe(false);
     mockWaiting.mockResolvedValueOnce([waiting(SITE)]);
-    await expect(admitAutoApprovedTransaction(SITE)).resolves.toBeNull();
+    await expect(sitePaymentWaiting(`${SITE}/trade`)).resolves.toBe(true);
     mockWaiting.mockRejectedValueOnce(new Error('not loaded'));
-    await expect(admitAutoApprovedTransaction(SITE)).resolves.toBeNull();
-    await expect(transactionAutoApprovePaused(SITE)).resolves.toBe(false);
+    await expect(sitePaymentWaiting(SITE)).resolves.toBe(true);
+    leave();
   });
 
-  test('no site admits nothing', async () => {
-    await expect(admitAutoApprovedTransaction('')).resolves.toBeNull();
-    await expect(admitAutoApprovedTransaction(undefined)).resolves.toBeNull();
+  test('no site: no turn to wait for, nothing waiting', async () => {
+    const leave = await takeSiteTurn('');
+    leave();
+    await expect(sitePaymentWaiting(undefined)).resolves.toBe(false);
+    expect(mockWaiting).not.toHaveBeenCalled();
   });
 });

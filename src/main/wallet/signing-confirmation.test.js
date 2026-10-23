@@ -18,6 +18,8 @@ const TX = Object.freeze({
   gasLimit: '21000',
   maxFeePerGas: '2000000000',
   maxPriorityFeePerGas: '1000000000',
+  // A dApp payment's site; a wallet send ignores it.
+  origin: 'https://app.example',
 });
 
 const TYPED_DATA = Object.freeze({
@@ -138,6 +140,22 @@ describe('signing-confirmation', () => {
 
   // A dApp payment is recorded under its site, which "Always allow"'s pause
   // reads (D12), so its confirmation binds the site as a permission key.
+  // Review of #788, round 2: a dApp payment without a site would be outside
+  // every site's pause, so its confirmation can't be issued or spent.
+  test('codex r2: a dapp-send confirmation without a site is refused', () => {
+    for (const origin of [undefined, null, '', '   ', 42]) {
+      expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin })).toThrow(
+        'A dApp payment needs the site it is for'
+      );
+    }
+    const token = issueConfirmation(KINDS.DAPP_SEND, 3, TX).token;
+    const err = refusal(() =>
+      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin: '' })
+    );
+    expect(err.code).toBe(NOT_CONFIRMED);
+    expect(err.message).toContain('A dApp payment needs the site it is for');
+  });
+
   test('a dapp-send binds the site it is for; a wallet-send has none', () => {
     const SITE = 'https://swap.example';
     const issue = (origin) => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin }).token;
@@ -147,8 +165,6 @@ describe('signing-confirmation', () => {
     expect(() => use(issue(SITE), `${SITE}/trade?x=1`)).not.toThrow();
     expect(refusal(() => use(issue(SITE), 'https://other.example')).code).toBe(NOT_CONFIRMED);
     expect(refusal(() => use(issue(SITE), undefined)).code).toBe(NOT_CONFIRMED);
-    expect(refusal(() => use(issue(undefined), SITE)).code).toBe(NOT_CONFIRMED);
-    expect(() => use(issue(undefined), undefined)).not.toThrow();
 
     const wallet = issueConfirmation(KINDS.WALLET_SEND, 3, { ...TX, origin: SITE }).token;
     expect(() =>

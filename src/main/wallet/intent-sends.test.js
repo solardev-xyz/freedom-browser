@@ -371,6 +371,70 @@ describe('a new intent', () => {
   });
 });
 
+// "Always allow"'s per-site turn (auto-approve-pause.js) is left when
+// nothing more of a send can enter the records.
+describe('onCommitted', () => {
+  test('a new intent: after its commit, before its broadcast', async () => {
+    const { tx, store } = start();
+    const onCommitted = jest.fn(() => {
+      expect(store.held()).toHaveLength(1);
+      expect(mockBroadcast).not.toHaveBeenCalled();
+    });
+    const sent = await tx.signAndSendTransaction(PARAMS, signer, { onCommitted });
+    expect(sent).toMatchObject({ nonce: 7 });
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  test('not when the send fails before its commit', async () => {
+    const { tx } = start();
+    const onCommitted = jest.fn();
+    const failing = {
+      getAddress: async () => ALICE.address,
+      signTransaction: jest.fn(async () => {
+        throw new Error('The vault is locked');
+      }),
+    };
+    await expect(tx.signAndSendTransaction(PARAMS, failing, { onCommitted })).rejects.toThrow();
+    expect(onCommitted).not.toHaveBeenCalled();
+  });
+
+  test('under an intent key: after the first commit, and before a resend', async () => {
+    const { tx, store } = start();
+    const key = 'safe-exec:100:0xabc';
+    const seen = [];
+    const onCommitted = () =>
+      seen.push({ held: store.held().length, broadcasts: mockBroadcast.mock.calls.length });
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw tagged('insufficient funds for gas * price + value', 'rejected');
+    });
+    await expect(
+      tx.signAndSendTransaction(PARAMS, signer, { intentKey: key, onCommitted })
+    ).rejects.toMatchObject({ outcome: 'rejected' });
+    await tx.signAndSendTransaction(PARAMS, signer, { intentKey: key, onCommitted });
+    expect(seen).toEqual([
+      { held: 1, broadcasts: 0 },
+      { held: 1, broadcasts: 1 },
+    ]);
+  });
+
+  test('a phone keeps no record: at once, before the phone is asked', async () => {
+    const { tx } = start();
+    const order = [];
+    const onCommitted = jest.fn(() => order.push('committed'));
+    const phone = {
+      getAddress: async () => ALICE.address,
+      sendTransaction: jest.fn(async () => {
+        order.push('phone');
+        throw Object.assign(new Error('Request rejected on your phone.'), {
+          code: 'REMOTE_USER_REJECTED',
+        });
+      }),
+    };
+    await expect(tx.signAndSendTransaction(PARAMS, phone, { onCommitted })).rejects.toThrow();
+    expect(order).toEqual(['committed', 'phone']);
+  });
+});
+
 describe('the phone path', () => {
   test('signs and broadcasts on the phone, with no record and no reservation', async () => {
     const { tx, store } = start();

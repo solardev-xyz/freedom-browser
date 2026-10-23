@@ -29,7 +29,8 @@ jest.mock('./safe/safe-messages', () => ({
 jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn() }));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
-  admitAutoApprovedTransaction: jest.fn(async () => () => {}),
+  takeSiteTurn: jest.fn(async () => () => {}),
+  sitePaymentWaiting: jest.fn(async () => false),
 }));
 
 const { buildTxRecordContext, registerWalletIpc } = require('./wallet-ipc');
@@ -67,8 +68,8 @@ describe('signing handlers require a main-side confirmation', () => {
   const { startSafeSend } = require('./safe/safe-transactions');
   const { startSafeMessage } = require('./safe/safe-messages');
   const confirmations = require('./signing-confirmation');
-  const { admitAutoApprovedTransaction } = require('./auto-approve-pause');
-  let release;
+  const { takeSiteTurn, sitePaymentWaiting } = require('./auto-approve-pause');
+  let leave;
 
   const SITE = 'https://app.example';
   const TX = {
@@ -100,8 +101,9 @@ describe('signing handlers require a main-side confirmation', () => {
     dappPermissions.getSigningAutoApprove.mockReset().mockReturnValue(false);
     dappPermissions.isTransactionAutoApproved.mockReset().mockReturnValue(false);
     dappPermissions.addTransactionAutoApprove.mockReset().mockReturnValue(true);
-    release = jest.fn();
-    admitAutoApprovedTransaction.mockReset().mockImplementation(async () => release);
+    leave = jest.fn();
+    takeSiteTurn.mockReset().mockImplementation(async () => leave);
+    sitePaymentWaiting.mockReset().mockResolvedValue(false);
     startSafeSend.mockClear();
     startSafeMessage.mockClear();
   });
@@ -198,7 +200,7 @@ describe('signing handlers require a main-side confirmation', () => {
     test("a matching rule is paused while one of the site's payments waits", async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
-      admitAutoApprovedTransaction.mockResolvedValue(null);
+      sitePaymentWaiting.mockResolvedValue(true);
       const result = await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
       expect(result).toMatchObject({
@@ -208,45 +210,63 @@ describe('signing handlers require a main-side confirmation', () => {
           'auto-approve is paused while a payment this site requested is waiting'
         ),
       });
-      expect(admitAutoApprovedTransaction).toHaveBeenCalledWith(SITE);
+      // Read in the site's turn, which it then leaves.
+      expect(takeSiteTurn).toHaveBeenCalledWith(SITE);
+      expect(sitePaymentWaiting).toHaveBeenCalledWith(SITE);
+      expect(leave).toHaveBeenCalled();
       expect(signAndRecord).not.toHaveBeenCalled();
     });
 
-    test('an admitted auto-approved send releases its admission once it settles', async () => {
+    // Review of #788, round 2: every dApp send of a site takes its turn
+    // until its payment is committed, so none can cross a silent send's
+    // reading of Payments waiting.
+    test("a send leaves its site's turn once its payment is committed, or when it fails", async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
-      signAndRecord.mockImplementation(async () => {
-        // Still admitted while it signs and records.
-        expect(release).not.toHaveBeenCalled();
+      signAndRecord.mockImplementation(async (_tx, _signer, _context, options) => {
+        // Still in its turn while it signs; main leaves it at the commit.
+        expect(leave).not.toHaveBeenCalled();
+        expect(options.onCommitted).toBe(leave);
+        options.onCommitted();
         return { hash: '0xhash' };
       });
       await expect(
         handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
       ).resolves.toMatchObject({ success: true });
-      expect(release).toHaveBeenCalledTimes(1);
+      expect(leave).toHaveBeenCalled();
 
+      leave.mockClear();
       signAndRecord.mockRejectedValue(new Error('vault locked'));
       await expect(
         handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { autoApprove: SITE })
       ).resolves.toMatchObject({ success: false });
-      expect(release).toHaveBeenCalledTimes(2);
+      expect(leave).toHaveBeenCalled();
     });
 
-    test("the prompt's confirmation still signs while the site's payment waits", async () => {
+    test("the prompt's confirmation still signs while the site's payment waits, in its turn", async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
       dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
-      admitAutoApprovedTransaction.mockResolvedValue(null);
+      sitePaymentWaiting.mockResolvedValue(true);
       const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
       const result = await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: SITE }, { confirmation });
       expect(result).toMatchObject({ success: true, hash: '0xhash' });
-      // Nothing claims auto-approve, so nothing is admitted or read.
-      expect(admitAutoApprovedTransaction).not.toHaveBeenCalled();
+      // It waits its turn, but the pause never refuses it.
+      expect(takeSiteTurn).toHaveBeenCalledWith(SITE);
+      expect(sitePaymentWaiting).not.toHaveBeenCalled();
     });
 
-    test('the records are read only for a request a rule covers', async () => {
+    test('a wallet send has no site and no turn', async () => {
+      const confirmation = await mint('wallet-send', null, TX);
+      await expect(
+        handlers['wallet:send-transaction']({}, TX, {}, { confirmation })
+      ).resolves.toMatchObject({ success: true });
+      expect(takeSiteTurn).not.toHaveBeenCalled();
+    });
+
+    test('a request no rule covers is refused before it waits for a turn', async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
-      admitAutoApprovedTransaction.mockResolvedValue(null);
+      sitePaymentWaiting.mockResolvedValue(true);
       const result = await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
       // Refused as before: no rule, and nothing said of a pause.
@@ -255,7 +275,8 @@ describe('signing handlers require a main-side confirmation', () => {
         code: 'SIGNING_NOT_CONFIRMED',
         error: expect.stringContaining("not covered by the site's auto-approve rules"),
       });
-      expect(admitAutoApprovedTransaction).not.toHaveBeenCalled();
+      expect(takeSiteTurn).not.toHaveBeenCalled();
+      expect(sitePaymentWaiting).not.toHaveBeenCalled();
     });
 
     // Review of #788: the pause reads the site a payment is recorded under,
@@ -271,19 +292,27 @@ describe('signing handlers require a main-side confirmation', () => {
         code: 'SIGNING_NOT_CONFIRMED',
         error: expect.stringContaining("the request's site is not the one its auto-approve names"),
       });
-      expect(admitAutoApprovedTransaction).not.toHaveBeenCalled();
+      expect(takeSiteTurn).not.toHaveBeenCalled();
       expect(signAndRecord).not.toHaveBeenCalled();
 
       // The same site, as a page path: recorded under its permission key.
       await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: `${SITE}/swap` }, { autoApprove: SITE });
       expect(signAndRecord).toHaveBeenCalledWith(
-        TX, signer, expect.objectContaining({ kind: 'dapp-send', origin: SITE }), { walletIndex: 2 });
+        TX,
+        signer,
+        expect.objectContaining({ kind: 'dapp-send', origin: SITE }),
+        expect.objectContaining({ walletIndex: 2 })
+      );
 
       // No context origin at all: the authorized site.
       await handlers['wallet:dapp-send-transaction']({}, TX, 2, {}, { autoApprove: SITE });
       expect(signAndRecord).toHaveBeenLastCalledWith(
-        TX, signer, expect.objectContaining({ origin: SITE }), { walletIndex: 2 });
+        TX,
+        signer,
+        expect.objectContaining({ origin: SITE }),
+        expect.objectContaining({ walletIndex: 2 })
+      );
     });
 
     test('codex: main binds a confirmed send to the site the user confirmed', async () => {
@@ -292,23 +321,22 @@ describe('signing handlers require a main-side confirmation', () => {
       const refused = await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: SITE }, { confirmation: forOther });
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      const withoutSite = await mint('dapp-send', 2, TX);
-      await expect(
-        handlers['wallet:dapp-send-transaction'](
-          {},
-          TX,
-          2,
-          { origin: SITE },
-          { confirmation: withoutSite }
-        )
-      ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      // A dApp payment's confirmation must name its site (round 2).
+      expect(handlers['wallet:confirm-signing']({}, 'dapp-send', 2, TX)).toMatchObject({
+        success: false,
+        error: 'A dApp payment needs the site it is for',
+      });
       expect(signAndRecord).not.toHaveBeenCalled();
 
       const confirmed = await mint('dapp-send', 2, { ...TX, origin: SITE });
       await handlers['wallet:dapp-send-transaction'](
         {}, TX, 2, { origin: `${SITE}/swap` }, { confirmation: confirmed });
       expect(signAndRecord).toHaveBeenCalledWith(
-        TX, signer, expect.objectContaining({ origin: SITE }), { walletIndex: 2 });
+        TX,
+        signer,
+        expect.objectContaining({ origin: SITE }),
+        expect.objectContaining({ walletIndex: 2 })
+      );
     });
 
     test('auto-approve claimed without a stored rule is refused', async () => {

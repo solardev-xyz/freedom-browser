@@ -39,6 +39,7 @@ const {
   heldIntentFor,
 } = require('../transaction-service');
 const { signAndRecord } = require('../tx-recorder');
+const { takeSiteTurn } = require('../auto-approve-pause');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { getEip1193Provider } = require('../provider-manager');
 
@@ -251,12 +252,20 @@ async function sendViaExecutor({ chainId, to, data, executorIndex, record, inten
     params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
   }
   if (record) {
-    return signAndRecord(
-      params,
-      executor,
-      { ...record, metadata: { ...record.metadata, executor: from } },
-      { intentKey }
-    );
+    // A site's payment (a dApp's Safe transaction) takes the site's turn
+    // until it is committed, as its other dApp payments do, so a silent
+    // send of the site can't sign past it (auto-approve-pause.js, D12).
+    const leave = record.origin ? await takeSiteTurn(record.origin) : null;
+    try {
+      return await signAndRecord(
+        params,
+        executor,
+        { ...record, metadata: { ...record.metadata, executor: from } },
+        { intentKey, onCommitted: leave }
+      );
+    } finally {
+      leave?.();
+    }
   }
   return signAndSendTransaction(params, executor, { intentKey });
 }
