@@ -4,7 +4,16 @@
  * workflow, a step that downloads freedom-cored or freedom-ipfsd
  * (`scripts/fetch-freedom-cored.js` or `scripts/fetch-freedom-ipfsd.js`, or
  * the npm scripts that run them) is followed at once by the step that
- * verifies that binary's release, and that step is exactly:
+ * verifies that binary's release.
+ *
+ * A download is found by a token that YAML folding can't split (the script's
+ * file name, or the npm script's name) anywhere in a step's text, comments
+ * and block scalars included. Its `run:` must then be one plain line that
+ * holds the token, with no comment: a folded, literal, quoted or continued
+ * `run:` is refused rather than read, so the downloads stay in the one form
+ * this guard parses.
+ *
+ * The verification step is exactly:
  *
  * - `run:` the verifier's invocation and nothing else: no wrapper, no
  *   `|| true`, no comment, no multi-line script;
@@ -68,13 +77,24 @@ function steps(text) {
   return found;
 }
 
+const FETCH = /fetch-freedom-(cored|ipfsd)\.js|(core|ipfsd):download/;
+
 /** The binary a step downloads, if it downloads one. */
 function fetchOf(step) {
-  const match = step.text.match(
-    /node scripts\/fetch-freedom-(cored|ipfsd)\.js|npm run (core|ipfsd):download/
-  );
+  const match = step.text.match(FETCH);
   if (!match) return null;
   return match[1] || (match[2] === 'core' ? 'cored' : 'ipfsd');
+}
+
+/** Why download `step`'s `run:` isn't one plain line with the download, or null. */
+function notPlainDownload(step) {
+  const { run } = step.keys;
+  if (typeof run !== 'string' || !run) return 'the download has no one-line run';
+  if (step.keys['(continuation)']) return 'the download step has a multi-line value';
+  if (/^[|>"'&*!{[]/.test(run)) return `the download's run is not a plain scalar: ${run}`;
+  if (/\s#/.test(run)) return `the download's run has a comment: ${run}`;
+  if (!FETCH.test(run)) return `the download is not in the step's run: ${run}`;
+  return null;
 }
 
 /** Why `step` isn't exactly `binary`'s verification step, or null. */
@@ -96,20 +116,31 @@ function notVerification(step, binary) {
   return null;
 }
 
+/**
+ * Each download in workflow `text`: its line, its binary, and what is wrong
+ * with it or with the step after it (null if nothing is).
+ */
+function downloads(text) {
+  const all = steps(text);
+  return all.flatMap((step, index) => {
+    const binary = fetchOf(step);
+    if (!binary) return [];
+    const problem = notPlainDownload(step) ?? notVerification(all[index + 1], binary);
+    return [{ line: step.line, binary, problem }];
+  });
+}
+
 describe('every freedom-core download has its provenance verified', () => {
   const files = fs.readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name));
   let fetches = 0;
 
   for (const file of files) {
-    const all = steps(fs.readFileSync(path.join(workflows, file), 'utf8'));
-    all.forEach((step, index) => {
-      const binary = fetchOf(step);
-      if (!binary) return;
+    for (const found of downloads(fs.readFileSync(path.join(workflows, file), 'utf8'))) {
       fetches += 1;
-      test(`${file}:${step.line} (${binary})`, () => {
-        expect(notVerification(all[index + 1], binary)).toBeNull();
+      test(`${file}:${found.line} (${found.binary})`, () => {
+        expect(found.problem).toBeNull();
       });
-    });
+    }
   }
 
   test('the workflows fetch from freedom-core at all', () => {
@@ -141,11 +172,7 @@ describe('the guard refuses a verification step that could pass without verifyin
       .map(([key, value], index) => `${index === 0 ? '      - ' : '        '}${key}: ${value}`);
     return `${lines.join('\n')}\n        env:\n          GH_TOKEN: \${{ github.token }}\n`;
   };
-  const judge = (text) => {
-    const all = steps(text);
-    const at = all.findIndex((step) => fetchOf(step));
-    return notVerification(all[at + 1], fetchOf(all[at]));
-  };
+  const judge = (text) => downloads(text)[0].problem;
 
   test('the real step passes', () => {
     expect(judge(fetchStep + verifyStep())).toBeNull();
@@ -172,5 +199,53 @@ describe('the guard refuses a verification step that could pass without verifyin
 
   test('a download with no step after it is refused', () => {
     expect(judge(fetchStep)).not.toBeNull();
+  });
+});
+
+// Review of #796, round 2: a download that YAML folds or continues across
+// lines is still a download, and is refused for not being one plain line.
+describe('the guard finds a download however its run is written, and refuses all but one line', () => {
+  // Each download is followed by its exact verification step, so only the
+  // download's own form is judged.
+  const download = (run) => `
+      - name: Download freedom-cored binaries
+        timeout-minutes: 7
+        shell: bash
+        ${run}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+
+      - name: Verify freedom-cored's build provenance
+        timeout-minutes: 7
+        shell: bash
+        run: ${VERIFY('cored')}
+        env:
+          GH_TOKEN: \${{ github.token }}
+`;
+  const judge = (run) => downloads(download(run)).map(({ problem }) => problem);
+
+  test('the real forms pass', () => {
+    expect(
+      judge('run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js')
+    ).toEqual([null]);
+    expect(judge('run: npm run core:download')).toEqual([null]);
+  });
+
+  test.each([
+    [
+      'the script folded away from node',
+      'run: >-\n          bash scripts/ci/hang-watchdog.sh 300 node\n          scripts/fetch-freedom-cored.js',
+    ],
+    ['npm run folded away from its script', 'run: >-\n          npm run\n          core:download'],
+    ['a literal block', 'run: |\n          node scripts/fetch-freedom-cored.js'],
+    ['a plain scalar continued', 'run: node\n          scripts/fetch-freedom-cored.js'],
+    ['a plain line continued after it', 'run: npm run core:download\n          -- --force'],
+    ['a quoted scalar continued', 'run: "npm run\n          core:download"'],
+    ['a quoted line', 'run: "npm run core:download"'],
+    ['the download only in a comment', 'run: true # node scripts/fetch-freedom-cored.js'],
+  ])('%s is a download, and refused', (_label, run) => {
+    const problems = judge(run);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).not.toBeNull();
   });
 });
