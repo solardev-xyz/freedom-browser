@@ -722,7 +722,7 @@ describe('signing handlers require a main-side confirmation', () => {
       ]) {
         feeCheck.checkAtApproval.mockResolvedValueOnce(verdict(fields));
         const result = await handlers['wallet:dapp-send-transaction'](
-          {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+          AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
         expect(result).toMatchObject({
           success: false,
           code: 'FEE_CHECK_NOT_AUTO_APPROVED',
@@ -734,9 +734,31 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(takeSiteTurn).not.toHaveBeenCalled();
       // A fee that passes is signed.
       const result = await handlers['wallet:dapp-send-transaction'](
-        {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
       expect(result).toMatchObject({ success: true });
       expect(feeCheck.checkAtApproval).toHaveBeenLastCalledWith(TX);
+    });
+
+    // #764 and A together: the requester check comes first, and a send that
+    // passes it is still judged by the fee check before it is signed.
+    test('the fee check judges an auto-approved send after its requester check', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+      // Another site's page naming this site's rules: refused, not judged.
+      guest(77, 'https://attacker.example/');
+      const borrowed = await handlers['wallet:dapp-send-transaction'](
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 77 });
+      expect(borrowed).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
+      // The site's own page: judged, and a fee that needs the user stops it.
+      feeCheck.checkAtApproval.mockResolvedValueOnce(
+        verdict({ comparable: false, ratio: null, autoApprove: false })
+      );
+      const judged = await handlers['wallet:dapp-send-transaction'](
+        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
+      expect(judged).toMatchObject({ success: false, code: 'FEE_CHECK_NOT_AUTO_APPROVED' });
+      expect(feeCheck.checkAtApproval).toHaveBeenCalledTimes(1);
+      expect(signAndRecord).not.toHaveBeenCalled();
     });
 
     // Main never signs a fee the user didn't see: a confirmed send without
