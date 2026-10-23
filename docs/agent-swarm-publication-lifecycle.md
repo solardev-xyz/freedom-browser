@@ -10,9 +10,15 @@ A provisional tool response after ten seconds is not the end of the user task.
 ## Pre-publish scan and approval
 
 Every source kind (managed workspace, attachment, inline text) goes through
-`src/main/agent/publication-scan.js` in the main process before the approval is
-shown. It runs on the in-memory snapshot that is later uploaded, so the scanned
-bytes are the uploaded bytes:
+`src/main/agent/publication-scan.js` before the approval is shown. The main
+process calls it through `publication-scan-host.js`, which runs the scan in a
+lazily spawned worker thread (`publication-scan-worker.js`, managed by
+`src/main/task-worker-host.js`) so a large publication does not freeze every
+window. Only if that worker cannot start, or crashes on the request, does the
+scan fall back to running on the main thread; a scan that exceeds the 60 s
+worker timeout fails the publication instead (nothing is uploaded). It runs on
+the in-memory snapshot that is later uploaded, so the scanned bytes are the
+uploaded bytes:
 
 - Path exclusions from the source reader (hidden files except `.well-known`,
   credential file names, `.git`) are listed on the card by name and reason.
