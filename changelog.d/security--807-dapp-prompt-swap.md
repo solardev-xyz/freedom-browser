@@ -1,0 +1,2 @@
+- A dApp can no longer swap the request on an open wallet prompt: a second request waits until the first is decided ([#807](https://github.com/solardev-xyz/freedom-browser/issues/807))
+  - The replaced request is answered instead of left waiting
