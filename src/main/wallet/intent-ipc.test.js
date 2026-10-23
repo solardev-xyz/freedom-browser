@@ -1567,3 +1567,342 @@ describe('the finality tracker settles held payments (7)', () => {
     ]);
   });
 });
+
+// freedom-core design 0005, "State history" (#94): a held payment whose
+// label couldn't be read for a day is shown as Couldn't confirm, and, once
+// a verified read shows its nonce used at a finalized block, may be closed
+// by hand. Real store, tracker, confirmations, locks and history; the
+// chain is scripted, and so is the clock.
+describe("Couldn't confirm, and closing by hand (#94)", () => {
+  const DAY = require('./intent-tracker').COULDNT_CONFIRM_AFTER_MS;
+  const OTHER = `0x${'ee'.repeat(32)}`;
+  const PAYMENT = {
+    chainId: 100,
+    to: BOB.address,
+    value: '1000',
+    gasLimit: '21000',
+    gasPrice: '1000000000',
+  };
+  let nowMs;
+  let clock;
+  beforeEach(() => {
+    nowMs = Date.UTC(2026, 9, 23, 12);
+    clock = jest.spyOn(Date, 'now').mockImplementation(() => nowMs);
+  });
+  afterEach(() => clock.mockRestore());
+
+  function startClosing() {
+    const running = start();
+    require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    const confirm = (kind, payload) => handlers['wallet:confirm-signing']({}, kind, null, payload);
+    return {
+      ...running,
+      handlers,
+      confirm,
+      list: async () => (await handlers['wallet:intents-list']({})).intents,
+      tracker: require('./intent-tracker').getIntentTracker(),
+      history: require('../payment-history'),
+      reservations: require('./nonce-reservations'),
+      close: (intentId, authorization) =>
+        handlers['wallet:intent-close']({}, intentId, authorization),
+      send: async () => {
+        const { token } = await confirm('wallet-send', {
+          ...PAYMENT,
+          data: undefined,
+          maxFeePerGas: undefined,
+          maxPriorityFeePerGas: undefined,
+        });
+        return running.walletSend({}, PAYMENT, {}, { confirmation: token });
+      },
+    };
+  }
+
+  // What the verified reads see: finalized block 3000, 100 below the
+  // head, each endpoint serving state 128 blocks deep. Alice's nonce 7 is
+  // used at `takenAt` by another transaction of hers (none: unused).
+  function chainOf({ takenAt = 1000, countWrap = null, countFails = false } = {}) {
+    const plain = mockRequest.getMockImplementation();
+    const chain = fakeFinalityChain({
+      sender: ALICE.address.toLowerCase(),
+      startNonce: 7,
+      txs: takenAt === null ? {} : { [takenAt]: [{ hash: OTHER, nonce: 7, status: 1 }] },
+      head: 3100,
+      finalized: 3000,
+      stateWindow: 128,
+    });
+    if (countWrap) chain.wrap('eth_getTransactionCount', countWrap);
+    if (countFails) {
+      chain.reshape('eth_getTransactionCount', () => {
+        throw new Error('missing trie node');
+      });
+    }
+    mockRequest.mockImplementation(async (chainId, method, params, options) =>
+      options?.includeTrust
+        ? chain.request(chainId, method, params, options)
+        : plain(chainId, method, params, options)
+    );
+    return chain;
+  }
+
+  const closeBindingOf = (payment, hashes = payment.couldntConfirm.hashes.map((h) => h.hash)) => ({
+    intentId: payment.intentId,
+    chainId: payment.chainId,
+    sender: payment.sender,
+    nonce: payment.nonce,
+    hashes,
+  });
+
+  async function closeConfirmed(running, payment, hashes) {
+    const { token } = await running.confirm('intent-close', closeBindingOf(payment, hashes));
+    return running.close(payment.intentId, { confirmation: token });
+  }
+
+  // A day of passes that couldn't read its label.
+  async function aDayLater(running) {
+    await running.tracker.pass();
+    nowMs += DAY;
+    await running.tracker.pass();
+  }
+
+  test('after a day, shown with its nonce, its hashes and an explorer link each; closed by hand, it is retired durably and its history says it is unconfirmed', async () => {
+    const running = startClosing();
+    // Uncertain: a payment that may be stuck is offered a speed-up, until
+    // its place in the queue is seen used.
+    mockBroadcast.mockImplementationOnce(async (_chainId, raw) => ({
+      result: keccak256(raw),
+      source: 'direct',
+      outcome: 'uncertain',
+    }));
+    const sent = await running.send();
+    expect(sent).toMatchObject({ success: true, nonce: 7 });
+    expect((await running.list())[0]).toMatchObject({ replacement: 'speed-up' });
+    const chain = chainOf();
+
+    // A receipt someone saw (its history row says confirmed): not waiting,
+    // as long as it isn't shown as Couldn't confirm.
+    const [row] = running.history.getRecent({});
+    running.history.update(row.id, { status: 'confirmed' });
+    const { waitingIntents } = require('./intent-ipc');
+    await running.tracker.pass();
+    expect(await running.list()).toEqual([
+      expect.objectContaining({
+        intentId: sent.intentId,
+        couldntConfirm: null,
+        receipt: 'confirmed',
+      }),
+    ]);
+    await expect(waitingIntents()).resolves.toEqual([]);
+    nowMs += DAY - 1;
+    await running.tracker.pass();
+    expect((await running.list())[0].couldntConfirm).toBeNull();
+    nowMs += 1;
+    await running.tracker.pass();
+    const [payment] = await running.list();
+    expect(payment).toMatchObject({
+      intentId: sent.intentId,
+      nonce: 7,
+      receipt: null,
+      replacement: null,
+      couldntConfirm: {
+        closable: true,
+        hashes: [{ hash: sent.hash, explorerUrl: `https://explorer.test/100/${sent.hash}` }],
+      },
+    });
+
+    // Nothing verified that receipt: it waits on the user again, so D12's
+    // pause applies to its site while it is listed.
+    await expect(waitingIntents()).resolves.toEqual([
+      expect.objectContaining({ intentId: sent.intentId }),
+    ]);
+
+    const closed = await closeConfirmed(running, payment);
+    expect(closed).toMatchObject({ success: true, intentId: sent.intentId });
+    expect(closed.intent).toMatchObject({ state: 'retired' });
+    expect(running.store.get(sent.intentId)).toMatchObject({
+      state: 'retired',
+      raw: null,
+      retirement: { block: 3000 },
+      hashes: [expect.objectContaining({ hash: sent.hash, raw: null })],
+    });
+    expect(running.history.getRecent({})).toEqual([
+      expect.objectContaining({
+        txHash: sent.hash,
+        status: 'unconfirmed',
+        metadata: expect.objectContaining({
+          intentId: sent.intentId,
+          finality: { label: 'closed', block: 3000 },
+        }),
+      }),
+    ]);
+    await expect(running.list()).resolves.toEqual([]);
+    expect(chain.reads().length).toBeGreaterThan(0);
+
+    // After a restart it stays closed, with its hashes, and can't be sent.
+    const later = startClosing();
+    await later.store.ready;
+    expect(later.store.get(sent.intentId)).toMatchObject({
+      state: 'retired',
+      hashes: [expect.objectContaining({ hash: sent.hash })],
+    });
+    const { token } = await later.confirm('intent-resend', {
+      intentId: sent.intentId,
+      chainId: 100,
+      sender: ALICE.address.toLowerCase(),
+      nonce: 7,
+      hash: sent.hash,
+    });
+    await expect(
+      later.handlers['wallet:intent-resend']({}, sent.intentId, { confirmation: token })
+    ).resolves.toMatchObject({ success: false, code: 'INTENT_NOT_HELD' });
+  });
+
+  test('an unmined payment (its nonce N or below at F) is never shown, is offered sending again and a replacement, and closing is refused', async () => {
+    const running = startClosing();
+    mockBroadcast.mockImplementationOnce(async (_chainId, raw) => ({
+      result: keccak256(raw),
+      source: 'direct',
+      outcome: 'uncertain',
+    }));
+    const sent = await running.send();
+    const chain = chainOf({ takenAt: null });
+    chain.reshape('eth_getTransactionReceipt', () => {
+      throw new Error('timeout');
+    });
+    await aDayLater(running);
+    const [payment] = await running.list();
+    expect(payment).toMatchObject({
+      intentId: sent.intentId,
+      couldntConfirm: null,
+      attention: 'uncertain',
+      replacement: 'speed-up',
+    });
+    await expect(closeConfirmed(running, payment, [sent.hash])).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_CLOSE_REFUSED',
+    });
+    expect(running.store.get(sent.intentId).state).toBe('held');
+  });
+
+  test("not closable when the nonce at F came from Direct or a quorum of one, or couldn't be read", async () => {
+    const unverified = [
+      { countFails: true },
+      {
+        countWrap: (result) => ({
+          result,
+          source: 'direct',
+          verified: false,
+          trust: { level: 'unverified', method: 'direct', quorum: { k: 3, m: 2, achieved: false } },
+        }),
+      },
+      {
+        countWrap: (result) => ({
+          result,
+          source: 'quorum',
+          verified: false,
+          trust: { level: 'unverified', method: 'quorum', quorum: { k: 1, m: 1, achieved: true } },
+        }),
+      },
+    ];
+    for (const options of unverified) {
+      // Each in a profile of its own.
+      fs.rmSync(mockUserData, { recursive: true, force: true });
+      mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-ipc-'));
+      const running = startClosing();
+      const sent = await running.send();
+      chainOf(options);
+      await aDayLater(running);
+      const [payment] = await running.list();
+      expect(payment.intentId).toBe(sent.intentId);
+      expect(payment.couldntConfirm).toMatchObject({ closable: false });
+      await expect(closeConfirmed(running, payment)).resolves.toMatchObject({
+        success: false,
+        code: 'INTENT_CLOSE_REFUSED',
+        intent: expect.objectContaining({ intentId: sent.intentId, state: 'held' }),
+      });
+      expect(running.store.get(sent.intentId).state).toBe('held');
+    }
+  });
+
+  test("it takes the account's lock, and a replacement committed meanwhile closes nothing", async () => {
+    const running = startClosing();
+    const sent = await running.send();
+    chainOf();
+    await aDayLater(running);
+    const [payment] = await running.list();
+    expect(payment.couldntConfirm.closable).toBe(true);
+    const { token } = await running.confirm('intent-close', closeBindingOf(payment));
+
+    // A replacement holds the account's lock, and commits under it while
+    // the close waits for the lock.
+    let closing;
+    await running.reservations.withAccountLock(
+      { chainId: 100, sender: ALICE.address },
+      async () => {
+        closing = running.close(payment.intentId, { confirmation: token });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(running.store.get(sent.intentId).state).toBe('held');
+        const raw = await ALICE.signTransaction({
+          type: 0,
+          chainId: 100,
+          nonce: 7,
+          to: BOB.address,
+          value: 1000n,
+          gasLimit: 21000n,
+          gasPrice: 2_000_000_000n,
+        });
+        await running.store.commit({
+          intentId: sent.intentId,
+          chainId: 100,
+          sender: ALICE.address,
+          nonce: 7,
+          hash: keccak256(raw),
+          raw,
+          via: 'replacement',
+        });
+      }
+    );
+    await expect(closing).resolves.toMatchObject({
+      success: false,
+      code: 'INTENT_CHANGED',
+      intent: expect.objectContaining({ state: 'held' }),
+    });
+    expect(running.store.get(sent.intentId)).toMatchObject({ state: 'held' });
+    expect(running.store.get(sent.intentId).hashes).toHaveLength(2);
+
+    // A confirmation of the revision before the replacement is refused.
+    await expect(closeConfirmed(running, payment)).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+    // One of what main has now closes it.
+    const [now] = await running.list();
+    await expect(closeConfirmed(running, now)).resolves.toMatchObject({ success: true });
+    expect(running.store.get(sent.intentId).state).toBe('retired');
+  });
+
+  test('closing needs a confirmation of this payment', async () => {
+    const running = startClosing();
+    const sent = await running.send();
+    chainOf();
+    await aDayLater(running);
+    const [payment] = await running.list();
+    await expect(running.close(payment.intentId, {})).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+    // A confirmation of a resend is not one of a close.
+    const { token } = await running.confirm('intent-resend', {
+      intentId: sent.intentId,
+      chainId: 100,
+      sender: payment.sender,
+      nonce: 7,
+      hash: sent.hash,
+    });
+    await expect(running.close(payment.intentId, { confirmation: token })).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+    expect(running.store.get(sent.intentId).state).toBe('held');
+  });
+});

@@ -44,6 +44,9 @@ const STATUSES = Object.freeze({
   TAKEN: 'taken',
   // Never mined, and never can be: another transaction took its nonce.
   DROPPED: 'dropped',
+  // A wallet intent the user closed by hand once its label couldn't be
+  // read (Couldn't confirm): whether it paid is unknown.
+  UNCONFIRMED: 'unconfirmed',
 });
 const FINAL_STATUSES = new Set([
   STATUSES.CONFIRMED,
@@ -52,6 +55,7 @@ const FINAL_STATUSES = new Set([
   STATUSES.NO_RECEIPT,
   STATUSES.TAKEN,
   STATUSES.DROPPED,
+  STATUSES.UNCONFIRMED,
 ]);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 

@@ -10,7 +10,7 @@ const { parseUnits, formatUnits, Interface, Transaction, keccak256 } = require('
 const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
-const { getIntentStore } = require('./intent-store');
+const { closedText, getIntentStore } = require('./intent-store');
 const { reserve, withAccountLock, withIntentKeyLock } = require('./nonce-reservations');
 
 // ERC-20 transfer function interface
@@ -652,9 +652,7 @@ function heldIntent(store, intentId) {
     throw error;
   }
   if (intent.state !== 'held') {
-    const error = new Error(
-      intent.state === 'voided' ? 'This payment was voided.' : 'This payment is already settled.'
-    );
+    const error = new Error(closedText(intent.state));
     error.code = 'INTENT_NOT_HELD';
     throw error;
   }

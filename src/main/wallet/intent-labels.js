@@ -40,7 +40,22 @@
  *
  * Every read goes through the injected `request`, called as
  * `chainData.request(chainId, method, params, options)` with trust and no
- * routing context, so it is never interactive.
+ * routing context, so it is never interactive. The read order asks Colibri
+ * before the quorum, so where Colibri proves a read its answer comes from
+ * as deep as its prover reaches; elsewhere a quorum's endpoints answer
+ * state reads only within the window W of recent blocks they keep.
+ *
+ * **The bracket** (design 0005, "State history", #94): the finalized block
+ * where the intent's nonce was last seen unused, by a verified read at its
+ * hash (a count of at most N). Each read that finds N unused at F moves it
+ * up to F, and the caller keeps it with the intent's record. Once N is
+ * used, the search for the block that used it runs above the bracket, so
+ * its deepest probe is only as far below the head as F's lag and the
+ * blocks since the last read, within W while the reads keep up. A bracket
+ * that doesn't verify (its hash isn't the verified header's at its height,
+ * or it isn't an ancestor of F) is dropped, and the search falls back to
+ * the window below F. Either way the search reads one block with its
+ * transactions, the one its probes located: never a range of blocks.
  */
 
 const LABELS = Object.freeze({
@@ -295,6 +310,46 @@ async function hashAt(segment, F, height, read) {
   return segment.headers.get(height).hash;
 }
 
+/**
+ * A probe's verified hash: hashAt's, or, one below the deepest header a
+ * label may walk to (F − MAX_DEPTH − 1), the parent hash that header names.
+ * A probe there is a lower bound for the search, never evidence: the block
+ * that used a nonce is still at most MAX_DEPTH below F.
+ */
+async function probeHashAt(segment, F, height, read) {
+  if (height >= 0n && F.number - height === MAX_DEPTH + 1n) {
+    await hashAt(segment, F, height + 1n, read);
+    return segment.headers.get(height + 1n).parentHash;
+  }
+  return hashAt(segment, F, height, read);
+}
+
+/** A bracket as kept with an intent's record, or null. */
+function bracketOf(value) {
+  if (!isObject(value) || !Number.isSafeInteger(value.number) || value.number < 0) return null;
+  if (typeof value.hash !== 'string' || !HASH.test(value.hash)) return null;
+  return { number: value.number, hash: value.hash.toLowerCase() };
+}
+
+/**
+ * The bracket's height, if it verifies below F: its hash is the verified
+ * one at its height, an ancestor of F within reach. Null if it doesn't;
+ * a read that fails throws, keeping the bracket for the next pass.
+ */
+async function verifiedBracket(bracket, F, segment, read) {
+  const height = BigInt(bracket.number);
+  if (height >= F.number) return null;
+  let hash;
+  try {
+    hash = await probeHashAt(segment, F, height, read);
+  } catch (err) {
+    // Deeper than any probe may go.
+    if (err instanceof Held && err.observed === OBSERVED.UNVERIFIABLE) return null;
+    throw err;
+  }
+  return hash === bracket.hash ? height : null;
+}
+
 function held(observed, reason) {
   return { label: LABELS.HELD, observed, reason };
 }
@@ -306,14 +361,24 @@ function held(observed, reason) {
  * @param {Function} deps.request - chainData.request
  * @param {object} [deps.segment] - the chain's verified headers, kept
  *   across intents and passes (createChainSegment)
- * @returns {Promise<{label: 'paid'|'failed', hash: string, block: number}
+ * @param {{number: number, hash: string}|null} [deps.bracket] - the
+ *   intent's bracket, from an earlier read
+ * @returns {Promise<({label: 'paid'|'failed', hash: string, block: number}
  *   | {label: 'taken', hash: null, block: number}
- *   | {label: 'held', observed: string, reason: string}>}
+ *   | {label: 'held', observed: string, reason: string}) & {
+ *     nonceAtF: {block: number, hash: string, count: number, used: boolean}|null,
+ *     bracket: {number: number, hash: string}|null }>}
+ *   with every label: the sender's verified nonce at F (`used` when it is
+ *   past the intent's), or null when it wasn't read; and the bracket to
+ *   keep (moved up, as it was, or null: none, or dropped)
  */
-async function readLabel(intent, { request, segment = createChainSegment() }) {
+async function readLabel(intent, { request, segment = createChainSegment(), bracket = null }) {
   const sender = intent.sender.toLowerCase();
   const nonce = BigInt(intent.nonce);
   const hashes = intent.hashes.map((entry) => entry.hash.toLowerCase());
+  let kept = bracketOf(bracket);
+  let nonceAtF = null;
+  const result = (label) => ({ ...label, nonceAtF, bracket: kept });
   const read = async (method, params) => {
     const reply = compactReply(
       method,
@@ -329,7 +394,7 @@ async function readLabel(intent, { request, segment = createChainSegment() }) {
   try {
     // 1. The finalized block, and the verified chain below it.
     const finalized = await read('eth_getBlockByNumber', ['finalized', false]);
-    if (finalized === null) return held(OBSERVED.UNKNOWN, 'no finalized block');
+    if (finalized === null) return result(held(OBSERVED.UNKNOWN, 'no finalized block'));
     const F = header(finalized);
     await anchor(segment, F, read);
 
@@ -340,6 +405,13 @@ async function readLabel(intent, { request, segment = createChainSegment() }) {
       return count;
     };
     const count = await countAt(F.hash);
+    nonceAtF = { block: Number(F.number), hash: F.hash, count: Number(count), used: count > nonce };
+    // Unused at F: the bracket moves up to it (never down, to a lagging
+    // pair's older F).
+    const before = kept;
+    if (count <= nonce && !(kept && BigInt(kept.number) > F.number)) {
+      kept = { number: Number(F.number), hash: F.hash };
+    }
 
     // 3. A receipt of its own, in a block of the finalized chain.
     for (const hash of hashes) {
@@ -348,22 +420,32 @@ async function readLabel(intent, { request, segment = createChainSegment() }) {
       const receipt = receiptOf(answer, hash, sender);
       const onChain = await hashAt(segment, F, receipt.blockNumber, read);
       if (onChain !== receipt.blockHash) {
-        return held(OBSERVED.UNKNOWN, 'its receipt is not in a block of the finalized chain');
+        return result(
+          held(OBSERVED.UNKNOWN, 'its receipt is not in a block of the finalized chain')
+        );
       }
       if (count <= nonce) {
-        return held(OBSERVED.UNKNOWN, 'the finalized nonce disagrees with its receipt');
+        // Evidence that disagrees moves nothing.
+        kept = before;
+        return result(held(OBSERVED.UNKNOWN, 'the finalized nonce disagrees with its receipt'));
       }
-      return {
+      return result({
         label: receipt.status === 1n ? LABELS.PAID : LABELS.FAILED,
         hash,
         block: Number(F.number),
-      };
+      });
     }
-    if (count <= nonce) return held(OBSERVED.ABSENT, 'not included');
+    if (count <= nonce) return result(held(OBSERVED.ABSENT, 'not included'));
 
     // 4. The nonce was used at or below F, by none of its receipts: find
-    // the block that used it, and the transaction there.
-    const height = await usedAt(nonce, F, segment, read, countAt);
+    // the block that used it, above the bracket if it verifies, and the
+    // transaction there.
+    let from = null;
+    if (kept) {
+      from = await verifiedBracket(kept, F, segment, read);
+      if (from === null) kept = null;
+    }
+    const height = await usedAt(nonce, F, segment, read, countAt, from);
     const blockHash = await hashAt(segment, F, height, read);
     const block = await read('eth_getBlockByHash', [blockHash, true]);
     header(block, { number: height, hash: blockHash });
@@ -377,31 +459,35 @@ async function readLabel(intent, { request, segment = createChainSegment() }) {
     if (hashes.includes(used.hash.toLowerCase())) {
       // Its own transaction used it, but its receipt read as none: the
       // receipt reads lag. Read again next pass.
-      return held(OBSERVED.INCLUDED, 'its own transaction used the nonce; no receipt yet');
+      return result(held(OBSERVED.INCLUDED, 'its own transaction used the nonce; no receipt yet'));
     }
-    return { label: LABELS.TAKEN, hash: null, block: Number(F.number) };
+    return result({ label: LABELS.TAKEN, hash: null, block: Number(F.number) });
   } catch (err) {
-    if (err instanceof Held) return held(err.observed, err.message);
-    return held(OBSERVED.UNKNOWN, `read failed: ${err.message}`);
+    if (err instanceof Held) return result(held(err.observed, err.message));
+    return result(held(OBSERVED.UNKNOWN, `read failed: ${err.message}`));
   }
 }
 
 /**
  * The height of the block that used `nonce`: the lowest on the verified
- * chain where the sender's nonce is past it. Galloping down from F, then a
- * binary search, each step a nonce read at a verified block hash.
+ * chain where the sender's nonce is past it. A binary search between
+ * `from` (a verified bracket, where it is not) and F; with no bracket,
+ * galloping down from F first, to at most one below the deepest block a
+ * label may look at. Each step is a nonce read at a verified block hash.
  */
-async function usedAt(nonce, F, segment, read, countAt) {
-  const deepest = F.number > MAX_DEPTH ? F.number - MAX_DEPTH : 0n;
+async function usedAt(nonce, F, segment, read, countAt, from = null) {
+  const pastAt = async (height) =>
+    (await countAt(await probeHashAt(segment, F, height, read))) > nonce;
   let above = F.number; // its nonce is past `nonce`
-  let below = null; // its nonce is not
+  let below = from; // its nonce is not
+  const deepest = F.number > MAX_DEPTH ? F.number - MAX_DEPTH - 1n : 0n;
   for (let step = 1n; below === null; step *= 2n) {
     let probe = above - step;
     if (probe < deepest) probe = deepest;
     if (probe >= above) {
       throw new Held(OBSERVED.UNVERIFIABLE, 'the nonce was used deeper than the verifiable depth');
     }
-    if ((await countAt(await hashAt(segment, F, probe, read))) > nonce) {
+    if (await pastAt(probe)) {
       above = probe;
       if (probe === deepest) {
         throw new Held(
@@ -415,7 +501,7 @@ async function usedAt(nonce, F, segment, read, countAt) {
   }
   while (above - below > 1n) {
     const mid = below + (above - below) / 2n;
-    if ((await countAt(await hashAt(segment, F, mid, read))) > nonce) above = mid;
+    if (await pastAt(mid)) above = mid;
     else below = mid;
   }
   return above;

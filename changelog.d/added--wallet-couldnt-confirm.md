@@ -1,0 +1,3 @@
+- A payment the wallet can't check on chain for a day shows as "Couldn't confirm" in Payments waiting, with its transaction hashes and explorer links ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Once the network shows that the payment's place in the queue was used, it can be closed by hand. The confirmation says that closing proves nothing about whether it was paid
+  - A payment whose place another transaction took is found more reliably. The wallet remembers where each payment last stood, also across restarts, and checks every 2 minutes while a sent payment isn't final

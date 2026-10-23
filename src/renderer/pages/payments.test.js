@@ -142,13 +142,19 @@ describe('payments internal page', () => {
 // label, and "Taken" says what it means. The page script can't import
 // lib/wallet/intent-texts.js, so these tests hold its copy equal.
 describe('payments settled at the finalized block', () => {
-  const { LABELS, TAKEN_EXPLANATION } = require('../lib/wallet/intent-texts.js');
+  const {
+    LABELS,
+    TAKEN_EXPLANATION,
+    CLOSED_EXPLANATION,
+  } = require('../lib/wallet/intent-texts.js');
 
   const settled = (label, overrides = {}) =>
     createPayment({
       kind: 'wallet-send',
       origin: null,
-      status: { paid: 'confirmed', failed: 'failed', taken: 'taken' }[label] ?? 'pending',
+      status:
+        { paid: 'confirmed', failed: 'failed', taken: 'taken', closed: 'unconfirmed' }[label] ??
+        'pending',
       metadata: { intentId: 'intent-1', finality: { label, block: 100 } },
       ...overrides,
     });
@@ -220,6 +226,21 @@ describe('payments settled at the finalized block', () => {
     }
     const { pill } = await statusOf(settled('paid'));
     expect(pill.textContent).toBe(LABELS.confirmed);
+  });
+
+  // freedom-core design 0005, "State history" (#94).
+  test('closed by hand shows "Couldn\'t confirm" and the line that says it proves nothing', async () => {
+    for (const payment of [
+      settled('closed'),
+      // Main's label, whatever a later write made of the status.
+      settled('closed', { status: 'confirmed' }),
+      createPayment({ kind: 'wallet-send', status: 'unconfirmed', metadata: null }),
+    ]) {
+      const { pill, note } = await statusOf(payment);
+      expect(pill.textContent).toBe(LABELS.couldntConfirm);
+      expect(pill.classList.contains('status-unconfirmed')).toBe(true);
+      expect(note.textContent).toBe(CLOSED_EXPLANATION);
+    }
   });
 
   test('a stored taken reads "Taken" with its explanation, even without a label', async () => {
