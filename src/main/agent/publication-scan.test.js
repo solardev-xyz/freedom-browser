@@ -434,6 +434,27 @@ describe('metadata stripping', () => {
     });
   }, 120_000);
 
+  // A rule's per-match check once re-read the whole text (keystore's "kdf"
+  // and "crypto" keys) or the whole line (an Ethereum key's context), so many
+  // candidates in one file were quadratic: 2 MB of ciphertexts took longer
+  // than the scan's 60 s budget. The verdict is now worked out once per text
+  // (or line), and what it finds must not change.
+  test('many candidates for a text-wide or line-wide check scan in linear time', () => {
+    const hex = index => index.toString(16).padStart(8, '0').repeat(8).replace(/^.{8}/, '3f9a1c7e');
+    const findings = text => scanText('blob.json', text).filter(finding => finding.kind === 'secret');
+    const keystoreLines = Array.from({ length: 20_000 }, (_, index) => `"ciphertext":"${hex(index).slice(0, 32)}","kdf" \n`);
+    const ethLine = Array.from({ length: 20_000 }, (_, index) => `0x${hex(index)} `).join('');
+    let started = Date.now();
+    expect(findings(keystoreLines.join(''))).toEqual([]); // no "crypto" key: not a keystore
+    expect(findings(`{"crypto":{"kdf":"scrypt",\n${keystoreLines.join('')}`).map(finding => finding.line))
+      .toEqual(Array.from({ length: 20_000 }, (_, index) => index + 2));
+    expect(findings(`deployer private key\n${ethLine}`)).toEqual([]); // the context is on another line
+    expect(findings(`deployer private key ${ethLine}\nsome text`)).toHaveLength(20_000);
+    expect(Date.now() - started).toBeLessThan(15_000); // quadratic: minutes
+    const mixed = `${HEX_KEY}\nprivate key ${HEX_KEY} ${HEX_KEY.replace(/^4/, '5')}\n${HEX_KEY.replace(/^4/, '6')}\nsigner ${HEX_KEY.replace(/^4/, '7')}`;
+    expect(findings(mixed).map(finding => finding.line)).toEqual([2, 2, 4]);
+  }, 60_000);
+
   // The bounded rewrite once capped `\s*` and the leading blanks of the
   // credential assignments, and the number of email domain labels; the walks
   // that replaced the caps must match what the original patterns matched.

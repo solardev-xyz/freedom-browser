@@ -130,10 +130,10 @@ function regexRule(pattern, accept = () => true, then = null) {
   };
 }
 
-function lineAt(text, index) {
+function lineBounds(text, index) {
   const start = text.lastIndexOf('\n', index - 1) + 1;
   const end = text.indexOf('\n', index);
-  return text.slice(start, end === -1 ? text.length : end);
+  return { start, end: end === -1 ? text.length : end };
 }
 
 function* letterWords(text) {
@@ -277,6 +277,15 @@ function emailDomainTail(text, headEnd) {
   return best === undefined ? { next: headEnd } : { end: best };
 }
 
+// "ciphertext" \s* : \s* "hex{32,}"
+function keystoreCiphertextTail(text, headEnd) {
+  const colon = spaceThen(text, headEnd, ':');
+  const quote = colon === -1 ? -1 : spaceThen(text, colon + 1, '"');
+  if (quote === -1) return {};
+  const end = runEnd(text, quote + 1, NOT_HEX);
+  return end - quote - 1 >= 32 && text[end] === '"' ? { end: end + 1 } : {};
+}
+
 const RULES = Object.freeze([
   // Existing workspace-history patterns, now named individually.
   { id: 'private-key-block', kind: 'secret', label: 'Private key block',
@@ -313,20 +322,31 @@ const RULES = Object.freeze([
   { id: 'ethereum-private-key', kind: 'secret', label: 'Ethereum private key',
     // A bare 0x + 64 hex is also every transaction hash and Swarm reference,
     // so the key must sit on a line that names it as a key.
-    matches: regexRule(/(?<![0-9A-Za-z])(?:0x)?(?<v>[0-9a-fA-F]{64})(?![0-9A-Za-z])/, (value, text, index) =>
-      !lowEntropyHex(value) && KEY_CONTEXT.test(lineAt(text, index).replace(/[0-9a-fA-F]{64}/g, ''))) },
+    // The line's verdict is worked out once per line, not once per hex run on
+    // it, so a single long line of keys stays linear.
+    matches: function* matches(text) {
+      let line = { end: -1, named: false };
+      yield* regexRule(/(?<![0-9A-Za-z])(?:0x)?(?<v>[0-9a-fA-F]{64})(?![0-9A-Za-z])/, (value, _text, index) => {
+        if (lowEntropyHex(value)) return false;
+        if (index >= line.end) {
+          const { start, end } = lineBounds(text, index);
+          line = { end, named: KEY_CONTEXT.test(text.slice(start, end).replace(/[0-9a-fA-F]{64}/g, '')) };
+        }
+        return line.named;
+      })(text);
+    } },
   { id: 'bip39-seed-phrase', kind: 'secret', label: 'Wallet recovery phrase', matches: seedPhraseMatches },
   { id: 'keystore-json', kind: 'secret', label: 'Encrypted wallet keystore',
-    matches: regexRule(/"ciphertext"/, (value, text) =>
-      jsonKeyFollowedBy(text, /"kdf"/i, at => /^"(?:scrypt|pbkdf2)"/i.test(text.slice(at, at + 8))) &&
-      jsonKeyFollowedBy(text, /"(?:crypto|Crypto)"/, () => true),
-    (text, headEnd) => {
-      const colon = spaceThen(text, headEnd, ':');
-      const quote = colon === -1 ? -1 : spaceThen(text, colon + 1, '"');
-      if (quote === -1) return {};
-      const end = runEnd(text, quote + 1, NOT_HEX);
-      return end - quote - 1 >= 32 && text[end] === '"' ? { end: end + 1 } : {};
-    }) },
+    // Whether the text has a "kdf" and a "crypto" key does not depend on which
+    // ciphertext matched: it is worked out once per text, on the first
+    // candidate, so many ciphertexts in one file stay linear.
+    matches: function* matches(text) {
+      let keystore;
+      yield* regexRule(/"ciphertext"/, () => (keystore ??=
+        jsonKeyFollowedBy(text, /"kdf"/i, at => /^"(?:scrypt|pbkdf2)"/i.test(text.slice(at, at + 8))) &&
+        jsonKeyFollowedBy(text, /"(?:crypto|Crypto)"/, () => true)),
+      keystoreCiphertextTail)(text);
+    } },
   { id: 'rpc-url-key', kind: 'secret', label: 'RPC URL with an embedded key',
     matches: function* matches(text) {
       const accept = value => !placeholderValue(value);
@@ -383,10 +403,24 @@ const RULES = Object.freeze([
 
 const RULE_BY_ID = new Map(RULES.map(rule => [rule.id, rule]));
 
-function lineNumber(text, index) {
+// Line numbers for one text. A rule's matches come in text order, so the
+// count carries on from the last one asked for and starts over only when a
+// new rule goes back to the start: the cost is one walk per rule, not one
+// per finding.
+function lineCounter(text) {
+  let at = 0;
   let line = 1;
-  for (let cursor = text.indexOf('\n'); cursor !== -1 && cursor < index; cursor = text.indexOf('\n', cursor + 1)) line++;
-  return line;
+  return index => {
+    if (index < at) {
+      at = 0;
+      line = 1;
+    }
+    for (let cursor = text.indexOf('\n', at); cursor !== -1 && cursor < index; cursor = text.indexOf('\n', cursor + 1)) {
+      line++;
+      at = cursor + 1;
+    }
+    return line;
+  };
 }
 
 // What the user sees: enough to recognise the value, not enough to reuse it.
@@ -427,6 +461,7 @@ function textOf(bytes) {
 function scanText(filePath, text, { secretsOnly = false } = {}) {
   const findings = [];
   const seen = new Set();
+  const lineNumber = lineCounter(text);
   let warnings = 0;
   // A rule that throws (a regexp engine limit, an unexpected input) must not
   // let the file through unchecked: it becomes a blocking finding instead.
@@ -444,7 +479,7 @@ function scanText(filePath, text, { secretsOnly = false } = {}) {
         kind: rule.kind,
         rule: rule.id,
         label: rule.label,
-        line: lineNumber(text, match.index),
+        line: lineNumber(match.index),
         excerpt: redact(rule.id, match.value),
         blocking: rule.kind === 'secret',
       });
