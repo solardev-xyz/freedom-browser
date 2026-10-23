@@ -415,7 +415,7 @@ The 72-hour window applies when one of the release's CVEs is in KEV, Chrome's re
 **While `main` is on a newer major than the latest release** (it has adopted the next major, which has not shipped yet), the security issue stays on the shipped major. Users run that major, and the 8-week adoption window never replaces a 7-day or 72-hour deadline. No bump goes to `main` for those fixes. One of two releases settles them:
 
 - a fast-path release on the shipped major (step 3 applies the bump on the release branch with `node scripts/electron-watch.js bump --version <x.y.z>`); or
-- a release from `main` whose Electron of the new major was published to npm after the target. Electron releases each security fix on every supported major together, so such a release carries the fixes. Once it is out, the issue closes on that basis, and any later fix on the new major is tracked from that release.
+- a release from `main` whose Electron of the new major was published to npm strictly after the target. Electron releases each security fix on every supported major together, so such a release carries the fixes. Once it is out, the issue closes on that basis, and any later fix on the new major is tracked from that release. Nothing else closes it: a release on a new-major Electron published before the target, or an open security issue for the new major, leaves it open with its own, earlier deadline.
 
 `main`'s own major is still watched in that state. When its newest patch carries security fixes, the bump pull request below keeps `main` current, and it points at the deadline issue, or at the adoption issue when nothing is owed on the shipped major.
 

@@ -577,34 +577,71 @@ describe('issue plan: one issue per key', () => {
     expect(actions.filter((a) => a.type === 'close')).toEqual([]);
   });
 
-  test('a release on a newer major closes the old major only on evidence it carries the fixes', () => {
-    const published = new Map([
-      ['44.9.3', at('2026-10-21T03:31:39.419Z')],
-      ['45.0.0', at('2026-10-21T06:03:52.729Z')],
-      ['45.0.1', at('2026-10-28T00:00:00Z')],
-    ]);
-    const plan = (shipped, desired = []) =>
+  describe('a release on a newer major closes the old major only on evidence it carries the fixes', () => {
+    const TARGET_AT = at('2026-10-21T03:31:39.419Z');
+    const old = () =>
+      have(722, 'security:44.9.3', {
+        title: 'Ship Electron 44.9.3 (security release), due 2026-10-21',
+      });
+    const plan = (published, desired = []) =>
       W.planIssues({
         desired,
-        existing: [have(722, 'security:44.9.3')],
-        shipped,
+        existing: [old()],
+        shipped: '45.0.0',
         shippedTag: 'v0.9.0',
-        pinned: shipped,
-        published,
+        pinned: '45.0.0',
+        published: new Map([['44.9.3', TARGET_AT], ...published]),
       });
-    // Published to npm after the old target: carries it.
-    const [closed] = plan('45.0.0');
-    expect(closed).toMatchObject({ type: 'close', number: 722 });
-    expect(closed.comment).toMatch(
-      /^Shipped through the newer major: v0\.9\.0 ships Electron 45\.0\.0, published to npm 2026-10-21 06:03 UTC, after Electron 44\.9\.3/
-    );
-    // A 45.x security issue takes the deadline over.
-    expect(plan('45.0.0', [want('security:45.0.1')])).toContainEqual(
-      expect.objectContaining({ type: 'close', number: 722, supersededBy: 'security:45.0.1' })
-    );
-    // Published before it, and nothing on 45 tracks the fixes: stays open.
-    published.set('45.0.0', at('2026-10-20T00:00:00Z'));
-    expect(plan('45.0.0')).toEqual([]);
+
+    test('an Electron published strictly after the old target closes it', () => {
+      const [closed] = plan([['45.0.0', at('2026-10-21T06:03:52.729Z')]]);
+      expect(closed).toMatchObject({ type: 'close', number: 722 });
+      expect(closed.supersededBy).toBeUndefined();
+      expect(closed.comment).toMatch(
+        /^Shipped through the newer major: v0\.9\.0 ships Electron 45\.0\.0, published to npm 2026-10-21 06:03 UTC, after Electron 44\.9\.3/
+      );
+    });
+
+    test('the same publish time is not "after": it stays open', () => {
+      expect(plan([['45.0.0', TARGET_AT]])).toEqual([]);
+    });
+
+    test('a 45.x security issue published before the target does not close it (round 2 probe)', () => {
+      const actions = plan(
+        [
+          ['45.0.0', at('2026-10-20T00:00:00Z')],
+          ['45.0.1', at('2026-10-20T12:00:00Z')],
+        ],
+        [want('security:45.0.1')]
+      );
+      expect(actions.filter((a) => a.number === 722)).toEqual([]);
+    });
+
+    test('the old deadline is not handed to a later 45.x issue: both stay, each with its own', () => {
+      const actions = plan(
+        [
+          ['45.0.0', at('2026-10-20T00:00:00Z')],
+          ['45.0.2', at('2026-10-28T00:00:00Z')],
+        ],
+        [want('security:45.0.2')]
+      );
+      // The 44.9.3 issue, due 2026-10-21, is neither closed nor superseded;
+      // the 45.0.2 issue is opened beside it with its own, later deadline.
+      expect(actions).toEqual([
+        expect.objectContaining({ type: 'create', key: 'security:45.0.2' }),
+      ]);
+    });
+
+    test('without npm publish times it stays open', () => {
+      expect(
+        W.planIssues({
+          desired: [],
+          existing: [old()],
+          shipped: '45.0.0',
+          pinned: '45.0.0',
+        })
+      ).toEqual([]);
+    });
   });
 
   test('a malformed marker is not a key', () => {

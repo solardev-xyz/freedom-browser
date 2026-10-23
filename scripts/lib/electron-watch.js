@@ -1161,23 +1161,16 @@ function planIssues({
           comment: `Shipped: ${shippedNote}.`,
         });
       } else if (shippedMajor !== null && shippedMajor > major) {
-        // A release moved to a newer major. Its fixes are carried by a
-        // release of that major published after this target (Electron
-        // releases each security fix on every supported major together);
-        // anything later is a security release of the new major, tracked by
-        // its own issue.
-        const next = newestOn(shippedMajor);
+        // A release moved to a newer major. The only evidence that it carries
+        // this target's fixes is its Electron's npm publish time: strictly
+        // after the target (Electron releases each security fix on every
+        // supported major together). Until a release ships such a build, the
+        // issue stays open with its own, earlier deadline. A security issue
+        // on the new major does not stand in for it: its releases may predate
+        // the target, and its deadlines are its own.
         const shippedAt = published.get(shipped);
         const targetAt = published.get(value);
-        if (next) {
-          actions.push({
-            type: 'close',
-            key,
-            number: have.number,
-            supersededBy: `security:${next}`,
-            comment: `Superseded by the issue for Electron ${next}: ${shippedNote}, and its ${shippedMajor}.x security releases carry this deadline forward.`,
-          });
-        } else if (shippedAt && targetAt && shippedAt >= targetAt) {
+        if (shippedAt && targetAt && shippedAt > targetAt) {
           actions.push({
             type: 'close',
             key,
