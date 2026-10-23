@@ -90,6 +90,16 @@ const NOT_INLINE_SPACE = /\S|[\n\r\u2028\u2029]/g;
 const NOT_LETTER = /[^A-Za-z]/g;
 const LINE_END = /[\n\r\u2028\u2029]/;
 const NOT_INLINE_TAB = /[^ \t]/g;
+const NOT_SPACE = /\S/g;
+const NOT_LABEL = /[^A-Za-z0-9-]/g;
+const NOT_PEM_TITLE = /[^A-Z ]/g;
+
+// The end of the \s run at `from`, when the character after it is one of
+// `next`; -1 otherwise. A walked `\s*` before a fixed character, so no cap.
+function spaceThen(text, from, next) {
+  const end = runEnd(text, from, NOT_SPACE);
+  return next.includes(text[end]) ? end : -1;
+}
 
 // `then` continues past a pattern's bounded head: then(text, headEnd, match)
 // returns { end } (the value runs to end; scanning resumes at `next`, default
@@ -198,10 +208,79 @@ function bareValueTail(text, headEnd) {
   return after === text.length || text[after] === '#' || LINE_END.test(text[after]) ? { end } : {};
 }
 
+// The credential-assignment rules walk what the original patterns matched as
+// `["']?\s*[:=]\s*` after the key name (\s is every Unicode space, newlines
+// included), so a BOM, NBSP, \f or a long run of blanks still matches.
+const CREDENTIAL_NAMES = 'password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key';
+
+// key ["']? \s* [:=] \s* ["'] value{8,} ["']
+function quotedAssignmentTail(text, headEnd) {
+  const name = headEnd + (text[headEnd] === '"' || text[headEnd] === "'" ? 1 : 0);
+  const operator = spaceThen(text, name, ':=');
+  if (operator === -1) return {};
+  const quote = spaceThen(text, operator + 1, '"\'');
+  if (quote === -1) return {};
+  const result = quotedValueTail(text, quote + 1);
+  return result.end - quote - 1 >= 8 ? { ...result, start: quote + 1 } : {};
+}
+
+// The key opened a line: ^\s* under the m flag, where \s also crosses blank lines.
+function opensLine(text, index) {
+  let start = index;
+  while (start > 0 && /\s/.test(text[start - 1])) {
+    start -= 1;
+    if (LINE_END.test(text[start])) return true;
+  }
+  return start === 0;
+}
+
+// ^\s* key \s* [:=] \s* value{8,} \s* (#.*)? $
+function bareAssignmentTail(text, headEnd, match) {
+  if (!opensLine(text, match.index)) return {};
+  const operator = spaceThen(text, headEnd, ':=');
+  if (operator === -1) return {};
+  const start = runEnd(text, operator + 1, NOT_SPACE);
+  const result = bareValueTail(text, start);
+  return result.end - start >= 8 ? { ...result, start } : {};
+}
+
+// -----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----, with the title walked.
+function pemTitleTail(text, headEnd) {
+  const end = runEnd(text, headEnd, NOT_PEM_TITLE);
+  const title = 'PRIVATE KEY';
+  if (end - headEnd < title.length || !text.startsWith('-----', end) || !text.startsWith(title, end - title.length)) return {};
+  const prefix = end - title.length - headEnd;
+  return prefix === 0 || (prefix >= 2 && text[end - title.length - 1] === ' ') ? { end: end + 5 } : {};
+}
+
+// "name" \s* : (then the caller's check of what follows), anywhere in text.
+function jsonKeyFollowedBy(text, name, valueAt) {
+  const key = new RegExp(name.source, `${name.flags.replace('g', '')}g`);
+  for (let match = key.exec(text); match; match = key.exec(text)) {
+    const colon = spaceThen(text, match.index + match[0].length, ':');
+    if (colon !== -1 && valueAt(runEnd(text, colon + 1, NOT_SPACE))) return true;
+  }
+  return false;
+}
+
+// The domain of an email: (?:label\.)+ then a 2-24 letter TLD that ends the
+// label run. As the greedy pattern does, take the most labels that work, with
+// no cap on their number.
+function emailDomainTail(text, headEnd) {
+  let best;
+  for (let at = headEnd, labels = 0; ; labels += 1) {
+    const end = runEnd(text, at, NOT_LABEL);
+    if (labels > 0 && end - at >= 2 && end - at <= 24 && /^[A-Za-z]+$/.test(text.slice(at, end))) best = end;
+    if (end === at || text[end] !== '.') break;
+    at = end + 1;
+  }
+  return best === undefined ? { next: headEnd } : { end: best };
+}
+
 const RULES = Object.freeze([
   // Existing workspace-history patterns, now named individually.
   { id: 'private-key-block', kind: 'secret', label: 'Private key block',
-    matches: regexRule(/-----BEGIN (?:[A-Z ]{1,40} )?PRIVATE KEY-----/) },
+    matches: regexRule(/-----BEGIN /, undefined, pemTitleTail) },
   { id: 'aws-access-key', kind: 'secret', label: 'AWS access key',
     matches: regexRule(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/, value => !placeholderValue(value)) },
   { id: 'openai-api-key', kind: 'secret', label: 'OpenAI-style API key',
@@ -220,14 +299,14 @@ const RULES = Object.freeze([
   { id: 'credential-assignment', kind: 'secret', label: 'Password or key assignment',
     matches: function* matches(text) {
       yield* regexRule(
-        /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s{0,64}[:=]\s{0,64}["'](?<v>[^"'\r\n]{8})/i,
+        new RegExp(`(?:${CREDENTIAL_NAMES}|authorization|credential)`, 'i'),
         value => !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(value) && !placeholderValue(value),
-        quotedValueTail
+        quotedAssignmentTail
       )(text);
       yield* regexRule(
-        /^[ \t]{0,256}(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s{0,64}[:=]\s{0,64}(?<v>[A-Za-z0-9_+/.=-]{8})/im,
+        new RegExp(`(?:${CREDENTIAL_NAMES})`, 'i'),
         value => !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(value) && !placeholderValue(value),
-        bareValueTail
+        bareAssignmentTail
       )(text);
     } },
   // Crypto-wallet material.
@@ -238,11 +317,15 @@ const RULES = Object.freeze([
       !lowEntropyHex(value) && KEY_CONTEXT.test(lineAt(text, index).replace(/[0-9a-fA-F]{64}/g, ''))) },
   { id: 'bip39-seed-phrase', kind: 'secret', label: 'Wallet recovery phrase', matches: seedPhraseMatches },
   { id: 'keystore-json', kind: 'secret', label: 'Encrypted wallet keystore',
-    matches: regexRule(/"ciphertext"\s{0,64}:\s{0,64}"[0-9a-fA-F]{32}/, (value, text) =>
-      /"kdf"\s{0,64}:\s{0,64}"(?:scrypt|pbkdf2)"/i.test(text) && /"(?:crypto|Crypto)"\s{0,64}:/.test(text),
+    matches: regexRule(/"ciphertext"/, (value, text) =>
+      jsonKeyFollowedBy(text, /"kdf"/i, at => /^"(?:scrypt|pbkdf2)"/i.test(text.slice(at, at + 8))) &&
+      jsonKeyFollowedBy(text, /"(?:crypto|Crypto)"/, () => true),
     (text, headEnd) => {
-      const end = runEnd(text, headEnd, NOT_HEX);
-      return text[end] === '"' ? { end: end + 1 } : {};
+      const colon = spaceThen(text, headEnd, ':');
+      const quote = colon === -1 ? -1 : spaceThen(text, colon + 1, '"');
+      if (quote === -1) return {};
+      const end = runEnd(text, quote + 1, NOT_HEX);
+      return end - quote - 1 >= 32 && text[end] === '"' ? { end: end + 1 } : {};
     }) },
   { id: 'rpc-url-key', kind: 'secret', label: 'RPC URL with an embedded key',
     matches: function* matches(text) {
@@ -273,15 +356,15 @@ const RULES = Object.freeze([
     matches: regexRule(/\bSK[0-9a-fA-F]{32}\b/, value => !lowEntropyHex(value.slice(2))) },
   { id: 'sendgrid-api-key', kind: 'secret', label: 'SendGrid API key',
     matches: regexRule(/\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/, value => !placeholderValue(value)) },
-  // Personal data: warnings, never blocking by default. Bounded by the RFC 5321
-  // local-part and RFC 1035 label limits.
+  // Personal data: warnings, never blocking by default. The local part is
+  // bounded by the RFC 5321 limit of 64; the domain is walked, any length.
   { id: 'email-address', kind: 'personal', label: 'Email address',
-    matches: regexRule(/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![A-Za-z0-9-])/, value => {
+    matches: regexRule(/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@/, value => {
       const domain = value.slice(value.indexOf('@') + 1).toLowerCase();
       const local = value.slice(0, value.indexOf('@')).toLowerCase();
       return !PLACEHOLDER_EMAIL_DOMAIN.test(domain) && !FILE_LIKE_TLD.test(domain.split('.').at(-1)) &&
         !['git', 'you', 'user', 'name', 'someone', 'email', 'me'].includes(local);
-    }) },
+    }, emailDomainTail) },
   { id: 'phone-number', kind: 'personal', label: 'Phone number',
     matches: regexRule(/(?:tel:|(?<![\w+]))\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}(?![\w])/, value => {
       const digits = value.replace(/\D/g, '');

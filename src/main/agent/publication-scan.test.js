@@ -401,6 +401,11 @@ describe('metadata stripping', () => {
         keystore: '"ciphertext": "' + run('a'),
         street: 'H' + run('a'),
         spaces: 'priv' + run(' '),
+        assignSpaces: 'password' + run('\\u00a0') + '= "x',
+        lineSpaces: run('\\n') + 'password' + run(' ') + '= ' + run('a') + ' x',
+        keywords: run(' token'),
+        pem: '-----BEGIN ' + run('A '),
+        kdf: '"ciphertext": "' + 'a'.repeat(40) + '" "kdf"' + run(' '),
         sourceMap: '/*# sourceMappingURL=' + run('x'),
       };
       const out = {};
@@ -424,10 +429,82 @@ describe('metadata stripping', () => {
     const out = JSON.parse(child.stdout);
     expect(out).toEqual({
       token: [], dashes: [], email: [], domain: [], quoted: [], bare: [], url: [], keystore: [],
-      street: [], spaces: [], sourceMap: [],
+      street: [], spaces: [], sourceMap: [], assignSpaces: [], lineSpaces: [], keywords: [], pem: [], kdf: [],
       longJwt: [10_000_003 + 42], longJwtHistory: true,
     });
   }, 120_000);
+
+  // The bounded rewrite once capped `\s*` and the leading blanks of the
+  // credential assignments, and the number of email domain labels; the walks
+  // that replaced the caps must match what the original patterns matched.
+  test('assignments led by any Unicode space or long blank runs, and many-label emails, are found', () => {
+    const secret = 'hunter2hunter2X';
+    for (const line of [
+      `\ufeffpassword = ${secret}\n`,
+      `\u00a0password = ${secret}`,
+      `\fpassword = ${secret}`,
+      `\vtoken: ${secret}`,
+      `\n\n   \n\tpassword=${secret}`,
+      `password${' '.repeat(100)}= ${secret}`,
+      `password =${' '.repeat(100)}${secret}  # prod`,
+      `password\n=\n${secret}`,
+      `secret = "${secret}"`,
+      `"api_key"${' '.repeat(100)}:${'\u00a0'.repeat(80)}"${secret}"`,
+      `token\ufeff=\ufeff'${secret}'`,
+    ]) {
+      expect([line, rulesIn(line)]).toEqual([line, ['credential-assignment']]);
+      expect([line, historyContainsSecret(line)]).toEqual([line, true]);
+    }
+    for (const line of [`x password = ${secret}`, `password = ${secret} x`, `password = "short"`, `apassword = ${secret}`]) {
+      expect([line, rulesIn(line)]).toEqual([line, []]);
+      expect([line, historyContainsSecret(line)]).toEqual([line, false]);
+    }
+    expect(rulesIn('bob@a.b.c.d.e.f.g.h.i.example-mail.de')).toEqual(['email-address']);
+    expect(rulesIn(join('-----BEGIN ', 'A'.repeat(60), ' PRIVATE KEY-----'))).toEqual(['private-key-block']);
+    expect(historyContainsSecret(join('-----BEGIN ', 'A'.repeat(60), ' PRIVATE KEY-----'))).toBe(true);
+    expect(historyContainsSecret(join('-----BEGIN ', ' PRIVATE KEY-----'))).toBe(false);
+  });
+
+  test('the walked rules match exactly what the original unbounded patterns matched', () => {
+    const original = {
+      'credential-assignment': [
+        [/["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["'](?<v>[^"'\r\n]{8}[^"'\r\n]*)["']/gi,
+          value => !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(value)],
+        [/^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*(?<v>[A-Za-z0-9_+/.=-]{8}[A-Za-z0-9_+/.=-]*)\s*(?:#.*)?$/gim,
+          value => !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(value)],
+      ],
+      'email-address': [[/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,24}(?![A-Za-z0-9-])/g, () => true]],
+      'private-key-block': [[/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/g, () => true]],
+    };
+    const pieces = ['password', 'token', 'api_key', 'access_token', ' ', '  ', '\t', '\n', '\r\n', '\ufeff', '\u00a0', '\f',
+      '=', ':', '"', "'", '#', 'x', 'Qz9kLm2PwX', 'a', '.', '-', '@', 'bob', 'de', 'mail', 'PRIVATE KEY', '-----', '-----BEGIN ',
+      'RSA', '1', 'secret', 'password = ', '\npassword: ', ' = "', "='", 'bob@', 'q@', 'a.', 'mail.', 'b-c.', '..',
+      'Qz9kLm2PwXr4"', '\n# c', '\u2028', '\v', 'PRIVATE KEY-----', '-----BEGIN RSA ',
+      ' '.repeat(70), '\n\ufeffpassword', 'http://', 'eyJ', 'u:p@', '/', 'test1234 ', 'a.b.c.d.e.f.g.h.i.', 'A'.repeat(45)];
+    // workspace-history-policy.js's historyContainsSecret before the rewrite.
+    const originalHistory = text => {
+      if (/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*|\beyJ[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*/.test(text)) return true;
+      if (/https?:\/\/[^\s/:]+:[^\s/@]+@/i.test(text)) return true;
+      for (const match of text.matchAll(original['credential-assignment'][0][0])) if (original['credential-assignment'][0][1](match[1] ?? match.groups.v)) return true;
+      for (const match of text.matchAll(original['credential-assignment'][1][0])) if (original['credential-assignment'][1][1](match.groups.v)) return true;
+      return false;
+    };
+    // Values the rules' own placeholder filters drop are left out of both sides.
+    const comparable = value => !/your|example|placeholder|changeme|dummy|test|\.\.\.|[<>]|(.)\1{7}|x{6}/i.test(value);
+    let seed = 7;
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let round = 0; round < 20000; round += 1) {
+      const text = Array.from({ length: 2 + Math.floor(random() * 14) }, () => pieces[Math.floor(random() * pieces.length)]).join('');
+      for (const [id, patterns] of Object.entries(original)) {
+        const expected = patterns.flatMap(([pattern, accept]) => [...text.matchAll(pattern)]
+          .map(match => match.groups?.v ?? match[0]).filter(accept)).filter(comparable).sort();
+        const rule = RULES.find(item => item.id === id);
+        const actual = [...rule.matches(text)].map(match => match.value).filter(comparable).sort();
+        expect([id, text, actual]).toEqual([id, text, expected]);
+      }
+      expect([text, historyContainsSecret(text)]).toEqual([text, originalHistory(text)]);
+    }
+  });
 
   test('a rule that throws fails the scan closed with a blocking finding', () => {
     const rule = RULES.find(item => item.id === 'jwt');
