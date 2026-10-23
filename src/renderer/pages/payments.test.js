@@ -137,3 +137,104 @@ describe('payments internal page', () => {
     });
   });
 });
+
+// D10: a wallet payment settled at the finalized block shows the wallet's
+// label, and "Taken" says what it means. The page script can't import
+// lib/wallet/intent-texts.js, so these tests hold its copy equal.
+describe('payments settled at the finalized block', () => {
+  const { LABELS, TAKEN_EXPLANATION } = require('../lib/wallet/intent-texts.js');
+
+  const settled = (label, overrides = {}) =>
+    createPayment({
+      kind: 'wallet-send',
+      origin: null,
+      status: { paid: 'confirmed', failed: 'failed', taken: 'taken' }[label] ?? 'pending',
+      metadata: { intentId: 'intent-1', finality: { label, block: 100 } },
+      ...overrides,
+    });
+
+  async function statusOf(payment) {
+    const ctx = await runPaymentsPage({ payments: [payment] });
+    const row = ctx.elements.results.querySelector('tbody').querySelector('tr');
+    const cell = row.querySelectorAll('td')[6];
+    return {
+      pill: cell.querySelector('.status-pill'),
+      note: cell.querySelector('.status-note'),
+    };
+  }
+
+  test.each([
+    ['paid', LABELS.confirmed, 'status-confirmed'],
+    ['failed', LABELS.failed, 'status-failed'],
+  ])('%s shows "%s", with nothing under it', async (label, text, className) => {
+    const { pill, note } = await statusOf(settled(label));
+    expect(pill.textContent).toBe(text);
+    expect(pill.classList.contains(className)).toBe(true);
+    expect(note).toBeNull();
+  });
+
+  test('taken shows "Taken" and the line that explains it', async () => {
+    const { pill, note } = await statusOf(settled('taken'));
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(pill.classList.contains('status-taken')).toBe(true);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  test("the label is main's finality label, even if a later receipt poll rewrote the status", async () => {
+    const { pill, note } = await statusOf(settled('taken', { status: 'no-receipt' }));
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(pill.classList.contains('status-taken')).toBe(true);
+    expect(pill.classList.contains('status-no-receipt')).toBe(false);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  // Every other row: its stored status reads as a known word, its style
+  // class unchanged, so the column doesn't mix "Confirmed (final)" with
+  // lowercase raw values.
+  test.each([
+    ['pending', 'Pending'],
+    ['confirmed', 'Confirmed'],
+    ['failed', 'Failed'],
+    ['settled', 'Settled'],
+    ['no-receipt', 'No receipt'],
+  ])('a stored %s reads "%s", its class unchanged', async (status, text) => {
+    const { pill, note } = await statusOf(
+      createPayment({ kind: 'wallet-send', status, metadata: { intentId: 'i' } })
+    );
+    expect(pill.textContent).toBe(text);
+    expect(pill.className).toBe(`status-pill status-${status}`);
+    expect(note).toBeNull();
+  });
+
+  test('"Confirmed (final)" only for a payment main settled as paid', async () => {
+    for (const payment of [
+      createPayment({ kind: 'wallet-send', status: 'confirmed', metadata: null }),
+      createPayment({ kind: 'wallet-send', status: 'confirmed', metadata: { intentId: 'i' } }),
+      settled('constructor', { status: 'confirmed' }),
+      settled(undefined, { status: 'confirmed' }),
+      settled('failed', { status: 'confirmed' }),
+    ]) {
+      const { pill } = await statusOf(payment);
+      expect(pill.textContent).not.toBe(LABELS.confirmed);
+    }
+    const { pill } = await statusOf(settled('paid'));
+    expect(pill.textContent).toBe(LABELS.confirmed);
+  });
+
+  test('a stored taken reads "Taken" with its explanation, even without a label', async () => {
+    const { pill, note } = await statusOf(
+      createPayment({ kind: 'wallet-send', status: 'taken', metadata: null })
+    );
+    expect(pill.textContent).toBe(LABELS.taken);
+    expect(note.textContent).toBe(TAKEN_EXPLANATION);
+  });
+
+  test('an unknown status shows as it is stored, as text', async () => {
+    for (const status of ['refunded', 'Pending!', '<b>x</b>', 'constructor', 'toString']) {
+      const ctx = await runPaymentsPage({ payments: [createPayment({ status })] });
+      const pill = ctx.elements.results.querySelector('.status-pill');
+      expect(pill.textContent).toBe(status);
+      expect(ctx.document.htmlWrites ?? []).not.toContainEqual(expect.stringContaining(status));
+    }
+  });
+});
