@@ -7,7 +7,10 @@ const { PassThrough } = require('stream');
 jest.mock('https');
 jest.mock('child_process', () => ({ execFileSync: jest.fn() }));
 
+// GITHUB_ACTIONS too: in CI the fetch verifies build provenance with gh
+// (scripts/ci/verify-core-provenance.test.js), which these tests don't run.
 const envKeys = [
+  'GITHUB_ACTIONS',
   'FREEDOM_IPFSD_RELEASE_TAG',
   'FREEDOM_CORE_RELEASE_TAG',
   'FREEDOM_CORE_REPO',
