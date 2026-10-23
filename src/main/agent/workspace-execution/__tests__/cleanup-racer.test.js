@@ -129,6 +129,62 @@ test('stops by itself once the cleanup has removed the target', async () => {
   });
 });
 
+test('retries a cleanup that failed between two swaps until one attempt races a swap', async () => {
+  // #779: on a Windows 11 standard user the helper's remove-tree can fail in
+  // well under one racer iteration, so a single attempt sometimes never
+  // overlapped a swap and the qualification reported a race it never ran.
+  // A slow racer makes that deterministic: the first attempt fails at once,
+  // long before the next swap; the second waits for a swap, then removes.
+  const target = path.join(fixture, 'work');
+  const sub = path.join(target, SUBDIRECTORY);
+  let calls = 0;
+  const report = await raceCleanup({
+    target,
+    outside: path.join(fixture, 'outside'),
+    names: racerNames(4),
+    linkType,
+    holdMs: 2000,
+    cleanup: async (cleanupTarget) => {
+      calls += 1;
+      if (calls === 1) throw new Error('failed between two swaps');
+      const isLink = () => {
+        try {
+          return fs.lstatSync(sub).isSymbolicLink();
+        } catch {
+          return false;
+        }
+      };
+      const deadline = Date.now() + 10_000;
+      while (isLink() && Date.now() < deadline) await sleep(5);
+      while (!isLink() && Date.now() < deadline) await sleep(1);
+      await renameAwayCleanup(cleanupTarget);
+    },
+  });
+  expect(calls).toBe(2);
+  expect(report).toMatchObject({
+    overlapped: true,
+    attempts: 2,
+    preserved: true,
+    removed: true,
+    firstError: 'failed between two swaps',
+  });
+});
+
+test('reports no overlap when every attempt fails between two swaps', async () => {
+  const report = await raceCleanup({
+    target: path.join(fixture, 'work'),
+    outside: path.join(fixture, 'outside'),
+    names: racerNames(4),
+    linkType,
+    holdMs: 3000,
+    attempts: 3,
+    cleanup: async () => {
+      throw new Error('never races');
+    },
+  });
+  expect(report).toMatchObject({ overlapped: false, attempts: 3, preserved: true, firstError: 'never races' });
+});
+
 test('reports the outside files a path-walking cleanup deleted through the link', async () => {
   // The negative control: the same race the platform tests run, against a
   // cleanup that is not confined, has to come back `preserved: false`. If the
