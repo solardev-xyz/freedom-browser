@@ -27,6 +27,7 @@ Before executing task-specific work, read the corresponding playbook:
 - Merging approved pull requests _(landing one or a batch on `main`)_: `docs/agent-playbooks/merge-process.md`
 - Changelog entries _(any user-visible change: add a `changelog.d/` fragment on the pull request that makes it, never a `CHANGELOG.md` edit; also version bumps and release prep)_: `docs/agent-playbooks/changelog-process.md`
 - Cutting a release _(release branch, version bump, tag, build, publish)_: `docs/agent-playbooks/release-process.md`
+- Electron security release _(an open `security-release` issue, or the `electron-watch/electron-*` bump pull request)_: `docs/agent-playbooks/release-process.md` § Security release (Electron)
 - Bundled node binaries (Ant, freedom-ipfs, Radicle, Arti) _(bumping a pinned release, debugging a download/checksum failure, or anything a task calls "ant"/"antd")_: `docs/agent-playbooks/bundled-binaries.md`
 - Security checklist _(before commit or PR)_: `docs/agent-playbooks/security-checklist.md`
 - Windows build in a UTM VM _(building/running a native Windows build on macOS for testing)_: `docs/agent-playbooks/windows-utm-build.md`

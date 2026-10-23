@@ -1,0 +1,139 @@
+name: Electron watch
+
+# Freedom's security-release rule for Electron, decided 2026-10-23 (#644,
+# roadmap item 0.2):
+#
+#   - a Chromium/Electron security fix on the current major reaches the stable
+#     release within 7 days of its npm publish;
+#   - within 72 hours when the bug is exploited in the wild (Chrome's release
+#     notes say an exploit exists in the wild, or the CVE is in CISA's KEV);
+#   - never ship an end-of-life Electron major;
+#   - adopt each new major within 8 weeks.
+#
+# Every 6 hours this compares the Electron `main` pins and the latest release
+# ships with npm, Electron's release notes and advisories, Chrome's release
+# blog and CISA KEV. It keeps one `security-release` issue per target version
+# (plus one per new major and one for an approaching end of life) with the
+# deadline, the evidence and the playbook checklist, and for a security target
+# newer than `main` it opens the Electron-only bump pull request and starts CI
+# on it. The rules, and how Electron marks a security release, are in
+# scripts/lib/electron-watch.js; the playbook is "Security release (Electron)"
+# in docs/agent-playbooks/release-process.md.
+#
+# Only GITHUB_TOKEN, and each job holds only what it uses. Writes happen on
+# `main` alone: a dispatch from any other branch is a dry run.
+#
+# Locally: `GH_REPO=solardev-xyz/freedom-browser node scripts/electron-watch.js watch --dry-run`.
+
+on:
+  schedule:
+    # Every 6 hours, off the hour (GitHub delays on-the-hour schedules the most).
+    - cron: '41 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would change; write no issue and open no pull request'
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One run at a time: two runs racing would each see "no issue yet".
+concurrency:
+  group: electron-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # the lockfile on `main` and at the latest release tag
+      issues: write # the `security-release` issues and their label
+      pull-requests: read # whether the bump pull request for a target exists
+    outputs:
+      bump_version: ${{ steps.watch.outputs.bump_version }}
+      issue_number: ${{ steps.watch.outputs.issue_number }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # Node built-ins and `gh` only: nothing to install.
+      - name: Check Electron releases and update the issues
+        id: watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run == true || github.ref != 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/electron-watch.js watch --dry-run
+          else
+            node scripts/electron-watch.js watch
+          fi
+
+  # The bump pull request for a new security target. npm resolves the lockfile
+  # with `--package-lock-only --ignore-scripts`, so no package code runs in the
+  # one job that can push.
+  bump:
+    needs: watch
+    if: needs.watch.outputs.bump_version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push `electron-watch/electron-<version>`
+      pull-requests: write # open the pull request against `main`
+    outputs:
+      branch: ${{ steps.bump.outputs.branch }}
+      dispatch_ci: ${{ steps.bump.outputs.dispatch_ci }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Bump Electron and open the pull request
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.watch.outputs.bump_version }}
+          ISSUE: ${{ needs.watch.outputs.issue_number }}
+        run: node scripts/electron-watch.js bump --version "$VERSION" --issue "$ISSUE" --open-pr
+
+  # A pull request or push made with GITHUB_TOKEN starts no `pull_request` or
+  # `push` workflow, by GitHub's design; `workflow_dispatch` is the documented
+  # exception. CI's `ci-ok` then lands on the bump branch's head commit, which
+  # is what branch protection reads. Without this a maintainer starts CI by
+  # hand (Actions > CI > Run workflow) or by pushing to the branch.
+  start-ci:
+    needs: bump
+    if: needs.bump.outputs.dispatch_ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # dispatch ci.yml on the bump branch
+
+    steps:
+      - name: Start CI on the bump branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ needs.bump.outputs.branch }}
+        run: gh workflow run ci.yml --ref "$BRANCH"
