@@ -122,6 +122,7 @@ function start() {
   };
   const index = { [SWAP]: 0, [OTHER]: 1, [PLAIN]: 0 };
   return {
+    tx,
     permissions,
     handlers,
     store: require('./intent-store').getIntentStore(),
@@ -143,6 +144,7 @@ function start() {
         ...tx,
         maxFeePerGas: undefined,
         maxPriorityFeePerGas: undefined,
+        origin: site,
       });
       return handlers['wallet:dapp-send-transaction'](
         {},
@@ -258,6 +260,109 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
     await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
     await expect(running.confirmedSend(PLAIN)).resolves.toMatchObject({ success: true });
+  });
+
+  // Review of #788, finding 1: the pause can't be passed twice at once.
+  test('codex: concurrent silent sends of one site: one signs, the other is refused', async () => {
+    const running = start();
+    const [first, second] = await Promise.all([running.autoSend(SWAP), running.autoSend(SWAP)]);
+    expect([first.success, second.success].filter(Boolean)).toHaveLength(1);
+    expect(first.success ? second : first).toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining('auto-approve is paused'),
+    });
+    expect(signed()).toBe(1);
+  });
+
+  test('a send in flight pauses its site until it settles; other sites go on', async () => {
+    const running = start();
+    // Admitted, and waiting on its signature: nothing is in the records yet.
+    let sign;
+    const atSigner = new Promise((reached) => {
+      mockSigners[0].signTransaction.mockImplementationOnce(
+        (transaction) =>
+          new Promise((resolve) => {
+            sign = () => resolve(ALICE.signTransaction(transaction));
+            reached();
+          })
+      );
+    });
+    const inFlight = running.autoSend(SWAP);
+    await atSigner;
+    expect(running.store.held()).toEqual([]);
+
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+    await expect(running.autoApproves(OTHER)).resolves.toBe(true);
+    await expect(running.autoSend(OTHER)).resolves.toMatchObject({ success: true });
+
+    sign();
+    const sent = await inFlight;
+    expect(sent).toMatchObject({ success: true, outcome: 'sent' });
+    // Settled, and now waiting in the records until it is mined.
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+    await mine(sent.hash);
+    await expect(running.autoApproves(SWAP)).resolves.toBe(true);
+  });
+
+  test('a send that fails before it signs leaves its site free', async () => {
+    const running = start();
+    mockSigners[0].signTransaction.mockRejectedValueOnce(new Error('The vault is locked'));
+    await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: false });
+    await expect(running.autoApproves(SWAP)).resolves.toBe(true);
+    await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: true });
+  });
+
+  // Review of #788, finding 2: the pause reads the site a payment is
+  // recorded under, so that is the site that authorized it.
+  test('codex: main binds a payment to the site that authorized it', async () => {
+    const running = start();
+    const send = (context, authorization, index = 0) =>
+      running.handlers['wallet:dapp-send-transaction'](
+        {},
+        running.tx,
+        index,
+        context,
+        authorization
+      );
+
+    // Signed under swap's rule, recorded as another site's: refused.
+    await expect(send({ origin: OTHER }, { autoApprove: SWAP })).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining("the request's site is not the one its auto-approve names"),
+    });
+    expect(signed()).toBe(0);
+
+    // Swap's refused payment is swap's, and pauses swap.
+    refusedOnce();
+    const refused = await send({ origin: SWAP }, { autoApprove: SWAP });
+    expect(running.store.get(refused.intentId)).toMatchObject({
+      state: 'held',
+      context: { origin: SWAP },
+    });
+    await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+    await expect(send({ origin: SWAP }, { autoApprove: SWAP })).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+
+    // A confirmation is for one site: confirmed for another, it can't record
+    // the payment under swap's name, nor swap's under another's.
+    const mint = async (origin, index = 0) =>
+      (
+        await running.handlers['wallet:confirm-signing']({}, 'dapp-send', index, {
+          ...running.tx,
+          origin,
+        })
+      ).token;
+    await expect(
+      send({ origin: OTHER }, { confirmation: await mint(SWAP) })
+    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(
+      send({ origin: SWAP }, { confirmation: await mint(PLAIN) })
+    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    expect(signed()).toBe(1);
   });
 
   test("message signing isn't paused: it pays nothing", async () => {

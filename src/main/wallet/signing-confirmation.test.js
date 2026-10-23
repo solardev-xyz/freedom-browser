@@ -136,6 +136,26 @@ describe('signing-confirmation', () => {
     });
   });
 
+  // A dApp payment is recorded under its site, which "Always allow"'s pause
+  // reads (D12), so its confirmation binds the site as a permission key.
+  test('a dapp-send binds the site it is for; a wallet-send has none', () => {
+    const SITE = 'https://swap.example';
+    const issue = (origin) => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin }).token;
+    const use = (token, origin) =>
+      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin });
+
+    expect(() => use(issue(SITE), `${SITE}/trade?x=1`)).not.toThrow();
+    expect(refusal(() => use(issue(SITE), 'https://other.example')).code).toBe(NOT_CONFIRMED);
+    expect(refusal(() => use(issue(SITE), undefined)).code).toBe(NOT_CONFIRMED);
+    expect(refusal(() => use(issue(undefined), SITE)).code).toBe(NOT_CONFIRMED);
+    expect(() => use(issue(undefined), undefined)).not.toThrow();
+
+    const wallet = issueConfirmation(KINDS.WALLET_SEND, 3, { ...TX, origin: SITE }).token;
+    expect(() =>
+      consumeConfirmation(wallet, KINDS.WALLET_SEND, 3, { ...TX, origin: 'https://other.example' })
+    ).not.toThrow();
+  });
+
   test('equivalent encodings of the same transaction match', () => {
     const { token } = issueConfirmation(KINDS.WALLET_SEND, 0, TX);
     expect(() =>

@@ -31,7 +31,8 @@ const {
   consumeConfirmation,
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
-const { transactionAutoApprovePaused } = require('./auto-approve-pause');
+const { admitAutoApprovedTransaction } = require('./auto-approve-pause');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -113,25 +114,59 @@ function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
 }
 
 /**
+ * The site a dApp send is recorded under: the intent's and the history
+ * row's origin, which "Always allow"'s pause reads (D12). It comes from
+ * what authorized the send, never from the renderer's display context
+ * alone:
+ * - auto-approved: the auto-approve key main checked. A context naming
+ *   another site is refused, so a site can't sign under its own rule and
+ *   record the payment as another's;
+ * - confirmed: the site the confirmation binds (signing-confirmation.js),
+ *   which the token's check holds equal to the context's.
+ * As a permission key (normalizeOrigin), or null.
+ */
+function dappSendSite(context, authorization) {
+  const shown = typeof context?.origin === 'string' ? normalizeOrigin(context.origin) : '';
+  if (!authorization?.confirmation && typeof authorization?.autoApprove === 'string') {
+    const site = normalizeOrigin(authorization.autoApprove);
+    if (context?.origin != null && shown !== site) {
+      throw notAuthorized("the request's site is not the one its auto-approve names");
+    }
+    return site || null;
+  }
+  return shown || null;
+}
+
+/**
  * The auto-approve check for a dApp send (authorizeSigning's
  * `autoApproveCheck`): the site's transaction rules, paused while one of
  * its payments is in Payments waiting (D12, auto-approve-pause.js). The
  * renderer then shows the approval prompt instead, so a request claiming
- * auto-approve meanwhile is refused, saying why. The pause is read first,
- * since the records are read asynchronously and the gate is synchronous;
- * only for a request that claims auto-approve and that a rule covers.
+ * auto-approve meanwhile is refused, saying why.
+ *
+ * A request that claims auto-approve and that a rule covers is admitted
+ * first (`admitAutoApprovedTransaction`): the site's other silent requests
+ * count as paused until `release` is called, once this send has settled.
+ * The admission is read before the gate, which is synchronous.
  */
 async function dappTxAutoApproveCheck(walletIndex, tx, authorization) {
   const site = authorization?.confirmation ? undefined : authorization?.autoApprove;
-  const paused =
-    site !== undefined &&
-    isDappTxAutoApproved(site, walletIndex, tx) &&
-    (await transactionAutoApprovePaused(site));
-  return (permissionKey) => {
-    if (paused) {
-      throw notAuthorized('auto-approve is paused while a payment this site requested is waiting');
-    }
-    return isDappTxAutoApproved(permissionKey, walletIndex, tx);
+  let release = null;
+  let paused = false;
+  if (site !== undefined && isDappTxAutoApproved(site, walletIndex, tx)) {
+    release = await admitAutoApprovedTransaction(site);
+    paused = !release;
+  }
+  return {
+    release,
+    check: (permissionKey) => {
+      if (paused) {
+        throw notAuthorized(
+          'auto-approve is paused while a payment this site requested is waiting'
+        );
+      }
+      return isDappTxAutoApproved(permissionKey, walletIndex, tx);
+    },
   };
 }
 
@@ -171,26 +206,36 @@ function authorizeSigning(authorization, kind, accountIndex, payload, autoApprov
 }
 
 async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
+  // An auto-approved dApp send's admission (auto-approve-pause.js), held
+  // until the send settles.
+  let release = null;
   try {
     const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
     if (!to || chainId === undefined || !gasLimit) {
       return { success: false, error: 'Missing required parameters: to, chainId, gasLimit' };
     }
     const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
-    const confirmKind = kind === PAYMENT_KINDS.DAPP_SEND ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
+    const dapp = kind === PAYMENT_KINDS.DAPP_SEND;
+    const confirmKind = dapp ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
+    // A dApp send is confirmed for, and recorded under, its site.
+    const site = dapp ? dappSendSite(context, authorization) : undefined;
+    let autoApproveCheck = null;
+    if (dapp) {
+      const auto = await dappTxAutoApproveCheck(walletIndex, tx, authorization);
+      release = auto.release;
+      autoApproveCheck = auto.check;
+    }
     const how = authorizeSigning(
       authorization,
       confirmKind,
       walletIndex,
-      tx,
-      confirmKind === CONFIRM_KINDS.DAPP_SEND
-        ? await dappTxAutoApproveCheck(walletIndex, tx, authorization)
-        : null
+      dapp ? { ...tx, origin: site } : tx,
+      autoApproveCheck
     );
     const result = await signAndRecord(
       tx,
       getSigner(walletIndex),
-      buildTxRecordContext(kind, context),
+      buildTxRecordContext(kind, dapp ? { ...context, origin: site } : context),
       { walletIndex }
     );
 
@@ -217,6 +262,9 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     // A send that got as far as an intent reports it (its id, outcome and a
     // summary), so the screen can offer to send those same bytes again.
     return { success: false, error: err.message, ...intentFailure(err) };
+  } finally {
+    // Settled: its payment, if it made one, is in the records now.
+    release?.();
   }
 }
 

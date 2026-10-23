@@ -446,10 +446,14 @@ async function approveDappTx() {
       }
     }
 
-    // The user pressed Confirm on exactly this transaction: main signs it
-    // once against this token. "Always allow" rides along and is recorded
-    // by main from the confirmed transaction itself (security audit O-7).
-    const authorization = await confirmSigning('dapp-send', walletIndex, tx);
+    // The user pressed Confirm on exactly this transaction, for this site:
+    // main signs it once against this token, and records it under that site.
+    // "Always allow" rides along and is recorded by main from the confirmed
+    // transaction itself (security audit O-7).
+    const authorization = await confirmSigning('dapp-send', walletIndex, {
+      ...tx,
+      origin: permissionKey,
+    });
     if (autoApprove && permissionKey && selector && txParams.to) {
       authorization.rememberAutoApprove = permissionKey;
     }

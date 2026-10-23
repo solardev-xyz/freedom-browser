@@ -330,9 +330,14 @@ describe('dapp-tx approval lifecycle', () => {
       { confirmation: 'token-1', rememberAutoApprove: 'https://app.example' }
     );
     // The confirmation — and so the rule main files from it — is bound to
-    // the transaction on the chain the next request checks.
-    const [sentTx] = window.wallet.dappSendTransaction.mock.calls[0];
-    expect(confirmSigning).toHaveBeenCalledWith('dapp-send', LEDGER_INDEX, sentTx);
+    // the transaction on the chain the next request checks, and to the site
+    // the payment is recorded under.
+    const [sentTx, , context] = window.wallet.dappSendTransaction.mock.calls[0];
+    expect(confirmSigning).toHaveBeenCalledWith('dapp-send', LEDGER_INDEX, {
+      ...sentTx,
+      origin: 'https://app.example',
+    });
+    expect(context.origin).toBe('https://app.example');
     expect(sentTx).toMatchObject({ to: txParams.to, data: txParams.data, chainId: 100 });
     expect(rememberedRules()).toEqual(['https://app.example']);
   });
@@ -354,8 +359,8 @@ describe('dapp-tx approval lifecycle', () => {
       { confirmation: 'token-2' },
     ]);
     expect(confirmSigning.mock.calls).toEqual([
-      ['dapp-send', LEDGER_INDEX, calls[0][0]],
-      ['dapp-send', LEDGER_INDEX, calls[1][0]],
+      ['dapp-send', LEDGER_INDEX, { ...calls[0][0], origin: 'https://app.example' }],
+      ['dapp-send', LEDGER_INDEX, { ...calls[1][0], origin: 'https://app.example' }],
     ]);
   });
 
