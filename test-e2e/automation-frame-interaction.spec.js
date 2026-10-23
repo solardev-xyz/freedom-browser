@@ -21,6 +21,7 @@ async function setup({ electronApp, window, harness }, zoom = 1, mode = 'hidden'
     <label for="message">Message</label><input id="message" name="message" onfocus="if(globalThis.redirectFocus) queueMicrotask(()=>document.querySelector('#decoy').focus())">
     <label for="decoy">Decoy</label><input id="decoy"><button>Send form</button></form>
     <div id="carousel" aria-label="Carousel" style="width:200px;height:60px;overflow:auto"><div style="height:400px">Slides</div></div>
+    <div id="embedded" aria-label="Embedded map" style="width:200px;height:60px;overflow:auto;scrollbar-width:none"><iframe id="map" style="display:block;border:0;width:200px;height:400px" srcdoc="<script>globalThis.wheels=0;addEventListener('wheel',e=>{e.preventDefault();wheels+=1},{passive:false})</script>"></iframe></div>
     <iframe src="${NESTED}" style="width:280px;height:100px;border:4px solid"></iframe>
     <div style="height:1800px">Long child document</div>
     <script>globalThis.submits=[];globalThis.clicks=[];document.addEventListener('click',event=>globalThis.clicks.push([event.target.tagName,event.clientX,event.clientY,event.isTrusted])); globalThis.inputs=[]; document.addEventListener('input',event=>globalThis.inputs.push(event.isTrusted)); globalThis.keys=[]; document.addEventListener('keydown', event=>globalThis.keys.push([event.key,event.isTrusted])); globalThis.slides=0; document.querySelector('#carousel').addEventListener('wheel', event=>{event.preventDefault(); globalThis.slides+=1}, {passive:false});</script>`,
@@ -136,7 +137,7 @@ function fixtureState(electronApp) {
       outside: await owner.executeJavaScript("document.querySelector('#outside').value"),
       child: child
         ? await child.executeJavaScript(
-            "({value:document.querySelector('#message').value,decoy:document.querySelector('#decoy').value,submits:globalThis.submits,clicks:globalThis.clicks,inputs:globalThis.inputs,keys:globalThis.keys,slides:globalThis.slides,y:scrollY})"
+            "({value:document.querySelector('#message').value,decoy:document.querySelector('#decoy').value,submits:globalThis.submits,clicks:globalThis.clicks,inputs:globalThis.inputs,keys:globalThis.keys,slides:globalThis.slides,mapWheels:document.querySelector('#map').contentWindow.wheels,y:scrollY})"
           )
         : null,
     };
@@ -199,6 +200,21 @@ for (const [mode, zoom] of [
       delivered: true,
     });
     expect((await fixtureState(electronApp)).child.slides).toBe(1);
+    // Every point of "Embedded map" is over its nested iframe: that iframe's
+    // document receives and consumes the wheel, which the frame's delivery
+    // probe cannot see, so it is sent once and delivery reported as unknown.
+    const embedded = await execute(electronApp, 'browser_scroll', {
+      ref: current.elements.find((element) => element.name === 'Embedded map').ref,
+      direction: 'down',
+    });
+    expect(embedded.ok, JSON.stringify(embedded)).toBe(true);
+    expect(embedded.result).toMatchObject({
+      moved: false,
+      outcome: 'no_movement',
+      attempts: 1,
+      delivered: null,
+    });
+    expect((await fixtureState(electronApp)).child.mapWheels).toBe(1);
     const scrolled = await execute(electronApp, 'browser_scroll', {
       ref: current.frames[0].viewport.ref,
       direction: 'down',
@@ -213,7 +229,7 @@ for (const [mode, zoom] of [
     expect(state.child.keys).toContainEqual(['ArrowLeft', true]);
     expect(state.outside).toBe('');
     expect(state.attached).toBe(true);
-    expect(state.approvals).toHaveLength(6);
+    expect(state.approvals).toHaveLength(7);
     expect(
       state.approvals.every(
         (request) =>

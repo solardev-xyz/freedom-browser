@@ -306,3 +306,92 @@ describe('WebContentsPageAdapter.scroll wheel resend', () => {
     expect(webContents.sendInputEvent).toHaveBeenCalledTimes(1);
   });
 });
+
+// Drives frameAction's browser_scroll through a fake frame session.
+// `childFrameAt(reads)` decides whether the scroll read with a point (the
+// first read is 1) only found a point over a nested child frame.
+function frameAdapter({ wheelReceived = false, childFrameAt = () => false } = {}) {
+  const webContents = new FakeWebContents();
+  const adapter = new WebContentsPageAdapter(webContents);
+  let probeCount = 0;
+  let pointReads = 0;
+  const session = {
+    frame: { ref: 'frame_1', origin: 'https://embed.test' },
+    reference: { scrollOnly: true },
+    assertCurrent: jest.fn(async () => {}),
+    checkedInputPoint: jest.fn(async (local) => ({ x: local.x + 100, y: local.y + 100 })),
+    mouse: jest.fn(async () => {
+      if (wheelReceived) probeCount += 1;
+    }),
+    evaluate: jest.fn(async (name, args = []) => {
+      if (name === 'viewport') return { ok: true };
+      if (name === 'wheelProbe') {
+        if (args[0] === 'arm') probeCount = 0;
+        return { ok: true, count: probeCount };
+      }
+      if (name === 'scroll') {
+        const childFrame = args[1] ? childFrameAt(++pointReads) : false;
+        return {
+          ok: true,
+          point: { x: 5, y: 5 },
+          ...(childFrame ? { childFrame: true } : {}),
+          scroll: { x: 0, y: 0, maxX: 0, maxY: 1000, minX: 0, width: 400, height: 300 },
+        };
+      }
+      throw new Error(`unexpected frame evaluate ${name}`);
+    }),
+  };
+  adapter.frameObserver = { withReference: async (_ref, _authorize, fn) => fn(session) };
+  const execution = {
+    authorizeFrame: () => true,
+    expectedFrameAction: {
+      label: 'Scroll down by 1 viewport(s) in the observed page or container',
+      frameRef: 'frame_1',
+      origin: 'https://embed.test',
+    },
+  };
+  const scroll = () =>
+    run(
+      adapter.frameAction(
+        'ref_frame_scroll',
+        { operation: 'browser_scroll', direction: 'down' },
+        execution
+      )
+    );
+  const wheels = () => session.mouse.mock.calls.filter(([event]) => event.type === 'mouseWheel');
+  return { scroll, wheels };
+}
+
+describe('WebContentsPageAdapter.frameAction browser_scroll wheel resend', () => {
+  test('a wheel that never reached the frame document is sent once more', async () => {
+    const { scroll, wheels } = frameAdapter();
+    await expect(scroll()).resolves.toMatchObject({ attempts: 2, delivered: false });
+    expect(wheels()).toHaveLength(2);
+  });
+
+  test('a wheel the frame document consumed is not sent twice', async () => {
+    const { scroll, wheels } = frameAdapter({ wheelReceived: true });
+    await expect(scroll()).resolves.toMatchObject({ attempts: 1, delivered: true });
+    expect(wheels()).toHaveLength(1);
+  });
+
+  test('a wheel sent over a nested child frame is not sent twice', async () => {
+    // Every point of the target is over a nested iframe, whose document gets
+    // the wheel where the frame's own probe cannot see it.
+    const { scroll, wheels } = frameAdapter({ childFrameAt: () => true });
+    await expect(scroll()).resolves.toMatchObject({
+      outcome: 'no_movement',
+      attempts: 1,
+      delivered: null,
+    });
+    expect(wheels()).toHaveLength(1);
+  });
+
+  test('a lost wheel is not resent when the recheck only finds a point over a child frame', async () => {
+    // The first two point reads (before and after preparing) are clear; the
+    // recheck after the lost wheel only finds a point over a nested iframe.
+    const { scroll, wheels } = frameAdapter({ childFrameAt: (n) => n > 2 });
+    await expect(scroll()).resolves.toMatchObject({ attempts: 1, delivered: false });
+    expect(wheels()).toHaveLength(1);
+  });
+});
