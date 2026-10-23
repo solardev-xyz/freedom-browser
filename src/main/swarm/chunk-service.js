@@ -171,6 +171,108 @@ async function readChunk(reference) {
   };
 }
 
+const CHUNK_PAYLOAD_SIZE = 4096;
+
+/**
+ * The byte length of the blob a root chunk stands for, from its span.
+ *
+ * Bee and Ant keep a redundancy-coded tree's level in the span's most
+ * significant byte (little-endian, so the last of its 8 bytes): set to
+ * `level | 0x80` on intermediate chunks, read back as "encoded" when the
+ * byte is above 128 (Bee's `redundancy.IsLevelEncoded` / `DecodeSpan`). That
+ * byte is cleared to get the real size; any other value in it is a real (and
+ * absurdly large) size, left as is.
+ *
+ * @param {Uint8Array} spanBytes - the chunk's 8 span bytes
+ * @returns {bigint}
+ */
+function dataSizeFromSpan(spanBytes) {
+  const bytes = Buffer.from(spanBytes);
+  if (bytes[7] > 128) bytes[7] = 0;
+  return bytes.readBigUInt64LE(0);
+}
+
+/**
+ * Download a blob's root chunk, check it hashes to `reference`, and work out
+ * the blob's size from its span. Lets the caller refuse an oversized blob
+ * before the node joins all of it.
+ *
+ * @returns {Promise<{ size: bigint, payload: Buffer }>} `payload` is the root
+ *   chunk's own payload, which is the whole blob when `size` fits one chunk.
+ */
+async function readDataRoot(reference) {
+  const bee = getBee();
+  let raw;
+
+  try {
+    raw = await bee.chunk.download(reference);
+  } catch (err) {
+    if (isChunkNotFoundError(err)) {
+      throw makeSemanticError('chunk_not_found', `Data not found: ${reference}`, err);
+    }
+    throw err;
+  }
+
+  let chunk;
+  try {
+    chunk = bee.unmarshalContentAddressedChunk(raw);
+    ensureSameReference(toHex(chunk.address), reference, 'content-addressed');
+  } catch (err) {
+    if (err.reason === 'chunk_type_mismatch') throw err;
+    throw makeSemanticError(
+      'chunk_type_mismatch',
+      'Downloaded bytes do not validate as the requested content-addressed chunk',
+      err
+    );
+  }
+
+  return {
+    size: dataSizeFromSpan(chunk.span.toUint8Array()),
+    payload: Buffer.from(chunk.payload.toUint8Array()),
+    // What the root read itself pulled off the network (span + payload), so
+    // the caller can charge it whether or not the blob is then joined.
+    chunkBytes: raw.length,
+  };
+}
+
+/**
+ * Read a whole blob by its root reference, joined by the node (bee-js
+ * `data.download`, i.e. `GET /bytes/<ref>`): the node checks every chunk it
+ * fetches, recovers erasure-coded content and falls back to the root's
+ * replicas. Freedom keeps no tree code of its own.
+ *
+ * `root` is what `readDataRoot` returned for the same reference. A blob that
+ * fits in its root chunk is that chunk's payload, already verified, so it is
+ * returned without a second request.
+ */
+async function readData(reference, root) {
+  const size = Number(root.size);
+  let data;
+
+  if (root.size <= BigInt(CHUNK_PAYLOAD_SIZE)) {
+    data = root.payload.subarray(0, size);
+  } else {
+    const bee = getBee();
+    try {
+      data = Buffer.from((await bee.data.download(reference)).toUint8Array());
+    } catch (err) {
+      if (isChunkNotFoundError(err)) {
+        throw makeSemanticError('chunk_not_found', `Data not found: ${reference}`, err);
+      }
+      throw err;
+    }
+  }
+
+  if (data.length !== size) {
+    throw new Error(`Node returned ${data.length} bytes for a ${size}-byte blob`);
+  }
+
+  return {
+    data: data.toString('base64'),
+    encoding: 'base64',
+  };
+}
+
 /**
  * Sign (in the identity core, through `signer`) and publish a single-owner
  * chunk. bee-js still validates the chunk first, so size errors read as
@@ -242,6 +344,9 @@ async function readSingleOwnerChunk(params) {
 module.exports = {
   publishChunk,
   readChunk,
+  readDataRoot,
+  readData,
+  dataSizeFromSpan,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
   uploadSingleOwnerChunk,

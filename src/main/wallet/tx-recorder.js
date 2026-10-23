@@ -45,6 +45,26 @@ function pollReceipt(rowId, hash, chainId) {
       // let repollPending sort it out on next boot.
       log.warn(`[TxRecorder] waitForTransaction failed for row ${rowId}: ${err.message}`);
     });
+  // Main (#749) sweeps every pending row once a receipt settles, for the
+  // 'dropped' rows a re-send on the same nonce leaves. A re-send here is
+  // the same intent's row, which the finality tracker labels (taken among
+  // them), and the sweep's receipt reads would reach Colibri first: the
+  // core's chain.request takes no per-request exclusions yet, and Colibri
+  // traps on a hash it hasn't seen (#750). So the sweep stays at boot.
+}
+
+// The signing account and nonce, so repollPending can tell a transaction
+// that will never be mined (its nonce taken by another) from one still
+// waiting. Phone wallets pick their own nonce and report none. Not an
+// intent's: the finality tracker labels its row from verified evidence at
+// the finalized block, whichever of its hashes was mined, where a sighting
+// of one hash's nonce taken would call a replaced payment dropped.
+function withSentFields(metadata, response) {
+  if (response.intentId) return metadata;
+  if (typeof response.from !== 'string' || !Number.isSafeInteger(response.nonce)) {
+    return metadata;
+  }
+  return { ...(metadata || {}), txFrom: response.from, txNonce: response.nonce };
 }
 
 // History rows this run wrote, by intent id: any later reply for the
@@ -143,13 +163,13 @@ function recordSend(response, row) {
       written =
         paymentHistory.update(existing.id, {
           txHash: response.hash,
-          metadata: metadataFor(existing.metadata, response),
+          metadata: withSentFields(metadataFor(existing.metadata, response), response),
         }) ?? existing;
     } else {
       written = paymentHistory.append({
         ...row,
         txHash: response.hash,
-        metadata: metadataFor(row.metadata, response),
+        metadata: withSentFields(metadataFor(row.metadata, response), response),
       });
     }
     if (response.intentId) rowsByIntent.set(response.intentId, written.id);

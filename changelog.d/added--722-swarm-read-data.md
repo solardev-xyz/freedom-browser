@@ -1,0 +1,1 @@
+- Swarm pages can read a whole published blob by its reference through `window.swarm`, with the node checking every chunk and recovering lost ones ([#722](https://github.com/solardev-xyz/freedom-browser/issues/722))

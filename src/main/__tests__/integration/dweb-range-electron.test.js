@@ -54,17 +54,38 @@ const PROBE_TIMEOUT_MS = 120_000;
 const HASH = 'ab'.repeat(32);
 const MIB = 1024 * 1024;
 
-function runProbe() {
+// Off Windows the probe gets its own process group, so a timeout can kill
+// Chromium's GPU/utility children along with the browser process instead of
+// leaving them orphaned.
+const OWN_GROUP = process.platform !== 'win32';
+
+function killProbe(child) {
+  if (OWN_GROUP) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // Group already gone; fall through to the single process.
+    }
+  }
+  child.kill('SIGKILL');
+}
+
+function runProbe(userData) {
   return new Promise((resolve, reject) => {
     const child = spawn(ELECTRON_PATH, ['--no-sandbox', '--headless', PROBE], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+      detached: OWN_GROUP,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '', FREEDOM_PROBE_USER_DATA: userData },
     });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    // Rejected from 'close', once the process is gone, so afterAll never
+    // removes the profile while Chromium is still writing into it.
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms\n${stdout}\n${stderr}`));
+      timedOut = true;
+      killProbe(child);
     }, PROBE_TIMEOUT_MS);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
@@ -78,6 +99,10 @@ function runProbe() {
     });
     child.on('close', () => {
       clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms\n${stdout}\n${stderr}`));
+        return;
+      }
       const line = stdout.split('\n').find((entry) => entry.startsWith('PROBE-RESULT '));
       if (!line) {
         reject(new Error(`probe produced no result\nstdout:\n${stdout}\nstderr:\n${stderr}`));
@@ -91,17 +116,19 @@ function runProbe() {
 describeWithElectron('bzz: through protocol.handle in a real Electron process', () => {
   let results;
   let content;
+  // The probe's throwaway profile. Created here rather than in the probe so
+  // it is removed on every outcome: a result, PROBE-FAILED, no output, or a
+  // timeout.
+  let userData;
 
   beforeAll(async () => {
-    results = await runProbe();
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-dweb-range-probe-'));
+    results = await runProbe(userData);
     content = Buffer.from(results.content, 'base64');
-  }, PROBE_TIMEOUT_MS);
+  }, PROBE_TIMEOUT_MS + 10_000);
 
   afterAll(() => {
-    // The probe's throwaway profile, removed once Electron has exited.
-    if (results?.userData?.startsWith(os.tmpdir())) {
-      fs.rmSync(results.userData, { recursive: true, force: true });
-    }
+    if (userData) fs.rmSync(userData, { recursive: true, force: true });
   });
 
   const bytes = (summary) => Buffer.from(summary.body, 'base64');

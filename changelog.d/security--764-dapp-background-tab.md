@@ -1,0 +1,3 @@
+- A dApp in a background tab can no longer act under the site in the visible tab: wallet requests are attributed to the tab that sent them, not to the address bar ([#764](https://github.com/solardev-xyz/freedom-browser/issues/764))
+  - A background page no longer gets the visible site's connected account from `eth_accounts`, or a signature or transaction signed silently under its auto-approve rules
+  - Approval prompts name the site that is asking, and the wallet checks an auto-approved request against the page that actually sent it before signing

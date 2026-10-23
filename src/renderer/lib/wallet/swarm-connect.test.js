@@ -174,6 +174,7 @@ async function loadSwarmConnect() {
   jest.doMock('../dapp-provider.js', () => ({
     getPermissionKey: jest.fn((url) => url),
     getActiveWebview: jest.fn(() => null),
+    getActivePageUrl: jest.fn(() => ''),
   }));
   jest.doMock('./permission-manage.js', () => ({ showSwarmPermissions: jest.fn() }));
   jest.doMock('./publisher-identity-selector.js', () => ({
@@ -561,5 +562,42 @@ describe('swarm approval prompts queue concurrent requests', () => {
 
     // The arm window elapsing must not hand out Allow on a locked vault.
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
+  });
+});
+
+describe('disconnectSwarmApp', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  // A key from the permissions list can name a site in another tab: revoking
+  // it must leave the visible, still-connected site's banner (and its page)
+  // alone; revoking the visible site hides the banner and tells its page.
+  test('hides the banner only when the revoked site is the one it shows', async () => {
+    const ctx = await loadSwarmConnect();
+    const provider = await import('../dapp-provider.js');
+    const visible = { send: jest.fn() };
+    provider.getActivePageUrl.mockReturnValue('bzz://visible');
+    provider.getActiveWebview.mockReturnValue(visible);
+    global.window.swarmPermissions.getPermission.mockResolvedValue({ autoApprove: {} });
+    global.window.swarmPermissions.revokePermission = jest.fn().mockResolvedValue({ success: true });
+    const banner = ctx.elements['swarm-connection-banner'];
+
+    await ctx.mod.updateSwarmConnectionBanner();
+    expect(banner.classList.contains('hidden')).toBe(false);
+
+    await ctx.mod.disconnectSwarmApp('bzz://background');
+    expect(global.window.swarmPermissions.revokePermission).toHaveBeenCalledWith('bzz://background');
+    expect(banner.classList.contains('hidden')).toBe(false);
+    expect(visible.send).not.toHaveBeenCalled();
+
+    await ctx.mod.disconnectSwarmApp('bzz://visible');
+    expect(banner.classList.contains('hidden')).toBe(true);
+    expect(visible.send).toHaveBeenCalledWith('swarm:provider-event', {
+      event: 'disconnect',
+      data: { origin: 'bzz://visible' },
+    });
   });
 });

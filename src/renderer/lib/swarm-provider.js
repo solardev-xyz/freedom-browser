@@ -60,6 +60,7 @@ const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
   'swarm_readChunk',
+  'swarm_readData',
   'swarm_readSingleOwnerChunk',
   'swarm_listFeeds',
   'swarm_unsubscribe',
@@ -138,6 +139,7 @@ async function handleSwarmRequest(webview, request) {
     } else if (
       method === 'swarm_readFeedEntry' ||
       method === 'swarm_readChunk' ||
+      method === 'swarm_readData' ||
       method === 'swarm_readSingleOwnerChunk'
     ) {
       // No permission required — feeds/chunks are public Swarm data

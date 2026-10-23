@@ -1,0 +1,4 @@
+- Open without gateway for eth.limo, eth.link and bzz.link pages ([#70](https://github.com/solardev-xyz/freedom-browser/issues/70))
+  - Address-bar pill offers the page's native IPFS or Swarm address, keeping path, query and fragment
+  - The gateway URL is never rewritten unless you choose to
+  - Always open without gateway, off by default, in the pill, the trust popover and Settings > Networks > Name Resolution

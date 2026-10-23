@@ -1,0 +1,1 @@
+- In `freedom://publish`, `Cmd+Enter` (`Ctrl+Enter` on Windows and Linux) publishes the text you typed, like the Publish button ([#720](https://github.com/solardev-xyz/freedom-browser/issues/720))
