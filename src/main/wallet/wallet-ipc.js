@@ -31,6 +31,8 @@ const {
   consumeConfirmation,
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
+const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -111,6 +113,32 @@ function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
   );
 }
 
+/**
+ * The site a dApp send is recorded under: the intent's and the history
+ * row's origin, which "Always allow"'s pause reads (D12). It comes from
+ * what authorized the send, never from the renderer's display context
+ * alone:
+ * - auto-approved: the auto-approve key main checked. A context naming
+ *   another site is refused, so a site can't sign under its own rule and
+ *   record the payment as another's;
+ * - confirmed: the site the confirmation binds (signing-confirmation.js),
+ *   which the token's check holds equal to the context's, and which can't
+ *   be empty.
+ * As a permission key (normalizeOrigin), or null when there is none, which
+ * no authorization then accepts.
+ */
+function dappSendSite(context, authorization) {
+  const shown = typeof context?.origin === 'string' ? normalizeOrigin(context.origin) : '';
+  if (!authorization?.confirmation && typeof authorization?.autoApprove === 'string') {
+    const site = normalizeOrigin(authorization.autoApprove);
+    if (context?.origin != null && shown !== site) {
+      throw notAuthorized("the request's site is not the one its auto-approve names");
+    }
+    return site || null;
+  }
+  return shown || null;
+}
+
 /** Main's own evaluation of a dApp's signing auto-approve flag. */
 function isDappSigningAutoApproved(permissionKey, walletIndex) {
   return Boolean(
@@ -147,27 +175,47 @@ function authorizeSigning(authorization, kind, accountIndex, payload, autoApprov
 }
 
 async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
+  // A dApp send's turn among its site's sends (auto-approve-pause.js), left
+  // once its payment is committed, or here when it fails first.
+  let release = null;
   try {
     const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
     if (!to || chainId === undefined || !gasLimit) {
       return { success: false, error: 'Missing required parameters: to, chainId, gasLimit' };
     }
     const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
-    const confirmKind = kind === PAYMENT_KINDS.DAPP_SEND ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
+    const dapp = kind === PAYMENT_KINDS.DAPP_SEND;
+    const confirmKind = dapp ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
+    // A dApp send is confirmed for, and recorded under, its site.
+    const site = dapp ? dappSendSite(context, authorization) : undefined;
     const how = authorizeSigning(
       authorization,
       confirmKind,
       walletIndex,
-      tx,
-      confirmKind === CONFIRM_KINDS.DAPP_SEND
-        ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx)
-        : null
+      dapp ? { ...tx, origin: site } : tx,
+      dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null
     );
+    if (dapp) {
+      // D12: the site's dApp sends take turns until each one's payment is
+      // committed (auto-approve-pause.js). A silent send doesn't wait for
+      // one: with another of the site's payments under way, it is paused.
+      // In its turn, it stops if one of the site's payments is waiting; a
+      // confirmed one goes on.
+      const silent = how === 'auto-approved';
+      const paused = () =>
+        notAuthorized('auto-approve is paused while a payment this site requested is waiting');
+      try {
+        release = await takeSiteTurn(site, { wait: !silent });
+      } catch (err) {
+        throw silent && err.code === 'SITE_TURN_BUSY' ? paused() : err;
+      }
+      if (silent && (await sitePaymentWaiting(site))) throw paused();
+    }
     const result = await signAndRecord(
       tx,
       getSigner(walletIndex),
-      buildTxRecordContext(kind, context),
-      { walletIndex }
+      buildTxRecordContext(kind, dapp ? { ...context, origin: site } : context),
+      { walletIndex, onCommitted: release }
     );
 
     // "Always allow" is recorded here, from the transaction the user just
@@ -193,6 +241,8 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
     // A send that got as far as an intent reports it (its id, outcome and a
     // summary), so the screen can offer to send those same bytes again.
     return { success: false, error: err.message, ...intentFailure(err) };
+  } finally {
+    release?.();
   }
 }
 
@@ -509,9 +559,21 @@ function registerWalletIpc() {
       // the vault owners' signatures, and every later board step
       // (safe-sign, safe-execute) only acts on this main-held, confirmed
       // SafeTx. There is no auto-approve for Safe sends.
-      authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId }, null);
+      //
+      // A dApp's SafeTx is confirmed for its site (`display.site`): its
+      // payment is recorded under that site and takes the site's turn
+      // (D12), so the token binds it. A wallet's own SafeTx has none.
+      const site = display?.site ?? undefined;
+      authorizeSigning(
+        authorization,
+        CONFIRM_KINDS.SAFE_SEND,
+        safeIndex,
+        { tx, chainId, origin: site },
+        null
+      );
+      const bound = site === undefined ? display : { ...display, site: normalizeOrigin(site) };
       const { startSafeSend } = require('./safe/safe-transactions');
-      return startSafeSend({ safeIndex, tx, display, chainId });
+      return startSafeSend({ safeIndex, tx, display: bound, chainId });
     })
   );
 

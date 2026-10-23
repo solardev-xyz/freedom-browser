@@ -22,10 +22,15 @@
  *     `from` address is a function of it), chainId, to, value, data and
  *     every gas field (gasLimit, maxFeePerGas, maxPriorityFeePerGas,
  *     gasPrice). A wallet-send binds the account that is active when the
- *     user confirms; switching accounts before the send refuses it.
+ *     user confirms; switching accounts before the send refuses it. A
+ *     dapp-send also binds the site it is for (`origin`, as a permission
+ *     key), which it must have: the payment is recorded under it, and
+ *     "Always allow" pauses for that site while the payment waits.
  *   - sign-message / sign-typed-data: the account and a SHA-256 digest of
  *     the message / typed data (canonical JSON, key order ignored).
- *   - safe-send: the Safe, chainId, to, value, data of the SafeTx.
+ *   - safe-send: the Safe, chainId, to, value, data of the SafeTx, and the
+ *     site a dApp's SafeTx is for (`origin`, as a permission key), or none
+ *     for the wallet's own: adding, removing or changing it refuses.
  *   - safe-message: the Safe and a digest of the dApp's {method, params}.
  *   - intent-resend: one held wallet intent as the user saw it: its id,
  *     chainId, sender, nonce and the hash of the signed bytes to be sent
@@ -44,6 +49,7 @@
  */
 
 const crypto = require('crypto');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 
 const CONFIRMATION_TTL_MS = 2 * 60 * 1000;
 // A confirmation is minted right before the handler call it authorises, so
@@ -135,6 +141,18 @@ function txHash(value) {
   return value.toLowerCase();
 }
 
+/** A Safe payment's site, if it has one (a dApp's), as its permission key. */
+function optionalSite(value) {
+  return value === undefined || value === null ? null : site(value);
+}
+
+/** A dApp payment's site, as its permission key: required. */
+function site(value) {
+  const key = typeof value === 'string' ? normalizeOrigin(value) : '';
+  if (!key) throw new Error('A dApp payment needs the site it is for');
+  return key;
+}
+
 function chain(value) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n <= 0) {
@@ -192,8 +210,13 @@ function txFields(tx) {
 function bindingFor(kind, accountIndex, payload) {
   switch (kind) {
     case KINDS.WALLET_SEND:
-    case KINDS.DAPP_SEND:
       return { walletIndex: index(accountIndex, 'wallet index'), ...txFields(payload) };
+    case KINDS.DAPP_SEND:
+      return {
+        walletIndex: index(accountIndex, 'wallet index'),
+        ...txFields(payload),
+        origin: site(payload.origin),
+      };
     case KINDS.SIGN_MESSAGE:
     case KINDS.SIGN_TYPED_DATA:
       if (payload === undefined || payload === null || payload === '') {
@@ -214,6 +237,7 @@ function bindingFor(kind, accountIndex, payload) {
         to: address(tx.to, 'to'),
         value: quantity(tx.value, 'value') ?? '0',
         data: hexData(tx.data),
+        origin: optionalSite(payload.origin),
       };
     }
     case KINDS.INTENT_RESEND: {

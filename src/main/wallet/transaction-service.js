@@ -789,7 +789,7 @@ async function heldIntentFor(intentKey) {
  * sends the first's bytes again. A held intent of another chain, sender or
  * kind is refused, with nothing sent.
  */
-async function sendUnderKey(params, signer, intentKey, context) {
+async function sendUnderKey(params, signer, intentKey, context, onCommitted = null) {
   const next = await withIntentKeyLock({ intentKey }, async () => {
     const held = await heldIntentFor(intentKey);
     if (!held) {
@@ -811,6 +811,7 @@ async function sendUnderKey(params, signer, intentKey, context) {
     }
     return { held };
   });
+  onCommitted?.();
   return next.held ? resendIntent(next.held.intentId) : handOff(next.committed);
 }
 
@@ -850,16 +851,28 @@ async function sendUnderKey(params, signer, intentKey, context) {
  *   Main's own callers only: never pass a renderer's value.
  * @param {{ kind?: string, origin?: string, walletIndex?: number }} [options.context]
  *   what the intent record keeps for display
+ * @param {() => void} [options.onCommitted] - Called once nothing more of
+ *   this send will enter the intent records: its intent committed, before
+ *   the broadcast; at once for a phone, which keeps no record; before a
+ *   resend, which commits nothing new. Not called when the send fails
+ *   first. ("Always allow"'s per-site turn, auto-approve-pause.js.)
  * @returns {Promise<Object>} Transaction result: `hash` (main's keccak of
  *   the bytes), `nonce`, `from`, `to`, `value`, `chainId`, `explorerUrl`,
  *   `broadcastSource`, `intentId` and `outcome` (`sent` or `uncertain`)
  */
-async function signAndSendTransaction(params, signer, { intentKey = null, context = {} } = {}) {
+async function signAndSendTransaction(
+  params,
+  signer,
+  { intentKey = null, context = {}, onCommitted = null } = {}
+) {
   if (typeof signer.sendTransaction === 'function') {
+    onCommitted?.();
     return sendThroughDevice(params, signer);
   }
-  if (intentKey) return sendUnderKey(params, signer, intentKey, context);
-  return handOff(await commitNewIntent(params, signer, { context }));
+  if (intentKey) return sendUnderKey(params, signer, intentKey, context, onCommitted);
+  const committed = await commitNewIntent(params, signer, { context });
+  onCommitted?.();
+  return handOff(committed);
 }
 
 /**

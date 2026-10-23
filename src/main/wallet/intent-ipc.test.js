@@ -143,8 +143,14 @@ function authorize(running, how, walletIndex, tx) {
     selector: tx.data.slice(0, 10),
     chainId: tx.chainId,
   };
+  // A dApp send's confirmation binds the site it is for, as the approval's does.
   return how === 'confirmed'
-    ? { confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, tx).token }
+    ? {
+        confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
+          ...tx,
+          origin: SITE,
+        }).token,
+      }
     : { autoApprove: SITE };
 }
 

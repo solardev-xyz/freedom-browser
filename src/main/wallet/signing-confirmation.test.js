@@ -18,6 +18,8 @@ const TX = Object.freeze({
   gasLimit: '21000',
   maxFeePerGas: '2000000000',
   maxPriorityFeePerGas: '1000000000',
+  // A dApp payment's site; a wallet send ignores it.
+  origin: 'https://app.example',
 });
 
 const TYPED_DATA = Object.freeze({
@@ -134,6 +136,64 @@ describe('signing-confirmation', () => {
       expect(refusal(() => consumeConfirmation(token, KINDS.WALLET_SEND, 3, TX)).code)
         .toBe(NOT_CONFIRMED);
     });
+  });
+
+  // A dApp payment is recorded under its site, which "Always allow"'s pause
+  // reads (D12), so its confirmation binds the site as a permission key.
+  // Review of #788, round 2: a dApp payment without a site would be outside
+  // every site's pause, so its confirmation can't be issued or spent.
+  test('codex r2: a dapp-send confirmation without a site is refused', () => {
+    for (const origin of [undefined, null, '', '   ', 42]) {
+      expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin })).toThrow(
+        'A dApp payment needs the site it is for'
+      );
+    }
+    const token = issueConfirmation(KINDS.DAPP_SEND, 3, TX).token;
+    const err = refusal(() =>
+      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin: '' })
+    );
+    expect(err.code).toBe(NOT_CONFIRMED);
+    expect(err.message).toContain('A dApp payment needs the site it is for');
+  });
+
+  test('a dapp-send binds the site it is for; a wallet-send has none', () => {
+    const SITE = 'https://swap.example';
+    const issue = (origin) => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin }).token;
+    const use = (token, origin) =>
+      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin });
+
+    expect(() => use(issue(SITE), `${SITE}/trade?x=1`)).not.toThrow();
+    expect(refusal(() => use(issue(SITE), 'https://other.example')).code).toBe(NOT_CONFIRMED);
+    expect(refusal(() => use(issue(SITE), undefined)).code).toBe(NOT_CONFIRMED);
+
+    const wallet = issueConfirmation(KINDS.WALLET_SEND, 3, { ...TX, origin: SITE }).token;
+    expect(() =>
+      consumeConfirmation(wallet, KINDS.WALLET_SEND, 3, { ...TX, origin: 'https://other.example' })
+    ).not.toThrow();
+  });
+
+  // Review of #788, round 3: a dApp's SafeTx binds its site; the wallet's
+  // own has none.
+  test('codex r3: a safe-send binds its site if it has one', () => {
+    const SITE = 'https://swap.example';
+    const SAFE = { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 };
+    const issue = (origin) =>
+      issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) }).token;
+    const use = (token, origin) =>
+      consumeConfirmation(token, KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) });
+
+    expect(() => use(issue(SITE), `${SITE}/swap`)).not.toThrow();
+    expect(() => use(issue(undefined), undefined)).not.toThrow();
+    for (const [issued, used] of [
+      [SITE, 'https://other.example'],
+      [undefined, SITE],
+      [SITE, undefined],
+    ]) {
+      expect(refusal(() => use(issue(issued), used)).code).toBe(NOT_CONFIRMED);
+    }
+    expect(() => issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, origin: '' })).toThrow(
+      'A dApp payment needs the site it is for'
+    );
   });
 
   test('equivalent encodings of the same transaction match', () => {

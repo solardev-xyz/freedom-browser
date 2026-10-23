@@ -14,7 +14,13 @@ jest.mock('electron', () => ({
   },
 }));
 
+// D12's pause reads the wallet's payment records; here it is the switch.
+jest.mock('./auto-approve-pause', () => ({
+  transactionAutoApprovePaused: jest.fn(async () => false),
+}));
+
 const { app } = require('electron');
+const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 let tmpDir;
 
@@ -33,6 +39,8 @@ const {
   revokePermission,
   revokePermissionsForWalletIndex,
   getAllPermissions,
+  addTransactionAutoApprove,
+  registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
 const sharedOriginUtils = require('../../shared/origin-utils');
@@ -199,5 +207,43 @@ describe('dapp-permissions — revoke by wallet index', () => {
     grantPermission('https://other.example', 0, 1);
     expect(revokePermissionsForWalletIndex(7)).toEqual([]);
     expect(getPermission('https://other.example')).not.toBeNull();
+  });
+});
+
+// The renderer's question before a dApp transaction: true sends it silently,
+// false shows the approval prompt.
+describe('dapp-permissions — the auto-approve question, paused while a payment waits (D12)', () => {
+  const SITE = 'https://swap.example';
+  const TO = '0x' + '66'.repeat(20);
+  const SELECTOR = '0xabcdef12';
+  let ask;
+
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    registerDappPermissionsIpc();
+    ask = (site, selector = SELECTOR) =>
+      ipcHandlers['dapp:is-tx-auto-approved']({}, site, TO, selector, 1);
+    transactionAutoApprovePaused.mockReset().mockResolvedValue(false);
+    grantPermission(SITE, 0, 1);
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('a covering rule answers yes while nothing of the site waits', async () => {
+    await expect(ask(SITE)).resolves.toBe(true);
+    expect(transactionAutoApprovePaused).toHaveBeenCalledWith(SITE);
+  });
+
+  test("a covering rule answers no while one of the site's payments waits", async () => {
+    transactionAutoApprovePaused.mockResolvedValue(true);
+    await expect(ask(SITE)).resolves.toBe(false);
+  });
+
+  test('no covering rule answers no, as before, without reading the records', async () => {
+    transactionAutoApprovePaused.mockResolvedValue(true);
+    await expect(ask(SITE, '0x12345678')).resolves.toBe(false);
+    await expect(ask('https://other.example')).resolves.toBe(false);
+    expect(transactionAutoApprovePaused).not.toHaveBeenCalled();
   });
 });

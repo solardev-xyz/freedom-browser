@@ -327,8 +327,38 @@ describe('execTransaction', () => {
       amount: '1000',
       metadata: { safeAddress: built.safeAddress, executor: OWNERS[0] },
     });
-    // The key is main's own argument, apart from the display context.
-    expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}` });
+    // The key is main's own argument, apart from the display context. With
+    // no site, there is no site's turn to leave.
+    expect(options).toEqual({
+      intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`,
+      onCommitted: null,
+    });
+  });
+
+  // D12: a dApp's Safe transaction takes its site's turn until committed,
+  // like the site's other payments (auto-approve-pause.js).
+  test("a dApp's Safe transaction takes its site's turn until it is committed", async () => {
+    const { takeSiteTurn, transactionAutoApprovePaused } = require('../auto-approve-pause');
+    const { built, signatures } = await buildSignedTx();
+    let committed;
+    mockSignAndRecord.mockImplementationOnce(async (_params, _signer, _context, options) => {
+      // Before its commit the site's turn is taken; the hook leaves it.
+      await expect(transactionAutoApprovePaused('https://swap.example')).resolves.toBe(true);
+      committed = options.onCommitted;
+      return { hash: '0x' + 'bb'.repeat(32) };
+    });
+    await execTransaction({
+      chainId: 100,
+      safeAddress: built.safeAddress,
+      safeTxData: built.safeTxData,
+      signatures,
+      executorIndex: 0,
+      record: { kind: 'safe-send', origin: 'https://swap.example', metadata: {} },
+    });
+    expect(committed).toEqual(expect.any(Function));
+    // Settled: the turn is free for the site's next send.
+    const leave = await takeSiteTurn('https://swap.example');
+    leave();
   });
 
   test('the intent key is the SafeTx hash every owner signed', async () => {

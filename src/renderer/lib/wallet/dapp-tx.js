@@ -451,10 +451,14 @@ async function approveDappTx() {
       }
     }
 
-    // The user pressed Confirm on exactly this transaction: main signs it
-    // once against this token. "Always allow" rides along and is recorded
-    // by main from the confirmed transaction itself (security audit O-7).
-    const authorization = await confirmSigning('dapp-send', walletIndex, tx);
+    // The user pressed Confirm on exactly this transaction, for this site:
+    // main signs it once against this token, and records it under that site.
+    // "Always allow" rides along and is recorded by main from the confirmed
+    // transaction itself (security audit O-7).
+    const authorization = await confirmSigning('dapp-send', walletIndex, {
+      ...tx,
+      origin: permissionKey,
+    });
     if (autoApprove && permissionKey && selector && txParams.to) {
       authorization.rememberAutoApprove = permissionKey;
     }
@@ -589,7 +593,8 @@ async function sendViaSafeAccount(walletIndex, txParams, site, chainId) {
     // The app's chain, resolved by the provider — main refuses a chain the
     // Safe does not live on rather than executing the calldata elsewhere.
     chainId,
-    await confirmSigning('safe-send', walletIndex, { tx: safeTx, chainId })
+    // Confirmed for this site, which main records its payment under.
+    await confirmSigning('safe-send', walletIndex, { tx: safeTx, chainId, origin: site })
   );
   if (!started.success) {
     throw new Error(started.error || 'Transaction failed');

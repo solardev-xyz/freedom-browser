@@ -330,11 +330,44 @@ describe('dapp-tx approval lifecycle', () => {
       { confirmation: 'token-1', rememberAutoApprove: 'https://app.example' }
     );
     // The confirmation — and so the rule main files from it — is bound to
-    // the transaction on the chain the next request checks.
-    const [sentTx] = window.wallet.dappSendTransaction.mock.calls[0];
-    expect(confirmSigning).toHaveBeenCalledWith('dapp-send', LEDGER_INDEX, sentTx);
+    // the transaction on the chain the next request checks, and to the site
+    // the payment is recorded under.
+    const [sentTx, , context] = window.wallet.dappSendTransaction.mock.calls[0];
+    expect(confirmSigning).toHaveBeenCalledWith('dapp-send', LEDGER_INDEX, {
+      ...sentTx,
+      origin: 'https://app.example',
+    });
+    expect(context.origin).toBe('https://app.example');
     expect(sentTx).toMatchObject({ to: txParams.to, data: txParams.data, chainId: 100 });
     expect(rememberedRules()).toEqual(['https://app.example']);
+  });
+
+  // Review of #788, round 3: a dApp's Safe transaction is confirmed for the
+  // site, which main records its payment under (D12).
+  test("a Safe account's transaction is confirmed for the site that asked", async () => {
+    const { elements, confirmSigning, openApproval, txParams } = await loadDappTx();
+    const utils = await import('./wallet-utils.js');
+    utils.isSafeAccount.mockReturnValue(true);
+    window.addEventListener = jest.fn();
+    window.removeEventListener = jest.fn();
+    window.wallet.safeSend = jest.fn(async () => ({
+      success: true,
+      state: { safeTxHash: '0x' + '5a'.repeat(32) },
+    }));
+    await openApproval({ requestChainId: 100 });
+
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    await flush();
+
+    const safeTx = { to: txParams.to, value: '0', data: txParams.data };
+    expect(confirmSigning).toHaveBeenCalledWith('safe-send', LEDGER_INDEX, {
+      tx: safeTx,
+      chainId: 100,
+      origin: 'https://app.example',
+    });
+    const [, , display] = window.wallet.safeSend.mock.calls[0];
+    expect(display.site).toBe('https://app.example');
   });
 
   test('every Confirm mints a fresh confirmation for exactly the transaction it sends', async () => {
@@ -354,8 +387,8 @@ describe('dapp-tx approval lifecycle', () => {
       { confirmation: 'token-2' },
     ]);
     expect(confirmSigning.mock.calls).toEqual([
-      ['dapp-send', LEDGER_INDEX, calls[0][0]],
-      ['dapp-send', LEDGER_INDEX, calls[1][0]],
+      ['dapp-send', LEDGER_INDEX, { ...calls[0][0], origin: 'https://app.example' }],
+      ['dapp-send', LEDGER_INDEX, { ...calls[1][0], origin: 'https://app.example' }],
     ]);
   });
 
