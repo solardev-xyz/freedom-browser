@@ -696,7 +696,7 @@ describe("the configuration barrier, with main's real configuration", () => {
       },
       myotis: { NETWORKS: new Map() },
     };
-    const config = new ChainConfig({ client, sources, log: { warn() {} } });
+    const config = new ChainConfig({ client, sources, log: { warn() {} }, checks: null });
     await config.whenServing();
     client.written.length = 0;
     const driver = new ChainDriver({ client, config, broadcasts: new BroadcastRecords() });

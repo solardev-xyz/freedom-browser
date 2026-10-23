@@ -1234,8 +1234,8 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getCatalogChain: guardInternal('getCatalogChain', (chainId) =>
     ipcRenderer.invoke('networks:get-catalog-chain', chainId)
   ),
-  addChain: guardInternal('addChain', (chain, rpcUrls) =>
-    ipcRenderer.invoke('networks:add-chain', chain, rpcUrls)
+  addChain: guardInternal('addChain', (chain, rpcUrls, options) =>
+    ipcRenderer.invoke('networks:add-chain', chain, rpcUrls, options)
   ),
   removeChain: guardInternal('removeChain', (chainId) =>
     ipcRenderer.invoke('networks:remove-chain', chainId)
