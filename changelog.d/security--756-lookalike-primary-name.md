@@ -1,0 +1,2 @@
+- A send no longer shows a look-alike ENS primary name as the recipient's verified name ([#756](https://github.com/solardev-xyz/freedom-browser/pull/756))
+  - A primary name that isn't written in its normalized form, such as `vitaIik.eth` with a capital I, now gets the untrusted-name warning instead

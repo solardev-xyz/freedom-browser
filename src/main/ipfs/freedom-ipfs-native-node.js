@@ -5,6 +5,10 @@ const { loadNativeBinding, isNativeBindingAvailable } = require('./freedom-ipfs-
 
 const BUFFER_SIZE = 64 * 1024;
 const ATTEMPT_TIMEOUT_MS = 30_000;
+// err.code on the rejection when the headers' timeout (ATTEMPT_TIMEOUT_MS by
+// default) passes with no response headers, so callers (the CI smoke) can
+// tell it from other request errors.
+const REQUEST_TIMEOUT_CODE = 'FREEDOM_IPFS_NATIVE_REQUEST_TIMEOUT';
 const REQUEST_QUEUE_TIMEOUT_MS = 15_000;
 // Delegated routers the node asks for content providers (and IPNS records),
 // comma-separated. The addon queries every entry in parallel and merges the
@@ -101,7 +105,9 @@ class NativeGatewayController {
 
     this.timeout = setTimeout(() => {
       this.cancel();
-      this.fail(new Error('freedom-ipfs native request timeout'));
+      const err = new Error('freedom-ipfs native request timeout');
+      err.code = REQUEST_TIMEOUT_CODE;
+      this.fail(err);
     }, headersTimeoutMs);
 
     // An abort ends the request at once, before or after the headers, and
@@ -736,6 +742,7 @@ module.exports = {
   FreedomIpfsNativeNode,
   NativeGatewayController,
   ATTEMPT_TIMEOUT_MS,
+  REQUEST_TIMEOUT_CODE,
   REQUEST_QUEUE_TIMEOUT_MS,
   DELEGATED_ROUTERS,
   DISPATCHER_STOP_TIMEOUT_MS,

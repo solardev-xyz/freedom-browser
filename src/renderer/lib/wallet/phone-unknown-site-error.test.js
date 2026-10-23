@@ -33,7 +33,19 @@ jest.mock('electron', () => ({
     getFocusedWindow: () => mockWindow,
     getAllWindows: () => [],
   },
-  webContents: { getAllWebContents: () => [] },
+  webContents: {
+    getAllWebContents: () => [],
+    // The site's tab (#764): guest 31 of the chrome window (id 7).
+    fromId: (id) =>
+      id === 31
+        ? {
+            id,
+            hostWebContents: { id: 7 },
+            getURL: () => 'https://app.example/',
+            isDestroyed: () => false,
+          }
+        : null,
+  },
 }));
 jest.mock('qrcode', () => ({}));
 jest.mock('../../../main/wallet/balance-service', () => ({}));
@@ -343,6 +355,8 @@ async function startAutoApproved(options = {}) {
   global.document = createDocument({ elementsById: { 'address-input': address } });
   global.window = rendererWindow(phone);
   mockRendererModules();
+  // The requesting tab's committed address (#764), not the address bar's.
+  jest.doMock('../tabs.js', () => ({ getDisplayUrlForWebview: () => SITE }));
   jest.doMock('../wallet-ui.js', () => ({
     showDappConnect: jest.fn(),
     getSelectedChainId: () => 100,
@@ -359,6 +373,7 @@ async function startAutoApproved(options = {}) {
   const webview = createElement('webview');
   webview.send = jest.fn();
   webview.getURL = () => SITE;
+  webview.getWebContentsId = () => 31;
   provider.setupWebviewProvider(webview);
   webview.dispatch('did-frame-navigate', {
     isMainFrame: true,

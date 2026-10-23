@@ -15,6 +15,8 @@ const { isMainThread, parentPort, threadId, workerData } = require('node:worker_
 const PRIVACY_MODE = 'basic';
 const MAX_LATEST_AGE_SECONDS = 60;
 const MAX_ERROR_MESSAGE = 2000;
+// colibri-runtime.js's refusal on an instance retired after a trap.
+const RETIRED_RUNTIME_ERROR = /Colibri WASM runtime was retired after a trap/;
 
 // Disk-backed storage adapter for Colibri's verifier state (sync committee
 // pubkeys, current head witness, etc — keys like "states_1" / "sync_1_<slot>").
@@ -168,7 +170,11 @@ function createColibriService({ runtime, storageDir, post }) {
       const result = await clientFor(clientId, config).request({ method, params });
       post({ type: 'result', id, ok: true, result });
     } catch (err) {
-      post({ type: 'result', id, ok: false, error: serializeError(err) });
+      const error = serializeError(err);
+      // Refused by a WASM instance another request's trap retired: this request
+      // did nothing wrong, and the host sends it to a fresh worker (#750).
+      const retry = RETIRED_RUNTIME_ERROR.test(error.message);
+      post({ type: 'result', id, ok: false, error, ...(retry ? { retry } : {}) });
     }
   }
 

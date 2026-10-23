@@ -17,7 +17,7 @@
   border-radius: 8px;
   /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 10000;
+  z-index: var(--z-popover);
   padding: 14px 16px;
   font-size: 13px;
   color: var(--text);
@@ -146,7 +146,7 @@
   border-radius: 8px;
   /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 10000;
+  z-index: var(--z-popover);
   padding: 14px 16px;
   font-size: 13px;
   color: var(--text);

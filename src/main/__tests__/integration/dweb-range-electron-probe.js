@@ -24,7 +24,11 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const PROBE_USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-dweb-range-probe-'));
+// The test creates the throwaway profile and removes it whatever happens to
+// this process; a probe run by hand makes its own.
+const PROBE_USER_DATA =
+  process.env.FREEDOM_PROBE_USER_DATA ||
+  fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-dweb-range-probe-'));
 app.setPath('userData', PROBE_USER_DATA);
 
 // The privileges index.js registers `bzz` with (DWEB_PROTOCOL_PRIVILEGES).
@@ -197,9 +201,6 @@ async function main() {
   results.abortedAtNode = Boolean(streams[1] && streams[1].aborted);
 
   results.seen = seen;
-  // Chromium writes into the profile until it exits, so the test removes it
-  // once this process is gone.
-  results.userData = PROBE_USER_DATA;
   server.closeAllConnections();
   server.close();
   process.stdout.write(`PROBE-RESULT ${JSON.stringify(results)}\n`);

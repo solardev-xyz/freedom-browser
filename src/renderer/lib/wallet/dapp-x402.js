@@ -37,6 +37,8 @@ import {
   signingButtonLabel,
 } from './wallet-utils.js';
 import { getPermissionKey } from '../origin-utils.js';
+import { getActivePageUrl } from '../dapp-provider.js';
+import { goBackInHistory } from '../history-traversal.js';
 import { refreshBalances } from './balance-display.js';
 import { showX402Permissions } from './permission-manage.js';
 import { showVaultUnlock } from './vault-unlock.js';
@@ -934,13 +936,40 @@ async function reject() {
       // subresource fetch.
       await window.electronAPI.x402Reject({ detectionId });
     } else {
-      // mainFrame paywall page: existing behaviour — clear detection
-      // and navigate the webview back (or to about:blank if no history).
-      await window.electronAPI.x402Cancel({ webContentsId: id });
+      // mainFrame paywall page: clear the detection and step the webview
+      // back (or to about:blank if there is no history). The Back is
+      // driven from here, through `goBackInHistory`, whenever the guest
+      // can be found and has somewhere to go: a `goBack()` issued by main
+      // is invisible to the renderer's traversal count, so the gateway
+      // offer (#70) would take the restored gateway page for a fresh
+      // visit and, with "Always open without gateway" on, redirect it
+      // straight back off the page the user asked to return to. Main
+      // keeps the navigation only as the fallback (no history, or no
+      // matching guest in this window).
+      const webview = findWebviewByWebContentsId(id);
+      if (webview?.canGoBack?.()) {
+        await window.electronAPI.x402Cancel({ webContentsId: id, navigate: false });
+        goBackInHistory(webview);
+      } else {
+        await window.electronAPI.x402Cancel({ webContentsId: id });
+      }
     }
   } catch (err) {
     console.error('[x402] reject/cancel failed:', err);
   }
+}
+
+// The guest `<webview>` for a paying tab, resolved off the DOM (like
+// page-context-menu.js does) so this module needs no `tabs.js` import.
+function findWebviewByWebContentsId(webContentsId) {
+  for (const webview of document.querySelectorAll?.('webview') || []) {
+    try {
+      if (webview.getWebContentsId() === webContentsId) return webview;
+    } catch {
+      // Not attached yet — cannot be the tab that hit the 402.
+    }
+  }
+  return null;
 }
 
 function closeAndReset() {
@@ -994,18 +1023,18 @@ function hideUnlockError() {
 }
 
 /**
- * Refresh the auto-pay banner for the current address bar URL (or the
- * supplied origin key). Shows the banner iff there's at least one
- * active cap for that origin.
+ * Refresh the auto-pay banner for the visible tab's committed page. Shows
+ * the banner iff there's at least one active cap for that origin. A
+ * supplied `originKey` is only a refresh hint, ignored unless it is the
+ * visible tab's own key — the banner never paints a site that is not on
+ * screen (#764).
  */
 export async function updateX402ConnectionBanner(originKey = null) {
   if (!bannerEl) return;
 
-  let key = originKey;
-  if (!key) {
-    const displayUrl = document.getElementById('address-input')?.value || '';
-    key = getPermissionKey(displayUrl);
-  }
+  const activeKey = getPermissionKey(getActivePageUrl());
+  if (originKey && originKey !== activeKey) return;
+  const key = activeKey;
 
   if (!key) {
     bannerEl.classList.add('hidden');
@@ -1080,8 +1109,12 @@ export async function disconnectX402(originKey) {
   if (!key) return;
   try {
     await window.electronAPI.x402RevokeAllForOrigin({ origin: key });
-    bannerEl?.classList.add('hidden');
-    currentBannerKey = null;
+    // Only the banner of the origin that was revoked: a key from the
+    // permissions list can name a site in another tab.
+    if (key === currentBannerKey) {
+      bannerEl?.classList.add('hidden');
+      currentBannerKey = null;
+    }
   } catch (err) {
     console.error('[x402] revoke-all failed:', err);
   }

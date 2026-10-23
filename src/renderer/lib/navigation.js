@@ -96,6 +96,7 @@ import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress
 import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
 import { boundPopoverToViewport } from './popover-bounds.js';
 import { matchesShortcut } from './shortcuts.js';
+import { noteUserNavigation } from './gateway-offer-ui.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
 const getNavState = () => getActiveTabState() || {};
@@ -880,6 +881,14 @@ const toggleTrustPopover = () => {
   }
   if (contentEl) contentEl.hidden = contentRows.length === 0;
 
+  // "Always open without gateway" (#70) only means something for a name a
+  // gateway serves — `.eth` — never for an onchain app or another name
+  // system. gateway-offer-ui.js owns the checkbox itself.
+  const gatewayRow = document.getElementById('trust-popover-gateway');
+  if (gatewayRow) {
+    gatewayRow.hidden = badge.kind === 'onchain' || !/\.eth$/i.test(name || '');
+  }
+
   // Record the identity of what's now rendered before we flip the
   // popover open — `setTrustPopoverOpen(true)` doesn't clear it, only
   // the close path does.
@@ -1545,6 +1554,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // of the very same affordance holds the draft, so these must too.
   if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit) {
     clearAddressBarEdit(navState);
+    // The same user action ends the "always open without gateway" Back
+    // guard for this tab (#70): a typed or bookmarked gateway address is
+    // redirected every time, not every other time.
+    noteUserNavigation(webview);
   }
 
   // Handle view-source: URLs - need to resolve dweb URLs before loading
