@@ -228,21 +228,38 @@ describe('signing-confirmation', () => {
         .toBe(NOT_CONFIRMED);
     });
 
+    // freedom-core #88: the core's hash of the data, bound with it.
+    const HASH = '0x' + 'ab'.repeat(32);
+
     test('typed data: key order does not matter, content does', () => {
-      const ok = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA);
+      const ok = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: HASH });
       const reordered = {
         message: TYPED_DATA.message,
         primaryType: TYPED_DATA.primaryType,
         types: TYPED_DATA.types,
         domain: { verifyingContract: TYPED_DATA.domain.verifyingContract, chainId: 100, name: 'Permit' },
       };
-      expect(() => consumeConfirmation(ok.token, KINDS.SIGN_TYPED_DATA, 0, reordered)).not.toThrow();
+      expect(consumeConfirmation(ok.token, KINDS.SIGN_TYPED_DATA, 0, reordered)).toEqual({ hash: HASH });
 
-      const other = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA);
+      const other = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: HASH });
       expect(refusal(() => consumeConfirmation(other.token, KINDS.SIGN_TYPED_DATA, 0, {
         ...TYPED_DATA,
         domain: { ...TYPED_DATA.domain, chainId: 1 },
       })).code).toBe(NOT_CONFIRMED);
+    });
+
+    test('a typed-data token carries the confirmed hash, and needs one', () => {
+      const upper = '0x' + 'AB'.repeat(32);
+      const { token } = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: upper });
+      expect(consumeConfirmation(token, KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA)).toEqual({ hash: HASH });
+      for (const bound of [undefined, {}, { hash: '0x12' }, { hash: 'ab'.repeat(32) }]) {
+        expect(() => issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, bound)).toThrow(
+          'Invalid typed data hash'
+        );
+      }
+      // Other kinds bind nothing more.
+      const message = issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'hello', { hash: HASH });
+      expect(consumeConfirmation(message.token, KINDS.SIGN_MESSAGE, 0, 'hello')).toEqual({});
     });
 
     test('a message token cannot sign typed data carrying the same string', () => {

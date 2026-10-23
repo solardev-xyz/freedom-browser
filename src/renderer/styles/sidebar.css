@@ -6163,6 +6163,19 @@
   max-height: 200px;
   overflow-y: auto;
   white-space: pre-wrap;
+  /* Every value whole (#88): long hex wraps instead of being cut. */
+  overflow-wrap: anywhere;
+}
+
+.dapp-sign-typed-ignored {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--foreground-muted);
+  overflow-wrap: anywhere;
+}
+
+.dapp-sign-typed-warning-text {
+  white-space: pre-line;
 }
 
 .dapp-sign-warning {

@@ -157,6 +157,45 @@ function toCoreTypedData(typedData) {
 }
 
 /**
+ * What the core is told beside a dApp's typed data for its view
+ * (freedom-core design 0002, #88): the dApp's `primaryType` exactly as it
+ * came, whatever its JSON type, when it sent one (a non-string keeps its
+ * type and reads `mismatch`), and the dApp's active chain. Neither changes
+ * what is signed.
+ *
+ * @param {object} typedData - normalized (normalizeTypedData)
+ * @param {number} [chainId]
+ */
+function typedDataViewOptions(typedData, chainId) {
+  const options = {};
+  if (typedData && Object.prototype.hasOwnProperty.call(typedData, 'primaryType')) {
+    options.primaryType = typedData.primaryType;
+  }
+  if (Number.isSafeInteger(chainId) && chainId >= 0) {
+    options.chainId = chainId;
+  }
+  return options;
+}
+
+/**
+ * The view's reports the approval screen warns about (#88): a primaryType
+ * other than the inferred root, and a domain chainId that differs from the
+ * dApp's chain or is absent. A warned request always shows its prompt,
+ * even under signing auto-approve. `unknown` is never a match, and never
+ * warned about.
+ *
+ * @param {{named_type?: string, chain?: string}} view
+ * @returns {string[]} of 'named-type', 'chain-mismatch', 'chain-absent'
+ */
+function typedDataWarnings(view) {
+  const warnings = [];
+  if (view?.named_type === 'mismatch') warnings.push('named-type');
+  if (view?.chain === 'mismatch') warnings.push('chain-mismatch');
+  if (view?.chain === 'absent') warnings.push('chain-absent');
+  return warnings;
+}
+
+/**
  * The core's `tx` for `sign.transaction`, read through ethers' own
  * Transaction so the request means exactly what Wallet.signTransaction
  * would have signed (type inference, defaults, validation). Returns the
@@ -231,4 +270,6 @@ module.exports = {
   messageToBytes,
   signsRawHash,
   RAW_HASH_LENGTH,
+  typedDataViewOptions,
+  typedDataWarnings,
 };

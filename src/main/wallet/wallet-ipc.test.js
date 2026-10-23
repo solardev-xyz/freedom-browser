@@ -28,7 +28,25 @@ jest.mock('../ens-resolver', () => ({ resolveEnsContent: jest.fn() }));
 jest.mock('./safe/safe-messages', () => ({
   startSafeMessage: jest.fn(async () => ({ token: 'session' })),
 }));
-jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn() }));
+jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn(), DEPLOY_CHAIN_ID: 100 }));
+// The identity core's typed_data.hash (freedom-core design 0002, #88),
+// simulated with ethers: the digest and the view, with its reports.
+const mockCoreViews = [];
+jest.mock('../core/vault-backend', () => {
+  const { TypedDataEncoder } = require('ethers');
+  const { simulatedView } = require('../../../test/helpers/simulated-vault-core');
+  return {
+    vaultBackend: {
+      typedDataView: jest.fn(async (data, options) => {
+        mockCoreViews.push([data, options]);
+        return {
+          hash: TypedDataEncoder.hash(data.domain, data.types, data.message),
+          view: simulatedView(data, options),
+        };
+      }),
+    },
+  };
+});
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
   takeSiteTurn: jest.fn(async () => () => {}),
@@ -377,7 +395,7 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { confirmation: forOther });
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       // A dApp payment's confirmation must name its site (round 2).
-      expect(handlers['wallet:confirm-signing']({}, 'dapp-send', 2, TX)).toMatchObject({
+      expect(await handlers['wallet:confirm-signing']({}, 'dapp-send', 2, TX)).toMatchObject({
         success: false,
         error: 'A dApp payment needs the site it is for',
       });
@@ -453,9 +471,24 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  const TYPED = {
+    domain: { name: 'App', chainId: 100 },
+    types: {
+      EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'chainId', type: 'uint256' }],
+      Order: [{ name: 'a', type: 'uint256' }],
+    },
+    primaryType: 'Order',
+    message: { a: 1 },
+  };
+  const TYPED_HASH = require('ethers').TypedDataEncoder.hash(
+    TYPED.domain,
+    { Order: TYPED.types.Order },
+    TYPED.message
+  );
+
   describe.each([
     ['wallet:sign-message', 'sign-message', '0x68656c6c6f', 'signMessage'],
-    ['wallet:sign-typed-data', 'sign-typed-data', { domain: { chainId: 100 }, message: { a: 1 } }, 'signTypedData'],
+    ['wallet:sign-typed-data', 'sign-typed-data', TYPED, 'signTypedData'],
   ])('%s', (channel, kind, payload, method) => {
     test('without a token: refused, the key is never touched', async () => {
       const result = await handlers[channel]({}, payload, 0);
@@ -467,7 +500,12 @@ describe('signing handlers require a main-side confirmation', () => {
       const confirmation = await mint(kind, 0, payload);
       const result = await handlers[channel]({}, payload, 0, { confirmation });
       expect(result).toEqual({ success: true, signature: method === 'signMessage' ? '0xmsgsig' : '0xtypedsig' });
-      expect(signer[method]).toHaveBeenCalledWith(payload);
+      if (method === 'signMessage') {
+        expect(signer[method]).toHaveBeenCalledWith(payload);
+      } else {
+        // The confirmed digest, as the core hashed it (#88).
+        expect(signer[method]).toHaveBeenCalledWith(payload, { expectedHash: TYPED_HASH });
+      }
     });
 
     test('a token for a different payload is refused', async () => {
@@ -489,16 +527,17 @@ describe('signing handlers require a main-side confirmation', () => {
 
     test('auto-approve is evaluated in main', async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
-      const refused = await handlers[channel](AUTO, payload, 0, { autoApprove: SITE, webContentsId: 12 });
+      const context = { chainId: 100 };
+      const refused = await handlers[channel](AUTO, payload, 0, { autoApprove: SITE, webContentsId: 12 }, context);
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
 
       dappPermissions.getSigningAutoApprove.mockReturnValue(true);
-      const signed = await handlers[channel](AUTO, payload, 0, { autoApprove: SITE, webContentsId: 12 });
+      const signed = await handlers[channel](AUTO, payload, 0, { autoApprove: SITE, webContentsId: 12 }, context);
       expect(signed.success).toBe(true);
       expect(dappPermissions.getSigningAutoApprove).toHaveBeenCalledWith(SITE);
 
       // ...and only for the account the site is connected with.
-      const other = await handlers[channel](AUTO, payload, 1, { autoApprove: SITE, webContentsId: 12 });
+      const other = await handlers[channel](AUTO, payload, 1, { autoApprove: SITE, webContentsId: 12 }, context);
       expect(other).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
     });
 
@@ -624,6 +663,142 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  // freedom-core #88: typed data is signed only as the core's view showed
+  // it, bound to its hash, and a warned request always needs its prompt.
+  describe('typed data and its view', () => {
+    const withData = (changes) => ({ ...TYPED, ...changes });
+
+    test('the confirmation binds the hash the core computed, and passes it', async () => {
+      const result = await handlers['wallet:confirm-signing']({}, 'sign-typed-data', 0, TYPED);
+      expect(result).toMatchObject({ success: true, hash: TYPED_HASH });
+      const signed = await handlers['wallet:sign-typed-data']({}, TYPED, 0, { confirmation: result.token });
+      expect(signed).toEqual({ success: true, signature: '0xtypedsig' });
+      expect(signer.signTypedData).toHaveBeenCalledWith(TYPED, { expectedHash: TYPED_HASH });
+    });
+
+    test('typed data the core refuses gets no confirmation, view or signature', async () => {
+      const { vaultBackend } = require('../core/vault-backend');
+      vaultBackend.typedDataView.mockRejectedValueOnce(
+        Object.assign(new Error('invalid typed data: too large to show in one reply'), { code: 'invalid_argument' })
+      );
+      const view = await handlers['wallet:typed-data-view']({}, TYPED, 100);
+      expect(view).toMatchObject({ success: false, code: 'invalid_argument' });
+      vaultBackend.typedDataView.mockRejectedValueOnce(new Error('invalid typed data: x'));
+      const minted = await handlers['wallet:confirm-signing']({}, 'sign-typed-data', 0, TYPED);
+      expect(minted).toMatchObject({ success: false });
+      expect(minted.token).toBeUndefined();
+      expect(signer.signTypedData).not.toHaveBeenCalled();
+    });
+
+    test("the view passes the dApp's primaryType as it came, and its chain", async () => {
+      mockCoreViews.length = 0;
+      for (const primaryType of ['Order', 'Other', true, false, null, 7, ['Order'], { Order: [] }]) {
+        await handlers['wallet:typed-data-view']({}, withData({ primaryType }), 100);
+      }
+      const { primaryType: _dropped, ...noPrimaryType } = TYPED;
+      await handlers['wallet:typed-data-view']({}, noPrimaryType, 100);
+      // A JSON string from the dApp is parsed: its values keep their types.
+      await handlers['wallet:typed-data-view']({}, JSON.stringify(withData({ primaryType: null })), 1);
+      expect(mockCoreViews.map(([, options]) => options)).toEqual([
+        { primaryType: 'Order', chainId: 100 },
+        { primaryType: 'Other', chainId: 100 },
+        { primaryType: true, chainId: 100 },
+        { primaryType: false, chainId: 100 },
+        { primaryType: null, chainId: 100 },
+        { primaryType: 7, chainId: 100 },
+        { primaryType: ['Order'], chainId: 100 },
+        { primaryType: { Order: [] }, chainId: 100 },
+        { chainId: 100 },
+        { primaryType: null, chainId: 1 },
+      ]);
+      // The core gets the data without EIP712Domain and primaryType.
+      expect(mockCoreViews[0][0]).toEqual({
+        domain: TYPED.domain,
+        types: { Order: TYPED.types.Order },
+        message: TYPED.message,
+      });
+    });
+
+    test('the view reports what the approval screen warns about', async () => {
+      const view = (data, chainId) => handlers['wallet:typed-data-view']({}, data, chainId);
+      await expect(view(TYPED, 100)).resolves.toMatchObject({ success: true, hash: TYPED_HASH, warnings: [] });
+      await expect(view(withData({ primaryType: 'Other' }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
+      await expect(view(withData({ primaryType: true }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
+      await expect(view(TYPED, 1)).resolves.toMatchObject({ warnings: ['chain-mismatch'] });
+      await expect(view(withData({ domain: { name: 'App' } }), 100)).resolves.toMatchObject({
+        warnings: ['chain-absent'],
+      });
+      // Without a chain or a primaryType: unknown, never a match, no warning.
+      const { primaryType: _dropped, ...noPrimaryType } = TYPED;
+      const unknown = await view(noPrimaryType, undefined);
+      expect(unknown.view).toMatchObject({ named_type: 'unknown', chain: 'unknown' });
+      expect(unknown.warnings).toEqual([]);
+    });
+
+    test('a warned request is never auto-approved; an unwarned one is, as before', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
+      dappPermissions.getSigningAutoApprove.mockReturnValue(true);
+      const sign = (data, chainId) =>
+        handlers['wallet:sign-typed-data'](AUTO, data, 0, { autoApprove: SITE, webContentsId: 12 }, { chainId });
+      for (const [data, chainId] of [
+        [withData({ primaryType: 'Other' }), 100],
+        [withData({ primaryType: true }), 100],
+        [withData({ primaryType: false }), 100],
+        [withData({ primaryType: null }), 100],
+        [TYPED, 1],
+        [withData({ domain: { name: 'App' } }), 100],
+      ]) {
+        await expect(sign(data, chainId)).resolves.toMatchObject({
+          success: false,
+          code: 'SIGNING_NOT_CONFIRMED',
+        });
+      }
+      expect(signer.signTypedData).not.toHaveBeenCalled();
+      const { primaryType: _dropped, ...noPrimaryType } = TYPED;
+      for (const [data, chainId] of [
+        [TYPED, 100],
+        [noPrimaryType, 100],
+        [TYPED, undefined],
+      ]) {
+        await expect(sign(data, chainId)).resolves.toEqual({ success: true, signature: '0xtypedsig' });
+      }
+      // Signed as viewed: the core's hash as expected_hash.
+      expect(signer.signTypedData).toHaveBeenCalledWith(TYPED, { expectedHash: TYPED_HASH });
+    });
+
+    test("a warned Safe typed-data request is never auto-approved (the Safe's chain is Gnosis)", async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 7 });
+      dappPermissions.getSigningAutoApprove.mockReturnValue(true);
+      const requester = { origin: SITE, webContentsId: 12 };
+      const start = (data) =>
+        handlers['wallet:safe-message-start'](
+          AUTO, 7, { method: 'eth_signTypedData_v4', params: ['0xsafe', JSON.stringify(data)] }, {}, requester,
+          { autoApprove: SITE, webContentsId: 12 }
+        );
+      await expect(start(withData({ domain: { name: 'App', chainId: 1 } }))).resolves.toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+      });
+      await expect(start(withData({ primaryType: 'Other' }))).resolves.toMatchObject({ success: false });
+      expect(startSafeMessage).not.toHaveBeenCalled();
+      await expect(start(TYPED)).resolves.toMatchObject({ success: true });
+      expect(startSafeMessage).toHaveBeenCalledTimes(1);
+    });
+
+    test('personal_sign is shown from the bytes main signs', async () => {
+      const view = (message) => handlers['wallet:message-view']({}, message);
+      await expect(view('0x68656c6c6f')).resolves.toEqual({ success: true, hex: '0x68656c6c6f', rawHash: false });
+      await expect(view('0x48454C4C4F')).resolves.toEqual({ success: true, hex: '0x48454c4c4f', rawHash: false });
+      await expect(view('hé')).resolves.toEqual({ success: true, hex: '0x68c3a9', rawHash: false });
+      await expect(view('0x' + 'ab'.repeat(32))).resolves.toMatchObject({ rawHash: true });
+      await expect(view('z'.repeat(32))).resolves.toMatchObject({ rawHash: true, hex: '0x' + '7a'.repeat(32) });
+      // What signing would refuse, or can't show, fails before any prompt.
+      for (const bad of ['0x41zz42', '0x123', ['0x00'], null]) {
+        await expect(view(bad)).resolves.toMatchObject({ success: false });
+      }
+    });
+  });
+
   // #89: a personal_sign of exactly 32 bytes as signed (a raw value whose
   // signature can be a Swarm feed update) always needs the user's prompt,
   // even with signing auto-approve. Other lengths auto-sign as before.
@@ -674,8 +849,8 @@ describe('signing handlers require a main-side confirmation', () => {
 
     test('typed data is auto-approved as before', async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
-      const typed = { domain: { chainId: 100 }, message: { a: 1 } };
-      const signed = await handlers['wallet:sign-typed-data'](AUTO, typed, 0, { autoApprove: SITE, webContentsId: 12 });
+      const signed = await handlers['wallet:sign-typed-data'](
+        AUTO, TYPED, 0, { autoApprove: SITE, webContentsId: 12 }, { chainId: 100 });
       expect(signed).toEqual({ success: true, signature: '0xtypedsig' });
     });
 
@@ -697,7 +872,7 @@ describe('signing handlers require a main-side confirmation', () => {
       }
       for (const request of [
         { method: 'personal_sign', params: ['0x' + 'ab'.repeat(33), '0xsafe'] },
-        { method: 'eth_signTypedData_v4', params: ['0xsafe', JSON.stringify({ message: { a: 1 } })] },
+        { method: 'eth_signTypedData_v4', params: ['0xsafe', JSON.stringify(TYPED)] },
       ]) {
         await expect(start(request, { autoApprove: SITE, webContentsId: 12 })).resolves.toMatchObject({ success: true });
       }

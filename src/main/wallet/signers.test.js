@@ -1,4 +1,4 @@
-const { Wallet, Transaction, verifyMessage, verifyTypedData, getBytes } = require('ethers');
+const { Wallet, Transaction, TypedDataEncoder, verifyMessage, verifyTypedData, getBytes } = require('ethers');
 
 // Anvil/Hardhat-default test key — well-known, never funded on mainnet.
 const TEST_PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
@@ -279,6 +279,112 @@ describe('getSigner (vault-backed)', () => {
     expect(coreCalls('sign.transaction')).toHaveLength(0);
   });
 
+  // freedom-core #88: the core signs only the digest passed as
+  // expected_hash. A dApp's request passes the hash the user confirmed; a
+  // request changed after that (here, by calling the signer with other
+  // data, as a test hook) is refused by the core, and nothing is signed.
+  test('typed data is signed only over the confirmed hash', async () => {
+    const signer = getSigner(0);
+    const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
+    const confirmed = TypedDataEncoder.hash(typed.domain, typed.types, typed.message);
+    const signature = await signer.signTypedData(typed, { expectedHash: confirmed });
+    expect(verifyTypedData(typed.domain, typed.types, typed.message, signature)).toBe(testWallet.address);
+    expect(coreCalls('sign.typed_data').map(([, , , hash]) => hash)).toEqual([confirmed]);
+    // No second hash: the confirmed one is the digest.
+    expect(coreCalls('typed_data.hash')).toEqual([]);
+
+    mockCore.calls = [];
+    const altered = { ...typed, message: { v: 2 } };
+    await expect(signer.signTypedData(altered, { expectedHash: confirmed })).rejects.toThrow(
+      'not the confirmed one'
+    );
+    expect(coreCalls('sign.typed_data').map(([, , , hash]) => hash)).toEqual([confirmed]);
+  });
+
+  // #88: a primaryType that isn't the inferred root is warned about, and
+  // approving signs as ethers does: over the inferred root.
+  test.each([
+    ['another declared type', { Person: [{ name: 'n', type: 'string' }], Mail: [{ name: 'p', type: 'Person' }] }, 'Person', { p: { n: 'x' } }],
+    ['true, beside a struct named true', { true: [{ name: 'v', type: 'uint8' }] }, true, { v: 1 }],
+    ['false, beside a struct named false', { false: [{ name: 'v', type: 'uint8' }] }, false, { v: 1 }],
+    ['null, beside a struct named null', { null: [{ name: 'v', type: 'uint8' }] }, null, { v: 1 }],
+  ])('approving a primaryType mismatch (%s) signs over the inferred root', async (_label, types, primaryType, message) => {
+    const domain = { name: 'D', chainId: 1 };
+    const hash = TypedDataEncoder.hash(domain, types, message);
+    const signature = await getSigner(0).signTypedData({ domain, types, primaryType, message }, { expectedHash: hash });
+    expect(signature).toBe(await testWallet.signTypedData(domain, types, message));
+  });
+
+  // Main's own typed data (SafeTx, SafeMessage, x402) has no prompt of
+  // its own: the core hashes it with typed_data.hash right before signing,
+  // and the signature passes that hash (#88).
+  test("main's own typed data is hashed by the core, and that hash passed", async () => {
+    const signer = getSigner(0);
+    const typed = { domain: { chainId: 100 }, types: { M: [{ name: 'v', type: 'uint256' }] }, message: { v: 7n } };
+    await signer.signTypedData(typed);
+    const [[, hashed]] = coreCalls('typed_data.hash');
+    expect(hashed).toEqual({ domain: { chainId: 100 }, types: typed.types, message: { v: '7' } });
+    const [[, , signed, expectedHash]] = coreCalls('sign.typed_data');
+    expect(signed).toEqual(hashed);
+    expect(expectedHash).toBe(TypedDataEncoder.hash(typed.domain, typed.types, typed.message));
+  });
+
+  // The real shapes main builds: a SafeTx (as safe-executor's
+  // hashSafeTransaction) and a SafeMessage (as safe-messages'), each signed
+  // by a vault owner the way collectOwnerSignature asks for it.
+  test.each([
+    [
+      'SafeTx',
+      () => {
+        const { generateTypedData } = require('@safe-global/protocol-kit');
+        return JSON.parse(
+          JSON.stringify(
+            generateTypedData({
+              safeAddress: '0x1234567890AbcdEF1234567890aBcdef12345678',
+              safeVersion: '1.4.1',
+              chainId: 100n,
+              data: {
+                to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+                value: '5',
+                data: '0x',
+                operation: 0,
+                safeTxGas: '0',
+                baseGas: '0',
+                gasPrice: '0',
+                gasToken: '0x0000000000000000000000000000000000000000',
+                refundReceiver: '0x0000000000000000000000000000000000000000',
+                nonce: 3,
+              },
+            }),
+            (_key, v) => (typeof v === 'bigint' ? Number(v) : v)
+          )
+        );
+      },
+    ],
+    [
+      'SafeMessage',
+      () => {
+        const { getEip712MessageTypes } = require('@safe-global/protocol-kit');
+        return {
+          types: getEip712MessageTypes('1.4.1'),
+          domain: { chainId: 100, verifyingContract: '0x1234567890AbcdEF1234567890aBcdef12345678' },
+          primaryType: 'SafeMessage',
+          message: { message: '0x' + '5e'.repeat(32) },
+        };
+      },
+    ],
+  ])('a vault owner signature over a %s passes its own hash', async (_label, build) => {
+    const typedData = build();
+    const signature = await getSigner(0).signTypedData(typedData);
+    const types = { ...typedData.types };
+    delete types.EIP712Domain;
+    const hash = TypedDataEncoder.hash(typedData.domain, types, typedData.message);
+    const [[, , , expectedHash]] = coreCalls('sign.typed_data');
+    expect(expectedHash).toBe(hash);
+    expect(coreCalls('typed_data.hash')).toHaveLength(1);
+    expect(verifyTypedData(typedData.domain, types, typedData.message, signature)).toBe(testWallet.address);
+  });
+
   test('a core result for another key or another request is refused', async () => {
     const signer = getSigner(0);
     await signer.getAddress();
@@ -372,8 +478,25 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(mockLedgerBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
 
     // JSON-string typed data reaches the backend parsed
-    await signer.signTypedData('{"domain":{},"types":{},"message":{}}');
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith({ domain: {}, types: {}, message: {} });
+    const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
+    await signer.signTypedData(JSON.stringify(typed));
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+  });
+
+  // freedom-core #88: a device signs what it shows, so main checks the
+  // request's hash against the confirmed one before the device sees it.
+  test('a device signs typed data only when it hashes to the confirmed digest', async () => {
+    const signer = getSigner(2);
+    const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
+    const hash = TypedDataEncoder.hash(typed.domain, typed.types, typed.message);
+    await signer.signTypedData(typed, { expectedHash: hash });
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: hash });
+    mockLedgerBackend.signTypedData.mockClear();
+    const altered = { ...typed, message: { v: 2 } };
+    await expect(signer.signTypedData(altered, { expectedHash: hash })).rejects.toThrow(
+      'changed after it was confirmed'
+    );
+    expect(mockLedgerBackend.signTypedData).not.toHaveBeenCalled();
   });
 
   test('vault and ledger signers do not advertise the sendTransaction capability', () => {
@@ -441,5 +564,107 @@ describe('getSigner (remote-backed dispatch)', () => {
     const signer = getSigner(4);
     await signer.signMessage('0x48656c6c6f');
     expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
+  });
+});
+
+// Review of #799 (round 1): main's own typed data (a Safe owner's SafeTx or
+// SafeMessage, an x402 payment) comes with no confirmed hash, and a device
+// signs it with ethers' encoder. The core still hashes and checks it first,
+// as it does a dApp's, and nothing reaches the device when it refuses.
+describe("getSigner: main's own typed data on a device", () => {
+  const { generateTypedData, getEip712MessageTypes } = require('@safe-global/protocol-kit');
+  const { vaultBackend } = require('../core/vault-backend');
+  const SAFE = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  const jsonSafe = (value) =>
+    JSON.parse(JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? Number(v) : v)));
+  const PAYLOADS = {
+    // As safe-executor's hashSafeTransaction builds it.
+    SafeTx: () =>
+      jsonSafe(
+        generateTypedData({
+          safeAddress: SAFE,
+          safeVersion: '1.4.1',
+          chainId: 100n,
+          data: {
+            to: SAFE, value: '1000', data: '0x', operation: 0, safeTxGas: '0', baseGas: '0',
+            gasPrice: '0', gasToken: ZERO, refundReceiver: ZERO, nonce: 0,
+          },
+        })
+      ),
+    // As safe-messages' startSafeMessage builds it.
+    SafeMessage: () => ({
+      types: getEip712MessageTypes('1.4.1'),
+      domain: { chainId: 100, verifyingContract: SAFE },
+      primaryType: 'SafeMessage',
+      message: { message: '0x' + '22'.repeat(32) },
+    }),
+    // An x402 (EIP-3009) payment authorization, as @x402/evm builds it.
+    TransferWithAuthorization: () => ({
+      domain: { name: 'USD Coin', version: '2', chainId: 8453, verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
+      types: {
+        TransferWithAuthorization: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'validAfter', type: 'uint256' },
+          { name: 'validBefore', type: 'uint256' },
+          { name: 'nonce', type: 'bytes32' },
+        ],
+      },
+      primaryType: 'TransferWithAuthorization',
+      message: {
+        from: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+        to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+        value: '10000', validAfter: '0', validBefore: '1900000000', nonce: '0x' + '33'.repeat(32),
+      },
+    }),
+  };
+  const DEVICES = {
+    ledger: [{ index: 1000000, name: 'My Stax', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'ledger' }, mockLedgerBackend],
+    phone: [{ index: 1000001, name: 'My Phone', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'remote' }, mockRemoteBackend],
+  };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe.each(Object.keys(DEVICES))('on a %s', (device) => {
+    const [record, backend] = DEVICES[device];
+
+    beforeEach(() => {
+      mockGetWalletRecord.mockReturnValue(record);
+      backend.signTypedData.mockReset();
+    });
+
+    test.each(Object.keys(PAYLOADS))('%s: the core hashes it before the device is asked', async (primaryType) => {
+      const typed = PAYLOADS[primaryType]();
+      let hashedFirst;
+      backend.signTypedData.mockImplementation(async () => {
+        hashedFirst = coreCalls('typed_data.hash').length === 1;
+        return '0xsig712';
+      });
+      await expect(getSigner(record.index).signTypedData(typed)).resolves.toBe('0xsig712');
+      expect(hashedFirst).toBe(true);
+      const [[, hashed]] = coreCalls('typed_data.hash');
+      expect(hashed).toEqual({
+        domain: typed.domain,
+        types: { [primaryType]: typed.types[primaryType] },
+        message: typed.message,
+      });
+      expect(backend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+      // Nothing of the vault's: no key, no vault signature.
+      expect(coreCalls('sign.typed_data')).toEqual([]);
+    });
+
+    test.each(Object.keys(PAYLOADS))('%s: data the core refuses never reaches the device', async (primaryType) => {
+      jest.spyOn(vaultBackend, 'typedDataHash').mockRejectedValueOnce(
+        Object.assign(new Error('invalid typed data'), { code: 'invalid_argument' })
+      );
+      await expect(getSigner(record.index).signTypedData(PAYLOADS[primaryType]())).rejects.toThrow(
+        'invalid typed data'
+      );
+      expect(backend.signTypedData).not.toHaveBeenCalled();
+    });
   });
 });

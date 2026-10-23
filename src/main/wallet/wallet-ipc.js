@@ -24,7 +24,16 @@ const { getEffectiveRpcUrls } = require('./rpc-manager');
 const chainData = require('../networks/chain-data');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
-const { signsRawHash } = require('./signing-utils');
+const {
+  signsRawHash,
+  normalizeMessage,
+  messageToBytes,
+  normalizeTypedData,
+  toCoreTypedData,
+  typedDataViewOptions,
+  typedDataWarnings,
+} = require('./signing-utils');
+const { vaultBackend } = require('../core/vault-backend');
 const {
   KINDS: CONFIRM_KINDS,
   NOT_CONFIRMED,
@@ -148,6 +157,41 @@ function dappSendSite(context, authorization) {
  */
 function isAutoApprovableMessage(method, message) {
   return !(method === 'personal_sign' && signsRawHash(message));
+}
+
+/**
+ * A dApp's typed data through the identity core (freedom-core design
+ * 0002, #88): its digest and the core's view of exactly what is signed,
+ * with the dApp's primaryType as it came and its active chain compared and
+ * reported. Refused like any malformed typed data when the view wouldn't
+ * fit one reply.
+ *
+ * @returns {Promise<{hash: string, view: object, warnings: string[]}>}
+ */
+async function typedDataViewFor(typedData, chainId) {
+  const normalized = normalizeTypedData(typedData);
+  if (!normalized || typeof normalized !== 'object') {
+    throw new Error('Typed data is required');
+  }
+  const { hash, view } = await vaultBackend.typedDataView(
+    toCoreTypedData(normalized),
+    typedDataViewOptions(normalized, chainId)
+  );
+  return { hash, view, warnings: typedDataWarnings(view) };
+}
+
+/**
+ * What a dApp's personal_sign signs, for the approval screen (#88): the
+ * bytes main sends to the core, from the same strictly validated hex, and
+ * whether they are a raw 32-byte value (#89). A message that isn't a
+ * string can't be shown, so it is refused before the prompt.
+ */
+function messageViewFor(message) {
+  if (typeof message !== 'string') {
+    throw new Error('The message to sign must be text or 0x-prefixed hex');
+  }
+  const bytes = messageToBytes(normalizeMessage(message));
+  return { hex: '0x' + bytes.toString('hex'), rawHash: signsRawHash(message) };
 }
 
 /** Main's own evaluation of a dApp's signing auto-approve flag. */
@@ -502,11 +546,36 @@ function registerWalletIpc() {
   // Issue a confirmation token for a request the user just confirmed on an
   // approval screen (O-7). The signing handler below it will sign exactly
   // this request, once. A wallet send binds the account active right now.
-  ipcMain.handle('wallet:confirm-signing', (_event, kind, accountIndex, payload) => {
+  ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload) => {
     try {
       const index = kind === CONFIRM_KINDS.WALLET_SEND ? getActiveWalletIndex() : accountIndex;
-      const { token, expiresAt } = issueConfirmation(kind, index, payload);
-      return { success: true, token, expiresAt };
+      // Typed data: the token binds the digest the user confirmed, as the
+      // core computes it, which the signature then passes as expected_hash.
+      const bound =
+        kind === CONFIRM_KINDS.SIGN_TYPED_DATA
+          ? { hash: (await typedDataViewFor(payload)).hash }
+          : undefined;
+      const { token, expiresAt } = issueConfirmation(kind, index, payload, bound);
+      return { success: true, token, expiresAt, ...(bound ? { hash: bound.hash } : {}) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // What a dApp's signing request signs, before its prompt (#88). Typed
+  // data: the core's view, for every signer kind; a request it refuses
+  // (malformed, or a view too large for one reply) fails here, unprompted.
+  ipcMain.handle('wallet:typed-data-view', async (_event, typedData, chainId) => {
+    try {
+      return { success: true, ...(await typedDataViewFor(typedData, chainId)) };
+    } catch (err) {
+      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
+    }
+  });
+
+  ipcMain.handle('wallet:message-view', async (_event, message) => {
+    try {
+      return { success: true, ...messageViewFor(message) };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -577,16 +646,37 @@ function registerWalletIpc() {
     }
   });
 
-  // Sign typed data (EIP-712) for a dApp
-  ipcMain.handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization) => {
+  // Sign typed data (EIP-712) for a dApp. `context.chainId` is the dApp's
+  // active chain, which an auto-approved request's view compares (#88).
+  ipcMain.handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization, context) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
       }
-      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
-        isDappSigningAutoApproved(key, walletIndex), event?.sender);
+      let expectedHash;
+      if (authorization?.confirmation) {
+        // The digest the user confirmed: the core signs nothing else.
+        ({ hash: expectedHash } = consumeConfirmation(
+          authorization.confirmation,
+          CONFIRM_KINDS.SIGN_TYPED_DATA,
+          walletIndex,
+          typedData
+        ));
+      } else {
+        // A request with a warning always shows its prompt, even under
+        // auto-approve (#88): only an unwarned view is auto-signed, for a
+        // requesting page that belongs to the site (#764).
+        const viewed =
+          authorization?.autoApprove !== undefined
+            ? await typedDataViewFor(typedData, context?.chainId)
+            : null;
+        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
+          viewed !== null && viewed.warnings.length === 0 && isDappSigningAutoApproved(key, walletIndex),
+        event?.sender);
+        expectedHash = viewed.hash;
+      }
 
-      const signature = await getSigner(walletIndex).signTypedData(typedData);
+      const signature = await getSigner(walletIndex).signTypedData(typedData, { expectedHash });
 
       return { success: true, signature };
     } catch (err) {
@@ -725,12 +815,22 @@ function registerWalletIpc() {
       // Same confirmation point as safe-send; follow-up calls are bound to
       // the session token this returns. A dApp's signing auto-approve is
       // evaluated here, in main — for the page the session is bound to only.
+      // A Safe signs on Gnosis only, so that is the chain a typed-data
+      // request's view compares (#88).
+      const { startSafeMessage } = require('./safe/safe-messages');
+      const { DEPLOY_CHAIN_ID } = require('./safe/safe-service');
+      const viewed =
+        !authorization?.confirmation &&
+        authorization?.autoApprove !== undefined &&
+        request?.method === 'eth_signTypedData_v4'
+          ? await typedDataViewFor(request.params?.[1], DEPLOY_CHAIN_ID)
+          : null;
       await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
         key === (requester?.origin ?? null) &&
           authorization.webContentsId === (requester?.webContentsId ?? null) &&
           isAutoApprovableMessage(request?.method, request?.params?.[0]) &&
+          (viewed === null || viewed.warnings.length === 0) &&
           isDappSigningAutoApproved(key, safeIndex), event?.sender);
-      const { startSafeMessage } = require('./safe/safe-messages');
       return startSafeMessage({ safeIndex, request, display, requester });
     })(event, ...args)
   );

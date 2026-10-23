@@ -21,7 +21,34 @@ const DAPP_SIGN_ELEMENT_IDS = [
   'dapp-sign-approve',
   'dapp-sign-auto-approve',
   'dapp-sign-raw-warning',
+  'dapp-sign-typed-warning',
+  'dapp-sign-typed-warning-text',
+  'dapp-sign-typed-ignored',
 ];
+
+// What main hands the screen (wallet:message-view, wallet:typed-data-view;
+// freedom-core #88): read here with main's own helpers and the simulated
+// core's view.
+const signingUtils = require('../../../main/wallet/signing-utils.js');
+const { simulatedView } = require('../../../../test/helpers/simulated-vault-core.js');
+
+function messagePrepared(message) {
+  const bytes = signingUtils.messageToBytes(signingUtils.normalizeMessage(message));
+  return { message: { hex: '0x' + bytes.toString('hex'), rawHash: signingUtils.signsRawHash(message) } };
+}
+
+function typedPrepared(typedData, siteChainId, chains = {}) {
+  const normalized = signingUtils.normalizeTypedData(typedData);
+  const view = simulatedView(
+    signingUtils.toCoreTypedData(normalized),
+    signingUtils.typedDataViewOptions(normalized, siteChainId)
+  );
+  return {
+    typedData: { hash: '0x' + '11'.repeat(32), view, warnings: signingUtils.typedDataWarnings(view) },
+    chainId: siteChainId,
+    chains,
+  };
+}
 
 const LEDGER_INDEX = 1000000;
 
@@ -82,10 +109,11 @@ async function loadDappSign() {
   const mod = await import('./dapp-sign.js');
   mod.initDappSign();
 
-  async function openApproval(message = '0xdeadbeef') {
+  async function openApproval(message = '0xdeadbeef', { method = 'personal_sign', prepared } = {}) {
     const settled = { state: 'pending' };
+    const params = method === 'personal_sign' ? [message, '0xledger'] : ['0xledger', message];
     const promise = mod
-      .showDappSignApproval({}, 'https://app.example', 'personal_sign', [message, '0xledger'])
+      .showDappSignApproval({}, 'https://app.example', method, params, prepared ?? messagePrepared(message))
       .then(
         (signature) => {
           settled.state = 'resolved';
@@ -231,6 +259,9 @@ describe('dapp-sign: the 32-byte warning', () => {
     ['33 bytes of hex', '0x' + '41'.repeat(33), 'A'.repeat(33)],
     ['31 bytes of text', 'a'.repeat(31), 'a'.repeat(31)],
     ['33 bytes of text', 'a'.repeat(33), 'a'.repeat(33)],
+    // #88: from the bytes main signs; bytes that aren't UTF-8 show as hex.
+    ['binary bytes', '0xfffefd00', '0xfffefd00'],
+    ['uppercase hex text', '0x48454C4C4F', 'HELLO'],
   ])('no warning at %s, shown as before', async (_label, message, shown) => {
     const { elements, openApproval } = await loadDappSign();
     await openApproval(message);
@@ -259,5 +290,140 @@ describe('dapp-sign: the 32-byte warning', () => {
 
     await openApproval('0xdeadbeef');
     expect(elements['dapp-sign-raw-warning'].classList.contains('hidden')).toBe(true);
+  });
+});
+
+// #88: typed data is shown from the identity core's view of what is signed,
+// never the dApp's JSON, with its reports warned about.
+describe('dapp-sign: the typed-data view', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const CONTRACT = '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC';
+  const LONG = 'a long field, '.repeat(20);
+  const MAIL = {
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      Person: [{ name: 'name', type: 'string' }, { name: 'wallet', type: 'address' }],
+      Mail: [
+        { name: 'from', type: 'Person' },
+        { name: 'to', type: 'Person[]' },
+        { name: 'amount', type: 'uint256' },
+        { name: 'contents', type: 'string' },
+      ],
+    },
+    primaryType: 'Mail',
+    domain: { name: 'Ether Mail', chainId: 1, verifyingContract: CONTRACT },
+    message: {
+      from: { name: 'Cow', wallet: '0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826', nested: 'not signed' },
+      to: [{ name: 'Bob', wallet: '0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB' }],
+      amount: '0x' + 'f'.repeat(64),
+      contents: LONG,
+      extra: 'sent, not signed',
+      also: 1,
+    },
+  };
+
+  async function openTyped(data, siteChainId = 1, chains = {}) {
+    const loaded = await loadDappSign();
+    await loaded.openApproval(JSON.stringify(data), {
+      method: 'eth_signTypedData_v4',
+      prepared: typedPrepared(data, siteChainId, chains),
+    });
+    return loaded.elements;
+  }
+
+  const text = (elements) => elements['dapp-sign-typed-data'].textContent;
+  const warning = (elements) =>
+    elements['dapp-sign-typed-warning'].classList.contains('hidden')
+      ? null
+      : elements['dapp-sign-typed-warning-text'].textContent;
+
+  test('every field of the view, whole: nothing from the dApp\'s own JSON', async () => {
+    const elements = await openTyped(MAIL);
+    const shown = text(elements);
+    // The domain whole: the contract in full, the chain id.
+    expect(shown).toContain(`verifyingContract: ${CONTRACT.toLowerCase()}`);
+    expect(shown).toContain('chainId: 1');
+    // Structs nested, arrays listed, values normalized and untruncated.
+    expect(shown).toContain('from (Person):');
+    expect(shown).toContain('wallet: 0xcd2a3d9f938e13cd947ec05abc7fe734df8dd826');
+    expect(shown).toContain('to (Person[]):');
+    expect(shown).toContain('[0]:');
+    expect(shown).toContain(`amount: ${(2n ** 256n - 1n).toString()}`);
+    expect(shown).toContain(`contents: ${LONG}`);
+    // Undeclared keys aren't shown as data; top-level ones are listed.
+    expect(shown).not.toContain('not signed');
+    expect(shown).not.toContain('extra');
+    expect(shown).not.toContain(CONTRACT);
+    expect(elements['dapp-sign-typed-ignored'].classList.contains('hidden')).toBe(false);
+    expect(elements['dapp-sign-typed-ignored'].textContent).toBe(
+      "The site also sent these fields, which aren't signed: also, extra"
+    );
+    // A match on both: no warning.
+    expect(warning(elements)).toBeNull();
+  });
+
+  test('the primaryType warning: on a mismatch, a non-string included; not on a match or without one', async () => {
+    for (const primaryType of ['Person', 'Order', 'EIP712Domain', true, null, 7]) {
+      const elements = await openTyped({ ...MAIL, primaryType });
+      expect(warning(elements)).toContain('The site named a different type of data than the one shown here');
+    }
+    for (const data of [MAIL, (({ primaryType: _p, ...rest }) => rest)(MAIL)]) {
+      expect(warning(await openTyped(data))).toBeNull();
+    }
+  });
+
+  test('true, false and null with a struct of that name as the root still warn', async () => {
+    for (const name of ['true', 'false', 'null']) {
+      const data = {
+        domain: { chainId: 1 },
+        types: { [name]: [{ name: 'v', type: 'uint8' }] },
+        primaryType: JSON.parse(name),
+        message: { v: 1 },
+      };
+      const elements = await openTyped(data);
+      expect(text(elements)).toContain(`${name}:`);
+      expect(warning(elements)).toContain('different type of data');
+    }
+  });
+
+  test('the chain warning names both chains on a mismatch, and warns on an absent chain', async () => {
+    const chains = { 1: { name: 'Ethereum' }, 100: { name: 'Gnosis' } };
+    expect(warning(await openTyped(MAIL, 100, chains))).toBe(
+      'This data is for Ethereum (chain 1), but the site is on Gnosis (chain 100).'
+    );
+    expect(warning(await openTyped(MAIL, 5))).toBe('This data is for chain 1, but the site is on chain 5.');
+    const noChain = { ...MAIL, domain: { name: 'Ether Mail', verifyingContract: CONTRACT } };
+    expect(warning(await openTyped(noChain, 1))).toBe(
+      'This data names no chain. The signature is valid on every chain where the contract it is for exists.'
+    );
+    // A match: no warning. Unknown (no site chain): never shown as a match,
+    // and no warning either.
+    expect(warning(await openTyped(MAIL, 1))).toBeNull();
+    expect(warning(await openTyped(MAIL, undefined))).toBeNull();
+  });
+
+  test('both warnings together; and the next prompt starts without them', async () => {
+    const { elements, openApproval } = await loadDappSign();
+    const data = { ...MAIL, primaryType: 'Person' };
+    await openApproval(JSON.stringify(data), {
+      method: 'eth_signTypedData_v4',
+      prepared: typedPrepared(data, 100),
+    });
+    const both = warning(elements);
+    expect(both).toContain('different type of data');
+    expect(both).toContain('but the site is on chain 100');
+
+    await openApproval('0xdeadbeef');
+    expect(warning(elements)).toBeNull();
+    expect(elements['dapp-sign-typed-ignored'].classList.contains('hidden')).toBe(true);
   });
 });
