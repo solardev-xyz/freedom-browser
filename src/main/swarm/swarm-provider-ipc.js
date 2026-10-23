@@ -467,10 +467,10 @@ async function handleGetCapabilities(origin) {
       specVersion: SPEC_VERSION,
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
-      publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
+      // No 'ethereum-wallet': accounts don't own feeds (#89).
+      publisherIdentityModes: ['app-scoped', 'bee-wallet'],
       features: ['messaging'],
       extensions: {
-        ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
       },
       limits: {

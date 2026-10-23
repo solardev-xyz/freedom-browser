@@ -401,7 +401,6 @@ module.exports = {
   SWARM_PREVIEW_APP_SCOPED_IDENTITY: 'swarm:preview-app-scoped-identity',
   SWARM_CREATE_APP_SCOPED_IDENTITY: 'swarm:create-app-scoped-identity',
   SWARM_ENSURE_ANT_WALLET_IDENTITY: 'swarm:ensure-ant-wallet-identity',
-  SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY: 'swarm:ensure-ethereum-wallet-identity',
   SWARM_ACTIVATE_FEED_IDENTITY: 'swarm:activate-feed-identity',
   SWARM_REVOKE_FEED_ACCESS: 'swarm:revoke-feed-access',
 

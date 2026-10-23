@@ -719,3 +719,63 @@ describe('dapp-provider signing authorization', () => {
     expect(walletMocks.signMessage).not.toHaveBeenCalled();
   });
 });
+
+// #89: a personal_sign of exactly 32 bytes always shows its prompt (with
+// the warning), even with signing auto-approve, whatever the account.
+// Other lengths and typed data are auto-signed as before.
+describe('dapp-provider: the 32-byte prompt', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const autoSigning = (walletIndex) => ({ walletIndex, chainId: 100, autoApprove: { signing: true } });
+
+  test.each([
+    ['hex', '0x' + 'ab'.repeat(32)],
+    ['text', 'z'.repeat(32)],
+  ])('a 32-byte message as %s prompts under auto-approve, on every account kind', async (_label, message) => {
+    for (const walletIndex of [0, 1000000, SAFE_WALLET_INDEX]) {
+      const { sendRequest, walletUi, walletMocks } = await loadProvider({ permission: autoSigning(walletIndex) });
+      sendRequest({ id: 1, method: 'personal_sign', params: [message, '0xaccount'] });
+      await flushMicrotasks();
+
+      expect(walletUi.showDappSignApproval).toHaveBeenCalledWith(
+        expect.anything(), 'https://app.example', 'personal_sign', [message, '0xaccount']
+      );
+      expect(walletMocks.signMessage).not.toHaveBeenCalled();
+      expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([
+    ['31 bytes', '0x' + 'ab'.repeat(31)],
+    ['33 bytes', '0x' + 'ab'.repeat(33)],
+    ['31 bytes of text', 'z'.repeat(31)],
+  ])('%s are auto-signed with no prompt, as before', async (_label, message) => {
+    const { webview, sendRequest, walletUi, walletMocks } = await loadProvider({ permission: autoSigning(0) });
+    sendRequest({ id: 2, method: 'personal_sign', params: [message, '0xaccount'] });
+    await flushMicrotasks();
+
+    expect(walletUi.showDappSignApproval).not.toHaveBeenCalled();
+    expect(walletMocks.signMessage).toHaveBeenCalledWith(message, 0, { autoApprove: 'https://app.example' });
+    expect(responsesSentTo(webview)).toEqual([
+      ['dapp:provider-response', { id: 2, result: '0xeoa', error: null }],
+    ]);
+  });
+
+  test('typed data is auto-signed with no prompt, as before', async () => {
+    const { sendRequest, walletUi, walletMocks } = await loadProvider({ permission: autoSigning(0) });
+    const typed = JSON.stringify({ domain: { chainId: 100 }, types: { M: [] }, message: {} });
+    sendRequest({ id: 3, method: 'eth_signTypedData_v4', params: ['0xaccount', typed] });
+    await flushMicrotasks();
+
+    expect(walletUi.showDappSignApproval).not.toHaveBeenCalled();
+    expect(walletMocks.signTypedData).toHaveBeenCalledWith(typed, 0, { autoApprove: 'https://app.example' });
+  });
+});

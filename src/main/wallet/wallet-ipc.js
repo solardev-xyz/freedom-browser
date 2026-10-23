@@ -24,6 +24,7 @@ const { getEffectiveRpcUrls } = require('./rpc-manager');
 const chainData = require('../networks/chain-data');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
+const { signsRawHash } = require('./signing-utils');
 const {
   KINDS: CONFIRM_KINDS,
   NOT_CONFIRMED,
@@ -137,6 +138,15 @@ function dappSendSite(context, authorization) {
     return site || null;
   }
   return shown || null;
+}
+
+/**
+ * Whether signing auto-approve may cover a dApp's message request: never a
+ * personal_sign of exactly 32 bytes, whose signature can be a Swarm feed
+ * update (#89), whatever the account. Its prompt always shows.
+ */
+function isAutoApprovableMessage(method, message) {
+  return !(method === 'personal_sign' && signsRawHash(message));
 }
 
 /** Main's own evaluation of a dApp's signing auto-approve flag. */
@@ -470,7 +480,7 @@ function registerWalletIpc() {
         return { success: false, error: 'Message is required' };
       }
       authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, (key) =>
-        isDappSigningAutoApproved(key, walletIndex));
+        isAutoApprovableMessage('personal_sign', message) && isDappSigningAutoApproved(key, walletIndex));
 
       const signature = await getSigner(walletIndex).signMessage(message);
 
@@ -631,7 +641,9 @@ function registerWalletIpc() {
       // the session token this returns. A dApp's signing auto-approve is
       // evaluated here, in main.
       authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
-        key === (requester?.origin ?? null) && isDappSigningAutoApproved(key, safeIndex));
+        key === (requester?.origin ?? null) &&
+          isAutoApprovableMessage(request?.method, request?.params?.[0]) &&
+          isDappSigningAutoApproved(key, safeIndex));
       const { startSafeMessage } = require('./safe/safe-messages');
       return startSafeMessage({ safeIndex, request, display, requester });
     })

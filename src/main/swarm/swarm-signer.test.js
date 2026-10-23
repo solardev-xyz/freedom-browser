@@ -40,19 +40,24 @@ jest.mock('../core/vault-backend', () => ({
   },
 }));
 
-const mockState = { unlocked: true, records: {} };
+const mockState = { unlocked: true, records: {}, lookups: [] };
 jest.mock('../identity-manager', () => ({
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
-  getWalletRecord: (index) => mockState.records[index] || null,
+  getWalletRecord: (index) => {
+    mockState.lookups.push(['getWalletRecord', index]);
+    return mockState.records[index] || null;
+  },
   getBeeWalletAddress: async () => (mockState.unlocked ? mockAddressOf('bee_wallet') : null),
   getPublisherAddress: async (index) => {
     if (!mockState.unlocked) throw new Error('Vault must be unlocked to derive publisher keys');
     return mockAddressOf(`publisher:${index}`);
   },
-  deriveAddresses: async ({ accounts = [] } = {}) =>
-    mockState.unlocked
+  deriveAddresses: async ({ accounts = [] } = {}) => {
+    mockState.lookups.push(['deriveAddresses', accounts]);
+    return mockState.unlocked
       ? { user_wallets: accounts.map((account) => ({ account, address: mockAddressOf(`account:${account}`) })) }
-      : null,
+      : null;
+  },
 }));
 jest.mock('./swarm-service', () => ({ getBee: () => mockBee }));
 
@@ -64,6 +69,7 @@ const PAYLOAD = Buffer.from('a single-owner chunk');
 beforeEach(() => {
   mockState.unlocked = true;
   mockState.records = { 2: { index: 2, type: 'mnemonic' } };
+  mockState.lookups = [];
   mockCore.tamper = null;
   mockCore.calls = [];
 });
@@ -72,7 +78,6 @@ describe('resolveSwarmSigner', () => {
   test.each([
     ['bee-wallet', {}, { kind: 'bee_wallet' }, 'bee_wallet'],
     ['app-scoped', { publisherKeyIndex: 3 }, { kind: 'publisher', origin_index: 3 }, 'publisher:3'],
-    ['ethereum-wallet', { walletIndex: 2 }, { kind: 'account', index: 2 }, 'account:2'],
   ])('%s signs with its key reference, as bee-js would', async (mode, fields, key, id) => {
     const signer = await resolveSwarmSigner({ mode, ...fields });
     expect(signer.owner).toBe(mockAddressOf(id));
@@ -102,27 +107,42 @@ describe('resolveSwarmSigner', () => {
   test.each([
     ['bee-wallet', {}, 'Vault is locked'],
     ['app-scoped', { publisherKeyIndex: 3 }, 'Vault must be unlocked to derive publisher keys'],
-    ['ethereum-wallet', { walletIndex: 2 }, 'Vault must be unlocked to derive wallet keys'],
   ])('a locked vault refuses %s before any signing', async (mode, fields, message) => {
     mockState.unlocked = false;
     await expect(resolveSwarmSigner({ mode, ...fields })).rejects.toThrow(message);
     expect(mockCore.calls).toEqual([]);
   });
 
-  test.each(['ledger', 'remote', 'safe'])('an ethereum-wallet identity on a %s account is refused', async (type) => {
-    mockState.records = { 2: { index: 2, type } };
-    await expect(resolveSwarmSigner({ mode: 'ethereum-wallet', walletIndex: 2 })).rejects.toThrow(
-      'This account has no derivable private key'
-    );
+  // #89: accounts don't own feeds. A stored ethereum-wallet identity fails
+  // with a plain error, whatever its account, locked or not, before any
+  // lookup or key: no signature with any key, and no fallback.
+  test.each([
+    ['a vault account', { 2: { index: 2, type: 'mnemonic' } }, true],
+    ['a vault account, locked', { 2: { index: 2, type: 'mnemonic' } }, false],
+    ['a Ledger account', { 2: { index: 2, type: 'ledger' } }, true],
+    ['a phone account', { 2: { index: 2, type: 'remote' } }, true],
+    ['a Safe account', { 2: { index: 2, type: 'safe' } }, true],
+    ['a deleted account', {}, true],
+  ])('an ethereum-wallet identity on %s fails, and nothing signs', async (_label, records, unlocked) => {
+    mockState.records = records;
+    mockState.unlocked = unlocked;
+    for (const identity of [
+      { mode: 'ethereum-wallet', walletIndex: 2 },
+      { identityMode: 'ethereum-wallet', walletIndex: 2 },
+      { mode: 'ethereum-wallet' },
+    ]) {
+      await expect(resolveSwarmSigner(identity)).rejects.toThrow(
+        "Ethereum wallet publisher identities aren't available"
+      );
+    }
+    expect(mockCore.calls).toEqual([]);
+    expect(mockState.lookups).toEqual([]);
   });
 
   test('malformed identities are refused', async () => {
     await expect(resolveSwarmSigner({ mode: 'app-scoped' })).rejects.toThrow('missing a publisher key index');
-    await expect(resolveSwarmSigner({ mode: 'ethereum-wallet' })).rejects.toThrow('missing a wallet index');
-    await expect(resolveSwarmSigner({ mode: 'ethereum-wallet', walletIndex: 7 })).rejects.toThrow(
-      'Wallet with index 7 does not exist'
-    );
     await expect(resolveSwarmSigner({ mode: 'other' })).rejects.toThrow('Unknown identity mode: other');
+    expect(mockCore.calls).toEqual([]);
   });
 });
 

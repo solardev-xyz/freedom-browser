@@ -194,6 +194,32 @@ function messageToBytes(message) {
   return Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
 }
 
+/**
+ * A raw 32-byte value: its EIP-191 signature is exactly a Swarm feed
+ * update's, a single-owner chunk signature (freedom-core design 0002,
+ * "Accounts as feed owners", #89).
+ */
+const RAW_HASH_LENGTH = 32;
+
+/**
+ * Whether a dApp's personal_sign of `message` signs exactly 32 bytes, as
+ * main normalizes it: 0x hex decoded, anything else as UTF-8, so a 64-digit
+ * hex string and a 32-byte text both count. Such a request always shows its
+ * prompt, with a warning, even under signing auto-approve (#89). A message
+ * that isn't a string counts too: what each backend would sign from it
+ * can't be told here. Malformed hex doesn't: signing refuses it anyway.
+ */
+function signsRawHash(message) {
+  if (typeof message !== 'string') return true;
+  let normalized;
+  try {
+    normalized = normalizeMessage(message);
+  } catch {
+    return false;
+  }
+  return messageToBytes(normalized).length === RAW_HASH_LENGTH;
+}
+
 module.exports = {
   normalizeMessage,
   normalizeTypedData,
@@ -203,4 +229,6 @@ module.exports = {
   assertBoundedTypeGraph,
   getEip712WirePayload,
   messageToBytes,
+  signsRawHash,
+  RAW_HASH_LENGTH,
 };

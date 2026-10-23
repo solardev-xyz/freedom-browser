@@ -7,7 +7,6 @@
 import { escapeHtml } from './wallet-utils.js';
 
 export const BEE_WALLET_IDENTITY_ID = 'bee-wallet';
-export const ETHEREUM_WALLET_ID_PREFIX = 'ethereum-wallet:';
 
 let outsideClickAttached = false;
 
@@ -146,9 +145,10 @@ function buildIdentityItem(identity, isActive, handlers) {
   item.type = 'button';
   item.className = 'wallet-selector-item publisher-identity-selector-item';
   if (isActive) item.classList.add('active');
-  // Main flags identities whose backing account can't sign feeds (deleted
-  // wallet, hardware account). Selecting one would only fail later, so the
-  // row is shown greyed out and inert instead of silently breaking feeds.
+  // Main flags identities that can't sign feeds (a stored Ethereum wallet
+  // identity, a mode that was removed). Selecting one would only fail, so
+  // the row is shown greyed out and inert instead of silently breaking
+  // feeds.
   if (identity.unavailable) {
     item.classList.add('unavailable');
     item.disabled = true;

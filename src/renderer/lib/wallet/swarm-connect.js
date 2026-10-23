@@ -1048,14 +1048,10 @@ async function persistFeedPromptIdentity(permissionKey, identity) {
     throw new Error('No publisher identity selected');
   }
 
+  // A stored ethereum-wallet identity (a removed mode, #89) is activated
+  // like any stored one, and main refuses it with its own error.
   if (identity.id === BEE_WALLET_IDENTITY_ID) {
     await window.swarmFeedStore.ensureAntWalletIdentity(permissionKey, { activate: true });
-  } else if (identity.mode === 'ethereum-wallet') {
-    await window.swarmFeedStore.ensureEthereumWalletIdentity(
-      permissionKey,
-      identity.walletIndex,
-      { activate: true }
-    );
   } else if (identity.mode === 'app-scoped' && identity.stored === false) {
     await window.swarmFeedStore.createAppScopedIdentity(permissionKey, {
       activate: true,

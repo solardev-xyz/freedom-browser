@@ -20,6 +20,7 @@ const DAPP_SIGN_ELEMENT_IDS = [
   'dapp-sign-reject',
   'dapp-sign-approve',
   'dapp-sign-auto-approve',
+  'dapp-sign-raw-warning',
 ];
 
 const LEDGER_INDEX = 1000000;
@@ -81,10 +82,10 @@ async function loadDappSign() {
   const mod = await import('./dapp-sign.js');
   mod.initDappSign();
 
-  async function openApproval() {
+  async function openApproval(message = '0xdeadbeef') {
     const settled = { state: 'pending' };
     const promise = mod
-      .showDappSignApproval({}, 'https://app.example', 'personal_sign', ['0xdeadbeef', '0xledger'])
+      .showDappSignApproval({}, 'https://app.example', 'personal_sign', [message, '0xledger'])
       .then(
         (signature) => {
           settled.state = 'resolved';
@@ -99,7 +100,7 @@ async function loadDappSign() {
     return { settled, promise };
   }
 
-  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval };
+  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval, executeSign };
 }
 
 describe('dapp-sign approval lifecycle', () => {
@@ -197,5 +198,66 @@ describe('dapp-sign approval lifecycle', () => {
     expect(settled.value).toMatchObject({ code: 4001 });
     expect(setSigningAutoApprove).not.toHaveBeenCalled();
     expect(elements['dapp-sign-auto-approve'].checked).toBe(false);
+  });
+});
+
+// #89: a personal_sign of exactly 32 bytes as signed is a raw value whose
+// signature can be a Swarm feed update. Its prompt shows the bytes as hex,
+// with a warning; other lengths read as before.
+describe('dapp-sign: the 32-byte warning', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const RAW_HEX = '0x' + 'ab'.repeat(32);
+
+  test.each([
+    ['given as hex', RAW_HEX, RAW_HEX],
+    ['given as uppercase hex', '0x' + 'AB'.repeat(32), RAW_HEX],
+    ['given as text', 'a'.repeat(32), '0x' + '61'.repeat(32)],
+    ['given as multi-byte text', 'é'.repeat(16), '0x' + 'c3a9'.repeat(16)],
+  ])('shows the warning and the hex, %s', async (_label, message, shown) => {
+    const { elements, openApproval } = await loadDappSign();
+    await openApproval(message);
+
+    expect(elements['dapp-sign-raw-warning'].classList.contains('hidden')).toBe(false);
+    expect(elements['dapp-sign-message'].textContent).toBe(shown);
+  });
+
+  test.each([
+    ['31 bytes of hex', '0x' + '41'.repeat(31), 'A'.repeat(31)],
+    ['33 bytes of hex', '0x' + '41'.repeat(33), 'A'.repeat(33)],
+    ['31 bytes of text', 'a'.repeat(31), 'a'.repeat(31)],
+    ['33 bytes of text', 'a'.repeat(33), 'a'.repeat(33)],
+  ])('no warning at %s, shown as before', async (_label, message, shown) => {
+    const { elements, openApproval } = await loadDappSign();
+    await openApproval(message);
+
+    expect(elements['dapp-sign-raw-warning'].classList.contains('hidden')).toBe(true);
+    expect(elements['dapp-sign-message'].textContent).toBe(shown);
+  });
+
+  test('approving signs the request as sent, and the next prompt starts without the warning', async () => {
+    const { elements, sign, openApproval, executeSign } = await loadDappSign();
+    const { settled, promise } = await openApproval(RAW_HEX);
+
+    elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(executeSign).toHaveBeenCalledWith(
+      'personal_sign',
+      [RAW_HEX, '0xledger'],
+      LEDGER_INDEX,
+      'https://app.example',
+      {}
+    );
+    sign.resolve('0xsignature');
+    await promise;
+    expect(settled).toMatchObject({ state: 'resolved', value: '0xsignature' });
+    expect(elements['dapp-sign-raw-warning'].classList.contains('hidden')).toBe(true);
+
+    await openApproval('0xdeadbeef');
+    expect(elements['dapp-sign-raw-warning'].classList.contains('hidden')).toBe(true);
   });
 });

@@ -207,7 +207,6 @@ describe('preload', () => {
       [exposures.swarmManifest, 'useIndividual', ['origin.eth', 'feeds'], IPC.SWARM_MANIFEST_USE_INDIVIDUAL, [{ origin: 'origin.eth', capability: 'feeds' }]],
       [exposures.swarmManifest, 'disconnect', ['origin.eth'], IPC.SWARM_MANIFEST_DISCONNECT, ['origin.eth']],
       [exposures.swarmFeedStore, 'previewAppScopedIdentity', ['origin.eth', { label: 'Draft' }], IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY, ['origin.eth', { label: 'Draft' }]],
-      [exposures.swarmFeedStore, 'ensureEthereumWalletIdentity', ['origin.eth', 2, { activate: true }], IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY, ['origin.eth', 2, { activate: true }]],
       [exposures.sitePermissions, 'respondToPrompt', [{ id: 1, decision: 'allow', remember: true }], IPC.PERMISSIONS_PROMPT_RESPONSE, [{ id: 1, decision: 'allow', remember: true }]],
       [exposures.sitePermissions, 'getForOrigin', ['https://example.com'], IPC.PERMISSIONS_GET_FOR_ORIGIN, ['https://example.com']],
       // #366: the chrome popover's Remove is window-scoped — main reads the
