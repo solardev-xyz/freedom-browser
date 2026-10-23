@@ -15,6 +15,7 @@
 const crypto = require('crypto');
 const { EndpointReferences } = require('./naming-config');
 const { IMMEDIATE_WATCHDOG_MS } = require('./core-deadlines');
+const { EndpointChecks } = require('./endpoint-checks');
 
 /** A control request's hang watchdog (design 0001): the core answers it at
  * once, so its deadline is just the watchdog's margin. */
@@ -27,6 +28,11 @@ const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
 const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
 const DEFAULT_NON_MYOTIS_BROADCAST_ORDER = ['direct'];
+/** How long a core process's first snapshot waits for the checks of its
+ * endpoints' chains (design 0005, "Endpoints serve their chain"). */
+const STARTUP_CHECKS_MS = 3000;
+/** Check results join the configuration at most this often. */
+const CHECKED_CONFIGURE_MS = 60_000;
 
 /** Main's references for chain data: one per (chain, URL). */
 class ChainReferences extends EndpointReferences {
@@ -97,6 +103,31 @@ function isUserConfiguredRpc(registry, chainId, url) {
   return Boolean(metadata && !metadata.builtin && !metadata.removed && !metadata.keyed);
 }
 
+/** The chains the registry configures whose IDs can cross the wire, by
+ * their IDs. */
+function wireChains(registry) {
+  const chains = [];
+  for (const [key, network] of Object.entries(registry.getAllNetworks() || {})) {
+    const chainId = Number(key);
+    if (!Number.isSafeInteger(chainId) || chainId < 0 || String(chainId) !== key) continue;
+    chains.push([chainId, key, network]);
+  }
+  return chains;
+}
+
+/** A chain's RPC endpoints the snapshot may list: the first ones in
+ * registry order. */
+const rpcUrls = (registry, chainId) =>
+  strings(registry.getEndpoints(chainId, 'rpc')).slice(0, MAX_RPC_ENDPOINTS);
+
+/** Every (chain, URL) whose chain the snapshot's endpoints are checked
+ * for. */
+function rpcPairs(registry) {
+  return wireChains(registry).flatMap(([chainId]) =>
+    rpcUrls(registry, chainId).map((url) => ({ chainId, url }))
+  );
+}
+
 /**
  * The configuration snapshot: one entry for every chain the registry
  * configures, its inputs computed where the router computes them (the read
@@ -107,15 +138,19 @@ function isUserConfiguredRpc(registry, chainId, url) {
  * either. It is a proposal: its references stay pinned until it is
  * settled.
  *
+ * Only RPC endpoints `allows` lets in are listed: those whose `eth_chainId`
+ * answered the chain (endpoint-checks.js). The prover and Blockscout's
+ * index speak other protocols, and aren't asked.
+ *
  * @param {ChainReferences} refs
  * @param {object} sources - { registry, myotis, logIndexUrls }
+ * @param {object} [options] - allows(chainId, url): whether the endpoint
+ *   answered the chain; by default every endpoint is listed
  */
-function buildChainSnapshot(refs, { registry, myotis, logIndexUrls = {} }) {
+function buildChainSnapshot(refs, { registry, myotis, logIndexUrls = {} }, { allows } = {}) {
   refs.propose();
   const chains = [];
-  for (const [key, network] of Object.entries(registry.getAllNetworks() || {})) {
-    const chainId = Number(key);
-    if (!Number.isSafeInteger(chainId) || chainId < 0 || String(chainId) !== key) continue;
+  for (const [chainId, key, network] of wireChains(registry)) {
     const served = myotis.NETWORKS?.has(chainId) === true;
     const ref = (url) => refs.endpointRef(chainId, url);
     const [prover] = strings(registry.getEndpoints(chainId, 'prover'));
@@ -135,8 +170,8 @@ function buildChainSnapshot(refs, { registry, myotis, logIndexUrls = {} }) {
         served ? DEFAULT_BROADCAST_ORDER : DEFAULT_NON_MYOTIS_BROADCAST_ORDER
       ),
       ...(quorum ? { quorum } : {}),
-      rpc: strings(registry.getEndpoints(chainId, 'rpc'))
-        .slice(0, MAX_RPC_ENDPOINTS)
+      rpc: rpcUrls(registry, chainId)
+        .filter((url) => !allows || allows(chainId, url))
         .map((url) => ({
           endpoint: ref(url),
           user_configured: isUserConfiguredRpc(registry, chainId, url),
@@ -165,6 +200,13 @@ function buildChainSnapshot(refs, { registry, myotis, logIndexUrls = {} }) {
  *
  * For main's executors, `endpoint(ref)` and `generation(chainId)` answer
  * for the current core process.
+ *
+ * The snapshot lists only RPC endpoints that answered their chain's
+ * `eth_chainId` (`checks`, endpoint-checks.js), each answer kept for the
+ * core process's life. A process's first snapshot waits up to
+ * STARTUP_CHECKS_MS for its checks; answers that change which endpoints
+ * are let in later join the configuration at most once every
+ * CHECKED_CONFIGURE_MS.
  */
 class ChainConfig {
   /**
@@ -172,8 +214,11 @@ class ChainConfig {
    * @param {import('./core-client').CoreClient} options.client
    * @param {object} options.sources - { registry, myotis, logIndexUrls }
    * @param {object} [options.log]
+   * @param {EndpointChecks|null} [options.checks] - the endpoints' chain
+   *   checks; null lists every endpoint unchecked (tests whose endpoints
+   *   are scripted)
    */
-  constructor({ client, sources, log }) {
+  constructor({ client, sources, log, checks }) {
     this.client = client;
     this.sources = sources;
     this.log = log || console;
@@ -181,12 +226,80 @@ class ChainConfig {
     // Every process's state by its client generation, while anything (a
     // reply still being judged or published) holds the generation.
     this.processes = new WeakMap();
+    this.checks = checks === undefined ? new EndpointChecks({ log: this.log }) : checks;
+    if (this.checks) this.checks.onChange = () => this.joinChecks();
+    this.lastConfigured = -Infinity; // when the last snapshot was sent
+    this.joinTimer = null;
+    // Which endpoints the checks let in changed since the last snapshot.
+    this.checksChanged = false;
     client.on('ready', () => this.attach());
     client.on('exit', () => {
       this.core = null;
+      this.stopChecks();
     });
     // Built after the handshake: initialize now.
     if (client.hello) this.attach();
+  }
+
+  /** The (chain, URL) pairs the registry has now, given to the checks. */
+  syncChecks() {
+    const pairs = rpcPairs(this.sources.registry);
+    this.checks?.sync(pairs);
+    return pairs;
+  }
+
+  /**
+   * Which endpoints answered their chain changed: the configuration takes
+   * it, CHECKED_CONFIGURE_MS after the last snapshot at the earliest. A
+   * snapshot sent meanwhile (a registry change) takes what changed before
+   * it, and moves the join to a minute after itself, for what changes
+   * after it; with nothing changed since, there is no join.
+   */
+  joinChecks() {
+    this.checksChanged = true;
+    // Before a process's first snapshot is built, it takes every answer so
+    // far itself.
+    if (!this.core?.snapshotted || this.joinTimer) return;
+    this.armJoin();
+  }
+
+  armJoin() {
+    const delay = Math.max(0, this.lastConfigured + CHECKED_CONFIGURE_MS - Date.now());
+    this.joinTimer = setTimeout(() => {
+      this.joinTimer = null;
+      if (!this.checksChanged || !this.core) return;
+      if (Date.now() < this.lastConfigured + CHECKED_CONFIGURE_MS) {
+        this.armJoin();
+        return;
+      }
+      this.configure().catch(() => {});
+    }, delay);
+    this.joinTimer.unref?.();
+  }
+
+  /** No core process: no join is due, and the checks stop (a new process
+   * starts them afresh). */
+  stopChecks() {
+    clearTimeout(this.joinTimer);
+    this.joinTimer = null;
+    this.checksChanged = false;
+    this.checks?.reset();
+  }
+
+  /** The core has stopped for good (chain.js's detachChain). */
+  dispose() {
+    this.core = null;
+    this.stopChecks();
+  }
+
+  /**
+   * Asks the endpoint `url` which chain it serves, for chain `chainId`'s
+   * configuration (a source added or edited): the chain ID it answered, or
+   * null when the check failed. Kept for the snapshot when it is one of the
+   * chain's endpoints.
+   */
+  checkEndpoint(chainId, url) {
+    return this.checks ? this.checks.check(chainId, url) : Promise.resolve(chainId);
   }
 
   /** The `{ url, chainId }` behind one of the current core process's
@@ -248,13 +361,18 @@ class ChainConfig {
     };
     this.core = core;
     this.processes.set(core.gen, core);
+    // A new process: no endpoint's answer carries over.
+    this.checks?.reset();
+    core.checked = this.checks?.settled(this.syncChecks(), STARTUP_CHECKS_MS);
     core.initialized = this.initialize(core);
   }
 
   /** Configures, then sends each Myotis chain's readiness: true once both
-   * succeed. */
+   * succeed. The first snapshot waits for the endpoints' checks, up to
+   * STARTUP_CHECKS_MS. */
   initialize(core) {
     return this.run(core, async () => {
+      if (core.checked) await core.checked;
       await this.sendConfigure(core);
       if (this.core !== core) return false;
       await this.sendAvailability(core);
@@ -310,10 +428,12 @@ class ChainConfig {
   }
 
   /** Sends the current snapshot (a registry change). Failed, it is owed:
-   * nothing is served until it goes. */
+   * nothing is served until it goes. An endpoint the change adds is asked
+   * its chain, and joins once it has answered. */
   async configure() {
     const core = this.core;
     if (!core) return;
+    this.syncChecks();
     try {
       await this.run(core, () => this.sendConfigure(core));
     } catch (err) {
@@ -362,8 +482,17 @@ class ChainConfig {
   async sendConfigure(core) {
     let result;
     try {
-      // Built as it is sent, with the registry of that moment.
-      const params = buildChainSnapshot(core.refs, this.sources);
+      // Built as it is sent, with the registry and the checks of that
+      // moment.
+      const checks = this.checks;
+      const params = buildChainSnapshot(
+        core.refs,
+        this.sources,
+        checks ? { allows: (chainId, url) => checks.allows(chainId, url) } : {}
+      );
+      this.lastConfigured = Date.now();
+      this.checksChanged = false;
+      core.snapshotted = true;
       result = await this.sendControl(core, 'chain.configure', params);
     } catch (err) {
       core.refs.settle(false);
@@ -410,6 +539,9 @@ module.exports = {
   ChainConfig,
   ChainReferences,
   buildChainSnapshot,
+  rpcPairs,
+  STARTUP_CHECKS_MS,
+  CHECKED_CONFIGURE_MS,
   wireQuorum,
   isUserConfiguredRpc,
   MAX_RPC_ENDPOINTS,

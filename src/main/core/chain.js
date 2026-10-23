@@ -14,9 +14,11 @@ const { BroadcastRecords } = require('./chain-broadcasts');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
 const { ChainDriver } = require('./chain-driver');
+const { defaultAsk } = require('./endpoint-checks');
 
 let driver = null;
 let config = null;
+let standaloneAsk = null;
 
 /**
  * Attaches chain data to `client`, before it starts.
@@ -49,6 +51,8 @@ function attachChain(client, { running } = {}) {
 /** The core has stopped for good: calls fail from now on, as the driver's
  * do when no core process serves them. */
 function detachChain() {
+  // Its endpoint checks stop with it.
+  config?.dispose();
   driver = null;
   config = null;
 }
@@ -64,4 +68,22 @@ function chainSettingsChanged() {
   if (config) config.configure().catch(() => {});
 }
 
-module.exports = { attachChain, detachChain, chainDriver, chainSettingsChanged };
+/**
+ * For a source being saved as one of chain `chainId`'s endpoints: the
+ * chain ID `url` answers to `eth_chainId`, or null when the check failed
+ * (endpoint-checks.js). The answer is kept for the snapshot while the core
+ * runs chain data.
+ */
+function checkEndpointChain(chainId, url) {
+  if (config) return config.checkEndpoint(chainId, url);
+  standaloneAsk ??= defaultAsk();
+  return standaloneAsk(url);
+}
+
+module.exports = {
+  attachChain,
+  detachChain,
+  chainDriver,
+  chainSettingsChanged,
+  checkEndpointChain,
+};

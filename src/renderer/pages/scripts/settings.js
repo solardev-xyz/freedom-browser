@@ -3286,10 +3286,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     if (el) el.innerHTML = searchResultsHtml();
   };
 
-  // Persist a new chain (+ its RPC endpoints), then open its detail.
-  const submitAddChain = async (def, rpcUrls, onError) => {
+  // Persist a new chain (+ its RPC endpoints), then open its detail. A
+  // chain typed in the manual form says so (`entered`): main checks that
+  // its RPC URL serves that chain before saving it.
+  const submitAddChain = async (def, rpcUrls, onError, options) => {
     try {
-      const res = await freedomAPI.addChain(def, rpcUrls);
+      const res = await freedomAPI.addChain(def, rpcUrls, options);
       if (res && res.success === false) {
         const message = res.error || 'Could not add chain';
         if (onError) onError(message);
@@ -3625,7 +3627,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           blockExplorer: '',
         },
         [rpc],
-        failManual
+        failManual,
+        { entered: true }
       );
     }
   });
