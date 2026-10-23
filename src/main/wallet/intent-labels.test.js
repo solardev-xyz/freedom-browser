@@ -88,7 +88,7 @@ describe('what counts as evidence', () => {
 describe('labels on the finalized chain', () => {
   test('its own transaction in a block of the finalized chain, status 1: paid', async () => {
     const chain = chainWith({ 90: [ours(1)] });
-    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.PAID,
       hash: HASH,
       block: 100,
@@ -125,7 +125,7 @@ describe('labels on the finalized chain', () => {
   test('another transaction of the sender used its nonce in a finalized block: taken, found in that block', async () => {
     // The same payment signed elsewhere, or anything else at nonce 7.
     const chain = chainWith({ 90: [{ hash: OTHER, nonce: 7, status: 1 }] });
-    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.TAKEN,
       hash: null,
       block: 100,
@@ -266,7 +266,7 @@ describe('reads agreed by different honest views (#712 review)', () => {
     const chain = chainWith({ 90: [ours(1)] });
     chain.defineView('lagging', { head: 98, finalized: 95 });
     chain.route('eth_getBlockByNumber', 'lagging');
-    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.PAID,
       hash: HASH,
       block: 95,
@@ -546,5 +546,317 @@ describe('what a walk keeps, and the retained window', () => {
       )
       .map(([, , params]) => Number(BigInt(params[0])));
     expect(Math.max(...walked)).toBe(599);
+  });
+});
+
+// freedom-core design 0005, "State history" (#94): nodes serve state for
+// a window W of recent blocks, so the search for the block that used a
+// nonce starts from a bracket, and Colibri answers deeper where it proves
+// the reads. Here W is 128 blocks below each view's head, as geth keeps.
+describe('state history (#94)', () => {
+  const W = 128;
+  // Another transaction of the sender at nonce 7, at `at`.
+  const takenAt = (at, options = {}) =>
+    chainWith({ [at]: [{ hash: OTHER, nonce: 7 }] }, { stateWindow: W, ...options });
+  const countHeights = (chain) =>
+    chain
+      .reads()
+      .filter(([method]) => method === 'eth_getTransactionCount')
+      .map(([, params]) => chain.views.canonical.heights.get(params[1].blockHash));
+  const fullBlockReads = (chain) =>
+    chain
+      .reads()
+      .filter(
+        ([method, params]) =>
+          (method === 'eth_getBlockByHash' || method === 'eth_getBlockByNumber') &&
+          params[1] === true
+      );
+  const bracketAt = (chain, height) => ({ number: height, hash: chain.canonicalHash(height) });
+
+  describe('the bracket', () => {
+    test('a read that finds the nonce unused at F takes the bracket there; later reads move it up, never down', async () => {
+      const chain = chainWith({}, { head: 200, finalized: 100 });
+      const segment = createChainSegment();
+      const first = await readLabel(INTENT, { request: chain.request, segment });
+      expect(first).toMatchObject({
+        label: LABELS.HELD,
+        observed: OBSERVED.ABSENT,
+        nonceAtF: { block: 100, hash: chain.canonicalHash(100), count: 7, used: false },
+        bracket: bracketAt(chain, 100),
+      });
+
+      chain.views.canonical.finalized = 130;
+      const moved = await readLabel(INTENT, {
+        request: chain.request,
+        segment,
+        bracket: first.bracket,
+      });
+      expect(moved.bracket).toEqual(bracketAt(chain, 130));
+
+      // A lagging pair's older F: the nonce is unused there too, and the
+      // bracket stays where it was.
+      chain.defineView('lagging', { head: 125, finalized: 120 });
+      chain.route('eth_getBlockByNumber', 'lagging');
+      const lagged = await readLabel(INTENT, {
+        request: chain.request,
+        segment,
+        bracket: moved.bracket,
+      });
+      expect(lagged).toMatchObject({ nonceAtF: { block: 120, used: false } });
+      expect(lagged.bracket).toEqual(bracketAt(chain, 130));
+    });
+
+    test('a finalized nonce that disagrees with its receipt moves nothing', async () => {
+      const chain = chainWith({ 90: [ours(1)] });
+      chain.reshape('eth_getTransactionCount', () => hex(7));
+      const bracket = bracketAt(chain, 80);
+      await expect(readLabel(INTENT, { request: chain.request, bracket })).resolves.toMatchObject({
+        label: LABELS.HELD,
+        observed: OBSERVED.UNKNOWN,
+        bracket,
+      });
+    });
+
+    test('a nonce used at F leaves the bracket where it was', async () => {
+      const chain = chainWith({ 90: [ours(1)] });
+      const bracket = bracketAt(chain, 80);
+      await expect(readLabel(INTENT, { request: chain.request, bracket })).resolves.toMatchObject({
+        label: LABELS.PAID,
+        nonceAtF: { block: 100, count: 8, used: true },
+        bracket,
+      });
+    });
+
+    test("once the nonce is used, the search runs above the bracket, within the endpoints' window, and labels the intent", async () => {
+      // F is 100 below the head: a probe deeper than 28 blocks below F is
+      // outside every endpoint's window. The nonce was used 20 below F.
+      const chain = takenAt(80, { head: 200, finalized: 100 });
+      await expect(
+        readLabel(INTENT, { request: chain.request, bracket: bracketAt(chain, 79) })
+      ).resolves.toMatchObject({ label: LABELS.TAKEN, block: 100, bracket: bracketAt(chain, 79) });
+      // Every probe above the bracket, all within the window.
+      expect(Math.min(...countHeights(chain))).toBeGreaterThan(79);
+      expect(Math.min(...countHeights(chain))).toBeGreaterThanOrEqual(200 - W);
+      // The one block read with its transactions: the one that used it.
+      expect(fullBlockReads(chain)).toEqual([
+        ['eth_getBlockByHash', [chain.canonicalHash(80), true]],
+      ]);
+
+      // Paid and failed, from its own receipt, with the nonce at F in reach.
+      for (const [status, label] of [
+        [1, LABELS.PAID],
+        [0, LABELS.FAILED],
+      ]) {
+        const own = chainWith({ 80: [ours(status)] }, { head: 200, stateWindow: W });
+        await expect(
+          readLabel(INTENT, { request: own.request, bracket: bracketAt(own, 79) })
+        ).resolves.toMatchObject({ label, hash: HASH });
+      }
+    });
+
+    test('without a bracket the same search probes past the window: missing state, held', async () => {
+      const chain = takenAt(80, { head: 200, finalized: 100 });
+      await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+        label: LABELS.HELD,
+        observed: OBSERVED.UNKNOWN,
+        reason: expect.stringContaining('missing trie node'),
+        nonceAtF: { block: 100, used: true },
+        bracket: null,
+      });
+    });
+
+    test('probes beyond the window leave the intent held, also the nonce at F itself, and keep the bracket', async () => {
+      // F is 150 below the head: even its own nonce is out of reach.
+      const chain = takenAt(80, { head: 250, finalized: 100 });
+      const bracket = bracketAt(chain, 79);
+      await expect(readLabel(INTENT, { request: chain.request, bracket })).resolves.toMatchObject({
+        label: LABELS.HELD,
+        observed: OBSERVED.UNKNOWN,
+        nonceAtF: null,
+        bracket,
+      });
+    });
+
+    test("a bracket that doesn't verify is dropped, and the search falls back to the window", async () => {
+      const wide = (at, options) =>
+        chainWith({ [at]: [{ hash: OTHER, nonce: 7 }] }, { head: 9100, ...options });
+      const dropped = { label: LABELS.TAKEN, bracket: null };
+
+      // Its hash isn't the verified header's at its height.
+      const forked = wide(80);
+      await expect(
+        readLabel(INTENT, {
+          request: forked.request,
+          bracket: { number: 79, hash: forked.forkHash(79) },
+        })
+      ).resolves.toMatchObject(dropped);
+
+      // It isn't an ancestor of F: at F, or above it.
+      for (const height of [100, 105]) {
+        const above = wide(80);
+        await expect(
+          readLabel(INTENT, { request: above.request, bracket: bracketAt(above, height) })
+        ).resolves.toMatchObject(dropped);
+      }
+
+      // Deeper below F than any probe may go (F − 8194).
+      const deep = wide(8990, { finalized: 9000 });
+      await expect(
+        readLabel(INTENT, { request: deep.request, bracket: bracketAt(deep, 9000 - 8194) })
+      ).resolves.toMatchObject(dropped);
+
+      // A malformed one is no bracket.
+      const malformed = wide(80);
+      await expect(
+        readLabel(INTENT, { request: malformed.request, bracket: { number: -1, hash: 'x' } })
+      ).resolves.toMatchObject(dropped);
+    });
+
+    test('a bracket whose check fails to read is kept for the next pass', async () => {
+      const chain = takenAt(80, { head: 200, finalized: 100 });
+      const bracket = bracketAt(chain, 79);
+      const request = jest.fn(async (chainId, method, params, options) => {
+        if (method.startsWith('eth_getBlockBy') && params[0] !== 'finalized') {
+          throw new Error('timeout');
+        }
+        return chain.request(chainId, method, params, options);
+      });
+      await expect(readLabel(INTENT, { request, bracket })).resolves.toMatchObject({
+        label: LABELS.HELD,
+        observed: OBSERVED.UNKNOWN,
+        bracket,
+      });
+    });
+  });
+
+  describe('Colibri, where it proves the reads', () => {
+    // The core's read order, scripted: Colibri first where the chain has a
+    // prover, Colibri is in the order and up, and it proves the method (at
+    // any depth its prover reaches); then the quorum, within its
+    // endpoints' window; then `direct`, one endpoint's answer, if given.
+    function routed(chain, { proves = null, direct: directAnswer = null } = {}) {
+      const request = jest.fn(async (chainId, method, params, options) => {
+        if (proves?.has(method)) {
+          request.sources.push('colibri');
+          return colibri(chain.prove(method, params));
+        }
+        try {
+          return await chain.request(chainId, method, params, options);
+        } catch (err) {
+          if (directAnswer) return directAnswer(method, params);
+          throw err;
+        }
+      });
+      request.sources = [];
+      return request;
+    }
+    const STATE_READS = new Set(['eth_getTransactionCount', 'eth_getBlockByHash']);
+
+    test("with a prover, and Colibri proving the reads, the search reaches a block beyond the endpoints' window", async () => {
+      // Used 2,000 blocks below F, with no bracket.
+      const chain = takenAt(1000, { head: 3100, finalized: 3000 });
+      const request = routed(chain, { proves: STATE_READS });
+      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
+        label: LABELS.TAKEN,
+        block: 3000,
+      });
+      expect(request.sources).toContain('colibri');
+      // The probes went deeper than any endpoint's window.
+      const probed = request.mock.calls
+        .filter(([, method]) => method === 'eth_getTransactionCount')
+        .map(([, , params]) => chain.views.canonical.heights.get(params[1].blockHash));
+      expect(Math.min(...probed)).toBeLessThan(3100 - W);
+    });
+
+    test("with no prover, Colibri out of the order or failing, or a read it doesn't prove, the read falls to the quorum, within the window", async () => {
+      // No Colibri at all (no prover, out of the order, or failing: the
+      // router goes on to the quorum), or Colibri proving only the block
+      // read, not the nonce.
+      for (const proves of [null, new Set(['eth_getBlockByHash'])]) {
+        const deep = takenAt(1000, { head: 3100, finalized: 3000 });
+        await expect(
+          readLabel(INTENT, { request: routed(deep, { proves }) })
+        ).resolves.toMatchObject({
+          label: LABELS.HELD,
+          observed: OBSERVED.UNKNOWN,
+          nonceAtF: { used: true },
+        });
+        // Within the window, the quorum's answers label it.
+        const shallow = takenAt(2995, { head: 3100, finalized: 3000 });
+        await expect(
+          readLabel(INTENT, { request: routed(shallow, { proves }) })
+        ).resolves.toMatchObject({ label: LABELS.TAKEN });
+      }
+    });
+
+    test('a Direct answer, or a quorum of one, never counts as evidence, at any depth', async () => {
+      // An archive endpoint answers past the window, alone.
+      for (const wrap of [direct, singleton]) {
+        const chain = takenAt(1000, { head: 3100, finalized: 3000 });
+        const request = routed(chain, {
+          direct: (method, params) => wrap(chain.prove(method, params)),
+        });
+        await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
+          label: LABELS.HELD,
+          observed: OBSERVED.UNKNOWN,
+          reason: expect.stringContaining('no verified evidence'),
+        });
+      }
+    });
+  });
+
+  test('no block scan: at most one block with its transactions per intent, the one its probes located', async () => {
+    for (const bracket of [null, 2900]) {
+      const chain = takenAt(2950, { head: 3100, finalized: 3000, stateWindow: Infinity });
+      await expect(
+        readLabel(INTENT, {
+          request: chain.request,
+          bracket: bracket === null ? null : bracketAt(chain, bracket),
+        })
+      ).resolves.toMatchObject({ label: LABELS.TAKEN });
+      expect(fullBlockReads(chain)).toEqual([
+        ['eth_getBlockByHash', [chain.canonicalHash(2950), true]],
+      ]);
+    }
+  });
+
+  test(`the bound: evidence ${MAX_DEPTH} blocks below F settles the intent; ${MAX_DEPTH + 1n} below, it stays held`, async () => {
+    const F = 9000;
+    const edge = F - Number(MAX_DEPTH);
+    const options = { head: 9100, finalized: F };
+    // Its own receipt.
+    await expect(
+      readLabel(INTENT, { request: chainWith({ [edge]: [ours(1)] }, options).request })
+    ).resolves.toMatchObject({ label: LABELS.PAID });
+    await expect(
+      readLabel(INTENT, { request: chainWith({ [edge - 1]: [ours(1)] }, options).request })
+    ).resolves.toMatchObject({ label: LABELS.HELD, observed: OBSERVED.UNVERIFIABLE });
+    // Another transaction at its nonce, found by the search from F...
+    const taken = (at) => chainWith({ [at]: [{ hash: OTHER, nonce: 7 }] }, options);
+    await expect(readLabel(INTENT, { request: taken(edge).request })).resolves.toMatchObject({
+      label: LABELS.TAKEN,
+    });
+    await expect(readLabel(INTENT, { request: taken(edge - 1).request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNVERIFIABLE,
+    });
+    // ...or from a bracket just below it.
+    const bracketed = taken(edge);
+    await expect(
+      readLabel(INTENT, {
+        request: bracketed.request,
+        bracket: bracketAt(bracketed, edge - 1),
+      })
+    ).resolves.toMatchObject({ label: LABELS.TAKEN, bracket: bracketAt(bracketed, edge - 1) });
+    // It never looked at a header below the bound.
+    const deepest = Math.min(
+      ...bracketed
+        .reads()
+        .filter(
+          ([method, params]) => method === 'eth_getBlockByNumber' && params[0] !== 'finalized'
+        )
+        .map(([, params]) => Number(BigInt(params[0])))
+    );
+    expect(deepest).toBe(edge);
   });
 });

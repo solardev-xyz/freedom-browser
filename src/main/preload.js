@@ -560,6 +560,10 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:intent-replacement-fees', intentId),
   intentReplace: (intentId, fees, authorization) =>
     ipcRenderer.invoke('wallet:intent-replace', intentId, fees, authorization),
+  // Close by hand a held payment shown as Couldn't confirm: `authorization`
+  // is an 'intent-close' confirmation of the payment and its hashes.
+  intentClose: (intentId, authorization) =>
+    ipcRenderer.invoke('wallet:intent-close', intentId, authorization),
   onIntentsChanged: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('wallet:intents-changed', handler);

@@ -285,6 +285,55 @@ describe('signing-confirmation', () => {
     });
   });
 
+  // freedom-core design 0005, "State history" (#94): closing by hand binds
+  // the intent and every hash it has, in order: the revision the user saw.
+  test('an intent-close binds the intent and each of its hashes, in order', () => {
+    const CLOSE = {
+      intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a07',
+      chainId: 100,
+      sender: '0x' + 'AB'.repeat(20),
+      nonce: 7,
+      hashes: ['0x' + 'A1'.repeat(32), '0x' + 'b2'.repeat(32)],
+    };
+    const lower = {
+      ...CLOSE,
+      sender: CLOSE.sender.toLowerCase(),
+      hashes: CLOSE.hashes.map((h) => h.toLowerCase()),
+    };
+    const ok = issueConfirmation(KINDS.INTENT_CLOSE, null, CLOSE);
+    expect(() => consumeConfirmation(ok.token, KINDS.INTENT_CLOSE, null, lower)).not.toThrow();
+
+    for (const changed of [
+      { hashes: [CLOSE.hashes[0]] },
+      { hashes: [...CLOSE.hashes].reverse() },
+      { hashes: [...CLOSE.hashes, '0x' + 'c3'.repeat(32)] },
+      { nonce: 8 },
+      { chainId: 1 },
+      { intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a08' },
+      { sender: '0x' + 'cd'.repeat(20) },
+    ]) {
+      const { token } = issueConfirmation(KINDS.INTENT_CLOSE, null, CLOSE);
+      expect(
+        refusal(() =>
+          consumeConfirmation(token, KINDS.INTENT_CLOSE, null, { ...CLOSE, ...changed })
+        ).code
+      ).toBe(NOT_CONFIRMED);
+    }
+    // Not a confirmation of a resend of the same intent.
+    const resend = issueConfirmation(KINDS.INTENT_RESEND, null, {
+      ...CLOSE,
+      hash: CLOSE.hashes[1],
+    });
+    expect(
+      refusal(() => consumeConfirmation(resend.token, KINDS.INTENT_CLOSE, null, CLOSE)).code
+    ).toBe(NOT_CONFIRMED);
+
+    for (const hashes of [[], undefined, ['0x12'], Array(65).fill(CLOSE.hashes[0])]) {
+      expect(() => issueConfirmation(KINDS.INTENT_CLOSE, null, { ...CLOSE, hashes })).toThrow(
+        /hash/i
+      );
+    }
+  });
   test('malformed requests are not issued a token', () => {
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, chainId: 0 })).toThrow(/chainId/);

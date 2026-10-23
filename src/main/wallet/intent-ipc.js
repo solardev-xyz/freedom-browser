@@ -24,19 +24,30 @@
  *   record, and only the fees from the caller. Offered for a refusal over
  *   fees, and as "speed up" for a payment that may be stuck. Refusals
  *   carry the intent's current summary, as a resend's do.
+ * - `wallet:intent-close(intentId, authorization)`: close by hand a held
+ *   intent shown as Couldn't confirm (design 0005, "State history", #94),
+ *   only once a verified read showed its nonce used at a finalized block,
+ *   so none of its transactions can be mined. The authorization is an
+ *   `intent-close` confirmation of the intent and every hash it has, built
+ *   from main's record. Under the account's reservation lock, and only for
+ *   those hashes: a replacement committed meanwhile closes nothing. The
+ *   intent is retired durably, and its history row says its payment is
+ *   unconfirmed. Refusals carry the intent's current summary.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
  *   change, or what the finality tracker saw of a held intent does.
  */
 
 const { ipcMain } = require('electron');
-const { getIntentStore } = require('./intent-store');
-const { resendAndRecord, replaceAndRecord } = require('./tx-recorder');
+const { closedText, getIntentStore } = require('./intent-store');
+const { resendAndRecord, replaceAndRecord, recordSettlement } = require('./tx-recorder');
 const { replacementFees } = require('./transaction-service');
 const { getSigner } = require('./signers');
 const paymentHistory = require('../payment-history');
 const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('./signing-confirmation');
 const { getIntentTracker } = require('./intent-tracker');
 const { OBSERVED } = require('./intent-labels');
+const { withAccountLock } = require('./nonce-reservations');
+const { getTxExplorerUrl } = require('./chains');
 
 const OUTCOME_ATTENTION = Object.freeze({
   rejected: 'refused',
@@ -175,8 +186,30 @@ function currentIntent(intentId) {
 }
 
 /**
+ * What Couldn't confirm shows of a held intent, or null when it isn't
+ * shown: its hashes, each with a block-explorer link, and whether it may
+ * be closed by hand.
+ */
+function couldntConfirmOf(view, tracker) {
+  const state = tracker.couldntConfirm(view);
+  if (!state) return null;
+  return {
+    since: state.since,
+    closable: state.closable,
+    hashes: view.hashes.map(({ hash }) => ({
+      hash,
+      explorerUrl: getTxExplorerUrl(view.chainId, hash) ?? null,
+    })),
+  };
+}
+
+/**
  * The held intents, each with where it stands and the receipt seen for it,
- * if any (`receipt`: a payment on chain no longer waits on the user).
+ * if any (`receipt`: a payment on chain no longer waits on the user), and
+ * `couldntConfirm` for one whose label couldn't be read for a day. That
+ * one waits on the user whatever a receipt said, since nothing verified
+ * it: it has no `receipt`. Once its nonce is seen used, none of its
+ * transactions can be mined, so it is offered no replacement.
  */
 async function listHeldIntents() {
   const store = getIntentStore();
@@ -186,11 +219,15 @@ async function listHeldIntents() {
   return store.held().map((view) => {
     const observation = tracker.observation(view.intentId);
     const mined = observation?.observed === OBSERVED.INCLUDED ? 'mined' : null;
+    const couldntConfirm = couldntConfirmOf(view, tracker);
+    const summary = intentSummary(view, observation);
     return {
-      ...intentSummary(view, observation),
+      ...summary,
       observed: observation?.observed ?? null,
       // On chain, though not final yet: it no longer waits on the user.
-      receipt: receipts.get(view.intentId) ?? mined,
+      receipt: couldntConfirm ? null : (receipts.get(view.intentId) ?? mined),
+      couldntConfirm,
+      replacement: couldntConfirm?.closable ? null : summary.replacement,
     };
   });
 }
@@ -214,9 +251,7 @@ function heldView(store, intentId) {
     throw error;
   }
   if (view.state !== 'held') {
-    const error = new Error(
-      view.state === 'voided' ? 'This payment was voided.' : 'This payment is already settled.'
-    );
+    const error = new Error(closedText(view.state));
     error.code = 'INTENT_NOT_HELD';
     throw error;
   }
@@ -283,6 +318,52 @@ async function replaceHeldIntent(intentId, fees, authorization) {
   return replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex));
 }
 
+// What an intent-close confirmation of `view` binds: the intent, and every
+// hash it has, in order (the revision the user saw).
+function closeBinding(view) {
+  return {
+    intentId: view.intentId,
+    chainId: view.chainId,
+    sender: view.sender,
+    nonce: view.nonce,
+    hashes: view.hashes.map((entry) => entry.hash),
+  };
+}
+
+/**
+ * Close a held intent by hand (design 0005, "State history"). The tracker
+ * must show it as Couldn't confirm, with a verified read in this run that
+ * saw its nonce past N at a finalized block: N is used on the finalized
+ * chain, so none of its signed versions can be mined. Then, under the
+ * account's lock, the store retires it, only if it still has the hashes
+ * the user confirmed.
+ */
+async function closeHeldIntent(intentId, authorization) {
+  const store = getIntentStore();
+  await store.ready;
+  const view = heldView(store, intentId);
+  const binding = closeBinding(view);
+  consumeConfirmation(authorization?.confirmation, CONFIRM_KINDS.INTENT_CLOSE, null, binding);
+  const evidence = getIntentTracker().closeEvidence(view.intentId);
+  if (!evidence) {
+    const error = new Error(
+      "This payment can't be closed: the network hasn't shown that its place in the queue " +
+        'was used.'
+    );
+    error.code = 'INTENT_CLOSE_REFUSED';
+    throw error;
+  }
+  const closed = await withAccountLock({ chainId: view.chainId, sender: view.sender }, (lock) =>
+    store.retire({ intentId: view.intentId, block: evidence.block, hashes: binding.hashes }, lock)
+  );
+  console.log(
+    `[WalletIPC] Closed intent ${view.intentId} by hand; its nonce ${view.nonce} was used ` +
+      `by finalized block ${evidence.block}`
+  );
+  recordSettlement(view, { label: 'closed', hash: null, block: evidence.block });
+  return { intentId: closed.intentId, intent: intentSummary(closed) };
+}
+
 /**
  * @param {object} [options]
  * @param {() => Electron.BrowserWindow[]} [options.windows] the chrome
@@ -340,6 +421,20 @@ function registerIntentIpc({
     }
   });
 
+  ipcMain.handle('wallet:intent-close', async (_event, intentId, authorization) => {
+    try {
+      return { success: true, ...(await closeHeldIntent(intentId, authorization)) };
+    } catch (err) {
+      console.error('[WalletIPC] Closing a payment failed:', err);
+      return {
+        success: false,
+        error: err.message,
+        ...intentFailure(err),
+        ...currentIntent(intentId),
+      };
+    }
+  });
+
   const changed = () => {
     for (const win of windows()) {
       if (win.isDestroyed()) continue;
@@ -356,6 +451,7 @@ function registerIntentIpc({
 
 module.exports = {
   attentionOf,
+  closeBinding,
   currentIntent,
   intentFailure,
   intentSummary,

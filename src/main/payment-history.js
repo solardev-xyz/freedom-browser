@@ -42,6 +42,9 @@ const STATUSES = Object.freeze({
   // finalized block: this payment may or may not have happened (it may
   // have been signed elsewhere too).
   TAKEN: 'taken',
+  // A wallet intent the user closed by hand once its label couldn't be
+  // read (Couldn't confirm): whether it paid is unknown.
+  UNCONFIRMED: 'unconfirmed',
 });
 const FINAL_STATUSES = new Set([
   STATUSES.CONFIRMED,
@@ -49,6 +52,7 @@ const FINAL_STATUSES = new Set([
   STATUSES.SETTLED,
   STATUSES.NO_RECEIPT,
   STATUSES.TAKEN,
+  STATUSES.UNCONFIRMED,
 ]);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 
