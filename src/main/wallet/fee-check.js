@@ -30,6 +30,18 @@
  * The header's age comes from its timestamp and this wall clock; the
  * quote's from its request's start on the monotonic clock.
  *
+ * **Main's own transactions** (a Safe's execution or activation, paid by
+ * its executor) are judged as they are signed, against the same R. Within
+ * the threshold, with a reference that permits auto-approval, they go ahead
+ * as before; otherwise they stop before signing
+ * (FEE_CHECK_NEEDS_CONFIRMATION) and are signed only with the fee the user
+ * then confirms on the Safe's screen (safe-executor.js).
+ *
+ * **Fees the user didn't see** are never signed: a confirmed send that
+ * names no fee of its own would be given today's after its confirmation,
+ * so it is refused (FEE_NOT_SHOWN) and goes back to its screen
+ * (wallet-ipc.js).
+ *
  * The check is a confirmation heuristic, not proof that a fee is honest.
  */
 
@@ -54,6 +66,13 @@ const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
 
 /** A send whose fee can't be auto-approved: it is shown for confirmation. */
 const FEE_CHECK_NOT_AUTO_APPROVED = 'FEE_CHECK_NOT_AUTO_APPROVED';
+
+/** A transaction main sends on its own (a Safe's execution or activation)
+ * whose fee needs the user: nothing is signed until they confirm it. */
+const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
+
+/** A send whose fee the user wasn't shown: it is never signed. */
+const FEE_NOT_SHOWN = 'FEE_NOT_SHOWN';
 
 /** The most chains whose evidence is kept at once. */
 const MAX_CHAINS = 32;
@@ -329,6 +348,8 @@ module.exports = {
   EVIDENCE_DEADLINE_MS,
   FEE_CHECK_ASK_AGAIN,
   FEE_CHECK_NOT_AUTO_APPROVED,
+  FEE_CHECK_NEEDS_CONFIRMATION,
+  FEE_NOT_SHOWN,
   FeeChecks,
   readEvidence,
   referenceFee,

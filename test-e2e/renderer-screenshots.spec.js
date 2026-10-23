@@ -429,6 +429,11 @@ test.describe('renderer screenshots', () => {
         }
         await recipes.dappPermissions(ctx);
         await shot('23-dapp-permissions');
+        // A Safe's own transactions, stopped for their fee (design 0005, A).
+        await recipes.safeExecuteFee(ctx);
+        await shot('28-safe-execute-fee');
+        await recipes.safeActivateFee(ctx);
+        await shot('29-safe-activate-fee');
         surfaces.tookEverySurface();
       });
 

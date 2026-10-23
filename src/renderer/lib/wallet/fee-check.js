@@ -16,13 +16,26 @@
  * (today's fee fell, or the evidence was gathered again): main then mints
  * nothing and answers FEE_CHECK_ASK_AGAIN with the new verdict, and the
  * screen asks again.
+ *
+ * A Safe's execution or activation that main stopped for its executor's fee
+ * (FEE_CHECK_NEEDS_CONFIRMATION) is shown on the signing board or the
+ * account card (describeFeeCheck), and confirmed there (confirmOfferedFee).
  */
+
+import { confirmSigning } from './signing-confirmation.js';
 
 /** Main's answer when a fee is newly above the threshold at the press. */
 export const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
 
 /** Main's answer when an auto-approved send's fee needs the user. */
 export const FEE_CHECK_NOT_AUTO_APPROVED = 'FEE_CHECK_NOT_AUTO_APPROVED';
+
+/** Main's answer when a transaction it sends on its own (a Safe's
+ * execution or activation) needs the user to confirm its fee. */
+export const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
+
+/** Main's answer to a send whose fee wasn't shown: nothing was signed. */
+export const FEE_NOT_SHOWN = 'FEE_NOT_SHOWN';
 
 /** Every text the fee check shows. */
 export const FEE_CHECK = Object.freeze({
@@ -35,7 +48,48 @@ export const FEE_CHECK = Object.freeze({
   above: (ratio) => `This network fee is ${ratio}× today's network fee.`,
   askAgain: 'Check the fee, then press Send anyway to pay it.',
   sendAnyway: 'Send anyway',
+  confirmFee: 'Confirm the network fee',
+  confirmExecute: 'Confirm fee and execute',
+  confirmActivate: 'Confirm fee and activate',
+  feeUnknown: "Couldn't get the network fee",
+  retry: 'Try again',
 });
+
+/**
+ * A verdict in lines of text: the most the transaction can cost, then how
+ * its fee compares with today's network fee (or that it couldn't be
+ * compared, or the warning above the threshold).
+ */
+export function describeFeeCheck(verdict, symbol = 'ETH') {
+  if (!verdict) return [];
+  const lines = [];
+  if (verdict.maxCost) lines.push(FEE_CHECK.upTo(formatMaxCost(verdict.maxCost), symbol));
+  if (!verdict.comparable) lines.push(FEE_CHECK.notCompared);
+  else if (verdict.above) lines.push(FEE_CHECK.above(verdict.ratio).replace(/\.$/, ''));
+  else lines.push(FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint));
+  return lines;
+}
+
+/**
+ * The user's confirmation of the fee main stopped a transaction of its own
+ * for (FEE_CHECK_NEEDS_CONFIRMATION): an 'executor-send' confirmation of
+ * the transaction main offered, with that fee, as main takes it back
+ * (`feeConfirmation`). A fee shown above the threshold is confirmed as
+ * such. Throws as confirmSigning does: FEE_CHECK_ASK_AGAIN with main's new
+ * verdict when the fee is newly above at the press.
+ */
+export async function confirmOfferedFee(offer, verdict) {
+  const { executorIndex, ...payload } = offer;
+  const { confirmation } = await confirmSigning(
+    'executor-send',
+    executorIndex,
+    payload,
+    verdict?.above ? { feeAcknowledged: true } : undefined
+  );
+  const { gasLimit, ...fees } = feeFields(payload);
+  delete fees.chainId;
+  return { confirmation, gasLimit, fees };
+}
 
 /** An amount of wei in whole units, rounded up at 9 decimals (a gwei):
  * "up to" never understates it. */

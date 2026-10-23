@@ -37,6 +37,11 @@
  *     again. Nothing is signed; the handler builds the binding from main's
  *     own record of the intent, never from fields the caller submits
  *     (`wallet:intent-resend`).
+ *   - executor-send: a transaction main sends on its own account's behalf
+ *     (a Safe's execution or activation, paid by its executor) whose fee
+ *     the fee check stopped for the user (design 0005, A): the executor's
+ *     wallet index, chainId, to, value, data, the gas limit and the fees
+ *     shown. Main signs it with exactly those fees, or not at all.
  *   - intent-replace: a held intent signed again at its nonce with new
  *     fees: its id, chainId, sender, nonce, the payment it keeps (to,
  *     value, data, gasLimit) and the new fees. The handler takes the
@@ -66,6 +71,7 @@ const KINDS = Object.freeze({
   SAFE_MESSAGE: 'safe-message',
   INTENT_RESEND: 'intent-resend',
   INTENT_REPLACE: 'intent-replace',
+  EXECUTOR_SEND: 'executor-send',
 });
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
@@ -210,6 +216,7 @@ function txFields(tx) {
 function bindingFor(kind, accountIndex, payload) {
   switch (kind) {
     case KINDS.WALLET_SEND:
+    case KINDS.EXECUTOR_SEND:
       return { walletIndex: index(accountIndex, 'wallet index'), ...txFields(payload) };
     case KINDS.DAPP_SEND:
       return {

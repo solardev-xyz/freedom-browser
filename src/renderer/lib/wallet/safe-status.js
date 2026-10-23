@@ -22,6 +22,13 @@ import {
 } from './wallet-utils.js';
 import { updateSendAvailability } from './send.js';
 import { showVaultUnlock } from './vault-unlock.js';
+import {
+  FEE_CHECK,
+  FEE_CHECK_ASK_AGAIN,
+  FEE_CHECK_NEEDS_CONFIRMATION,
+  confirmOfferedFee,
+  describeFeeCheck,
+} from './fee-check.js';
 
 let card;
 let refreshToken = 0;
@@ -115,10 +122,63 @@ function renderStatus(status) {
     <button type="button" class="safe-status-btn primary" id="safe-status-activate">Activate</button>
     <div class="unlock-error hidden" id="safe-status-error"></div>
   `);
-  document.getElementById('safe-status-activate')?.addEventListener('click', handleActivate);
+  document
+    .getElementById('safe-status-activate')
+    ?.addEventListener('click', () => handleActivate());
 }
 
-async function handleActivate() {
+/**
+ * The executor's activation fee, stopped by the fee check (design 0005,
+ * A): shown, and signed only once the user confirms it.
+ */
+function renderFeeAsk(walletIndex, ask) {
+  const lines = describeFeeCheck(ask.feeCheck, 'xDAI');
+  render(`
+    <div class="safe-status-text">
+      <strong>${escapeHtml(FEE_CHECK.confirmFee)}.</strong>
+      ${lines.map((line) => `${escapeHtml(line)}.`).join(' ')}
+    </div>
+    <button type="button" class="safe-status-btn primary" id="safe-status-confirm-fee">${escapeHtml(FEE_CHECK.confirmActivate)}</button>
+    <button type="button" class="safe-status-btn" id="safe-status-cancel-fee">Cancel</button>
+    <div class="unlock-error hidden" id="safe-status-error"></div>
+  `);
+  document
+    .getElementById('safe-status-confirm-fee')
+    ?.addEventListener('click', () => confirmActivationFee(walletIndex, ask));
+  document
+    .getElementById('safe-status-cancel-fee')
+    ?.addEventListener('click', () => refreshSafeStatusCard());
+}
+
+async function confirmActivationFee(walletIndex, ask) {
+  // Another account since the fee was shown: its card is shown instead.
+  if (walletRecord()?.index !== walletIndex) return refreshSafeStatusCard();
+  const button = document.getElementById('safe-status-confirm-fee');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Activating…';
+  }
+  let feeConfirmation;
+  try {
+    feeConfirmation = await confirmOfferedFee(ask.offer, ask.feeCheck);
+  } catch (err) {
+    if (err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck) {
+      // Newly above the threshold at the press: shown, and asked again.
+      renderFeeAsk(walletIndex, { ...ask, feeCheck: err.feeCheck });
+      return;
+    }
+    await refreshSafeStatusCard();
+    showInlineError(document.getElementById('safe-status-error'), err?.message);
+    return;
+  }
+  return handleActivate(feeConfirmation);
+}
+
+/**
+ * `feeConfirmation`: the user's confirmation of the executor's fee that
+ * the fee check stopped for (confirmActivationFee).
+ */
+async function handleActivate(feeConfirmation) {
   const wallet = walletRecord();
   if (!wallet) return;
 
@@ -128,7 +188,15 @@ async function handleActivate() {
     button.textContent = 'Activating…';
   }
 
-  const result = await window.wallet.activateSafe(wallet.index);
+  const result = await (feeConfirmation
+    ? window.wallet.activateSafe(wallet.index, { feeConfirmation })
+    : window.wallet.activateSafe(wallet.index));
+
+  // The executor's fee needs the user: nothing was signed.
+  if (!result.success && result.code === FEE_CHECK_NEEDS_CONFIRMATION && result.offer) {
+    renderFeeAsk(wallet.index, { feeCheck: result.feeCheck, offer: result.offer });
+    return;
+  }
 
   // Deployment is signed by the executor's vault key: a locked vault is
   // a step in the flow, not a failure — walk the user through the

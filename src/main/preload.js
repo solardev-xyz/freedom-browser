@@ -596,13 +596,16 @@ contextBridge.exposeInMainWorld('wallet', {
   createSafe: (name, ownerIndexes, threshold) =>
     ipcRenderer.invoke('wallet:create-safe', name, ownerIndexes, threshold),
   getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
-  activateSafe: (index) => ipcRenderer.invoke('wallet:activate-safe', index),
+  // `options.feeConfirmation`: the user's 'executor-send' confirmation of a
+  // fee the fee check stopped for (design 0005, A), with that fee.
+  activateSafe: (index, options) => ipcRenderer.invoke('wallet:activate-safe', index, options),
   // Safe sends (the signing board): every call returns {success, state}
   // where state is the board's render model (null when nothing pending).
   safeSend: (safeIndex, tx, display, chainId, authorization) =>
     ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId, authorization),
   safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
-  safeExecute: (safeIndex) => ipcRenderer.invoke('wallet:safe-execute', safeIndex),
+  safeExecute: (safeIndex, options) =>
+    ipcRenderer.invoke('wallet:safe-execute', safeIndex, options),
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
   safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
   safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),

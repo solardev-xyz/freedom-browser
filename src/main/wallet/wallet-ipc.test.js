@@ -6,7 +6,10 @@ jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({ getBalancesWithCache: jest.fn(async () => ({ balances: null, fromCache: false })) }));
 jest.mock('./chains', () => ({}));
 jest.mock('./provider-manager', () => ({}));
-jest.mock('./transaction-service', () => ({}));
+jest.mock('./transaction-service', () => ({
+  namesOwnFees: ({ maxFeePerGas, maxPriorityFeePerGas, gasPrice }) =>
+    Boolean((maxFeePerGas && maxPriorityFeePerGas) || gasPrice),
+}));
 jest.mock('./tx-recorder', () => ({
   signAndRecord: jest.fn(),
   KINDS: { WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
@@ -22,6 +25,7 @@ jest.mock('./dapp-permissions', () => ({
 }));
 jest.mock('./safe/safe-transactions', () => ({
   startSafeSend: jest.fn(async () => ({ safeTxHash: '0xsafetx' })),
+  executeSafePending: jest.fn(async () => ({ status: 'executed' })),
 }));
 jest.mock('./safe/safe-messages', () => ({
   startSafeMessage: jest.fn(async () => ({ token: 'session' })),
@@ -523,6 +527,8 @@ describe('signing handlers require a main-side confirmation', () => {
       for (const [kind, index, payload] of [
         ['wallet-send', null, TX],
         ['dapp-send', 2, { ...TX, origin: SITE }],
+        // A Safe executor's fee, confirmed on the Safe's screen.
+        ['executor-send', 0, TX],
       ]) {
         const outstanding = confirmations._outstandingCount();
         const asked = await handlers['wallet:confirm-signing']({}, kind, index, payload);
@@ -579,6 +585,64 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { autoApprove: SITE });
       expect(result).toMatchObject({ success: true });
       expect(feeCheck.checkAtApproval).toHaveBeenLastCalledWith(TX);
+    });
+
+    // Main never signs a fee the user didn't see: a confirmed send without
+    // its own fees would be given today's after its confirmation.
+    test("a send whose fee wasn't shown is refused, with nothing signed", async () => {
+      const { gasPrice: _shown, ...noFee } = TX;
+      const halfFee = { ...noFee, maxFeePerGas: '2000000000' };
+      const zeroFee = { ...noFee, gasPrice: 0 };
+      for (const tx of [noFee, halfFee, zeroFee]) {
+        const confirmation = await mint('dapp-send', 2, { ...tx, origin: SITE });
+        const result = await handlers['wallet:dapp-send-transaction'](
+          {}, tx, 2, { origin: SITE }, { confirmation });
+        expect(result).toEqual({
+          success: false,
+          code: 'FEE_NOT_SHOWN',
+          error: "This payment's network fee wasn't shown, so nothing was signed. Review it again.",
+        });
+        const sent = await handlers['wallet:send-transaction'](
+          {}, tx, {}, { confirmation: await mint('wallet-send', null, tx) });
+        expect(sent).toMatchObject({ success: false, code: 'FEE_NOT_SHOWN' });
+      }
+      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(takeSiteTurn).not.toHaveBeenCalled();
+      // A phone picks its own fee.
+      getSigner.mockReturnValue({ sendTransaction: jest.fn() });
+      const phone = await handlers['wallet:send-transaction'](
+        {}, noFee, {}, { confirmation: await mint('wallet-send', null, noFee) });
+      expect(phone).toMatchObject({ success: true });
+    });
+
+    test("a Safe's execution or activation stopped for its fee answers what to show", async () => {
+      const { executeSafePending } = require('./safe/safe-transactions');
+      const { activateSafe } = require('./safe/safe-service');
+      const judged = verdict({ comparable: false, ratio: null, autoApprove: false });
+      const offer = { executorIndex: 0, ...TX };
+      const stop = () =>
+        Object.assign(feeCheck.feeCheckError('FEE_CHECK_NEEDS_CONFIRMATION', judged), { offer });
+      executeSafePending.mockRejectedValueOnce(stop());
+      activateSafe.mockRejectedValueOnce(stop());
+      for (const channel of ['wallet:safe-execute', 'wallet:activate-safe']) {
+        await expect(handlers[channel]({}, 7)).resolves.toEqual({
+          success: false,
+          code: 'FEE_CHECK_NEEDS_CONFIRMATION',
+          error: "This payment's network fee needs your confirmation.",
+          feeCheck: judged,
+          offer,
+        });
+      }
+      expect(executeSafePending).toHaveBeenLastCalledWith(7, { feeConfirmation: undefined });
+      expect(activateSafe).toHaveBeenLastCalledWith(7, { feeConfirmation: undefined });
+
+      // The user's confirmation of that fee goes back with the retry.
+      const feeConfirmation = { confirmation: 'token', gasLimit: TX.gasLimit, fees: { gasPrice: TX.gasPrice } };
+      activateSafe.mockResolvedValueOnce({ safeAddress: '0xsafe', hash: '0xhash' });
+      await handlers['wallet:safe-execute']({}, 7, { feeConfirmation });
+      await handlers['wallet:activate-safe']({}, 7, { feeConfirmation });
+      expect(executeSafePending).toHaveBeenLastCalledWith(7, { feeConfirmation });
+      expect(activateSafe).toHaveBeenLastCalledWith(7, { feeConfirmation });
     });
   });
 

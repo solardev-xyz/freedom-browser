@@ -197,11 +197,17 @@ async function signSafePending(safeIndex, ownerIndex) {
  * re-called safely after any failure (signatures survive — the SafeTx
  * nonce only advances when an execution lands).
  *
+ * The executor's fee is judged by the fee check at confirmation (design
+ * 0005, A): one that needs the user stops the execution with nothing
+ * signed and the SafeTx kept (FEE_CHECK_NEEDS_CONFIRMATION); it runs again
+ * with `feeConfirmation`, the user's confirmation of that fee.
+ *
  * @param {number} safeIndex
+ * @param {{ feeConfirmation?: Object }} [options]
  * @returns {Promise<Object>} SafeSendState; on success carries
  *   `executed: {hash, explorerUrl}` (and the pending entry is cleared)
  */
-async function executeSafePending(safeIndex) {
+async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
   const record = getSafeRecord(safeIndex);
   const pending = getPending(safeIndex);
   if (!pending) {
@@ -234,6 +240,7 @@ async function executeSafePending(safeIndex) {
         safeTxData: pending.safeTxData,
         signatures: pending.signatures,
         executorIndex: pickDefaultExecutor(record.owners),
+        feeConfirmation,
         record: {
           kind: PAYMENT_KINDS.SAFE_SEND,
           fromAddress: pending.safeAddress,

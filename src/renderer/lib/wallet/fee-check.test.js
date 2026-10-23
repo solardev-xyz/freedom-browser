@@ -178,3 +178,74 @@ test('an answer for an earlier transaction is dropped, and reset clears everythi
   confirmation.reset();
   expect(Object.values(elements).filter(shown)).toEqual([]);
 });
+
+test('a verdict in lines: the most it can cost, then how it compares', () => {
+  expect(feeCheck.describeFeeCheck(VERDICT, 'xDAI')).toEqual([
+    'Up to 0.001050001 xDAI',
+    "About 1.2× today's network fee",
+  ]);
+  expect(feeCheck.describeFeeCheck({ ...VERDICT, comparable: false, ratio: null }, 'xDAI')).toEqual(
+    ['Up to 0.001050001 xDAI', "Couldn't compare this fee with today's network fee"]
+  );
+  expect(feeCheck.describeFeeCheck({ ...VERDICT, ratio: '20', above: true }, 'xDAI')).toEqual([
+    'Up to 0.001050001 xDAI',
+    "This network fee is 20× today's network fee",
+  ]);
+  expect(feeCheck.describeFeeCheck(null)).toEqual([]);
+});
+
+// A Safe's execution or activation that main stopped for its fee: the user
+// confirms exactly the transaction main offered, and main takes back that
+// fee with the confirmation.
+describe('confirming a fee main stopped its own transaction for', () => {
+  const OFFER = {
+    executorIndex: 0,
+    chainId: 100,
+    to: '0x41aD4887971f90BB3fE4d83eCa65177281283261',
+    value: '0',
+    data: '0x6a761202',
+    gasLimit: '150000',
+    maxFeePerGas: '2000000000',
+    maxPriorityFeePerGas: '1000000000',
+  };
+
+  beforeEach(() => {
+    window.wallet.confirmSigning = jest.fn(async () => ({ success: true, token: 'token-1' }));
+  });
+
+  test('the offered transaction is confirmed, and its fee goes back with the token', async () => {
+    await expect(feeCheck.confirmOfferedFee(OFFER, VERDICT)).resolves.toEqual({
+      confirmation: 'token-1',
+      gasLimit: '150000',
+      fees: { maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000' },
+    });
+    const { executorIndex: _executor, ...payload } = OFFER;
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith('executor-send', 0, payload);
+  });
+
+  test('a legacy fee, and a fee shown above the threshold', async () => {
+    const { maxFeePerGas: _max, maxPriorityFeePerGas: _tip, ...rest } = OFFER;
+    const legacy = { ...rest, gasPrice: '5000000000' };
+    const confirmed = await feeCheck.confirmOfferedFee(legacy, { ...VERDICT, above: true });
+    expect(confirmed.fees).toEqual({ gasPrice: '5000000000' });
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith(
+      'executor-send',
+      0,
+      expect.objectContaining({ gasPrice: '5000000000' }),
+      { feeAcknowledged: true }
+    );
+  });
+
+  test("main's ask-again reaches the screen with its verdict", async () => {
+    window.wallet.confirmSigning.mockResolvedValueOnce({
+      success: false,
+      code: feeCheck.FEE_CHECK_ASK_AGAIN,
+      error: 'again',
+      feeCheck: { ...VERDICT, above: true },
+    });
+    await expect(feeCheck.confirmOfferedFee(OFFER, VERDICT)).rejects.toMatchObject({
+      code: feeCheck.FEE_CHECK_ASK_AGAIN,
+      feeCheck: { ...VERDICT, above: true },
+    });
+  });
+});

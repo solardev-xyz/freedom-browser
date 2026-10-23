@@ -208,8 +208,16 @@ async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
  * @param {Object} params
  * @returns {Promise<{maxFeePerGas?: string, maxPriorityFeePerGas?: string, gasPrice?: string}>}
  */
+/**
+ * Whether a transaction names its own fees, which resolveFeeParams keeps:
+ * both EIP-1559 fees, or a gas price. One that doesn't is given today's.
+ */
+function namesOwnFees({ maxFeePerGas, maxPriorityFeePerGas, gasPrice }) {
+  return Boolean((maxFeePerGas && maxPriorityFeePerGas) || gasPrice);
+}
+
 async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }) {
-  if ((maxFeePerGas && maxPriorityFeePerGas) || gasPrice) {
+  if (namesOwnFees({ maxFeePerGas, maxPriorityFeePerGas, gasPrice })) {
     return { maxFeePerGas, maxPriorityFeePerGas, gasPrice };
   }
 
@@ -950,6 +958,7 @@ module.exports = {
   estimateGas,
   getGasPrices,
   toFeeFields,
+  namesOwnFees,
   buildErc20TransferData,
   parseAmount,
   formatAmount,

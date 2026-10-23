@@ -16,6 +16,7 @@ const {
   parseAmount,
   getTransactionStatus,
   waitForTransaction,
+  namesOwnFees,
 } = require('./transaction-service');
 const { signAndRecord, KINDS: PAYMENT_KINDS } = require('./tx-recorder');
 const { intentFailure } = require('./intent-ipc');
@@ -35,6 +36,7 @@ const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
 const {
   FEE_CHECK_ASK_AGAIN,
   FEE_CHECK_NOT_AUTO_APPROVED,
+  FEE_NOT_SHOWN,
   checkFees,
   checkAtApproval,
   feeCheckError,
@@ -81,6 +83,12 @@ function buildTxRecordContext(kind, context = {}) {
     Object.entries(context ?? {}).filter(([name]) => !RENDERER_KEY_FIELD.test(name))
   );
   return { ...display, kind };
+}
+
+/** What a Safe screen needs to ask for a fee the fee check stopped for:
+ * main's verdict and the transaction offered for confirmation. */
+function feeAsk(err) {
+  return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
 function notAuthorized(reason) {
@@ -189,7 +197,17 @@ const FEE_CHECKED_KINDS = new Set([
   CONFIRM_KINDS.WALLET_SEND,
   CONFIRM_KINDS.DAPP_SEND,
   CONFIRM_KINDS.INTENT_REPLACE,
+  CONFIRM_KINDS.EXECUTOR_SEND,
 ]);
+
+/** A send whose fees the user wasn't shown, refused before it is signed. */
+function feeNotShown() {
+  const error = new Error(
+    "This payment's network fee wasn't shown, so nothing was signed. Review it again."
+  );
+  error.code = FEE_NOT_SHOWN;
+  return error;
+}
 
 /** Whether `walletIndex` is a phone account, which signs and pays itself. */
 function phoneSigner(walletIndex) {
@@ -229,6 +247,11 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
       const verdict = await checkAtApproval(tx);
       if (!verdict.autoApprove) throw feeCheckError(FEE_CHECK_NOT_AUTO_APPROVED, verdict);
     }
+    // Main never signs fees the user didn't see: a send that doesn't name
+    // its own would be given today's after its confirmation
+    // (resolveFeeParams). It goes back to its screen instead, with nothing
+    // signed. A phone picks its own fees.
+    if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShown();
     if (dapp) {
       // D12: the site's dApp sends take turns until each one's payment is
       // committed (auto-approve-pause.js). A silent send doesn't wait for
@@ -587,16 +610,18 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:activate-safe', async (_event, index) => {
+  // `options.feeConfirmation`: an 'executor-send' confirmation of the fee
+  // the fee check stopped for, with that fee (safe-executor.js).
+  ipcMain.handle('wallet:activate-safe', async (_event, index, options) => {
     try {
       const { activateSafe } = require('./safe/safe-service');
-      const result = await activateSafe(index);
+      const result = await activateSafe(index, { feeConfirmation: options?.feeConfirmation });
       return { success: true, ...result };
     } catch (err) {
       // The identity core's errors carry their own code (`vault_locked`);
       // the renderer's contract is VAULT_LOCKED.
       const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
-      return { success: false, error: err.message, code };
+      return { success: false, error: err.message, code, ...feeAsk(err) };
     }
   });
 
@@ -614,7 +639,7 @@ function registerWalletIpc() {
       // The identity core's errors carry their own code (`vault_locked`);
       // the renderer's contract is VAULT_LOCKED.
       const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
-      return { success: false, error: err.message, code };
+      return { success: false, error: err.message, code, ...feeAsk(err) };
     }
   };
 
@@ -653,9 +678,9 @@ function registerWalletIpc() {
 
   ipcMain.handle(
     'wallet:safe-execute',
-    safeStateHandler((safeIndex) => {
+    safeStateHandler((safeIndex, options) => {
       const { executeSafePending } = require('./safe/safe-transactions');
-      return executeSafePending(safeIndex);
+      return executeSafePending(safeIndex, { feeConfirmation: options?.feeConfirmation });
     })
   );
 

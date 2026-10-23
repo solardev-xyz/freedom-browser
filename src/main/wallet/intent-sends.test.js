@@ -13,9 +13,20 @@ const { readJournal } = require('../lib/durable-journal');
 const mockChainRequest = jest.fn();
 const mockGetFeeQuote = jest.fn();
 const mockBroadcast = jest.fn();
+// The fee check's reference (design 0005, A): today's quote, which two
+// endpoints gave, so a Safe executor's fee at that quote goes ahead.
+const mockGetFeeReference = jest.fn(async (chainId) => {
+  const quote = await mockGetFeeQuote(chainId).catch(() => null);
+  return {
+    header: null,
+    lowest_priority: null,
+    quote: quote && { ...quote, verified: false, answered: 2 },
+  };
+});
 jest.mock('../networks/chain-data', () => ({
   request: (...args) => mockChainRequest(...args),
   getFeeQuote: (...args) => mockGetFeeQuote(...args),
+  getFeeReference: (...args) => mockGetFeeReference(...args),
   broadcastRawTransaction: (...args) => mockBroadcast(...args),
 }));
 jest.mock('./chains', () => ({

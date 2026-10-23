@@ -2902,6 +2902,13 @@
                     <span class="dapp-tx-label">Est. Fee</span>
                     <span class="dapp-tx-value" id="dapp-tx-fee">~0.001 ETH</span>
                   </div>
+                  <!-- No fee yet: Confirm waits for it (design 0005, A) -->
+                  <div class="dapp-tx-fee-retry-row hidden" id="dapp-tx-fee-retry-row">
+                    <span>Confirm needs the network fee.</span>
+                    <button type="button" class="dapp-tx-fee-retry" id="dapp-tx-fee-retry">
+                      Try again
+                    </button>
+                  </div>
                   <!-- The fee check at confirmation (freedom-core design 0005, A) -->
                   <div class="fee-check-max dapp-tx-fee-check hidden" id="dapp-tx-fee-max"></div>
                   <div class="fee-check-note dapp-tx-fee-check hidden" id="dapp-tx-fee-note"></div>

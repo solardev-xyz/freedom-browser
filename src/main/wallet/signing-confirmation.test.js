@@ -196,6 +196,30 @@ describe('signing-confirmation', () => {
     );
   });
 
+  // Design 0005, A: a Safe executor's transaction the fee check stopped is
+  // signed only with the fee the user confirmed on the Safe's screen.
+  test("an executor-send binds the executor and the fee shown, and no other kind's", () => {
+    const { origin: _site, ...EXEC } = TX;
+    const issue = () => issueConfirmation(KINDS.EXECUTOR_SEND, 0, EXEC).token;
+    expect(() => consumeConfirmation(issue(), KINDS.EXECUTOR_SEND, 0, { ...EXEC })).not.toThrow();
+    for (const [index, payload] of [
+      [0, { ...EXEC, maxFeePerGas: '2000000001' }],
+      [0, { ...EXEC, maxPriorityFeePerGas: '1000000001' }],
+      [0, { ...EXEC, gasLimit: '21001' }],
+      [0, { ...EXEC, data: '0x' }],
+      [2, EXEC],
+    ]) {
+      expect(refusal(() => consumeConfirmation(issue(), KINDS.EXECUTOR_SEND, index, payload)).code)
+        .toBe(NOT_CONFIRMED);
+    }
+    // A wallet send's token is not an executor's, nor the other way round.
+    const wallet = issueConfirmation(KINDS.WALLET_SEND, 0, EXEC).token;
+    expect(refusal(() => consumeConfirmation(wallet, KINDS.EXECUTOR_SEND, 0, EXEC)).code)
+      .toBe(NOT_CONFIRMED);
+    expect(refusal(() => consumeConfirmation(issue(), KINDS.WALLET_SEND, 0, EXEC)).code)
+      .toBe(NOT_CONFIRMED);
+  });
+
   test('equivalent encodings of the same transaction match', () => {
     const { token } = issueConfirmation(KINDS.WALLET_SEND, 0, TX);
     expect(() =>

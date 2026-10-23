@@ -65,6 +65,8 @@ const DAPP_TX_ELEMENT_IDS = [
   'dapp-tx-fee-note',
   'dapp-tx-fee-warning',
   'dapp-tx-fee-warning-text',
+  'dapp-tx-fee-retry-row',
+  'dapp-tx-fee-retry',
 ];
 
 const LEDGER_INDEX = 1000000;
@@ -788,5 +790,130 @@ describe('dapp-tx: the fee check at confirmation (design 0005, A)', () => {
     expect(shown(elements['dapp-tx-fee-max'])).toBe(false);
     await press(elements);
     expect(confirmSigning).toHaveBeenCalled();
+  });
+
+  // Main never signs a dApp transaction with fees the user didn't see: a
+  // quote that failed leaves Confirm disabled, with a way to ask again.
+  test("a fee that couldn't be quoted: Confirm waits, and the fee can be asked for again", async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    window.wallet.getGasPrice.mockResolvedValueOnce({ success: false, error: 'no endpoint' });
+    await openApproval();
+    expect(elements['dapp-tx-fee'].textContent).toBe('Unable to estimate');
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(shown(elements['dapp-tx-fee-retry-row'])).toBe(true);
+    expect(window.wallet.feeCheck).not.toHaveBeenCalled();
+    // A press that gets through anyway signs nothing.
+    await press(elements);
+    expect(confirmSigning).not.toHaveBeenCalled();
+
+    elements['dapp-tx-fee-retry'].dispatch('click');
+    await flush();
+    expect(elements['dapp-tx-fee'].textContent).toBe('~0.000021 ETH');
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    expect(shown(elements['dapp-tx-fee-retry-row'])).toBe(false);
+    expect(elements['dapp-tx-fee-max'].textContent).toBe('Up to 0.000021 ETH');
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalledWith(
+      'dapp-send',
+      LEDGER_INDEX,
+      expect.objectContaining({ gasLimit: '21000', gasPrice: '1000000000' })
+    );
+  });
+
+  test('a quote that names no fee, or an estimate that fails, is not a fee', async () => {
+    for (const fail of [
+      () => window.wallet.getGasPrice.mockResolvedValueOnce({ success: true, type: 'eip1559' }),
+      () => window.wallet.estimateGas.mockRejectedValueOnce(new Error('gone')),
+      () => window.wallet.getDerivedWallets.mockResolvedValueOnce({ success: true, wallets: [] }),
+    ]) {
+      const { elements, openApproval } = await loadDappTx();
+      fail();
+      await openApproval();
+      expect(elements['dapp-tx-fee'].textContent).toBe('Unable to estimate');
+      expect(elements['dapp-tx-approve'].disabled).toBe(true);
+      expect(shown(elements['dapp-tx-fee-retry-row'])).toBe(true);
+    }
+  });
+
+  test('while the fee is quoted, Confirm waits for it', async () => {
+    const { elements, openApproval } = await loadDappTx();
+    let quote;
+    window.wallet.getGasPrice.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          quote = resolve;
+        })
+    );
+    await openApproval();
+    expect(elements['dapp-tx-fee'].textContent).toBe('Estimating…');
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(shown(elements['dapp-tx-fee-retry-row'])).toBe(false);
+    quote({ success: true, type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' });
+    await flush();
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+  });
+
+  test("a locked vault keeps Confirm disabled once the fee is known; unlocking enables it", async () => {
+    const { elements, openApproval } = await loadDappTx({ type: 'mnemonic' });
+    const utils = await import('./wallet-utils.js');
+    utils.bypassUnlockGateForDevice.mockReturnValue(false);
+    window.identity = {
+      getStatus: jest.fn(async () => ({ isUnlocked: false })),
+      getVaultMeta: jest.fn(async () => ({ userKnowsPassword: true })),
+      unlock: jest.fn(async () => ({ success: true })),
+    };
+    window.quickUnlock = {
+      canUseTouchId: jest.fn(async () => false),
+      isEnabled: jest.fn(async () => false),
+    };
+    await openApproval();
+    expect(elements['dapp-tx-fee'].textContent).toBe('~0.000021 ETH');
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    elements['dapp-tx-password-input'].value = 'pw';
+    elements['dapp-tx-password-submit'].dispatch('click');
+    await flush();
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+  });
+
+  test("main refusing a fee the approval didn't show sends it back, with nothing signed", async () => {
+    const { elements, confirmSigning, send, openApproval } = await loadDappTx();
+    const { settled } = await openApproval();
+    await press(elements);
+    send.resolve({
+      success: false,
+      code: 'FEE_NOT_SHOWN',
+      error: "This payment's network fee wasn't shown, so nothing was signed. Review it again.",
+    });
+    await flush();
+    expect(settled.state).toBe('pending');
+    expect(elements['dapp-tx-error'].textContent).toBe(
+      "This payment's network fee wasn't shown, so nothing was signed. Review it again."
+    );
+    expect(elements['dapp-tx-approve'].textContent).toBe('Confirm');
+    expect(elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(elements['dapp-tx-fee'].textContent).toBe('Unable to estimate');
+    expect(shown(elements['dapp-tx-fee-retry-row'])).toBe(true);
+    expect(shown(elements['dapp-tx-fee-max'])).toBe(false);
+
+    // Asked again, shown, and confirmed again: a new confirmation.
+    elements['dapp-tx-fee-retry'].dispatch('click');
+    await flush();
+    expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    expect(shown(elements['dapp-tx-error'])).toBe(false);
+    await press(elements);
+    expect(confirmSigning).toHaveBeenCalledTimes(2);
+  });
+
+  test('a Safe account or a phone: their fee is not this screen\'s to wait for', async () => {
+    for (const type of ['remote', 'safe']) {
+      const { elements, openApproval } = await loadDappTx({ type });
+      if (type === 'safe') {
+        const utils = await import('./wallet-utils.js');
+        utils.isSafeAccount.mockReturnValue(true);
+      }
+      window.wallet.getGasPrice.mockResolvedValueOnce({ success: false, error: 'no endpoint' });
+      await openApproval();
+      expect(elements['dapp-tx-approve'].disabled).toBe(false);
+    }
   });
 });

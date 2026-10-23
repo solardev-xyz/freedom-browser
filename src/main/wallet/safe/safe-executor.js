@@ -40,6 +40,8 @@ const {
 } = require('../transaction-service');
 const { signAndRecord } = require('../tx-recorder');
 const { takeSiteTurn } = require('../auto-approve-pause');
+const { FEE_CHECK_NEEDS_CONFIRMATION, checkAtApproval, feeCheckError } = require('../fee-check');
+const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('../signing-confirmation');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { getEip1193Provider } = require('../provider-manager');
 
@@ -229,6 +231,53 @@ async function collectOwnerSignature({ typedData, ownerIndex }) {
   return { signer: getAddress(address), data };
 }
 
+/** The fee fields a confirmation names: both EIP-1559 fees, or a gas price. */
+function confirmedFees(fees) {
+  if (fees?.maxFeePerGas != null && fees?.maxPriorityFeePerGas != null) {
+    return {
+      maxFeePerGas: String(fees.maxFeePerGas),
+      maxPriorityFeePerGas: String(fees.maxPriorityFeePerGas),
+    };
+  }
+  if (fees?.gasPrice != null) return { gasPrice: String(fees.gasPrice) };
+  return {};
+}
+
+/**
+ * The executor's transaction at today's quote, judged by the fee check at
+ * confirmation (freedom-core design 0005, A) as it is signed. A fee within
+ * the threshold, against a reference that permits it, goes ahead without
+ * the user, as before. Any other stops here, with nothing signed: the error
+ * (FEE_CHECK_NEEDS_CONFIRMATION) carries the verdict and the transaction
+ * offered, which the Safe's screen shows and confirms ('executor-send').
+ */
+async function quotedExecutorSend({ chainId, to, data, executorIndex, from }) {
+  const [{ gasLimit }, gasPrices] = await Promise.all([
+    estimateGas({ from, to, value: '0', data, chainId }),
+    getGasPrices(chainId),
+  ]);
+  const params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
+  const verdict = await checkAtApproval(params);
+  if (!verdict.autoApprove) {
+    const error = feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, verdict);
+    error.offer = { executorIndex, chainId, to, value: '0', data, gasLimit, ...toFeeFields(gasPrices) };
+    throw error;
+  }
+  return params;
+}
+
+/**
+ * The executor's transaction with the fee the user confirmed on the Safe's
+ * screen: signed with exactly that fee, against its 'executor-send'
+ * confirmation, or not at all.
+ */
+function confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation }) {
+  const fees = confirmedFees(feeConfirmation.fees);
+  const params = { to, value: '0', data, gasLimit: feeConfirmation.gasLimit, ...fees, chainId };
+  consumeConfirmation(feeConfirmation.confirmation, CONFIRM_KINDS.EXECUTOR_SEND, executorIndex, params);
+  return params;
+}
+
 /**
  * Quote gas against the executor account and broadcast through the
  * ordinary transaction-service path (the executor EOA pays the fee).
@@ -236,20 +285,31 @@ async function collectOwnerSignature({ typedData, ownerIndex }) {
  * `intentKey` names the send across retries: while its intent is held, a
  * retry sends that intent's bytes again, so it needs no new quote.
  *
+ * A new send is judged by the fee check first (quotedExecutorSend), unless
+ * it comes with `feeConfirmation` (`{ confirmation, gasLimit, fees }`): the
+ * user's confirmation of the fee the check stopped for, which it is then
+ * signed with (confirmedExecutorSend).
+ *
  * With a `record` context the tx lands in payment history (the executor
  * address is stamped into the metadata automatically); without one the
  * broadcast is bare — callers own the recording decision.
  */
-async function sendViaExecutor({ chainId, to, data, executorIndex, record, intentKey }) {
+async function sendViaExecutor({
+  chainId,
+  to,
+  data,
+  executorIndex,
+  record,
+  intentKey,
+  feeConfirmation = null,
+}) {
   const executor = getSigner(executorIndex);
   const from = await executor.getAddress();
   let params = { to, value: '0', data, chainId };
   if (!(await heldIntentFor(intentKey))) {
-    const [{ gasLimit }, gasPrices] = await Promise.all([
-      estimateGas({ from, to, value: '0', data, chainId }),
-      getGasPrices(chainId),
-    ]);
-    params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
+    params = feeConfirmation
+      ? confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation })
+      : await quotedExecutorSend({ chainId, to, data, executorIndex, from });
   }
   if (record) {
     // A site's payment (a dApp's Safe transaction) takes the site's turn
@@ -287,7 +347,15 @@ async function sendViaExecutor({ chainId, to, data, executorIndex, record, inten
  *   shape); from should be the SAFE address, the executor is stamped in
  * @returns {Promise<Object>} transaction-service result ({hash, …})
  */
-async function execTransaction({ chainId, safeAddress, safeTxData, signatures, executorIndex, record }) {
+async function execTransaction({
+  chainId,
+  safeAddress,
+  safeTxData,
+  signatures,
+  executorIndex,
+  record,
+  feeConfirmation,
+}) {
   const safeTx = new EthSafeTransaction(safeTxData);
   for (const { signer, data } of signatures) {
     safeTx.addSignature(new EthSafeSignature(signer, data));
@@ -318,6 +386,7 @@ async function execTransaction({ chainId, safeAddress, safeTxData, signatures, e
     executorIndex,
     record,
     intentKey: execIntentKey(chainId, safeTxHash),
+    feeConfirmation,
   });
 }
 
@@ -333,7 +402,17 @@ async function execTransaction({ chainId, safeAddress, safeTxData, signatures, e
  *
  * @returns {Promise<{safeAddress: string, tx: Object}>}
  */
-async function deploySafe({ owners, threshold, saltNonce, chainId, executorIndex, provider, deployment, record }) {
+async function deploySafe({
+  owners,
+  threshold,
+  saltNonce,
+  chainId,
+  executorIndex,
+  provider,
+  deployment,
+  record,
+  feeConfirmation,
+}) {
   const { safeAddress, to, data } =
     deployment ??
     (await buildDeploymentTransaction({ owners, threshold, saltNonce, chainId, provider }));
@@ -344,6 +423,7 @@ async function deploySafe({ owners, threshold, saltNonce, chainId, executorIndex
     executorIndex,
     record,
     intentKey: deployIntentKey(chainId, safeAddress),
+    feeConfirmation,
   });
   return { safeAddress, tx };
 }

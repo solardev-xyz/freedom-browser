@@ -6613,6 +6613,18 @@
   color: var(--muted);
 }
 
+/* The executor's fee, waiting for the user (design 0005, A): neutral, and
+   amber when it is far above today's network fee. */
+.safe-signing-banner.safe-signing-fee {
+  background: var(--toolbar);
+  border-color: var(--border);
+}
+
+.safe-signing-banner.safe-signing-fee.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
 .safe-signing-discard {
   align-self: flex-start;
   color: var(--danger);
@@ -6715,4 +6727,29 @@
 
 .dapp-tx-fee-check {
   text-align: right;
+}
+
+/* No fee yet: Confirm waits for it, and the fee can be asked for again. */
+.dapp-tx-fee-retry-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dapp-tx-fee-retry {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dapp-tx-fee-retry:hover {
+  background: var(--toolbar);
 }
