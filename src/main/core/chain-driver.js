@@ -177,12 +177,15 @@ const EXCLUSIONS = 'exclude_sources';
  * A read's serialized params, with and without its exclusions. A core
  * that offers EXCLUSIONS gets them; an older one refuses a field it
  * doesn't know, so it gets the read without them, in its profile's order,
- * as main's reads went before.
+ * as main's reads went before. The caller's params are serialized once,
+ * in `plain`: the excluding form appends the exclusions' own JSON (known
+ * source names only) to that text, so the caller's code (a getter, a
+ * `toJSON`) never runs again, and both forms carry the same read.
  */
 class ReadHead {
-  constructor(payload, exclusions) {
-    this.plain = serialized(payload);
-    this.excluding = serialized({ ...payload, ...exclusions });
+  constructor(plain, names) {
+    this.plain = plain;
+    this.excluding = `${plain.slice(0, -1)},"exclude_sources":${JSON.stringify(names)}}`;
   }
 }
 
@@ -409,8 +412,9 @@ class ChainDriver {
         background: Boolean(background),
         profile: profile === 'ant_scan' ? 'ant_scan' : 'default',
       };
-      const exclusions = wireExclusions(excludeSources);
-      head = exclusions.exclude_sources ? new ReadHead(payload, exclusions) : serialized(payload);
+      const plain = serialized(payload);
+      const { exclude_sources: names } = wireExclusions(excludeSources);
+      head = names ? new ReadHead(plain, names) : plain;
     } catch (err) {
       return Promise.reject(err);
     }

@@ -688,6 +688,7 @@ describe("the configuration barrier, with main's real configuration", () => {
     client.current = { id: 'process' };
     client.hello = {};
     client.written = []; // [method, controls pending as it went]
+    client.bodies = []; // each request's params, as JSON
     client.serves = (gen) => gen === client.current;
     client.whenReady = async () => client.hello;
     let generation = 0;
@@ -697,6 +698,7 @@ describe("the configuration barrier, with main's real configuration", () => {
       const json = raw instanceof JsonParams ? raw.json : JSON.stringify(raw);
       if (options.fence && !options.fence()) return Promise.reject(coreError('fenced', 'Fenced'));
       client.written.push([method, config.core.pending]);
+      client.bodies.push(json);
       if (method === 'chain.configure') {
         generation += 1;
         const reply = { generations: { 1: generation } };
@@ -765,31 +767,50 @@ describe("the configuration barrier, with main's real configuration", () => {
     ]);
   });
 
-  test("a control the caller's own code queues while its params are serialized goes first", async () => {
-    const { client, driver, change, release } = await barrier();
-    let serializations = 0;
-    let control;
-    const params = {
-      toJSON() {
-        serializations += 1;
-        control = change();
-        return [];
-      },
-    };
-    const pending = driver.request(1, 'eth_blockNumber', params);
-    await new Promise(setImmediate);
-    expect(client.written).toEqual([['chain.configure', 1]]);
-    release();
-    await control;
-    expect((await pending).result).toBe('0x1');
-    expect(client.written).toEqual([
-      ['chain.configure', 1],
-      ['chain.request', 0],
-    ]);
-    // Serialized once, before any fence: the size check and every attempt
-    // share it.
-    expect(serializations).toBe(1);
-  });
+  // Review of #797 (797-m1): a read's exclusions, negotiated per attempt,
+  // don't serialize the caller's params a second time either, so a core
+  // that offers them and one that doesn't get the same read.
+  test.each([
+    ['no exclusions', {}, undefined, undefined],
+    ['exclusions, to a core without them', {}, ['colibri'], undefined],
+    [
+      'exclusions, to a core that offers them',
+      { capabilities: ['fragments', 'exclude_sources'] },
+      ['colibri'],
+      ['colibri'],
+    ],
+  ])(
+    "a control the caller's own code queues while its params are serialized goes first: %s",
+    async (_name, hello, excludeSources, wire) => {
+      const { client, driver, change, release } = await barrier();
+      client.hello = hello;
+      let serializations = 0;
+      let control;
+      const params = {
+        toJSON() {
+          serializations += 1;
+          control = change();
+          return ['0xabc', `0x${serializations.toString(16)}`];
+        },
+      };
+      const pending = driver.request(1, 'eth_getBalance', params, { excludeSources });
+      await new Promise(setImmediate);
+      expect(client.written).toEqual([['chain.configure', 1]]);
+      release();
+      await control;
+      expect((await pending).result).toBe('0x1');
+      expect(client.written).toEqual([
+        ['chain.configure', 1],
+        ['chain.request', 0],
+      ]);
+      // Serialized once, before any fence: the size check and every
+      // attempt share it, with or without its exclusions.
+      expect(serializations).toBe(1);
+      const body = JSON.parse(client.bodies.at(-1));
+      expect(body.params).toEqual(['0xabc', '0x1']);
+      expect(body.exclude_sources).toEqual(wire);
+    }
+  );
 });
 
 // Review of #698 (parity): a dApp's call object crosses IPC with native
