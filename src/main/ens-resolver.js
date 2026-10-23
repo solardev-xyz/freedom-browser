@@ -2391,10 +2391,43 @@ async function tryColibriReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   }
 
   if (!name) return { ...noReverseResult(normalizedAddress), trust };
+  if (!isNormalizedEnsName(name)) {
+    return unnormalizedReverseResult(normalizedAddress, name, trust);
+  }
   return { success: true, address: normalizedAddress, name, system: 'ens', trust };
 }
 
 const CONTRACT_BACKED_REVERSE_SYSTEMS = [NAME_SYSTEMS.wns, NAME_SYSTEMS.gns];
+
+// An ENS primary name counts only when it is its own ENSIP-15 normalization.
+// The forward check hashes the claimed name as written, so the owner of an
+// unnormalized lookalike such as `vitaIik.eth` (a capital I) passes it, and
+// the name would render like `vitalik.eth`. WNS and GNS claims are normalized
+// before their forward check already. (freedom-core #75.)
+function isNormalizedEnsName(name) {
+  if (typeof name !== 'string' || Buffer.byteLength(name) > 1024) return false;
+  try {
+    return ens_normalize(name) === name;
+  } catch {
+    return false;
+  }
+}
+
+// `unverifiedCause` lets the renderer tell this apart from a claim that
+// doesn't forward-resolve back: an unnormalized name usually does resolve
+// back, so the generic warning would read as a false alarm.
+function unnormalizedReverseResult(normalizedAddress, claimedName, trust) {
+  return {
+    ...unverifiedReverseResult(
+      normalizedAddress,
+      NAME_SYSTEMS.ens,
+      claimedName,
+      `Reverse record for ${normalizedAddress} claims a name that isn't normalized`,
+      trust
+    ),
+    unverifiedCause: 'unnormalized',
+  };
+}
 
 function unverifiedReverseResult(normalizedAddress, nameSystem, claimedName, detail, trust = undefined) {
   return {
@@ -2422,6 +2455,9 @@ async function readMyotisReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   }
   const ensTrust = buildMyotisTrust(ensRec, NAME_SYSTEMS.ens);
   if (ensRec.status === 'ok' && ensRec.name) {
+    if (!isNormalizedEnsName(ensRec.name)) {
+      return unnormalizedReverseResult(normalizedAddress, ensRec.name, ensTrust);
+    }
     return {
       success: true,
       address: normalizedAddress,
@@ -2556,6 +2592,9 @@ async function resolveEnsReverseWithMethod(method, normalizedAddress, coinType =
 
   const decoded = decodeReverseOutcome(outcome.resolvedData);
   if (decoded.status === REVERSE_OUTCOME.name) {
+    if (!isNormalizedEnsName(decoded.detail)) {
+      return unnormalizedReverseResult(normalizedAddress, decoded.detail, outcome.trust);
+    }
     return {
       success: true,
       address: normalizedAddress,

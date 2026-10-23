@@ -184,9 +184,12 @@ function createOpenSSHPrivateKey(privateKey, publicKey, comment) {
     sshString(comment),
   ]);
 
-  // Add padding (1, 2, 3, ...) to reach block size (8 for "none" cipher)
+  // Add padding (1, 2, 3, ...) to reach block size (8 for "none" cipher).
+  // An already aligned section gets none, as OpenSSH writes it: ssh-key,
+  // which Radicle reads keys with, refuses a whole block of padding, so a
+  // full 8 bytes made an alias whose length is 5 mod 8 an unloadable key.
   const blockSize = 8;
-  const padLen = blockSize - (privateSection.length % blockSize);
+  const padLen = (blockSize - (privateSection.length % blockSize)) % blockSize;
   const padding = Buffer.alloc(padLen);
   for (let i = 0; i < padLen; i++) {
     padding[i] = i + 1;

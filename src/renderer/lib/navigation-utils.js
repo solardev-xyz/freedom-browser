@@ -111,8 +111,15 @@ export const describeUnverifiedForward = (name) =>
 // doesn't forward-verify back to the address. The claimed name is NOT
 // rendered as visible text anywhere — only as tooltip text on a warning
 // glyph — so a phisher can't lean on its visual plausibility.
-export const describeUnverifiedReverse = (claimedName) =>
-  claimedName
+// `cause: 'unnormalized'` is a claim that does resolve back but isn't its
+// own ENS normalization (`vitaIik.eth`, a capital I): saying it doesn't
+// resolve back would be false, and a user who checks would dismiss the warning.
+export const describeUnverifiedReverse = (claimedName, cause = null) =>
+  cause === 'unnormalized'
+    ? claimedName
+      ? `This address claims to be "${claimedName}", but that isn't a normalized ENS name, so it can look like a different name. Treat the name as untrusted — could be a spoofing attempt.`
+      : `This address has a primary name set, but it isn't a normalized ENS name, so it can look like a different name. Treat the claim as untrusted.`
+    : claimedName
     ? `This address claims to be "${claimedName}", but the name doesn't forward-resolve back to it. Treat the name as untrusted — could be a stale record or a spoofing attempt.`
     : `This address has a primary name set, but it doesn't forward-verify back. Treat the claim as untrusted.`;
 
