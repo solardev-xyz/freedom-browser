@@ -33,6 +33,8 @@ module.exports = createReleaseFetcher({
   tagEnv: 'FREEDOM_CORE_RELEASE_TAG',
   tagPattern: TAG_PATTERN,
   tagPrefix: 'cored-',
+  // What builds and attests cored-v* releases; CI verifies against it.
+  provenanceWorkflow: 'release.yml',
 });
 
 if (require.main === module) {
