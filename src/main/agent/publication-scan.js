@@ -58,16 +58,63 @@ const PLACEHOLDER_EMAIL_DOMAIN =
   /(?:^|\.)(?:example\.(?:com|org|net)|example|test|invalid|localhost|domain\.com|email\.com|yourdomain\.com|company\.com)$/i;
 const FILE_LIKE_TLD = /^(?:png|jpe?g|gif|svg|webp|avif|ico|js|mjs|cjs|css|html?|json|map|ts|tsx|jsx|md|txt|xml|woff2?|ttf)$/i;
 const KEY_CONTEXT =
-  /(?:priv(?:ate)?[\s_-]*key|privkey|secret|signing[\s_-]*key|signer|deployer|mnemonic|wallet[\s_-]*key|\bpk\b|\bsk\b)/i;
+  /(?:priv(?:ate)?[\s_-]{0,8}key|privkey|secret|signing[\s_-]{0,8}key|signer|deployer|mnemonic|wallet[\s_-]{0,8}key|\bpk\b|\bsk\b)/i;
+
+// Matching is linear in the text, whatever the regexp engine does. V8 runs a
+// pattern on its own backtrack stack, and with some engine settings (CI's
+// coverage run; reproduced by --no-regexp-optimization) an open-ended `X+` or
+// `X*` pushes one entry per character, so a run of millions of token
+// characters threw "Maximum call stack size exceeded" from matchAll whatever
+// the JS stack size was. So every pattern below has bounded quantifiers only,
+// and an open-ended run (a token's tail, a quoted value) is walked by runEnd:
+// a search for the first character outside the run, a single character class
+// with no quantifier. Each such run is followed by a character outside its
+// class, so the walk is exactly what the greedy pattern matched.
+function runEnd(text, from, stop) {
+  stop.lastIndex = from;
+  return stop.exec(text)?.index ?? text.length;
+}
+
+const NOT_TOKEN = /[^A-Za-z0-9_-]/g;
+const NOT_WORD_TOKEN = /[^A-Za-z0-9_]/g;
+const NOT_DASH_TOKEN = /[^A-Za-z0-9-]/g;
+const NOT_ALNUM = /[^A-Za-z0-9]/g;
+const NOT_HEX = /[^0-9a-fA-F]/g;
+const NOT_DIGIT = /\D/g;
+const NOT_WEBHOOK_PATH = /[^A-Za-z0-9_/+-]/g;
+const NOT_URL_USER = /[\s/:@'"<>]/g;
+const NOT_URL_PASSWORD = /[\s/@'"<>]/g;
+const NOT_QUOTED_VALUE = /["'\r\n]/g;
+const NOT_BARE_VALUE = /[^A-Za-z0-9_+/.=-]/g;
+const NOT_INLINE_SPACE = /\S|[\n\r\u2028\u2029]/g;
+const NOT_LETTER = /[^A-Za-z]/g;
+const LINE_END = /[\n\r\u2028\u2029]/;
+const NOT_INLINE_TAB = /[^ \t]/g;
+
+// `then` continues past a pattern's bounded head: then(text, headEnd, match)
+// returns { end } (the value runs to end; scanning resumes at `next`, default
+// end) or, when the text does not complete the match, { next } or {}.
+const tail = stop => (text, headEnd) => ({ end: runEnd(text, headEnd, stop) });
 
 // Each rule yields { index, value } for every match it accepts.
-function regexRule(pattern, accept = () => true) {
+function regexRule(pattern, accept = () => true, then = null) {
+  const flags = [...new Set(`${pattern.flags}g${pattern.source.includes('(?<v>') ? 'd' : ''}`)].join('');
   return function* matches(text) {
-    const expression = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
-    for (const match of text.matchAll(expression)) {
+    const expression = new RegExp(pattern.source, flags);
+    for (let match = expression.exec(text); match; match = expression.exec(text)) {
+      const headEnd = match.index + match[0].length;
       // A named group `v` narrows the reported value (a password inside a URL).
-      const value = match.groups?.v ?? match[0];
-      const index = match.index + (match.groups?.v === undefined ? 0 : match[0].indexOf(match.groups.v));
+      const group = match.indices?.groups?.v;
+      let index = group ? group[0] : match.index;
+      let end = group ? group[1] : headEnd;
+      if (then) {
+        const result = then(text, headEnd, match);
+        expression.lastIndex = Math.max(result.next ?? result.end ?? 0, match.index + 1);
+        if (result.end === undefined) continue;
+        if (result.start !== undefined) index = result.start;
+        end = result.end;
+      }
+      const value = text.slice(index, end);
       if (accept(value, text, index, match)) yield { index, value };
     }
   };
@@ -79,8 +126,16 @@ function lineAt(text, index) {
   return text.slice(start, end === -1 ? text.length : end);
 }
 
+function* letterWords(text) {
+  const letter = /[A-Za-z]/g;
+  for (let match = letter.exec(text); match; match = letter.exec(text)) {
+    const end = runEnd(text, match.index, NOT_LETTER);
+    yield { index: match.index, end, word: text.slice(match.index, end) };
+    letter.lastIndex = end;
+  }
+}
+
 function* seedPhraseMatches(text) {
-  const words = /[A-Za-z]+/g;
   let run = [];
   const flush = function* () {
     if (run.length >= MIN_SEED_WORDS) {
@@ -93,18 +148,17 @@ function* seedPhraseMatches(text) {
     }
     run = [];
   };
-  for (const match of text.matchAll(words)) {
-    const word = match[0];
+  for (const { word, index, end } of letterWords(text)) {
     const lower = word.toLowerCase();
     const previous = run.at(-1);
-    const gap = previous ? text.slice(previous.end, match.index) : '';
     // Words may be separated by whitespace, list numbering or simple
     // punctuation, as in a "1. word 2. word" backup sheet; anything else
     // (prose punctuation runs, markup) ends the run.
-    const contiguous = !previous || /^[\s\d.,;:)("'|-]{1,8}$/.test(gap);
+    const contiguous = !previous ||
+      (index - previous.end <= 8 && /^[\s\d.,;:)("'|-]{1,8}$/.test(text.slice(previous.end, index)));
     if (!contiguous) yield* flush();
     if (BIP39_WORDS.has(lower) && (word === lower || word === word.toUpperCase() || run.length === 0)) {
-      run.push({ word: lower, index: match.index, end: match.index + word.length });
+      run.push({ word: lower, index, end });
     } else {
       yield* flush();
     }
@@ -112,33 +166,68 @@ function* seedPhraseMatches(text) {
   yield* flush();
 }
 
+// eyJ… . … . …: three token segments of at least 12 characters. A head that
+// does not complete fails for every later head inside the same first segment
+// too, so scanning resumes after it (a run of "-eyJ" stays linear).
+function jwtTail(text, headEnd) {
+  const first = runEnd(text, headEnd, NOT_TOKEN);
+  if (text[first] !== '.') return { next: first };
+  const second = runEnd(text, first + 1, NOT_TOKEN);
+  if (second - first - 1 < 12 || text[second] !== '.') return { next: first };
+  const third = runEnd(text, second + 1, NOT_TOKEN);
+  return third - second - 1 < 12 ? { next: first } : { end: third };
+}
+
+function urlPasswordTail(text, headEnd) {
+  const user = runEnd(text, headEnd, NOT_URL_USER);
+  if (user === headEnd || text[user] !== ':') return {};
+  const password = runEnd(text, user + 1, NOT_URL_PASSWORD);
+  if (password === user + 1 || text[password] !== '@') return {};
+  return { start: user + 1, end: password, next: password + 1 };
+}
+
+function quotedValueTail(text, headEnd) {
+  const end = runEnd(text, headEnd, NOT_QUOTED_VALUE);
+  return text[end] === '"' || text[end] === "'" ? { end, next: end + 1 } : {};
+}
+
+// The value must end its line, optionally followed by blanks and a # comment.
+function bareValueTail(text, headEnd) {
+  const end = runEnd(text, headEnd, NOT_BARE_VALUE);
+  const after = runEnd(text, end, NOT_INLINE_SPACE);
+  return after === text.length || text[after] === '#' || LINE_END.test(text[after]) ? { end } : {};
+}
+
 const RULES = Object.freeze([
   // Existing workspace-history patterns, now named individually.
   { id: 'private-key-block', kind: 'secret', label: 'Private key block',
-    matches: regexRule(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/) },
+    matches: regexRule(/-----BEGIN (?:[A-Z ]{1,40} )?PRIVATE KEY-----/) },
   { id: 'aws-access-key', kind: 'secret', label: 'AWS access key',
     matches: regexRule(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/, value => !placeholderValue(value)) },
   { id: 'openai-api-key', kind: 'secret', label: 'OpenAI-style API key',
-    matches: regexRule(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*/, value => !placeholderValue(value)) },
+    matches: regexRule(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20}/, value => !placeholderValue(value), tail(NOT_TOKEN)) },
   { id: 'github-token', kind: 'secret', label: 'GitHub token',
-    matches: regexRule(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20}[A-Za-z0-9_]*/, value => !placeholderValue(value)) },
+    matches: regexRule(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20}/, value => !placeholderValue(value), tail(NOT_WORD_TOKEN)) },
   { id: 'slack-token', kind: 'secret', label: 'Slack token',
-    matches: regexRule(/\bxox[baprs]-[A-Za-z0-9-]{10}[A-Za-z0-9-]*/, value => !placeholderValue(value)) },
+    matches: regexRule(/\bxox[baprs]-[A-Za-z0-9-]{10}/, value => !placeholderValue(value), tail(NOT_DASH_TOKEN)) },
   { id: 'jwt', kind: 'secret', label: 'JSON Web Token',
-    matches: regexRule(/\beyJ[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*/) },
+    matches: regexRule(/\beyJ[A-Za-z0-9_-]{12}/, undefined, jwtTail) },
   { id: 'url-credentials', kind: 'secret', label: 'Password in a URL',
     matches: regexRule(
-      /\b(?:https?|wss?|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?):\/\/[^\s/:@'"<>]+:(?<v>[^\s/@'"<>]+)@/i,
-      value => !placeholderValue(value) && !/^(?:pass(?:word)?|secret|pwd|\*+)$/i.test(value)) },
+      /\b(?:https?|wss?|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?):\/\//i,
+      value => !placeholderValue(value) && !/^(?:pass(?:word)?|secret|pwd)$/i.test(value) && /[^*]/.test(value),
+      urlPasswordTail) },
   { id: 'credential-assignment', kind: 'secret', label: 'Password or key assignment',
     matches: function* matches(text) {
       yield* regexRule(
-        /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["'](?<v>[^"'\r\n]{8}[^"'\r\n]*)["']/i,
-        value => !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(value) && !placeholderValue(value)
+        /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s{0,64}[:=]\s{0,64}["'](?<v>[^"'\r\n]{8})/i,
+        value => !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(value) && !placeholderValue(value),
+        quotedValueTail
       )(text);
       yield* regexRule(
-        /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*(?<v>[A-Za-z0-9_+/.=-]{8}[A-Za-z0-9_+/.=-]*)\s*(?:#.*)?$/im,
-        value => !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(value) && !placeholderValue(value)
+        /^[ \t]{0,256}(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s{0,64}[:=]\s{0,64}(?<v>[A-Za-z0-9_+/.=-]{8})/im,
+        value => !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(value) && !placeholderValue(value),
+        bareValueTail
       )(text);
     } },
   // Crypto-wallet material.
@@ -149,28 +238,45 @@ const RULES = Object.freeze([
       !lowEntropyHex(value) && KEY_CONTEXT.test(lineAt(text, index).replace(/[0-9a-fA-F]{64}/g, ''))) },
   { id: 'bip39-seed-phrase', kind: 'secret', label: 'Wallet recovery phrase', matches: seedPhraseMatches },
   { id: 'keystore-json', kind: 'secret', label: 'Encrypted wallet keystore',
-    matches: regexRule(/"ciphertext"\s*:\s*"[0-9a-fA-F]{32}[0-9a-fA-F]*"/, (value, text) =>
-      /"kdf"\s*:\s*"(?:scrypt|pbkdf2)"/i.test(text) && /"(?:crypto|Crypto)"\s*:/.test(text)) },
+    matches: regexRule(/"ciphertext"\s{0,64}:\s{0,64}"[0-9a-fA-F]{32}/, (value, text) =>
+      /"kdf"\s{0,64}:\s{0,64}"(?:scrypt|pbkdf2)"/i.test(text) && /"(?:crypto|Crypto)"\s{0,64}:/.test(text),
+    (text, headEnd) => {
+      const end = runEnd(text, headEnd, NOT_HEX);
+      return text[end] === '"' ? { end: end + 1 } : {};
+    }) },
   { id: 'rpc-url-key', kind: 'secret', label: 'RPC URL with an embedded key',
-    matches: regexRule(
-      /\b(?:https?|wss?):\/\/(?:[a-z0-9-]+\.infura\.io\/(?:v3|ws\/v3)\/[0-9a-f]{32}|[a-z0-9-]+\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*|(?:[a-z0-9-]+\.)+quiknode\.pro\/[0-9a-f]{20}[0-9a-f]*|rpc\.ankr\.com\/[a-z0-9_]+\/[0-9a-f]{40}[0-9a-f]*)/i,
-      value => !placeholderValue(value)) },
+    matches: function* matches(text) {
+      const accept = value => !placeholderValue(value);
+      yield* regexRule(/\b(?:https?|wss?):\/\/[a-z0-9-]{1,63}\.infura\.io\/(?:v3|ws\/v3)\/[0-9a-f]{32}/i, accept)(text);
+      yield* regexRule(/\b(?:https?|wss?):\/\/[a-z0-9-]{1,63}\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{20}/i, accept, tail(NOT_TOKEN))(text);
+      yield* regexRule(/\b(?:https?|wss?):\/\/(?:[a-z0-9-]{1,63}\.){1,8}quiknode\.pro\/[0-9a-f]{20}/i, accept, tail(NOT_HEX))(text);
+      yield* regexRule(/\b(?:https?|wss?):\/\/rpc\.ankr\.com\/[a-z0-9_]{1,64}\/[0-9a-f]{40}/i, accept, tail(NOT_HEX))(text);
+    } },
   // Payment, cloud and messaging services.
   { id: 'stripe-secret-key', kind: 'secret', label: 'Stripe secret key',
-    matches: regexRule(/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16}[A-Za-z0-9]*\b/, value => !placeholderValue(value)) },
+    matches: regexRule(/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16}/, value => !placeholderValue(value), (text, headEnd) => {
+      const end = runEnd(text, headEnd, NOT_ALNUM);
+      return text[end] === '_' ? {} : { end }; // \b: the key ends at a non-word character
+    }) },
   { id: 'google-api-key', kind: 'secret', label: 'Google API key',
     matches: regexRule(/\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/, value => !placeholderValue(value)) },
   { id: 'slack-webhook', kind: 'secret', label: 'Slack webhook URL',
-    matches: regexRule(/https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_/+-]{20}[A-Za-z0-9_/+-]*/, value => !placeholderValue(value)) },
+    matches: regexRule(/https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_/+-]{20}/, value => !placeholderValue(value), tail(NOT_WEBHOOK_PATH)) },
   { id: 'discord-webhook', kind: 'secret', label: 'Discord webhook URL',
-    matches: regexRule(/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5}\d*\/[A-Za-z0-9_-]{30}[A-Za-z0-9_-]*/, value => !placeholderValue(value)) },
+    matches: regexRule(/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5}/, value => !placeholderValue(value), (text, headEnd) => {
+      const id = runEnd(text, headEnd, NOT_DIGIT);
+      if (text[id] !== '/') return {};
+      const end = runEnd(text, id + 1, NOT_TOKEN);
+      return end - id - 1 >= 30 ? { end } : {};
+    }) },
   { id: 'twilio-api-key', kind: 'secret', label: 'Twilio API key',
     matches: regexRule(/\bSK[0-9a-fA-F]{32}\b/, value => !lowEntropyHex(value.slice(2))) },
   { id: 'sendgrid-api-key', kind: 'secret', label: 'SendGrid API key',
     matches: regexRule(/\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/, value => !placeholderValue(value)) },
-  // Personal data: warnings, never blocking by default.
+  // Personal data: warnings, never blocking by default. Bounded by the RFC 5321
+  // local-part and RFC 1035 label limits.
   { id: 'email-address', kind: 'personal', label: 'Email address',
-    matches: regexRule(/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,24}(?![A-Za-z0-9-])/, value => {
+    matches: regexRule(/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![A-Za-z0-9-])/, value => {
       const domain = value.slice(value.indexOf('@') + 1).toLowerCase();
       const local = value.slice(0, value.indexOf('@')).toLowerCase();
       return !PLACEHOLDER_EMAIL_DOMAIN.test(domain) && !FILE_LIKE_TLD.test(domain.split('.').at(-1)) &&
@@ -185,9 +291,9 @@ const RULES = Object.freeze([
     matches: regexRule(/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/, value => ibanValid(value) && !/^DE89 ?3704 ?0044 ?0532 ?0130 ?00$/.test(value) && !/^GB82 ?WEST/.test(value)) },
   { id: 'postal-address', kind: 'personal', label: 'Street address',
     matches: function* matches(text) {
-      yield* regexRule(/\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+\s+){1,3}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Drive|Court|Place)(?![A-Za-z])/,
+      yield* regexRule(/\b\d{1,5}[A-Za-z]?\s{1,8}(?:[A-Z][a-z]{1,30}\s{1,8}){1,3}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Drive|Court|Place)(?![A-Za-z])/,
         value => !/\b(?:Main|Example|Sample|Fake)\b/.test(value))(text);
-      yield* regexRule(/\b[A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.|weg|gasse|platz|allee)\s+\d{1,4}[a-z]?\b/,
+      yield* regexRule(/\b[A-ZÄÖÜ][a-zäöüß]{1,40}(?:straße|strasse|str\.|weg|gasse|platz|allee)\s{1,8}\d{1,4}[a-z]?\b/,
         value => !/^(?:Muster|Beispiel)/.test(value))(text);
     } },
 ]);
@@ -239,8 +345,11 @@ function scanText(filePath, text, { secretsOnly = false } = {}) {
   const findings = [];
   const seen = new Set();
   let warnings = 0;
-  for (const rule of RULES) {
-    if (secretsOnly && rule.kind !== 'secret') continue;
+  // A rule that throws (a regexp engine limit, an unexpected input) must not
+  // let the file through unchecked: it becomes a blocking finding instead.
+  const incomplete = () => findings.push({ path: filePath, kind: 'secret', rule: 'scan-incomplete',
+    label: 'Could not be fully checked', excerpt: 'The pre-publish check stopped on this file', blocking: true });
+  const scanRule = rule => {
     for (const match of rule.matches(text)) {
       const key = `${rule.id}:${match.index}`;
       if (seen.has(key)) continue;
@@ -257,6 +366,14 @@ function scanText(filePath, text, { secretsOnly = false } = {}) {
         blocking: rule.kind === 'secret',
       });
     }
+  };
+  for (const rule of RULES) {
+    if (secretsOnly && rule.kind !== 'secret') continue;
+    try {
+      scanRule(rule);
+    } catch {
+      if (!findings.some(finding => finding.rule === 'scan-incomplete')) incomplete();
+    }
   }
   // A key assigned to PRIVATE_KEY = '…' is one value: report the specific rule.
   const specific = new Set(findings.filter(finding => finding.kind === 'secret' && finding.rule !== 'credential-assignment')
@@ -266,9 +383,17 @@ function scanText(filePath, text, { secretsOnly = false } = {}) {
   }
   // The history policy's broader credential check stays the backstop: any text
   // it refuses is reported even when no named rule recognised the value.
-  if (!findings.some(finding => finding.kind === 'secret') && historyContainsSecret(text)) {
-    findings.push({ path: filePath, kind: 'secret', rule: 'possible-credential', label: 'Possible credential',
-      excerpt: 'Value hidden', blocking: true });
+  if (!findings.some(finding => finding.kind === 'secret')) {
+    let possible;
+    try {
+      possible = historyContainsSecret(text);
+    } catch {
+      incomplete();
+    }
+    if (possible) {
+      findings.push({ path: filePath, kind: 'secret', rule: 'possible-credential', label: 'Possible credential',
+        excerpt: 'Value hidden', blocking: true });
+    }
   }
   return findings.sort((left, right) => (left.line || 0) - (right.line || 0));
 }
@@ -439,8 +564,20 @@ function stripImageMetadata(bytes) {
   }
 }
 
-const SOURCE_MAP_COMMENT = /^[ \t]*(?:\/\/[#@][ \t]*sourceMappingURL=[^\r\n]*|\/\*[#@][ \t]*sourceMappingURL=[^*]*\*\/[ \t]*)$/gm;
+const SOURCE_MAP_START = /^[ \t]{0,256}(?:\/\/|\/\*)[#@][ \t]{0,64}sourceMappingURL=/gm;
+const LINE_BREAK = /[\r\n]/g;
 const SCRIPT_OR_STYLE = /\.(?:m?js|cjs|css)$/i;
+
+// A whole-line `//# sourceMappingURL=…` or `/*# sourceMappingURL=… */`, walked
+// without an open-ended pattern (see runEnd). Returns the comment's end or -1.
+function sourceMapCommentEnd(text, match) {
+  const headEnd = match.index + match[0].length;
+  if (match[0].trimStart().startsWith('//')) return runEnd(text, headEnd, LINE_BREAK);
+  const close = text.indexOf('*', headEnd);
+  if (close === -1 || text[close + 1] !== '/') return -1;
+  const end = runEnd(text, close + 2, NOT_INLINE_TAB);
+  return end === text.length || LINE_END.test(text[end]) ? end : -1;
+}
 
 function stripSourceMapComments(bytes) {
   // latin1 maps bytes one-to-one, so indices found here slice the original
@@ -449,9 +586,13 @@ function stripSourceMapComments(bytes) {
   const text = buffer.toString('latin1');
   const parts = [];
   let cursor = 0;
-  for (const match of text.matchAll(SOURCE_MAP_COMMENT)) {
+  const start = new RegExp(SOURCE_MAP_START.source, SOURCE_MAP_START.flags);
+  for (let match = start.exec(text); match; match = start.exec(text)) {
+    const end = sourceMapCommentEnd(text, match);
+    if (end === -1) continue;
     parts.push(buffer.subarray(cursor, match.index));
-    cursor = match.index + match[0].length;
+    cursor = end;
+    start.lastIndex = Math.max(end, match.index + 1);
   }
   if (!parts.length) return buffer;
   parts.push(buffer.subarray(cursor));

@@ -378,4 +378,69 @@ describe('metadata stripping', () => {
     expect(preparePublication({ kind: 'file', name: 'blob.txt', data: runOnly }).findings).toEqual([]);
     expect(historyContainsSecret(long.jwt)).toBe(true);
   });
+
+  // CI's coverage run hit V8's regexp backtrack limit on the case above even
+  // though a local run passed: that limit is the engine's own backtrack stack,
+  // not the JS stack, so --stack-size alone does not reproduce it, while
+  // --no-regexp-optimization (no greedy-loop shortcut) does, deterministically.
+  // Every rule, the history backstop and source-map stripping must get through
+  // hostile runs under that setting too.
+  test('hostile runs scan under a regexp engine without its loop optimisations', () => {
+    const script = `
+      const scan = require(${JSON.stringify(require.resolve('./publication-scan'))});
+      const { historyContainsSecret } = require(${JSON.stringify(require.resolve('./workspace-history-policy'))});
+      const run = (unit) => unit.repeat(Math.ceil(10_000_000 / unit.length));
+      const hostile = {
+        token: ' eyJ' + run('Ab3dE9gHk2'),
+        dashes: run('-eyJ'),
+        email: run('a'),
+        domain: 'x@' + run('a.'),
+        quoted: 'password: "' + run('a'),
+        bare: 'password = ' + run('a') + ' x',
+        url: 'http://u:' + run('a'),
+        keystore: '"ciphertext": "' + run('a'),
+        street: 'H' + run('a'),
+        spaces: 'priv' + run(' '),
+        sourceMap: '/*# sourceMappingURL=' + run('x'),
+      };
+      const out = {};
+      for (const [name, text] of Object.entries(hostile)) {
+        try {
+          const findings = scan.preparePublication({ kind: 'file', name: 'blob.js', data: Buffer.from(text) }).findings;
+          out[name] = [...new Set(findings.map(finding => finding.rule))];
+          historyContainsSecret(text);
+        } catch (error) {
+          out[name] = String(error.message);
+        }
+      }
+      const longJwt = 'eyJ' + run('Ab3dE9gHk2') + '.' + 'a'.repeat(20) + '.' + 'b'.repeat(20);
+      out.longJwt = [...scan.RULES.find(rule => rule.id === 'jwt').matches(' ' + longJwt + ' ')].map(match => match.value.length);
+      out.longJwtHistory = historyContainsSecret(longJwt);
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const child = require('child_process').spawnSync(process.execPath,
+      ['--no-regexp-optimization', '--stack-size=256', '-e', script], { encoding: 'utf8', maxBuffer: 1 << 20 });
+    expect(child.stderr).toBe('');
+    const out = JSON.parse(child.stdout);
+    expect(out).toEqual({
+      token: [], dashes: [], email: [], domain: [], quoted: [], bare: [], url: [], keystore: [],
+      street: [], spaces: [], sourceMap: [],
+      longJwt: [10_000_003 + 42], longJwtHistory: true,
+    });
+  }, 120_000);
+
+  test('a rule that throws fails the scan closed with a blocking finding', () => {
+    const rule = RULES.find(item => item.id === 'jwt');
+    const { matches } = rule;
+    rule.matches = () => { throw new RangeError('Maximum call stack size exceeded'); };
+    try {
+      const findings = scanText('big.txt', 'nothing secret here');
+      expect(findings).toEqual([expect.objectContaining({ rule: 'scan-incomplete', kind: 'secret', blocking: true, path: 'big.txt' })]);
+      const scan = preparePublication({ kind: 'text', text: 'hello' });
+      expect(scan.findings.map(finding => [finding.rule, finding.blocking])).toEqual([['scan-incomplete', true]]);
+    } finally {
+      rule.matches = matches;
+    }
+    expect(scanText('big.txt', 'nothing secret here')).toEqual([]);
+  });
 });

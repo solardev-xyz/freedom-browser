@@ -74,17 +74,43 @@ function historyPathReason(value, includeGenerated = false) {
 /* istanbul ignore next -- Also serialized into the sandbox helper (see above). */
 function historyContainsSecret(value) {
   const text = typeof value === 'string' ? value : value.toString('utf8');
+  // Every pattern is bounded, and open-ended runs are walked by searching for
+  // the first character outside them: an open-ended `X*` can push one regexp
+  // backtrack entry per character and throw on a run of millions (see
+  // publication-scan.js). Self-contained, so it still serializes.
+  const runEnd = (from, stop) => {
+    stop.lastIndex = from;
+    const found = stop.exec(text);
+    return found ? found.index : text.length;
+  };
   if (
-    /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*|\beyJ[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{12}[A-Za-z0-9_-]*/.test(
+    /-----BEGIN (?:[A-Z ]{1,40} )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20}/.test(
       text
     )
   )
     return true;
-  if (/https?:\/\/[^\s/:]+:[^\s/@]+@/i.test(text)) return true;
+  const notToken = /[^A-Za-z0-9_-]/g;
+  const jwt = /\beyJ[A-Za-z0-9_-]{12}/g;
+  for (let match = jwt.exec(text); match; match = jwt.exec(text)) {
+    const first = runEnd(match.index + match[0].length, notToken);
+    const second = text[first] === '.' ? runEnd(first + 1, notToken) : -1;
+    const third = second - first > 12 && text[second] === '.' ? runEnd(second + 1, notToken) : -1;
+    if (third - second > 12) return true;
+    jwt.lastIndex = Math.max(first, match.index + 1);
+  }
+  const url = /https?:\/\//gi;
+  for (let match = url.exec(text); match; match = url.exec(text)) {
+    const user = runEnd(match.index + match[0].length, /[\s/:]/g);
+    if (user === match.index + match[0].length || text[user] !== ':') continue;
+    const password = runEnd(user + 1, /[\s/@]/g);
+    if (password > user + 1 && text[password] === '@') return true;
+  }
   const assignments =
-    /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["']([^"'\r\n]{8}[^"'\r\n]*)["']/gi;
-  for (const match of text.matchAll(assignments)) {
+    /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s{0,64}[:=]\s{0,64}["']([^"'\r\n]{8})/gi;
+  for (let match = assignments.exec(text); match; match = assignments.exec(text)) {
+    const end = runEnd(match.index + match[0].length, /["'\r\n]/g);
     if (
+      (text[end] === '"' || text[end] === "'") &&
       !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(
         match[1]
       )
@@ -92,9 +118,16 @@ function historyContainsSecret(value) {
       return true;
   }
   const bareAssignments =
-    /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*([A-Za-z0-9_+/.=-]{8}[A-Za-z0-9_+/.=-]*)\s*(?:#.*)?$/gim;
-  for (const match of text.matchAll(bareAssignments)) {
-    if (!/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(match[1])) return true;
+    /^[ \t]{0,256}(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s{0,64}[:=]\s{0,64}([A-Za-z0-9_+/.=-]{8})/gim;
+  for (let match = bareAssignments.exec(text); match; match = bareAssignments.exec(text)) {
+    // The value must end its line, optionally followed by blanks and a # comment.
+    const end = runEnd(match.index + match[0].length, /[^A-Za-z0-9_+/.=-]/g);
+    const after = runEnd(end, /\S|[\n\r\u2028\u2029]/g);
+    if (
+      (after === text.length || text[after] === '#' || /[\n\r\u2028\u2029]/.test(text[after])) &&
+      !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(match[1])
+    )
+      return true;
   }
   return false;
 }
