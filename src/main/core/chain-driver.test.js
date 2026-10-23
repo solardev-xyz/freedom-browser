@@ -441,6 +441,41 @@ describe('fencing', () => {
   });
 });
 
+describe('the fee reference (design 0005, A)', () => {
+  const REFERENCE = {
+    header: { source: 'colibri', number: '20000000', timestamp: '1700000000', base_fee: '7' },
+    lowest_priority: '1',
+    quote: {
+      type: 'legacy',
+      gasPrice: '9',
+      effectiveGasPrice: '9',
+      source: 'direct',
+      verified: false,
+      answered: 2,
+    },
+  };
+
+  test('chain.fee_reference: fenced as a fee quote, its parts as the core gives them', async () => {
+    const { driver, client } = setUp(() => ({ ...REFERENCE, generation: 3 }));
+    await expect(driver.feeReference(1)).resolves.toEqual(REFERENCE);
+    expect(client.written).toEqual([
+      ['chain.fee_reference', { chain_id: 1, deadline_ms: DEADLINE_MS }],
+    ]);
+    // A part that failed is null, as the core sends it.
+    const nulls = { header: null, lowest_priority: null, quote: null };
+    const none = setUp(() => ({ ...nulls, generation: 3 }));
+    await expect(none.driver.feeReference(1)).resolves.toEqual(nulls);
+  });
+
+  test("within the caller's deadline, never the core's full 120 s past it", async () => {
+    const { driver, client } = setUp(() => ({ ...REFERENCE, generation: 3 }));
+    await driver.feeReference(1, { deadlineMs: 15_000 });
+    await driver.feeReference(1, { deadlineMs: 500_000 });
+    expect(client.written.map(([, params]) => params.deadline_ms)).toEqual([15_000, DEADLINE_MS]);
+    await expect(driver.feeReference('abc')).rejects.toThrow('Unsupported chain ID: abc');
+  });
+});
+
 describe('deadlines and cancellation', () => {
   test("what is left of the caller's deadline goes with each attempt; none left, nothing goes", async () => {
     let clock = 0;

@@ -77,6 +77,7 @@ const METHOD_CLASSES = Object.freeze({
   'chain.availability': IMMEDIATE,
   'chain.request': SESSION,
   'chain.fee_quote': SESSION,
+  'chain.fee_reference': SESSION,
   'chain.broadcast': SESSION,
   'chain.html': SESSION,
 });

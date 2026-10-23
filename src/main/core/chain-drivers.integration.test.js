@@ -19,7 +19,7 @@ const { BroadcastRecords } = require('./chain-broadcasts');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
 const { ChainDriver, RECONFIGURED } = require('./chain-driver');
-const { servesChain } = require('../../../test/helpers/core-chain-probe');
+const { servesChain, servesFeeReference } = require('../../../test/helpers/core-chain-probe');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 jest.mock('../ipfs/gateway-transport', () => ({
@@ -36,6 +36,8 @@ const binary = process.env.FREEDOM_CORED_PATH;
 jest.setTimeout(30_000);
 const quietLog = { info() {}, warn() {}, error() {} };
 const describeIfChain = servesChain(binary) ? describe : describe.skip;
+// The fee check's evidence (design 0005, A): a core with chain.fee_reference.
+const testIfFeeReference = servesFeeReference(binary) ? test : test.skip;
 
 /** A signed transaction and its hash (freedom-core vectors/chain.json). */
 const RAW =
@@ -247,6 +249,52 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
     while (client.pool.held > 0) await new Promise(setImmediate);
   });
 
+  testIfFeeReference(
+    "the fee check's evidence: B's quote, and what the wallet makes of it",
+    async () => {
+      const x = await start();
+      x.world.answer = (body) => ({
+        result: body.method === 'eth_gasPrice' ? '0x3b9aca00' : '0x5f5e100',
+      });
+      // One endpoint, no prover: no header, and B's combined quote is that
+      // endpoint's word.
+      await expect(chainData.getFeeReference(1, { deadlineMs: 15_000 })).resolves.toEqual({
+        header: null,
+        lowest_priority: '100000000',
+        quote: {
+          type: 'eip1559',
+          baseFee: '900000000',
+          maxPriorityFeePerGas: '100000000',
+          maxFeePerGas: '1900000000',
+          effectiveGasPrice: '1000000000',
+          source: 'direct',
+          verified: false,
+          answered: 1,
+        },
+      });
+      expect(x.wire.at(-1)).toMatchObject({
+        method: 'chain.fee_reference',
+        deadline: expect.any(Number),
+      });
+      expect(x.wire.at(-1).deadline).toBeLessThanOrEqual(15_000);
+      // The wallet's check of a send at 20 gwei against R = 1.9 gwei.
+      const { FeeChecks } = require('../wallet/fee-check');
+      const checks = new FeeChecks({ log: quietLog });
+      await expect(
+        checks.atApproval({ chainId: 1, gasLimit: '21000', gasPrice: '20000000000' })
+      ).resolves.toMatchObject({
+        maxCost: '420000000000000',
+        comparable: true,
+        ratio: '11',
+        above: true,
+        oneEndpoint: true,
+        basis: 'quote',
+        autoApprove: false,
+        askAgain: true,
+      });
+    }
+  );
+
   test("a call object's BigInt quantities reach the node as the router's hex", async () => {
     const x = await start();
     expect(
@@ -341,6 +389,9 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
       ['effectiveGasPrice', '16'],
       ['source', 'direct'],
       ['verified', false],
+      // Direct's quote is B's (design 0005, deviation fee-combination):
+      // combined from the endpoints that answered, here one.
+      ['answered', 1],
     ]);
   });
 });

@@ -9,6 +9,8 @@
  *   v0.3.0 has none.
  * - `servesChainHtml`: `chain.html` (design 0006); v0.4.0 has none.
  * - `servesDweb`: `dweb.open` (design 0006); v0.4.0 has none.
+ * - `servesFeeReference`: `chain.fee_reference` (design 0005, A); v0.6.0
+ *   has none.
  */
 const fs = require('fs');
 const os = require('os');
@@ -69,6 +71,10 @@ function servesChain(binary) {
   return serves(binary, 'chain.configure', { chains: [] });
 }
 
+function servesFeeReference(binary) {
+  return serves(binary, 'chain.fee_reference', { chain_id: 1, deadline_ms: 1000 });
+}
+
 function servesChainHtml(binary) {
   return serves(binary, 'chain.html', {
     chain_id: 1,
@@ -89,4 +95,4 @@ function servesDweb(binary) {
   });
 }
 
-module.exports = { servesChain, servesChainHtml, servesDweb };
+module.exports = { servesChain, servesChainHtml, servesDweb, servesFeeReference };
