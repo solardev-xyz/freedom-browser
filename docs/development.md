@@ -96,6 +96,15 @@ $env:NODE_ENV = 'test'
 & .\node_modules\electron\dist\electron.exe scripts/qualify-windows-controller.js --root C:\freedom-test\qualification
 ```
 
+To qualify an installed build instead of the development helpers in
+`out/windows-workspace`, add `--runtime <install>\resources\windows-workspace`
+to `qualify-windows-workspace.js` (for a per-user install, `<install>` is
+`%LOCALAPPDATA%\Programs\freedom-browser`). Add `--home <dir>` if setup
+provisioned a sandbox home other than the default
+`%LOCALAPPDATA%\FreedomBrowser\Sandbox`. Both apply to every check, including
+the opened-handle reads. `qualify-windows-controller.js` takes no `--runtime`; run
+from a checkout, it uses `out/`.
+
 The scripts retain their fixtures and JSONL results. This does not replace the
 packaged-app, first-use UI and installer checks recorded in the Agent roadmap.
 
