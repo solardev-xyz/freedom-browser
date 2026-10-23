@@ -820,6 +820,87 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  // #89: a personal_sign of exactly 32 bytes as signed (a raw value whose
+  // signature can be a Swarm feed update) always needs the user's prompt,
+  // even with signing auto-approve. Other lengths auto-sign as before.
+  describe('a 32-byte personal_sign is never auto-approved', () => {
+    const RAW_HEX = '0x' + 'ab'.repeat(32);
+    const RAW_TEXT = 'x'.repeat(32);
+    const RAW_UTF8 = 'é'.repeat(16); // 16 characters, 32 bytes
+    const LEDGER = 1000000;
+
+    beforeEach(() => {
+      dappPermissions.getSigningAutoApprove.mockReturnValue(true);
+    });
+
+    test.each([
+      ['as hex', RAW_HEX],
+      ['as text', RAW_TEXT],
+      ['as multi-byte text', RAW_UTF8],
+      ['in uppercase hex', '0x' + 'AB'.repeat(32)],
+      ['as a non-string', Array.from({ length: 32 }, () => 1)],
+    ])('%s: refused under auto-approve, on any account; signed when confirmed', async (_label, message) => {
+      for (const walletIndex of [0, LEDGER]) {
+        dappPermissions.getPermission.mockReturnValue({ walletIndex });
+        const refused = await handlers['wallet:sign-message'](AUTO, message, walletIndex, { autoApprove: SITE, webContentsId: 12 });
+        expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      }
+      expect(getSigner).not.toHaveBeenCalled();
+
+      // Approving at the prompt signs exactly as before.
+      const confirmation = await mint('sign-message', 0, message);
+      const signed = await handlers['wallet:sign-message']({}, message, 0, { confirmation });
+      expect(signed).toEqual({ success: true, signature: '0xmsgsig' });
+      expect(signer.signMessage).toHaveBeenCalledWith(message);
+    });
+
+    test.each([
+      ['31 bytes of hex', '0x' + 'ab'.repeat(31)],
+      ['33 bytes of hex', '0x' + 'ab'.repeat(33)],
+      ['31 bytes of text', 'x'.repeat(31)],
+      ['33 bytes of text', 'x'.repeat(33)],
+      ['32 hex digits (16 bytes)', '0x' + 'ab'.repeat(16)],
+      ['64 hex digits without 0x (64 bytes of text)', 'ab'.repeat(32)],
+    ])('%s: auto-approved as before', async (_label, message) => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
+      const signed = await handlers['wallet:sign-message'](AUTO, message, 0, { autoApprove: SITE, webContentsId: 12 });
+      expect(signed).toEqual({ success: true, signature: '0xmsgsig' });
+      expect(signer.signMessage).toHaveBeenCalledWith(message);
+    });
+
+    test('typed data is auto-approved as before', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
+      const typed = { domain: { chainId: 100 }, message: { a: 1 } };
+      const signed = await handlers['wallet:sign-typed-data'](AUTO, typed, 0, { autoApprove: SITE, webContentsId: 12 });
+      expect(signed).toEqual({ success: true, signature: '0xtypedsig' });
+    });
+
+    test('a Safe account: 32 bytes needs its prompt; other lengths and typed data do not', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 7 });
+      const requester = { origin: SITE, webContentsId: 12 };
+      const start = (request, authorization) =>
+        handlers['wallet:safe-message-start'](AUTO, 7, request, {}, requester, authorization);
+      for (const message of [RAW_HEX, RAW_TEXT]) {
+        const request = { method: 'personal_sign', params: [message, '0xsafe'] };
+        await expect(start(request, { autoApprove: SITE, webContentsId: 12 })).resolves.toMatchObject({
+          success: false,
+          code: 'SIGNING_NOT_CONFIRMED',
+        });
+        expect(startSafeMessage).not.toHaveBeenCalled();
+        const confirmation = await mint('safe-message', 7, request);
+        await expect(start(request, { confirmation })).resolves.toMatchObject({ success: true });
+        startSafeMessage.mockClear();
+      }
+      for (const request of [
+        { method: 'personal_sign', params: ['0x' + 'ab'.repeat(33), '0xsafe'] },
+        { method: 'eth_signTypedData_v4', params: ['0xsafe', JSON.stringify({ message: { a: 1 } })] },
+      ]) {
+        await expect(start(request, { autoApprove: SITE, webContentsId: 12 })).resolves.toMatchObject({ success: true });
+      }
+      expect(startSafeMessage).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('Safe handlers', () => {
     const SAFE_TX = { to: TX.to, value: '5', data: '0x' };
 

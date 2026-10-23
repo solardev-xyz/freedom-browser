@@ -1,0 +1,1 @@
+- When a site asks to sign exactly 32 bytes, the prompt always appears, even for a site allowed to sign without asking, and shows the bytes as hex with a warning that they can authorize things the prompt can't show, such as a Swarm feed update ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))

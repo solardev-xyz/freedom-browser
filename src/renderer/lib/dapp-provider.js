@@ -16,6 +16,7 @@ import { isSafeAccount, accountType, GNOSIS_CHAIN_ID } from './wallet/wallet-uti
 import { fetchFeeCheck, FEE_CHECK_NOT_AUTO_APPROVED } from './wallet/fee-check.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { confirmSigning } from './wallet/signing-confirmation.js';
+import { signsRawHash } from './wallet/personal-sign.js';
 import { PHONE_OUTCOME_UNKNOWN, siteOutcomeUnknownError } from './wallet/intent-texts.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl, applyDnsNameIdentity } from './url-utils.js';
@@ -296,7 +297,11 @@ async function handleProviderRequest(webview, request) {
         parseInt(await getCurrentChainId(webview), 16);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
-      if (permission.autoApprove?.signing) {
+      // A personal_sign of exactly 32 bytes always prompts, with its
+      // warning: its signature can be a Swarm feed update (#89). Main
+      // refuses to auto-approve it too.
+      const alwaysPrompt = method === 'personal_sign' && signsRawHash(params?.[0]);
+      if (permission.autoApprove?.signing && !alwaysPrompt) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);

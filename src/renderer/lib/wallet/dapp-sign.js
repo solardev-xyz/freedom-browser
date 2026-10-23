@@ -21,6 +21,7 @@ import {
   isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
+import { personalSignBytes, signsRawHash, bytesToHex } from './personal-sign.js';
 
 // DOM references
 let dappSignScreen;
@@ -39,6 +40,7 @@ let dappSignError;
 let dappSignRejectBtn;
 let dappSignApproveBtn;
 let dappSignAutoApproveCheckbox;
+let dappSignRawWarning;
 
 // Local state. `dappSignPending.signing` is true while the signature is
 // in flight: a hardware signature is a device prompt we cannot recall, so
@@ -63,6 +65,7 @@ export function initDappSign() {
   dappSignRejectBtn = document.getElementById('dapp-sign-reject');
   dappSignApproveBtn = document.getElementById('dapp-sign-approve');
   dappSignAutoApproveCheckbox = document.getElementById('dapp-sign-auto-approve');
+  dappSignRawWarning = document.getElementById('dapp-sign-raw-warning');
 
   // Register screen hider
   registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
@@ -147,6 +150,7 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       dappSignSite.textContent = permissionKey;
     }
 
+    dappSignRawWarning?.classList.add('hidden');
     if (method === 'personal_sign') {
       displayPersonalSignMessage(params);
     } else if (method === 'eth_signTypedData_v4') {
@@ -186,9 +190,17 @@ function displayPersonalSignMessage(params) {
   }
   dappSignTypedDataSection?.classList.add('hidden');
 
+  // Exactly 32 bytes: shown as hex, with a warning (#89). Its signature
+  // can be a Swarm feed update, which nothing here could show.
+  const rawHash = signsRawHash(message);
+  dappSignRawWarning?.classList.toggle('hidden', !rawHash);
+
   if (dappSignMessage) {
-    let displayMessage = message;
-    if (message.startsWith('0x')) {
+    const bytes = personalSignBytes(message);
+    let displayMessage = typeof message === 'string' ? message : String(message);
+    if (rawHash && bytes) {
+      displayMessage = bytesToHex(bytes);
+    } else if (typeof message === 'string' && message.startsWith('0x')) {
       try {
         displayMessage = hexToUtf8(message.slice(2));
       } catch {
@@ -417,6 +429,7 @@ function rejectDappSign() {
 
 function closeDappSign() {
   dappSignScreen?.classList.add('hidden');
+  dappSignRawWarning?.classList.add('hidden');
   // A Safe flow may still be showing the signing board (in-flow, not a
   // modal) — restoring the identity view under it would double-render.
   if (!isSafeSigningBoardOpen()) {

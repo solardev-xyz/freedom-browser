@@ -1,0 +1,2 @@
+- Wallet accounts can no longer be a site's Swarm publisher identity: feeds and signed chunks use an app-scoped identity or the Ant wallet ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A site still set to a wallet account shows it as unavailable, and its feed requests fail until you choose another identity for it

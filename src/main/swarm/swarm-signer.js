@@ -17,14 +17,9 @@ function isWireSignature(signature) {
 }
 const { Identifier } = require('@ethersphere/bee-js');
 const { vaultBackend } = require('../core/vault-backend');
-const {
-  getWalletRecord,
-  WALLET_TYPES,
-  getPublisherAddress,
-  getBeeWalletAddress,
-  deriveAddresses,
-} = require('../identity-manager');
+const { getPublisherAddress, getBeeWalletAddress } = require('../identity-manager');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
+const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { getBee } = require('./swarm-service');
 
 function getIdentityMode(identity) {
@@ -104,26 +99,12 @@ async function resolveSwarmSigner(identity) {
     return createSwarmSigner({ kind: 'publisher', origin_index: identity.publisherKeyIndex }, owner);
   }
 
-  if (identityMode === 'ethereum-wallet') {
-    const walletIndex = identity.walletIndex;
-    if (typeof walletIndex !== 'number') {
-      throw new Error('Ethereum wallet identity is missing a wallet index');
-    }
-    if (!Number.isInteger(walletIndex) || walletIndex < 0) {
-      throw new Error('Wallet index must be a non-negative integer');
-    }
-    const record = getWalletRecord(walletIndex);
-    if (!record) {
-      throw new Error(`Wallet with index ${walletIndex} does not exist`);
-    }
-    if (record.type !== WALLET_TYPES.MNEMONIC) {
-      throw new Error('This account has no derivable private key — the key never leaves its device');
-    }
-    const addresses = await deriveAddresses({ accounts: [walletIndex] });
-    if (!addresses) {
-      throw new Error('Vault must be unlocked to derive wallet keys');
-    }
-    return createSwarmSigner({ kind: 'account', index: walletIndex }, addresses.user_wallets[0].address);
+  // Removed (#89): an account's 32-byte personal_sign is a chunk
+  // signature, so only keys that sign nothing else own feeds. A stored
+  // identity in this mode fails here, before any key is asked for, and
+  // nothing falls back to another key (another owner, another feed).
+  if (identityMode === ETHEREUM_WALLET_MODE) {
+    throw new Error(ETHEREUM_WALLET_UNAVAILABLE);
   }
 
   throw new Error(`Unknown identity mode: ${identityMode}`);

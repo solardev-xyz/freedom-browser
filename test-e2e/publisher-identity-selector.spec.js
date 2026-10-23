@@ -1,7 +1,7 @@
 // Publisher identity selector — identities the main process flags as
-// `unavailable` (deleted wallet, hardware account that can't export a key
-// for Swarm feed signing) must render as inert, not as an ordinary pick
-// that only fails later with an opaque INTERNAL_ERROR.
+// `unavailable` (a stored Ethereum wallet identity, a mode removed by
+// freedom-core design 0002 #89) must render as inert, not as an ordinary
+// pick that only fails later.
 //
 // The selector is shared by the feed prompt, the Swarm permission screen
 // and publisher identity management, so asserting it here covers all
@@ -22,17 +22,17 @@ const STATE = {
       stored: true,
     },
     {
-      id: 'ethereum-wallet:0',
-      mode: 'ethereum-wallet',
-      label: 'Main Wallet',
-      walletIndex: 0,
+      id: 'app-scoped:1',
+      mode: 'app-scoped',
+      label: 'Second identity',
+      publisherKeyIndex: 1,
       owner: '0x2222222222222222222222222222222222222222',
-      stored: false,
+      stored: true,
     },
     {
       id: 'ethereum-wallet:1',
       mode: 'ethereum-wallet',
-      label: 'Ledger 1',
+      label: 'Main Wallet',
       walletIndex: 1,
       owner: '0x3333333333333333333333333333333333333333',
       stored: true,
@@ -63,8 +63,8 @@ test('an unavailable publisher identity renders inert and cannot be selected', a
     host.querySelector('.publisher-identity-selector-btn').click();
 
     const items = Array.from(host.querySelectorAll('.publisher-identity-selector-item'));
-    const unavailable = items.find((item) => item.textContent.includes('Ledger 1'));
-    const usable = items.find((item) => item.textContent.includes('Main Wallet'));
+    const unavailable = items.find((item) => item.textContent.includes('Main Wallet'));
+    const usable = items.find((item) => item.textContent.includes('Second identity'));
 
     unavailable.click();
     usable.click();
@@ -81,7 +81,7 @@ test('an unavailable publisher identity renders inert and cannot be selected', a
   expect(result.unavailableNote).toBe(true);
   expect(result.usableDisabled).toBe(false);
   // Clicking the unavailable row is a no-op; the usable one still selects.
-  expect(result.selected).toEqual(['ethereum-wallet:0']);
+  expect(result.selected).toEqual(['app-scoped:1']);
 
   // Selecting closes the dropdown; reopen it so the shot shows the list.
   // Wait for the close to settle before toggling — under load a reopen click
