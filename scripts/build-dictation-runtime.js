@@ -86,6 +86,10 @@ async function buildDictationRuntime(arch = process.arch, platform = process.pla
         manifest.binarySha256 === hash(fs.readFileSync(destination)) &&
         manifest.libraries?.every(file => /^[A-Za-z0-9_.-]+$/.test(file.name) && file.sha256 === hash(fs.readFileSync(path.join(output, file.name))))) return;
   } catch { /* A missing or stale build is regenerated from pinned source. */ }
+  // Release packaging stages this build from an earlier job of the same run;
+  // there a stale or missing build is a pipeline bug, not something to
+  // recompile silently.
+  if (process.env.FREEDOM_DICTATION_RUNTIME_PREBUILT === '1') throw new Error(`No current prebuilt dictation runtime in ${output}`);
   const cmake = process.env.CMAKE || 'cmake';
   try { execFileSync(cmake, ['--version'], { stdio: 'pipe', timeout: 10000 }); }
   catch { throw new Error('CMake and a C++ compiler are required to build local dictation. Packaged Freedom needs neither.'); }
