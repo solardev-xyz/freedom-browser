@@ -101,6 +101,8 @@
     "ipfs:native:smoke": "node scripts/smoke-freedom-ipfs-native.js",
     "ipfs:reset": "rm -rf ipfs-data && echo 'Legacy repo-root IPFS data reset.'",
     "tor:download": "node scripts/fetch-arti.js",
+    "natives:download": "node scripts/prebuilt-natives.js fetch",
+    "natives:pin": "node scripts/prebuilt-natives.js pin",
     "tor:reset": "rm -rf tor-data && echo 'Tor data reset.'",
     "radicle:download": "node scripts/fetch-radicle-addon.js",
     "radicle:reset": "rm -rf radicle-data && echo 'Legacy repo-root Radicle data removed; managed profile data was not changed.'",

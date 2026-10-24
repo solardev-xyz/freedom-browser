@@ -1,0 +1,210 @@
+name: Prebuilt natives
+run-name: >-
+  ${{ github.ref == 'refs/heads/main' && 'Prebuilt natives' || format('Prebuilt natives test on {0} (no publish)', github.ref_name) }}
+
+# Compiles the natives every release build used to compile itself — Arti
+# (Tor), the whisper.cpp dictation runtime and the Windows sandbox helpers —
+# once per recipe, on the same runners release.yml packages on, and publishes
+# them as a `natives-<date>-<run id>` pre-release (never "Latest"). Release
+# builds download them through scripts/prebuilt-natives.js, which installs a
+# component only while scripts/prebuilt-natives.json pins its current recipe
+# key and only after its sha256 matches; anything stale is compiled from source
+# as before. See docs/agent-playbooks/bundled-binaries.md "Prebuilt natives"
+# for when to run this and how to pin the result.
+#
+# Dispatch only. A run on any branch but `main` builds and uploads workflow
+# artifacts but publishes nothing, so a branch can test a recipe change
+# without minting a release.
+#
+# Nothing here restores a cache: these binaries ship inside signed releases
+# (#635).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: natives-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mac-arm64
+            runner: macos-15
+            arch: arm64
+            rust_triple: aarch64-apple-darwin
+            rustup_sha256: 20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5
+          - target: linux-x64
+            runner: ubuntu-latest
+            arch: x64
+            rust_triple: x86_64-unknown-linux-gnu
+            rustup_sha256: 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            rust_triple: aarch64-unknown-linux-gnu
+            rustup_sha256: e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+          - target: win-x64
+            runner: windows-latest
+            arch: x64
+            rust_triple: x86_64-pc-windows-msvc
+            rustup_sha256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_VERSION: 1.28.2
+      RUSTUP_SHA256: ${{ matrix.rustup_sha256 }}
+      RUST_TRIPLE: ${{ matrix.rust_triple }}
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The builds read nothing from node_modules, so there is no npm ci.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Same toolchain convention as release.yml: the runner image normally
+      # ships cargo; if not, a pinned rustup-init checked against its sha256.
+      - name: Build Arti and the dictation runtime
+        if: runner.os != 'Windows'
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            (
+              cd "$RUNNER_TEMP"
+              curl --proto '=https' --tlsv1.2 -sSfo rustup-init \
+                "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"
+              echo "${RUSTUP_SHA256}  rustup-init" | shasum -a 256 -c -
+              chmod +x rustup-init
+              ./rustup-init -y --profile minimal --no-modify-path
+              rm rustup-init
+            )
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          node scripts/fetch-arti.js
+          node scripts/build-dictation-runtime.js "$ARCH"
+
+      # Inside the already installed x64 MSVC developer shell, as in release.yml;
+      # no compiler is downloaded.
+      - name: Build Arti, the dictation runtime and the Windows sandbox helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Push-Location $env:RUNNER_TEMP
+            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/$env:RUST_TRIPLE/rustup-init.exe"
+            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
+            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $env:RUSTUP_SHA256) {
+              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
+            }
+            ./rustup-init.exe -y --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item rustup-init.exe
+            Pop-Location
+            $env:PATH = "$(Join-Path $env:USERPROFILE '.cargo\bin');$env:PATH"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          node scripts/fetch-arti.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-dictation-runtime.js x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-windows-workspace.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Archive the built natives
+        run: node scripts/prebuilt-natives.js pack --target "$TARGET" --out natives-dist
+
+      - name: Upload the archives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: natives-${{ matrix.target }}
+          path: natives-dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download the archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: natives-*
+          merge-multiple: true
+          path: natives-dist
+
+      - name: Write the pin file
+        id: manifest
+        run: |
+          set -euo pipefail
+          tag="natives-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}"
+          node scripts/prebuilt-natives.js manifest --dir natives-dist --tag "$tag" --commit "$GITHUB_SHA" > prebuilt-natives.json
+          cat prebuilt-natives.json
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # `npm run natives:pin -- --run <id>` reads the pin file from this
+      # artifact, not from the release: an asset on a release can be replaced
+      # later, the artifact of a finished run cannot.
+      - name: Upload the pin file
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prebuilt-natives-manifest
+          path: prebuilt-natives.json
+          if-no-files-found: error
+
+      # A pre-release that is never "Latest", so nothing that looks for the
+      # newest Freedom release (the updater, the real-conditions E2E host)
+      # can mistake it for one.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" natives-dist/*.tar.gz prebuilt-natives.json \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Prebuilt natives $TAG" \
+            --notes "Arti, the dictation runtime and the Windows sandbox helpers built by ${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID} from ${GITHUB_SHA}. Release builds use these only once scripts/prebuilt-natives.json pins them."
+          {
+            echo "Published \`$TAG\`. Pin it with:"
+            echo
+            echo "    npm run natives:pin -- --run ${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"

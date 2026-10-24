@@ -362,12 +362,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: darwin-arm64
 
+      # Prebuilt natives (natives.yml) whose pinned recipe still matches this
+      # checkout, checked against their pinned sha256; whatever is stale is
+      # compiled below or by the beforePack hook, as before.
+      - name: Download prebuilt natives
+        id: natives
+        run: |
+          components="dictation"
+          if [ "$BUNDLE_TOR" = true ]; then components="$components arti"; fi
+          node scripts/prebuilt-natives.js fetch --target mac-arm64 $components
+
       # The runner image normally ships cargo. If it does not, install a
       # pinned, checksummed rustup-init rather than piping sh.rustup.rs into
       # a shell: this job later holds the signing credentials, so nothing
       # unpinned should run on it. Same convention as the fetch-* scripts.
       - name: Build Arti (Tor) client
-        if: env.BUNDLE_TOR == 'true'
+        if: env.BUNDLE_TOR == 'true' && steps.natives.outputs.arti != 'hit'
         env:
           RUSTUP_VERSION: 1.28.2
           RUSTUP_SHA256: 20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5
@@ -630,8 +640,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.myotis }}
 
+      # Prebuilt natives (natives.yml) whose pinned recipe still matches this
+      # checkout, checked against their pinned sha256; whatever is stale is
+      # compiled below or by the beforePack hook, as before.
+      - name: Download prebuilt natives
+        id: natives
+        run: |
+          components="dictation"
+          if [ "$BUNDLE_TOR" = true ]; then components="$components arti"; fi
+          node scripts/prebuilt-natives.js fetch --target "linux-${{ matrix.arch }}" $components
+
       - name: Build Arti (Tor) client
-        if: env.BUNDLE_TOR == 'true'
+        if: env.BUNDLE_TOR == 'true' && steps.natives.outputs.arti != 'hit'
         env:
           RUSTUP_VERSION: 1.28.2
           RUSTUP_SHA256: ${{ matrix.rustup_sha256 }}
@@ -1194,10 +1214,15 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Download prebuilt natives
+        id: natives
+        run: node scripts/prebuilt-natives.js fetch --target win-x64 dictation windows-workspace
+
       # scripts/build-dictation-runtime.js and scripts/build-windows-workspace.js
       # are what the beforePack hook would run; each writes a manifest that
       # lets the packaging job reuse its output instead of rebuilding it.
       - name: Build the dictation runtime and Windows sandbox helpers
+        if: steps.natives.outputs.dictation != 'hit' || steps.natives.outputs.windows_workspace != 'hit'
         shell: pwsh
         env:
           RUSTUP_VERSION: 1.28.2
@@ -1280,8 +1305,13 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Build Arti (Tor) client
+      - name: Download prebuilt Arti (Tor) client
+        id: natives
         if: env.BUNDLE_TOR == 'true'
+        run: node scripts/prebuilt-natives.js fetch --target win-x64 arti
+
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true' && steps.natives.outputs.arti != 'hit'
         shell: pwsh
         env:
           RUSTUP_VERSION: 1.28.2
