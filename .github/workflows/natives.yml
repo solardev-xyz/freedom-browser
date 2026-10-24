@@ -35,6 +35,7 @@ on:
       - src/main/agent/dictation-local-notices.txt
       - scripts/build-windows-workspace.js
       - scripts/windows-workspace-notices.js
+      - LICENSE
       - src/main/agent/workspace-execution/native/windows/**
 
 permissions:

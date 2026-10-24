@@ -48,6 +48,8 @@ describe('component keys', () => {
     expect(COMPONENTS['windows-workspace'].inputs()).toContain(
       'src/main/agent/workspace-execution/native/windows/src/main.rs'
     );
+    // windows-workspace-notices.js embeds the repository LICENSE in the notices.
+    expect(COMPONENTS['windows-workspace'].inputs()).toContain('LICENSE');
   });
 
   test('a core.autocrlf checkout computes the same key; a changed input does not', () => {

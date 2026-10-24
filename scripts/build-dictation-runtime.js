@@ -78,7 +78,9 @@ async function buildDictationRuntime(arch = process.arch, platform = process.pla
   const executable = platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
   const destination = path.join(output, executable);
   const notices = path.resolve(__dirname, '../src/main/agent/dictation-local-notices.txt');
-  const recipeSha256 = hash(Buffer.concat([fs.readFileSync(__filename), fs.readFileSync(notices)]));
+  // CRLF folded to LF, as in prebuilt-natives.js's component key: a runtime
+  // built on a core.autocrlf checkout stays current on an LF one.
+  const recipeSha256 = hash([__filename, notices].map(file => fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).join(''));
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
     if (manifest.revision === WHISPER_REVISION && manifest.recipeSha256 === recipeSha256 &&

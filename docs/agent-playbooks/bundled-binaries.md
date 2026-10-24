@@ -343,7 +343,7 @@ sha256. `scripts/prebuilt-natives.js` owns the component list.
 - **Recipe key**: the sha256 of every file that decides a component's bytes
   (`scripts/fetch-arti.js`; `scripts/build-dictation-runtime.js` with
   `src/shared/dictation-runtime.js` and the notices; `scripts/build-windows-workspace.js`,
-  its notices writer and the adapter under `src/main/agent/workspace-execution/native/windows/`),
+  its notices writer, the repository `LICENSE` those notices embed and the adapter under `src/main/agent/workspace-execution/native/windows/`),
   line endings normalised.
 - **Release builds** run `node scripts/prebuilt-natives.js fetch` before their
   Arti step. A component whose pinned key matches the checkout is downloaded,
@@ -362,7 +362,9 @@ sha256. `scripts/prebuilt-natives.js` owns the component list.
   but publishes nothing, which is how to try a recipe change before merging it.
 - **Locally**, `npm run natives:download` installs the current prebuilts for
   the host (a Windows developer skips the 12-minute sandbox build), and the
-  build scripts reuse them through their manifests.
+  build scripts reuse them through their manifests. Those manifests hash the
+  recipe files with line endings normalised too, so an archive built on the
+  Windows runner's core.autocrlf checkout stays current on an LF checkout.
 
 ## See also
 

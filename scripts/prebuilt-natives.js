@@ -57,6 +57,8 @@ const COMPONENTS = {
     inputs: () => [
       'scripts/build-windows-workspace.js',
       'scripts/windows-workspace-notices.js',
+      // windows-workspace-notices.js embeds it in CODEX-DEPENDENCIES.*.
+      'LICENSE',
       ...listFiles(WINDOWS_ADAPTER),
     ],
     dir: () => 'out/windows-workspace/x64',
