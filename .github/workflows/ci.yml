@@ -1659,16 +1659,10 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      # ── was the `e2e-theme-parity` job ──
-      # Both themes, every surface the tour reaches: the declared theme plus WCAG
-      # contrast on headings, body copy, buttons and inputs. This is the check that
-      # fails on a reintroduced #224 (dark resolver rows under the light theme) or
-      # #249 (white-on-white permission origin).
-      - name: Run theme parity E2E
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: xvfb-run -a npm run test:e2e -- --output=test-results/e2e-theme-parity test-e2e/theme-parity.spec.js
-
       # ── was the `e2e-renderer-screenshots` job ──
+      # First, and into the default `test-results/`: renderer-screenshots-gate.test.js
+      # pins this exact command. The theme-parity run after it writes only to its
+      # own `test-results/e2e-theme-parity/`, so it cannot wipe these results.
       # Committed pixel baselines for the tour's surfaces, both themes. Ubuntu only:
       # font rasterisation differs enough between platforms that a macOS or Windows
       # leg would disagree with every baseline (the spec skips itself off Linux).
@@ -1682,7 +1676,7 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_CAPTURE_RENDERER_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.renderer_baselines && '1' || '0' }}
-        run: xvfb-run -a npm run test:e2e:screenshots -- --output=test-results/e2e-renderer-screenshots
+        run: xvfb-run -a npm run test:e2e:screenshots
 
       # Capture never replaces comparison or writes the committed references.
       # Candidates require inspection and a later commit to adopt.
@@ -1706,6 +1700,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # ── was the `e2e-theme-parity` job ──
+      # Both themes, every surface the tour reaches: the declared theme plus WCAG
+      # contrast on headings, body copy, buttons and inputs. This is the check that
+      # fails on a reintroduced #224 (dark resolver rows under the light theme) or
+      # #249 (white-on-white permission origin).
+      - name: Run theme parity E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e -- --output=test-results/e2e-theme-parity test-e2e/theme-parity.spec.js
+
+      - name: Upload theme parity traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-theme-parity-traces
+          path: test-results/e2e-theme-parity/
+          if-no-files-found: ignore
+          retention-days: 14
   # Static analysis of the workflows and composite actions themselves (#633,
   # #637): an unpinned `uses:`, a checkout that persists the git token,
   # a cache restored into a release build, template injection and the rest of
