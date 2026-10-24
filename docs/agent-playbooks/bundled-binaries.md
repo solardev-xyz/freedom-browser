@@ -307,7 +307,7 @@ Same shape, different pin location:
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then
-  `npm run radicle:download`. CI's `radicle-addon-load` matrix then loads the
+  `npm run radicle:download`. CI's `native-addons` matrix then loads the
   addon on every runner-available target and checks it against
   `RADICLE_ADDON_REQUIRED_EXPORTS` (`scripts/check-radicle-addon.js`); win-arm64
   has no hosted runner, so its asset is only verified against the pinned sums.

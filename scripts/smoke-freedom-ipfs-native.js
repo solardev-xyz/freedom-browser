@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Smoke test for the freedom-ipfs native addon (`npm run ipfs:native:smoke`,
-// run per shipped target by ci.yml's freedom-ipfs-native-addon job).
+// run per shipped target by ci.yml's native-addons job).
 //
 // Hard failures (always exit 1): the addon doesn't load or reports the wrong
 // target, the node doesn't start or isn't healthy, the diagnostics snapshots
