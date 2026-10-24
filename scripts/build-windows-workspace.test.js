@@ -137,4 +137,27 @@ describe('reusing a staged helper build', () => {
     }
     expect(currentBuild(path.join(os.tmpdir(), 'freedom-no-such-build'), 'x64')).toBe(false);
   });
+
+  // The published helpers are built on a core.autocrlf Windows checkout and
+  // reused on LF ones; the repository LICENSE lands in CODEX-DEPENDENCIES.*.
+  test('the recipe ignores line endings but tracks the repository LICENSE', () => {
+    const real = fs.readFileSync;
+    const license = path.join(__dirname, '../LICENSE');
+    const recipe = recipeSha256();
+    const read = jest.spyOn(fs, 'readFileSync');
+    try {
+      read.mockImplementation((file, ...rest) => {
+        const out = real(file, ...rest);
+        if (String(file).endsWith('manifest.json')) return out;
+        const crlf = String(out).replace(/\n/g, '\r\n');
+        return typeof out === 'string' ? crlf : Buffer.from(crlf);
+      });
+      expect(recipeSha256()).toBe(recipe);
+      read.mockImplementation((file, ...rest) => {
+        const out = real(file, ...rest);
+        return path.resolve(String(file)) === license ? `${out}changed\n` : out;
+      });
+      expect(recipeSha256()).not.toBe(recipe);
+    } finally { read.mockRestore(); }
+  });
 });
