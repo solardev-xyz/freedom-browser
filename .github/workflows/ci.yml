@@ -342,7 +342,7 @@ jobs:
       # libradicle is the ONLY Radicle runtime — there is no executable fallback —
       # so every release asset has to download, verify against the in-repo pinned
       # checksums, load, and answer a native call on the platform it ships for.
-      # Modelled on myotis-addon-load. win-arm64 has no hosted runner: it is
+      # Modelled on the Myotis addon section below. win-arm64 has no hosted runner: it is
       # downloaded and checksum-verified on windows-latest (a foreign-arch library
       # cannot be dlopen'ed), which is what catches a missing or re-published asset.
       - name: Download this runner's libradicle addon
@@ -1535,7 +1535,7 @@ jobs:
       # requests — `meinhard.eth` is a Swarm-hosted (bzz://) site. This is the
       # headless, real-network validation that Ant is a working bee drop-in for
       # downloads. Linux-only to keep CI cheap; the cross-platform spawn proof lives
-      # in e2e-onboarding-identity above.
+      # in e2e-desktop's onboarding-identity section above.
       - name: Download Ant (antd) binary
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
