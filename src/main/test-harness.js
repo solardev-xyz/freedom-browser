@@ -1077,10 +1077,6 @@ function installProfileDeleteSimulator() {
     profileDeleteSims.has(profileId) ? { ...profileDeleteSims.get(profileId) } : null;
 }
 
-// Neutralize the updater's user actions in test mode: "Check now" would hit
-// the network (or a native "Updates Managed Elsewhere" dialog, since index.js
-// never starts the updater in test mode) and "Restart to update" would quit
-// the app under test. updater.js checks this global and records instead.
 // Playwright's Electron loader appends `--password-store=basic` and
 // `--use-mock-keychain` to every launch it makes. On macOS the mock keychain
 // leaves OSCrypt available, so every harness spec runs with working secure
@@ -1115,6 +1111,10 @@ function installLinuxMockCredentialStore(storage = safeStorage, {
   return true;
 }
 
+// Neutralize the updater's user actions in test mode: "Check now" would hit
+// the network (or a native "Updates Managed Elsewhere" dialog, since index.js
+// never starts the updater in test mode) and "Restart to update" would quit
+// the app under test. updater.js checks this global and records instead.
 function installUpdaterRecorder() {
   globalThis.__FREEDOM_TEST_UPDATER__ = {
     record: (action) => {

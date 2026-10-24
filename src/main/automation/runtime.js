@@ -12,6 +12,17 @@ const DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS = 10_000;
 // Chromium's net::ERR_ABORTED: a load cancelled by a newer navigation or Stop.
 const NET_ERR_ABORTED = -3;
 
+// Compare navigation URLs by their parsed form, so `https://a.example` and
+// the `https://a.example/` Chromium reports for it are the same URL.
+function normalizeNavigationUrl(value) {
+  if (typeof value !== 'string') return '';
+  try {
+    return new URL(value).href;
+  } catch {
+    return value;
+  }
+}
+
 function defaultNavigationRequestIdFactory() {
   return `nav_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
@@ -152,9 +163,22 @@ function createAutomationRuntime(options = {}) {
         // A tab still loading something else (a URL the user just typed, a
         // page held by the first ad-block engine) has that load cancelled by
         // this navigation, and Chromium reports the cancellation as one
-        // main-frame ERR_ABORTED after this navigation has started. That
-        // failure belongs to the superseded load, not to this request (#815).
+        // main-frame ERR_ABORTED for the *superseded* URL after this
+        // navigation has started. That failure belongs to the superseded
+        // load, not to this request (#815). Two things keep the exemption
+        // narrow (probed under Electron 44): an abort naming one of this
+        // request's own URLs (the one asked for, or any it started or
+        // redirected to — the chrome can rewrite dweb names) is always this
+        // request's, even while armed, since superseding a provisional load
+        // emits no abort at all and the flag can stay armed; and once an
+        // abort was absorbed, a did-stop-loading only completes the request
+        // if a main-frame commit happened — Stop on the new navigation
+        // emits no failure of its own, so without that the request would
+        // resolve ok with the tab still on the old page.
         let supersededAbortPending = guestWebContents.isLoading?.() === true;
+        let supersededAbortConsumed = false;
+        let navigationCommitted = false;
+        const ownUrls = new Set([normalizeNavigationUrl(url)]);
         const request = {
           requestId,
           guestWebContents,
@@ -166,11 +190,31 @@ function createAutomationRuntime(options = {}) {
         const completeWhenReady = () => {
           if (acknowledged && navigationCompleted) settleNavigationRequest(request);
         };
-        const onStarted = (_event, _url, isInPlace, isMainFrame) => {
-          if (isMainFrame !== false && isInPlace !== true) navigationStarted = true;
+        const onStarted = (_event, startedUrl, isInPlace, isMainFrame) => {
+          if (isMainFrame === false || isInPlace === true) return;
+          navigationStarted = true;
+          ownUrls.add(normalizeNavigationUrl(startedUrl));
+        };
+        const onRedirected = (_event, redirectedUrl, isInPlace, isMainFrame) => {
+          if (!navigationStarted || isMainFrame === false || isInPlace === true) return;
+          ownUrls.add(normalizeNavigationUrl(redirectedUrl));
+        };
+        const onCommitted = () => {
+          if (navigationStarted) navigationCommitted = true;
         };
         const onStopped = () => {
           if (!navigationStarted) return;
+          if (supersededAbortConsumed && !navigationCommitted) {
+            settleNavigationRequest(
+              request,
+              new AutomationError(
+                ERROR_CODES.NAVIGATION_FAILED,
+                'The desktop tab stopped loading before the navigation committed',
+                { retryable: true }
+              )
+            );
+            return;
+          }
           navigationCompleted = true;
           completeWhenReady();
         };
@@ -179,10 +223,15 @@ function createAutomationRuntime(options = {}) {
           navigationCompleted = true;
           completeWhenReady();
         };
-        const onFailed = (_event, code, description, _url, isMainFrame) => {
+        const onFailed = (_event, code, description, failedUrl, isMainFrame) => {
           if (isMainFrame === false) return;
-          if (code === NET_ERR_ABORTED && supersededAbortPending) {
+          if (
+            code === NET_ERR_ABORTED &&
+            supersededAbortPending &&
+            !ownUrls.has(normalizeNavigationUrl(failedUrl))
+          ) {
             supersededAbortPending = false;
+            supersededAbortConsumed = true;
             return;
           }
           if (!navigationStarted) return;
@@ -204,6 +253,8 @@ function createAutomationRuntime(options = {}) {
         request.cleanup = () => {
           guestWebContents.off?.('did-start-navigation', onStarted);
           guestWebContents.off?.('did-stop-loading', onStopped);
+          guestWebContents.off?.('did-navigate', onCommitted);
+          guestWebContents.off?.('did-redirect-navigation', onRedirected);
           guestWebContents.off?.('did-navigate-in-page', onInPage);
           guestWebContents.off?.('did-fail-load', onFailed);
           guestWebContents.off?.('destroyed', onDestroyed);
@@ -225,6 +276,8 @@ function createAutomationRuntime(options = {}) {
         };
         guestWebContents.on?.('did-start-navigation', onStarted);
         guestWebContents.on?.('did-stop-loading', onStopped);
+        guestWebContents.on?.('did-navigate', onCommitted);
+        guestWebContents.on?.('did-redirect-navigation', onRedirected);
         guestWebContents.on?.('did-navigate-in-page', onInPage);
         guestWebContents.on?.('did-fail-load', onFailed);
         guestWebContents.on?.('destroyed', onDestroyed);
