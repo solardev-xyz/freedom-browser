@@ -1,6 +1,7 @@
 name: Prebuilt natives
 run-name: >-
-  ${{ github.ref == 'refs/heads/main' && 'Prebuilt natives' || format('Prebuilt natives test on {0} (no publish)', github.ref_name) }}
+  ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') && 'Prebuilt natives'
+   || format('Prebuilt natives test on {0} (no publish)', github.head_ref || github.ref_name) }}
 
 # Compiles the natives every release build used to compile itself — Arti
 # (Tor), the whisper.cpp dictation runtime and the Windows sandbox helpers —
@@ -12,15 +13,29 @@ run-name: >-
 # as before. See docs/agent-playbooks/bundled-binaries.md "Prebuilt natives"
 # for when to run this and how to pin the result.
 #
-# Dispatch only. A run on any branch but `main` builds and uploads workflow
-# artifacts but publishes nothing, so a branch can test a recipe change
-# without minting a release.
+# Publishes only when dispatched on `main`. A pull request that touches a
+# recipe file builds every target too, so a bump that no longer compiles on
+# one of them fails before it merges; that run, like a dispatch on any other
+# branch, uploads workflow artifacts and publishes nothing.
 #
 # Nothing here restores a cache: these binaries ship inside signed releases
 # (#635).
 
 on:
   workflow_dispatch:
+  # Every input of every component key in scripts/prebuilt-natives.js
+  # (scripts/prebuilt-natives.test.js keeps the two lists in step).
+  pull_request:
+    paths:
+      - .github/workflows/natives.yml
+      - scripts/prebuilt-natives.js
+      - scripts/fetch-arti.js
+      - scripts/build-dictation-runtime.js
+      - src/shared/dictation-runtime.js
+      - src/main/agent/dictation-local-notices.txt
+      - scripts/build-windows-workspace.js
+      - scripts/windows-workspace-notices.js
+      - src/main/agent/workspace-execution/native/windows/**
 
 permissions:
   contents: read
@@ -145,7 +160,7 @@ jobs:
 
   publish:
     needs: [build]
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

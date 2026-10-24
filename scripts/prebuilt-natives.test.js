@@ -173,6 +173,16 @@ test('pack and manifest cover every component of every target', () => {
   expect(() => pack('mac-arm64', dist, root)).toThrow('Nothing built');
 });
 
+test('natives.yml rebuilds on a pull request that changes any component input', () => {
+  const yml = fs.readFileSync(path.join(ROOT, '.github/workflows/natives.yml'), 'utf8');
+  const paths = yml.split('pull_request:')[1].split('\npermissions:')[0]
+    .split('\n').map((line) => line.match(/^ {6}- (\S+)$/)?.[1]).filter(Boolean);
+  const covered = (file) => paths.some((entry) => entry.endsWith('/**') ? file.startsWith(entry.slice(0, -2)) : entry === file);
+  for (const spec of Object.values(COMPONENTS)) {
+    for (const file of spec.inputs()) expect([file, covered(file)]).toEqual([file, true]);
+  }
+});
+
 test('the checked-in pin file is well formed', () => {
   const pins = JSON.parse(fs.readFileSync(path.join(__dirname, 'prebuilt-natives.json'), 'utf8'));
   expect(Object.keys(pins).sort()).toEqual(['commit', 'components', 'tag']);
