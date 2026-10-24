@@ -166,3 +166,20 @@ test('the backend search patch fails loudly when upstream code moves', () => {
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a staged-prebuilt release build fails instead of recompiling a missing or stale runtime', async () => {
+  const target = `${process.platform}-${process.arch}`;
+  const dir = { darwin: 'mac', win32: 'win', linux: 'linux' }[process.platform];
+  const output = path.resolve(__dirname, '../out/dictation-runtime', `${dir}-${process.arch}`);
+  // A developer checkout may hold a current local build, which is reused and proves nothing here.
+  if (!require('../src/shared/dictation-runtime').SUPPORTED_TARGETS.includes(target) ||
+      fs.existsSync(path.join(output, 'manifest.json'))) return;
+  const previous = process.env.FREEDOM_DICTATION_RUNTIME_PREBUILT;
+  process.env.FREEDOM_DICTATION_RUNTIME_PREBUILT = '1';
+  try {
+    await expect(buildDictationRuntime(process.arch)).rejects.toThrow(`No current prebuilt dictation runtime in ${output}`);
+  } finally {
+    if (previous === undefined) delete process.env.FREEDOM_DICTATION_RUNTIME_PREBUILT;
+    else process.env.FREEDOM_DICTATION_RUNTIME_PREBUILT = previous;
+  }
+});

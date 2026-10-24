@@ -1224,11 +1224,6 @@ jobs:
           if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           node scripts/build-dictation-runtime.js x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/build-windows-workspace.js
@@ -1303,11 +1298,6 @@ jobs:
             $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
             $env:PATH = "$cargoBin;$env:PATH"
           }
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
@@ -1424,8 +1414,9 @@ jobs:
       # restored from a cache (#635). With both staged, the beforePack hook
       # (scripts/prepare-native-supervisors.js) finds the dictation runtime's
       # and the sandbox helpers' manifests current and compiles nothing;
-      # FREEDOM_WINDOWS_WORKSPACE_PREBUILT on the packaging step turns a
-      # mismatch into a failure instead of a silent 12-minute rebuild.
+      # FREEDOM_WINDOWS_WORKSPACE_PREBUILT and FREEDOM_DICTATION_RUNTIME_PREBUILT
+      # on the packaging step turn a mismatch into a failure instead of a
+      # silent rebuild (12 minutes of sandbox, ~2.5 of whisper.cpp).
       - name: Download the Windows sandbox helpers and dictation runtime
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1451,6 +1442,7 @@ jobs:
         shell: pwsh
         env:
           FREEDOM_WINDOWS_WORKSPACE_PREBUILT: '1'
+          FREEDOM_DICTATION_RUNTIME_PREBUILT: '1'
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
