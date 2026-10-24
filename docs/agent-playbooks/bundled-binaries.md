@@ -364,7 +364,11 @@ sha256. `scripts/prebuilt-natives.js` owns the component list.
   the host (a Windows developer skips the 12-minute sandbox build), and the
   build scripts reuse them through their manifests. Those manifests hash the
   recipe files with line endings normalised too, so an archive built on the
-  Windows runner's core.autocrlf checkout stays current on an LF checkout.
+  Windows runner's core.autocrlf checkout stays current on an LF checkout. The
+  one exception is the Windows sandbox's `adapterSha256`: the app checks it
+  byte for byte against the adapter source it ships with
+  (`windows-sandbox-runtime.js`), so a Windows checkout with
+  `core.autocrlf=false` still rebuilds the sandbox locally.
 
 ## See also
 

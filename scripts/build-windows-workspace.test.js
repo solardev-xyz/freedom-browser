@@ -95,7 +95,7 @@ describe('reusing a staged helper build', () => {
   const os = require('node:os');
   const path = require('node:path');
   const crypto = require('node:crypto');
-  const { currentBuild, recipeSha256, textDigest, BINARIES, REVISION, ARCHIVE_SHA256 } = require('./build-windows-workspace');
+  const { currentBuild, recipeSha256, BINARIES, REVISION, ARCHIVE_SHA256 } = require('./build-windows-workspace');
   const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
   const adapter = path.join(__dirname, '../src/main/agent/workspace-execution/native/windows/src/main.rs');
 
@@ -108,7 +108,7 @@ describe('reusing a staged helper build', () => {
     }
     for (const filename of ['CODEX-LICENSE.txt', 'CODEX-DEPENDENCIES.json', 'CODEX-DEPENDENCIES.txt']) fs.writeFileSync(path.join(output, filename), 'notice');
     const manifest = { version: 1, backend: 'elevated', arch: 'x64', revision: REVISION, archiveSha256: ARCHIVE_SHA256,
-      adapterSha256: textDigest(adapter), recipeSha256: recipeSha256(), binaries };
+      adapterSha256: sha256(fs.readFileSync(adapter)), recipeSha256: recipeSha256(), binaries };
     fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(manifest));
     return { output, manifest };
   };
@@ -144,7 +144,6 @@ describe('reusing a staged helper build', () => {
     const real = fs.readFileSync;
     const license = path.join(__dirname, '../LICENSE');
     const recipe = recipeSha256();
-    const adapterDigest = textDigest(adapter);
     const read = jest.spyOn(fs, 'readFileSync');
     try {
       read.mockImplementation((file, ...rest) => {
@@ -154,7 +153,6 @@ describe('reusing a staged helper build', () => {
         return typeof out === 'string' ? crlf : Buffer.from(crlf);
       });
       expect(recipeSha256()).toBe(recipe);
-      expect(textDigest(adapter)).toBe(adapterDigest);
       read.mockImplementation((file, ...rest) => {
         const out = real(file, ...rest);
         return path.resolve(String(file)) === license ? `${out}changed\n` : out;

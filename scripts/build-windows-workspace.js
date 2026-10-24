@@ -135,7 +135,7 @@ function currentBuild(output, arch) {
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
     return manifest.version === 1 && manifest.backend === 'elevated' && manifest.arch === arch &&
       manifest.revision === REVISION && manifest.archiveSha256 === ARCHIVE_SHA256 &&
-      manifest.adapterSha256 === textDigest(path.join(ADAPTER, 'src/main.rs')) && manifest.recipeSha256 === recipeSha256() &&
+      manifest.adapterSha256 === digest(path.join(ADAPTER, 'src/main.rs')) && manifest.recipeSha256 === recipeSha256() &&
       BINARIES.every(filename => manifest.binaries?.[filename] === digest(path.join(output, filename))) &&
       ['CODEX-LICENSE.txt', 'CODEX-DEPENDENCIES.json', 'CODEX-DEPENDENCIES.txt'].every(filename => fs.existsSync(path.join(output, filename)));
   } catch { return false; }
@@ -226,7 +226,9 @@ async function buildWindowsWorkspace(arch = process.arch) {
   fs.copyFileSync(path.join(source, 'LICENSE'), path.join(output, 'CODEX-LICENSE.txt'));
   if (fs.existsSync(path.join(source, 'NOTICE'))) fs.copyFileSync(path.join(source, 'NOTICE'), path.join(output, 'CODEX-NOTICE.txt'));
   await writeWindowsNotices({ cargo, workspace, source, output, freedomRoot: ROOT, arch });
-  const adapterSha256 = textDigest(path.join(ADAPTER, 'src/main.rs'));
+  // Raw bytes, not textDigest(): windows-sandbox-runtime.js checks this against
+  // the adapter source packaged beside it, byte for byte.
+  const adapterSha256 = digest(path.join(ADAPTER, 'src/main.rs'));
   fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, adapterSha256, recipeSha256: recipeSha256(), binaries: hashes }, null, 2)}\n`);
   console.log(`Windows workspace helper built: ${output}`);
   return output;
