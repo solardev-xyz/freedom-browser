@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 //
 // The macOS-only Agent security regressions (#778), run by the
-// `agent-macos-jest` job in .github/workflows/ci.yml.
+// `e2e-automation` job in .github/workflows/ci.yml (formerly `agent-macos-jest`).
 //
 // Several of these tests gate themselves on `process.platform === 'darwin'`,
 // so on every other runner they are skipped, and a skipped test is green. That

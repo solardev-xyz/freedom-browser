@@ -1,5 +1,5 @@
 /**
- * Guard for scripts/ci/macos-security-tests.js, the `agent-macos-jest` job's
+ * Guard for scripts/ci/macos-security-tests.js, the `e2e-automation` job's
  * "ran, and was not skipped" check (#778). The job exists because a skipped
  * test reports green; a checker that let a skip through, or a list of
  * macOS-only tests that drifted from the sources, would put it straight back
@@ -227,10 +227,10 @@ describe('the lists', () => {
   });
 });
 
-describe('the agent-macos-jest job', () => {
+describe('the e2e-automation job (formerly agent-macos-jest)', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
   const block = workflow
-    .split(/^ {2}agent-macos-jest:[ \t]*$/m)[1]
+    .split(/^ {2}e2e-automation:[ \t]*$/m)[1]
     ?.split(/^ {2}[A-Za-z0-9_-]+:[ \t]*$/m)[0];
 
   it('runs this checker on macOS', () => {
