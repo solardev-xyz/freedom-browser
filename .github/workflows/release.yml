@@ -1853,6 +1853,11 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
+      # The Agent's real-sandbox, runtime and CLI specs need Bubblewrap, the
+      # owner helper and a userns AppArmor profile on Ubuntu 24.04 (#815).
+      - name: Prepare the Linux Agent workspace sandbox
+        uses: ./.github/actions/linux-agent-sandbox
+
       - name: Download adblock filter lists
         run: npm run adblock:download
         env:

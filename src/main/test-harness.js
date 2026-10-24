@@ -44,7 +44,7 @@ const {
   runWithPrivateLogContext,
   redactUrlForLog,
 } = require('./private/private-log-context');
-const { app, BrowserWindow, ipcMain, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, webContents } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
@@ -1077,6 +1077,40 @@ function installProfileDeleteSimulator() {
     profileDeleteSims.has(profileId) ? { ...profileDeleteSims.get(profileId) } : null;
 }
 
+// Playwright's Electron loader appends `--password-store=basic` and
+// `--use-mock-keychain` to every launch it makes. On macOS the mock keychain
+// leaves OSCrypt available, so every harness spec runs with working secure
+// storage. On Linux nothing pairs with `basic`, so safeStorage reports the
+// hard-coded-key `basic_text` backend as unavailable and every provider,
+// MCP or domain credential write is (correctly) refused: specs that need a
+// stored key could only ever pass on macOS (#815). Give the Linux harness the
+// same thing the macOS harness already gets: a mock store, installed only for
+// that exact Playwright switch, so a real keyring or a packaged launch (no
+// Playwright loader, no `basic` switch) is never replaced.
+const MOCK_CREDENTIAL_PREFIX = Buffer.from('freedom-e2e-mock-keychain-v1:');
+function installLinuxMockCredentialStore(storage = safeStorage, {
+  platform = process.platform,
+  commandLine = app.commandLine,
+} = {}) {
+  if (platform !== 'linux' || commandLine.getSwitchValue('password-store') !== 'basic') return false;
+  if (storage.isEncryptionAvailable() && storage.getSelectedStorageBackend() !== 'basic_text') return false;
+  storage.isEncryptionAvailable = () => true;
+  storage.getSelectedStorageBackend = () => 'unknown';
+  storage.encryptString = (text) => {
+    if (typeof text !== 'string') throw new TypeError('encryptString expects a string');
+    return Buffer.concat([MOCK_CREDENTIAL_PREFIX, Buffer.from(text, 'utf8')]);
+  };
+  storage.decryptString = (encrypted) => {
+    if (!Buffer.isBuffer(encrypted) || encrypted.length < MOCK_CREDENTIAL_PREFIX.length ||
+        !encrypted.subarray(0, MOCK_CREDENTIAL_PREFIX.length).equals(MOCK_CREDENTIAL_PREFIX)) {
+      throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.');
+    }
+    return encrypted.subarray(MOCK_CREDENTIAL_PREFIX.length).toString('utf8');
+  };
+  log.info('[test-harness] Linux Playwright launch: mock credential store installed (macOS parity with --use-mock-keychain)');
+  return true;
+}
+
 // Neutralize the updater's user actions in test mode: "Check now" would hit
 // the network (or a native "Updates Managed Elsewhere" dialog, since index.js
 // never starts the updater in test mode) and "Restart to update" would quit
@@ -1208,6 +1242,7 @@ function exposeGlobalShim(agentRuntime) {
 function installTestHarness({ defaultSession, agentRuntime }) {
   if (!TEST_MODE_ENABLED) return false;
   log.info('[test-harness] FREEDOM_TEST_MODE=1 — installing harness');
+  installLinuxMockCredentialStore();
   resetFixtures();
   resetProfileLaunches();
   resetProfileFocusSims();
@@ -1233,6 +1268,7 @@ module.exports = {
   createAgentWalletTestOptions,
   isTestMode,
   installTestHarness,
+  installLinuxMockCredentialStore,
   prepareAgentExitScenario,
   adblockEngineLandingGate,
   // Exposed so private-window sessions (created after startup) get the same
