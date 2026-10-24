@@ -9,6 +9,8 @@ const IPC = require('../../shared/ipc-channels');
 
 const DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS = 330_000;
 const DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS = 10_000;
+// Chromium's net::ERR_ABORTED: a load cancelled by a newer navigation or Stop.
+const NET_ERR_ABORTED = -3;
 
 function defaultNavigationRequestIdFactory() {
   return `nav_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -147,6 +149,12 @@ function createAutomationRuntime(options = {}) {
         let acknowledged = false;
         let navigationStarted = false;
         let navigationCompleted = false;
+        // A tab still loading something else (a URL the user just typed, a
+        // page held by the first ad-block engine) has that load cancelled by
+        // this navigation, and Chromium reports the cancellation as one
+        // main-frame ERR_ABORTED after this navigation has started. That
+        // failure belongs to the superseded load, not to this request (#815).
+        let supersededAbortPending = guestWebContents.isLoading?.() === true;
         const request = {
           requestId,
           guestWebContents,
@@ -171,8 +179,13 @@ function createAutomationRuntime(options = {}) {
           navigationCompleted = true;
           completeWhenReady();
         };
-        const onFailed = (_event, _code, description, _url, isMainFrame) => {
-          if (isMainFrame === false || !navigationStarted) return;
+        const onFailed = (_event, code, description, _url, isMainFrame) => {
+          if (isMainFrame === false) return;
+          if (code === NET_ERR_ABORTED && supersededAbortPending) {
+            supersededAbortPending = false;
+            return;
+          }
+          if (!navigationStarted) return;
           settleNavigationRequest(
             request,
             new AutomationError(
