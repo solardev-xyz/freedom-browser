@@ -1151,8 +1151,182 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-  windows-x64:
+  # The Windows natives compile from pinned sources in two jobs of their own,
+  # side by side, instead of one after another inside `windows-x64`: built there serially they made `windows-x64` the run's
+  # critical path (34 min on the 2026-10-24 nightly, 15 min of it Rust for
+  # the sandbox helpers). Each hands its output to `windows-x64` as a workflow
+  # artifact of this run, so the release still takes no input from a cache
+  # (#635). Neither name matches the `freedom-*` pattern the `release` and
+  # `nightly` jobs download, so they never become release assets.
+  #
+  # Same convention as the mac and Linux jobs: the runner image normally ships
+  # cargo, and if it ever does not, install a pinned rustup-init checked
+  # against a sha256 recorded here rather than running an unpinned installer
+  # off the network. The Rust and C/C++ dependency trees (bundled SQLite,
+  # ring, ggml) build inside the already installed x64 MSVC developer shell;
+  # no compiler is downloaded either.
+  windows-sandbox:
     needs: [plan]
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assert x86_64 runner
+        run: |
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "Expected an x86_64 Windows runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      # These builds read nothing from node_modules, so there is no npm ci.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # scripts/build-dictation-runtime.js and scripts/build-windows-workspace.js
+      # are what the beforePack hook would run; each writes a manifest that
+      # lets the packaging job reuse its output instead of rebuilding it.
+      - name: Build the dictation runtime and Windows sandbox helpers
+        shell: pwsh
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Push-Location $env:RUNNER_TEMP
+            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/x86_64-pc-windows-msvc/rustup-init.exe"
+            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
+            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $env:RUSTUP_SHA256) {
+              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
+            }
+            ./rustup-init.exe -y --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item rustup-init.exe
+            Pop-Location
+            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$cargoBin;$env:PATH"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          node scripts/build-dictation-runtime.js x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-windows-workspace.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the built natives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64-sandbox-build
+          path: |
+            out/windows-workspace/x64/
+            out/dictation-runtime/win-x64/
+          if-no-files-found: error
+          overwrite: true
+
+  # Runs (and uploads nothing) on a dispatch without Tor too, so `windows-x64`
+  # can list it in `needs` without a skipped-dependency special case.
+  # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through the
+  # `win.extraResources` entry in package.json.
+  windows-arti:
+    needs: [plan]
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Same expression as the build jobs'.
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assert x86_64 runner
+        run: |
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "Expected an x86_64 Windows runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      # These builds read nothing from node_modules, so there is no npm ci.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        shell: pwsh
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Push-Location $env:RUNNER_TEMP
+            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/x86_64-pc-windows-msvc/rustup-init.exe"
+            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
+            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $env:RUSTUP_SHA256) {
+              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
+            }
+            ./rustup-init.exe -y --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item rustup-init.exe
+            Pop-Location
+            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$cargoBin;$env:PATH"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run tor:download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64-arti-build
+          path: arti-bin/win-x64/arti.exe
+          if-no-files-found: error
+          overwrite: true
+
+  windows-x64:
+    needs: [plan, windows-arti, windows-sandbox]
     if: needs.plan.outputs.skip != 'true'
     runs-on: windows-latest
     timeout-minutes: 90
@@ -1246,47 +1420,24 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: win32-x64
 
-      # Same convention as the mac and Linux jobs: the runner image normally
-      # ships cargo, and if it ever does not, install a pinned rustup-init
-      # checked against a sha256 recorded here rather than running an
-      # unpinned installer off the network.
-      #
-      # Arti's dependency tree compiles C (bundled SQLite, ring), so the build
-      # runs inside the same already installed x64 MSVC developer shell the
-      # packaging step below uses — no compiler is downloaded here either.
-      # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through
-      # the `win.extraResources` entry in package.json.
-      - name: Prepare Rust and build Windows native components
-        shell: pwsh
-        env:
-          RUSTUP_VERSION: 1.28.2
-          RUSTUP_SHA256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
-        run: |
-          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-            Push-Location $env:RUNNER_TEMP
-            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/x86_64-pc-windows-msvc/rustup-init.exe"
-            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
-            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
-            if ($actual -ne $env:RUSTUP_SHA256) {
-              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
-            }
-            ./rustup-init.exe -y --profile minimal --no-modify-path
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Remove-Item rustup-init.exe
-            Pop-Location
-            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
-            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            $env:PATH = "$cargoBin;$env:PATH"
-          }
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          if ($env:BUNDLE_TOR -eq 'true') {
-            npm run tor:download
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+      # Built by `windows-arti` and `windows-sandbox` in this same run, never
+      # restored from a cache (#635). With both staged, the beforePack hook
+      # (scripts/prepare-native-supervisors.js) finds the dictation runtime's
+      # and the sandbox helpers' manifests current and compiles nothing;
+      # FREEDOM_WINDOWS_WORKSPACE_PREBUILT on the packaging step turns a
+      # mismatch into a failure instead of a silent 12-minute rebuild.
+      - name: Download the Windows sandbox helpers and dictation runtime
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x64-sandbox-build
+          path: out
+
+      - name: Download the Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x64-arti-build
+          path: arti-bin/win-x64
 
       # No Windows code-signing certificate exists yet, so this installer is
       # unsigned (same as every release on freedom.baby so far) and SmartScreen
@@ -1298,6 +1449,8 @@ jobs:
       # break the `url:` <channel>-win-x64.yml records for the updater.
       - name: Build NSIS installer and portable zip
         shell: pwsh
+        env:
+          FREEDOM_WINDOWS_WORKSPACE_PREBUILT: '1'
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -1331,10 +1484,17 @@ jobs:
   # then extract the portable zip and drive that. The installer leg is the one
   # that covers the install itself — a wrong `files`/`extraResources` rule that
   # only shows up once the tree has been unpacked by NSIS rather than by a zip
-  # reader fails there and nowhere else.
+  # reader fails there and nowhere else. The two legs share nothing but the
+  # artifact, so they run as a matrix on separate runners rather than one
+  # after the other: the Windows smoke test sits on the run's critical path.
   smoke-windows-x64:
     needs: [plan, windows-x64]
     if: needs.plan.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [installer, portable]
+    name: smoke-windows-x64-${{ matrix.leg }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -1394,6 +1554,7 @@ jobs:
           echo "FREEDOM_E2E_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Locate the installer
+        if: matrix.leg == 'installer'
         run: |
           shopt -s nullglob
           exes=(artifact/*.exe)
@@ -1406,6 +1567,7 @@ jobs:
           echo "FREEDOM_INSTALLER=$(cygpath -w "$(realpath "${exes[0]}")")" >> "$GITHUB_ENV"
 
       - name: Install the NSIS package
+        if: matrix.leg == 'installer'
         shell: pwsh
         run: |
           # `/S` is NSIS's silent switch. Launched without -Wait the installer
@@ -1457,7 +1619,7 @@ jobs:
       # a dropped `win.extraResources` entry, or an Arti build that failed
       # without failing its step, fails here instead of shipping silently.
       - name: Assert the installed package bundles Arti (Tor)
-        if: env.BUNDLE_TOR == 'true'
+        if: matrix.leg == 'installer' && env.BUNDLE_TOR == 'true'
         run: |
           installed="$(cygpath -u "$FREEDOM_INSTALLED_EXE")"
           arti="$(dirname "$installed")/resources/arti-bin/arti.exe"
@@ -1476,14 +1638,17 @@ jobs:
       # tables instead: whatever imports the runtime must ship it beside itself
       # (scripts/after-pack.js places it).
       - name: Assert the installed package ships the VC++ runtime it needs
+        if: matrix.leg == 'installer'
         run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_INSTALLED_EXE")")")"
 
       - name: Smoke-test the installed package
+        if: matrix.leg == 'installer'
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_INSTALLED_EXE }}
         run: npm run test:e2e:packaged -- --output=test-results/installer
 
       - name: Extract the portable zip
+        if: matrix.leg == 'portable'
         shell: pwsh
         run: |
           # Expand-Archive rather than `tar -xf`: the first tar on PATH in Git
@@ -1505,7 +1670,7 @@ jobs:
       # Same assertion as for the installed package: the two artifacts are
       # packed separately, so a missing binary can appear in either one alone.
       - name: Assert the portable zip bundles Arti (Tor)
-        if: env.BUNDLE_TOR == 'true'
+        if: matrix.leg == 'portable' && env.BUNDLE_TOR == 'true'
         run: |
           portable="$(cygpath -u "$FREEDOM_PORTABLE_EXE")"
           arti="$(dirname "$portable")/resources/arti-bin/arti.exe"
@@ -1517,9 +1682,11 @@ jobs:
           echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
 
       - name: Assert the portable zip ships the VC++ runtime it needs
+        if: matrix.leg == 'portable'
         run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_PORTABLE_EXE")")")"
 
       - name: Smoke-test the portable zip
+        if: matrix.leg == 'portable'
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_PORTABLE_EXE }}
         run: npm run test:e2e:packaged -- --output=test-results/portable
@@ -1530,7 +1697,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: smoke-windows-x64-report
+          name: smoke-windows-x64-${{ matrix.leg }}-report
           path: test-results/
           if-no-files-found: ignore
           overwrite: true
@@ -1630,8 +1797,16 @@ jobs:
   e2e-full:
     needs: [plan]
     if: needs.plan.outputs.nightly == 'true' && needs.plan.outputs.skip != 'true'
+    # The suite runs one worker at a time (playwright.config.js) and took
+    # 38 min as a single job. Four shards finish in about a quarter of that,
+    # and a flake costs Auto-retry one shard instead of the whole suite.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: e2e-full-${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -1664,13 +1839,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run the full harness E2E suite
-        run: xvfb-run -a npm run test:e2e
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: xvfb-run -a npm run test:e2e -- --shard="$SHARD/4"
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-full-traces
+          name: e2e-full-traces-${{ matrix.shard }}
           path: |
             test-results/
             playwright-report/
@@ -1830,6 +2007,8 @@ jobs:
         plan,
         mac-arm64,
         linux,
+        windows-arti,
+        windows-sandbox,
         windows-x64,
         smoke-linux,
         smoke-mac-arm64,
