@@ -1353,6 +1353,95 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The same Agent and automation specs on Linux. `e2e-agent` and
+  # `e2e-automation` run them on macOS only, so until #815 they reached
+  # Linux solely through the nightly `e2e-full`, and 27 Linux-only failures
+  # (no keychain under Playwright's `--password-store=basic`, no Bubblewrap,
+  # owner helper or userns AppArmor profile, a superseded-load abort failing
+  # `browser_navigate`) merged green. The sandbox action gives the source
+  # tree what the .deb gives users; see its header.
+  e2e-agent-linux:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Prepare the Linux Agent workspace sandbox
+        uses: ./.github/actions/linux-agent-sandbox
+
+      # Same as release.yml's e2e-full: with real lists the first ad-block
+      # engine build holds a typed load, the shape automation-kernel's
+      # "preserve HTTPS" navigates over (#815). Without them PR CI never
+      # sees it.
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run agent and automation E2E on Linux
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/ai-onboarding.spec.js \
+            test-e2e/agent-examples.spec.js \
+            test-e2e/agent-dictation.spec.js \
+            test-e2e/agent-cancellation.spec.js \
+            test-e2e/agent-evaluation.spec.js \
+            test-e2e/agent-product-qualification.spec.js \
+            test-e2e/agent-sidebar.spec.js \
+            test-e2e/agent-preview-isolation.spec.js \
+            test-e2e/agent-preview-dns-prefetch.spec.js \
+            test-e2e/agent-review-layout.spec.js \
+            test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
+            test-e2e/pdf-processor.spec.js \
+            test-e2e/workspace-viewers.spec.js \
+            test-e2e/automation-dialog.spec.js \
+            test-e2e/automation-frame-interaction.spec.js \
+            test-e2e/automation-frame-observation.spec.js \
+            test-e2e/automation-frame-prototype.spec.js \
+            test-e2e/automation-kernel.spec.js \
+            test-e2e/automation-native-dialog.spec.js \
+            test-e2e/automation-observation.spec.js \
+            test-e2e/automation-page-tools.spec.js \
+            test-e2e/automation-recovery.spec.js \
+            test-e2e/automation-runtime.spec.js \
+            test-e2e/automation-visual-interaction.spec.js \
+            test-e2e/automation-visual-prototype.spec.js \
+            test-e2e/freedom-cli.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-agent-linux-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # The Agent security regressions that only macOS can run (#778): the S1
   # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
   # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
@@ -2176,6 +2265,7 @@ jobs:
         agent-macos-jest,
         code-changed,
         e2e-agent,
+        e2e-agent-linux,
         e2e-automation,
         e2e-adblock,
         e2e-address-bar-clipboard,
