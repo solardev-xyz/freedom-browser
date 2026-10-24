@@ -1389,6 +1389,17 @@ jobs:
       - name: Prepare the Linux Agent workspace sandbox
         uses: ./.github/actions/linux-agent-sandbox
 
+      # Same as release.yml's e2e-full: with real lists the first ad-block
+      # engine build holds a typed load, the shape automation-kernel's
+      # "preserve HTTPS" navigates over (#815). Without them PR CI never
+      # sees it.
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run agent and automation E2E on Linux
         run: |
           xvfb-run -a npm run test:e2e -- \

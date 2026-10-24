@@ -478,13 +478,78 @@ describe('automation runtime registration', () => {
       });
     });
 
-    // Electron 44 probe: superseding a still-provisional load emits no abort
-    // for it at all, so the exemption stays armed; the request's own abort
-    // must still fail it.
-    test('does not absorb its own ERR_ABORTED when no superseded abort came first', async () => {
+    // The #815 nightly shape (automation-kernel.spec.js "preserve HTTPS"):
+    // the URL typed and held by the first ad-block engine is the same URL
+    // browser_navigate then asks for, so the superseded abort names it.
+    test('absorbs a superseded ERR_ABORTED for the same URL it navigates to', async () => {
       const { desktop, navigate } = bindLoadingDesktop({ loading: true });
       const { navigation } = await navigate();
       desktop.emit('did-fail-load', {}, -3, '', 'https://next.example', true);
+      desktop.url = 'https://next.example/';
+      desktop.emit('did-navigate', {}, 'https://next.example/');
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: true,
+        result: { url: 'https://next.example/' },
+      });
+    });
+
+    // Electron 44 probe: superseding a still-provisional load emits no abort
+    // for it at all, so the exemption stays armed. If the request's own load
+    // is then aborted under the same URL before anything else happened, the
+    // events can't tell it from a superseded abort, but no commit follows,
+    // so the stop still fails it.
+    test('fails when an absorbed same-URL abort was its own and nothing commits', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example', true);
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED once it has committed', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-navigate', {}, 'https://next.example/');
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED after a redirect', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-redirect-navigation', {}, 'https://landing.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED after a second main-frame start', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-start-navigation', {}, 'https://other.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb an ERR_ABORTED for a URL a later start named', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-start-navigation', {}, 'https://other.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://other.example/', true);
       await expect(navigation).resolves.toMatchObject({
         ok: false,
         error: { code: 'NAVIGATION_FAILED' },

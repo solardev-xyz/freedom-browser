@@ -165,20 +165,31 @@ function createAutomationRuntime(options = {}) {
         // this navigation, and Chromium reports the cancellation as one
         // main-frame ERR_ABORTED for the *superseded* URL after this
         // navigation has started. That failure belongs to the superseded
-        // load, not to this request (#815). Two things keep the exemption
-        // narrow (probed under Electron 44): an abort naming one of this
-        // request's own URLs (the one asked for, or any it started or
-        // redirected to — the chrome can rewrite dweb names) is always this
-        // request's, even while armed, since superseding a provisional load
-        // emits no abort at all and the flag can stay armed; and once an
-        // abort was absorbed, a did-stop-loading only completes the request
-        // if a main-frame commit happened — Stop on the new navigation
-        // emits no failure of its own, so without that the request would
-        // resolve ok with the tab still on the old page.
+        // load, not to this request (#815). Three things keep the exemption
+        // narrow (probed under Electron 44):
+        // - An abort naming a URL only this request can own (one it
+        //   redirected to, or one a later main-frame start named) is always
+        //   this request's, even while armed: superseding a provisional load
+        //   emits no abort at all, so the flag can stay armed.
+        // - The URL asked for (and the one its own start named — the chrome
+        //   can rewrite dweb names) can't decide it: the superseded load is
+        //   often the very same URL, typed and held by the ad-block engine,
+        //   then browser_navigate'd to (automation-kernel.spec.js "preserve
+        //   HTTPS"). Such an abort is absorbed only while nothing else of
+        //   this request has happened yet: one main-frame start, no redirect,
+        //   no commit.
+        // - Once an abort was absorbed, a did-stop-loading only completes the
+        //   request if a main-frame commit happened. Stop on the new
+        //   navigation emits no failure of its own, and an absorbed abort
+        //   that was really this request's own is followed by a stop with no
+        //   commit, so both still fail rather than resolve ok with the tab
+        //   on the old page.
         let supersededAbortPending = guestWebContents.isLoading?.() === true;
         let supersededAbortConsumed = false;
         let navigationCommitted = false;
         const ownUrls = new Set([normalizeNavigationUrl(url)]);
+        let mainFrameStarts = 0;
+        let navigationRedirected = false;
         const request = {
           requestId,
           guestWebContents,
@@ -193,10 +204,12 @@ function createAutomationRuntime(options = {}) {
         const onStarted = (_event, startedUrl, isInPlace, isMainFrame) => {
           if (isMainFrame === false || isInPlace === true) return;
           navigationStarted = true;
+          mainFrameStarts += 1;
           ownUrls.add(normalizeNavigationUrl(startedUrl));
         };
         const onRedirected = (_event, redirectedUrl, isInPlace, isMainFrame) => {
           if (!navigationStarted || isMainFrame === false || isInPlace === true) return;
+          navigationRedirected = true;
           ownUrls.add(normalizeNavigationUrl(redirectedUrl));
         };
         const onCommitted = () => {
@@ -223,13 +236,14 @@ function createAutomationRuntime(options = {}) {
           navigationCompleted = true;
           completeWhenReady();
         };
+        // Until this request has done anything past its one start, its own
+        // URLs are only the one asked for and the one that start named.
+        const isSupersededAbort = (failedUrl) =>
+          !ownUrls.has(normalizeNavigationUrl(failedUrl)) ||
+          (mainFrameStarts <= 1 && !navigationRedirected && !navigationCommitted);
         const onFailed = (_event, code, description, failedUrl, isMainFrame) => {
           if (isMainFrame === false) return;
-          if (
-            code === NET_ERR_ABORTED &&
-            supersededAbortPending &&
-            !ownUrls.has(normalizeNavigationUrl(failedUrl))
-          ) {
+          if (code === NET_ERR_ABORTED && supersededAbortPending && isSupersededAbort(failedUrl)) {
             supersededAbortPending = false;
             supersededAbortConsumed = true;
             return;
@@ -348,13 +362,16 @@ function createAutomationRuntime(options = {}) {
           resolve,
           reject,
           cleanup: () => {},
-          timeout: setTimeout(() => {
-            settleTabControlRequest(
-              request,
-              null,
-              tabControlError(`Timed out waiting for desktop tab ${type}`)
-            );
-          }, type === 'creation' ? desktopNavigationTimeoutMs : desktopTabControlTimeoutMs),
+          timeout: setTimeout(
+            () => {
+              settleTabControlRequest(
+                request,
+                null,
+                tabControlError(`Timed out waiting for desktop tab ${type}`)
+              );
+            },
+            type === 'creation' ? desktopNavigationTimeoutMs : desktopTabControlTimeoutMs
+          ),
         };
         pendingTabControlRequests.set(requestId, request);
         try {
