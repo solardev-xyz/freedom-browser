@@ -161,11 +161,13 @@ async function pageToolsBridge(action, input = {}) {
     },
     300_000
   );
-  // Electron 44's native API takes JSON text. Never retry with another calling
-  // convention: the first invocation might already have produced side effects.
+  // Electron 45 (Chromium 156) takes the input as an object; Electron 44 took
+  // JSON text and 45 rejects that with a TypeError. Never retry with another
+  // calling convention: the first invocation might already have produced side
+  // effects.
   try {
     Promise.resolve(
-      context.executeTool(tool, JSON.stringify(input.arguments), { signal: controller.signal })
+      context.executeTool(tool, input.arguments, { signal: controller.signal })
     ).then(
       (value) => {
         if (value === null || value === undefined) return job.finish({ status: 'outcome_unknown' });
