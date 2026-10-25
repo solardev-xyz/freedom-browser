@@ -319,6 +319,22 @@ async function applyOnionRouting(endpoint) {
   );
 }
 
+/**
+ * Re-apply the routing policy in force now on every tracked session: what an
+ * obsolete apply does once it completes, instead of undoing anything itself.
+ * After a crash and a restart, the policy in force is the restart's PAC;
+ * after a deliberate stop, it is DIRECT. Clearing here instead would act on
+ * the sessions as a later run left them, and hand `.onion` to the system
+ * resolver while that run reports RUNNING.
+ */
+async function reassertOnionRouting() {
+  if (appliedSocksEndpoint) {
+    await applyOnionRouting(appliedSocksEndpoint);
+  } else {
+    await clearOnionRouting();
+  }
+}
+
 /** Restore DIRECT `.onion` connections on every tracked session. */
 async function clearOnionRouting() {
   appliedSocksEndpoint = null;
@@ -364,9 +380,12 @@ async function applyTorProxy(mode, statusMessage, superseded = () => false) {
   }
 
   if (superseded()) {
-    // Stopped while the proxy was being applied: undo it instead of reporting
-    // RUNNING for a service the user just turned off.
-    clearOnionRouting().catch(() => {});
+    // Stopped or restarted while the proxy was being applied: no RUNNING for
+    // this run, and the routing in force now (the stop's DIRECT or the
+    // restart's PAC) is re-applied over whatever this apply's calls left.
+    reassertOnionRouting().catch((err) => {
+      log.error('[Tor] Failed to re-apply .onion routing:', err.message);
+    });
     return false;
   }
 

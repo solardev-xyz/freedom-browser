@@ -162,6 +162,8 @@ test('a model install is atomic, downloads no executable and leaves legacy insta
     expect(local.ready()).toBe(true);
     expect(download).toHaveBeenCalledTimes(1);
     expect(download.mock.calls[0].slice(0, 2)).toEqual([MODEL_URL, MODEL_SHA256]);
+    // The progress label names the model the way Settings and the chooser do (#803).
+    expect(download.mock.calls[0][5]).toBe('Downloading Whisper Base');
     expect(fs.readFileSync(path.join(legacy, 'keep'), 'utf8')).toBe('legacy');
     expect(fs.readdirSync(local.root).sort()).toEqual(['NOTICES.txt', 'ggml-base.bin', 'installed.json']);
     expect(execFile).not.toHaveBeenCalled();

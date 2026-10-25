@@ -624,7 +624,15 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     let decision = payload.approved;
+    const stringArray = (value, max) => Array.isArray(value) && value.length <= max &&
+      value.every(item => typeof item === 'string' && item.length <= 1_024) ? [...value] : null;
+    const publicationFixPaths = stringArray(payload.publicationFix?.paths, 200);
+    if (!payload.approved && publicationFixPaths?.length) {
+      decision = { approved: false, publicationFix: { paths: publicationFixPaths } };
+    }
     if (payload.approved) {
+      const publicationExclusions = stringArray(payload.publicationExclusions, 200);
+      const publicationAcknowledged = stringArray(payload.publicationAcknowledged, 200);
       const walletIndex =
         Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
           ? payload.walletIndex
@@ -632,12 +640,15 @@ function registerFreedomAgentIpc(options = {}) {
       const diagnosticScope = payload.diagnosticScope === 'conversation' ? 'conversation' : null;
       const workspacePermissionScope =
         payload.workspacePermissionScope === 'conversation' ? 'conversation' : null;
-      if (walletIndex !== null || diagnosticScope || workspacePermissionScope) {
+      if (walletIndex !== null || diagnosticScope || workspacePermissionScope ||
+          publicationExclusions?.length || publicationAcknowledged?.length) {
         decision = {
           approved: true,
           ...(walletIndex !== null && { walletIndex }),
           ...(diagnosticScope && { diagnosticScope }),
           ...(workspacePermissionScope && { workspacePermissionScope }),
+          ...(publicationExclusions?.length && { publicationExclusions }),
+          ...(publicationAcknowledged?.length && { publicationAcknowledged }),
         };
       }
     }
@@ -1044,7 +1055,8 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     const bzzUrl = typeof payload?.bzzUrl === 'string' ? payload.bzzUrl.trim() : '';
-    if (!/^bzz:\/\/[a-f0-9]{64}$/.test(bzzUrl)) {
+    // 128 hex: an encrypted private draft link (reference plus key).
+    if (!/^bzz:\/\/[a-f0-9]{64}(?:[a-f0-9]{64})?$/.test(bzzUrl)) {
       return errorEnvelope(
         AGENT_ERROR_CODES.INVALID_ARGUMENT,
         'Opening a publication requires a valid Swarm URL'

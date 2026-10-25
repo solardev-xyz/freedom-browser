@@ -25,7 +25,7 @@ class FakeWebContents extends EventEmitter {
   }
 
   isLoading() {
-    return false;
+    return this.loading === true;
   }
 
   isDestroyed() {
@@ -408,6 +408,201 @@ describe('automation runtime registration', () => {
       ok: true,
       tabId: 'tab_desktop',
       result: { url: 'https://next.example/' },
+    });
+  });
+
+  describe('a navigation that supersedes a load still in flight (#815)', () => {
+    function bindLoadingDesktop({ loading }) {
+      const runtime = createAutomationRuntime({
+        isPrivateWebContents: () => false,
+        navigationRequestIdFactory: () => 'nav_test',
+        controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+      });
+      const host = new EventEmitter();
+      host.send = jest.fn();
+      const ipcMain = new EventEmitter();
+      const desktop = new FakeWebContents('https://typed.example/', 42);
+      desktop.hostWebContents = host;
+      desktop.loading = loading;
+      runtime.attachToHostWebContents(host, { ipcMain });
+      host.emit('did-attach-webview', {}, desktop);
+      ipcMain.emit(
+        IPC.AUTOMATION_BIND_TAB,
+        { sender: host },
+        { rendererTabId: 12, guestWebContentsId: 42 }
+      );
+      const navigate = async () => {
+        const navigation = runtime.controller.execute(OPERATIONS.NAVIGATE, {
+          tabId: 'tab_desktop',
+          url: 'https://next.example/',
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        ipcMain.emit(
+          IPC.AUTOMATION_NAVIGATE_RESULT,
+          { sender: host },
+          { requestId: 'nav_test', ok: true }
+        );
+        desktop.loading = true;
+        desktop.emit('did-start-navigation', {}, 'https://next.example/', false, true);
+        return { navigation };
+      };
+      return { desktop, navigate };
+    }
+
+    test("ignores the superseded load's ERR_ABORTED and completes", async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://typed.example/', true);
+      desktop.url = 'https://next.example/';
+      desktop.emit('did-navigate', {}, 'https://next.example/');
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: true,
+        result: { url: 'https://next.example/' },
+      });
+    });
+
+    // Electron 44 probe: a committed page still loading a subresource, then a
+    // new navigation that is Stopped before it commits, emits start(new),
+    // ERR_ABORTED(old page), stop — no failure for the new navigation itself.
+    test('fails when the tab stops after a superseded abort without committing', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://typed.example/', true);
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    // The #815 nightly shape (automation-kernel.spec.js "preserve HTTPS"):
+    // the URL typed and held by the first ad-block engine is the same URL
+    // browser_navigate then asks for, so the superseded abort names it.
+    test('absorbs a superseded ERR_ABORTED for the same URL it navigates to', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example', true);
+      desktop.url = 'https://next.example/';
+      desktop.emit('did-navigate', {}, 'https://next.example/');
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: true,
+        result: { url: 'https://next.example/' },
+      });
+    });
+
+    // Electron 44 probe: superseding a still-provisional load emits no abort
+    // for it at all, so the exemption stays armed. If the request's own load
+    // is then aborted under the same URL before anything else happened, the
+    // events can't tell it from a superseded abort, but no commit follows,
+    // so the stop still fails it.
+    test('fails when an absorbed same-URL abort was its own and nothing commits', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example', true);
+      desktop.loading = false;
+      desktop.emit('did-stop-loading');
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED once it has committed', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-navigate', {}, 'https://next.example/');
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED after a redirect', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-redirect-navigation', {}, 'https://landing.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb a same-URL ERR_ABORTED after a second main-frame start', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-start-navigation', {}, 'https://other.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb an ERR_ABORTED for a URL a later start named', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-start-navigation', {}, 'https://other.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://other.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('does not absorb an ERR_ABORTED for a URL it redirected to', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-redirect-navigation', {}, 'https://landing.example/', false, true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://landing.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('still fails when its own load is aborted after the superseded one', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://typed.example/', true);
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('still fails on ERR_ABORTED when nothing was loading', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: false });
+      const { navigation } = await navigate();
+      desktop.emit('did-fail-load', {}, -3, '', 'https://next.example/', true);
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED' },
+      });
+    });
+
+    test('still fails on any other error while superseding a load', async () => {
+      const { desktop, navigate } = bindLoadingDesktop({ loading: true });
+      const { navigation } = await navigate();
+      desktop.emit(
+        'did-fail-load',
+        {},
+        -105,
+        'ERR_NAME_NOT_RESOLVED',
+        'https://next.example/',
+        true
+      );
+      await expect(navigation).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'NAVIGATION_FAILED', message: 'ERR_NAME_NOT_RESOLVED' },
+      });
     });
   });
 

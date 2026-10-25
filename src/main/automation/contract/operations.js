@@ -19,6 +19,10 @@ const {
 } = require('../../../shared/automation-operations');
 
 const OPERATION_SET = new Set(Object.values(OPERATIONS));
+// 'public' is an unencrypted public publication; 'draft' is an encrypted
+// private draft link (Swarm-Encrypt). See swarm-publication-controller.js.
+const SWARM_PUBLISH_TARGETS = Object.freeze(['public', 'draft']);
+const STABLE_ADDRESS_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TAB_OPERATIONS = new Set([
   OPERATIONS.GET_TAB,
   OPERATIONS.FOCUS_TAB,
@@ -642,6 +646,29 @@ function validateOperationInput(operation, rawInput) {
         'indexDocument'
       );
     }
+    if (input.target !== undefined) {
+      if (!SWARM_PUBLISH_TARGETS.includes(input.target)) {
+        throw invalidArgument(`target must be one of: ${SWARM_PUBLISH_TARGETS.join(', ')}`, {
+          field: 'target',
+        });
+      }
+      normalized.target = input.target;
+    }
+    if (input.stableAddress !== undefined) {
+      if (typeof input.stableAddress !== 'string' || !STABLE_ADDRESS_NAME.test(input.stableAddress)) {
+        throw invalidArgument(
+          'stableAddress must be 1-64 lowercase letters, digits or inner hyphens',
+          { field: 'stableAddress' }
+        );
+      }
+      // A draft link is never given a stable address or a name.
+      if (normalized.target === 'draft') {
+        throw invalidArgument('A private draft link cannot have a stable address', {
+          field: 'stableAddress',
+        });
+      }
+      normalized.stableAddress = input.stableAddress;
+    }
   }
 
   if (operation === OPERATIONS.SWARM_PUBLICATION_STATUS && input.publicationId !== undefined) {
@@ -673,6 +700,8 @@ module.exports = {
   NODE_REQUEST_SERVICES,
   OPERATIONS,
   PRESS_KEYS,
+  STABLE_ADDRESS_NAME,
+  SWARM_PUBLISH_TARGETS,
   validateOperationInput,
   canonicalNodeRequestPath,
 };

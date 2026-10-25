@@ -106,14 +106,19 @@ async function realClick(window, electronApp, id) {
 
 // A touch on the fixture guest through CDP's Input.dispatchTouchEvent, which
 // runs Chromium's real gesture detector: no moves is a tap; a long drag turns
-// into a scroll (gestureScrollBegin before the touchEnd).
+// into a scroll (gestureScrollBegin before the touchEnd). Returns the guest's
+// input-event types for the touch, through its touchEnd, as the main-process
+// gesture tracker saw them.
 async function realTouch(electronApp, moves) {
-  await electronApp.evaluate(
+  return electronApp.evaluate(
     async ({ webContents }, { url, moves }) => {
       const guest = webContents
         .getAllWebContents()
         .find((wc) => wc.getType() === 'webview' && wc.getURL() === url);
       if (!guest) throw new Error('fixture guest not found');
+      const seen = [];
+      const record = (_event, input) => seen.push(input.type);
+      guest.on('input-event', record);
       guest.debugger.attach('1.3');
       try {
         const touch = (type, touchPoints) =>
@@ -121,13 +126,24 @@ async function realTouch(electronApp, moves) {
         await touch('touchStart', [{ x: 200, y: 300 }]);
         for (const [x, y] of moves) await touch('touchMove', [{ x, y }]);
         await touch('touchEnd', []);
+        for (let i = 0; i < 50 && !seen.includes('touchEnd'); i++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
       } finally {
         guest.debugger.detach();
+        guest.removeListener('input-event', record);
       }
+      return seen.slice(0, seen.indexOf('touchEnd') + 1);
     },
     { url: PAGE_URL, moves }
   );
 }
+
+// Whether Chromium turned the touch into a scroll before its touchEnd: what
+// the gesture tracker (external-protocol.js, TOUCH_TURNED_GESTURE) keys on.
+const touchTurnedScroll = (events) =>
+  events.at(-1) === 'touchEnd' &&
+  (events.includes('gestureScrollBegin') || events.includes('touchScrollStarted'));
 
 // A script with no user gesture.
 const scriptOpen = (window, url) =>
@@ -374,18 +390,38 @@ test('a click that navigated the tab does not pay for a popup the next page open
 test('a touch scroll does not arm a popup; a touch tap does', async ({ window, electronApp }) => {
   await gotoFixture(window, electronApp);
 
-  await realTouch(electronApp, [
+  // On Electron 45 the guest sometimes drops the compositor scroll of a CDP
+  // drag even though Chromium did turn it into a scroll: the page gets its
+  // pointercancel and the browser its gestureScrollBegin, but scrollY stays
+  // 0 (3 of 18 local runs, probed 2026-10-25; CI on Electron 44 never hit
+  // it). Each drag is checked to be a scroll gesture before its touchEnd,
+  // which grants nothing, so dragging again until the page moves cannot arm
+  // the popup.
+  const drag = [
     [200, 280],
     [200, 240],
     [200, 180],
     [200, 120],
-  ]);
-  await expect.poll(() => evalInWebview(window, 'scrollY'), { timeout: 5_000 }).toBeGreaterThan(0);
+  ];
+  let scrolled = false;
+  for (let attempt = 0; attempt < 5 && !scrolled; attempt++) {
+    const events = await realTouch(electronApp, drag);
+    expect(touchTurnedScroll(events), JSON.stringify(events)).toBe(true);
+    for (let wait = 0; wait < 20 && !scrolled; wait++) {
+      scrolled = (await evalInWebview(window, 'scrollY')) > 0;
+      if (!scrolled) await window.waitForTimeout(50);
+    }
+  }
+  expect(scrolled, 'the touch drag never scrolled the page').toBe(true);
   await scriptOpen(window, POPUP_A);
   await expect(icon(window)).toBeVisible();
   await expect(tabs(window)).toHaveCount(1);
 
-  await realTouch(electronApp, []);
+  // The tap must have reached the gesture tracker (touchTurnedScroll([]) is
+  // false too, so check the touchEnd first) and not have turned into a scroll.
+  const tap = await realTouch(electronApp, []);
+  expect(tap.at(-1), `tap never reached touchEnd: ${JSON.stringify(tap)}`).toBe('touchEnd');
+  expect(touchTurnedScroll(tap), JSON.stringify(tap)).toBe(false);
   await scriptOpen(window, POPUP_B);
   await expect(tabs(window)).toHaveCount(2);
   await expect.poll(() => guestUrls(electronApp), { timeout: 10_000 }).toContain(POPUP_B);

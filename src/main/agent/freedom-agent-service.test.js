@@ -1289,6 +1289,15 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'without replacing unrelated settings'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On Linux, sandboxed commands cannot create Unix sockets: socket(AF_UNIX) fails with EACCES'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      "multiprocessing.set_start_method('fork')"
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      '32-bit executables (i386 or x32 on x64, AArch32 on arm64) are killed with SIGSYS'
+    );
 
     fake.prompt.resolve();
     await service.waitForIdle();
@@ -2583,6 +2592,99 @@ describe('FreedomAgentService', () => {
     expect(invalidApproval.publication).not.toHaveProperty('workspacePath');
     await service.decideApproval('run_test', invalidApproval.approvalId, false);
     await expect(invalidDecision).resolves.toBe('declined');
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects draft, stable-address and postage details, and refuses an inconsistent publication request (#741 E, F, G, H)', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const postage = { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true,
+      estimatedCostPlur: '12000', estimatedChunks: 3, extra: 'dropped' };
+    const draft = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, postage,
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 3, excerpt: 'https://unpkg.com', blocking: false }] } });
+    let approval = events.at(-1);
+    expect(approval.publication).toEqual({ kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true,
+      postage: { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true, estimatedCostPlur: '12000', estimatedChunks: 3 },
+      findings: [expect.objectContaining({ kind: 'third-party', rule: 'third-party-script', excerpt: 'https://unpkg.com', blocking: false })] });
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(draft).resolves.toBe('approved');
+
+    const stable = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'public', public: true, postage: { status: 'none' },
+        stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` } } });
+    approval = events.at(-1);
+    // A card with no existence answer says it may be live, never "new".
+    expect(approval.publication).toMatchObject({ target: 'public', public: true, postage: { status: 'none' },
+      stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, existing: 'unknown', currentBzzUrl: `bzz://${'f'.repeat(64)}` } });
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await expect(stable).resolves.toBe('declined');
+
+    // Inconsistent kinds never reach the card: a draft that claims to be
+    // public or unencrypted, a draft with a stable address, a non-public
+    // publication that is not a draft.
+    for (const publication of [
+      { kind: 'folder', name: 'dist', target: 'draft', public: true, encrypted: true },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, stableAddress: { name: 'x', owner: `0x${'1'.repeat(40)}` } },
+      { kind: 'folder', name: 'dist', public: false },
+    ]) {
+      await expect(requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication }))
+        .rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    }
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('publication findings reach the card, and card choices may only name listed files and findings', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const publication = {
+      kind: 'folder', name: 'dist', public: true,
+      files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 9 }],
+      excluded: [{ path: '.env', reason: 'Credential file' }],
+      findings: [{ id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 2, excerpt: 'sk_liv••••', blocking: true }],
+    };
+    const ask = () => {
+      const decision = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication });
+      return { decision, approval: events.at(-1) };
+    };
+
+    let { decision, approval } = ask();
+    expect(approval.publication.findings).toEqual(publication.findings);
+    expect(approval.publication.excluded).toEqual(publication.excluded);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['other.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationAcknowledged: ['finding_9'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] });
+
+    ({ decision, approval } = ask());
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['index.html'] } })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['app.js'] } })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'declined', publicationFix: { paths: ['app.js'] } });
+
+    // A folder can list up to 1,000 files; a finding in any of them, and
+    // well over 100 of them, must still be excludable from the card.
+    publication.files = Array.from({ length: 1_000 }, (_, index) => ({ path: `f${index}.js`, bytes: 1 }));
+    publication.findings = Array.from({ length: 150 }, (_, index) => ({ id: `finding_${index + 1}`, path: `f${index + 850}.js`,
+      kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 1, excerpt: 'sk_liv••••', blocking: true }));
+    ({ decision, approval } = ask());
+    expect(approval.publication.files).toHaveLength(1_000);
+    const late = publication.findings.map(finding => finding.path);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: [...late, 'missing.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: late })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: late });
 
     await service.stop('run_test');
     await service.waitForIdle();

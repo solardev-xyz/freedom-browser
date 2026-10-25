@@ -254,6 +254,23 @@ describe('automation operation contract', () => {
     ).toEqual({ publicationId: 'swarm_pub_aaaaaaaaaaaaaaaaaaaaaaaa' });
   });
 
+  test('accepts a private draft target and a stable address name, never both together (#741 E, F)', () => {
+    expect(validateOperationInput(OPERATIONS.SWARM_PUBLISH, { workspacePath: 'dist', target: 'draft' }))
+      .toEqual({ workspacePath: 'dist', target: 'draft' });
+    expect(validateOperationInput(OPERATIONS.SWARM_PUBLISH, { workspacePath: 'dist', target: 'public', stableAddress: 'my-site-2' }))
+      .toEqual({ workspacePath: 'dist', target: 'public', stableAddress: 'my-site-2' });
+    expect(validateOperationInput(OPERATIONS.SWARM_PUBLISH, { text: 'x', stableAddress: 'notes' }))
+      .toMatchObject({ stableAddress: 'notes' });
+    expect(() => validateOperationInput(OPERATIONS.SWARM_PUBLISH, { workspacePath: 'dist', target: 'private' }))
+      .toThrow('target must be one of: public, draft');
+    expect(() => validateOperationInput(OPERATIONS.SWARM_PUBLISH, { workspacePath: 'dist', target: 'draft', stableAddress: 'site' }))
+      .toThrow('A private draft link cannot have a stable address');
+    for (const name of ['', 'My-Site', '-site', 'site-', 'a/b', 'x'.repeat(65), 'site.eth', 7]) {
+      expect(() => validateOperationInput(OPERATIONS.SWARM_PUBLISH, { workspacePath: 'dist', stableAddress: name }))
+        .toThrow('stableAddress');
+    }
+  });
+
   test('validates bounded declarative waits', () => {
     expect(
       validateOperationInput(OPERATIONS.WAIT, {

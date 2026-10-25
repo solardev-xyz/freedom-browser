@@ -203,20 +203,73 @@ jobs:
           path: coverage/
           if-no-files-found: error
 
-  # v0.8.0 upgrade / profile-migration coverage on all three desktop platforms.
-  # The bee->ant carry has OS-specific filesystem semantics (Windows EPERM on
-  # locked handles, rename-vs-copy fallbacks), so the migration + profile
-  # resolver/paths suites must be green on Windows and macOS too — not just the
-  # ubuntu-only `test` job. Pure jest, no display or native nodes required.
-  migration-cross-platform:
+  # Grouped job: each `── was the … job ──` section below is one former job,
+  # copied step for step. They share one runner and one install instead of a
+  # runner each, because the org's 20-job (5 macOS) concurrency cap, not test
+  # time, was what made CI slow (2026-10: most jobs ran under 3 minutes, a
+  # third of every run was setup, and jobs queued 7-40 minutes for a runner).
+  # Every section runs after an earlier one failed (`!cancelled()` and a
+  # successful install), so one run still reports every failing suite; each
+  # Playwright run writes to its own `test-results/<former job>/`, which
+  # Playwright would otherwise wipe at the start of the next one. A section
+  # that changes the runner for whatever follows it (filter lists, node
+  # binaries, a setuid Chromium sandbox) is placed after the ones it would
+  # otherwise affect.
+  #
+  # Native-addon and cross-platform jest checks for every shipped target, one
+  # runner per target. `migration` runs on the three desktop OS families
+  # (macos-15 stands in for the former macos-latest, the same arm64 image),
+  # and freedom-ipfs has no mac-x64 build.
+  native-addons:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - target: mac-arm64
+            os: macos-15
+            migration: true
+            ipfs: darwin-arm64
+            radicle: mac-arm64
+            radicle_flags: --mac --arm64
+            myotis: darwin-arm64
+            myotis_addon: myotis-bin/mac-arm64/myotis-node.node
+          - target: mac-x64
+            os: macos-15-intel
+            migration: false
+            ipfs: ''
+            radicle: mac-x64
+            radicle_flags: --mac --x64
+            myotis: darwin-x64
+            myotis_addon: myotis-bin/mac-x64/myotis-node.node
+          - target: linux-x64
+            os: ubuntu-latest
+            migration: true
+            ipfs: linux-x64
+            radicle: linux-x64
+            radicle_flags: --linux --x64
+            myotis: linux-x64
+            myotis_addon: myotis-bin/linux-x64/myotis-node.node
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            migration: false
+            ipfs: linux-arm64
+            radicle: linux-arm64
+            radicle_flags: --linux --arm64
+            myotis: linux-arm64
+            myotis_addon: myotis-bin/linux-arm64/myotis-node.node
+          - target: win-x64
+            os: windows-latest
+            migration: true
+            ipfs: win32-x64
+            radicle: win-x64
+            radicle_flags: --win --x64
+            myotis: win32-x64
+            myotis_addon: myotis-bin/win-x64/myotis-node.node
+    name: native-addons (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -231,16 +284,128 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: deps
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
 
+      # ── was the `migration-cross-platform` job ──
+      # v0.8.0 upgrade / profile-migration coverage on all three desktop platforms.
+      # The bee->ant carry has OS-specific filesystem semantics (Windows EPERM on
+      # locked handles, rename-vs-copy fallbacks), so the migration + profile
+      # resolver/paths suites must be green on Windows and macOS too — not just the
+      # ubuntu-only `test` job. Pure jest, no display or native nodes required.
       - name: Run migration + profile suites
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.migration }}
         run: npm run test:migration
 
-  # Independent of the long native sandbox build: prove both a positive
-  # network control and the isolated preview boundary on every desktop OS.
-  e2e-preview-network:
+      # ── was the `freedom-ipfs-native-addon` job ──
+      # freedom-ipfs native addon smoke for every desktop addon target currently
+      # published in the pinned prebuilt manifest. This downloads the real release
+      # artifact, loads it in Node, starts native freedom-ipfs, serves the identity
+      # CID bafkqaaa locally (no network), and fetches an immutable /ipfs/<cid>
+      # through the native request API (no IPNS lookup; network-only failures of
+      # that live leg are a ::warning::, see #747).
+      - name: Assert shipped native-addon target
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.ipfs != '' }}
+        run: node -e "const target = process.platform + '-' + process.arch; const expected = process.env.EXPECTED_TARGET; if (target !== expected) { console.error('Expected ' + expected + ' runner, got ' + target); process.exit(1); } console.log(target);"
+        env:
+          EXPECTED_TARGET: ${{ matrix.ipfs }}
+
+      - name: Download IPFS native addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.ipfs != '' }}
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Smoke test IPFS native addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.ipfs != '' }}
+        run: npm run ipfs:native:smoke
+        env:
+          FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.ipfs }}
+          # The live-network leg fetches an immutable /ipfs/<cid> and turns a
+          # network-only failure into a ::warning:: (see the script header and
+          # #747); load/start/local-content failures still fail the job.
+
+      - name: Smoke test issue #102 high-fanout IPFS page
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.ipfs != '' && (matrix.ipfs == 'linux-x64') }}
+        run: npm run ipfs:native:smoke
+        env:
+          FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.ipfs }}
+          FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
+          # `1` = warn mode: the root page fetch retries and turns network
+          # weather into a ::warning:: like the live leg; gateway_busy during
+          # the fan-out still fails the job (#747).
+          FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
+
+      # ── was the `radicle-addon-load` job ──
+      # libradicle is the ONLY Radicle runtime — there is no executable fallback —
+      # so every release asset has to download, verify against the in-repo pinned
+      # checksums, load, and answer a native call on the platform it ships for.
+      # Modelled on the Myotis addon section below. win-arm64 has no hosted runner: it is
+      # downloaded and checksum-verified on windows-latest (a foreign-arch library
+      # cannot be dlopen'ed), which is what catches a missing or re-published asset.
+      - name: Download this runner's libradicle addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run radicle:download -- ${{ matrix.radicle_flags }}
+
+      - name: Load addon and verify exports
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.radicle }}/libradicle.node
+
+      # No hosted arm64 Windows runner exists, so the asset is at least proven
+      # to be published and to match the pinned SHA256SUMS.
+      - name: Verify the win-arm64 release asset
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && (matrix.radicle == 'win-x64') }}
+        run: npm run radicle:download -- --win --arm64
+
+      # ── was the `myotis-addon-load` job ──
+      # Load every native Myotis addon target that release packaging requires.
+      # The live network proof below remains one representative architecture per
+      # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
+      # ARM64 Linux without multiplying the expensive cold-sync workload.
+      - name: Download this runner's official Myotis addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: ${{ matrix.myotis }}
+
+      - name: Build ownership helper (POSIX)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && (runner.os != 'Windows') }}
+        run: npm run myotis:build-supervisor
+
+      - name: Build ownership helper (Windows)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && (runner.os == 'Windows') }}
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run myotis:build-supervisor -- x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check ownership recovery without networking
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: node scripts/check-myotis-owner-recovery.js
+
+      - name: Load addon and verify ABI
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        # The expected ABI comes from the release pin, not a literal repeated
+        # here: on the v0.1.11 bump this step still said 26 and would have
+        # failed every platform against a correctly pinned addon.
+        run: node -e "const {abi:expected}=require('./scripts/myotis-release.json'); const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==expected) throw new Error('Expected ABI '+expected+', got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        env:
+          MYOTIS_ADDON: ${{ matrix.myotis_addon }}
+
+  # Grouped job; see the note above `native-addons`.
+  #
+  # The suites that must hold on all three desktop operating systems. The
+  # onboarding section downloads Ant and freedom-ipfs and the preview-network
+  # qualification makes Linux's chrome-sandbox setuid, so those two go last.
+  e2e-desktop:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
@@ -248,21 +413,142 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 45
+
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
-      - uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install Linux native USB build dependency
         if: runner.os == 'Linux'
-      - uses: ./.github/actions/install-node-deps
-      - uses: ./.github/actions/install-playwright-deps
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        id: deps
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
+        uses: ./.github/actions/install-playwright-deps
+
+      # ── was the `e2e-address-bar-clipboard` job ──
+      # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
+      - name: Run address-bar clipboard E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-address-bar-clipboard test-e2e/address-bar-clipboard.spec.js
+          else
+            npm run test:e2e -- --output=test-results/e2e-address-bar-clipboard test-e2e/address-bar-clipboard.spec.js
+          fi
+
+      # ── was the `e2e-close-tab-shortcut` job ──
+      # Issue #97 — Cmd/Ctrl+W must close the active tab, not the window. The
+      # accelerator is resolved by the platform's own menu layer, so the ownership
+      # half runs on all three (that is where macOS and Windows/Linux differed);
+      # the real-keypress half needs X11 key injection and runs on Linux only,
+      # which is where the bug shipped.
+      #
+      # Issue #556 rides along: Next/Previous Tab must switch on every press from
+      # a focused page. Same shape — a main-process-delivered press on all three
+      # platforms (the leg that runs on macOS, where #556 was reported), real X11
+      # presses via xdotool on Linux.
+      # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
+      # through CDP into the renderer and never reaches a menu accelerator.
+      # setxkbmap (x11-xkb-utils) switches the xvfb display to the French and
+      # Czech layouts for the select-tab layout presses (#717).
+      # Through the shared apt wrapper, like every other apt call on Linux CI.
+      - name: Install xdotool
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: |
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool x11-xkb-utils
+
+      - name: Run close-tab and tab-switch shortcut E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-close-tab-shortcut test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
+          else
+            npm run test:e2e -- --output=test-results/e2e-close-tab-shortcut test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
+          fi
+
+      # ── was the `e2e-profiles` job ──
+      # Profile lifecycle (create / use / manage / delete) across all desktop
+      # platforms. Runs the in-process harness in catalog mode (no real nodes, no
+      # second-process spawn — see test-e2e/profiles-fixtures.js).
+      - name: Run profile lifecycle E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
+          else
+            npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
+          fi
+
+      # ── was the `e2e-onboarding-identity` job ──
+      # Onboarding wizard must create node identities while a real Swarm node (now
+      # antd) is running. Drives the full password wizard end-to-end against a real
+      # antd spawn across all three desktop platforms — the cross-platform proof
+      # that the bundled Ant node starts, goes healthy, and accepts an injected
+      # identity. (antd self-initializes its identity and reads the injected
+      # keys/swarm.key; it has no LevelDB statestore, but the wizard's
+      # stop→wipe→reinject→restart flow is still exercised.)
+      - name: Download Ant (antd) binary
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download IPFS native addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Upgrade-path proof on every desktop platform: antd must adopt a
+      # migrated bee-era identity (decrypt keys/swarm.key with the carried-over
+      # config password) instead of self-generating a throwaway wallet. The
+      # Windows leg matters most — EPERM-on-locked-handle is the historical
+      # failure class for these data-dir moves (issue #90).
+      - name: Run bee-data → ant-data migration integration test
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest --forceExit src/main/identity/__tests__/integration/bee-to-ant-migration.test.js
+
+      - name: Run onboarding identity E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e:onboarding -- --output=test-results/e2e-onboarding-identity
+          else
+            npm run test:e2e:onboarding -- --output=test-results/e2e-onboarding-identity
+          fi
+
+      # ── was the `e2e-preview-network` job ──
+      # Independent of the long native sandbox build: prove both a positive
+      # network control and the isolated preview boundary on every desktop OS.
       - name: Qualify preview network isolation against owned listeners
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         shell: bash
         run: |
           node -e "require('electron')"
@@ -275,135 +561,15 @@ jobs:
             node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-agent-preview-network.js'],{stdio:'inherit',timeout:30000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
           fi
 
-  # freedom-ipfs native addon smoke for every desktop addon target currently
-  # published in the pinned prebuilt manifest. This downloads the real release
-  # artifact, loads it in Node, starts native freedom-ipfs, serves the identity
-  # CID bafkqaaa locally (no network), and fetches an immutable /ipfs/<cid>
-  # through the native request API (no IPNS lookup; network-only failures of
-  # that live leg are a ::warning::, see #747).
-  freedom-ipfs-native-addon:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: darwin-arm64
-          - os: ubuntu-latest
-            target: linux-x64
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-          - os: windows-latest
-            target: win32-x64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-        with:
-          ignore-scripts: 'true'
-
-      - name: Assert shipped native-addon target
-        run: node -e "const target = process.platform + '-' + process.arch; const expected = process.env.EXPECTED_TARGET; if (target !== expected) { console.error('Expected ' + expected + ' runner, got ' + target); process.exit(1); } console.log(target);"
-        env:
-          EXPECTED_TARGET: ${{ matrix.target }}
-
-      - name: Download IPFS native addon
-        run: npm run ipfs:download
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Smoke test IPFS native addon
-        run: npm run ipfs:native:smoke
-        env:
-          FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
-          # The live-network leg fetches an immutable /ipfs/<cid> and turns a
-          # network-only failure into a ::warning:: (see the script header and
-          # #747); load/start/local-content failures still fail the job.
-
-      - name: Smoke test issue #102 high-fanout IPFS page
-        if: matrix.target == 'linux-x64'
-        run: npm run ipfs:native:smoke
-        env:
-          FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
-          FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
-          # `1` = warn mode: the root page fetch retries and turns network
-          # weather into a ::warning:: like the live leg; gateway_busy during
-          # the fan-out still fails the job (#747).
-          FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
-
-  # libradicle is the ONLY Radicle runtime — there is no executable fallback —
-  # so every release asset has to download, verify against the in-repo pinned
-  # checksums, load, and answer a native call on the platform it ships for.
-  # Modelled on myotis-addon-load. win-arm64 has no hosted runner: it is
-  # downloaded and checksum-verified on windows-latest (a foreign-arch library
-  # cannot be dlopen'ed), which is what catches a missing or re-published asset.
-  radicle-addon-load:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: mac-arm64
-            flags: --mac --arm64
-          - os: macos-15-intel
-            target: mac-x64
-            flags: --mac --x64
-          - os: ubuntu-latest
-            target: linux-x64
-            flags: --linux --x64
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-            flags: --linux --arm64
-          - os: windows-latest
-            target: win-x64
-            flags: --win --x64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-        with:
-          ignore-scripts: 'true'
-
-      - name: Download this runner's libradicle addon
-        run: npm run radicle:download -- ${{ matrix.flags }}
-
-      - name: Load addon and verify exports
-        run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.target }}/libradicle.node
-
-      # No hosted arm64 Windows runner exists, so the asset is at least proven
-      # to be published and to match the pinned SHA256SUMS.
-      - name: Verify the win-arm64 release asset
-        if: matrix.target == 'win-x64'
-        run: npm run radicle:download -- --win --arm64
+          name: e2e-desktop-${{ matrix.os }}-traces
+          path: |
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Package an unpacked `--dir` build for every shipped platform and fail if
   # app.asar holds anything outside the `build.files` allowlist (#576). The
@@ -416,10 +582,6 @@ jobs:
   packed-asar-contents:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        flags: ['--mac --arm64', '--linux --x64', '--win --x64']
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -440,87 +602,18 @@ jobs:
         with:
           ignore-scripts: 'true'
 
-      - name: Package and check app.asar
-        run: node scripts/ci/check-packed-asar.js ${{ matrix.flags }}
+      # One runner for all three: each package takes well under a minute,
+      # and a runner per platform spent more on setup than on packaging.
+      - name: Package and check app.asar (mac arm64)
+        run: node scripts/ci/check-packed-asar.js --mac --arm64
 
-  # Load every native Myotis addon target that release packaging requires.
-  # The live network proof below remains one representative architecture per
-  # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
-  # ARM64 Linux without multiplying the expensive cold-sync workload.
-  myotis-addon-load:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: darwin-arm64
-            addon: myotis-bin/mac-arm64/myotis-node.node
-          - os: macos-15-intel
-            target: darwin-x64
-            addon: myotis-bin/mac-x64/myotis-node.node
-          - os: ubuntu-latest
-            target: linux-x64
-            addon: myotis-bin/linux-x64/myotis-node.node
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-            addon: myotis-bin/linux-arm64/myotis-node.node
-          - os: windows-latest
-            target: win32-x64
-            addon: myotis-bin/win-x64/myotis-node.node
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+      - name: Package and check app.asar (linux x64)
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/check-packed-asar.js --linux --x64
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-        with:
-          ignore-scripts: 'true'
-
-      - name: Download this runner's official Myotis addon
-        run: npm run myotis:download
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
-
-      - name: Build ownership helper (POSIX)
-        if: runner.os != 'Windows'
-        run: npm run myotis:build-supervisor
-
-      - name: Build ownership helper (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vs) { throw 'Installed x64 MSVC tools are required.' }
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          npm run myotis:build-supervisor -- x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Check ownership recovery without networking
-        run: node scripts/check-myotis-owner-recovery.js
-
-      - name: Load addon and verify ABI
-        # The expected ABI comes from the release pin, not a literal repeated
-        # here: on the v0.1.11 bump this step still said 26 and would have
-        # failed every platform against a correctly pinned addon.
-        run: node -e "const {abi:expected}=require('./scripts/myotis-release.json'); const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==expected) throw new Error('Expected ABI '+expected+', got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
-        env:
-          MYOTIS_ADDON: ${{ matrix.addon }}
+      - name: Package and check app.asar (win x64)
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/check-packed-asar.js --win --x64
 
   # Real Myotis release-addon + Freedom resolver E2E on every operating
   # system we ship. One production-app launch cold-syncs over libp2p/devp2p,
@@ -712,37 +805,16 @@ jobs:
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
-  # Settings navigation, persistence, and chain policy are shipped control
-  # surfaces. Exercise their real renderer/webview integration so malformed
-  # sidebar markup, broken transitions, and Myotis policy regressions cannot
-  # pass unit-only CI. `myotis-recovery.spec.js` joins them for the Nodes-menu
-  # side of the same Myotis policy: synthetic checkpoint-recovery states drive
-  # the real renderer, so the retry button's visibility while a background
-  # retry waits and the notice clearing on success are asserted in CI.
-  # `myotis-upgrade-advisory.spec.js` does the same for the fork-watch
-  # "update Freedom" notice on the Nodes card and the Settings source badge.
+  # Grouped job; see the note above `native-addons`.
   #
-  # The other internal pages ride along: `internal-pages-csp.spec.js` drives
-  # each page under `script-src 'self'` and fails on any CSP violation (#432),
-  # `error-page.spec.js` covers the error page's title and node-state copy
-  # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
-  # Settings > Appearance rather than the OS scheme (#233).
-  # `updates.spec.js` drives the auto-update state through both surfaces it
-  # paints, Settings > Updates and the hamburger update row (#87).
-  #
-  # This is also the per-PR job with the real filter lists downloaded, so
-  # `adblock-first-engine.spec.js` runs here: the first page of a fresh
-  # profile, with no engine cache, held behind the first ad-block engine build
-  # (#524). Without the real lists that build takes milliseconds and the path
-  # was only ever exercised by the nightly's full harness run.
-  # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
-  # usage line, Clear cache and the live size change against a fake antd's
-  # `/debugstore` and `/v0/cache` routes, and its size picker.
-  e2e-settings:
+  # Wallet, Safe, the Electron network-stack proxies and Settings. Settings
+  # goes last: it downloads the real ad-block filter lists, which every later
+  # app launch on this runner would otherwise pick up.
+  e2e-settings-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -757,380 +829,71 @@ jobs:
           cache: npm
 
       - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
+        id: deps
         uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Download adblock filter lists
-        run: npm run adblock:download
-        env:
-          # The uBlock lists are pinned to a uAssets commit resolved through
-          # GitHub's API; the token avoids its anonymous rate limit.
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Run settings + internal-page E2E
-        run: >-
-          xvfb-run -a npm run test:e2e --
-          test-e2e/settings.spec.js
-          test-e2e/settings-adblock.spec.js
-          test-e2e/adblock-first-engine.spec.js
-          test-e2e/myotis-recovery.spec.js
-          test-e2e/myotis-upgrade-advisory.spec.js
-          test-e2e/internal-pages-csp.spec.js
-          test-e2e/error-page.spec.js
-          test-e2e/internal-page-theme.spec.js
-          test-e2e/updates.spec.js
-          test-e2e/swarm-cache.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-settings-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # The keyboard shortcut registry is the only source of truth for menu
-  # accelerators, the renderer keydown fallback and the Settings > Shortcuts
-  # remap flow, and unit tests can only prove the three agree on paper. These
-  # two specs drive the real main → preload → renderer round trip, so a
-  # regression in it cannot pass unit-only CI (previously they ran locally
-  # only — see #180).
-  e2e-shortcuts-zoom:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run zoom + shortcuts E2E
-        run: xvfb-run -a npm run test:e2e -- test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-shortcuts-zoom-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Whether a request honours `session.setProxy` — the `.onion` PAC in
-  # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
-  # jest mock can stand in for (that is exactly how #355 happened: the external
-  # IPFS gateway proxy used undici, whose sockets never see the session). This
-  # runs the suites that spawn a real Electron process to check it — the IPFS
-  # gateway transport and, since #359, ENS CCIP-Read gateway fetches over the
-  # same transport. The suites self-skip wherever the Electron binary cannot be
-  # resolved; `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure
-  # here rather than a silent skip. (`--ignore-scripts` is not what decides that: the
-  # `electron` package has no postinstall, so `require('electron')` downloads
-  # the binary on first use in whichever job asks for it — including the
-  # `test` job, where it lands uncached.)
-  ipfs-gateway-proxy:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Electron system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
+      # ── was the `ipfs-gateway-proxy` job ──
+      # Whether a request honours `session.setProxy` — the `.onion` PAC in
+      # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
+      # jest mock can stand in for (that is exactly how #355 happened: the external
+      # IPFS gateway proxy used undici, whose sockets never see the session). This
+      # runs the suites that spawn a real Electron process to check it — the IPFS
+      # gateway transport and, since #359, ENS CCIP-Read gateway fetches over the
+      # same transport. The suites self-skip wherever the Electron binary cannot be
+      # resolved; `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure
+      # here rather than a silent skip. (`--ignore-scripts` is not what decides that: the
+      # `electron` package has no postinstall, so `require('electron')` downloads
+      # the binary on first use in whichever job asks for it — including the
+      # `test` job, where it lands uncached.)
       # Before jest: both suites below resolve the binary through
       # `require('electron')`, and two workers racing that first-use download
       # fail with `spawn ETXTBSY` (seen on this job when #359 added the second
       # suite).
       - name: Warm the Electron binary download
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: node -e "require('electron')"
 
       - name: Run the external gateway and ENS CCIP-Read proxy integration tests
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_ELECTRON_NET_TEST: '1'
         run: >-
           npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
           src/main/__tests__/integration/ens-ccip-proxy.test.js
 
-  # Tab activation, link dispositions and menu dismissal are all about *focus*
-  # — which of the shell and the guest `<webview>` owns the keyboard — and no
-  # unit test can see that: it is decided by the real Chromium focus tree.
-  # These specs are the only place it is asserted, and they ran locally
-  # only until a focus regression in one shipped green through the curated
-  # list above (the `<webview>` holding focus after a tab switch swallowed the
-  # Escape that dismisses the page context menu; caught by hand, not by CI).
-  #
-  # `menus.spec.js` and `bookmarks.spec.js` are here for the same reason: the
-  # first asserts Escape hands focus back to the button that opened a menu
-  # (#306), the second drives modified/middle clicks and a real HTML5 drag on
-  # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
-  # dispatch cannot exercise. `page-context-menu.spec.js` joins them for the
-  # selection search item (#330), whose Ctrl/Cmd-click background disposition
-  # is likewise invisible to a synthetic click.
-  #
-  # `chrome-popovers.spec.js` likewise needs the real thing: it resizes the
-  # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
-  # chrome document's scrollHeight, where a context menu lands relative to the
-  # pointer), none of which a jsdom-less unit fake can produce (#324).
-  #
-  # `permissions.spec.js` belongs to the same family and was likewise in no
-  # job's list: the anchored prompt is decided by real input and focus routing
-  # (Escape and click-away as a deny-once, a background tab's prompt held
-  # rather than dismissed, a modal <dialog> taking the Escape instead), and it
-  # drives the indicator popover the dismissal embargo is surfaced and lifted
-  # in — including the private-window scoping, which needs two real windows on
-  # two real sessions (#364, #365). `external-protocol.spec.js` rides the same
-  # prompt for magnet:/mailto: links (#406), and its user-gesture gate reads
-  # real input events on the guest webContents — a scripted click must not
-  # count, so only a real input path can prove it.
-  #
-  # `popup-blocker.spec.js` (#442) is gated on that same input tracking — a
-  # real click opens a popup, a script's window.open is blocked — and drives
-  # the address-bar "Pop-up blocked" icon, a private window's session-only
-  # allow and an allow that must survive a real app restart.
-  # `popup-close.spec.js` (#580) replays popupcheck.com's test against a local
-  # fixture with the same real input, and closes every popup it opens by its
-  # tab close button, Cmd/Ctrl+W, its window and its own `window.close()`.
-  # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
-  # (#443), which now asks the main-process popup blocker instead of keeping
-  # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
-  # guard that keeps web content off the local Ant API keys on the requesting
-  # frame and webContents type, which only a real tab `<webview>` produces.
-  # `user-agent.spec.js` (#471) reads the User-Agent a real tab guest, its
-  # worker and a private window's partition send, which a unit test can't see.
-  e2e-tabs:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
-        run: |
-          xvfb-run -a npm run test:e2e -- \
-            test-e2e/tabs.spec.js \
-            test-e2e/onchain-apps.spec.js \
-            test-e2e/menus.spec.js \
-            test-e2e/chrome-popovers.spec.js \
-            test-e2e/bookmarks.spec.js \
-            test-e2e/page-context-menu.spec.js \
-            test-e2e/permissions.spec.js \
-            test-e2e/external-protocol.spec.js \
-            test-e2e/dweb-link-gesture.spec.js \
-            test-e2e/popup-blocker.spec.js \
-            test-e2e/popup-close.spec.js \
-            test-e2e/ant-api-guard.spec.js \
-            test-e2e/user-agent.spec.js \
-            test-e2e/browser-fullscreen.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-tabs-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Name resolution reaches the user through two surfaces that only the real
-  # main → preload → renderer round trip exercises: the address bar (what a
-  # typed name or `ipfs://` URL resolves to, and what gets painted back into
-  # the bar) and the wallet's Send recipient field (which chain a name is
-  # resolved for, and which address the review screen commits to).
-  #
-  # `ensv2.spec.js` drives the wallet DNS/Unicode-recipient flow and asserts
-  # each lookup is requested for the selected chain; its second describe —
-  # the native-IPFS ENS checker — self-skips unless `ENSV2_UI_LIVE=1`, so
-  # this job stays offline and deterministic. `address-bar.spec.js` covers
-  # the scheme/gateway-form rewrites the name parser has to decline, plus the
-  # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
-  # curated list, so a regression in either shipped green — the #319 lesson.
-  # `ens-history-traversal.spec.js` joins them for the same reason: it drives
-  # the toolbar's Back/Forward through the real webview session history and
-  # asserts the trust badge re-verifies for the restored entry (#86), which no
-  # unit-level dispatch can exercise.
-  #
-  # `chrome-page-spoof.spec.js` pins what the bar may *not* show: a remote
-  # page serving an `/error.html` or `/ens-conflict.html` path must not get
-  # to pick the name and protocol icon (#235). `tez-unverified.spec.js` and
-  # `tez-head-conflict.spec.js` drive the Tezos Domains interstitials: the
-  # "Continue once" button has to load the resolved content, and a
-  # chain-head disagreement has to be a hard block. `ens-trust-popover.spec.js`
-  # (#68) drives the address-bar trust shield and its popover for all four
-  # trust levels: status sentence and row sequences, click-to-copy of the
-  # full value, one click from an open menu to the popover, and the shield
-  # giving way to the neutral globe on an internal page.
-  # `gateway-offer.spec.js` (#70) drives the "Open without gateway" pill for
-  # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
-  # opens the native address with path/query/fragment, and the opt-in
-  # "always" redirect leaves a gateway page reached by Back alone.
-  e2e-address-bar-ens:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run address-bar + ENSv2 + name-interstitial E2E
-        run: |
-          xvfb-run -a npm run test:e2e -- \
-            test-e2e/address-bar.spec.js \
-            test-e2e/ensv2.spec.js \
-            test-e2e/ens-history-traversal.spec.js \
-            test-e2e/chrome-page-spoof.spec.js \
-            test-e2e/tez-unverified.spec.js \
-            test-e2e/tez-head-conflict.spec.js \
-            test-e2e/ens-trust-popover.spec.js \
-            test-e2e/gateway-offer.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-address-bar-ens-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Wallet approval surfaces, driven through the real sidebar renderer with the
-  # main-process IPC replaced per app instance. A hardware-account signature
-  # can't be recalled once the device prompt is up, so these pin that nothing
-  # else can hide or cancel it: a dApp transaction (`dapp-tx-ledger-confirm`),
-  # a send (`send-ledger-confirm`), an x402 payment (`x402-payment-in-flight`)
-  # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
-  # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
-  # is deployed on, and `publisher-identity-selector.spec.js` renders
-  # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
-  # drives the Nodes tab's Browsing Credit group through node states the
-  # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
-  # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
-  # offering a plan while Ant is still rediscovering the wallet's batches, and
-  # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
-  # Publishing button opening it, identity or not.
-  # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
-  # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
-  # tab's wallet requests attributed to its own site, with a real vault and
-  # the real main-side signing check. The anvil-backed Safe specs run in
-  # `e2e-safe` below.
-  e2e-wallet:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
+      # ── was the `e2e-wallet` job ──
+      # Wallet approval surfaces, driven through the real sidebar renderer with the
+      # main-process IPC replaced per app instance. A hardware-account signature
+      # can't be recalled once the device prompt is up, so these pin that nothing
+      # else can hide or cancel it: a dApp transaction (`dapp-tx-ledger-confirm`),
+      # a send (`send-ledger-confirm`), an x402 payment (`x402-payment-in-flight`)
+      # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
+      # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
+      # is deployed on, and `publisher-identity-selector.spec.js` renders
+      # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
+      # drives the Nodes tab's Browsing Credit group through node states the
+      # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
+      # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
+      # offering a plan while Ant is still rediscovering the wallet's batches, and
+      # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
+      # Publishing button opening it, identity or not.
+      # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
+      # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
+      # tab's wallet requests attributed to its own site, with a real vault and
+      # the real main-side signing check. The anvil-backed Safe specs run in
+      # `e2e-safe` below.
       - name: Run wallet approval E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
-          xvfb-run -a npm run test:e2e -- \
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
             test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
@@ -1143,64 +906,28 @@ jobs:
             test-e2e/publish-page-setup.spec.js \
             test-e2e/publish-text-shortcut.spec.js
 
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-wallet-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Safe (multi-owner account) lifecycle through the real UI against an anvil
-  # fork of Gnosis: create → fund → activate (a real canonical-factory
-  # deployment) → send, plus a dApp connecting the Safe for an EIP-1271
-  # signature and a send through the board. These used to kill the main
-  # process with SIGSEGV on the first receipt lookup after a broadcast (#453:
-  # a Colibri WASM trap Electron's main process could not catch).
-  #
-  # anvil comes from foundry's own release tarball, checked against a sha256
-  # recorded here (re-derived from upstream's `foundry_v1.8.3_linux_amd64.sha256`
-  # asset, not trusted from it at run time). The fork itself still reads
-  # https://rpc.gnosischain.com, a public endpoint this job cannot pin; the
-  # harness project's CI retries absorb a blip, and
-  # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
-  # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
-  #
-  # The fixtures read Gnosis from the fork only (a proof source verifies the
-  # live chain), so the specs no longer pass through Colibri on chain 100; the
-  # crash itself is pinned by the jest step below, which needs this job's
-  # Electron binary.
-  e2e-safe:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
+      # ── was the `e2e-safe` job ──
+      # Safe (multi-owner account) lifecycle through the real UI against an anvil
+      # fork of Gnosis: create → fund → activate (a real canonical-factory
+      # deployment) → send, plus a dApp connecting the Safe for an EIP-1271
+      # signature and a send through the board. These used to kill the main
+      # process with SIGSEGV on the first receipt lookup after a broadcast (#453:
+      # a Colibri WASM trap Electron's main process could not catch).
+      #
+      # anvil comes from foundry's own release tarball, checked against a sha256
+      # recorded here (re-derived from upstream's `foundry_v1.8.3_linux_amd64.sha256`
+      # asset, not trusted from it at run time). The fork itself still reads
+      # https://rpc.gnosischain.com, a public endpoint this job cannot pin; the
+      # harness project's CI retries absorb a blip, and
+      # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
+      # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
+      #
+      # The fixtures read Gnosis from the fork only (a proof source verifies the
+      # live chain), so the specs no longer pass through Colibri on chain 100; the
+      # crash itself is pinned by the jest step below, which needs this job's
+      # Electron binary.
       - name: Install foundry (anvil)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FOUNDRY_VERSION: v1.8.3
           FOUNDRY_SHA256: 7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568
@@ -1224,6 +951,7 @@ jobs:
       # binary, so there it skips; here the binary is fetched first (the
       # `electron` package downloads it on first require) and a skip fails.
       - name: Colibri WASM trap guard under Electron's main process
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED: '1'
         run: |
@@ -1231,21 +959,273 @@ jobs:
           npx jest src/main/ens/colibri-runtime.test.js
 
       - name: Run Safe E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_SAFE_E2E_REQUIRED: '1'
         run: |
-          xvfb-run -a npm run test:e2e -- \
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-safe \
             test-e2e/safe-accounts.spec.js \
             test-e2e/safe-dapp.spec.js
+
+      # ── was the `e2e-settings` job ──
+      # Settings navigation, persistence, and chain policy are shipped control
+      # surfaces. Exercise their real renderer/webview integration so malformed
+      # sidebar markup, broken transitions, and Myotis policy regressions cannot
+      # pass unit-only CI. `myotis-recovery.spec.js` joins them for the Nodes-menu
+      # side of the same Myotis policy: synthetic checkpoint-recovery states drive
+      # the real renderer, so the retry button's visibility while a background
+      # retry waits and the notice clearing on success are asserted in CI.
+      # `myotis-upgrade-advisory.spec.js` does the same for the fork-watch
+      # "update Freedom" notice on the Nodes card and the Settings source badge.
+      #
+      # The other internal pages ride along: `internal-pages-csp.spec.js` drives
+      # each page under `script-src 'self'` and fails on any CSP violation (#432),
+      # `error-page.spec.js` covers the error page's title and node-state copy
+      # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
+      # Settings > Appearance rather than the OS scheme (#233).
+      # `updates.spec.js` drives the auto-update state through both surfaces it
+      # paints, Settings > Updates and the hamburger update row (#87).
+      #
+      # This is also the per-PR job with the real filter lists downloaded, so
+      # `adblock-first-engine.spec.js` runs here: the first page of a fresh
+      # profile, with no engine cache, held behind the first ad-block engine build
+      # (#524). Without the real lists that build takes milliseconds and the path
+      # was only ever exercised by the nightly's full harness run.
+      # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
+      # usage line, Clear cache and the live size change against a fake antd's
+      # `/debugstore` and `/v0/cache` routes, and its size picker.
+      - name: Download adblock filter lists
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run settings + internal-page E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: >-
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-settings
+          test-e2e/settings.spec.js
+          test-e2e/settings-adblock.spec.js
+          test-e2e/adblock-first-engine.spec.js
+          test-e2e/myotis-recovery.spec.js
+          test-e2e/myotis-upgrade-advisory.spec.js
+          test-e2e/internal-pages-csp.spec.js
+          test-e2e/error-page.spec.js
+          test-e2e/internal-page-theme.spec.js
+          test-e2e/updates.spec.js
+          test-e2e/swarm-cache.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-safe-traces
+          name: e2e-settings-wallet-traces
           path: |
             test-results/
-            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Grouped job; see the note above `native-addons`.
+  #
+  # Browser chrome: tabs, menus, popovers, find, private windows, the address
+  # bar and ENS, shortcuts and zoom.
+  e2e-browser:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        id: deps
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-playwright-deps
+
+      # ── was the `e2e-tabs` job ──
+      # Tab activation, link dispositions and menu dismissal are all about *focus*
+      # — which of the shell and the guest `<webview>` owns the keyboard — and no
+      # unit test can see that: it is decided by the real Chromium focus tree.
+      # These specs are the only place it is asserted, and they ran locally
+      # only until a focus regression in one shipped green through the curated
+      # list above (the `<webview>` holding focus after a tab switch swallowed the
+      # Escape that dismisses the page context menu; caught by hand, not by CI).
+      #
+      # `menus.spec.js` and `bookmarks.spec.js` are here for the same reason: the
+      # first asserts Escape hands focus back to the button that opened a menu
+      # (#306), the second drives modified/middle clicks and a real HTML5 drag on
+      # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
+      # dispatch cannot exercise. `page-context-menu.spec.js` joins them for the
+      # selection search item (#330), whose Ctrl/Cmd-click background disposition
+      # is likewise invisible to a synthetic click.
+      #
+      # `chrome-popovers.spec.js` likewise needs the real thing: it resizes the
+      # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
+      # chrome document's scrollHeight, where a context menu lands relative to the
+      # pointer), none of which a jsdom-less unit fake can produce (#324).
+      #
+      # `permissions.spec.js` belongs to the same family and was likewise in no
+      # job's list: the anchored prompt is decided by real input and focus routing
+      # (Escape and click-away as a deny-once, a background tab's prompt held
+      # rather than dismissed, a modal <dialog> taking the Escape instead), and it
+      # drives the indicator popover the dismissal embargo is surfaced and lifted
+      # in — including the private-window scoping, which needs two real windows on
+      # two real sessions (#364, #365). `external-protocol.spec.js` rides the same
+      # prompt for magnet:/mailto: links (#406), and its user-gesture gate reads
+      # real input events on the guest webContents — a scripted click must not
+      # count, so only a real input path can prove it.
+      #
+      # `popup-blocker.spec.js` (#442) is gated on that same input tracking — a
+      # real click opens a popup, a script's window.open is blocked — and drives
+      # the address-bar "Pop-up blocked" icon, a private window's session-only
+      # allow and an allow that must survive a real app restart.
+      # `popup-close.spec.js` (#580) replays popupcheck.com's test against a local
+      # fixture with the same real input, and closes every popup it opens by its
+      # tab close button, Cmd/Ctrl+W, its window and its own `window.close()`.
+      # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
+      # (#443), which now asks the main-process popup blocker instead of keeping
+      # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
+      # guard that keeps web content off the local Ant API keys on the requesting
+      # frame and webContents type, which only a real tab `<webview>` produces.
+      # `user-agent.spec.js` (#471) reads the User-Agent a real tab guest, its
+      # worker and a private window's partition send, which a unit test can't see.
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: |
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-tabs \
+            test-e2e/tabs.spec.js \
+            test-e2e/onchain-apps.spec.js \
+            test-e2e/menus.spec.js \
+            test-e2e/chrome-popovers.spec.js \
+            test-e2e/bookmarks.spec.js \
+            test-e2e/page-context-menu.spec.js \
+            test-e2e/permissions.spec.js \
+            test-e2e/external-protocol.spec.js \
+            test-e2e/dweb-link-gesture.spec.js \
+            test-e2e/popup-blocker.spec.js \
+            test-e2e/popup-close.spec.js \
+            test-e2e/ant-api-guard.spec.js \
+            test-e2e/user-agent.spec.js \
+            test-e2e/browser-fullscreen.spec.js
+
+      # ── was the `e2e-chrome` job ──
+      # Browser chrome around the page that only a real window can exercise, and
+      # that `e2e-tabs` (already the longest e2e job) has no room for: the find
+      # bar against a real guest's find-in-page results (`find-in-page`), the tab
+      # audio indicator and its mute toggle (`tab-mute`), private windows on their
+      # own session and palette (`private-windows`, `private-tab-color`), the one
+      # focus ring every chrome text field draws (`chrome-input-focus`, #246),
+      # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
+      # and the download shelf, whose dismissed card must stay dismissed for the
+      # rest of the transfer (`downloads`, #309), and the application menu's
+      # History menu, which reads private-window state (`history-menu`, #584).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: |
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
+            test-e2e/find-in-page.spec.js \
+            test-e2e/tab-mute.spec.js \
+            test-e2e/private-windows.spec.js \
+            test-e2e/page-providers-early.spec.js \
+            test-e2e/private-tab-color.spec.js \
+            test-e2e/chrome-input-focus.spec.js \
+            test-e2e/sidebar-subscreen-headers.spec.js \
+            test-e2e/downloads.spec.js \
+            test-e2e/agent-review-layout.spec.js \
+            test-e2e/history-menu.spec.js
+
+      - name: Upload software rendering profile
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-software-video-profile-${{ github.job }}
+          path: test-results/**/software-video-scroll-profile.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # ── was the `e2e-shortcuts-zoom` job ──
+      # The keyboard shortcut registry is the only source of truth for menu
+      # accelerators, the renderer keydown fallback and the Settings > Shortcuts
+      # remap flow, and unit tests can only prove the three agree on paper. These
+      # two specs drive the real main → preload → renderer round trip, so a
+      # regression in it cannot pass unit-only CI (previously they ran locally
+      # only — see #180).
+      - name: Run zoom + shortcuts E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e -- --output=test-results/e2e-shortcuts-zoom test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
+
+      # ── was the `e2e-address-bar-ens` job ──
+      # Name resolution reaches the user through two surfaces that only the real
+      # main → preload → renderer round trip exercises: the address bar (what a
+      # typed name or `ipfs://` URL resolves to, and what gets painted back into
+      # the bar) and the wallet's Send recipient field (which chain a name is
+      # resolved for, and which address the review screen commits to).
+      #
+      # `ensv2.spec.js` drives the wallet DNS/Unicode-recipient flow and asserts
+      # each lookup is requested for the selected chain; its second describe —
+      # the native-IPFS ENS checker — self-skips unless `ENSV2_UI_LIVE=1`, so
+      # this job stays offline and deterministic. `address-bar.spec.js` covers
+      # the scheme/gateway-form rewrites the name parser has to decline, plus the
+      # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
+      # curated list, so a regression in either shipped green — the #319 lesson.
+      # `ens-history-traversal.spec.js` joins them for the same reason: it drives
+      # the toolbar's Back/Forward through the real webview session history and
+      # asserts the trust badge re-verifies for the restored entry (#86), which no
+      # unit-level dispatch can exercise.
+      #
+      # `chrome-page-spoof.spec.js` pins what the bar may *not* show: a remote
+      # page serving an `/error.html` or `/ens-conflict.html` path must not get
+      # to pick the name and protocol icon (#235). `tez-unverified.spec.js` and
+      # `tez-head-conflict.spec.js` drive the Tezos Domains interstitials: the
+      # "Continue once" button has to load the resolved content, and a
+      # chain-head disagreement has to be a hard block. `ens-trust-popover.spec.js`
+      # (#68) drives the address-bar trust shield and its popover for all four
+      # trust levels: status sentence and row sequences, click-to-copy of the
+      # full value, one click from an open menu to the popover, and the shield
+      # giving way to the neutral globe on an internal page.
+      # `gateway-offer.spec.js` (#70) drives the "Open without gateway" pill for
+      # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
+      # opens the native address with path/query/fragment, and the opt-in
+      # "always" redirect leaves a gateway page reached by Back alone.
+      - name: Run address-bar + ENSv2 + name-interstitial E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: |
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-address-bar-ens \
+            test-e2e/address-bar.spec.js \
+            test-e2e/ensv2.spec.js \
+            test-e2e/ens-history-traversal.spec.js \
+            test-e2e/chrome-page-spoof.spec.js \
+            test-e2e/tez-unverified.spec.js \
+            test-e2e/tez-head-conflict.spec.js \
+            test-e2e/ens-trust-popover.spec.js \
+            test-e2e/gateway-offer.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-browser-traces
+          path: |
+            test-results/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -1306,12 +1286,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Native Agent qualification uses macOS's real workspace sandbox.
+  # Native Agent qualification uses macOS's real workspace sandbox. The
+  # macOS-only security suites (formerly the `agent-macos-jest` job) share this
+  # runner: they need the same built supervisor, and a macOS runner of their
+  # own cost one of the org's five concurrent macOS slots for a minute of jest.
   e2e-automation:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    permissions:
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1325,8 +1310,22 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
       - name: Build macOS workspace supervisor
+        id: supervisor
         run: npm run build:workspace-supervisor
+      # The Agent security regressions that only macOS can run (#778): the S1
+      # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
+      # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
+      # `process.platform === 'darwin'`, so every other runner skips them, and a
+      # skipped test is green. The checker runs the seatbelt, secure-files and
+      # native-supervisor suites with `--json` and fails unless every one of their
+      # tests passed, none skipped, with each macOS-only test passing by name; its
+      # header lists those tests and why. `scripts/ci/macos-security-tests.test.js`
+      # (in `test`, on Linux) keeps that list in step with the sources. Pure jest:
+      # no display, no Electron, no built supervisor.
+      - name: Run the macOS-only security suites, refusing any skip
+        run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
       - name: Run automation E2E
+        if: ${{ !cancelled() && steps.supervisor.outcome == 'success' }}
         run: |
           npm run test:e2e -- \
             test-e2e/automation-dialog.spec.js \
@@ -1353,67 +1352,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The Agent security regressions that only macOS can run (#778): the S1
-  # write-confined `sandbox-exec rm` cleanup, plain and under a process racing
-  # it with a link swap, and the S7 absent-`.git` deny. They gate themselves on
-  # `process.platform === 'darwin'`, so every other runner skips them, and a
-  # skipped test is green. The checker runs the seatbelt, secure-files and
-  # native-supervisor suites with `--json` and fails unless every one of their
-  # tests passed, none skipped, with each macOS-only test passing by name; its
-  # header lists those tests and why. `scripts/ci/macos-security-tests.test.js`
-  # (in `test`, on Linux) keeps that list in step with the sources. Pure jest:
-  # no display, no Electron, no built supervisor.
-  agent-macos-jest:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: macos-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-        with:
-          ignore-scripts: 'true'
-
-      # secure-files.test.js's "kernel identity ..." case resolves the real
-      # workspace supervisor through `resolveMacosSupervisor`, which reads
-      # `out/macos-supervisor/<arch>/`. `ignore-scripts` skips `prestart`, so
-      # build it here from the repository-owned source with the runner's
-      # Apple toolchain (no installer is launched).
-      - name: Build the macOS workspace supervisor
-        run: npm run build:workspace-supervisor
-
-      - name: Run the macOS-only security suites, refusing any skip
-        run: node scripts/ci/macos-security-tests.js --output "$RUNNER_TEMP/macos-security-tests.json"
-
-  # Browser chrome around the page that only a real window can exercise, and
-  # that `e2e-tabs` (already the longest e2e job) has no room for: the find
-  # bar against a real guest's find-in-page results (`find-in-page`), the tab
-  # audio indicator and its mute toggle (`tab-mute`), private windows on their
-  # own session and palette (`private-windows`, `private-tab-color`), the one
-  # focus ring every chrome text field draws (`chrome-input-focus`, #246),
-  # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
-  # and the download shelf, whose dismissed card must stay dismissed for the
-  # rest of the transfer (`downloads`, #309), and the application menu's
-  # History menu, which reads private-window state (`history-menu`, #584).
-  e2e-chrome:
+  # The same Agent and automation specs on Linux. `e2e-agent` and
+  # `e2e-automation` run them on macOS only, so until #815 they reached
+  # Linux solely through the nightly `e2e-full`, and 27 Linux-only failures
+  # (no keychain under Playwright's `--password-store=basic`, no Bubblewrap,
+  # owner helper or userns AppArmor profile, a superseded-load abort failing
+  # `browser_navigate`) merged green. The sandbox action gives the source
+  # tree what the .deb gives users; see its header.
+  e2e-agent-linux:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1435,138 +1385,72 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
+      - name: Prepare the Linux Agent workspace sandbox
+        uses: ./.github/actions/linux-agent-sandbox
+
+      # Same as release.yml's e2e-full: with real lists the first ad-block
+      # engine build holds a typed load, the shape automation-kernel's
+      # "preserve HTTPS" navigates over (#815). Without them PR CI never
+      # sees it.
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run agent and automation E2E on Linux
         run: |
           xvfb-run -a npm run test:e2e -- \
-            test-e2e/find-in-page.spec.js \
-            test-e2e/tab-mute.spec.js \
-            test-e2e/private-windows.spec.js \
-            test-e2e/page-providers-early.spec.js \
-            test-e2e/private-tab-color.spec.js \
-            test-e2e/chrome-input-focus.spec.js \
-            test-e2e/sidebar-subscreen-headers.spec.js \
-            test-e2e/downloads.spec.js \
+            test-e2e/ai-onboarding.spec.js \
+            test-e2e/agent-examples.spec.js \
+            test-e2e/agent-dictation.spec.js \
+            test-e2e/agent-cancellation.spec.js \
+            test-e2e/agent-evaluation.spec.js \
+            test-e2e/agent-product-qualification.spec.js \
+            test-e2e/agent-sidebar.spec.js \
+            test-e2e/agent-preview-isolation.spec.js \
+            test-e2e/agent-preview-dns-prefetch.spec.js \
             test-e2e/agent-review-layout.spec.js \
-            test-e2e/history-menu.spec.js
-
-      - name: Upload software rendering profile
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: agent-software-video-profile-${{ github.job }}
-          path: test-results/**/software-video-scroll-profile.json
-          if-no-files-found: ignore
-          retention-days: 14
+            test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
+            test-e2e/pdf-processor.spec.js \
+            test-e2e/workspace-viewers.spec.js \
+            test-e2e/automation-dialog.spec.js \
+            test-e2e/automation-frame-interaction.spec.js \
+            test-e2e/automation-frame-observation.spec.js \
+            test-e2e/automation-frame-prototype.spec.js \
+            test-e2e/automation-kernel.spec.js \
+            test-e2e/automation-native-dialog.spec.js \
+            test-e2e/automation-observation.spec.js \
+            test-e2e/automation-page-tools.spec.js \
+            test-e2e/automation-recovery.spec.js \
+            test-e2e/automation-runtime.spec.js \
+            test-e2e/automation-visual-interaction.spec.js \
+            test-e2e/automation-visual-prototype.spec.js \
+            test-e2e/freedom-cli.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-chrome-traces
+          name: e2e-agent-linux-traces
           path: |
             test-results/
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
 
-  # Onboarding wizard must create node identities while a real Swarm node (now
-  # antd) is running. Drives the full password wizard end-to-end against a real
-  # antd spawn across all three desktop platforms — the cross-platform proof
-  # that the bundled Ant node starts, goes healthy, and accepts an injected
-  # identity. (antd self-initializes its identity and reads the injected
-  # keys/swarm.key; it has no LevelDB statestore, but the wizard's
-  # stop→wipe→reinject→restart flow is still exercised.)
-  e2e-onboarding-identity:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Download Ant (antd) binary
-        # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
-        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
-        # ends itself with an unconditional process.exit(), the call that
-        # can hang forever on Node 24 (#544). hang-watchdog fails the step
-        # after 5 min with a process table and stack samples instead of a
-        # silent 20-minute job cancel; timeout-minutes is the backstop.
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Download IPFS native addon
-        run: npm run ipfs:download
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      # Upgrade-path proof on every desktop platform: antd must adopt a
-      # migrated bee-era identity (decrypt keys/swarm.key with the carried-over
-      # config password) instead of self-generating a throwaway wallet. The
-      # Windows leg matters most — EPERM-on-locked-handle is the historical
-      # failure class for these data-dir moves (issue #90).
-      - name: Run bee-data → ant-data migration integration test
-        run: npx jest --forceExit src/main/identity/__tests__/integration/bee-to-ant-migration.test.js
-
-      - name: Run onboarding identity E2E
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e:onboarding
-          else
-            npm run test:e2e:onboarding
-          fi
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-onboarding-identity-${{ matrix.os }}-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Issue #345 — quitting with the bundled native IPFS node running aborted the
-  # main process (SIGABRT, `Error::ThrowAsJavaScriptException napi_throw`) on
-  # most quits. Live, because FREEDOM_TEST_MODE stubs the node managers away:
-  # under `harness` or `packaged` no freedom-ipfs event dispatcher worker
-  # exists at all, so the quit path this guards is never taken and the bug
-  # would ship green. No network is needed — the spec starts the node, waits
-  # for it to report running, and quits — so this job only downloads the addon.
-  e2e-ipfs-quit:
+  # Grouped job; see the note above `native-addons`.
+  #
+  # The live-network suites, together so a network flake costs Auto-retry this
+  # one job. The ones that download a node binary run after the ones that
+  # don't, so no suite launches the app with a node it did not ask for.
+  e2e-live:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -1585,12 +1469,56 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
+        id: deps
         uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
+      # ── was the `e2e-adblock` job ──
+      # Ad blocking through the real webRequest pipeline and the webview preload:
+      # network blocking + element hiding (adblock.spec.js, which no job ran
+      # before), and filter-list scriptlets pruning YouTube-shaped player data at
+      # document start in a page and its cross-origin iframe (#410). Local fixture
+      # servers only; the scriptlet spec downloads the sha256-pinned resources
+      # file itself when `npm run adblock:download` hasn't run.
+      - name: Run ad blocking E2E (headless)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: >-
+          xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-adblock
+          test-e2e/live/adblock.spec.js test-e2e/live/adblock-scriptlets.spec.js
+
+      # ── was the `e2e-chrome-webstore` job ──
+      # Issue #346 — a Chrome Web Store page killed the browser process on Electron
+      # 44.3.0: Chromium 152 exposes `chrome.webstorePrivate` to ordinary web pages
+      # on the store origin, and Electron has no delegate behind it. Live, because
+      # the exposure is keyed on the real origin — no fixture page can stand in for
+      # it. Unlike e2e-ant this needs no bundled node, so there is nothing to
+      # download first and the spec seeds node autostart off.
+      # electron 44 ships no postinstall script: `node_modules/electron/index.js`
+      # downloads the binary on the first `require('electron')`, which is what
+      # Playwright does when it launches the app. Pull it here so a cold
+      # download cannot eat into the fixture's 60s launch budget — and so this
+      # step, not a test failure, is what reports a broken download.
+      - name: Warm the Electron binary download
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: node -e "require('electron')"
+
+      - name: Run Chrome Web Store live E2E (headless)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-chrome-webstore test-e2e/live/chrome-webstore.spec.js
+
+      # ── was the `e2e-ipfs-quit` job ──
+      # Issue #345 — quitting with the bundled native IPFS node running aborted the
+      # main process (SIGABRT, `Error::ThrowAsJavaScriptException napi_throw`) on
+      # most quits. Live, because FREEDOM_TEST_MODE stubs the node managers away:
+      # under `harness` or `packaged` no freedom-ipfs event dispatcher worker
+      # exists at all, so the quit path this guards is never taken and the bug
+      # would ship green. No network is needed — the spec starts the node, waits
+      # for it to report running, and quits — so this job only downloads the addon.
       - name: Download freedom-ipfs native addon
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         # Version pinned in scripts/fetch-freedom-ipfs-native.js so CI tests
         # exactly what releases ship.
         run: npm run ipfs:download
@@ -1598,54 +1526,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run the IPFS clean-quit E2E (headless)
-        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-ipfs-quit test-e2e/live/ipfs-quit.spec.js
 
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-ipfs-quit-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Standalone Ant live E2E: prove the bundled antd node starts, connects to the
-  # Swarm network (peer count climbs), and serves real content the browser
-  # requests — `meinhard.eth` is a Swarm-hosted (bzz://) site. This is the
-  # headless, real-network validation that Ant is a working bee drop-in for
-  # downloads. Linux-only to keep CI cheap; the cross-platform spawn proof lives
-  # in e2e-onboarding-identity above.
-  e2e-ant:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
+      # ── was the `e2e-ant` job ──
+      # Standalone Ant live E2E: prove the bundled antd node starts, connects to the
+      # Swarm network (peer count climbs), and serves real content the browser
+      # requests — `meinhard.eth` is a Swarm-hosted (bzz://) site. This is the
+      # headless, real-network validation that Ant is a working bee drop-in for
+      # downloads. Linux-only to keep CI cheap; the cross-platform spawn proof lives
+      # in e2e-desktop's onboarding-identity section above.
       - name: Download Ant (antd) binary
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
         # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
         # ends itself with an unconditional process.exit(), the call that
@@ -1659,310 +1551,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download IPFS binary
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run ipfs:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run Ant live download E2E (headless)
-        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/eth-sites.spec.js
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-ant test-e2e/live/eth-sites.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-ant-traces
+          name: e2e-live-traces
           path: |
             test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Ad blocking through the real webRequest pipeline and the webview preload:
-  # network blocking + element hiding (adblock.spec.js, which no job ran
-  # before), and filter-list scriptlets pruning YouTube-shaped player data at
-  # document start in a page and its cross-origin iframe (#410). Local fixture
-  # servers only; the scriptlet spec downloads the sha256-pinned resources
-  # file itself when `npm run adblock:download` hasn't run.
-  e2e-adblock:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run ad blocking E2E (headless)
-        run: >-
-          xvfb-run -a npm run test:e2e:live --
-          test-e2e/live/adblock.spec.js test-e2e/live/adblock-scriptlets.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-adblock-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Issue #346 — a Chrome Web Store page killed the browser process on Electron
-  # 44.3.0: Chromium 152 exposes `chrome.webstorePrivate` to ordinary web pages
-  # on the store origin, and Electron has no delegate behind it. Live, because
-  # the exposure is keyed on the real origin — no fixture page can stand in for
-  # it. Unlike e2e-ant this needs no bundled node, so there is nothing to
-  # download first and the spec seeds node autostart off.
-  e2e-chrome-webstore:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      # electron 44 ships no postinstall script: `node_modules/electron/index.js`
-      # downloads the binary on the first `require('electron')`, which is what
-      # Playwright does when it launches the app. Pull it here so a cold
-      # download cannot eat into the fixture's 60s launch budget — and so this
-      # step, not a test failure, is what reports a broken download.
-      - name: Warm the Electron binary download
-        run: node -e "require('electron')"
-
-      - name: Run Chrome Web Store live E2E (headless)
-        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/chrome-webstore.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-chrome-webstore-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
-  e2e-address-bar-clipboard:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run address-bar clipboard E2E
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- test-e2e/address-bar-clipboard.spec.js
-          else
-            npm run test:e2e -- test-e2e/address-bar-clipboard.spec.js
-          fi
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-address-bar-clipboard-${{ matrix.os }}-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Issue #97 — Cmd/Ctrl+W must close the active tab, not the window. The
-  # accelerator is resolved by the platform's own menu layer, so the ownership
-  # half runs on all three (that is where macOS and Windows/Linux differed);
-  # the real-keypress half needs X11 key injection and runs on Linux only,
-  # which is where the bug shipped.
-  #
-  # Issue #556 rides along: Next/Previous Tab must switch on every press from
-  # a focused page. Same shape — a main-process-delivered press on all three
-  # platforms (the leg that runs on macOS, where #556 was reported), real X11
-  # presses via xdotool on Linux.
-  e2e-close-tab-shortcut:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-playwright-deps
-
-      # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
-      # through CDP into the renderer and never reaches a menu accelerator.
-      # setxkbmap (x11-xkb-utils) switches the xvfb display to the French and
-      # Czech layouts for the select-tab layout presses (#717).
-      # Through the shared apt wrapper, like every other apt call on Linux CI.
-      - name: Install xdotool
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool x11-xkb-utils
-
-      - name: Run close-tab and tab-switch shortcut E2E
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
-          else
-            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
-          fi
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-close-tab-shortcut-${{ matrix.os }}-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Profile lifecycle (create / use / manage / delete) across all desktop
-  # platforms. Runs the in-process harness in catalog mode (no real nodes, no
-  # second-process spawn — see test-e2e/profiles-fixtures.js).
-  e2e-profiles:
-    needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run profile lifecycle E2E
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- test-e2e/profiles.spec.js
-          else
-            npm run test:e2e -- test-e2e/profiles.spec.js
-          fi
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-profiles-${{ matrix.os }}-traces
-          path: |
-            test-results/
-            playwright-report/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -2021,65 +1625,15 @@ jobs:
             echo "renderer=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Both themes, every surface the tour reaches: the declared theme plus WCAG
-  # contrast on headings, body copy, buttons and inputs. This is the check that
-  # fails on a reintroduced #224 (dark resolver rows under the light theme) or
-  # #249 (white-on-white permission origin).
-  e2e-theme-parity:
-    needs: renderer-changed
-    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Linux native USB build dependency
-        uses: ./.github/actions/install-linux-native-deps
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-node-deps
-
-      - name: Install Playwright system dependencies
-        uses: ./.github/actions/install-playwright-deps
-
-      - name: Run theme parity E2E
-        run: xvfb-run -a npm run test:e2e -- test-e2e/theme-parity.spec.js
-
-      - name: Upload Playwright traces and screenshots
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-theme-parity-traces
-          path: |
-            test-results/
-            playwright-report/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # Committed pixel baselines for the tour's surfaces, both themes. Ubuntu only:
-  # font rasterisation differs enough between platforms that a macOS or Windows
-  # leg would disagree with every baseline (the spec skips itself off Linux).
+  # Grouped job; see the note above `native-addons`.
   #
-  # When this fails, download the `renderer-screenshots-diff` artifact — it
-  # carries `<name>-actual.png` and `<name>-diff.png` per surface — and either
-  # fix the regression or adopt the new pixels with
-  # `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
-  # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
-  e2e-renderer-screenshots:
+  # Theme parity and the renderer screenshot comparison, both gated on a
+  # renderer change.
+  e2e-renderer:
     needs: renderer-changed
     if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -2094,22 +1648,38 @@ jobs:
           cache: npm
 
       - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
+        id: deps
         uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
+      # ── was the `e2e-renderer-screenshots` job ──
+      # First, and into the default `test-results/`: renderer-screenshots-gate.test.js
+      # pins this exact command. The theme-parity run after it writes only to its
+      # own `test-results/e2e-theme-parity/`, so it cannot wipe these results.
+      # Committed pixel baselines for the tour's surfaces, both themes. Ubuntu only:
+      # font rasterisation differs enough between platforms that a macOS or Windows
+      # leg would disagree with every baseline (the spec skips itself off Linux).
+      #
+      # When this fails, download the `renderer-screenshots-diff` artifact — it
+      # carries `<name>-actual.png` and `<name>-diff.png` per surface — and either
+      # fix the regression or adopt the new pixels with
+      # `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
+      # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
       - name: Compare renderer screenshots
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_CAPTURE_RENDERER_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.renderer_baselines && '1' || '0' }}
         run: xvfb-run -a npm run test:e2e:screenshots
 
       # Capture never replaces comparison or writes the committed references.
       # Candidates require inspection and a later commit to adopt.
-
       - name: Upload Linux baseline candidates
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.renderer_baselines }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -2130,6 +1700,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # ── was the `e2e-theme-parity` job ──
+      # Both themes, every surface the tour reaches: the declared theme plus WCAG
+      # contrast on headings, body copy, buttons and inputs. This is the check that
+      # fails on a reintroduced #224 (dark resolver rows under the light theme) or
+      # #249 (white-on-white permission origin).
+      - name: Run theme parity E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: xvfb-run -a npm run test:e2e -- --output=test-results/e2e-theme-parity test-e2e/theme-parity.spec.js
+
+      - name: Upload theme parity traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-theme-parity-traces
+          path: test-results/e2e-theme-parity/
+          if-no-files-found: ignore
+          retention-days: 14
   # Static analysis of the workflows and composite actions themselves (#633,
   # #637): an unpinned `uses:`, a checkout that persists the git token,
   # a cache restored into a release build, template injection and the rest of
@@ -2173,35 +1760,18 @@ jobs:
     if: always()
     needs:
       [
-        agent-macos-jest,
         code-changed,
         e2e-agent,
+        e2e-agent-linux,
         e2e-automation,
-        e2e-adblock,
-        e2e-address-bar-clipboard,
-        e2e-address-bar-ens,
-        e2e-ant,
-        e2e-chrome,
-        e2e-chrome-webstore,
-        e2e-close-tab-shortcut,
-        e2e-ipfs-quit,
-        e2e-onboarding-identity,
-        e2e-profiles,
-        e2e-preview-network,
-        e2e-renderer-screenshots,
-        e2e-safe,
-        e2e-settings,
-        e2e-shortcuts-zoom,
-        e2e-tabs,
-        e2e-theme-parity,
-        e2e-wallet,
-        freedom-ipfs-native-addon,
-        ipfs-gateway-proxy,
-        migration-cross-platform,
-        myotis-addon-load,
+        e2e-browser,
+        e2e-desktop,
+        e2e-live,
+        e2e-renderer,
+        e2e-settings-wallet,
         myotis-native-e2e,
+        native-addons,
         packed-asar-contents,
-        radicle-addon-load,
         renderer-changed,
         test,
         zizmor,
