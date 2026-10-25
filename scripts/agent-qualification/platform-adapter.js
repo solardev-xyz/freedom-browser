@@ -27,7 +27,8 @@ function linuxAdapter() {
     terminationScope: 'pid_namespace',
     survivorsPossible: false,
     completeDescendantTermination: true,
-    fullNetworkIncludesHostAbstractUnixSockets: true,
+    // The Bubblewrap seccomp filter refuses socket(AF_UNIX) in every posture (#817).
+    fullNetworkIncludesHostAbstractUnixSockets: false,
     listener(port) {
       return commandOutput('ss', ['-H', '-ltnp', `sport = :${port}`]) || '';
     },

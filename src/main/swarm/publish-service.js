@@ -84,7 +84,8 @@ function normalizeTag(tag) {
 
   return {
     tagUid: tag.uid,
-    ...(/^[a-f0-9]{64}$/i.test(tag.address || '') && { reference: tag.address.toLowerCase() }),
+    // 128 hex is an encrypted reference (a private draft link).
+    ...(/^[a-f0-9]{64}(?:[a-f0-9]{64})?$/i.test(tag.address || '') && { reference: tag.address.toLowerCase() }),
     split,
     seen,
     stored,
@@ -95,6 +96,13 @@ function normalizeTag(tag) {
     // need no new receipt; newly sent chunks must be synced.
     done: split > 0 && synced + seen >= split,
   };
+}
+
+// `encrypt: true` sends `Swarm-Encrypt: true`: the node encrypts every chunk
+// and returns a 128-hex reference that carries the decryption key. Used only
+// for the Agent's private draft links; it is never set implicitly.
+function encryptOption(options) {
+  return options.encrypt === true ? { encrypt: true } : {};
 }
 
 /**
@@ -115,6 +123,7 @@ async function publishData(data, options = {}) {
     deferred: false,
     contentType: options.contentType || 'text/plain',
     ...options.uploadOptions,
+    ...encryptOption(options),
   });
 
   return normalizeUploadResult(result, batchId, sizeEstimate);
@@ -209,6 +218,7 @@ async function publishCollection(files, options = {}) {
     deferred: true,
     indexDocument,
     ...options.uploadOptions,
+    ...encryptOption(options),
   });
 
   return normalizeUploadResult(result, batchId, totalSize);

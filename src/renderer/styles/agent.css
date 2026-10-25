@@ -2715,6 +2715,29 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   border-radius: 8px;
 }
 
+/* F: older versions stay retrievable. Information, not a hazard. */
+.agent-approval .agent-publication-stable-notice {
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+}
+
+/* G: the selected postage batch is close to expiry. */
+.agent-approval .agent-publication-postage-warning {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 3px solid var(--warning-fg);
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+  border-radius: 8px;
+}
+
+.agent-approval .agent-publication-postage-warning[data-level='critical'] {
+  font-weight: 560;
+  border-left-color: var(--agent-danger);
+  background: color-mix(in srgb, var(--agent-danger) 10%, transparent);
+}
+
 .agent-publication-findings {
   display: grid;
   gap: 8px;

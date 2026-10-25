@@ -91,47 +91,52 @@ const CATEGORIES = {
 // tree). Ghostery doesn't label its build with a uBlock revision, so the
 // revision was identified by content and is re-checkable by anyone:
 //   - the file last changed in ghostery/adblocker at `ghostery.commit`
-//     (2026-08-04 12:06 UTC), written by `ghostery.buildScript`, which copies
+//     (2026-08-14 12:47 UTC), written by `ghostery.buildScript`, which copies
 //     Ghostery's CDN build of uBlock's resources verbatim;
-//   - its 148 scriptlet names equal exactly the set uBlock's
-//     src/js/resources/ declares from be3bb05f (07-20) to 505fbc7a (08-06),
-//     and `prevent-clipboard-write` already takes `excludeMatches` as a vararg
-//     (0e1001f5, 08-02) while every scriptlet still calls `getExtraArgs`
-//     (renamed in 505fbc7a) — no other commit touches that directory in
-//     between, so the source tree is 0e1001f5's;
-//   - uBlock tag 1.72.3rc4 is that tree (released 08-02, the last tag before
-//     Ghostery's build), and 1.73.0 stable ships byte-identical
-//     src/js/resources/, src/js/redirect-resources.js and
-//     src/web_accessible_resources/ (same git tree hashes).
+//   - its 149 scriptlet names equal exactly the set uBlock's
+//     src/js/resources/ declares from 0fdbfdb2 (08-07, adds `json-edit.fn`)
+//     to 57ade5f4 (08-21); no body calls `getExtraArgs` any more (renamed in
+//     505fbc7a, 08-06), `prevent-clipboard-write` already returns true when
+//     it prevents a write (c25d4daf, 08-10) and `trusted-replace-outbound-text`
+//     logs its rest parameter (87fe86fd, 08-11), but the
+//     `prevent-clipboard-write` alert still has the old styling that 8a85e049
+//     (08-13) replaced (`padding:1em`, no `font-size:32px`). History is
+//     linear and no other commit touches that directory in between, so the
+//     source tree is 87fe86fd's;
+//   - uBlock tag 1.73.1b1 (a dev build, 08-11) is that tree and the only tag
+//     that is: 1.73.1b2-b4 (08-13, the last tags before Ghostery's build)
+//     already carry 8a85e049. No stable release ships byte-identical
+//     src/js/resources/ (1.73.0 predates 0fdbfdb2, 1.74.0 has later changes),
+//     so the pin is the tag's commit only; src/js/redirect-resources.js and
+//     src/web_accessible_resources/ are identical to 1.73.0 (same git tree
+//     hashes), and its 63 redirects are unchanged from the v2.18.2 file.
 // The `MIME_TYPE_STUB.*` redirects are Ghostery's additions, not uBlock's.
 // Re-derive all of this when bumping the tag; the test only guards the tag.
 const RESOURCES = {
   file: 'resources.json',
   title: 'uBlock Origin scriptlets and redirect resources (via @ghostery/adblocker)',
-  tag: 'v2.18.2',
+  tag: 'v2.20.1',
   sourceUrl:
-    'https://raw.githubusercontent.com/ghostery/adblocker/v2.18.2/packages/adblocker/assets/ublock-origin/resources.json',
-  sha256: 'e14b498f693c4166d27971f7fdfe49b167c139a8e659cc59bedc9ab29a2348f5',
+    'https://raw.githubusercontent.com/ghostery/adblocker/v2.20.1/packages/adblocker/assets/ublock-origin/resources.json',
+  sha256: '5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690',
   license: 'GPL-3.0-only',
   upstream: {
     ublockOrigin: {
       repo: 'gorhill/uBlock',
-      tag: '1.72.3rc4',
-      commit: 'de31aee0fcd69dc89cde558f1a0638c1aa77b75e',
+      tag: '1.73.1b1',
+      commit: '6788ed72af9bf2670bcdc1c3da3925d8b4f36443',
       sourceUrl:
-        'https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources',
-      sameSourceAsRelease: '1.73.0',
-      sameSourceAsReleaseUrl: 'https://github.com/gorhill/uBlock/tree/1.73.0/src/js/resources',
+        'https://github.com/gorhill/uBlock/tree/6788ed72af9bf2670bcdc1c3da3925d8b4f36443/src/js/resources',
     },
     ghostery: {
       repo: 'ghostery/adblocker',
-      tag: 'v2.18.2',
-      tagCommit: 'c4c20aa63e3a72113f66777cf35a3f58877a36ee',
-      commit: 'e08ecf7fe10f929d5053234017d72d65001640a6',
+      tag: 'v2.20.1',
+      tagCommit: 'c18718adc33e82a086d996d0b0f75deb3d01745a',
+      commit: '7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec',
       commitUrl:
-        'https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6',
+        'https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec',
       buildScript:
-        'https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js',
+        'https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/update.js',
     },
   },
 };

@@ -41,8 +41,10 @@ provider failure, or approval. They never log model explanations or project byte
   consumes the existing non-serializable permit only for the exact command and
   canonical project-relative directory. A different command cannot use it.
 - The sandbox and its filesystem protections stay in force. Direct network access
-  remains the existing indivisible public/localhost/private-LAN bundle, with
-  Linux abstract Unix sockets explicitly included in the review.
+  remains the existing indivisible public/localhost/private-LAN bundle. It no
+  longer reaches Linux host abstract Unix sockets: Linux commands cannot open
+  Unix sockets at all ([#817](https://github.com/solardev-xyz/freedom-browser/issues/817)),
+  and the review still names whichever posture the backend reports.
 - Request mutation, Stop, pause, completion, or new user steering invalidate an
   in-flight decision. Steering also clears unused one-shot permits. It does not
   retroactively stop a command already running; Stop remains available.

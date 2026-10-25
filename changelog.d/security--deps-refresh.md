@@ -1,0 +1,7 @@
+- Updated runtime dependencies:
+  - Electron 44.7.0 to 45.0.0 (Chromium 152.0.7977.130 to 156.0.8078.48, Node 24.21.0 to 24.22.0)
+  - `@ethersphere/bee-js` 13.1.0 to 13.2.0
+  - `@ghostery/adblocker` 2.18.2 to 2.20.1
+  - `@ledgerhq/hw-app-eth` 7.10.0 to 7.11.1
+  - `@safe-global/protocol-kit` 8.0.7 to 8.0.10
+  - `electron-updater` 6.8.9 to 6.8.11

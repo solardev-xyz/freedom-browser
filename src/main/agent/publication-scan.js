@@ -23,7 +23,7 @@ const MAX_WARNINGS_PER_FILE = 25;
 const BIP39_WORDS = new Set(BIP39_ENGLISH);
 const MIN_SEED_WORDS = 12;
 
-const FINDING_KINDS = Object.freeze(['secret', 'personal', 'metadata', 'scope']);
+const FINDING_KINDS = Object.freeze(['secret', 'personal', 'metadata', 'scope', 'third-party']);
 
 const PLACEHOLDER =
   /your[_ -]|example|placeholder|changeme|change[_-]me|dummy|sample|redacted|insert|replace[_-]?me|<|>|\.\.\.|…|\{\{|\$\{|process\.env/i;
@@ -516,9 +516,103 @@ function scanText(filePath, text, { secretsOnly = false } = {}) {
   return findings.sort((left, right) => (left.line || 0) - (right.line || 0));
 }
 
-function scanBytes(filePath, bytes) {
+// --- Generated-code hygiene (warnings only; content is never rewritten) ---
+//
+// A site published to Swarm is served from bzz://, so anything it loads from
+// an http(s) origin is a third party: the page breaks when that host goes
+// away, and the host learns who opens it. A form that posts elsewhere sends
+// what visitors type to that host. These are warnings for the card; the
+// user or Agent decides whether to bundle the asset or keep it.
+
+const MARKUP_FILE = /\.(?:html?|xhtml|svg)$/i;
+const SCRIPT_FILE = /\.(?:m?js|cjs)$/i;
+const HYGIENE_TAG = /<(script|link|img|form)(?=[\s/>])/gi;
+const HYGIENE_FETCH = /\bfetch[ \t]{0,16}\([ \t\r\n]{0,16}(["'`])/g;
+const HYGIENE_ATTRIBUTE = /(?:^|\s)(src|href|action)[ \t\r\n]{0,16}=[ \t\r\n]{0,16}(?:"([^"]{0,2048})"|'([^']{0,2048})'|([^\s"'>]{1,2048}))/gi;
+const LINK_NOT_LOADED = /(?:^|\s)rel[ \t\r\n]{0,16}=[ \t\r\n]{0,16}["']?(?:canonical|alternate|author|me|license|help|next|prev|bookmark|external|nofollow|noopener|noreferrer)["'\s>]/i;
+const MAX_TAG_CHARS = 4096;
+const MAX_URL_CHARS = 2048;
+const HYGIENE_RULES = Object.freeze({
+  script: { rule: 'third-party-script', label: 'Script from a third-party site', attribute: 'src' },
+  link: { rule: 'third-party-link', label: 'Stylesheet or resource from a third-party site', attribute: 'href' },
+  img: { rule: 'third-party-image', label: 'Image from a third-party site', attribute: 'src' },
+  form: { rule: 'external-form', label: 'Form sends its data to another site', attribute: 'action' },
+  fetch: { rule: 'third-party-fetch', label: 'Request to a third-party site (fetch)' },
+});
+
+// The origin of an absolute http(s) or protocol-relative URL; null for a
+// relative, bzz://, data: or other in-site reference.
+function thirdPartyOrigin(value) {
+  const url = String(value).trim();
+  if (!/^(?:https?:)?\/\//i.test(url)) return null;
+  try {
+    const parsed = new URL(url, 'https://same-site.invalid/');
+    return parsed.hostname && parsed.hostname !== 'same-site.invalid' ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function hygieneFindings(filePath, text, { markup, script }) {
+  const findings = [];
+  const seen = new Set();
+  const lineNumber = lineCounter(text);
+  const add = (kind, origin, index) => {
+    const spec = HYGIENE_RULES[kind];
+    const key = `${spec.rule}:${origin}`;
+    // One finding per rule and origin in a file: ten images from one CDN are
+    // one decision, not ten.
+    if (seen.has(key) || findings.length >= MAX_WARNINGS_PER_FILE) return;
+    seen.add(key);
+    // The excerpt is the origin only: a URL's path or query can carry a key.
+    findings.push({ path: filePath, kind: 'third-party', rule: spec.rule, label: spec.label,
+      line: lineNumber(index), excerpt: origin, blocking: false });
+  };
+  if (markup) {
+    // Each tag is read up to its '>' or the next '<', whichever comes first,
+    // with both positions carried forward, so the walk stays linear.
+    let nextClose = -1;
+    let nextOpen = -1;
+    for (const match of text.matchAll(HYGIENE_TAG)) {
+      const start = match.index + match[0].length;
+      if (nextClose < start) { nextClose = text.indexOf('>', start); if (nextClose === -1) nextClose = text.length; }
+      if (nextOpen < start) { nextOpen = text.indexOf('<', start); if (nextOpen === -1) nextOpen = text.length; }
+      const tag = text.slice(start, Math.min(nextClose, nextOpen, start + MAX_TAG_CHARS));
+      const kind = match[1].toLowerCase();
+      // rel=canonical/alternate/… only names another page; nothing is loaded.
+      if (kind === 'link' && LINK_NOT_LOADED.test(tag)) continue;
+      for (const attribute of tag.matchAll(HYGIENE_ATTRIBUTE)) {
+        if (attribute[1].toLowerCase() !== HYGIENE_RULES[kind].attribute) continue;
+        const origin = thirdPartyOrigin(attribute[2] ?? attribute[3] ?? attribute[4]);
+        if (origin) add(kind, origin, match.index);
+        break;
+      }
+    }
+  }
+  if (markup || script) {
+    for (const match of text.matchAll(HYGIENE_FETCH)) {
+      const start = match.index + match[0].length;
+      const end = text.indexOf(match[1], start);
+      if (end === -1 || end - start > MAX_URL_CHARS) continue;
+      const origin = thirdPartyOrigin(text.slice(start, end));
+      if (origin) add('fetch', origin, match.index);
+    }
+  }
+  return findings;
+}
+
+function scanBytes(filePath, bytes, { contentType } = {}) {
   const decoded = textOf(bytes);
-  return decoded ? scanText(filePath, decoded.text, { secretsOnly: decoded.binary }) : [];
+  if (!decoded) return [];
+  const findings = scanText(filePath, decoded.text, { secretsOnly: decoded.binary });
+  const markup = MARKUP_FILE.test(filePath) || /^\s*text\/html\b/i.test(contentType || '');
+  const script = SCRIPT_FILE.test(filePath) || /^\s*(?:text|application)\/javascript\b/i.test(contentType || '');
+  if (!decoded.binary && (markup || script)) {
+    try {
+      findings.push(...hygieneFindings(filePath, decoded.text, { markup, script }));
+    } catch { /* A warning pass that fails never blocks or hides the secret scan. */ }
+  }
+  return findings;
 }
 
 // --- Metadata stripping (lossless: container metadata only, pixels untouched) ---
@@ -790,10 +884,10 @@ function preparePublication(source) {
     const result = sanitizeFile(filePath, source.data, { removable: false });
     if (result.stripped) stripped.push({ path: filePath, reason: result.stripped });
     if (result.finding) findings.push(result.finding);
-    findings.push(...scanBytes(filePath, result.bytes));
+    findings.push(...scanBytes(filePath, result.bytes, { contentType: source.contentType }));
     prepared = Object.freeze({ ...source, data: result.bytes, bytes: result.bytes.byteLength });
   } else {
-    findings.push(...scanText('Text', String(source.text ?? '')));
+    findings.push(...scanBytes('Text', String(source.text ?? ''), { contentType: source.contentType }));
     prepared = source;
   }
   return Object.freeze({
@@ -816,6 +910,7 @@ function publicationScanSummary(scan, findings = scan.findings) {
 
 module.exports = {
   FINDING_KINDS,
+  HYGIENE_RULES,
   MAX_FINDINGS,
   MIN_SEED_WORDS,
   RULES,
@@ -825,6 +920,7 @@ module.exports = {
   publicationScanSummary,
   redact,
   scanText,
+  hygieneFindings,
   stripImageMetadata,
   stripSourceMapComments,
 };

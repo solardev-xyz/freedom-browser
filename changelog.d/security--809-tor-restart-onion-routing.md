@@ -1,0 +1,2 @@
+- `.onion` addresses no longer fall back to your normal DNS after Tor crashes and restarts ([#809](https://github.com/solardev-xyz/freedom-browser/issues/809))
+  - Tor could show as running while `.onion` lookups went to the system resolver

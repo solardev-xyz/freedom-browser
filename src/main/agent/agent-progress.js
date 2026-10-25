@@ -530,12 +530,27 @@ function normalizePublicationReceipt(value) {
     !applicationStates.has(value.applicationState) ||
     !kind ||
     !name ||
-    value.public !== true
+    // A private draft link is encrypted and not public; older receipts have no target.
+    value.public !== (value.target !== 'draft') ||
+    (value.target === 'draft' && value.encrypted !== true)
   ) {
     return null;
   }
+  const draft = value.target === 'draft';
   const reference = boundedString(value.reference, 128).toLowerCase();
-  const validReference = /^[a-f0-9]{64}$/.test(reference);
+  const validReference = (draft ? /^[a-f0-9]{128}$/ : /^[a-f0-9]{64}$/).test(reference);
+  const stable = value.stableAddress && typeof value.stableAddress === 'object' && !draft &&
+    /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value.stableAddress.name) && /^0x[a-f0-9]{40}$/.test(value.stableAddress.owner)
+    ? value.stableAddress : null;
+  const stableReference = stable && /^[a-f0-9]{64}$/.test(stable.reference) && stable.bzzUrl === `bzz://${stable.reference}` ? stable.reference : '';
+  const stableAddress = stable ? Object.freeze({
+    name: stable.name,
+    owner: stable.owner,
+    ...(stableReference && { reference: stableReference, bzzUrl: `bzz://${stableReference}` }),
+    ...(Number.isSafeInteger(stable.index) && stable.index >= 0 && { index: stable.index }),
+    ...(typeof stable.updated === 'boolean' && { updated: stable.updated }),
+    ...(boundedString(stable.error, 500) && { error: boundedString(stable.error, 500) }),
+  }) : null;
   const bzzUrl = validReference && value.bzzUrl === `bzz://${reference}` ? value.bzzUrl : '';
   const progress =
     Number.isSafeInteger(value.progress) && value.progress >= 0 && value.progress <= 100
@@ -551,7 +566,10 @@ function normalizePublicationReceipt(value) {
     applicationState: value.applicationState,
     kind,
     name,
-    public: true,
+    target: draft ? 'draft' : 'public',
+    public: !draft,
+    ...(draft && { encrypted: true }),
+    ...(stableAddress && { stableAddress }),
     ...(bytes !== null && { bytes }),
     ...(progress !== null && { progress }),
     ...(indexDocument && { indexDocument }),
@@ -727,6 +745,18 @@ function checkpointProgress(workspace) {
 
 function publicationSubject(publication) {
   return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
+}
+
+function publicationVerb(publication) {
+  return publication?.target === 'draft' ? 'created an encrypted private draft link for' : 'published';
+}
+
+function stableAddressNote(publication) {
+  const stable = publication?.stableAddress;
+  if (!stable) return '';
+  return stable.updated === true && stable.bzzUrl
+    ? ` Its stable address ${stable.bzzUrl} now points to this version.`
+    : ' The stable address was not updated.';
 }
 
 function publicationObject(publication) {
@@ -1450,10 +1480,12 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
             ? 'swarm_publication_verified'
             : 'swarm_publication_completed',
           tone: publication.verified ? 'success' : 'caution',
-          headline: publication.verified ? 'Published and verified on Swarm' : 'Published to Swarm',
+          headline: publication.target === 'draft'
+            ? publication.verified ? 'Private draft link ready and verified' : 'Private draft link ready'
+            : publication.verified ? 'Published and verified on Swarm' : 'Published to Swarm',
           detail: publication.verified
-            ? `Freedom published ${publicationObject(publication)} and verified retrieval at ${publication.bzzUrl}.`
-            : `Freedom published ${publicationObject(publication)} at ${publication.bzzUrl}, but retrieval was not verified yet.`,
+            ? `Freedom ${publicationVerb(publication)} ${publicationObject(publication)} and verified retrieval at ${publication.bzzUrl}.${stableAddressNote(publication)}`
+            : `Freedom ${publicationVerb(publication)} ${publicationObject(publication)} at ${publication.bzzUrl}, but retrieval was not verified yet.${stableAddressNote(publication)}`,
           publication,
           destinations,
           counts,

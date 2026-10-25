@@ -1289,6 +1289,15 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'without replacing unrelated settings'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On Linux, sandboxed commands cannot create Unix sockets: socket(AF_UNIX) fails with EACCES'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      "multiprocessing.set_start_method('fork')"
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      '32-bit executables (i386 or x32 on x64, AArch32 on arm64) are killed with SIGSYS'
+    );
 
     fake.prompt.resolve();
     await service.waitForIdle();
@@ -2583,6 +2592,52 @@ describe('FreedomAgentService', () => {
     expect(invalidApproval.publication).not.toHaveProperty('workspacePath');
     await service.decideApproval('run_test', invalidApproval.approvalId, false);
     await expect(invalidDecision).resolves.toBe('declined');
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects draft, stable-address and postage details, and refuses an inconsistent publication request (#741 E, F, G, H)', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const postage = { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true,
+      estimatedCostPlur: '12000', estimatedChunks: 3, extra: 'dropped' };
+    const draft = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, postage,
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 3, excerpt: 'https://unpkg.com', blocking: false }] } });
+    let approval = events.at(-1);
+    expect(approval.publication).toEqual({ kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true,
+      postage: { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true, estimatedCostPlur: '12000', estimatedChunks: 3 },
+      findings: [expect.objectContaining({ kind: 'third-party', rule: 'third-party-script', excerpt: 'https://unpkg.com', blocking: false })] });
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(draft).resolves.toBe('approved');
+
+    const stable = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'public', public: true, postage: { status: 'none' },
+        stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` } } });
+    approval = events.at(-1);
+    // A card with no existence answer says it may be live, never "new".
+    expect(approval.publication).toMatchObject({ target: 'public', public: true, postage: { status: 'none' },
+      stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, existing: 'unknown', currentBzzUrl: `bzz://${'f'.repeat(64)}` } });
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await expect(stable).resolves.toBe('declined');
+
+    // Inconsistent kinds never reach the card: a draft that claims to be
+    // public or unencrypted, a draft with a stable address, a non-public
+    // publication that is not a draft.
+    for (const publication of [
+      { kind: 'folder', name: 'dist', target: 'draft', public: true, encrypted: true },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, stableAddress: { name: 'x', owner: `0x${'1'.repeat(40)}` } },
+      { kind: 'folder', name: 'dist', public: false },
+    ]) {
+      await expect(requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication }))
+        .rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    }
 
     await service.stop('run_test');
     await service.waitForIdle();

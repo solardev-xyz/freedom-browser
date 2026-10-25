@@ -985,6 +985,26 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
     );
   });
 
+  test('a page with no committed identity cannot connect or switch chains', async () => {
+    const { addWebview, commitMainFrameOf, sendRequestFrom, walletUi, dappPermissions } = await twoTabs();
+    const fresh = addWebview({ url: '', webContentsId: 88 });
+    commitMainFrameOf(fresh, MAIN_FRAME);
+
+    sendRequestFrom(fresh, { id: 1, method: 'eth_accounts', params: [] });
+    sendRequestFrom(fresh, { id: 2, method: 'eth_requestAccounts', params: [] });
+    sendRequestFrom(fresh, { id: 3, method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    sendRequestFrom(fresh, { id: 4, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee' }] });
+    await flushMicrotasks();
+
+    const byId = Object.fromEntries(responsesSentTo(fresh).map(([, r]) => [r.id, r]));
+    expect(byId[1].result).toEqual([]);
+    for (const id of [2, 3, 4]) expect(byId[id].error.code).toBe(4100);
+    expect(dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(walletUi.showDappConnect).not.toHaveBeenCalled();
+    expect(walletUi.showDappTxApproval).not.toHaveBeenCalled();
+    expect(walletUi.setSelectedChainId).not.toHaveBeenCalled();
+  });
+
   // A DNS-named ENS site over IPNS commits as ipns://<key> but is shown as
   // ens://example.com; it keeps the name key its grants were stored under
   // before #764, and main cross-checks the name against the guest's key.

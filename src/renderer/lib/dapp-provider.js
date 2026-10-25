@@ -181,6 +181,17 @@ export function getActivePageUrl() {
   return activeWebview ? getDisplayUrlForWebview(activeWebview) : '';
 }
 
+// Methods that act for the site: without a committed URL a page has no
+// identity to hold a grant, so these are refused rather than keyed to
+// nothing.
+const SITE_METHODS = new Set([
+  'eth_requestAccounts',
+  'wallet_switchEthereumChain',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+]);
+
 async function getCurrentChainId(webview = null) {
   try {
     // A contract-hosted app is part of a particular chain. Pinning provider
@@ -230,6 +241,10 @@ async function handleProviderRequest(webview, request) {
   try {
     let result;
 
+    if (!permissionKey && SITE_METHODS.has(method)) {
+      throw { ...ERRORS.UNAUTHORIZED, message: 'This page has no address to connect from yet' };
+    }
+
     const agentWallet = await offerAgentWalletRequest(
       webview,
       method,
@@ -253,7 +268,9 @@ async function handleProviderRequest(webview, request) {
       result = String(parseInt(chainId, 16));
     } else if (method === 'eth_accounts') {
       // Return connected accounts (empty if not connected)
-      const permission = await window.dappPermissions.getPermission(permissionKey);
+      const permission = permissionKey
+        ? await window.dappPermissions.getPermission(permissionKey)
+        : null;
       if (permission) {
         const walletsResult = await window.wallet.getDerivedWallets();
         const wallets = walletsResult.success ? walletsResult.wallets : [];
@@ -739,7 +756,7 @@ export function broadcastProviderEvent(event, data) {
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js
-export { getPermissionKey, executeSign };
+export { getPermissionKey, executeSign, getNavigationGeneration };
 
 // Export state for wallet UI to access
 export const walletState = {

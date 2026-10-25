@@ -401,11 +401,9 @@ test('reads a live external project without granting writes or socket access', a
   expect(result).toEqual({ read: 'Live project fixture', listed: true, found: true, matched: true,
     denied: { 'live.sock': 'WORKSPACE_PATH_TYPE_MISMATCH', 'link.txt': 'WORKSPACE_FILE_UNSAFE', 'hardlink.txt': 'WORKSPACE_FILE_UNSAFE' },
     writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true,
-    // Linux bubblewrap does not yet deny connect() on a socket inside the
-    // read-only project (https://github.com/solardev-xyz/freedom-browser/issues/817).
-    // Pinned rather than skipped: every other assertion still runs on Linux,
-    // and this flips to a failure the moment #817 is fixed.
-    socketDenied: process.platform !== 'linux', unchanged: true, commandStillValidated: true });
+    // Seatbelt denies the connection on macOS; on Linux the Bubblewrap seccomp
+    // filter refuses socket(AF_UNIX) (#817).
+    socketDenied: true, unchanged: true, commandStillValidated: true });
 });
 
 for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} files through Pi tools and the real sandbox`, async ({ electronApp, userDataDir }) => {
@@ -1810,6 +1808,130 @@ test('publication approval shows scan findings, blocks secrets and says the uplo
     runId: 'run_publication_scan_ui', approvalId: 'approval_publication_scan', approved: true,
     publicationExclusions: ['deploy.js'], publicationAcknowledged: [scan.findings.find(finding => finding.path === 'app.js').id],
   }]);
+});
+
+// #741 E, F, G and H on the card. The payloads come from the real
+// SwarmPublicationController and SwarmPostageReadiness, driven by fake Ant
+// stamp reads and fake uploads: nothing reaches a network or spends postage.
+// The decision IPC is replaced so the test sees what the card sends to main.
+test('publication approval offers a private draft link and a stable address, with postage cost and expiry', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const { SwarmPublicationController } = require('../src/main/agent/swarm-publication-controller');
+  const { SwarmPostageReadiness } = require('../src/main/agent/swarm-postage-readiness');
+  const batchId = 'c3'.repeat(32);
+  const stampReads = [];
+  const fakeAnt = ttlSeconds => ({ stamp: { get: async (id) => {
+    stampReads.push(id);
+    return { usable: true, amount: '1210000000', duration: { toSeconds: () => ttlSeconds }, remainingSize: { toBytes: () => 400_000_000 } };
+  } } });
+  const site = {
+    sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist',
+    files: [
+      { path: 'index.html', bytes: Buffer.from('<!doctype html><title>Draft</title>\n<link rel="stylesheet" href="style.css">\n<script src="https://unpkg.com/confetti@1/confetti.js"></script>\n<p>Hello</p>') },
+      { path: 'style.css', bytes: Buffer.from('p { color: teal }') },
+    ],
+  };
+  site.bytes = site.files.reduce((total, file) => total + file.bytes.length, 0);
+  const capture = async (input, ttlSeconds, extra = {}) => {
+    let request;
+    const controller = new SwarmPublicationController({
+      attachmentStore: { resolvePublicationSource: async () => { throw new Error('unused'); } },
+      workspaceSourceReader: { read: async () => site },
+      publishData: async () => { throw new Error('no upload in this test'); },
+      publishFile: async () => { throw new Error('no upload in this test'); },
+      publishDirectory: async () => { throw new Error('no upload in this test'); },
+      publishCollection: async () => { throw new Error('no upload in this test'); },
+      getUploadStatus: async () => ({}), addHistoryEntry: () => ({ id: 1 }), updateHistoryEntry: () => {},
+      postageReadiness: new SwarmPostageReadiness({ getBee: () => fakeAnt(ttlSeconds), selectBestBatch: async () => batchId }),
+      ...extra,
+    });
+    await controller.publish(input, { conversationId: 'e2e', requestApproval: async (value) => { request = value; return 'declined'; } }).catch(() => {});
+    return request;
+  };
+  const draft = await capture({ workspacePath: 'dist', target: 'draft' }, 3 * 86_400 + 600);
+  const stable = await capture({ workspacePath: 'dist', stableAddress: 'my-site' }, 45 * 86_400, {
+    feedSigner: async () => ({ address: `0x${'5a'.repeat(20)}`, privateKey: `0x${'1'.repeat(64)}` }),
+    // Live already, with no record of it in this browser (a deleted
+    // conversation, a restored vault): the card must not call it new.
+    readFeedState: async () => ({ exists: true, index: 1 }),
+  });
+  expect(stampReads).toEqual([batchId, batchId]);
+  expect(draft.publication).toMatchObject({ target: 'draft', public: false, encrypted: true, postage: { status: 'ready', batchId, expiry: 'soon' } });
+  expect(stable.publication).toMatchObject({ target: 'public', public: true, stableAddress: { name: 'my-site', existing: 'yes', latestIndex: 1 }, postage: { expiry: 'ok' } });
+  expect(JSON.stringify(stable)).not.toContain('1'.repeat(64));
+
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__publicationDecisions = [];
+    ipcMain.removeHandler('agent:approval:decide');
+    ipcMain.handle('agent:approval:decide', (_event, payload) => {
+      globalThis.__publicationDecisions.push(payload);
+      return { ok: true, decided: true };
+    });
+  });
+  const send = event => electronApp.evaluate(({ BrowserWindow }, event) => {
+    BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', { runId: 'run_publication_targets', ...event });
+  }, event);
+  await send({ type: 'run_started', userText: 'Publish my site' });
+  const show = (approvalId, request) => send({ type: 'approval_requested', approvalId, ...request });
+  const approve = window.locator('#agent-approval-approve');
+  const summary = window.locator('#agent-publication-summary');
+  const shoot = async (label) => {
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await window.locator('#agent-approval-action').scrollIntoViewIfNeeded();
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`${label}-${theme}.png`) });
+      await approve.scrollIntoViewIfNeeded();
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`${label}-footer-${theme}.png`) });
+    }
+  };
+
+  // E + G + H: a private draft link, a batch close to expiry, a third-party script.
+  await show('approval_draft', draft);
+  await expect(window.locator('#agent-approval-action')).toHaveText('Create a private draft link for “dist”?');
+  await expect(approve).toHaveText('Create private draft link');
+  await expect(window.locator('#agent-publication-permanent')).toBeHidden();
+  await expect(window.locator('#agent-publication-draft-notice')).toBeVisible();
+  await expect(window.locator('#agent-publication-draft-notice')).toHaveText(
+    'Private draft link. The content is encrypted, but anyone who gets the link can read it, so share it deliberately. The encrypted data is still stored on the public network and can’t be deleted or taken back.');
+  await expect(window.locator('#agent-publication-stable-notice')).toBeHidden();
+  await expect(window.locator('#agent-approval-allow-conversation')).toBeHidden();
+  await expect(summary).toContainText('Private draft link (encrypted)');
+  await expect(summary).toContainText(`${batchId.slice(0, 8)}…${batchId.slice(-8)}`);
+  await expect(summary).toContainText(/≈ 0\.0000\d+ xBZZ of this batch’s prepaid storage \(about \d+ chunks\)\. Nothing new is bought\./);
+  await expect(summary).toContainText('3 days');
+  await expect(window.locator('#agent-publication-postage-warning')).toHaveText(
+    'This postage batch expires in 3 days. After that the content can no longer be retrieved unless the batch is extended in Storage.');
+  await expect(window.locator('.agent-publication-finding')).toHaveCount(1);
+  await expect(window.locator('.agent-publication-finding')).toContainText('Third party · warning');
+  await expect(window.locator('.agent-publication-finding')).toContainText('https://unpkg.com');
+  await expect(approve).toBeEnabled();
+  await shoot('publication-draft');
+  await approve.click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions)).toEqual([
+    { runId: 'run_publication_targets', approvalId: 'approval_draft', approved: true },
+  ]);
+  await send({ type: 'approval_resolved', approvalId: 'approval_draft', decision: 'approved' });
+  await expect(window.locator('#agent-approval')).toBeHidden();
+
+  // F: a public publication to a stable address. Its own approval, its own
+  // button, and the note that older versions stay retrievable.
+  await show('approval_stable', stable);
+  await expect(window.locator('#agent-approval-action')).toHaveText('Publish “dist” to Swarm?');
+  await expect(approve).toHaveText('Publish publicly');
+  await expect(window.locator('#agent-publication-permanent')).toBeVisible();
+  await expect(window.locator('#agent-publication-draft-notice')).toBeHidden();
+  await expect(window.locator('#agent-publication-stable-notice')).toHaveText(
+    'Stable address. Later fixes can update this address, but they don’t remove this version: anyone holding its own reference can still retrieve it while its postage is valid.');
+  await expect(summary).toContainText('my-site · owned by your Swarm identity');
+  await expect(summary).toContainText('This address already exists (2 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+  await expect(summary).not.toContainText('A new address');
+  await expect(summary).toContainText('45 days');
+  await expect(window.locator('#agent-publication-postage-warning')).toBeHidden();
+  await expect(approve).toBeEnabled();
+  await shoot('publication-stable');
+  await window.locator('#agent-approval-decline').click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions.length)).toBe(2);
+  expect((await electronApp.evaluate(() => globalThis.__publicationDecisions))[1]).toMatchObject({ approvalId: 'approval_stable', approved: false });
 });
 
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {

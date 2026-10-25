@@ -542,3 +542,100 @@ describe('metadata stripping', () => {
     expect(scanText('big.txt', 'nothing secret here')).toEqual([]);
   });
 });
+
+describe('generated-code hygiene (#741 H)', () => {
+  const { hygieneFindings } = require('./publication-scan');
+  const site = files => preparePublication({ kind: 'folder', name: 'site', files: Object.entries(files).map(([filePath, text]) => ({ path: filePath, bytes: Buffer.from(text) })) });
+  const PAGE = [
+    '<!doctype html><html><head>',
+    '<link rel="canonical" href="https://example.org/page">',
+    '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/x/dist/x.css">',
+    '<script src="//unpkg.com/lib@1/lib.js"></script>',
+    '<script src="app.js"></script><link rel="icon" href="favicon.png">',
+    '</head><body>',
+    '<img alt="pixel" src="https://tracker.example.net/p.gif?id=SECRET_TOKEN">',
+    '<img src="bzz://abc/logo.png"><img src="data:image/png;base64,AAAA"><img src="/logo.png">',
+    "<form method=post action='https://formspree.io/f/abcd'><input name=email></form>",
+    '<form action="/subscribe"></form><form action="#"></form>',
+    '<script>fetch("https://api.example.com/v1/data?key=SECRET_TOKEN").then(r => r.json()); fetch("/local.json")</script>',
+    '</body></html>',
+  ].join('\n');
+
+  test('flags third-party script, link, image and fetch targets and external form actions as warnings, by origin only', () => {
+    const scan = site({ 'index.html': PAGE, 'app.js': 'fetch(`https://api.example.com/other`); fetch("./data.json");' });
+    const hygiene = scan.findings.filter(finding => finding.kind === 'third-party');
+    expect(hygiene.map(finding => [finding.path, finding.rule, finding.excerpt, finding.line])).toEqual([
+      ['index.html', 'third-party-link', 'https://cdn.jsdelivr.net', 3],
+      ['index.html', 'third-party-script', 'https://unpkg.com', 4],
+      ['index.html', 'third-party-image', 'https://tracker.example.net', 7],
+      ['index.html', 'external-form', 'https://formspree.io', 9],
+      ['index.html', 'third-party-fetch', 'https://api.example.com', 11],
+      ['app.js', 'third-party-fetch', 'https://api.example.com', 1],
+    ]);
+    expect(hygiene.every(finding => finding.blocking === false && /^finding_\d+$/.test(finding.id))).toBe(true);
+    // A URL's path or query can carry a key: only the origin is shown.
+    expect(JSON.stringify(scan.findings)).not.toContain('SECRET_TOKEN');
+    // Hygiene findings warn; they never block the publication.
+    expect(scan.findings.some(finding => finding.blocking)).toBe(false);
+    // Content is never rewritten.
+    expect(scan.source.files.find(file => file.path === 'index.html').bytes.toString()).toBe(PAGE);
+  });
+
+  test('one finding per rule and origin in a file, and only markup or scripts are checked', () => {
+    const images = Array.from({ length: 30 }, (_, i) => `<img src="https://cdn.example.com/${i}.png">`).join('\n');
+    expect(site({ 'gallery.html': images }).findings.map(finding => finding.rule)).toEqual(['third-party-image']);
+    expect(site({ 'README.md': PAGE, 'notes.txt': PAGE }).findings.filter(finding => finding.kind === 'third-party')).toEqual([]);
+    // Inline text is checked when it is published as HTML.
+    const text = preparePublication({ kind: 'text', text: PAGE, contentType: 'text/html; charset=utf-8' });
+    expect(text.findings.filter(finding => finding.kind === 'third-party').length).toBe(5);
+    expect(preparePublication({ kind: 'text', text: PAGE }).findings.filter(finding => finding.kind === 'third-party')).toEqual([]);
+  });
+
+  test('relative, same-site and non-http references stay quiet', () => {
+    const quiet = '<script src="./a.js"></script><script src="/b.js"></script><link href="style.css" rel="stylesheet">' +
+      '<img src="bzz://ref/x.png"><img src="ipfs://cid/x.png"><img src="data:,x"><form action="./send"></form>' +
+      '<a href="https://example.com/">a link is not a load</a><link rel="alternate" href="https://example.com/feed.xml">' +
+      '<script>fetch(url); fetch("api/x"); window.fetch("/y")</script>';
+    expect(hygieneFindings('index.html', quiet, { markup: true, script: true })).toEqual([]);
+  });
+
+  test('the Agent site template carries a restrictive CSP meta and passes the check cleanly', () => {
+    const template = fs.readFileSync(path.join(__dirname, 'skills', 'swarm-publishing', 'site-template.html'), 'utf8');
+    const csp = template.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"\s*\/?>/);
+    expect(csp).not.toBeNull();
+    const directives = Object.fromEntries(csp[1].split(';').map(part => part.trim().split(/\s+/)).map(([name, ...values]) => [name, values]));
+    expect(directives).toMatchObject({ 'default-src': ["'self'"], 'script-src': ["'self'"], 'connect-src': ["'self'"],
+      'form-action': ["'self'"], 'object-src': ["'none'"], 'base-uri': ["'self'"] });
+    expect(site({ 'index.html': template }).findings).toEqual([]);
+  });
+
+  test('hostile markup scans in linear time under a regexp engine without its loop optimisations', () => {
+    const script = `
+      const scan = require(${JSON.stringify(require.resolve('./publication-scan'))});
+      const run = (unit) => unit.repeat(Math.ceil(10_000_000 / unit.length));
+      const hostile = {
+        openTags: run('<img'),
+        unterminatedTag: '<script src="' + run('a'),
+        attributes: '<img ' + run('src=x '),
+        spaces: '<img src' + run(' '),
+        fetches: run('fetch("'),
+        mixedFetches: 'fetch("' + run("fetch('"),
+        forms: run('<form action='),
+      };
+      const out = {};
+      const started = Date.now();
+      for (const [name, text] of Object.entries(hostile)) {
+        try {
+          out[name] = scan.preparePublication({ kind: 'file', name: 'blob.html', data: Buffer.from(text) }).findings
+            .filter(finding => finding.kind === 'third-party').length;
+        } catch (error) { out[name] = String(error.message); }
+      }
+      out.fast = Date.now() - started < 60_000;
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const child = require('child_process').spawnSync(process.execPath,
+      ['--no-regexp-optimization', '--stack-size=256', '-e', script], { encoding: 'utf8', maxBuffer: 1 << 20 });
+    expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ openTags: 0, unterminatedTag: 0, attributes: 0, spaces: 0, fetches: 0, mixedFetches: 0, forms: 0, fast: true });
+  }, 120_000);
+});
