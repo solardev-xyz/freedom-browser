@@ -5,12 +5,14 @@
 // made from a built binary. Chromium's third-party notices are the reason it
 // exists: Electron generates them into a single `LICENSES.chromium.html` and
 // leaves it beside the executable, which is what Linux and Windows packages
-// ship — but electron-builder *deletes* that copy on the macOS path
-// (`unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in
+// ship — but electron-builder before 26.18 *deleted* that copy on the macOS
+// path (`unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in
 // app-builder-lib/out/electron/electronMac.js), and the `.dmg`/`-mac.zip`
 // carry only `Freedom.app`, so before `build.mac.extraResources` copied it
 // into `Contents/Resources` every macOS artifact redistributed Chromium with
 // no third-party attribution at all while NOTICES pointed at the file.
+// electron-builder 26.18 moves it into the bundle itself; the explicit copy
+// stays.
 //
 // A unit test over package.json can only say the config still asks for it.
 // This says the bytes arrived, once per shipped artifact (the six release

@@ -409,14 +409,14 @@
     "node": ">=24.11.0 <25"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.7",
+    "@babel/core": "^8.0.9",
     "@babel/preset-env": "^8.0.7",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.7.0",
+    "electron": "^44.9.3",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",

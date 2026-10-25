@@ -536,14 +536,18 @@ describe("Chromium's third-party notices reach every artifact", () => {
     }).toEqual({ file: CHROMIUM_NOTICES, present: true });
   });
 
-  it('is still unlinked from the macOS app dir by the installed electron-builder', () => {
-    // The whole reason for the mac-only copy below. If a future
-    // electron-builder stops deleting it, this fails and the copy can be
-    // reconsidered rather than carried forever as cargo cult.
-    const macPack = 'node_modules/app-builder-lib/out/electron/electronMac.js';
-    if (!fs.existsSync(path.join(repoRoot, macPack))) return; // bare checkout
-    const unlinks = /unlinkIfExists[^\n]*appOutDir, "LICENSES\.chromium\.html"/.test(read(macPack));
-    expect({ macPack, unlinks }).toEqual({ macPack, unlinks: true });
+  it('is moved into the macOS bundle by the installed electron-builder too', () => {
+    // electron-builder up to 26.15 deleted the copy beside the executable on
+    // the macOS path, which is why the mac-only copy below exists. From 26.18
+    // it moves that copy into Contents/Resources itself
+    // (electron-userland/electron-builder#9407). The explicit copy stays so
+    // the shipped file does not hinge on electron-builder internals; if a
+    // future electron-builder stops moving it, this fails and the change
+    // gets a look instead of passing unnoticed.
+    const framework = 'node_modules/app-builder-lib/out/electron/ElectronFramework.js';
+    if (!fs.existsSync(path.join(repoRoot, framework))) return; // bare checkout
+    const moves = /isMac \? \[move\("LICENSES\.chromium\.html"\)\]/.test(read(framework));
+    expect({ framework, moves }).toEqual({ framework, moves: true });
   });
 
   it('is copied into the macOS bundle, which the .dmg and .zip actually carry', () => {
