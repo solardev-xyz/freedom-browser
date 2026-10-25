@@ -1,0 +1,1 @@
+- A page you navigate to while a wallet connect prompt is open no longer receives the account granted to the previous page ([#808](https://github.com/solardev-xyz/freedom-browser/issues/808))
