@@ -439,6 +439,14 @@
   background: var(--agent-sheet);
 }
 
+/* The header the sheets hang from is opaque too while one is open: in light
+   theme the glass let the page's colour through above an opaque body (#803).
+   Not while collapsing, so the glass still dissolves the usual way. */
+.agent-floating:not(.collapsed)[data-presentation='column']:is([data-agent-view='setup'], [data-agent-view='services'])
+  .agent-sidebar-header {
+  background-color: var(--agent-sheet);
+}
+
 /* No status yet: the empty line would only pad the sheet's foot. */
 .agent-floating[data-presentation='column'] .agent-setup-view > .agent-message:empty {
   display: none;

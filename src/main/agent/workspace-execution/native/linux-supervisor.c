@@ -250,12 +250,13 @@ static void init_process(int parentfd, int start, int report, int gate_read,
         close(3); close(4);
         if (probe) { if (syscall(SYS_close_range, 3U, ~0U, 0)) _exit(125); }
         else {
-            close(7);
+            /* fd7 is the browser-supplied seccomp program, read and closed by
+             * Bubblewrap's --seccomp 7; the gate closes 7+ before release. */
             if (syscall(SYS_close_range, 9U, ~0U, 0)) _exit(125);
         }
         execv(command[0], command); _exit(127);
     }
-    close(gate_read); close(gate_write); close(executable);
+    close(gate_read); close(gate_write); close(executable); close(7);
     close(0); close(1); close(2); /* I must not keep command transports open */
     struct owner monitor = {.created=true, .pidfd=mfd, .actual={-1,0}};
     while (now_ms() < deadline) {
@@ -334,6 +335,7 @@ int main(int argc, char **argv) {
     o.created = true;
     stage = "lifetime";
     close(5); /* original inherited executable descriptor is no longer needed */
+    close(7); /* seccomp program belongs to M's Bubblewrap only */
     close(start[0]); close(report[1]); close(entry[1]); close(release[0]); close(parentfd); close(self);
     close(0); close(1); close(2);
     for (;;) {

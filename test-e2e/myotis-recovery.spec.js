@@ -10,7 +10,7 @@ async function recoveryState(app, phase, reason = 'quorum-unavailable') {
       supported: true,
       running: false,
       state: 'off',
-      version: '0.1.16',
+      version: '0.1.18',
     };
     const status = {
       ...off,

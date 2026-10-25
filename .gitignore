@@ -4,6 +4,8 @@ native/freedom-ipfs-node/prebuilds/
 dist/
 out/
 *.log
+# Audit evidence is committed raw; its captured logs are part of the record.
+!docs/audits/evidence/**/*.log
 npm-debug.log*
 yarn-error.log*
 .DS_Store

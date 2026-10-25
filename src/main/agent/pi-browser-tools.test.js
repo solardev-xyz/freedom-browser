@@ -669,7 +669,7 @@ describe('Pi browser tool adapter', () => {
         toolCallId: 'call_publish',
         operation: OPERATIONS.SWARM_PUBLISH,
         status: 'succeeded',
-        publication,
+        publication: { ...publication, target: 'public' },
       })
     );
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('resourceId');

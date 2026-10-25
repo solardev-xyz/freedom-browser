@@ -68,6 +68,7 @@ function createController(overrides = {}) {
       bytesSize: 12,
     })),
     getUploadStatus: jest.fn(),
+    readFeedState: jest.fn(async () => ({ exists: false })),
     addHistoryEntry: jest.fn(() => ({ id: 7 })),
     updateHistoryEntry: jest.fn(),
     verifyPublication: jest.fn(async () => true),
@@ -99,6 +100,7 @@ describe('SwarmPublicationController', () => {
       publication: {
         kind: 'folder',
         name: 'website',
+        target: 'public',
         public: true,
         bytes: 5,
         files: [{ path: 'index.html', bytes: 5 }],
@@ -173,6 +175,7 @@ describe('SwarmPublicationController', () => {
       publication: {
         kind: 'folder',
         name: 'dist',
+        target: 'public',
         public: true,
         bytes: 12,
         files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 7 }],
@@ -487,4 +490,388 @@ test('retains a late transport receipt after a deadline without sending another 
   expect(controller.operations.get(PUBLICATION_ID)).toMatchObject({ state: 'outcome_unknown', reference: REFERENCE });
   expect(dependencies.verifyPublication).not.toHaveBeenCalled();
   expect((await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication.state).toBe('completed');
+});
+
+test('a late unencrypted draft receipt is recorded as a failure with its public reference', async () => {
+  const upload = deferred();
+  const save = jest.fn();
+  const { controller, dependencies } = createController({ publishCollection: () => upload.promise, jobTimeoutMs: 5, interactiveTimeoutMs: 1, store: { list: () => [], save } });
+  await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'owner', requestApproval: async () => 'approved' });
+  await Promise.allSettled([...controller.active.values()]);
+  expect(controller.operations.get(PUBLICATION_ID).state).toBe('outcome_unknown');
+  save.mockClear();
+  upload.resolve({ reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}` });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(controller.operations.get(PUBLICATION_ID)).toMatchObject({ state: 'failed', unencryptedReference: REFERENCE,
+    error: expect.stringContaining(`unencrypted reference ${REFERENCE}`) });
+  expect(controller.operations.get(PUBLICATION_ID)).not.toHaveProperty('reference');
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ state: 'failed', unencryptedReference: REFERENCE }));
+  expect(dependencies.updateHistoryEntry).toHaveBeenCalledWith(7, expect.objectContaining({ reference: REFERENCE, status: 'failed' }));
+  // History drops the timeout's "outcome is unknown" text for the real error.
+  expect(dependencies.updateHistoryEntry).toHaveBeenLastCalledWith(7, { status: 'failed',
+    errorMessage: expect.stringContaining(`unencrypted reference ${REFERENCE}`) });
+  const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication;
+  expect(receipt).toMatchObject({ state: 'failed', unencryptedReference: REFERENCE });
+});
+
+describe('SwarmPublicationController pre-publish scan', () => {
+  const STRIPE = `sk_live_${'4eC39HqLyjWDarjtT1zdp7dc'}`;
+  const folderWith = (files, excluded) => ({
+    sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist',
+    bytes: files.reduce((total, file) => total + file.bytes.length, 0), files, ...(excluded && { excluded }),
+  });
+
+  test('scans attachment, text and workspace sources before approval without blocking clean content', async () => {
+    for (const input of [{ resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa' }, { text: `key ${STRIPE}` }, { workspacePath: 'dist' }]) {
+      const { controller } = createController({
+        readAttachmentSource: jest.fn(async descriptor => ({ ...descriptor, files: [{ path: 'pay.js', bytes: Buffer.from(`const k = "${STRIPE}";`) }] })),
+        workspaceSourceReader: { read: jest.fn(async () => folderWith([{ path: 'app.js', bytes: Buffer.from(`fetch("x", { key: "${STRIPE}" })`) }])) },
+      });
+      const requestApproval = jest.fn(async () => 'declined');
+      await expect(controller.publish(input, { requestApproval })).rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER });
+      const { findings } = requestApproval.mock.calls[0][0].publication;
+      expect(findings).toEqual([expect.objectContaining({ kind: 'secret', rule: 'stripe-secret-key', blocking: true, line: 1 })]);
+      expect(JSON.stringify(findings)).not.toContain(STRIPE);
+    }
+  });
+
+  test('a secret finding blocks a plain approval; nothing is uploaded', async () => {
+    const { controller, dependencies } = createController({
+      workspaceSourceReader: { read: jest.fn(async () => folderWith([{ path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";`) }])) },
+    });
+    const failure = controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => 'approved' });
+    await expect(failure).rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER, message: expect.stringContaining('stripe-secret-key') });
+    await failure.catch(error => expect(error.message).not.toContain(STRIPE));
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+    expect(dependencies.addHistoryEntry).not.toHaveBeenCalled();
+  });
+
+  test('Publish anyway for each blocking finding uploads exactly the scanned bytes', async () => {
+    const files = [
+      { path: 'index.html', bytes: Buffer.from('<p>alice.smith@proton.me</p>') },
+      { path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";\n//# sourceMappingURL=app.js.map\n`) },
+      { path: 'app.js.map', bytes: Buffer.from('{"sources":["secret.ts"]}') },
+    ];
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } });
+    let request;
+    const result = await controller.publish({ workspacePath: 'dist' }, { requestApproval: async value => {
+      request = value;
+      const ids = value.publication.findings.filter(finding => finding.blocking).map(finding => finding.id);
+      return { status: 'approved', publicationAcknowledged: ids };
+    } });
+    expect(request.publication.findings.map(finding => [finding.path, finding.rule, finding.blocking])).toEqual([
+      ['index.html', 'email-address', false], ['app.js', 'stripe-secret-key', true],
+    ]);
+    expect(request.publication.excluded).toEqual([{ path: 'app.js.map', reason: expect.stringContaining('Source map') }]);
+    expect(request.publication.stripped).toEqual([{ path: 'app.js', reason: 'sourceMappingURL comment removed' }]);
+    const uploaded = dependencies.publishCollection.mock.calls[0][0];
+    expect(uploaded.map(file => file.path)).toEqual(['index.html', 'app.js']);
+    expect(uploaded[1].bytes.toString()).toBe(`const s = "${STRIPE}";\n\n`);
+    expect(request.publication.files).toEqual(uploaded.map(file => ({ path: file.path, bytes: file.bytes.length })));
+    // The model-facing receipt carries counts and rule names, never an excerpt.
+    expect(result.publication.prepublishScan).toEqual({ findings: 2, rules: ['email-address', 'stripe-secret-key'], excludedFiles: 1, metadataStripped: 1, excludedByUser: 0 });
+  });
+
+  test('Exclude file removes it from the upload and resolves its findings', async () => {
+    const files = [{ path: 'index.html', bytes: Buffer.from('hi') }, { path: 'keys.js', bytes: Buffer.from(`k="${STRIPE}"`) }];
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } });
+    await controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'approved', publicationExclusions: ['keys.js'] }) });
+    expect(dependencies.publishCollection).toHaveBeenCalledWith([files[0]], expect.anything());
+    await expect(createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(files)) } }).controller
+      .publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'approved', publicationExclusions: ['missing.js'] }) }))
+      .rejects.toMatchObject({ code: ERROR_CODES.INVALID_ARGUMENT });
+    // More than 100 flagged files can all be excluded (up to the 200-finding cap).
+    const many = [{ path: 'index.html', bytes: Buffer.from('hi') },
+      ...Array.from({ length: 150 }, (_, index) => ({ path: `k${index}.js`, bytes: Buffer.from(`k="${STRIPE}"`) }))];
+    const wide = createController({ workspaceSourceReader: { read: jest.fn(async () => folderWith(many)) } });
+    await wide.controller.publish({ workspacePath: 'dist' }, { requestApproval: async () =>
+      ({ status: 'approved', publicationExclusions: many.slice(1).map(file => file.path) }) });
+    expect(wide.dependencies.publishCollection).toHaveBeenCalledWith([many[0]], expect.anything());
+  });
+
+  test('Ask Agent to fix returns rule names and paths only, and the next attempt scans the new snapshot', async () => {
+    const read = jest.fn()
+      .mockResolvedValueOnce(folderWith([{ path: 'app.js', bytes: Buffer.from(`\nconst s = "${STRIPE}";`) }]))
+      .mockResolvedValueOnce(folderWith([{ path: 'app.js', bytes: Buffer.from('const s = window.config.key;') }]));
+    const { controller, dependencies } = createController({ workspaceSourceReader: { read } });
+    const first = controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => ({ status: 'declined', publicationFix: { paths: ['app.js'] } }) });
+    await expect(first).rejects.toMatchObject({
+      code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
+      message: expect.stringContaining('app.js: stripe-secret-key (line 2)'),
+      suggestedAction: expect.stringContaining('swarm_publish again'),
+    });
+    await first.catch(error => expect(`${error.message}${error.suggestedAction}`).not.toContain('sk_live'));
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist' }, { requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.findings).toBeUndefined();
+    expect(dependencies.publishCollection.mock.calls[0][0][0].bytes.toString()).toBe('const s = window.config.key;');
+  });
+
+  test('lists excluded paths by name and reason, and strips image metadata from a single attached file', async () => {
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x0e]), Buffer.from('Exif\0\0GPS\0\0\0', 'latin1'),
+      Buffer.from([0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]),
+    ]);
+    const { controller, dependencies } = createController({
+      attachmentStore: { resolvePublicationSource: jest.fn(async () => ({ kind: 'file', name: 'photo.jpg', path: '/x/photo.jpg' })) },
+      readAttachmentSource: jest.fn(async () => ({ kind: 'file', name: 'photo.jpg', data: jpeg, bytes: jpeg.length, contentType: 'image/jpeg' })),
+    });
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ resourceId: 'file_aaaaaaaaaaaaaaaaaaaa' }, { requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.stripped).toEqual([{ path: 'photo.jpg', reason: 'Image metadata (EXIF, GPS, XMP) removed' }]);
+    const sent = dependencies.publishData.mock.calls[0][0];
+    expect(sent.includes(Buffer.from('Exif'))).toBe(false);
+    expect(sent).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]));
+    expect(requestApproval.mock.calls[0][0].publication.bytes).toBe(sent.length);
+  });
+
+  test('the scan is awaited with the caller signal; Stop while it runs cancels before approval', async () => {
+    const scanning = deferred();
+    const preparePublication = jest.fn(() => scanning.promise);
+    const { controller, dependencies } = createController({ preparePublication });
+    const stop = new AbortController();
+    const requestApproval = jest.fn();
+    const publication = controller.publish({ workspacePath: 'dist' }, { requestApproval, signal: stop.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(preparePublication).toHaveBeenCalledWith(expect.objectContaining({ kind: 'folder' }), { signal: stop.signal });
+    stop.abort();
+    const abortError = new Error('PublicationScan prepare aborted');
+    abortError.name = 'AbortError';
+    scanning.reject(abortError);
+    await expect(publication).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+  });
+});
+
+describe('private draft links, stable addresses and postage on the card (#741 E, F, G)', () => {
+  const ENCRYPTED = 'e'.repeat(128);
+  const FEED = 'f'.repeat(64);
+  const OWNER = `0x${'1'.repeat(40)}`;
+  const BATCH = 'c'.repeat(64);
+  const STRIPE = `sk_live_${'4eC39HqLyjWDarjtT1zdp7dc'}`;
+  const encryptedUpload = jest.fn(async () => ({ reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: null, bytesSize: 12 }));
+  const signer = () => jest.fn(async () => ({ address: OWNER, privateKey: `0x${'9'.repeat(64)}` }));
+  const feeds = () => ({
+    updateFeed: jest.fn(async () => ({ index: 3 })),
+    createFeed: jest.fn(async () => ({ manifestReference: FEED, bzzUrl: `bzz://${FEED}` })),
+    readFeedState: jest.fn(async () => ({ exists: false })),
+  });
+
+  test('E: a draft is its own target, uploads with Swarm-Encrypt and records that it was a draft', async () => {
+    const { controller, dependencies } = createController({ publishCollection: encryptedUpload });
+    const requestApproval = jest.fn(async () => 'approved');
+    const result = await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication).toMatchObject({ target: 'draft', public: false, encrypted: true });
+    expect(requestApproval.mock.calls[0][0].publication).not.toHaveProperty('stableAddress');
+    expect(encryptedUpload.mock.calls[0][1]).toMatchObject({ encrypt: true });
+    expect(result.publication).toMatchObject({ target: 'draft', public: false, encrypted: true, reference: ENCRYPTED,
+      bzzUrl: `bzz://${ENCRYPTED}`, state: 'completed', message: expect.stringContaining('Private draft link ready') });
+    expect(dependencies.addHistoryEntry).toHaveBeenCalledWith(expect.objectContaining({ name: 'dist (private draft link)' }));
+  });
+
+  test('E: an unencrypted reference from the node is never reported as a private link', async () => {
+    const { controller, dependencies } = createController();
+    const failure = controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    await expect(failure).rejects.toThrow(`did not encrypt this upload: it returned the unencrypted reference ${REFERENCE}`);
+    const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'c' })).publication;
+    // Not a draft link, but the user can see which public reference holds the content.
+    expect(receipt).toMatchObject({ target: 'draft', state: 'failed', applicationState: 'possibly_applied', unencryptedReference: REFERENCE });
+    expect(receipt).not.toHaveProperty('bzzUrl');
+    expect(receipt).not.toHaveProperty('reference');
+    expect(dependencies.updateHistoryEntry).toHaveBeenCalledWith(7, expect.objectContaining({ reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}`, status: 'failed' }));
+  });
+
+  test('E: a draft is confirmed by its tag, which Ant keys on the root address (the leading 64 hex)', async () => {
+    let clock = 0;
+    const timing = { now: () => clock, sleep: async ms => { clock += ms; }, progressTimeoutMs: 30, progressPollMs: 10 };
+    const upload = jest.fn(async () => ({ reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: 9 }));
+    const { controller } = createController({ ...timing, publishCollection: upload,
+      getUploadStatus: jest.fn(async () => ({ done: true, progress: 100, reference: ENCRYPTED.slice(0, 64) })) });
+    const result = await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(result.publication).toMatchObject({ state: 'completed', reference: ENCRYPTED });
+
+    // A tag for some other root still never confirms it.
+    const other = createController({ ...timing, publishCollection: upload,
+      getUploadStatus: jest.fn(async () => ({ done: true, progress: 100, reference: 'a'.repeat(64) })) });
+    await expect(other.controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' }))
+      .rejects.toThrow('Network confirmation is still unavailable');
+  });
+
+  test('E: the same scan and blocking rules apply to a draft', async () => {
+    const { controller } = createController({
+      publishCollection: encryptedUpload,
+      workspaceSourceReader: { read: jest.fn(async () => ({ sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist', bytes: 20,
+        files: [{ path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";`) }] })) },
+    });
+    encryptedUpload.mockClear();
+    await expect(controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' }))
+      .rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER, message: expect.stringContaining('stripe-secret-key') });
+    expect(encryptedUpload).not.toHaveBeenCalled();
+  });
+
+  test('E: publishing a draft publicly later is a separate approval and an unencrypted upload', async () => {
+    let call = 0;
+    const publishCollection = jest.fn(async () => (call++ === 0
+      ? { reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: null }
+      : { reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}`, tagUid: null }));
+    let id = 0;
+    const { controller } = createController({ publishCollection, publicationIdFactory: () => `swarm_pub_${String(++id).padStart(24, '0')}` });
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    const declined = jest.fn(async () => 'declined');
+    await expect(controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval: declined }))
+      .rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER });
+    expect(declined).toHaveBeenCalledWith(expect.objectContaining({ publication: expect.objectContaining({ target: 'public', public: true }) }));
+    expect(publishCollection).toHaveBeenCalledTimes(1);
+    const published = await controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+    expect(publishCollection.mock.calls[1][1]).not.toHaveProperty('encrypt');
+    expect(published.publication).toMatchObject({ target: 'public', public: true, reference: REFERENCE });
+    expect(published.publication).not.toHaveProperty('encrypted');
+  });
+
+  test('E: a draft never gets a stable address', async () => {
+    const { controller, dependencies } = createController({ feedSigner: signer(), ...feeds() });
+    const requestApproval = jest.fn();
+    await expect(controller.publish({ workspacePath: 'dist', target: 'draft', stableAddress: 'site' }, { requestApproval }))
+      .rejects.toMatchObject({ code: ERROR_CODES.INVALID_ARGUMENT });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+  });
+
+  test('F: publishes under a feed owned by the Swarm identity, and a later fix updates the same address', async () => {
+    const feed = feeds();
+    let id = 0;
+    const feedSigner = signer();
+    const { controller } = createController({ feedSigner, ...feed, publicationIdFactory: () => `swarm_pub_${String(++id).padStart(24, '0')}` });
+    const requestApproval = jest.fn(async () => 'approved');
+    const first = await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, existing: 'no' });
+    expect(feed.updateFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', REFERENCE, undefined);
+    expect(feed.createFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', undefined);
+    expect(first.publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, reference: FEED, bzzUrl: `bzz://${FEED}`, index: 3, updated: true });
+    expect(JSON.stringify(first)).not.toContain('9'.repeat(64));
+    // A later publication in another conversation names the address it updates.
+    await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'other', requestApproval });
+    expect(requestApproval.mock.calls[1][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, existing: 'yes', currentBzzUrl: `bzz://${FEED}` });
+    expect(feed.updateFeed).toHaveBeenCalledTimes(2);
+    // Never below the index this browser already wrote.
+    expect(feed.updateFeed.mock.calls[1][4]).toEqual({ minIndex: 4 });
+    // One read for the first card (the second has a local record), and one
+    // read-back after each update.
+    expect(feed.readFeedState).toHaveBeenCalledTimes(3);
+    expect(feed.readFeedState).toHaveBeenCalledWith(OWNER, 'freedom-agent/stable-address/my-site');
+  });
+
+  test('F: an update that lands under a live later version is rewritten above it, and never reported as applied', async () => {
+    // The first update expired with its batch, later ones survive: the card
+    // can't see the address, and the first write lands at index 0.
+    const feed = feeds();
+    feed.updateFeed.mockImplementation(async (key, topic, ref, batch, options) => ({ index: options?.minIndex || 0 }));
+    const heads = [{ exists: false }, { exists: true, index: 5 }, { exists: true, index: 6 }];
+    feed.readFeedState.mockImplementation(async () => heads.shift());
+    const { controller } = createController({ feedSigner: signer(), ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(feed.updateFeed).toHaveBeenCalledTimes(2);
+    expect(feed.updateFeed.mock.calls[1][4]).toEqual({ minIndex: 6 });
+    expect(result.publication.stableAddress).toMatchObject({ updated: true, index: 6 });
+
+    // Still shadowed after the rewrite: published, but the address is not updated.
+    const stuck = feeds();
+    stuck.updateFeed.mockImplementation(async (key, topic, ref, batch, options) => ({ index: options?.minIndex || 0 }));
+    const stuckHeads = [{ exists: false }, { exists: true, index: 5 }, { exists: true, index: 9 }];
+    stuck.readFeedState.mockImplementation(async () => stuckHeads.shift());
+    const other = createController({ feedSigner: signer(), ...stuck });
+    const failed = await other.controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(failed.publication.state).toBe('completed');
+    expect(failed.publication.message).toContain('the stable address was not updated');
+    expect(failed.publication.stableAddress).toMatchObject({ updated: false, error: expect.stringContaining('still serves its later version 9') });
+    expect(stuck.createFeed).not.toHaveBeenCalled();
+  });
+
+  test('F: a read-back that fails or lags behind the write does not undo the update', async () => {
+    for (const readBack of [async () => { throw new Error('node down'); }, async () => ({ exists: false }), async () => ({ exists: true, index: 1 })]) {
+      const feed = feeds();
+      feed.readFeedState.mockImplementationOnce(async () => ({ exists: true, index: 2 })).mockImplementation(readBack);
+      const { controller } = createController({ feedSigner: signer(), ...feed });
+      const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+      // The card's latest index is a floor for the write.
+      expect(feed.updateFeed.mock.calls[0][4]).toEqual({ minIndex: 3 });
+      expect(feed.updateFeed).toHaveBeenCalledTimes(1);
+      expect(result.publication.stableAddress).toMatchObject({ updated: true, index: 3 });
+    }
+  });
+
+  test('F: with no local record the card reads the feed, and only a definite "no update" says the address is new', async () => {
+    const card = async (readFeedState, extra = {}) => {
+      const requestApproval = jest.fn(async () => 'declined');
+      const { controller } = createController({ feedSigner: signer(), ...feeds(), readFeedState, ...extra });
+      await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval }).catch(() => {});
+      return requestApproval.mock.calls[0][0].publication.stableAddress;
+    };
+    // Live already (a deleted conversation, an evicted record, a restored vault).
+    expect(await card(jest.fn(async () => ({ exists: true, index: 2 })))).toEqual({ name: 'site', owner: OWNER, existing: 'yes', latestIndex: 2 });
+    expect(await card(jest.fn(async () => ({ exists: false })))).toEqual({ name: 'site', owner: OWNER, existing: 'no' });
+    expect(await card(jest.fn(async () => { throw new Error('node down'); })))
+      .toEqual({ name: 'site', owner: OWNER, existing: 'unknown' });
+    expect(await card(jest.fn(() => new Promise(() => {})), { interactiveTimeoutMs: 5 }))
+      .toEqual({ name: 'site', owner: OWNER, existing: 'unknown' });
+  });
+
+  test('F: a locked vault refuses before approval; a failed feed update leaves the content published and says so', async () => {
+    const locked = createController({ feedSigner: jest.fn(async () => { throw new Error('locked'); }), ...feeds() });
+    const requestApproval = jest.fn(async () => 'approved');
+    await expect(locked.controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { requestApproval }))
+      .rejects.toMatchObject({ code: ERROR_CODES.CAPABILITY_UNAVAILABLE, message: expect.stringContaining('vault') });
+    expect(requestApproval).not.toHaveBeenCalled();
+
+    const feed = feeds();
+    feed.updateFeed.mockRejectedValueOnce(new Error('feed write refused'));
+    const { controller } = createController({ feedSigner: signer(), ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval });
+    expect(result.publication).toMatchObject({ state: 'completed', reference: REFERENCE,
+      message: expect.stringContaining('the stable address was not updated'),
+      stableAddress: { name: 'site', owner: OWNER, updated: false, error: 'feed write refused' } });
+    expect(result.publication.stableAddress).not.toHaveProperty('bzzUrl');
+    expect(feed.createFeed).not.toHaveBeenCalled();
+  });
+
+  test('F: an identity switched after approval does not update the address', async () => {
+    const feed = feeds();
+    const feedSigner = jest.fn()
+      .mockResolvedValueOnce({ address: OWNER, privateKey: '0x1' })
+      .mockResolvedValueOnce({ address: `0x${'2'.repeat(40)}`, privateKey: '0x2' });
+    const { controller } = createController({ feedSigner, ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(result.publication.stableAddress).toMatchObject({ updated: false, error: expect.stringContaining('identity changed') });
+    expect(feed.updateFeed).not.toHaveBeenCalled();
+  });
+
+  test('G: the card shows the selected batch, its cost and time left, and that batch is the one used', async () => {
+    const preview = { status: 'ready', batchId: BATCH, usable: true, ttlSeconds: 3 * 86_400, expiry: 'soon', estimatedChunks: 4, estimatedCostPlur: '4000' };
+    const readiness = { backendKey: () => 'backend', preview: jest.fn(async () => preview),
+      select: jest.fn(async () => 'd'.repeat(64)), inspect: jest.fn(async () => ({ ready: true, firstConfirmedBlock: 1 })) };
+    const { controller, dependencies } = createController({ postageReadiness: readiness, publishCollection: encryptedUpload });
+    encryptedUpload.mockClear();
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    expect(readiness.preview).toHaveBeenCalledWith('c', 12, { encrypted: true, files: 2 });
+    expect(requestApproval.mock.calls[0][0].publication.postage).toEqual(preview);
+    expect(readiness.select).not.toHaveBeenCalled();
+    expect(encryptedUpload.mock.calls[0][1]).toMatchObject({ batchId: BATCH, encrypt: true });
+    expect(dependencies.publishData).not.toHaveBeenCalled();
+  });
+
+  test('G: postage details that cannot be read never decide the publication', async () => {
+    const readiness = { backendKey: () => 'backend', preview: jest.fn(async () => { throw new Error('node down'); }),
+      select: jest.fn(async () => BATCH), inspect: jest.fn(async () => ({ ready: true, firstConfirmedBlock: 1 })) };
+    const { controller, dependencies } = createController({ postageReadiness: readiness });
+    const requestApproval = jest.fn(async () => 'approved');
+    const result = await controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.postage).toEqual({ status: 'unknown' });
+    expect(readiness.select).toHaveBeenCalledTimes(1);
+    expect(dependencies.publishCollection.mock.calls[0][1]).toMatchObject({ batchId: BATCH });
+    expect(result.publication.state).toBe('completed');
+  });
 });

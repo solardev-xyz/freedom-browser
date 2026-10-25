@@ -2703,6 +2703,176 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   white-space: pre-wrap;
 }
 
+/* Swarm publication: the permanent-content notice and pre-publish findings. */
+.agent-approval .agent-publication-permanent {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--agent-danger) 10%, transparent);
+  border-radius: 8px;
+}
+
+/* F: older versions stay retrievable. Information, not a hazard. */
+.agent-approval .agent-publication-stable-notice {
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+}
+
+/* G: the selected postage batch is close to expiry. */
+.agent-approval .agent-publication-postage-warning {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 3px solid var(--warning-fg);
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+  border-radius: 8px;
+}
+
+.agent-approval .agent-publication-postage-warning[data-level='critical'] {
+  font-weight: 560;
+  border-left-color: var(--agent-danger);
+  background: color-mix(in srgb, var(--agent-danger) 10%, transparent);
+}
+
+.agent-publication-findings {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  margin-bottom: 12px;
+  overflow: auto;
+}
+
+.agent-publication-findings[hidden] {
+  display: none;
+}
+
+.agent-approval .agent-publication-findings-heading {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-approval .agent-publication-findings-status {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-approval .agent-publication-findings-status.blocked {
+  color: var(--agent-danger);
+}
+
+.agent-publication-finding-group {
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 9px;
+}
+
+.agent-publication-finding-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.agent-publication-finding-path {
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.agent-publication-finding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-publication-finding-actions button {
+  padding: 3px 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-publication-finding-actions button:hover {
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.agent-approval .agent-publication-finding-state {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-approval .agent-publication-finding-state:empty {
+  display: none;
+}
+
+.agent-publication-finding-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-publication-finding {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-publication-finding-badge {
+  color: color-mix(in srgb, var(--warning-fg) 80%, var(--text));
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-publication-finding[data-kind='secret'] .agent-publication-finding-badge {
+  color: var(--agent-danger);
+}
+
+.agent-publication-finding-label {
+  color: var(--text);
+}
+
+.agent-publication-finding-excerpt {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.agent-publication-anyway-label {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.agent-publication-finding-group.excluded .agent-publication-finding {
+  opacity: 0.5;
+}
+
 .agent-workspace-permission-details summary {
   width: max-content;
   color: var(--muted);

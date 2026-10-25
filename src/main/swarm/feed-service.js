@@ -126,16 +126,87 @@ async function downloadExactFeedPayload(bee, owner, topic, index) {
   };
 }
 
+// Highest index the head probe will look for: 2^40 updates is far beyond any
+// real feed, and it bounds the probe to ~80 chunk reads.
+const MAX_PROBED_FEED_INDEX = 2 ** 40;
+
+// Only a 404 says an update chunk is missing. A 500 ("read chunk failed")
+// can't tell a missing chunk from an unreachable one, so it propagates:
+// reading it as missing would call a live feed empty or under-read its head.
+async function feedUpdateChunkExists(bee, owner, topic, index) {
+  const reference = bee.calculateSingleOwnerChunkAddress(makeFeedIdentifier(topic, index), owner);
+  try {
+    await bee.chunk.download(reference);
+    return true;
+  } catch (err) {
+    if (err instanceof BeeResponseError && err.status === 404) return false;
+    throw err;
+  }
+}
+
+/**
+ * Find a sequence feed's latest index by reading its update chunks directly,
+ * for when the latest-update lookup (GET /feeds) answered "not found".
+ *
+ * That 404 is not proof the feed is empty: Ant also answers 404 ("wrapped
+ * chunk cannot be retrieved") for a feed whose latest legacy (ts||ref)
+ * update points at a chunk that is gone, e.g. after the content's batch
+ * expired. The update chunks themselves can still be there, so ask for them
+ * by address (GET /chunks): grow then bisect to the last index that exists.
+ *
+ * The probe assumes the updates are contiguous from index 0 to the head, as
+ * a sequence feed writes them. Two cases break that and it then reads low:
+ * - a gap (a missing intermediate update) ends the probe at the gap, so the
+ *   head reads as the last index before it;
+ * - a missing index 0 (the first update's batch expired while later ones,
+ *   stamped on another batch, survive) reads as "no update", although the
+ *   feed is live. Nothing on the network tells that apart from a new feed.
+ * So a writer that knows a later index must pass it (updateFeed's minIndex),
+ * and should read the feed back after writing (see readFeedState).
+ *
+ * @returns {Promise<number|null>} Latest index, or null when the feed has no update
+ */
+async function probeFeedHead(bee, owner, topic) {
+  if (!(await feedUpdateChunkExists(bee, owner, topic, 0))) return null;
+  let lo = 0; // known to exist
+  let hi = 1; // first index not yet known to be missing
+  while (hi <= MAX_PROBED_FEED_INDEX && await feedUpdateChunkExists(bee, owner, topic, hi)) {
+    lo = hi;
+    hi *= 2;
+  }
+  if (hi > MAX_PROBED_FEED_INDEX) {
+    throw new Error('Feed head probe exceeded the maximum feed index');
+  }
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (await feedUpdateChunkExists(bee, owner, topic, mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
  * Resolve the next available feed index using the public FeedReader API.
  * On a non-empty feed, downloads the latest payload to get feedIndexNext.
- * On an empty feed (BeeResponseError 404/500), defaults to 0.
+ * When that lookup answers "not found" (BeeResponseError 404/500), the
+ * update chunks are probed directly (see probeFeedHead) and only a feed
+ * with no update at index 0 starts at 0 — so a live feed whose latest
+ * update's content expired is continued, not restarted under its own head.
  * All other errors (network, timeout) propagate to the caller.
  *
  * @param {import('@ethersphere/bee-js').FeedWriter|import('@ethersphere/bee-js').FeedReader} reader
+ * @param {import('@ethersphere/bee-js').Bee} bee
+ * @param {import('@ethersphere/bee-js').EthAddress} owner
+ * @param {import('@ethersphere/bee-js').Topic} topic
+ * @param {number} [minIndex=0] - Lowest index the caller will accept, from an
+ *   index it already knows was written (the probe can read a live feed low)
  * @returns {Promise<number>} Next index to write at
  */
-async function resolveNextIndex(reader) {
+async function resolveNextIndex(reader, bee, owner, topic, minIndex = 0) {
+  return Math.max(minIndex, await resolveNetworkNextIndex(reader, bee, owner, topic));
+}
+
+async function resolveNetworkNextIndex(reader, bee, owner, topic) {
   try {
     const latest = await reader.downloadPayload();
     if (latest.feedIndexNext) {
@@ -145,7 +216,8 @@ async function resolveNextIndex(reader) {
     return feedIndexToNumber(latest.feedIndex) + 1;
   } catch (err) {
     if (isNotFoundError(err)) {
-      return 0;
+      const head = await probeFeedHead(bee, owner, topic);
+      return head === null ? 0 : head + 1;
     }
     throw err;
   }
@@ -197,9 +269,12 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} contentReference - Swarm reference to point the feed at
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
+ * @param {{ minIndex?: number }} [options] - minIndex: write at this index or
+ *   later, for a caller that knows the feed already reached minIndex - 1.
  * @returns {Promise<{ index: number }>}
  */
-async function updateFeed(signerPrivateKey, topicString, contentReference, batchId) {
+async function updateFeed(signerPrivateKey, topicString, contentReference, batchId, options = {}) {
+  const minIndex = Number.isSafeInteger(options.minIndex) && options.minIndex > 0 ? options.minIndex : 0;
   const bee = getBee();
   const privateKey = new PrivateKey(signerPrivateKey);
   const topic = Topic.fromString(topicString);
@@ -213,7 +288,7 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
 
   const result = await withWriteLock(topicHex, async () => {
     const writer = bee.feed.makeWriter(topic, privateKey);
-    const nextIndex = await resolveNextIndex(writer);
+    const nextIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic, minIndex);
     await writer.uploadReference(resolvedBatchId, contentReference, { index: nextIndex });
     return { index: nextIndex };
   });
@@ -273,7 +348,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
       writeIndex = index;
     } else {
       // Auto-increment — resolve next available index
-      writeIndex = await resolveNextIndex(writer);
+      writeIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic);
     }
 
     await writer.uploadPayload(resolvedBatchId, data, { index: writeIndex });
@@ -326,8 +401,42 @@ async function readFeedPayload(ownerAddress, topic, index) {
   }
 }
 
+/**
+ * Whether a feed already has an update, read before asking to write one.
+ * A 404 from the latest-update lookup is checked against the update chunks
+ * themselves (probeFeedHead): Ant also answers 404 for a live feed whose
+ * latest update's content has expired, and that feed must still read as
+ * existing. A 500 or a network error, from either the lookup or a chunk
+ * probe, can't tell an empty feed from an unreachable one, so it throws and
+ * the caller reads it as unknown.
+ *
+ * `exists: false` means no update was found, not that none was ever written:
+ * a feed whose index-0 update expired with its batch reads the same (see
+ * probeFeedHead). Callers that write must not take it as proof of an empty
+ * feed; the publication controller reads the feed back after updating it.
+ *
+ * @param {string} ownerAddress - 0x-prefixed owner address
+ * @param {string} topicString - Topic string (as passed to updateFeed)
+ * @returns {Promise<{ exists: true, index: number } | { exists: false }>}
+ */
+async function readFeedState(ownerAddress, topicString) {
+  const bee = getBee();
+  const topic = Topic.fromString(topicString);
+  const owner = new EthAddress(ownerAddress);
+  const reader = bee.feed.makeReader(topic, owner);
+  try {
+    const latest = await reader.downloadPayload();
+    return { exists: true, index: feedIndexToNumber(latest.feedIndex) };
+  } catch (err) {
+    if (!(err instanceof BeeResponseError && err.status === 404)) throw err;
+  }
+  const head = await probeFeedHead(bee, owner, topic);
+  return head === null ? { exists: false } : { exists: true, index: head };
+}
+
 module.exports = {
   buildTopicString,
+  readFeedState,
   createFeed,
   updateFeed,
   writeFeedPayload,

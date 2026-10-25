@@ -277,9 +277,15 @@ describe('Freedom agent IPC', () => {
       opened: true,
     });
     expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', bzzUrl);
-    await expect(
-      openPublication({ sender: ctx.sender }, { bzzUrl: 'file:///Users/private' })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    // A private draft link's encrypted reference is 128 hex.
+    const draftUrl = `bzz://${'e'.repeat(128)}`;
+    await expect(openPublication({ sender: ctx.sender }, { bzzUrl: draftUrl })).resolves.toEqual({ ok: true, opened: true });
+    expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', draftUrl);
+    for (const bad of ['file:///Users/private', `bzz://${'e'.repeat(96)}`, `bzz://${'e'.repeat(130)}`]) {
+      await expect(
+        openPublication({ sender: ctx.sender }, { bzzUrl: bad })
+      ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    }
     await expect(openPublication({ sender: ctx.otherSender }, { bzzUrl })).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
@@ -1118,6 +1124,35 @@ describe('Freedom agent IPC', () => {
       approved: true,
       diagnosticScope: 'conversation',
     });
+  });
+
+  test('passes publication card choices as bounded string lists', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Publish' });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'], publicationFix: { paths: ['x'] } });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: false,
+      publicationFix: { paths: ['app.js'] }, publicationAcknowledged: ['finding_1'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: false, publicationFix: { paths: ['app.js'] },
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [{ path: 'x' }] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+    const wide = Array.from({ length: 200 }, (_, index) => `k${index}.js`);
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: wide });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: wide,
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [...wide, 'one-too-many.js'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
   });
 
   test('passes only the supported conversation workspace-permission grant', async () => {

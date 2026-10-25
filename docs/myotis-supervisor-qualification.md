@@ -9,7 +9,7 @@ the recorded finite campaign; the remaining product gates still apply.
 
 ## Current checkpoint-recovery integration
 
-The current integration uses the official Myotis v0.1.16 release addon (ABI 47),
+The current integration uses the official Myotis v0.1.18 release addon (ABI 50),
 whose bytes are checksum-pinned in `scripts/myotis-release.json`; Freedom ships
 no patched or locally built extension. A stale anchor starts automatic Colibri checkpoint
 verification and a guarded native-generation replacement. It does not show the

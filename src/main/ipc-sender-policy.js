@@ -151,6 +151,7 @@ const SETTINGS_CHANNELS = [
   'agent:dictation:choose',
   'agent:dictation:install',
   'agent:dictation:cancel',
+  'agent:webmcp:launch-state',
   'agent:provider:get-status',
   'agent:provider:get-catalog',
   'agent:provider:refresh-models',

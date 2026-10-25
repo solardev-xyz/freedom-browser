@@ -1,0 +1,8 @@
+LIBRARY netapi32
+EXPORTS
+  NetApiBufferFree
+  NetUserSetInfo
+  NetLocalGroupAdd
+  NetLocalGroupAddMembers
+  NetUserAdd
+  NetUserGetInfo

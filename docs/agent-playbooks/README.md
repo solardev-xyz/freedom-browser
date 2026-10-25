@@ -6,6 +6,7 @@ Use these files on demand:
 
 - `architecture-boundaries.md`: guardrails for architectural changes.
 - `bundled-binaries.md`: bundled node binaries (Ant, freedom-ipfs, Radicle, Arti) — what they are, where they land, and how to bump a pin.
+- `dependency-updates.md`: scope, pitfalls and the pull request format for dependency updates (npm, Electron, bundled binaries).
 - `code-style-and-linting.md`: lint-aware implementation workflow.
 - `commit-messages.md`: commit title/body conventions.
 - `changelog-process.md`: changelog fragments day to day, and assembling them at release.

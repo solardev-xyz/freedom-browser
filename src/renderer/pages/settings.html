@@ -1774,8 +1774,12 @@
               <div class="row-body">
                 <label class="row-label" for="enable-ai">Enable AI features</label>
                 <p class="row-help" id="enable-ai-help">Off by default. Your provider receives the prompts and content shared with Agent.</p>
+                <p class="row-help" id="enable-ai-restart-help">Page tools that websites offer Agent take effect after restart.</p>
               </div>
-              <div class="row-control"><label class="toggle"><input type="checkbox" id="enable-ai" aria-describedby="enable-ai-help" /><span class="slider"></span></label></div>
+              <div class="row-control">
+                <button type="button" id="enable-ai-restart" class="btn" hidden>Restart now</button>
+                <label class="toggle"><input type="checkbox" id="enable-ai" aria-describedby="enable-ai-help enable-ai-restart-help" /><span class="slider"></span></label>
+              </div>
             </div>
           </div>
           <p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p>

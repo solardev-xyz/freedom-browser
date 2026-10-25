@@ -175,13 +175,26 @@ function startCleanupRacer({
  * Run `cleanup(target)` while a racer swaps `target/sub` for a link to
  * `outside`, then report what the race did.
  *
- * `overlapped` is true when at least one link was swapped in after the
- * cleanup started; `preserved` when every outside file still holds its
- * original contents. The cleanup is allowed to fail while the racer keeps
- * the tree non-empty; once the racer has stopped, `cleanup` runs again and
- * `removed` says whether the target is gone.
+ * `overlapped` is true when a link was swapped in while a cleanup attempt
+ * was running; `preserved` when every outside file still holds its original
+ * contents. The cleanup is allowed to fail while the racer keeps the tree
+ * non-empty, and is retried, up to `attempts` times, until one attempt has
+ * overlapped a swap or removed the target: a single fast attempt can fail
+ * between two swaps without ever racing one (seen on a Windows 11 standard
+ * user with Defender on, #779), which says nothing about the cleanup.
+ * Once the racer has stopped, `cleanup` runs again and `removed` says
+ * whether the target is gone.
  */
-async function raceCleanup({ target, outside, names, linkType, cleanup, holdMs, maxMs }) {
+async function raceCleanup({
+  target,
+  outside,
+  names,
+  linkType,
+  cleanup,
+  holdMs,
+  maxMs,
+  attempts = 10,
+}) {
   await fs.promises.mkdir(target, { recursive: true });
   await fs.promises.mkdir(outside, { recursive: true });
   for (const name of names) await fs.promises.writeFile(path.join(outside, name), PRESERVED);
@@ -189,12 +202,25 @@ async function raceCleanup({ target, outside, names, linkType, cleanup, holdMs, 
   let before;
   let during;
   let firstError = null;
+  let overlapped = false;
+  let made = 0;
   try {
     before = await racer.counts();
-    try {
-      await cleanup(target);
-    } catch (error) {
-      firstError = error.message;
+    let start = before;
+    while (made < attempts) {
+      made += 1;
+      try {
+        await cleanup(target);
+      } catch (error) {
+        firstError = firstError ?? error.message;
+      }
+      const end = await racer.counts();
+      if (end.links > start.links) {
+        overlapped = true;
+        break;
+      }
+      if (!present(target)) break;
+      start = end;
     }
     during = await racer.counts();
   } finally {
@@ -220,7 +246,8 @@ async function raceCleanup({ target, outside, names, linkType, cleanup, holdMs, 
     })
   );
   return {
-    overlapped: during.links > before.links,
+    overlapped,
+    attempts: made,
     preserved: intact.every(Boolean) && survivors.length === names.length,
     removed: !present(target),
     missing: names.filter((_name, index) => !intact[index]),

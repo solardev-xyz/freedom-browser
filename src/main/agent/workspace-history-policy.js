@@ -74,27 +74,95 @@ function historyPathReason(value, includeGenerated = false) {
 /* istanbul ignore next -- Also serialized into the sandbox helper (see above). */
 function historyContainsSecret(value) {
   const text = typeof value === 'string' ? value : value.toString('utf8');
+  // Every pattern is bounded, and open-ended runs are walked by searching for
+  // the first character outside them: an open-ended `X*` can push one regexp
+  // backtrack entry per character and throw on a run of millions (see
+  // publication-scan.js). Self-contained, so it still serializes.
+  const runEnd = (from, stop) => {
+    stop.lastIndex = from;
+    const found = stop.exec(text);
+    return found ? found.index : text.length;
+  };
   if (
-    /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20,}|\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}/.test(
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{20}/.test(
       text
     )
   )
     return true;
-  if (/https?:\/\/[^\s/:]+:[^\s/@]+@/i.test(text)) return true;
+  // -----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----
+  const pem = /-----BEGIN /g;
+  for (let match = pem.exec(text); match; match = pem.exec(text)) {
+    const start = match.index + match[0].length;
+    const end = runEnd(start, /[^A-Z ]/g);
+    const prefix = end - start - 'PRIVATE KEY'.length;
+    if (prefix >= 0 && text.startsWith('PRIVATE KEY-----', end - 'PRIVATE KEY'.length) &&
+        (prefix === 0 || (prefix >= 2 && text[start + prefix - 1] === ' '))) return true;
+  }
+  // `\s*` around the assignment operator, walked: any run of Unicode spaces
+  // (a BOM, NBSP, blank lines) before a fixed character.
+  const spaceThen = (from, next) => {
+    const end = runEnd(from, /\S/g);
+    return next.includes(text[end]) ? end : -1;
+  };
+  const notToken = /[^A-Za-z0-9_-]/g;
+  const jwt = /\beyJ[A-Za-z0-9_-]{12}/g;
+  for (let match = jwt.exec(text); match; match = jwt.exec(text)) {
+    const first = runEnd(match.index + match[0].length, notToken);
+    const second = text[first] === '.' ? runEnd(first + 1, notToken) : -1;
+    const third = second - first > 12 && text[second] === '.' ? runEnd(second + 1, notToken) : -1;
+    if (third - second > 12) return true;
+    jwt.lastIndex = Math.max(first, match.index + 1);
+  }
+  const url = /https?:\/\//gi;
+  for (let match = url.exec(text); match; match = url.exec(text)) {
+    const user = runEnd(match.index + match[0].length, /[\s/:]/g);
+    if (user === match.index + match[0].length || text[user] !== ':') continue;
+    const password = runEnd(user + 1, /[\s/@]/g);
+    if (password > user + 1 && text[password] === '@') return true;
+  }
+  // ["']? key ["']? \s* [:=] \s* ["'] value{8,} ["']
   const assignments =
-    /["']?(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)["']?\s*[:=]\s*["']([^"'\r\n]{8,})["']/gi;
-  for (const match of text.matchAll(assignments)) {
+    /(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|authorization|private[_-]?key|credential)/gi;
+  for (let match = assignments.exec(text); match; match = assignments.exec(text)) {
+    const name = match.index + match[0].length;
+    const operator = spaceThen(name + (text[name] === '"' || text[name] === "'" ? 1 : 0), ':=');
+    const quote = operator === -1 ? -1 : spaceThen(operator + 1, '"\'');
+    if (quote === -1) continue;
+    const end = runEnd(quote + 1, /["'\r\n]/g);
+    if (end - quote - 1 < 8 || (text[end] !== '"' && text[end] !== "'")) continue;
+    // A placeholder value is skipped whole, as matchAll did.
+    assignments.lastIndex = end + 1;
     if (
       !/^(?:\$\{|process\.env\.|your[_ -]|example|placeholder|changeme|test|dummy|<)/i.test(
-        match[1]
+        text.slice(quote + 1, quote + 41)
       )
     )
       return true;
   }
+  // ^\s* key \s* [:=] \s* value{8,} \s* (#.*)? $, multiline.
+  const lineEnd = /[\n\r\u2028\u2029]/;
   const bareAssignments =
-    /^\s*(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*([A-Za-z0-9_+/.=-]{8,})\s*(?:#.*)?$/gim;
-  for (const match of text.matchAll(bareAssignments)) {
-    if (!/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(match[1])) return true;
+    /(?:password|passwd|api[_-]?key|secret|token|access[_-]?token|auth[_-]?token|private[_-]?key)/gi;
+  for (let match = bareAssignments.exec(text); match; match = bareAssignments.exec(text)) {
+    let lineStart = match.index;
+    let opens = false;
+    while (lineStart > 0 && /\s/.test(text[lineStart - 1]) && !opens) {
+      lineStart -= 1;
+      opens = lineEnd.test(text[lineStart]);
+    }
+    if (!opens && lineStart !== 0) continue;
+    const operator = spaceThen(match.index + match[0].length, ':=');
+    if (operator === -1) continue;
+    const start = runEnd(operator + 1, /\S/g);
+    // The value must end its line, optionally followed by blanks and a # comment.
+    const end = runEnd(start, /[^A-Za-z0-9_+/.=-]/g);
+    const after = runEnd(end, /\S|[\n\r\u2028\u2029]/g);
+    if (
+      end - start >= 8 &&
+      (after === text.length || text[after] === '#' || lineEnd.test(text[after])) &&
+      !/^(?:your[_-]|example|placeholder|changeme|test|dummy)/i.test(text.slice(start, start + 40))
+    )
+      return true;
   }
   return false;
 }

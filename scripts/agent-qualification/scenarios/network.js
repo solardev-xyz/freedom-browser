@@ -30,15 +30,19 @@ def code(error):
     return type(error).__name__
 
 def connect(family, target):
-    sock = socket.socket(family, socket.SOCK_STREAM)
-    sock.settimeout(5)
+    # Creation is inside the try: the Linux seccomp filter refuses AF_UNIX
+    # sockets at socket(2), before any address is looked up (#817).
+    sock = None
     try:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(5)
         sock.connect(target)
         return 'connected'
     except Exception as error:
         return code(error)
     finally:
-        sock.close()
+        if sock is not None:
+            sock.close()
 
 def probe(args):
     loop_port, lan_host, lan_port, public_host, public_port, abstract, sock_path, url = args[:8]
@@ -198,7 +202,7 @@ module.exports = {
       child.public === 'connected' &&
       (platform.fullNetworkIncludesHostAbstractUnixSockets
         ? child.abstract === 'connected'
-        : child.abstract === 'not_applicable') &&
+        : child.abstract !== 'connected') &&
       child.pathname !== 'connected' &&
       String(child.https).startsWith('status:');
 

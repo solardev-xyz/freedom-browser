@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Settings > AI says that website page tools (WebMCP) start working after a restart once AI is turned on, and offers Restart now; until then Agent tells you a restart is needed instead of reporting the tools unavailable ([#803](https://github.com/solardev-xyz/freedom-browser/issues/803))

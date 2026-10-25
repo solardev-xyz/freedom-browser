@@ -495,7 +495,7 @@ export function createAgentProviderUi(options = {}) {
       descriptor?.canRefresh &&
       (!descriptor.updatedAt || Date.now() - descriptor.updatedAt > 24 * 60 * 60 * 1000)
     ) {
-      refreshModelCatalog();
+      refreshModelCatalog({ background: true });
     }
   }
 
@@ -770,24 +770,41 @@ export function createAgentProviderUi(options = {}) {
     }
   }
 
-  async function refreshModelCatalog() {
+  // A catalog refresh says so only when someone asked for it, and only for a
+  // moment: a page opened on a day-old catalog refreshes in the background with
+  // no status line, not even when it fails (the previous catalog stays in use,
+  // and nobody asked), and a clicked refresh's "refreshed" clears itself
+  // (#803). A clicked refresh's failure stays until the next action, like every
+  // other error here.
+  const TRANSIENT_MESSAGE_MS = 4000;
+  let transientTimer = null;
+  function setTransientMessage(element, text) {
+    clearTimeout(transientTimer);
+    setMessage(element, text);
+    transientTimer = setTimeout(() => {
+      if (element.textContent === text) setMessage(element, '');
+    }, TRANSIENT_MESSAGE_MS);
+  }
+
+  async function refreshModelCatalog({ background = false } = {}) {
     const providerId = elements.provider.value;
     elements.modelRefresh.disabled = true;
-    setMessage(elements.providerMessage, 'Refreshing model catalog…');
+    if (!background) setMessage(elements.providerMessage, 'Refreshing model catalog…');
     try {
       const response = await api.refreshAgentProviderModels(
         providerId,
         elements.apiKey.value || undefined
       );
       if (!response?.ok) {
-        setMessage(
-          elements.providerMessage,
-          responseMessage(
-            response,
-            'Could not refresh models. Your previous catalog is still available.'
-          ),
-          true
-        );
+        if (!background)
+          setMessage(
+            elements.providerMessage,
+            responseMessage(
+              response,
+              'Could not refresh models. Your previous catalog is still available.'
+            ),
+            true
+          );
         return;
       }
       state.providerCatalog = response.catalog;
@@ -795,14 +812,15 @@ export function createAgentProviderUi(options = {}) {
       renderProviderFields();
       renderConnectedProviders();
       renderActiveModel();
-      setMessage(elements.providerMessage, 'Model catalog refreshed');
+      if (!background) setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
       return true;
     } catch {
-      setMessage(
-        elements.providerMessage,
-        'Could not refresh models. Your previous catalog is still available.',
-        true
-      );
+      if (!background)
+        setMessage(
+          elements.providerMessage,
+          'Could not refresh models. Your previous catalog is still available.',
+          true
+        );
     } finally {
       elements.modelRefresh.disabled = false;
     }
@@ -1440,7 +1458,7 @@ export function createAgentProviderUi(options = {}) {
       renderModelDetails();
       renderCompatibilityCheck();
     });
-    elements.modelRefresh.addEventListener('click', refreshModelCatalog);
+    elements.modelRefresh.addEventListener('click', () => refreshModelCatalog());
     elements.testProvider.addEventListener('click', testProviderConnection);
     elements.compatibilityContinue.addEventListener('click', async () => {
       if (!context.conversationId && context.runStatus === 'idle') {

@@ -307,7 +307,7 @@ Same shape, different pin location:
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then
-  `npm run radicle:download`. CI's `radicle-addon-load` matrix then loads the
+  `npm run radicle:download`. CI's `native-addons` matrix then loads the
   addon on every runner-available target and checks it against
   `RADICLE_ADDON_REQUIRED_EXPORTS` (`scripts/check-radicle-addon.js`); win-arm64
   has no hosted runner, so its asset is only verified against the pinned sums.
@@ -328,6 +328,47 @@ Arti pins a crates.io version only — cargo does the fetching and verification.
 All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
+
+## Prebuilt natives (Arti, whisper.cpp, Windows sandbox)
+
+Arti, the whisper.cpp dictation runtime and the Windows sandbox helpers are
+compiled from pinned sources, which used to cost every release build 5 to 20
+minutes per platform. `.github/workflows/natives.yml` compiles them once, on
+the same runners `release.yml` packages on, and publishes one
+`<component>-<target>.tar.gz` per target to a `natives-<date>-<run id>`
+pre-release (never "Latest"). `scripts/prebuilt-natives.json` pins the release
+tag and, per component, the recipe key it was built from and each archive's
+sha256. `scripts/prebuilt-natives.js` owns the component list.
+
+- **Recipe key**: the sha256 of every file that decides a component's bytes
+  (`scripts/fetch-arti.js`; `scripts/build-dictation-runtime.js` with
+  `src/shared/dictation-runtime.js` and the notices; `scripts/build-windows-workspace.js`,
+  its notices writer, the repository `LICENSE` those notices embed and the adapter under `src/main/agent/workspace-execution/native/windows/`),
+  line endings normalised.
+- **Release builds** run `node scripts/prebuilt-natives.js fetch` before their
+  Arti step. A component whose pinned key matches the checkout is downloaded,
+  checked against its sha256 and installed, and the build steps then skip it.
+  A stale one (any PR that changes a recipe file) is compiled from source exactly
+  as before, with a `::warning::` on the run, so a recipe change can never ship
+  old binaries; it only costs time until it is re-pinned. A checksum mismatch
+  fails the build.
+- **After merging a recipe change** (an Arti, whisper.cpp or Codex sandbox bump,
+  or an edit to those scripts): dispatch `natives.yml` on `main` (Actions →
+  Prebuilt natives → Run workflow), then `npm run natives:pin -- --run <run id>`
+  and open a PR with the updated `scripts/prebuilt-natives.json`. `pin` takes
+  the pin file from the run's own workflow artifact rather than the release,
+  whose assets can be replaced later, and refuses anything but a successful
+  dispatch on `main`. A dispatch on another branch builds and uploads artifacts
+  but publishes nothing, which is how to try a recipe change before merging it.
+- **Locally**, `npm run natives:download` installs the current prebuilts for
+  the host (a Windows developer skips the 12-minute sandbox build), and the
+  build scripts reuse them through their manifests. Those manifests hash the
+  recipe files with line endings normalised too, so an archive built on the
+  Windows runner's core.autocrlf checkout stays current on an LF checkout. The
+  one exception is the Windows sandbox's `adapterSha256`: the app checks it
+  byte for byte against the adapter source it ships with
+  (`windows-sandbox-runtime.js`), so a Windows checkout with
+  `core.autocrlf=false` still rebuilds the sandbox locally.
 
 ## See also
 
