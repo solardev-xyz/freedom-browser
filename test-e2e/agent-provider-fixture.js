@@ -26,6 +26,7 @@ async function openProviderSettings(window) {
         .context()
         .pages()
         .find((page) => page.url().includes('/pages/settings.html'));
+      if (page && !page.__diag) { page.__diag = true; page.on('console', (m) => { if (m.text().includes('[diag]')) console.log(Date.now(), m.text()); }); page.on('load', () => console.log(Date.now(), '[diag] settings page load event')); }
       return Boolean(page);
     })
     .toBe(true);

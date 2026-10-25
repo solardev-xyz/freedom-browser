@@ -143,7 +143,7 @@ test('a catalog refresh reports itself only when asked for, and only briefly', a
     const message = providerPage.locator('#agent-provider-message');
     await providerPage.locator('#agent-provider-add').click();
     await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
-    await providerPage.locator('#agent-custom-name').fill('Refresh fixture');
+    console.log(Date.now(), '[diag] test: fill name'); await providerPage.locator('#agent-custom-name').fill('Refresh fixture'); console.log(Date.now(), '[diag] test: filled name');
     await providerPage.locator('#agent-custom-url').fill(`http://127.0.0.1:${server.address().port}/v1`);
     await providerPage.locator('#agent-custom-models').fill('manual-model');
     await providerPage.locator('#agent-provider-save').click();

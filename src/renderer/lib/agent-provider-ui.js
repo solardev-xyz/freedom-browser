@@ -466,6 +466,7 @@ export function createAgentProviderUi(options = {}) {
   }
 
   function openProviderDetail(providerId, chooseMethod = false) {
+    console.warn('[diag] openProviderDetail', providerId, location.hash, providerScreen, elements.provider.value, performance.now().toFixed(0), new Error().stack.split('\n').slice(1, 6).join(' | '));
     closeDisconnectConfirm();
     choosingProviderMethod = chooseMethod;
     elements.provider.value = providerId;
@@ -1520,6 +1521,7 @@ export function createAgentProviderUi(options = {}) {
   // Settings owns URL/history; replaying a route must not push another one or
   // clear a partially edited form on catalogue/status updates.
   function showSettingsPage(screen, providerId) {
+    console.warn('[diag] showSettingsPage', screen, providerId, providerScreen, elements.provider?.value, performance.now().toFixed(0));
     if (
       providerScreen === screen &&
       (screen !== 'detail' || elements.provider.value === providerId)

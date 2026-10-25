@@ -588,6 +588,7 @@ const canonicalizeHash = (route) => {
 // Settings tab (#280) — so no navigation can leave a hash the page
 // resolved somewhere else standing in the address bar.
 const applyHashSection = () => {
+  console.warn('[diag] applyHashSection', location.hash, performance.now().toFixed(0), performance.timeOrigin.toFixed(0));
   const route = resolveRoute(location.hash);
   canonicalizeHash(route);
   showSection(route);
