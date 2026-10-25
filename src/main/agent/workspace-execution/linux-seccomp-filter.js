@@ -28,7 +28,13 @@
 //
 // The cost: a command cannot run its own Unix-socket server either, even in
 // /tmp. Python 3.14's default `forkserver` multiprocessing start method is one
-// such user (it listens on an AF_UNIX socket); `fork` still works.
+// such user (it listens on an AF_UNIX socket); `fork` still works. The
+// foreign-ABI rule is wider than sockets: any 32-bit executable (i386 or x32 on
+// x64, AArch32 on arm64), such as a prebuilt 32-bit helper or toolchain binary
+// shipped in a project, is killed with SIGSYS on its very first syscall, in
+// every posture. Allowing those ABIs would need their own reviewed syscall
+// tables (and a way to see socketcall()'s in-memory arguments), so they stay
+// unsupported rather than unfiltered.
 //
 // Every other syscall is allowed; this is a host-IPC filter, not a general
 // syscall allowlist. Bubblewrap applies it right before exec'ing the native

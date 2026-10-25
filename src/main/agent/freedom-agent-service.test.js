@@ -1289,6 +1289,15 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'without replacing unrelated settings'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On Linux, sandboxed commands cannot create Unix sockets: socket(AF_UNIX) fails with EACCES'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      "multiprocessing.set_start_method('fork')"
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      '32-bit executables (i386 or x32 on x64, AArch32 on arm64) are killed with SIGSYS'
+    );
 
     fake.prompt.resolve();
     await service.waitForIdle();
