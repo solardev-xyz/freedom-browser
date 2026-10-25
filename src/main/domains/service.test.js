@@ -64,7 +64,7 @@ function fixture(namespace = 'eth', available = false) {
     return { hash };
   }) };
   const options = { store, chain, wallet, executeWaitMs: 0, pollMs: 1, verifyResolution: jest.fn(async () => true),
-    getPublication: jest.fn(async () => ({ publicationId, reference: '12'.repeat(32), state: 'completed', verified: true, indexDocument: 'index.html' })) };
+    getPublication: jest.fn(async () => ({ publicationId, target: 'public', public: true, reference: '12'.repeat(32), state: 'completed', verified: true, indexDocument: 'index.html' })) };
   return { service: new DomainService(options), options, state, chain, wallet, clock, store,
     context: { conversationId: 'conversation', requestApproval: jest.fn(async () => 'approved') }, getSecret: () => secret, getWire: () => wire };
 }
@@ -229,11 +229,38 @@ test('a provably unsent reveal can resume even after its dispatch digest replace
 
 test('unverified/non-site publications and custom resolvers never prepare a write', async () => {
   const f = fixture();
-  f.options.getPublication.mockResolvedValue({ state: 'completed', verified: false });
+  f.options.getPublication.mockResolvedValue({ public: true, state: 'completed', verified: false });
   await expect(f.service.prepare({ name: f.state.name, intent: 'set_website', publicationId }, f.context)).rejects.toThrow('verified');
   f.state.supportedResolver = false;
   await expect(f.service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'after' }, f.context)).rejects.toThrow('resolver');
   expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('a private draft link is never connected to a name', async () => {
+  const f = fixture();
+  f.options.getPublication.mockResolvedValue({ publicationId, target: 'draft', public: false, encrypted: true,
+    reference: '12'.repeat(64), state: 'completed', verified: true, indexDocument: 'index.html' });
+  await expect(f.service.prepare({ name: f.state.name, intent: 'set_website', publicationId }, f.context))
+    .rejects.toThrow('A private draft link cannot be connected to a name');
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('a publication with an updated stable address maps the name to the feed, not one version', async () => {
+  const f = fixture();
+  const feed = 'fe'.repeat(32);
+  f.options.getPublication.mockResolvedValue({ publicationId, target: 'public', public: true, reference: '12'.repeat(32),
+    state: 'completed', verified: true, indexDocument: 'index.html',
+    stableAddress: { name: 'site', owner: `0x${'a'.repeat(40)}`, reference: feed, bzzUrl: `bzz://${feed}`, updated: true } });
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'set_website', publicationId }, f.context);
+  expect(JSON.stringify(plan)).toContain(feed);
+  // Not updated: the version reference is used instead.
+  const g = fixture();
+  g.options.getPublication.mockResolvedValue({ publicationId, target: 'public', public: true, reference: '12'.repeat(32),
+    state: 'completed', verified: true, indexDocument: 'index.html',
+    stableAddress: { name: 'site', owner: `0x${'a'.repeat(40)}`, updated: false, error: 'locked' } });
+  const fallback = await g.service.prepare({ name: g.state.name, intent: 'set_website', publicationId }, g.context);
+  expect(JSON.stringify(fallback)).not.toContain(feed);
+  expect(JSON.stringify(fallback)).toContain('12'.repeat(32));
 });
 
 test('changed record/ownership and price changes invalidate stale plans before sending', async () => {

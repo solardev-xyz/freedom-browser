@@ -1328,6 +1328,32 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('keeps the publication kind: a private draft link with its encrypted reference, and a stable address (#741 E, F)', () => {
+    const base = { publicationId: `swarm_pub_${'a'.repeat(24)}`, state: 'completed', applicationState: 'applied', kind: 'folder', name: 'site', verified: true };
+    const draft = normalizePublicationReceipt({ ...base, target: 'draft', public: false, encrypted: true,
+      reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` });
+    expect(draft).toMatchObject({ target: 'draft', public: false, encrypted: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` });
+    const outcome = buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: draft }], 'completed');
+    expect(outcome).toMatchObject({ headline: 'Private draft link ready and verified' });
+    expect(outcome.detail).toContain('encrypted private draft link');
+    expect(outcome.detail).not.toMatch(/Freedom published/);
+    // A receipt cannot claim to be a draft and public, or a public one unencrypted-length-mismatched.
+    expect(normalizePublicationReceipt({ ...base, target: 'draft', public: true, encrypted: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+    expect(normalizePublicationReceipt({ ...base, target: 'draft', public: false, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+    expect(normalizePublicationReceipt({ ...base, public: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+
+    const feed = 'f'.repeat(64);
+    const stable = normalizePublicationReceipt({ ...base, target: 'public', public: true, reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}`,
+      stableAddress: { name: 'site', owner: `0x${'1'.repeat(40)}`, reference: feed, bzzUrl: `bzz://${feed}`, index: 2, updated: true, privateKey: '0xsecret' } });
+    expect(stable.stableAddress).toEqual({ name: 'site', owner: `0x${'1'.repeat(40)}`, reference: feed, bzzUrl: `bzz://${feed}`, index: 2, updated: true });
+    expect(buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: stable }], 'completed').detail)
+      .toContain(`stable address bzz://${feed} now points to this version`);
+    const stale = normalizePublicationReceipt({ ...base, public: true, reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}`,
+      stableAddress: { name: 'site', owner: `0x${'1'.repeat(40)}`, updated: false, error: 'locked' } });
+    expect(buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: stale }], 'completed').detail)
+      .toContain('The stable address was not updated.');
+  });
+
   test('projects verified Swarm publications without local paths and recovers in-flight work', () => {
     const publication = normalizePublicationReceipt({
       publicationId: `swarm_pub_${'a'.repeat(24)}`,
@@ -1348,6 +1374,7 @@ describe('Agent progress projection', () => {
       applicationState: 'applied',
       kind: 'folder',
       name: 'My site',
+      target: 'public',
       public: true,
       progress: 100,
       reference: 'b'.repeat(64),

@@ -152,6 +152,9 @@ function createAgentElements() {
     'agent-publication-details',
     'agent-publication-summary',
     'agent-publication-permanent',
+    'agent-publication-draft-notice',
+    'agent-publication-stable-notice',
+    'agent-publication-postage-warning',
     'agent-publication-findings',
     'agent-wallet-account-field',
     'agent-wallet-account',
@@ -4528,6 +4531,82 @@ describe('Agent UI', () => {
     card.children[1].children[0].dispatch('click');
     await flush();
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
+  });
+
+  test('a private draft link is its own action with its own fixed notice, postage and receipt (#741 E, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_draft',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: { kind: 'folder', name: 'dist', workspacePath: 'dist', target: 'draft', public: false, encrypted: true,
+        postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 3 * 86_400 + 5, expiry: 'soon',
+          estimatedCostPlur: '123456789012', estimatedChunks: 6 },
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 4, excerpt: 'https://unpkg.com', blocking: false }] },
+    });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Create a private draft link for “dist”?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Create private draft link');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('publishing it publicly later needs its own approval');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    const summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('Private draft link (encrypted)');
+    expect(summary).toContain('cccccccc…cccccccc');
+    expect(summary).toContain('≈ 0.0000123 xBZZ of this batch’s prepaid storage (about 6 chunks). Nothing new is bought.');
+    expect(summary).toContain('3 days');
+    const warning = ctx.elements['agent-publication-postage-warning'];
+    expect(warning.hidden).toBe(false);
+    expect(warning.dataset.level).toBe('warn');
+    expect(warning.textContent).toBe('This postage batch expires in 3 days. After that the content can no longer be retrieved unless the batch is extended in Storage.');
+    const finding = ctx.elements['agent-publication-findings'].querySelectorAll('.agent-publication-finding-badge')[0];
+    expect(finding.textContent).toBe('Third party · warning');
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_draft', true);
+
+    const encrypted = 'e'.repeat(128);
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', intent: 'Publishing dist' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', status: 'succeeded',
+      label: 'Published dist', publication: { publicationId: `swarm_pub_${'d'.repeat(24)}`, state: 'completed', applicationState: 'applied',
+        kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, progress: 100, reference: encrypted,
+        bzzUrl: `bzz://${encrypted}`, verified: true, message: 'Private draft link ready · retrieval verified' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
+    expect(card.children[0].children.at(-1).textContent).toBe('Private draft link ready · retrieval verified · encrypted, anyone with the link can read it');
+    expect(card.children[1].children.map(button => button.textContent)).toEqual(['Open', 'Copy draft link']);
+    card.children[1].children[1].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.copyText).toHaveBeenCalledWith(`bzz://${encrypted}`);
+  });
+
+  test('a stable-address publication says older versions stay retrievable, and an expired or missing batch is explained (#741 F, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const ask = (approvalId, publication) => ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId,
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist', publication: { kind: 'folder', name: 'dist', target: 'public', public: true, ...publication } });
+    ask('approval_stable', { stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` },
+      postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 0, expiry: 'expired' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(false);
+    let summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('my-site · owned by your Swarm identity');
+    expect(summary).toContain(`Updates bzz://${'f'.repeat(64)}`);
+    expect(summary).toContain('Expired');
+    expect(ctx.elements['agent-publication-postage-warning'].dataset.level).toBe('critical');
+    expect(ctx.elements['agent-publication-postage-warning'].textContent).toContain('has expired');
+
+    ctx.elements['agent-approval-decline'].dispatch('click');
+    await flush();
+    ask('approval_none', { postage: { status: 'none' } });
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-postage-warning'].hidden).toBe(true);
+    summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('No usable batch yet. Freedom checks again before uploading and never buys postage on its own.');
   });
 
   test('publication findings block Publish publicly until each secret is resolved', async () => {

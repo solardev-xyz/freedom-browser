@@ -99,6 +99,7 @@ describe('SwarmPublicationController', () => {
       publication: {
         kind: 'folder',
         name: 'website',
+        target: 'public',
         public: true,
         bytes: 5,
         files: [{ path: 'index.html', bytes: 5 }],
@@ -173,6 +174,7 @@ describe('SwarmPublicationController', () => {
       publication: {
         kind: 'folder',
         name: 'dist',
+        target: 'public',
         public: true,
         bytes: 12,
         files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 7 }],
@@ -616,5 +618,156 @@ describe('SwarmPublicationController pre-publish scan', () => {
     await expect(publication).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
     expect(requestApproval).not.toHaveBeenCalled();
     expect(dependencies.publishCollection).not.toHaveBeenCalled();
+  });
+});
+
+describe('private draft links, stable addresses and postage on the card (#741 E, F, G)', () => {
+  const ENCRYPTED = 'e'.repeat(128);
+  const FEED = 'f'.repeat(64);
+  const OWNER = `0x${'1'.repeat(40)}`;
+  const BATCH = 'c'.repeat(64);
+  const STRIPE = `sk_live_${'4eC39HqLyjWDarjtT1zdp7dc'}`;
+  const encryptedUpload = jest.fn(async () => ({ reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: null, bytesSize: 12 }));
+  const signer = () => jest.fn(async () => ({ address: OWNER, privateKey: `0x${'9'.repeat(64)}` }));
+  const feeds = () => ({
+    updateFeed: jest.fn(async () => ({ index: 3 })),
+    createFeed: jest.fn(async () => ({ manifestReference: FEED, bzzUrl: `bzz://${FEED}` })),
+  });
+
+  test('E: a draft is its own target, uploads with Swarm-Encrypt and records that it was a draft', async () => {
+    const { controller, dependencies } = createController({ publishCollection: encryptedUpload });
+    const requestApproval = jest.fn(async () => 'approved');
+    const result = await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication).toMatchObject({ target: 'draft', public: false, encrypted: true });
+    expect(requestApproval.mock.calls[0][0].publication).not.toHaveProperty('stableAddress');
+    expect(encryptedUpload.mock.calls[0][1]).toMatchObject({ encrypt: true });
+    expect(result.publication).toMatchObject({ target: 'draft', public: false, encrypted: true, reference: ENCRYPTED,
+      bzzUrl: `bzz://${ENCRYPTED}`, state: 'completed', message: expect.stringContaining('Private draft link ready') });
+    expect(dependencies.addHistoryEntry).toHaveBeenCalledWith(expect.objectContaining({ name: 'dist (private draft link)' }));
+  });
+
+  test('E: an unencrypted reference from the node is never reported as a private link', async () => {
+    const { controller } = createController();
+    const failure = controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    await expect(failure).rejects.toThrow('did not encrypt this upload');
+    const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'c' })).publication;
+    expect(receipt).toMatchObject({ target: 'draft', state: 'outcome_unknown' });
+    expect(receipt).not.toHaveProperty('bzzUrl');
+  });
+
+  test('E: the same scan and blocking rules apply to a draft', async () => {
+    const { controller } = createController({
+      publishCollection: encryptedUpload,
+      workspaceSourceReader: { read: jest.fn(async () => ({ sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist', bytes: 20,
+        files: [{ path: 'app.js', bytes: Buffer.from(`const s = "${STRIPE}";`) }] })) },
+    });
+    encryptedUpload.mockClear();
+    await expect(controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' }))
+      .rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER, message: expect.stringContaining('stripe-secret-key') });
+    expect(encryptedUpload).not.toHaveBeenCalled();
+  });
+
+  test('E: publishing a draft publicly later is a separate approval and an unencrypted upload', async () => {
+    let call = 0;
+    const publishCollection = jest.fn(async () => (call++ === 0
+      ? { reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: null }
+      : { reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}`, tagUid: null }));
+    let id = 0;
+    const { controller } = createController({ publishCollection, publicationIdFactory: () => `swarm_pub_${String(++id).padStart(24, '0')}` });
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    const declined = jest.fn(async () => 'declined');
+    await expect(controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval: declined }))
+      .rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER });
+    expect(declined).toHaveBeenCalledWith(expect.objectContaining({ publication: expect.objectContaining({ target: 'public', public: true }) }));
+    expect(publishCollection).toHaveBeenCalledTimes(1);
+    const published = await controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+    expect(publishCollection.mock.calls[1][1]).not.toHaveProperty('encrypt');
+    expect(published.publication).toMatchObject({ target: 'public', public: true, reference: REFERENCE });
+    expect(published.publication).not.toHaveProperty('encrypted');
+  });
+
+  test('E: a draft never gets a stable address', async () => {
+    const { controller, dependencies } = createController({ feedSigner: signer(), ...feeds() });
+    const requestApproval = jest.fn();
+    await expect(controller.publish({ workspacePath: 'dist', target: 'draft', stableAddress: 'site' }, { requestApproval }))
+      .rejects.toMatchObject({ code: ERROR_CODES.INVALID_ARGUMENT });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(dependencies.publishCollection).not.toHaveBeenCalled();
+  });
+
+  test('F: publishes under a feed owned by the Swarm identity, and a later fix updates the same address', async () => {
+    const feed = feeds();
+    let id = 0;
+    const feedSigner = signer();
+    const { controller } = createController({ feedSigner, ...feed, publicationIdFactory: () => `swarm_pub_${String(++id).padStart(24, '0')}` });
+    const requestApproval = jest.fn(async () => 'approved');
+    const first = await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER });
+    expect(feed.updateFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', REFERENCE, undefined);
+    expect(feed.createFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', undefined);
+    expect(first.publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, reference: FEED, bzzUrl: `bzz://${FEED}`, index: 3, updated: true });
+    expect(JSON.stringify(first)).not.toContain('9'.repeat(64));
+    // A later publication in another conversation names the address it updates.
+    await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'other', requestApproval });
+    expect(requestApproval.mock.calls[1][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, currentBzzUrl: `bzz://${FEED}` });
+    expect(feed.updateFeed).toHaveBeenCalledTimes(2);
+  });
+
+  test('F: a locked vault refuses before approval; a failed feed update leaves the content published and says so', async () => {
+    const locked = createController({ feedSigner: jest.fn(async () => { throw new Error('locked'); }), ...feeds() });
+    const requestApproval = jest.fn(async () => 'approved');
+    await expect(locked.controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { requestApproval }))
+      .rejects.toMatchObject({ code: ERROR_CODES.CAPABILITY_UNAVAILABLE, message: expect.stringContaining('vault') });
+    expect(requestApproval).not.toHaveBeenCalled();
+
+    const feed = feeds();
+    feed.updateFeed.mockRejectedValueOnce(new Error('feed write refused'));
+    const { controller } = createController({ feedSigner: signer(), ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval });
+    expect(result.publication).toMatchObject({ state: 'completed', reference: REFERENCE,
+      message: expect.stringContaining('the stable address was not updated'),
+      stableAddress: { name: 'site', owner: OWNER, updated: false, error: 'feed write refused' } });
+    expect(result.publication.stableAddress).not.toHaveProperty('bzzUrl');
+    expect(feed.createFeed).not.toHaveBeenCalled();
+  });
+
+  test('F: an identity switched after approval does not update the address', async () => {
+    const feed = feeds();
+    const feedSigner = jest.fn()
+      .mockResolvedValueOnce({ address: OWNER, privateKey: '0x1' })
+      .mockResolvedValueOnce({ address: `0x${'2'.repeat(40)}`, privateKey: '0x2' });
+    const { controller } = createController({ feedSigner, ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(result.publication.stableAddress).toMatchObject({ updated: false, error: expect.stringContaining('identity changed') });
+    expect(feed.updateFeed).not.toHaveBeenCalled();
+  });
+
+  test('G: the card shows the selected batch, its cost and time left, and that batch is the one used', async () => {
+    const preview = { status: 'ready', batchId: BATCH, usable: true, ttlSeconds: 3 * 86_400, expiry: 'soon', estimatedChunks: 4, estimatedCostPlur: '4000' };
+    const readiness = { backendKey: () => 'backend', preview: jest.fn(async () => preview),
+      select: jest.fn(async () => 'd'.repeat(64)), inspect: jest.fn(async () => ({ ready: true, firstConfirmedBlock: 1 })) };
+    const { controller, dependencies } = createController({ postageReadiness: readiness, publishCollection: encryptedUpload });
+    encryptedUpload.mockClear();
+    const requestApproval = jest.fn(async () => 'approved');
+    await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval });
+    expect(readiness.preview).toHaveBeenCalledWith('c', 12, { encrypted: true, files: 2 });
+    expect(requestApproval.mock.calls[0][0].publication.postage).toEqual(preview);
+    expect(readiness.select).not.toHaveBeenCalled();
+    expect(encryptedUpload.mock.calls[0][1]).toMatchObject({ batchId: BATCH, encrypt: true });
+    expect(dependencies.publishData).not.toHaveBeenCalled();
+  });
+
+  test('G: postage details that cannot be read never decide the publication', async () => {
+    const readiness = { backendKey: () => 'backend', preview: jest.fn(async () => { throw new Error('node down'); }),
+      select: jest.fn(async () => BATCH), inspect: jest.fn(async () => ({ ready: true, firstConfirmedBlock: 1 })) };
+    const { controller, dependencies } = createController({ postageReadiness: readiness });
+    const requestApproval = jest.fn(async () => 'approved');
+    const result = await controller.publish({ workspacePath: 'dist' }, { conversationId: 'c', requestApproval });
+    expect(requestApproval.mock.calls[0][0].publication.postage).toEqual({ status: 'unknown' });
+    expect(readiness.select).toHaveBeenCalledTimes(1);
+    expect(dependencies.publishCollection.mock.calls[0][1]).toMatchObject({ batchId: BATCH });
+    expect(result.publication.state).toBe('completed');
   });
 });

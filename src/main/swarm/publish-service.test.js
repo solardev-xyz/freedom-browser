@@ -226,6 +226,33 @@ describe('publish-service', () => {
     });
   });
 
+  describe('Swarm encryption for private draft links (#741 E)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    test('encrypt: true reaches the collection and data uploads; it is never on by default', async () => {
+      const { publishData } = require('./publish-service');
+      mockUploadCollection.mockResolvedValue({ reference: makeRef('e'.repeat(128)), tagUid: 41 });
+      mockUploadFile.mockResolvedValue({ reference: makeRef('e'.repeat(128)), tagUid: 42 });
+      const files = [{ path: 'index.html', bytes: Buffer.from('<p>draft</p>') }];
+      const collection = await publishCollection(files, { batchId: 'batch5', encrypt: true });
+      expect(mockUploadCollection.mock.calls[0][2]).toMatchObject({ encrypt: true });
+      expect(collection.bzzUrl).toBe(`bzz://${'e'.repeat(128)}`);
+      await publishData('draft text', { batchId: 'batch5', encrypt: true });
+      expect(mockUploadFile.mock.calls[0][3]).toMatchObject({ encrypt: true });
+      await publishCollection(files, { batchId: 'batch5' });
+      await publishData('public text', { batchId: 'batch5', encrypt: 'yes' });
+      expect(mockUploadCollection.mock.calls[1][2]).not.toHaveProperty('encrypt');
+      expect(mockUploadFile.mock.calls[1][3]).not.toHaveProperty('encrypt');
+    });
+
+    test('an encrypted tag address is reported as the reference', () => {
+      expect(normalizeTag({ uid: 1, split: 2, synced: 2, address: 'E'.repeat(128) }).reference).toBe('e'.repeat(128));
+      expect(normalizeTag({ uid: 1, split: 2, synced: 2, address: 'e'.repeat(100) })).not.toHaveProperty('reference');
+    });
+  });
+
   describe('IPC handlers', () => {
     beforeEach(() => {
       jest.clearAllMocks();

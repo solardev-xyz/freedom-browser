@@ -55,12 +55,60 @@ carries `prepublishScan` counts and rule names only. The card's permanence line
 is fixed markup, not request text, and swarm publications never offer
 "Allow for conversation".
 
-Not implemented yet (issue #741): encrypted draft uploads, feed-based stable
-addresses, postage cost/TTL on the card, and third-party script/tracker checks.
+For HTML/SVG and JavaScript files (and inline text published as `text/html`)
+the scan also warns, by origin only, about generated-code hygiene: `<script
+src>`, `<link>` (except navigation-only `rel` values such as `canonical`),
+`<img src>` and `fetch()` targets on an http(s) origin, and forms whose
+`action` posts to another site. These are `third-party` warnings: they never
+block, one per rule and origin per file, and the content is never rewritten.
+The Agent's site template (`skills/swarm-publishing/site-template.html`)
+starts new static sites with a restrictive `Content-Security-Policy` `<meta>`.
+
+## Publication targets: public, private draft link, stable address
+
+`swarm_publish` takes a `target`:
+
+- `public` (default): an unencrypted public upload. The card's primary button
+  is **Publish publicly**.
+- `draft`: a **private draft link**. The upload is sent with
+  `Swarm-Encrypt: true` and its reference is 128 hex (the address plus the
+  decryption key). The card's button is **Create private draft link** and its
+  fixed notice says that anyone who gets the link can read it and that the
+  encrypted data is still stored on the public network permanently. The same
+  scan and blocking rules apply. If the node returns an unencrypted
+  (64-hex) reference, the publication is not reported as a draft link. A
+  draft never gets a stable address or a domain name (`DomainService`
+  refuses it), and publishing the same content publicly later is a separate
+  `swarm_publish` call with its own approval. Receipts carry `target`,
+  `public` and, for drafts, `encrypted: true`.
+
+`stableAddress: "<name>"` (public only) publishes under a Swarm feed owned by
+the user's Swarm identity (the node wallet key from the unlocked vault; a
+locked vault refuses before approval). The topic is
+`freedom-agent/stable-address/<name>`, so the same name always resolves to
+the same `bzz://` feed manifest, and a later publication with that name
+updates it. After the content upload is confirmed, the controller writes the
+feed update and the feed manifest with the same batch. If that fails, the
+content is still published and the receipt says `stableAddress.updated:
+false`. The card's fixed notice says older versions stay retrievable by
+anyone holding their own reference while their postage is valid. Connecting
+a name is left to the existing domain tools, only when the user asks; for a
+publication with an updated stable address they map the name to the feed.
+
+## Postage on the card
+
+Before approval, `SwarmPostageReadiness.preview()` selects the batch the
+upload will use (the same selection as before, never a purchase) and reads its
+remaining time and per-chunk amount. The card shows the batch, an estimated
+share of its prepaid storage (estimated chunks × the batch's amount) and the
+time remaining, and a warning line under 7 days (critical under one day, and
+for an expired batch). The upload then uses that same batch. If the preview
+cannot be read, the card says so and the readiness checks below still decide.
 
 ## Readiness and retries
 
-After public-network approval, Freedom selects and retains one postage batch.
+After approval, Freedom retains one postage batch: the one the card showed,
+or, if the card could not read one, the one it selects now.
 A recent successful purchase receipt in this conversation takes precedence over
 another automatically selected batch. A purchase is never repeated by publication
 code. The approved file/text snapshot stays in memory and is reused unchanged for
