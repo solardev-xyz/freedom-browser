@@ -1737,8 +1737,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # The action runs zizmor's container image by digest for the version
-      # named here; bump both together (Dependabot bumps the action).
+      # Since v0.7 the action no longer pulls a container image: it
+      # pip-downloads the zizmor wheel for the version named here with
+      # `--require-hashes` against the lock file it ships for that version
+      # (support/locks/zizmor-<version>.txt), so the integrity guarantee is
+      # the action's own SHA pin plus that hash lock. It needs `python3` on
+      # the runner (ubuntu-latest has it). A version the pinned action has no
+      # lock for fails the step, so bump both together (Dependabot bumps the
+      # action).
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
