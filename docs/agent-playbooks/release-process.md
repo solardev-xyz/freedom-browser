@@ -13,6 +13,8 @@ The flow at a glance:
 3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
+An Electron security fix with a deadline does not wait for this cycle: it takes the [Security release (Electron)](#security-release-electron) fast path below, which reuses §1 and §4–§9 and skips the rest.
+
 Myotis packaging also builds the checked-in native supervisor before binary
 preflight (`scripts/build.js`). Native macOS builds compile every requested
 architecture; Linux builds use the target host compiler; Windows release CI
@@ -386,6 +388,74 @@ Why a `-dev` suffix rather than a bare `<next>`:
 - The About dialog (`app.getVersion()`) and the updater User-Agent in `src/main/updater.js` are the only surfaces that show the version. With the suffix, a screenshot or bug report from a local build self-identifies as unreleased, instead of falsely claiming the previous release.
 - Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
 - Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
+
+## Security release (Electron)
+
+The fast path for Freedom's security-release rule for Electron, decided 2026-10-23 ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644), roadmap item 0.2):
+
+- a Chromium/Electron security fix on the current major reaches the stable release within **7 days** of its npm publish;
+- within **72 hours** when the bug is exploited in the wild: Chrome's release notes say "an exploit … exists in the wild", or the CVE is in CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) catalog;
+- never ship an end-of-life Electron major (Electron supports the latest three);
+- adopt each new major within 8 weeks of its first stable release.
+
+### What starts it
+
+`.github/workflows/electron-watch.yml` runs `scripts/electron-watch.js` every 6 hours (and on demand from the Actions tab, with a `dry_run` option). It reads the Electron that `main`'s lockfile pins and the one the latest stable release's lockfile ships, and keeps one issue per finding, labelled `security-release`:
+
+- **`Ship Electron <x.y.z> (security release), due <date>`** — `<x.y.z>` is the newest patch on the shipped major. The issue lists every release since the shipped version that carries a security fix, why it counts, its own deadline and its CVEs; the earliest deadline is the issue's. It is updated in place as the evidence changes, closed as superseded when a newer patch on the same major becomes the target (the new issue carries the deadline forward), and closed as shipped once the latest stable release's lockfile has the target.
+- **`Adopt Electron <N>, due <date>`** — opened when a new major's first stable release is on npm, due 8 weeks later. Not a fast-path bump: a major goes through §2's checks and a release of its own.
+- **`Electron <N> reaches end of life on <date>`** / **`… is past end of life`** — the pinned major is the oldest supported one (or its EOL date in [Electron's schedule](https://releases.electronjs.org/schedule) is within a release cycle), or no longer supported at all.
+
+A release counts as a security release when any of these says so; `scripts/lib/electron-watch.js` documents the phrasings, observed over 1,000 Electron releases:
+
+- its GitHub release notes: a `Security: …` line, a CVE id, a `Backported fixes from upstream …` line (Electron's cherry-pick batches since 2026-06, which name no CVEs), a `Backported fix for <bug id>` line, or a link to one of Electron's advisories;
+- one of Electron's [security advisories](https://github.com/electron/electron/security/advisories) names it as the patched version for the shipped one; these often appear weeks after the release;
+- it rolls Chromium past a build whose post on [Chrome's release blog](https://chromereleases.googleblog.com/) lists security fixes.
+
+The 72-hour window applies when one of the release's CVEs is in KEV, Chrome's release notes say it is exploited in the wild, or the notes do. Electron's cherry-pick batches name no CVEs, so an exploited Chromium bug can be fixed without any source tying it to a release: the issue then lists the Chromium CVEs CISA added since the shipped version came out, with the deadline the 72-hour rule would give, and a person checks the backport PRs. The script does not guess.
+
+**While `main` is on a newer major than the latest release** (it has adopted the next major, which has not shipped yet), the security issue stays on the shipped major. Users run that major, and the 8-week adoption window never replaces a 7-day or 72-hour deadline. No bump goes to `main` for those fixes. One of two releases settles them:
+
+- a fast-path release on the shipped major (step 3 applies the bump on the release branch with `node scripts/electron-watch.js bump --version <x.y.z>`); or
+- a release from `main` whose Electron of the new major was published to npm strictly after the target. Electron releases each security fix on every supported major together, so such a release carries the fixes. Once it is out, the issue closes on that basis, and any later fix on the new major is tracked from that release. Nothing else closes it: a release on a new-major Electron published before the target, or an open security issue for the new major, leaves it open with its own, earlier deadline.
+
+`main`'s own major is still watched in that state. When its newest patch carries security fixes, the bump pull request below keeps `main` current, and it points at the deadline issue, or at the adoption issue when nothing is owed on the shipped major.
+
+Text from upstream (release notes, advisories, CISA) is written into the issues as inert text, and they link only to Electron's GitHub releases, pull requests and advisories and to Chrome's release blog. Values from releases.electronjs.org reach the changelog fragment only in their exact numeric formats.
+
+For each security target newer than `main`'s pin on `main`'s own major, the workflow also opens the bump pull request, `chore(deps): Electron <x.y.z> (security release)`, from `electron-watch/electron-<x.y.z>` against `main`. It changes exactly what an Electron bump changes (§2, "An Electron bump is never lockfile-only"): `package.json` and `package-lock.json` (resolved with `npm install --package-lock-only --ignore-scripts`, so no package code runs in the job that can push), `licenses-audit.json`, `LICENSE_AUDIT.md`, and the Electron line of a `changelog.d/` fragment (an unreleased one is moved forward, as the 44.5.1 to 44.6.0 to 44.7.0 bumps did; otherwise a new `security--deps-electron-<x.y.z>.md`). A major is never bumped this way.
+
+Two GitHub rules shape what happens next:
+
+- **CI.** A pull request or push made with a workflow's `GITHUB_TOKEN` starts no `pull_request` or `push` workflow, by GitHub's design. `workflow_dispatch` is the exception, so the same run dispatches `ci.yml` on the bump branch; its `ci-ok` lands on the pull request's head commit, which is what branch protection reads. If it is missing, start it from Actions > CI > Run workflow on the branch, or push a commit to the branch yourself.
+- **Opening the pull request** needs the repository setting _Allow GitHub Actions to create and approve pull requests_ (Settings > Actions > General). With it off (`gh api repos/<owner>/<repo>/actions/permissions/workflow` reports `can_approve_pull_request_reviews: false`), the workflow pushes the branch, warns, and the issue links a ready compare page: open the pull request from there, which also starts CI normally.
+
+### Who ships
+
+The releaser ships: a repository admin, because only admins can create `release/**` branches and `v*` tags (Appendix B). Assign the issue to yourself when you pick it up. The issue's due date is the deadline, not the next planned release. If it cannot be met, say so in a comment with the reason and the date you expect; the body is rewritten by every run, so edits there are lost.
+
+### Steps
+
+1. **Merge the bump into `main`.** Review the pull request like any other, with the Electron release notes the issue links. The diff is Electron-only; check the changelog line reads well, and the NODE_MODULE_VERSION note in the description (a patch release within a major has never changed it, which is what lets this path skip §2's native-module check). Merge per `merge-process.md` once `ci-ok` is green.
+2. **Branch from the last release tag, not from `main`**, which carries unreleased work:
+
+   ```
+   git fetch origin --tags
+   git switch -c release/<version> v<last>
+   git push -u origin release/<version>
+   ```
+
+   `<version>` is the next patch after `<last>` (`v0.8.7` gives `0.8.8`), even when `main` is already on `<version>-dev`: §1 allows the release to take the number, and `main` moves to the patch after it in step 7.
+
+3. **Electron-only change.** `git cherry-pick -x <merge commit's bump commit>`. If `package-lock.json` conflicts because `main`'s lockfile moved since the tag, abort the pick and regenerate on the release branch instead: `node scripts/electron-watch.js bump --version <x.y.z>` makes the same edits on any checkout. Use the npm CI resolves with (§2), then commit as `chore(deps): Electron <x.y.z> (security release)`. Nothing else lands on this branch: no other dependency, no feature, no §2 refresh.
+4. **One release candidate.** Set `<version>-rc.1` (§1), re-stamp the audit baseline (§4; the Electron line is the only re-derivation), assemble the changelog from the one fragment (`changelog-process.md` step 9: add `## [Unreleased]`, `npm run changelog:assemble -- --write`, `git rm` the fragment), and tag `v<version>-rc.1` (§5). §4's UI consistency audit and §3's sweep of the whole cycle do not apply: nothing but Electron changed.
+5. **The automated smoke legs.** The candidate's release run must be green, all of it: the four builds and the four smoke jobs, `smoke-mac-arm64`, `smoke-linux-x64`, `smoke-linux-arm64` and `smoke-windows-x64`. Each runs the `packaged` and `packaged-live` Playwright projects against both artifacts of its platform (§6): launch, version, persistence, an `https://` page with the shield in its default state, the bundled Ant, IPFS, Radicle and Tor, the fuses, site permissions, the history worker and the notices. The push of the release branch runs `ci.yml`'s full matrix as well (§4). By hand, on one real machine: launch, About shows `<version>-rc.1`, an `https://` page renders. Add §6 step 7 (camera and microphone on macOS) when the Electron notes touch media or permissions. A failing leg is fixed on the branch and becomes `rc.2`; one candidate is the plan, not a reason to ship a red one.
+6. **Ship by the due date.** Set the bare `<version>` and the changelog heading (§1, §3), tag `v<version>`, re-check the draft in short form (§6), and publish (§7): upload to `freedom.baby`, update the website, publish the draft.
+7. **Back to `main`.** Merge the release branch into `main` (§8). If `main` was on `<version>-dev`, open `<version+1>-dev` (§9) and rename the milestone. The merge does **not** remove the bump's fragment from `main`: the release branch added and deleted it, so git sees no change there to bring across. `git rm` it in the merge commit, or the next release lists the Electron line a second time. If a later bump moved that fragment on `main` in the meantime, rewrite its line to start at the version just shipped instead. If `main` is on a newer major than the release branch, keep `main`'s `package.json`, `package-lock.json` and license audit in that merge; take only the version, changelog and release-branch fixes.
+
+The next run of the workflow after the GitHub release is published sees the target in the latest release's lockfile and closes the issue.
+
+Not automated yet: the `freedom.baby` upload (§7), and anything about how installs take the update. `src/main/updater.js` downloads it in the background with `autoInstallOnAppQuit` off, so it waits for the user to choose Install now, and a security release prompts no harder than any other.
 
 ## Nightly builds
 
