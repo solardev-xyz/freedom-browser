@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Project commands on Linux cannot open Unix sockets ([#817](https://github.com/solardev-xyz/freedom-browser/issues/817))

@@ -137,6 +137,17 @@ These are retained product/qualification decisions, not silently completed work:
    Unix sockets/possible X11 or host IPC; future qualification and approval copy
    should make this concrete. The macOS private-directory teardown race remains
    an unproven native hypothesis requiring a surviving-process fault fixture.
+   **Update 2026-10-25 ([#817](https://github.com/solardev-xyz/freedom-browser/issues/817)):**
+   the Linux host-IPC part is closed for Unix sockets. A read-only project mount
+   still let a command `connect()` to a pathname socket inside the project, the
+   pathname counterpart of the abstract-socket point above. Bubblewrap now
+   installs a seccomp filter on every command that refuses `socket(AF_UNIX)`,
+   datagram Unix `socketpair`, io_uring and foreign syscall ABIs, so neither
+   project sockets nor (under full networking) host abstract sockets are
+   reachable, and receipts report `customSeccomp: true`. The capability probe
+   loads the same filter, so a host that cannot install it has no Linux
+   workspace backend. Host loopback and LAN IP services remain part of the
+   full-network grant.
 8. **Other deliberate behavior:** ordinary task navigation is not classified as a
    sensitive action on every URL; `personal_sign` shows exact bytes without a new
    UTF-8 view; multi-window Agent ownership remains single-owner. Database deletion
