@@ -50,6 +50,10 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}/prefix/v1`;
+  // The keyless connection gets its own path on the same server, so its
+  // requests can be told apart from any the first connection still sends.
+  const keylessUrl = `http://127.0.0.1:${server.address().port}/keyless/v1`;
+  const keylessRequests = () => requests.filter(r => r.url.startsWith('/keyless/v1/'));
   try {
 
   let providerPage = await openProviderSettings(window);
@@ -118,14 +122,13 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await providerPage.locator('#agent-provider-add').click();
     await chooseCompatible(providerPage);
     await providerPage.locator('#agent-custom-name').fill('Keyless fixture');
-    await providerPage.locator('#agent-custom-url').fill(baseUrl);
+    await providerPage.locator('#agent-custom-url').fill(keylessUrl);
     await providerPage.locator('#agent-custom-models').fill('manual-model');
-    const before = requests.length;
     await providerPage.locator('#agent-provider-save').click();
     await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
-    // Only the keyless connection's own requests, which carry no key: the
-    // first connection (Bearer key, same server) may still be talking to it.
-    expect(requests.slice(before).filter(r => !r.auth)).toEqual([]);
+    // Manual model IDs: saving sends nothing to the keyless endpoint. The
+    // first connection (same server, its own path) may still be talking.
+    expect(keylessRequests()).toEqual([]);
     rejectTools = true;
     await providerPage.locator('#agent-provider-advanced').evaluate(el => { el.open = true; });
     await providerPage.locator('#agent-provider-test').click();
@@ -139,7 +142,10 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     rejectTools = false;
     await providerPage.locator('#agent-provider-test').click();
     await expect(providerPage.locator('#agent-compatibility-result')).toContainText('Chat and tools verified', { timeout: 20000 });
-    expect(requests.slice(before).every(r => !r.auth)).toBe(true);
+    // Both checks reached the keyless endpoint, and none of them with a key.
+    expect(keylessRequests().length).toBeGreaterThan(0);
+    expect(keylessRequests().map(r => r.auth)).toEqual(keylessRequests().map(() => undefined));
+    expect(requests.filter(r => !r.url.startsWith('/keyless/v1/')).every(r => r.url.startsWith('/prefix/v1/') && r.auth === 'Bearer fixture-only-key')).toBe(true);
     await providerPage.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers', exact: true }).click();
     await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Fixture gateway');
     await expect(providerPage.locator('#agent-connected-provider-list')).toContainText('Keyless fixture');
