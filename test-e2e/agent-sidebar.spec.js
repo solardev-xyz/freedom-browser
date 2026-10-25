@@ -401,11 +401,9 @@ test('reads a live external project without granting writes or socket access', a
   expect(result).toEqual({ read: 'Live project fixture', listed: true, found: true, matched: true,
     denied: { 'live.sock': 'WORKSPACE_PATH_TYPE_MISMATCH', 'link.txt': 'WORKSPACE_FILE_UNSAFE', 'hardlink.txt': 'WORKSPACE_FILE_UNSAFE' },
     writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true,
-    // Linux bubblewrap does not yet deny connect() on a socket inside the
-    // read-only project (https://github.com/solardev-xyz/freedom-browser/issues/817).
-    // Pinned rather than skipped: every other assertion still runs on Linux,
-    // and this flips to a failure the moment #817 is fixed.
-    socketDenied: process.platform !== 'linux', unchanged: true, commandStillValidated: true });
+    // Seatbelt denies the connection on macOS; on Linux the Bubblewrap seccomp
+    // filter refuses socket(AF_UNIX) (#817).
+    socketDenied: true, unchanged: true, commandStillValidated: true });
 });
 
 for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} files through Pi tools and the real sandbox`, async ({ electronApp, userDataDir }) => {

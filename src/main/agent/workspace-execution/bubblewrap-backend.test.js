@@ -12,6 +12,7 @@ const {
   DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
   DESCRIPTOR_CLOSURE_PROBE_MARKER,
   PRIVATE_TEMP_SIZE_BYTES,
+  SECCOMP_PROGRAM_DESCRIPTOR,
   SHARED_MEMORY_SIZE_BYTES,
   buildBubblewrapArguments,
   capabilityProbeArguments,
@@ -20,6 +21,7 @@ const {
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
+const { buildUnixSocketSeccompFilter } = require('./linux-seccomp-filter');
 
 function expectArgumentSequence(args, sequence) {
   expect(args.join('\0')).toContain(sequence.join('\0'));
@@ -295,7 +297,58 @@ describe('Bubblewrap backend contract', () => {
     ]);
   });
 
-  test('refuses unsupported network, seccomp, and required aggregate-limit policies', async () => {
+  test.each([
+    ['read-only file policy', (workspaceRoot) => createWorkspaceFileReadPolicy({ workspaceRoot })],
+    ['writable offline policy', (workspaceRoot) => createWorkspaceExecutionPolicy({ workspaceRoot })],
+    ['writable full-network policy', (workspaceRoot) => createWorkspaceExecutionPolicy({ workspaceRoot, network: 'full' })],
+  ])('installs the Unix-socket seccomp filter for a %s (#817)', async (_label, createPolicy) => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createPolicy(fixture.workspaceRoot);
+    const launch = await buildBubblewrapArguments(policy, { command: '/usr/bin/true' });
+    fixtureRoots.push(launch.stagingDirectory);
+    const setup = launch.args.slice(0, launch.args.indexOf('--'));
+    expectArgumentSequence(setup, ['--seccomp', String(SECCOMP_PROGRAM_DESCRIPTOR)]);
+    expect(setup.filter((arg) => arg === '--seccomp' || arg === '--add-seccomp-fd')).toHaveLength(1);
+    expect(launch.seccompFilter.equals(buildUnixSocketSeccompFilter(process.arch))).toBe(true);
+  });
+
+  test('hands the launch filter to the native owner and reports the seccomp enforcement', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: fixture.workspaceRoot });
+    let ownerOptions;
+    let ownerArgs;
+    const executor = new BubblewrapExecutor({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async (_binary, args, options) => {
+        ownerArgs = args; ownerOptions = options;
+        return completedOwner();
+      },
+    });
+    executor.capabilities = { available: true };
+    const receipt = await executor.execute(policy, { command: '/usr/bin/true' });
+    expect(Buffer.isBuffer(ownerOptions.seccompFilter)).toBe(true);
+    expect(ownerOptions.seccompFilter.length).toBeGreaterThan(0);
+    expect(ownerArgs[ownerArgs.indexOf('--seccomp') + 1]).toBe('7');
+    expect(receipt.capabilities).toMatchObject({
+      customSeccomp: true, hostAbstractUnixSockets: 'denied', hostUnixSockets: 'denied',
+    });
+  });
+
+  test('accepts a policy that requires the custom seccomp filter', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const seccomp = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      requireCustomSeccomp: true,
+    });
+    const launch = await buildBubblewrapArguments(seccomp, { command: '/usr/bin/true' });
+    fixtureRoots.push(launch.stagingDirectory);
+    expect(launch.args).toContain('--seccomp');
+  });
+
+  test('refuses unsupported network and required aggregate-limit policies', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const brokered = await createWorkspaceExecutionPolicy({
@@ -305,14 +358,6 @@ describe('Bubblewrap backend contract', () => {
     await expect(
       buildBubblewrapArguments(brokered, { command: '/usr/bin/true' })
     ).rejects.toMatchObject({ code: 'UNSUPPORTED_NETWORK_POSTURE' });
-
-    const seccomp = await createWorkspaceExecutionPolicy({
-      workspaceRoot: fixture.workspaceRoot,
-      requireCustomSeccomp: true,
-    });
-    await expect(
-      buildBubblewrapArguments(seccomp, { command: '/usr/bin/true' })
-    ).rejects.toMatchObject({ code: 'SECCOMP_UNAVAILABLE' });
 
     const resourceLimited = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
@@ -419,6 +464,54 @@ describe('Bubblewrap backend contract', () => {
         diagnostic: 'synthetic descriptor close failure\n',
       },
     });
+  });
+
+  linuxOnlyTest('loads the seccomp filter in the gate probe and fails closed when it cannot', async () => {
+    const calls = [];
+    const runOwner = jest.fn(async (_binary, args, options) => {
+      calls.push({ args, options });
+      if (calls.length === 1) return completedOwner({ stdout: 'bubblewrap 0.test\n' });
+      if (calls.length === 2) return completedOwner();
+      // What Bubblewrap does when the kernel refuses the program.
+      return completedOwner({ code: 1, stderr: 'bwrap: seccomp: Invalid argument\n' });
+    });
+    const capabilities = await detectBubblewrapCapabilities({ binary: '/usr/bin/true', runOwner });
+    expect(calls[2].args).toEqual(capabilityProbeArguments());
+    expect(calls[2].args[calls[2].args.indexOf('--seccomp') + 1]).toBe(String(SECCOMP_PROGRAM_DESCRIPTOR));
+    expect(Buffer.isBuffer(calls[2].options.seccompFilter)).toBe(true);
+    expect(calls[0].options.seccompFilter).toBeUndefined();
+    expect(capabilities).toMatchObject({
+      available: false,
+      denial: { code: 'NATIVE_DESCRIPTOR_CLOSURE_UNAVAILABLE' },
+      enforcement: { customSeccomp: false },
+    });
+  });
+
+  linuxOnlyTest('reports customSeccomp only once the filtered gate probe passes', async () => {
+    const results = [
+      { stdout: 'bubblewrap 0.test\n' }, {}, { stdout: `${DESCRIPTOR_CLOSURE_PROBE_MARKER}\n` },
+    ];
+    const runOwner = jest.fn(async () => completedOwner(results.shift()));
+    const capabilities = await detectBubblewrapCapabilities({ binary: '/usr/bin/true', runOwner });
+    expect(capabilities).toMatchObject({
+      available: true,
+      enforcement: { customSeccomp: true, seccompFilter: 'deny_unix_socket_creation',
+        hostUnixSockets: 'denied', fullNetworkIncludesHostAbstractUnixSockets: false },
+    });
+  });
+
+  linuxOnlyTest('is unavailable on an architecture without a reviewed filter', async () => {
+    const results = [{ stdout: 'bubblewrap 0.test\n' }, {}];
+    const runOwner = jest.fn(async () => completedOwner(results.shift()));
+    const capabilities = await detectBubblewrapCapabilities({
+      binary: '/usr/bin/true', runOwner, architecture: 'riscv64',
+    });
+    expect(capabilities).toMatchObject({
+      available: false, denial: { code: 'SECCOMP_FILTER_UNAVAILABLE' },
+      diagnostics: { architecture: 'riscv64' },
+    });
+    // The gate probe never ran without the filter.
+    expect(runOwner).toHaveBeenCalledTimes(2);
   });
 
   linuxOnlyTest('classifies a wrapper failure before readiness as sandbox denied', async () => {

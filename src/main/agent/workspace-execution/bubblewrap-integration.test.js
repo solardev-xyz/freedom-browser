@@ -13,7 +13,10 @@ const {
   SHARED_MEMORY_SIZE_BYTES,
   capabilityProbeArguments,
 } = require('./bubblewrap-backend');
-const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const {
+  createWorkspaceExecutionPolicy,
+  createWorkspaceFileReadPolicy,
+} = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
 const {
   approvedCommandPath,
@@ -366,14 +369,10 @@ describeBubblewrap(bubblewrapDescription, () => {
       "  result.dns = await new Promise((resolve) => dns.lookup('example.com', (error) => resolve(error ? error.code : 'unexpected')));",
       "  const internalPath = '/tmp/internal.sock';",
       "  const internalServer = net.createServer((socket) => socket.end('inside'));",
-      '  await new Promise((resolve, reject) => internalServer.once("error", reject).listen(internalPath, resolve));',
-      '  result.internal = await new Promise((resolve) => {',
-      "    let body = ''; const socket = net.createConnection({ path: internalPath });",
-      "    socket.on('data', (chunk) => { body += chunk; });",
-      "    socket.on('end', () => resolve(body));",
-      "    socket.on('error', (error) => resolve(error.code));",
-      '  });',
-      '  await new Promise((resolve) => internalServer.close(resolve));',
+      '  result.internal = await new Promise((resolve) => internalServer.once("error", (error) => resolve(error.code)).listen(internalPath, () => resolve("listening")));',
+      "  const { spawnSync } = require('child_process');",
+      "  const piped = spawnSync(process.execPath, ['-e', 'process.stdin.pipe(process.stdout)'], { input: 'piped-ok', encoding: 'utf8' });",
+      '  result.socketpairStdio = piped.stdout;',
       '  process.stdout.write(JSON.stringify(result));',
       '})().catch((error) => { console.error(error); process.exit(1); });',
     ].join('\n');
@@ -413,14 +412,18 @@ describeBubblewrap(bubblewrapDescription, () => {
       fd: 'ENOENT',
       tcp: 'ECONNREFUSED',
       internet: 'ENETUNREACH',
-      unix: 'ENOENT',
-      abstract: 'ECONNREFUSED',
+      // socket(AF_UNIX) is refused by the seccomp filter before any path or
+      // abstract name is looked up (#817), including for an in-sandbox
+      // server; libuv's socketpair-based child stdio keeps working.
+      unix: 'EACCES',
+      abstract: 'EACCES',
       dns: 'ENOTFOUND',
-      internal: 'inside',
+      internal: 'EACCES',
+      socketpairStdio: 'piped-ok',
     });
   });
 
-  test('full networking exposes public, host-loopback, LAN, and host abstract sockets only for that policy', async () => {
+  test('full networking exposes public, host-loopback and LAN, but no host Unix sockets', async () => {
     const lanAddress = process.env.FREEDOM_SANDBOX_LAN_HOST || privateIpv4Address();
     expect(lanAddress).toBeTruthy();
     const tcpServer = net.createServer((socket) => {
@@ -503,20 +506,80 @@ describeBubblewrap(bubblewrapDescription, () => {
         publicNetworking: 'host_network',
         loopbackNetworking: 'host_network',
         privateNetworking: 'host_network',
-        hostAbstractUnixSockets: 'reachable',
+        hostAbstractUnixSockets: 'denied',
+        hostUnixSockets: 'denied',
+        customSeccomp: true,
       },
     });
     const result = JSON.parse(fullReceipt.stdout);
     expect(result).toMatchObject({
       loopback: 'connected',
       internet: 'connected',
-      abstract: 'connected',
+      abstract: 'EACCES',
       dns: 'resolved',
     });
     if (process.env.FREEDOM_SANDBOX_LAN_HOST) expect(result.lan).toBe('connected');
     else expect(result.lan).not.toBe('ENETUNREACH');
-    expect(result.unix).not.toBe('connected');
+    expect(result.unix).toBe('EACCES');
     expect(offlineReceipt).toMatchObject({ state: 'completed', exitCode: 0 });
+  });
+
+  test.each([
+    ['read-only file policy', createWorkspaceFileReadPolicy, {}],
+    ['writable offline policy', createWorkspaceExecutionPolicy, {}],
+    ['writable full-network policy', createWorkspaceExecutionPolicy, { network: 'full' }],
+  ])('refuses connect() to a live Unix socket inside the project under a %s (#817)', async (_label, create, extra) => {
+    const createPolicy = (options = {}) => create({ workspaceRoot: fixture.workspaceRoot,
+      limits: { timeoutMs: 10_000 }, ...extra, ...options });
+    // Policies are validated first: a command policy refuses a project that
+    // already holds a socket, but one can appear after launch.
+    const nodePolicy = await createPolicy({ runtimeRoots: runtimeAccess.runtimeRoots });
+    const pythonPolicy = await createPolicy();
+    let connections = 0;
+    const streamServer = net.createServer((socket) => { connections += 1; socket.end('host-unix'); });
+    await listen(streamServer, path.join(fixture.workspaceRoot, 'live.sock'));
+    const script = [
+      "const net = require('net');",
+      "const dgram = require('dgram');",
+      'const result = {};',
+      '(async () => {',
+      '  result.stream = await new Promise((resolve) => {',
+      "    const socket = net.connect('/workspace/live.sock');",
+      "    socket.once('connect', () => { socket.end(); resolve('connected'); });",
+      "    socket.once('error', (error) => resolve(error.code));",
+      '  });',
+      "  try { dgram.createSocket('udp4').close(); result.udp = 'created'; } catch (error) { result.udp = error.code; }",
+      '  process.stdout.write(JSON.stringify(result));',
+      '})();',
+    ].join('\n');
+    let receipt;
+    try {
+      receipt = await executor.execute(nodePolicy, { command: 'node', args: ['-e', script] });
+      // Python reaches socket(2) without libuv; a raw datagram send is refused the same way.
+      const python = await executor.execute(pythonPolicy, {
+        command: '/usr/bin/python3',
+        args: ['-c', [
+          'import socket',
+          'try:',
+          '    s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); print("created")',
+          'except PermissionError as error:',
+          '    print("denied", error.errno)',
+          'try:',
+          '    socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM); print("dgram-pair")',
+          'except PermissionError as error:',
+          '    print("dgram-pair-denied", error.errno)',
+          'a, b = socket.socketpair(); a.sendall(b"pair"); print(b.recv(4).decode())',
+        ].join('\n')],
+      });
+      expect(python).toMatchObject({ state: 'completed', exitCode: 0 });
+      expect(python.stdout.trim().split('\n')).toEqual(['denied 13', 'dgram-pair-denied 13', 'pair']);
+    } finally {
+      await closeServer(streamServer);
+    }
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0,
+      capabilities: { customSeccomp: true, hostUnixSockets: 'denied' } });
+    expect(JSON.parse(receipt.stdout)).toEqual({ stream: 'EACCES', udp: 'created' });
+    expect(connections).toBe(0);
   });
 
   test('closes every inherited descriptor above stderr before the command starts', async () => {

@@ -16,7 +16,8 @@ const encode = (r) => `${JSON.stringify(r)}\n`;
 function fixture(options = {}) {
   const child = new EventEmitter(); child.exitCode = null;
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
-  child.stdio = [child.stdin, child.stdout, child.stderr, new PassThrough(), new PassThrough()];
+  child.stdio = [child.stdin, child.stdout, child.stderr, new PassThrough(), new PassThrough(),
+    null, null, new PassThrough()];
   child.kill = jest.fn(() => { throw new Error('Forbidden numeric signal'); });
   const controls = []; child.stdio[3].on('data', (c) => controls.push(c.toString()));
   const runtime = { fd: 55, executablePath: '/trusted/owner', sourceSha256: buildId, close: jest.fn(async () => {}) };
@@ -170,3 +171,25 @@ test('exec-failure FINAL preserves original monitor127 with complete cleanup', a
   const result = await f.promise;
   expect(result.code).toBe(127); expect(result.error).toBeNull(); expect(cleanupProven(result.final)).toBe(true);
 });
+test('a seccomp program travels to the owner on fd7 only when supplied', async () => {
+  const program = Buffer.alloc(16, 1);
+  const f = fixture({ seccompFilter: program });
+  const received = []; f.child.stdio[7].on('data', (chunk) => received.push(chunk));
+  const ended = new Promise((resolve) => f.child.stdio[7].on('end', resolve));
+  f.child.stdio[4].write(ready); f.end();
+  const result = await f.promise; await ended;
+  expect(result.error).toBeNull();
+  expect(Buffer.concat(received).equals(program)).toBe(true);
+  const stdio = f.spawnProcess.mock.calls[0][2].stdio;
+  expect(stdio).toHaveLength(8); expect(stdio[5]).toBe(55); expect(stdio[6]).toBe('ignore'); expect(stdio[7]).toBe('pipe');
+  const plain = fixture(); plain.child.stdio[4].write(ready); plain.end(); await plain.promise;
+  expect(plain.spawnProcess.mock.calls[0][2].stdio).toHaveLength(6);
+});
+test.each([[Buffer.alloc(0)], [Buffer.alloc(7)], ['not a buffer'], [Buffer.alloc(8 * 4097)]])(
+  'refuses a malformed seccomp program before spawning %#', async (seccompFilter) => {
+    const runtime = { fd: 55, sourceSha256: buildId, close: jest.fn(async () => {}) };
+    const spawnProcess = jest.fn();
+    await expect(runLinuxOwner('/usr/bin/bwrap', [], { runtime, spawnProcess, seccompFilter }))
+      .rejects.toThrow('LINUX_OWNER_INVALID_SECCOMP');
+    expect(spawnProcess).not.toHaveBeenCalled(); expect(runtime.close).toHaveBeenCalled();
+  });
