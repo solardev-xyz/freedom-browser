@@ -77,7 +77,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function loadDappTx() {
+async function loadDappTx({ safe = false } = {}) {
   jest.resetModules();
 
   const elementsById = Object.fromEntries(
@@ -118,8 +118,14 @@ async function loadDappTx() {
       }),
       confirmSigning,
       dappSendTransaction: jest.fn(() => send.promise),
+      safeSend: jest.fn(async () => ({ success: true, state: { safeTxHash: '0xsafetx' } })),
     },
   };
+  // The Safe board settles a dApp transaction through window events.
+  const listeners = {};
+  window.addEventListener = (type, fn) => (listeners[type] ||= new Set()).add(fn);
+  window.removeEventListener = (type, fn) => listeners[type]?.delete(fn);
+  window.dispatchEvent = (event) => [...(listeners[event.type] || [])].forEach((fn) => fn(event));
 
   // The Ledger account bypasses the vault-unlock gate, the same as in the app.
   jest.doMock('./wallet-utils.js', () => ({
@@ -128,7 +134,7 @@ async function loadDappTx() {
       return true;
     }),
     bypassUnlockGateForSafe: jest.fn(() => false),
-    isSafeAccount: jest.fn(() => false),
+    isSafeAccount: jest.fn(() => safe),
     renderSafeFeePayer: jest.fn(),
     truncateAddress: jest.fn((address) => address),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
@@ -224,6 +230,59 @@ describe('dapp-tx approval lifecycle', () => {
     // Answered: the next request is served.
     const third = await openApproval();
     expect(third.settled.state).toBe('pending');
+  });
+
+  describe('a Safe request parked on its board while a newer one shows', () => {
+    const boardEvent = (type, detail) => window.dispatchEvent({ type, detail });
+
+    async function parkSafeThenShowNewcomer() {
+      const env = await loadDappTx({ safe: true });
+      const { mod, elements, openApproval, hideForOtherScreen } = env;
+      const a = await openApproval();
+      elements['dapp-tx-approve'].dispatch('click');
+      await flush();
+      expect(window.wallet.safeSend).toHaveBeenCalledTimes(1);
+      // The board takes the sidebar (hides the tx screen); the user parks it.
+      hideForOtherScreen();
+      const b = mod.showDappTxApproval({}, 'https://b.example', { to: '0xB0000000000000000000000000000000000000bb', value: '2', data: '0x' });
+      b.catch(() => {});
+      await flush();
+      expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-tx-site'].textContent).toBe('https://b.example');
+      return { ...env, a, b };
+    }
+
+    test('discarding it answers it, not the newcomer, and leaves the newcomer on screen', async () => {
+      const { a, b, elements } = await parkSafeThenShowNewcomer();
+      const bState = { state: 'pending' };
+      b.then(() => (bState.state = 'resolved'), () => (bState.state = 'rejected'));
+
+      boardEvent('wallet:safe-discarded', { safeIndex: LEDGER_INDEX });
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'rejected', value: { code: 4001 } });
+      expect(bState.state).toBe('pending');
+      expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-tx-site'].textContent).toBe('https://b.example');
+    });
+
+    test('its execution answers it and leaves the newcomer on screen', async () => {
+      const { a, b, elements } = await parkSafeThenShowNewcomer();
+      const bState = { state: 'pending' };
+      b.then(() => (bState.state = 'resolved'), () => (bState.state = 'rejected'));
+
+      boardEvent('wallet:safe-executed', { safeTxHash: '0xsafetx', hash: '0xexec' });
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'resolved', value: '0xexec' });
+      expect(bState.state).toBe('pending');
+      expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(false);
+
+      // The newcomer is still answerable from its own screen.
+      elements['dapp-tx-reject'].dispatch('click');
+      await flush();
+      expect(bState.state).toBe('rejected');
+    });
   });
 
   test('a prompt another screen hid holds off nothing', async () => {

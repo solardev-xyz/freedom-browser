@@ -256,7 +256,12 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
   // The document that asked: the grant's events go to it only if it is
   // still there when the grant completes.
   const generation = webview ? getNavigationGeneration(webview) : null;
+  // A request another screen hid (so not "showing") gives way, and is
+  // answered now rather than left waiting forever. One whose grant is
+  // being written settles itself through its own reference.
+  const previous = dappConnectPending;
   dappConnectPending = { permissionKey, resolve, reject, webview, pinnedChainId, generation };
+  if (previous && !previous.deciding) previous.reject({ code: 4001, message: 'Replaced by a newer request' });
 
   if (dappConnectSite) {
     dappConnectSite.textContent = permissionKey || displayUrl || 'Unknown';

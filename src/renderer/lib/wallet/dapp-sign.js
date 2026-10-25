@@ -158,6 +158,10 @@ export async function showDappSignApproval(webview, permissionKey, method, param
     if (previous && !previous.signing) previous.reject({ code: 4001, message: 'Replaced by a newer request' });
     if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
     setDappSignCancelEnabled(true);
+    // A Safe request parked on its board leaves its "Signing…" label and
+    // error behind; this request starts clean.
+    if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
+    hideDappSignError();
 
     if (dappSignSite) {
       dappSignSite.textContent = permissionKey;
@@ -417,11 +421,18 @@ async function approveDappSign() {
   } catch (err) {
     if (err?.code === 4001) {
       // The user closed the Safe signing board — that IS the rejection.
-      rejectDappSign();
-      closeDappSign();
+      // Answer this request, not whichever one holds the screen now.
+      request.reject({ code: 4001, message: 'User rejected the request' });
+      if (dappSignPending === request) closeDappSign();
       return;
     }
     console.error('[WalletUI] dApp signing failed:', err);
+    // A newer request took the screen while the Safe board was parked: this
+    // one is no longer on screen to retry, so answer it with the failure.
+    if (dappSignPending !== request) {
+      request.reject(err);
+      return;
+    }
     showDappSignError(err.message || 'Signing failed');
     if (dappSignApproveBtn) {
       dappSignApproveBtn.disabled = false;

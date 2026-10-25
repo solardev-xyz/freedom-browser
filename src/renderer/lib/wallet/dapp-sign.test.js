@@ -30,13 +30,15 @@ function flush() {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((res) => {
+  let reject;
+  const promise = new Promise((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
-async function loadDappSign() {
+async function loadDappSign({ safe = false } = {}) {
   jest.resetModules();
 
   const elementsById = Object.fromEntries(
@@ -67,7 +69,7 @@ async function loadDappSign() {
       return true;
     }),
     bypassUnlockGateForSafe: jest.fn(() => false),
-    isSafeAccount: jest.fn(() => false),
+    isSafeAccount: jest.fn(() => safe),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
   }));
   jest.doMock('./safe-signing.js', () => ({
@@ -131,6 +133,60 @@ describe('dapp-sign approval lifecycle', () => {
 
     const third = await openApproval();
     expect(third.settled.state).toBe('pending');
+  });
+
+  describe('a Safe request parked on its board while a newer one shows', () => {
+    async function parkSafeThenShowNewcomer() {
+      const env = await loadDappSign({ safe: true });
+      const { mod, elements, openApproval, hideForOtherScreen, executeSign } = env;
+      const a = await openApproval();
+      elements['dapp-sign-approve'].dispatch('click');
+      await flush();
+      expect(executeSign).toHaveBeenCalledTimes(1);
+      // The board takes the sidebar (hides the sign screen); the user parks it.
+      hideForOtherScreen();
+      const bState = { state: 'pending' };
+      mod
+        .showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xb0b0', '0xledger'])
+        .then(() => (bState.state = 'resolved'), () => (bState.state = 'rejected'));
+      await flush();
+      expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+      return { ...env, a, bState };
+    }
+
+    test('closing its board answers it, not the newcomer, and leaves the newcomer on screen', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.reject({ code: 4001, message: 'User rejected the request' });
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'rejected', value: { code: 4001 } });
+      expect(bState.state).toBe('pending');
+      expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+    });
+
+    test('its failure answers it and paints no error on the newcomer', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.reject(new Error('threshold not reached'));
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'rejected', value: { message: 'threshold not reached' } });
+      expect(bState.state).toBe('pending');
+      expect(elements['dapp-sign-error'].classList.contains('hidden')).toBe(true);
+    });
+
+    test('its signature answers it and leaves the newcomer answerable', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.resolve('0xsafesig');
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'resolved', value: '0xsafesig' });
+      expect(bState.state).toBe('pending');
+      elements['dapp-sign-reject'].dispatch('click');
+      await flush();
+      expect(bState.state).toBe('rejected');
+    });
   });
 
   test('a prompt another screen hid holds off nothing', async () => {

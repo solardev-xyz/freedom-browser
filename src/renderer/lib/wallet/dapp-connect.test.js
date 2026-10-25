@@ -283,6 +283,43 @@ describe('dapp-connect prompt', () => {
     expect(openConnect('https://other.example').state).toBe('pending');
   });
 
+  test('a request another screen hid is answered when a newcomer replaces it', async () => {
+    const { elements, grantPermission, openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
+    const first = openConnect('https://app.example');
+
+    hideForOtherScreen();
+    const second = openConnect('https://other.example');
+    expect(first).toMatchObject({ state: 'rejected', value: { code: 4001 } });
+    expect(second.state).toBe('pending');
+
+    // The newcomer is the one on screen, and the one Connect grants.
+    expect(elements['dapp-connect-site'].textContent).toBe('https://other.example');
+    elements['dapp-connect-approve'].dispatch('click');
+    await flush();
+    expect(grantPermission.mock.calls[0][0]).toBe('https://other.example');
+    expect(second.state).toBe('resolved');
+  });
+
+  test('a grant being written behind another screen settles itself, not as replaced', async () => {
+    const { elements, grantPermission, openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
+    let finishGrant;
+    grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
+    const first = openConnect('https://app.example');
+    elements['dapp-connect-approve'].dispatch('click');
+    await flush();
+
+    hideForOtherScreen();
+    const second = openConnect('https://other.example');
+    expect(first.state).toBe('pending');
+
+    finishGrant({ success: true });
+    await flush();
+    expect(first.state).toBe('resolved');
+    // The first grant's completion leaves the newcomer's screen up.
+    expect(second.state).toBe('pending');
+    expect(elements['sidebar-dapp-connect'].classList.contains('hidden')).toBe(false);
+  });
+
   test('while the grant is written, there is no way out and no second grant', async () => {
     const { elements, grantPermission, openConnect } = await loadDappConnectPrompt();
     let finishGrant;

@@ -211,6 +211,10 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     // Show auto-approve checkbox only for contract calls (has function selector)
     if (dappTxAutoApproveCheckbox) dappTxAutoApproveCheckbox.checked = false;
     setDappTxCancelEnabled(true);
+    // A Safe request parked on its board leaves its "Signing…" label and
+    // error behind; this request starts clean.
+    if (dappTxApproveBtn) dappTxApproveBtn.textContent = 'Confirm';
+    hideDappTxError();
     if (dappTxAutoApproveRow) {
       dappTxAutoApproveRow.classList.toggle('hidden', !selector);
     }
@@ -458,7 +462,9 @@ async function approveDappTx() {
       const hash = await sendViaSafeAccount(walletIndex, txParams, permissionKey, chainId);
       console.log('[WalletUI] dApp Safe transaction executed:', hash);
       resolve(hash);
-      closeDappTx();
+      // The parked board lets a newer request take the screen meanwhile:
+      // close only this request's own.
+      if (dappTxPending === request) closeDappTx();
       return;
     }
 
@@ -513,11 +519,18 @@ async function approveDappTx() {
   } catch (err) {
     if (err?.code === 4001) {
       // The user discarded the Safe transaction — that IS the rejection.
-      rejectDappTx();
-      closeDappTx();
+      // Answer this request, not whichever one holds the screen now.
+      request.reject({ code: 4001, message: 'User rejected the request' });
+      if (dappTxPending === request) closeDappTx();
       return;
     }
     console.error('[WalletUI] dApp transaction failed:', err);
+    // A newer request took the screen while the Safe board was parked: this
+    // one is no longer on screen to retry, so answer it with the failure.
+    if (dappTxPending !== request) {
+      request.reject(err);
+      return;
+    }
     showDappTxError(err.message || 'Transaction failed');
     if (dappTxApproveBtn) {
       dappTxApproveBtn.disabled = false;
