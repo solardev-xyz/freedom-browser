@@ -1251,21 +1251,7 @@ jobs:
         run: npm run build:workspace-supervisor
       - name: Run agent E2E
         run: |
-          npm run test:e2e -- \
-            test-e2e/ai-onboarding.spec.js \
-            test-e2e/agent-examples.spec.js \
-            test-e2e/agent-dictation.spec.js \
-            test-e2e/agent-cancellation.spec.js \
-            test-e2e/agent-evaluation.spec.js \
-            test-e2e/agent-product-qualification.spec.js \
-            test-e2e/agent-sidebar.spec.js \
-            test-e2e/agent-preview-isolation.spec.js \
-            test-e2e/agent-preview-dns-prefetch.spec.js \
-            test-e2e/agent-review-layout.spec.js \
-            test-e2e/agent-mcp.spec.js \
-            test-e2e/custom-provider.spec.js \
-            test-e2e/pdf-processor.spec.js \
-            test-e2e/workspace-viewers.spec.js
+          npm run test:e2e -- --repeat-each=15 --retries=0 test-e2e/custom-provider.spec.js
       - name: Upload software rendering profile
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1401,34 +1387,7 @@ jobs:
 
       - name: Run agent and automation E2E on Linux
         run: |
-          xvfb-run -a npm run test:e2e -- \
-            test-e2e/ai-onboarding.spec.js \
-            test-e2e/agent-examples.spec.js \
-            test-e2e/agent-dictation.spec.js \
-            test-e2e/agent-cancellation.spec.js \
-            test-e2e/agent-evaluation.spec.js \
-            test-e2e/agent-product-qualification.spec.js \
-            test-e2e/agent-sidebar.spec.js \
-            test-e2e/agent-preview-isolation.spec.js \
-            test-e2e/agent-preview-dns-prefetch.spec.js \
-            test-e2e/agent-review-layout.spec.js \
-            test-e2e/agent-mcp.spec.js \
-            test-e2e/custom-provider.spec.js \
-            test-e2e/pdf-processor.spec.js \
-            test-e2e/workspace-viewers.spec.js \
-            test-e2e/automation-dialog.spec.js \
-            test-e2e/automation-frame-interaction.spec.js \
-            test-e2e/automation-frame-observation.spec.js \
-            test-e2e/automation-frame-prototype.spec.js \
-            test-e2e/automation-kernel.spec.js \
-            test-e2e/automation-native-dialog.spec.js \
-            test-e2e/automation-observation.spec.js \
-            test-e2e/automation-page-tools.spec.js \
-            test-e2e/automation-recovery.spec.js \
-            test-e2e/automation-runtime.spec.js \
-            test-e2e/automation-visual-interaction.spec.js \
-            test-e2e/automation-visual-prototype.spec.js \
-            test-e2e/freedom-cli.spec.js
+          xvfb-run -a npm run test:e2e -- --repeat-each=15 --retries=0 test-e2e/custom-provider.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
