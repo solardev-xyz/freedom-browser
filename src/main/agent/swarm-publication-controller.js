@@ -605,7 +605,17 @@ class SwarmPublicationController {
           // waking a stopped turn or dispatching any further network request.
           Promise.resolve(upload).then(result => {
             if (!this.operations.has(operation.publicationId)) return;
-            this.#recordUploadResult(operation, result);
+            try {
+              this.#recordUploadResult(operation, result);
+            } catch (error) {
+              // A late draft result that came back unencrypted is a known
+              // failure with a known public reference: record it rather than
+              // leaving the receipt unknown with the reference unsaved.
+              if (!operation.unencryptedReference) return;
+              operation.state = PUBLICATION_STATES.FAILED;
+              operation.error = safeMessage(error, 'The Swarm publication failed');
+              operation.message = 'Upload failed. The existing postage batch was retained.';
+            }
             this.#emitProgress(operation);
           }).catch(() => {});
           throw new Error('The upload has not returned a result. Its outcome is unknown; do not start another upload.');

@@ -247,7 +247,14 @@ describe('publish-service', () => {
       expect(mockUploadFile.mock.calls[1][3]).not.toHaveProperty('encrypt');
     });
 
-    test('an encrypted tag address is reported as the reference', () => {
+    test('an encrypted upload\'s tag address is reported as the reference', () => {
+      // The pinned Ant keys an encrypted upload's tag on the root chunk
+      // address, the leading 64 hex of the 128-hex reference, so that is the
+      // shape a draft's tag actually carries.
+      const encrypted = 'ab'.repeat(32) + 'cd'.repeat(32);
+      expect(normalizeTag({ uid: 1, split: 2, synced: 2, address: encrypted.slice(0, 64).toUpperCase() }))
+        .toMatchObject({ tagUid: 1, reference: encrypted.slice(0, 64), done: true });
+      // A full 128-hex address is accepted too, should a node report one.
       expect(normalizeTag({ uid: 1, split: 2, synced: 2, address: 'E'.repeat(128) }).reference).toBe('e'.repeat(128));
       expect(normalizeTag({ uid: 1, split: 2, synced: 2, address: 'e'.repeat(100) })).not.toHaveProperty('reference');
     });

@@ -74,7 +74,9 @@ class MockBytes {
   }
   toUint8Array() { return this._bytes; }
   toHex() { return Buffer.from(this._bytes).toString('hex'); }
-  static keccak256(_bytes) { return new MockBytes(new Uint8Array(32).fill(7)); }
+  // Not a hash: keeps the topic||index input so tests can tell which feed
+  // index an update-chunk address was derived for (see mockFeedChunksUpTo).
+  static keccak256(bytes) { return new MockBytes(Uint8Array.from(bytes)); }
 }
 
 class MockIdentifier extends MockBytes {}
@@ -171,6 +173,26 @@ function createMockReader({ downloadPayloadResult, downloadPayloadFn } = {}) {
     reader.downloadPayload.mockRejectedValue(make404());
   }
   return reader;
+}
+
+// Model a feed whose update chunks exist at indexes 0..lastIndex (GET /chunks),
+// independent of what the latest-update lookup (GET /feeds) answers.
+// Returns the list of indexes probed.
+function mockFeedChunksUpTo(lastIndex) {
+  const probed = [];
+  mockCalculateSingleOwnerChunkAddress.mockImplementation((identifier) => ({
+    index: Number(Buffer.from(identifier.toUint8Array()).readBigUInt64BE(identifier.length - 8)),
+  }));
+  mockDownloadChunk.mockImplementation(async (ref) => {
+    probed.push(ref.index);
+    if (ref.index <= lastIndex) return new MockBytes('soc');
+    throw make404();
+  });
+  return probed;
+}
+
+function make404WrappedChunk() {
+  return new MockBeeResponseError(404, 'wrapped chunk cannot be retrieved');
 }
 
 function mockExactFeedPayload(data = 'exact data', span = 1n) {
@@ -414,6 +436,19 @@ describe('feed-service', () => {
         .rejects.toThrow('network error');
     });
 
+    test('continues a live feed after its head when the latest lookup 404s on expired content', async () => {
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      for (const head of [0, 1, 6, 7, 8, 1000]) {
+        mockFeedChunksUpTo(head);
+        writer.uploadReference.mockClear();
+        await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).resolves.toEqual({ index: head + 1 });
+        expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: head + 1 });
+      }
+    });
+
     test('propagates non-404 errors from resolveNextIndex (does not default to 0)', async () => {
       const writer = createMockWriter();
       writer.downloadPayload.mockRejectedValue(new Error('network timeout'));
@@ -601,6 +636,28 @@ describe('feed-service', () => {
       mockMakeFeedReader.mockReturnValue(reader);
       await expect(readFeedState(MOCK_OWNER, 'freedom-agent/stable-address/site')).resolves.toEqual({ exists: true, index: 4 });
       expect(mockMakeFeedReader.mock.calls[0][0]).toBeInstanceOf(MockTopic);
+    });
+
+    test('a 404 for a live feed whose latest content expired still reads as existing', async () => {
+      // Ant answers GET /feeds with 404 "wrapped chunk cannot be retrieved"
+      // when the latest legacy update points at a chunk that is gone.
+      mockMakeFeedReader.mockReturnValue({ downloadPayload: jest.fn().mockRejectedValue(make404WrappedChunk()) });
+      const probed = mockFeedChunksUpTo(5);
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 5 });
+      expect(probed[0]).toBe(0);
+    });
+
+    test('a 404 with no update chunk at index 0 is an empty feed', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      const probed = mockFeedChunksUpTo(-1);
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
+      expect(probed).toEqual([0]);
+    });
+
+    test('an unreachable chunk probe reads as unknown, not empty', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockDownloadChunk.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toThrow('ECONNREFUSED');
     });
 
     test('only a 404 means the feed has no update yet', async () => {

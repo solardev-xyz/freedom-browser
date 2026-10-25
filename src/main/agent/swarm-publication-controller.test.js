@@ -492,6 +492,25 @@ test('retains a late transport receipt after a deadline without sending another 
   expect((await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication.state).toBe('completed');
 });
 
+test('a late unencrypted draft receipt is recorded as a failure with its public reference', async () => {
+  const upload = deferred();
+  const save = jest.fn();
+  const { controller, dependencies } = createController({ publishCollection: () => upload.promise, jobTimeoutMs: 5, interactiveTimeoutMs: 1, store: { list: () => [], save } });
+  await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'owner', requestApproval: async () => 'approved' });
+  await Promise.allSettled([...controller.active.values()]);
+  expect(controller.operations.get(PUBLICATION_ID).state).toBe('outcome_unknown');
+  save.mockClear();
+  upload.resolve({ reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}` });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(controller.operations.get(PUBLICATION_ID)).toMatchObject({ state: 'failed', unencryptedReference: REFERENCE,
+    error: expect.stringContaining(`unencrypted reference ${REFERENCE}`) });
+  expect(controller.operations.get(PUBLICATION_ID)).not.toHaveProperty('reference');
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ state: 'failed', unencryptedReference: REFERENCE }));
+  expect(dependencies.updateHistoryEntry).toHaveBeenCalledWith(7, expect.objectContaining({ reference: REFERENCE, status: 'failed' }));
+  const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication;
+  expect(receipt).toMatchObject({ state: 'failed', unencryptedReference: REFERENCE });
+});
+
 describe('SwarmPublicationController pre-publish scan', () => {
   const STRIPE = `sk_live_${'4eC39HqLyjWDarjtT1zdp7dc'}`;
   const folderWith = (files, excluded) => ({
