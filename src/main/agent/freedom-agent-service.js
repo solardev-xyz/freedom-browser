@@ -539,7 +539,7 @@ const MAX_PUBLICATION_FINDINGS = 200;
 
 function normalizePublicationFinding(value) {
   if (!value || typeof value !== 'object' || typeof value.id !== 'string' || !/^finding_\d{1,4}$/.test(value.id)) return null;
-  if (!['secret', 'personal', 'metadata', 'scope'].includes(value.kind) || typeof value.rule !== 'string') return null;
+  if (!['secret', 'personal', 'metadata', 'scope', 'third-party'].includes(value.kind) || typeof value.rule !== 'string') return null;
   return Object.freeze({
     id: value.id,
     path: String(value.path ?? '').slice(0, 1_024),
@@ -573,6 +573,24 @@ function validPublicationDecision(publication, decision) {
     list(decision.publicationAcknowledged, findingIds, MAX_PUBLICATION_FINDINGS);
 }
 
+// G: the batch the upload will use, its remaining time and the estimated
+// share of its prepaid storage. Numbers only; the card words them.
+function normalizePublicationPostage(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (value.status === 'none' || value.status === 'unknown') return Object.freeze({ status: value.status });
+  if (value.status !== 'ready' || !/^[a-f0-9]{64}$/.test(value.batchId) || !Number.isSafeInteger(value.ttlSeconds) ||
+      value.ttlSeconds < 0 || !['ok', 'soon', 'critical', 'expired'].includes(value.expiry)) return null;
+  return Object.freeze({
+    status: 'ready',
+    batchId: value.batchId,
+    ttlSeconds: value.ttlSeconds,
+    expiry: value.expiry,
+    usable: value.usable === true,
+    ...(typeof value.estimatedCostPlur === 'string' && /^\d{1,40}$/.test(value.estimatedCostPlur) && { estimatedCostPlur: value.estimatedCostPlur }),
+    ...(Number.isSafeInteger(value.estimatedChunks) && value.estimatedChunks > 0 && { estimatedChunks: value.estimatedChunks }),
+  });
+}
+
 function normalizePublicationApproval(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
@@ -581,7 +599,10 @@ function normalizePublicationApproval(value) {
       ? // eslint-disable-next-line no-control-regex
         value.name.slice(0, 240).replace(/[\u0000-\u001f\u007f]/g, '')
       : '';
-  if (!kind || !name || value.public !== true) return null;
+  // A draft is encrypted and not public; anything else must say it is public.
+  const target = value.target === 'draft' ? 'draft' : 'public';
+  if (!kind || !name || value.public !== (target === 'public') ||
+      (target === 'draft' && (value.encrypted !== true || value.stableAddress !== undefined))) return null;
   const workspacePath =
     typeof value.workspacePath === 'string' && value.workspacePath.length <= 1_024
       ? value.workspacePath
@@ -598,10 +619,24 @@ function normalizePublicationApproval(value) {
         (segment) =>
           segment && segment !== '.' && segment !== '..' && segment.toLowerCase() !== '.git'
       ));
+  const stableAddress = value.stableAddress && typeof value.stableAddress === 'object' &&
+    typeof value.stableAddress.name === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value.stableAddress.name) &&
+    /^0x[a-f0-9]{40}$/.test(value.stableAddress.owner)
+    ? Object.freeze({ name: value.stableAddress.name, owner: value.stableAddress.owner,
+      // Whether the address already serves something. Anything but a definite
+      // 'no' is shown as possibly existing: approval may re-point a live address.
+      existing: ['yes', 'no'].includes(value.stableAddress.existing) ? value.stableAddress.existing : 'unknown',
+      ...(Number.isSafeInteger(value.stableAddress.latestIndex) && value.stableAddress.latestIndex >= 0 && { latestIndex: value.stableAddress.latestIndex }),
+      ...(/^bzz:\/\/[a-f0-9]{64}$/.test(value.stableAddress.currentBzzUrl) && { currentBzzUrl: value.stableAddress.currentBzzUrl }) })
+    : null;
   return Object.freeze({
     kind,
     name,
-    public: true,
+    target,
+    public: target === 'public',
+    ...(target === 'draft' && { encrypted: true }),
+    ...(stableAddress && { stableAddress }),
+    ...(normalizePublicationPostage(value.postage) && { postage: normalizePublicationPostage(value.postage) }),
     ...(typeof value.text === 'string' && { text: value.text }),
     ...(Array.isArray(value.files) && { files: value.files.slice(0, 1_000).map(file => ({ path: String(file.path).slice(0, 1024), bytes: file.bytes })) }),
     ...(Array.isArray(value.findings) && value.findings.length && { findings: Object.freeze(value.findings.slice(0, MAX_PUBLICATION_FINDINGS).map(normalizePublicationFinding).filter(Boolean)) }),
@@ -765,6 +800,11 @@ function normalizeApprovalRequest(request, recipient) {
     typeof request.projectAccess?.name === 'string' && request.projectAccess.name.trim() && request.projectAccess.name.length <= 240 &&
     request.projectAccess.mode === 'write' && request.projectAccess.scope === 'conversation'
     ? Object.freeze({ name: request.projectAccess.name, mode: 'write', scope: 'conversation' }) : null;
+  // A publication request whose details do not normalise (a draft that
+  // claims to be public, say) must not fall back to a generic card.
+  if (request?.action === 'swarm_publish' && !publication) {
+    throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid publication approval request');
+  }
   if (request?.action === 'project_write' && !projectAccess) {
     throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid project editing permission request');
   }

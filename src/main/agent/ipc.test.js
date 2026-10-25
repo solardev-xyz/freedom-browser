@@ -277,9 +277,15 @@ describe('Freedom agent IPC', () => {
       opened: true,
     });
     expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', bzzUrl);
-    await expect(
-      openPublication({ sender: ctx.sender }, { bzzUrl: 'file:///Users/private' })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    // A private draft link's encrypted reference is 128 hex.
+    const draftUrl = `bzz://${'e'.repeat(128)}`;
+    await expect(openPublication({ sender: ctx.sender }, { bzzUrl: draftUrl })).resolves.toEqual({ ok: true, opened: true });
+    expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', draftUrl);
+    for (const bad of ['file:///Users/private', `bzz://${'e'.repeat(96)}`, `bzz://${'e'.repeat(130)}`]) {
+      await expect(
+        openPublication({ sender: ctx.sender }, { bzzUrl: bad })
+      ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    }
     await expect(openPublication({ sender: ctx.otherSender }, { bzzUrl })).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },

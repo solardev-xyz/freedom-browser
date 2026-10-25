@@ -1055,7 +1055,8 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     const bzzUrl = typeof payload?.bzzUrl === 'string' ? payload.bzzUrl.trim() : '';
-    if (!/^bzz:\/\/[a-f0-9]{64}$/.test(bzzUrl)) {
+    // 128 hex: an encrypted private draft link (reference plus key).
+    if (!/^bzz:\/\/[a-f0-9]{64}(?:[a-f0-9]{64})?$/.test(bzzUrl)) {
       return errorEnvelope(
         AGENT_ERROR_CODES.INVALID_ARGUMENT,
         'Opening a publication requires a valid Swarm URL'
