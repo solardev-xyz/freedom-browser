@@ -137,7 +137,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.16",
+      "version": "v0.1.18",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
