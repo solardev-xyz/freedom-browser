@@ -199,6 +199,8 @@ test('exact approval binds document, definition and arguments', async () => {
     untrusted: true,
   });
   expect(context.executeTool).toHaveBeenCalledTimes(1);
+  // Chromium 156 rejects JSON text here; the input goes in as an object.
+  expect(context.executeTool.mock.calls[0][1]).toEqual({ value: 'hello' });
 });
 
 test.each(['event', 'definition', 'navigation', 'rediscovery', 'stop'])(
