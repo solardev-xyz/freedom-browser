@@ -1249,6 +1249,9 @@ jobs:
         uses: ./.github/actions/install-node-deps
       - name: Build macOS workspace supervisor
         run: npm run build:workspace-supervisor
+      - name: TEMP seatbelt diagnostic
+        continue-on-error: true
+        run: ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron scripts/ci/tmp-seatbelt-diag.js
       - name: Run agent E2E
         run: |
           npm run test:e2e -- \
