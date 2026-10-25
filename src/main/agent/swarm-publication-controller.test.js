@@ -507,6 +507,9 @@ test('a late unencrypted draft receipt is recorded as a failure with its public 
   expect(controller.operations.get(PUBLICATION_ID)).not.toHaveProperty('reference');
   expect(save).toHaveBeenCalledWith(expect.objectContaining({ state: 'failed', unencryptedReference: REFERENCE }));
   expect(dependencies.updateHistoryEntry).toHaveBeenCalledWith(7, expect.objectContaining({ reference: REFERENCE, status: 'failed' }));
+  // History drops the timeout's "outcome is unknown" text for the real error.
+  expect(dependencies.updateHistoryEntry).toHaveBeenLastCalledWith(7, { status: 'failed',
+    errorMessage: expect.stringContaining(`unencrypted reference ${REFERENCE}`) });
   const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'owner' })).publication;
   expect(receipt).toMatchObject({ state: 'failed', unencryptedReference: REFERENCE });
 });
@@ -753,8 +756,51 @@ describe('private draft links, stable addresses and postage on the card (#741 E,
     await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'other', requestApproval });
     expect(requestApproval.mock.calls[1][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, existing: 'yes', currentBzzUrl: `bzz://${FEED}` });
     expect(feed.updateFeed).toHaveBeenCalledTimes(2);
-    expect(feed.readFeedState).toHaveBeenCalledTimes(1);
+    // Never below the index this browser already wrote.
+    expect(feed.updateFeed.mock.calls[1][4]).toEqual({ minIndex: 4 });
+    // One read for the first card (the second has a local record), and one
+    // read-back after each update.
+    expect(feed.readFeedState).toHaveBeenCalledTimes(3);
     expect(feed.readFeedState).toHaveBeenCalledWith(OWNER, 'freedom-agent/stable-address/my-site');
+  });
+
+  test('F: an update that lands under a live later version is rewritten above it, and never reported as applied', async () => {
+    // The first update expired with its batch, later ones survive: the card
+    // can't see the address, and the first write lands at index 0.
+    const feed = feeds();
+    feed.updateFeed.mockImplementation(async (key, topic, ref, batch, options) => ({ index: options?.minIndex || 0 }));
+    const heads = [{ exists: false }, { exists: true, index: 5 }, { exists: true, index: 6 }];
+    feed.readFeedState.mockImplementation(async () => heads.shift());
+    const { controller } = createController({ feedSigner: signer(), ...feed });
+    const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(feed.updateFeed).toHaveBeenCalledTimes(2);
+    expect(feed.updateFeed.mock.calls[1][4]).toEqual({ minIndex: 6 });
+    expect(result.publication.stableAddress).toMatchObject({ updated: true, index: 6 });
+
+    // Still shadowed after the rewrite: published, but the address is not updated.
+    const stuck = feeds();
+    stuck.updateFeed.mockImplementation(async (key, topic, ref, batch, options) => ({ index: options?.minIndex || 0 }));
+    const stuckHeads = [{ exists: false }, { exists: true, index: 5 }, { exists: true, index: 9 }];
+    stuck.readFeedState.mockImplementation(async () => stuckHeads.shift());
+    const other = createController({ feedSigner: signer(), ...stuck });
+    const failed = await other.controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(failed.publication.state).toBe('completed');
+    expect(failed.publication.message).toContain('the stable address was not updated');
+    expect(failed.publication.stableAddress).toMatchObject({ updated: false, error: expect.stringContaining('still serves its later version 9') });
+    expect(stuck.createFeed).not.toHaveBeenCalled();
+  });
+
+  test('F: a read-back that fails or lags behind the write does not undo the update', async () => {
+    for (const readBack of [async () => { throw new Error('node down'); }, async () => ({ exists: false }), async () => ({ exists: true, index: 1 })]) {
+      const feed = feeds();
+      feed.readFeedState.mockImplementationOnce(async () => ({ exists: true, index: 2 })).mockImplementation(readBack);
+      const { controller } = createController({ feedSigner: signer(), ...feed });
+      const result = await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+      // The card's latest index is a floor for the write.
+      expect(feed.updateFeed.mock.calls[0][4]).toEqual({ minIndex: 3 });
+      expect(feed.updateFeed).toHaveBeenCalledTimes(1);
+      expect(result.publication.stableAddress).toMatchObject({ updated: true, index: 3 });
+    }
   });
 
   test('F: with no local record the card reads the feed, and only a definite "no update" says the address is new', async () => {

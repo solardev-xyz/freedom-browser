@@ -2498,7 +2498,7 @@ function renderPublicationApproval(request) {
       : stable.existing === 'yes'
         ? `This address already exists${versions}. Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication`
         : stable.existing === 'no'
-          ? 'A new address is created when this is published'
+          ? 'No earlier version of this address was found on the network, so publishing creates it'
           : 'Freedom could not check whether this address already exists. If it does, publishing points it at this content, and anything linked to it will show this publication';
     appendPublicationSummary('Stable address', `${stable.name} · owned by your Swarm identity ${shortAddress(stable.owner)}\n${effect}`);
   }

@@ -408,7 +408,8 @@ class SwarmPublicationController {
       target,
       public: !draft,
       ...(draft && { encrypted: true }),
-      ...(stableAddress && { stableAddress: { name: stableAddress.name, owner: stableAddress.owner, topic: stableAddress.topic } }),
+      ...(stableAddress && { stableAddress: { name: stableAddress.name, owner: stableAddress.owner, topic: stableAddress.topic,
+        ...(stableAddress.latestIndex !== undefined && { knownIndex: stableAddress.latestIndex }) } }),
       // The batch the approval card showed is the batch the upload uses.
       ...(postage?.batchId && { plannedBatchId: postage.batchId }),
       progress: 0,
@@ -615,6 +616,8 @@ class SwarmPublicationController {
               operation.state = PUBLICATION_STATES.FAILED;
               operation.error = safeMessage(error, 'The Swarm publication failed');
               operation.message = 'Upload failed. The existing postage batch was retained.';
+              // History still holds the timeout's "outcome is unknown" text.
+              this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.error });
             }
             this.#emitProgress(operation);
           }).catch(() => {});
@@ -769,9 +772,36 @@ class SwarmPublicationController {
       if (String(signer?.address || '').toLowerCase() !== stableAddress.owner) {
         throw new Error('Your Swarm identity changed after approval, so the stable address was not updated');
       }
-      const update = await observe(Promise.resolve().then(() =>
-        this.updateFeed(signer.privateKey, stableAddress.topic, operation.reference, operation.batchId)), FEED_TIMEOUT_MS);
-      if (update.kind !== 'result') throw update.error || new Error('The feed update did not finish in time');
+      // The network can read a live address low (its first update expired
+      // with its batch, or a gap), so never write below an index this
+      // browser already knows was written.
+      const known = [stableAddress.knownIndex, ...[...this.operations.values()]
+        .filter(item => item.stableAddress?.name === stableAddress.name && item.stableAddress.owner === stableAddress.owner &&
+          item.stableAddress.updated === true)
+        .map(item => item.stableAddress.index)]
+        .filter(index => Number.isSafeInteger(index) && index >= 0);
+      let minIndex = known.length ? Math.max(...known) + 1 : 0;
+      let update;
+      for (let attempt = 0; ; attempt += 1) {
+        const written = await observe(Promise.resolve().then(() =>
+          this.updateFeed(signer.privateKey, stableAddress.topic, operation.reference, operation.batchId,
+            ...(minIndex > 0 ? [{ minIndex }] : []))), FEED_TIMEOUT_MS);
+        if (written.kind !== 'result') throw written.error || new Error('The feed update did not finish in time');
+        update = written;
+        const index = written.value?.index;
+        if (!Number.isSafeInteger(index)) break;
+        // Read the address back: a later index still served means this
+        // update landed under the live head and changed nothing. A read that
+        // fails, or lags behind the write, proves nothing either way.
+        const readBack = await observe(Promise.resolve().then(() =>
+          this.readFeedState(stableAddress.owner, stableAddress.topic)), this.interactiveTimeoutMs);
+        const head = readBack.kind === 'result' && readBack.value?.exists === true ? readBack.value.index : undefined;
+        if (!Number.isSafeInteger(head) || head <= index) break;
+        if (attempt === 1) {
+          throw new Error(`The stable address still serves its later version ${head}, so this update (version ${index}) is not shown`);
+        }
+        minIndex = head + 1;
+      }
       const manifest = await observe(Promise.resolve().then(() =>
         this.createFeed(signer.privateKey, stableAddress.topic, operation.batchId)), FEED_TIMEOUT_MS);
       if (manifest.kind !== 'result') throw manifest.error || new Error('The stable address manifest did not finish in time');

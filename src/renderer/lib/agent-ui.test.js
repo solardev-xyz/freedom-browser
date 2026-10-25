@@ -4624,7 +4624,7 @@ describe('Agent UI', () => {
     const live = await summaryFor('a1', { existing: 'yes', latestIndex: 2 });
     expect(live).toContain('This address already exists (3 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
     expect(live).not.toContain('A new address');
-    expect(await summaryFor('a2', { existing: 'no' })).toContain('A new address is created when this is published');
+    expect(await summaryFor('a2', { existing: 'no' })).toContain('No earlier version of this address was found on the network, so publishing creates it');
     for (const [id, state] of [['a3', { existing: 'unknown' }], ['a4', {}]]) {
       const text = await summaryFor(id, state);
       expect(text).toContain('Freedom could not check whether this address already exists');

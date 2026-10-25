@@ -449,6 +449,36 @@ describe('feed-service', () => {
       }
     });
 
+    test('minIndex keeps a write above an index the caller knows, even when the probe reads the feed as empty', async () => {
+      // Index 0 expired with its batch while later updates survive: the
+      // probe can't see past it, so only the caller's known index helps.
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      mockFeedChunksUpTo(-1);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 6 });
+      expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: 6 });
+      // A network head past minIndex still wins.
+      writer.uploadReference.mockClear();
+      mockFeedChunksUpTo(9);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 10 });
+      // An absent or invalid minIndex changes nothing.
+      writer.uploadReference.mockClear();
+      mockFeedChunksUpTo(-1);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: -3 })).resolves.toEqual({ index: 0 });
+    });
+
+    test('a 500 from an update-chunk probe fails the write instead of reading the chunk as missing', async () => {
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      mockDownloadChunk.mockRejectedValue(new MockBeeResponseError(500, 'read chunk failed'));
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).rejects.toBeInstanceOf(MockBeeResponseError);
+      expect(writer.uploadReference).not.toHaveBeenCalled();
+    });
+
     test('propagates non-404 errors from resolveNextIndex (does not default to 0)', async () => {
       const writer = createMockWriter();
       writer.downloadPayload.mockRejectedValue(new Error('network timeout'));
@@ -658,6 +688,42 @@ describe('feed-service', () => {
       mockMakeFeedReader.mockReturnValue(createMockReader());
       mockDownloadChunk.mockRejectedValue(new Error('connect ECONNREFUSED'));
       await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toThrow('ECONNREFUSED');
+    });
+
+    test('a 500 from an update-chunk probe reads as unknown, not as a missing chunk', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockFeedChunksUpTo(5);
+      const chunkPresent = mockDownloadChunk.getMockImplementation();
+      // After the /feeds 404, index 0 answers 500.
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 0) throw new MockBeeResponseError(500, 'read chunk failed');
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
+      // Mid-bracket too: a 500 at index 4 must not end the probe at 3.
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 4) throw new MockBeeResponseError(500, 'read chunk failed');
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
+    });
+
+    test('the probe assumes contiguous updates: a gap or a missing index 0 reads the head low', async () => {
+      // Documented limit (see probeFeedHead): the writer's minIndex and the
+      // controller's read-back cover it.
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockFeedChunksUpTo(9);
+      const chunkPresent = mockDownloadChunk.getMockImplementation();
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 2) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 1 });
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 0) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
     });
 
     test('only a 404 means the feed has no update yet', async () => {
