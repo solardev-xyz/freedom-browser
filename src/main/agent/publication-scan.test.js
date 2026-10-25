@@ -601,7 +601,7 @@ describe('generated-code hygiene (#741 H)', () => {
 
   test('the Agent site template carries a restrictive CSP meta and passes the check cleanly', () => {
     const template = fs.readFileSync(path.join(__dirname, 'skills', 'swarm-publishing', 'site-template.html'), 'utf8');
-    const csp = template.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/);
+    const csp = template.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"\s*\/?>/);
     expect(csp).not.toBeNull();
     const directives = Object.fromEntries(csp[1].split(';').map(part => part.trim().split(/\s+/)).map(([name, ...values]) => [name, values]));
     expect(directives).toMatchObject({ 'default-src': ["'self'"], 'script-src': ["'self'"], 'connect-src': ["'self'"],
