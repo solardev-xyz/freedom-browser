@@ -102,7 +102,7 @@ async function muteTab({ win }, { pin = false } = {}) {
 async function appMenu({ app, win }, { zoomIn = false } = {}) {
   if (zoomIn) {
     await menuItem(app, 'zoom-in');
-    await win.waitForTimeout(500);
+    await win.waitForTimeout(300);
   }
   await win.click('#menu-button');
   await win.waitForTimeout(500);
@@ -124,7 +124,7 @@ async function privateWindow({ app, win }) {
   await menuItem(app, 'new-private-window');
   let page;
   for (let i = 0; i < 50 && !page; i++) {
-    await win.waitForTimeout(500);
+    await win.waitForTimeout(300);
     page = app
       .windows()
       .find(
@@ -442,7 +442,7 @@ async function onchainApp({ app, win }) {
 async function trustPopover({ win }) {
   await win.click('#trust-shield');
   await win.waitForSelector('#trust-popover', { state: 'visible' });
-  await win.waitForTimeout(500);
+  await win.waitForTimeout(300);
 }
 
 // Tezos interstitials: 'unverified' | 'conflict'
