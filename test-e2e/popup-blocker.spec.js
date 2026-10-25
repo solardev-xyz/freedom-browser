@@ -417,7 +417,11 @@ test('a touch scroll does not arm a popup; a touch tap does', async ({ window, e
   await expect(icon(window)).toBeVisible();
   await expect(tabs(window)).toHaveCount(1);
 
-  expect(touchTurnedScroll(await realTouch(electronApp, []))).toBe(false);
+  // The tap must have reached the gesture tracker (touchTurnedScroll([]) is
+  // false too, so check the touchEnd first) and not have turned into a scroll.
+  const tap = await realTouch(electronApp, []);
+  expect(tap.at(-1), `tap never reached touchEnd: ${JSON.stringify(tap)}`).toBe('touchEnd');
+  expect(touchTurnedScroll(tap), JSON.stringify(tap)).toBe(false);
   await scriptOpen(window, POPUP_B);
   await expect(tabs(window)).toHaveCount(2);
   await expect.poll(() => guestUrls(electronApp), { timeout: 10_000 }).toContain(POPUP_B);
