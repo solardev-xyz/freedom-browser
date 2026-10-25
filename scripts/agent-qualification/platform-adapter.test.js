@@ -24,7 +24,7 @@ describe('workspace qualification platform adapters', () => {
       terminationScope: 'pid_namespace',
       survivorsPossible: false,
       completeDescendantTermination: true,
-      fullNetworkIncludesHostAbstractUnixSockets: true,
+      fullNetworkIncludesHostAbstractUnixSockets: false,
     });
     expect(adapter.receiptMatches(receipt, 'cancelled')).toBe(true);
     expect(adapter.receiptMatches({ ...receipt, backend: 'macos-seatbelt' }, 'cancelled')).toBe(

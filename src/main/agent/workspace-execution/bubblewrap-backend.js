@@ -15,6 +15,7 @@ const { createReadinessOutputForwarder, notifyOutput } = require('./process-io')
 const { runLinuxOwner, cleanupProven } = require('./linux-supervisor-process');
 const { resolveLinuxSupervisor, assertOutsideWritableRoots } = require('./linux-supervisor-runtime');
 const { executableCommandEntries, systemToolchainDirectories } = require('./executable-access');
+const { buildUnixSocketSeccompFilter } = require('./linux-seccomp-filter');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
@@ -22,7 +23,10 @@ const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
 const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = systemToolchainDirectories('linux').join(':');
 const BUBBLEWRAP_SUPERVISOR_SHELL = '/bin/bash';
-const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([3, 4, 5, 6, 8]);
+const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([3, 4, 5, 6, 7, 8]);
+// The native owner hands Bubblewrap the seccomp program on this descriptor
+// (run mode only); Bubblewrap reads and closes it, and the gate closes 7+.
+const SECCOMP_PROGRAM_DESCRIPTOR = 7;
 const DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT = Object.freeze(
   [
     'for descriptor_path in /proc/self/fd/*; do',
@@ -167,7 +171,8 @@ function baseCapabilityProbeArguments(gate = false) {
     '/tmp',
     '--remount-ro',
     '/proc',
-    ...(gate ? ['--dir', '/run', '--perms', '0555', '--file', '8', '/run/freedom-workspace-owner'] : []),
+    ...(gate ? ['--dir', '/run', '--perms', '0555', '--file', '8', '/run/freedom-workspace-owner',
+      '--seccomp', String(SECCOMP_PROGRAM_DESCRIPTOR)] : []),
     '--remount-ro',
     '/',
     '--clearenv',
@@ -286,7 +291,18 @@ async function detectBubblewrapCapabilities(options = {}) {
       }
     );
   }
-  const descriptorProbe = await runBoundedProcess(binary, capabilityProbeArguments(), { ...options, probe: false });
+  let seccompFilter;
+  try {
+    seccompFilter = buildUnixSocketSeccompFilter(options.architecture || process.arch);
+  } catch {
+    return unavailable('SECCOMP_FILTER_UNAVAILABLE',
+      'No reviewed Unix-socket seccomp filter exists for this architecture', { binary, version,
+        architecture: options.architecture || process.arch });
+  }
+  // The gate probe runs under the same filter every command gets, so a kernel
+  // or Bubblewrap that cannot install it makes the backend unavailable.
+  const descriptorProbe = await runBoundedProcess(binary, capabilityProbeArguments(),
+    { ...options, probe: false, seccompFilter });
   if (
     descriptorProbe.code !== 0 ||
     descriptorProbe.stdout !== `${DESCRIPTOR_CLOSURE_PROBE_MARKER}\n`
@@ -317,7 +333,8 @@ async function detectBubblewrapCapabilities(options = {}) {
       networkNone: true,
       networkFull: 'host_namespace',
       loopbackNetworking: 'private_namespace',
-      fullNetworkIncludesHostAbstractUnixSockets: true,
+      fullNetworkIncludesHostAbstractUnixSockets: false,
+      hostUnixSockets: 'denied',
       processNamespace: true,
       ipcNamespace: true,
       descendantInheritance: true,
@@ -329,7 +346,8 @@ async function detectBubblewrapCapabilities(options = {}) {
       cancellationGuarantee: 'best_effort',
       survivorsPossible: true,
       completeDescendantTermination: false,
-      customSeccomp: false,
+      customSeccomp: true,
+      seccompFilter: 'deny_unix_socket_creation',
       nestedUserNamespacesDisabled: true,
       aggregateResourceLimits: false,
     }),
@@ -410,7 +428,7 @@ async function addProtectedMounts(args, policy, stagingDirectory) {
   }
 }
 
-async function buildBubblewrapArguments(policy, request) {
+async function buildBubblewrapArguments(policy, request, options = {}) {
   if (!isValidatedWorkspaceExecutionPolicy(policy)) {
     throw new ExecutionPolicyError(
       'INVALID_POLICY',
@@ -421,12 +439,6 @@ async function buildBubblewrapArguments(policy, request) {
     throw new ExecutionPolicyError(
       'UNSUPPORTED_NETWORK_POSTURE',
       'The Linux backend supports only offline or full host networking'
-    );
-  }
-  if (policy.seccomp.requireCustomFilter) {
-    throw new ExecutionPolicyError(
-      'SECCOMP_UNAVAILABLE',
-      'A reviewed custom seccomp filter is not available in this spike'
     );
   }
   if (!policy.filesystem.exposeSystemToolchain) {
@@ -442,6 +454,9 @@ async function buildBubblewrapArguments(policy, request) {
     );
   }
   const normalizedRequest = validateExecutionRequest(request);
+  // No policy can grant host IPC yet (HOST_IPC is unimplemented), so every
+  // command gets the Unix-socket filter whatever its network or write posture.
+  const seccompFilter = buildUnixSocketSeccompFilter(options.architecture || process.arch);
   const readinessMarker = `freedom-sandbox-ready-${crypto.randomUUID()}`;
   const stagingDirectory = await createLauncherStagingDirectory(policy.network);
   try {
@@ -543,6 +558,7 @@ async function buildBubblewrapArguments(policy, request) {
     // named 0555 copy and its parent before the gate or command can execute.
     args.push('--dir', '/run', '--perms', '0555', '--file', '8', '/run/freedom-workspace-owner');
     args.push('--remount-ro', '/proc', '--remount-ro', '/');
+    args.push('--seccomp', String(SECCOMP_PROGRAM_DESCRIPTOR));
 
     const fixedEnvironment = {
       HOME: '/tmp/home',
@@ -576,6 +592,7 @@ async function buildBubblewrapArguments(policy, request) {
     return Object.freeze({
       args: Object.freeze(args),
       request: normalizedRequest,
+      seccompFilter,
       stagingDirectory,
       readinessMarker,
       exposedSystemPaths: Object.freeze(
@@ -724,6 +741,7 @@ class BubblewrapExecutor {
       assertOutsideWritableRoots(runtime, policy, launch.stagingDirectory);
       result = await this.runOwner(this.binary, launch.args, {
         runtime, timeoutMs: policy.limits.timeoutMs, signal: launch.request.signal,
+        seccompFilter: launch.seccompFilter,
         stdoutBytes: policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
         stderrBytes: policy.limits.stderrBytes, onStdin: launch.request.onStdin,
         onOutput: (stream, chunk) => {
@@ -782,8 +800,8 @@ class BubblewrapExecutor {
         publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
         loopbackNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'private_namespace',
         privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-        hostAbstractUnixSockets: policy.network === NETWORK_POSTURES.FULL ? 'reachable' : 'isolated',
-        survivorsPossible: !complete, completeDescendantTermination: complete, customSeccomp: false },
+        hostAbstractUnixSockets: 'denied', hostUnixSockets: 'denied',
+        survivorsPossible: !complete, completeDescendantTermination: complete, customSeccomp: true },
       diagnostics: { nativeOwner: final, ownerExit: result.ownerExit || null,
         ...(!sandboxStarted && { initializationDiagnostic: boundedText(result.stderr) }),
         transportComplete: !!result.transportComplete, requestedCancellation: !!result.requested,
@@ -806,6 +824,7 @@ module.exports = {
   DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
   DESCRIPTOR_CLOSURE_PROBE_MARKER,
   PRIVATE_TEMP_SIZE_BYTES,
+  SECCOMP_PROGRAM_DESCRIPTOR,
   SHARED_MEMORY_SIZE_BYTES,
   SYSTEM_CONFIGURATION_PATHS,
   SYSTEM_RUNTIME_PATHS,
