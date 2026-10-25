@@ -102,7 +102,7 @@ async function muteTab({ win }, { pin = false } = {}) {
 async function appMenu({ app, win }, { zoomIn = false } = {}) {
   if (zoomIn) {
     await menuItem(app, 'zoom-in');
-    await win.waitForTimeout(300);
+    await win.waitForTimeout(500);
   }
   await win.click('#menu-button');
   await win.waitForTimeout(500);
@@ -124,7 +124,7 @@ async function privateWindow({ app, win }) {
   await menuItem(app, 'new-private-window');
   let page;
   for (let i = 0; i < 50 && !page; i++) {
-    await win.waitForTimeout(300);
+    await win.waitForTimeout(500);
     page = app
       .windows()
       .find(
@@ -270,7 +270,34 @@ async function sendForm({ app, win }) {
 }
 
 // dApp screens rendered directly from the renderer modules.
+//
+// The Send, Sign and Connect prompts share the sidebar, and one showing an
+// undecided request refuses a newcomer with -32002 (dapp-prompt-guard.js). So
+// each recipe first answers whichever prompt is up the way a user would — its
+// own Reject button — and only then asks for its own. The click goes through
+// the DOM rather than the mouse so the pointer (and any :hover it draws) stays
+// where the caller left it. Every promise a recipe starts is settled quietly:
+// rejecting it here is the point, not an error.
+const DAPP_PROMPTS = [
+  ['#sidebar-dapp-tx', '#dapp-tx-reject'],
+  ['#sidebar-dapp-sign', '#dapp-sign-reject'],
+  ['#sidebar-dapp-connect', '#dapp-connect-reject'],
+];
+
+async function dismissDappPrompts(win) {
+  await win.evaluate((prompts) => {
+    for (const [screen, reject] of prompts) {
+      const el = document.querySelector(screen);
+      if (el && !el.classList.contains('hidden')) document.querySelector(reject)?.click();
+    }
+  }, DAPP_PROMPTS);
+  for (const [screen] of DAPP_PROMPTS) {
+    await win.waitForSelector(screen, { state: 'hidden' });
+  }
+}
+
 async function dappTxApproval({ win }) {
+  await dismissDappPrompts(win);
   await win.evaluate(
     async ({ ledger, to }) => {
       const dappTx = await import('./lib/wallet/dapp-tx.js');
@@ -294,24 +321,36 @@ async function dappTxApproval({ win }) {
 }
 
 async function dappSign({ win }) {
+  await dismissDappPrompts(win);
   await win.evaluate(async () => {
     const dappSign = await import('./lib/wallet/dapp-sign.js');
-    dappSign.showDappSignApproval({}, 'https://swap.example', 'personal_sign', [
-      '0x48656c6c6f2046726565646f6d',
-      '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
-    ]);
+    dappSign
+      .showDappSignApproval({}, 'https://swap.example', 'personal_sign', [
+        '0x48656c6c6f2046726565646f6d',
+        '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      ])
+      .then(
+        () => {},
+        () => {}
+      );
   });
-  await win.waitForTimeout(600);
+  await win.waitForSelector('#sidebar-dapp-sign', { state: 'visible' });
+  await win.waitForTimeout(500);
 }
 
 async function dappConnect({ win }) {
+  await dismissDappPrompts(win);
   await win.evaluate(async () => {
     const dappConnect = await import('./lib/wallet/dapp-connect.js');
     new Promise((res, rej) =>
       dappConnect.showDappConnect('https://swap.example', 'https://swap.example', res, rej, {})
+    ).then(
+      () => {},
+      () => {}
     );
   });
-  await win.waitForTimeout(600);
+  await win.waitForSelector('#sidebar-dapp-connect', { state: 'visible' });
+  await win.waitForTimeout(500);
 }
 
 // The wallet's manage-permissions subscreen for a connected dApp — the screen
@@ -403,7 +442,7 @@ async function onchainApp({ app, win }) {
 async function trustPopover({ win }) {
   await win.click('#trust-shield');
   await win.waitForSelector('#trust-popover', { state: 'visible' });
-  await win.waitForTimeout(300);
+  await win.waitForTimeout(500);
 }
 
 // Tezos interstitials: 'unverified' | 'conflict'
