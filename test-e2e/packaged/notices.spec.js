@@ -48,6 +48,18 @@ test("Chromium's third-party notices ship with the artifact", async ({ electronA
   expect(head).toMatch(/chromium/i);
 });
 
+test("Electron's own licence text ships with the artifact", async ({ electronApp }) => {
+  // electron-builder 26.18+ renames Electron's dist `LICENSE` to
+  // `LICENSE.electron.txt` and leaves it where the Chromium notices go. Freedom
+  // has no explicit copy of this one, so this is the check that it arrived.
+  const { distDir } = await layout(electronApp);
+  const license = path.join(distDir, 'LICENSE.electron.txt');
+  expect({ license, present: fs.existsSync(license) }).toEqual({ license, present: true });
+  const text = fs.readFileSync(license, 'utf8');
+  expect(text).toContain('Copyright (c) Electron contributors');
+  expect(text).toContain('Permission is hereby granted, free of charge');
+});
+
 test('Freedom’s own licence and NOTICES ship with the artifact', async ({ electronApp }) => {
   const { resourcesPath } = await layout(electronApp);
 

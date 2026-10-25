@@ -200,6 +200,10 @@ Electron generates every Chromium third-party notice into a single `LICENSES.chr
 
 The macOS row is an explicit copy because electron-builder before 26.18 **deleted** the file on the macOS path — `unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in `app-builder-lib/out/electron/electronMac.js` — and, even unremoved, it would sit beside `Freedom.app` rather than inside it, so neither the `.dmg` nor the `-mac.zip` (both of which carry only the `.app`) would have contained it. Until this revision `NOTICES` pointed macOS users at a file no macOS artifact shipped. electron-builder 26.18 moves the file into `Contents/Resources` itself ([electron-builder#9407](https://github.com/electron-userland/electron-builder/issues/9407)); the explicit copy stays so the shipped file does not hinge on electron-builder internals, and `licenses-audit.test.js` notices if the installed electron-builder stops moving it.
 
+### Electron's own licence text
+
+Electron's dist also carries its MIT `LICENSE` beside the executable. electron-builder 26.18 renames it to `LICENSE.electron.txt` (so it cannot be mistaken for Freedom's own `LICENSE`) and keeps it where the Chromium notices go: beside `freedom` / `Freedom.exe` on Linux and Windows, and in `Freedom.app/Contents/Resources/` on macOS (the same `retainElectronLicenseFiles` step in `app-builder-lib/out/electron/ElectronFramework.js`). Freedom has no explicit copy of this file, so `licenses-audit.test.js` fails if the installed electron-builder stops renaming it, and the packaged notices smoke (`test-e2e/packaged/notices.spec.js`) checks that every artifact carries it. The `electron-builder` range in `package.json` starts at 26.18 for the same reason.
+
 `scripts/build.js` fails the build if `node_modules/electron/dist/LICENSES.chromium.html` is absent (an install that skipped Electron's binary download), and `licenses-audit.test.js` fails if the macOS `extraResources` entry is dropped.
 
 ---

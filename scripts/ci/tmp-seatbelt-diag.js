@@ -29,11 +29,7 @@ const sb = require(path.join(root, 'src/main/agent/workspace-execution/seatbelt-
       stdout: receipt.stdout, stderr: receipt.stderr, denial: receipt.denial, diagnostics: receipt.diagnostics }, null, 1));
     const priv = await sb.createPrivateDirectory();
     const profile = sb.buildSeatbeltProfile(policy, priv);
-    if (label === 'read') console.log('PROFILE\n' + profile);
-    const variants = ['', '(allow sysctl-read)', '(allow mach-lookup)', '(allow file-read*)', '(allow iokit-open)',
-      '(allow ipc-posix-shm*)', '(allow user-preference-read)', '(allow file-write*)', '(allow process-exec)',
-      '(allow mach-register)', '(allow ipc-posix-sem)', '(allow system-socket)', '(allow network*)', '(allow process-info*)',
-      '(allow file-ioctl)', '(allow default)'];
+    const variants = ['', '(allow sysctl-read)'];
     for (const extra of variants) {
       const file = path.join(priv, 'v.sb');
       fs.writeFileSync(file, profile + extra + '\n');
@@ -47,8 +43,8 @@ const sb = require(path.join(root, 'src/main/agent/workspace-execution/seatbelt-
   try {
     const out = execFileSync('/usr/bin/log', ['show', '--last', '3m', '--style', 'compact', '--predicate',
       'sender == "Sandbox" OR eventMessage CONTAINS "deny("'], { encoding: 'utf8', maxBuffer: 64 << 20 });
-    const lines = out.split('\n').filter((l) => /Electron|deny/.test(l));
-    const uniq = [...new Set(lines.map((l) => l.replace(/^.*?(deny\(\d+\))/, '$1').replace(/\(\d+\)/g, '')))];
+    const lines = out.split('\n').filter((l) => /Electron\(/.test(l) && /deny/.test(l));
+    const uniq = [...new Set(lines.map((l) => l.replace(/^.*?Sandbox: /, '').replace(/\(\d+\)/g, '')))];
     console.log('DENIALS', uniq.length); for (const l of uniq.slice(0, 300)) console.log('  ', l);
   } catch (e) { console.log('log show failed', e.message); }
 })().catch((e) => { console.log('FATAL', e); process.exitCode = 1; });

@@ -167,6 +167,8 @@ Electron
   `Freedom.app`, and electron-builder before 26.18 deleted the copy
   Electron ships beside the executable, so without it the file reached no
   macOS user at all.
+  Electron's own MIT licence text ships as `LICENSE.electron.txt`, in the
+  same place as `LICENSES.chromium.html` on each platform.
 
 == Ad blocking ==
 
