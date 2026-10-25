@@ -2,6 +2,26 @@ const { openProviderSettings } = require('./agent-provider-fixture');
 const http = require('http');
 const { test, expect } = require('./fixtures');
 
+// Choosing a provider updates the page's hash, and the hashchange handler
+// that renders that route arrives a moment later. A field filled before it
+// can be wiped when the form is reopened, which on a loaded runner left the
+// connection name empty and the save "Not connected". The handler is what
+// names the page, so wait for the heading before typing anything.
+async function chooseCompatible(providerPage) {
+  await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
+  await expect(providerPage.locator('#ai-provider-page-title')).toHaveText('OpenAI-compatible');
+}
+
+// A composer re-render (a new chat, a finished run) can close the model menu
+// between the click that opened it and the click on its entry, so open it
+// again until "Manage models…" is there to click.
+async function manageModels(window) {
+  await expect(async () => {
+    if (!(await window.locator('#agent-manage-providers').isVisible())) await window.locator('#agent-model-menu-button').click();
+    await window.locator('#agent-manage-providers').click({ timeout: 2000 });
+  }).toPass({ timeout: 15000 });
+}
+
 test('custom provider discovers models, verifies tools, chats, and supports a second keyless connection', async ({ window }, testInfo) => {
   const requests = [];
   let rejectTools = false;
@@ -34,7 +54,7 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
 
   let providerPage = await openProviderSettings(window);
     await providerPage.locator('#agent-provider-add').click();
-    await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
+    await chooseCompatible(providerPage);
     await providerPage.locator('#agent-custom-name').fill('Fixture gateway');
     await providerPage.locator('#agent-custom-url').fill(baseUrl);
     await expect(providerPage.locator('#agent-custom-transport')).toContainText('without transport encryption');
@@ -93,18 +113,19 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
 
     await window.locator('#agent-session-privacy').click();
     await window.locator('#agent-new-chat').click();
-    await window.locator('#agent-model-menu-button').click();
-    await window.locator('#agent-manage-providers').click();
+    await manageModels(window);
     providerPage = await openProviderSettings(window);
     await providerPage.locator('#agent-provider-add').click();
-    await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
+    await chooseCompatible(providerPage);
     await providerPage.locator('#agent-custom-name').fill('Keyless fixture');
     await providerPage.locator('#agent-custom-url').fill(baseUrl);
     await providerPage.locator('#agent-custom-models').fill('manual-model');
     const before = requests.length;
     await providerPage.locator('#agent-provider-save').click();
     await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
-    expect(requests.length).toBe(before);
+    // Only the keyless connection's own requests, which carry no key: the
+    // first connection (Bearer key, same server) may still be talking to it.
+    expect(requests.slice(before).filter(r => !r.auth)).toEqual([]);
     rejectTools = true;
     await providerPage.locator('#agent-provider-advanced').evaluate(el => { el.open = true; });
     await providerPage.locator('#agent-provider-test').click();
@@ -112,8 +133,7 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await expect(providerPage.locator('#agent-compatibility-continue')).toHaveText('Continue anyway');
     await providerPage.locator('#agent-compatibility-continue').click();
     await expect(window.locator('#agent-prompt')).toBeVisible();
-    await window.locator('#agent-model-menu-button').click();
-    await window.locator('#agent-manage-providers').click();
+    await manageModels(window);
     providerPage = await openProviderSettings(window);
     await providerPage.locator('#agent-connected-provider-list').getByRole('button', { name: /Keyless fixture/ }).click();
     rejectTools = false;
@@ -142,8 +162,13 @@ test('a catalog refresh reports itself only when asked for, and only briefly', a
     const providerPage = await openProviderSettings(window);
     const message = providerPage.locator('#agent-provider-message');
     await providerPage.locator('#agent-provider-add').click();
+<<<<<<< HEAD
     await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI-compatible', exact: true }).click();
     console.log(Date.now(), '[diag] test: fill name'); await providerPage.locator('#agent-custom-name').fill('Refresh fixture'); console.log(Date.now(), '[diag] test: filled name');
+=======
+    await chooseCompatible(providerPage);
+    await providerPage.locator('#agent-custom-name').fill('Refresh fixture');
+>>>>>>> 9c008c5ae (test(e2e): wait out the provider route and menu races in custom-provider.spec.js)
     await providerPage.locator('#agent-custom-url').fill(`http://127.0.0.1:${server.address().port}/v1`);
     await providerPage.locator('#agent-custom-models').fill('manual-model');
     await providerPage.locator('#agent-provider-save').click();

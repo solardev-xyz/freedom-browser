@@ -1251,7 +1251,7 @@ jobs:
         run: npm run build:workspace-supervisor
       - name: Run agent E2E
         run: |
-          npm run test:e2e -- --repeat-each=10 --retries=0 test-e2e/custom-provider.spec.js
+          npm run test:e2e -- --repeat-each=15 --retries=0 test-e2e/custom-provider.spec.js
       - name: Upload software rendering profile
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1387,7 +1387,7 @@ jobs:
 
       - name: Run agent and automation E2E on Linux
         run: |
-          xvfb-run -a npm run test:e2e -- --repeat-each=10 --retries=0 test-e2e/custom-provider.spec.js
+          xvfb-run -a npm run test:e2e -- --repeat-each=15 --retries=0 test-e2e/custom-provider.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
