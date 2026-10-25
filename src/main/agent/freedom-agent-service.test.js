@@ -2611,8 +2611,9 @@ describe('FreedomAgentService', () => {
       publication: { kind: 'folder', name: 'dist', target: 'public', public: true, postage: { status: 'none' },
         stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` } } });
     approval = events.at(-1);
+    // A card with no existence answer says it may be live, never "new".
     expect(approval.publication).toMatchObject({ target: 'public', public: true, postage: { status: 'none' },
-      stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` } });
+      stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, existing: 'unknown', currentBzzUrl: `bzz://${'f'.repeat(64)}` } });
     await service.decideApproval('run_test', approval.approvalId, false);
     await expect(stable).resolves.toBe('declined');
 

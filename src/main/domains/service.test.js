@@ -245,6 +245,15 @@ test('a private draft link is never connected to a name', async () => {
   expect(f.wallet.send).not.toHaveBeenCalled();
 });
 
+test('an unknown publication ID gets the "choose a completed publication" refusal, not the draft one', async () => {
+  const f = fixture();
+  f.options.getPublication.mockResolvedValue(null);
+  const failure = f.service.prepare({ name: f.state.name, intent: 'set_website', publicationId }, f.context);
+  await expect(failure).rejects.toThrow('Choose a completed, retrieval-verified Swarm website publication ID.');
+  await expect(failure).rejects.not.toThrow('private draft link');
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
 test('a publication with an updated stable address maps the name to the feed, not one version', async () => {
   const f = fixture();
   const feed = 'fe'.repeat(32);

@@ -68,6 +68,7 @@ function createController(overrides = {}) {
       bytesSize: 12,
     })),
     getUploadStatus: jest.fn(),
+    readFeedState: jest.fn(async () => ({ exists: false })),
     addHistoryEntry: jest.fn(() => ({ id: 7 })),
     updateHistoryEntry: jest.fn(),
     verifyPublication: jest.fn(async () => true),
@@ -632,6 +633,7 @@ describe('private draft links, stable addresses and postage on the card (#741 E,
   const feeds = () => ({
     updateFeed: jest.fn(async () => ({ index: 3 })),
     createFeed: jest.fn(async () => ({ manifestReference: FEED, bzzUrl: `bzz://${FEED}` })),
+    readFeedState: jest.fn(async () => ({ exists: false })),
   });
 
   test('E: a draft is its own target, uploads with Swarm-Encrypt and records that it was a draft', async () => {
@@ -647,12 +649,31 @@ describe('private draft links, stable addresses and postage on the card (#741 E,
   });
 
   test('E: an unencrypted reference from the node is never reported as a private link', async () => {
-    const { controller } = createController();
+    const { controller, dependencies } = createController();
     const failure = controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' });
-    await expect(failure).rejects.toThrow('did not encrypt this upload');
+    await expect(failure).rejects.toThrow(`did not encrypt this upload: it returned the unencrypted reference ${REFERENCE}`);
     const receipt = (await controller.status({ publicationId: PUBLICATION_ID }, { conversationId: 'c' })).publication;
-    expect(receipt).toMatchObject({ target: 'draft', state: 'outcome_unknown' });
+    // Not a draft link, but the user can see which public reference holds the content.
+    expect(receipt).toMatchObject({ target: 'draft', state: 'failed', applicationState: 'possibly_applied', unencryptedReference: REFERENCE });
     expect(receipt).not.toHaveProperty('bzzUrl');
+    expect(receipt).not.toHaveProperty('reference');
+    expect(dependencies.updateHistoryEntry).toHaveBeenCalledWith(7, expect.objectContaining({ reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}`, status: 'failed' }));
+  });
+
+  test('E: a draft is confirmed by its tag, which Ant keys on the root address (the leading 64 hex)', async () => {
+    let clock = 0;
+    const timing = { now: () => clock, sleep: async ms => { clock += ms; }, progressTimeoutMs: 30, progressPollMs: 10 };
+    const upload = jest.fn(async () => ({ reference: ENCRYPTED, bzzUrl: `bzz://${ENCRYPTED}`, tagUid: 9 }));
+    const { controller } = createController({ ...timing, publishCollection: upload,
+      getUploadStatus: jest.fn(async () => ({ done: true, progress: 100, reference: ENCRYPTED.slice(0, 64) })) });
+    const result = await controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' });
+    expect(result.publication).toMatchObject({ state: 'completed', reference: ENCRYPTED });
+
+    // A tag for some other root still never confirms it.
+    const other = createController({ ...timing, publishCollection: upload,
+      getUploadStatus: jest.fn(async () => ({ done: true, progress: 100, reference: 'a'.repeat(64) })) });
+    await expect(other.controller.publish({ workspacePath: 'dist', target: 'draft' }, { conversationId: 'c', requestApproval: async () => 'approved' }))
+      .rejects.toThrow('Network confirmation is still unavailable');
   });
 
   test('E: the same scan and blocking rules apply to a draft', async () => {
@@ -704,15 +725,33 @@ describe('private draft links, stable addresses and postage on the card (#741 E,
     const { controller } = createController({ feedSigner, ...feed, publicationIdFactory: () => `swarm_pub_${String(++id).padStart(24, '0')}` });
     const requestApproval = jest.fn(async () => 'approved');
     const first = await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'c', requestApproval });
-    expect(requestApproval.mock.calls[0][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER });
+    expect(requestApproval.mock.calls[0][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, existing: 'no' });
     expect(feed.updateFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', REFERENCE, undefined);
     expect(feed.createFeed).toHaveBeenCalledWith(`0x${'9'.repeat(64)}`, 'freedom-agent/stable-address/my-site', undefined);
     expect(first.publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, reference: FEED, bzzUrl: `bzz://${FEED}`, index: 3, updated: true });
     expect(JSON.stringify(first)).not.toContain('9'.repeat(64));
     // A later publication in another conversation names the address it updates.
     await controller.publish({ workspacePath: 'dist', stableAddress: 'my-site' }, { conversationId: 'other', requestApproval });
-    expect(requestApproval.mock.calls[1][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, currentBzzUrl: `bzz://${FEED}` });
+    expect(requestApproval.mock.calls[1][0].publication.stableAddress).toEqual({ name: 'my-site', owner: OWNER, existing: 'yes', currentBzzUrl: `bzz://${FEED}` });
     expect(feed.updateFeed).toHaveBeenCalledTimes(2);
+    expect(feed.readFeedState).toHaveBeenCalledTimes(1);
+    expect(feed.readFeedState).toHaveBeenCalledWith(OWNER, 'freedom-agent/stable-address/my-site');
+  });
+
+  test('F: with no local record the card reads the feed, and only a definite "no update" says the address is new', async () => {
+    const card = async (readFeedState, extra = {}) => {
+      const requestApproval = jest.fn(async () => 'declined');
+      const { controller } = createController({ feedSigner: signer(), ...feeds(), readFeedState, ...extra });
+      await controller.publish({ workspacePath: 'dist', stableAddress: 'site' }, { conversationId: 'c', requestApproval }).catch(() => {});
+      return requestApproval.mock.calls[0][0].publication.stableAddress;
+    };
+    // Live already (a deleted conversation, an evicted record, a restored vault).
+    expect(await card(jest.fn(async () => ({ exists: true, index: 2 })))).toEqual({ name: 'site', owner: OWNER, existing: 'yes', latestIndex: 2 });
+    expect(await card(jest.fn(async () => ({ exists: false })))).toEqual({ name: 'site', owner: OWNER, existing: 'no' });
+    expect(await card(jest.fn(async () => { throw new Error('node down'); })))
+      .toEqual({ name: 'site', owner: OWNER, existing: 'unknown' });
+    expect(await card(jest.fn(() => new Promise(() => {})), { interactiveTimeoutMs: 5 }))
+      .toEqual({ name: 'site', owner: OWNER, existing: 'unknown' });
   });
 
   test('F: a locked vault refuses before approval; a failed feed update leaves the content published and says so', async () => {

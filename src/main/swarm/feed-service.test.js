@@ -129,7 +129,7 @@ jest.mock('electron-log', () => ({
   error: jest.fn(),
 }));
 
-const { buildTopicString, createFeed, updateFeed, writeFeedPayload, readFeedPayload, withWriteLock, feedIndexToNumber, isNotFoundError } = require('./feed-service');
+const { buildTopicString, createFeed, updateFeed, writeFeedPayload, readFeedPayload, readFeedState, withWriteLock, feedIndexToNumber, isNotFoundError } = require('./feed-service');
 
 const TEST_PRIVATE_KEY = '0x' + 'ab'.repeat(32);
 const MOCK_MANIFEST_REF = 'ff'.repeat(32);
@@ -592,6 +592,23 @@ describe('feed-service', () => {
 
       const [, data] = writer.uploadPayload.mock.calls[0];
       expect(data).toBe(buf);
+    });
+  });
+
+  describe('readFeedState', () => {
+    test('reports the latest index of a feed that has an update', async () => {
+      const reader = createMockReader({ downloadPayloadResult: { payload: new MockBytes('x'), feedIndex: new MockFeedIndex(4) } });
+      mockMakeFeedReader.mockReturnValue(reader);
+      await expect(readFeedState(MOCK_OWNER, 'freedom-agent/stable-address/site')).resolves.toEqual({ exists: true, index: 4 });
+      expect(mockMakeFeedReader.mock.calls[0][0]).toBeInstanceOf(MockTopic);
+    });
+
+    test('only a 404 means the feed has no update yet', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
+      // A 500 can't tell an empty feed from an unreachable one.
+      mockMakeFeedReader.mockReturnValue({ downloadPayload: jest.fn().mockRejectedValue(new MockBeeResponseError(500)) });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
     });
   });
 

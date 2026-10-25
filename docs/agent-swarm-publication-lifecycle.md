@@ -76,18 +76,33 @@ starts new static sites with a restrictive `Content-Security-Policy` `<meta>`.
   fixed notice says that anyone who gets the link can read it and that the
   encrypted data is still stored on the public network permanently. The same
   scan and blocking rules apply. If the node returns an unencrypted
-  (64-hex) reference, the publication is not reported as a draft link. A
+  (64-hex) reference, the publication fails and is not reported as a draft
+  link; the receipt (`unencryptedReference`), the error and the publish
+  history entry record that public reference so the user can check it. A
   draft never gets a stable address or a domain name (`DomainService`
   refuses it), and publishing the same content publicly later is a separate
   `swarm_publish` call with its own approval. Receipts carry `target`,
-  `public` and, for drafts, `encrypted: true`.
+  `public` and, for drafts, `encrypted: true`. Ant confirms a draft's tag
+  against the leading 64 hex (the root chunk address); the key half never
+  appears in a tag.
+- Storage of draft links: the full 128-hex link, decryption key included, is
+  kept in plaintext in the profile's `agent-publications.json` and in the
+  publish history database, the same as public references, so the receipt
+  and **Copy draft link** keep working after a restart. Anyone who can read
+  the profile directory can read every draft made from it; treat the profile
+  like the drafts themselves.
 
 `stableAddress: "<name>"` (public only) publishes under a Swarm feed owned by
 the user's Swarm identity (the node wallet key from the unlocked vault; a
 locked vault refuses before approval). The topic is
 `freedom-agent/stable-address/<name>`, so the same name always resolves to
 the same `bzz://` feed manifest, and a later publication with that name
-updates it. After the content upload is confirmed, the controller writes the
+updates it. Because the address depends only on owner and name, it can be
+live (and linked to an ENS name) with no local record of it, after a deleted
+conversation or a restored vault. So before approval the controller reads the
+feed: the card says the address already exists (and how many versions it
+has), that a new one is created (only on a definite 404), or that Freedom
+could not check and approval may re-point a live address. After the content upload is confirmed, the controller writes the
 feed update and the feed manifest with the same batch. If that fails, the
 content is still published and the receipt says `stableAddress.updated:
 false`. The card's fixed notice says older versions stay retrievable by

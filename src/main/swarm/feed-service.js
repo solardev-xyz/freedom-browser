@@ -326,8 +326,30 @@ async function readFeedPayload(ownerAddress, topic, index) {
   }
 }
 
+/**
+ * Whether a feed already has an update, read before asking to write one.
+ * Only a 404 counts as "no update yet": a 500 or a network error can't tell
+ * an empty feed from an unreachable one, so it reads as unknown.
+ *
+ * @param {string} ownerAddress - 0x-prefixed owner address
+ * @param {string} topicString - Topic string (as passed to updateFeed)
+ * @returns {Promise<{ exists: true, index: number } | { exists: false }>}
+ */
+async function readFeedState(ownerAddress, topicString) {
+  const bee = getBee();
+  const reader = bee.feed.makeReader(Topic.fromString(topicString), new EthAddress(ownerAddress));
+  try {
+    const latest = await reader.downloadPayload();
+    return { exists: true, index: feedIndexToNumber(latest.feedIndex) };
+  } catch (err) {
+    if (err instanceof BeeResponseError && err.status === 404) return { exists: false };
+    throw err;
+  }
+}
+
 module.exports = {
   buildTopicString,
+  readFeedState,
   createFeed,
   updateFeed,
   writeFeedPayload,

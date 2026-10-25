@@ -2489,9 +2489,18 @@ function renderPublicationApproval(request) {
   appendPublicationSummary('Default document', publication.indexDocument);
   appendPublicationSummary('Publish as', draft ? 'Private draft link (encrypted)' : 'Public (unencrypted)');
   if (publication.stableAddress) {
-    appendPublicationSummary('Stable address', `${publication.stableAddress.name} · owned by your Swarm identity ${shortAddress(publication.stableAddress.owner)}\n${publication.stableAddress.currentBzzUrl
-      ? `Updates ${publication.stableAddress.currentBzzUrl}`
-      : 'A new address is created when this is published'}`);
+    const stable = publication.stableAddress;
+    // The address comes from the owner and name alone, so it may already be
+    // live, and linked to a name, with no record of it in this browser.
+    const versions = Number.isSafeInteger(stable.latestIndex) ? ` (${stable.latestIndex + 1} earlier ${stable.latestIndex ? 'versions' : 'version'})` : '';
+    const effect = stable.currentBzzUrl
+      ? `Updates ${stable.currentBzzUrl}. Anything linked to it, such as an ENS name, will show this publication`
+      : stable.existing === 'yes'
+        ? `This address already exists${versions}. Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication`
+        : stable.existing === 'no'
+          ? 'A new address is created when this is published'
+          : 'Freedom could not check whether this address already exists. If it does, publishing points it at this content, and anything linked to it will show this publication';
+    appendPublicationSummary('Stable address', `${stable.name} · owned by your Swarm identity ${shortAddress(stable.owner)}\n${effect}`);
   }
   appendPublicationSummary('Network', draft ? 'Public Swarm network (encrypted chunks)' : 'Public Swarm network');
   renderPublicationPostage(publication.postage);

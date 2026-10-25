@@ -183,7 +183,7 @@ class DomainService {
     if (input.intent === 'set_website') {
       const publication = await this.getPublication?.(input.publicationId, context);
       // A private draft link never gets a name: it would make it public.
-      if (publication?.target === 'draft' || publication?.public !== true) refuse('A private draft link cannot be connected to a name. Publish it publicly first; that is its own approval.');
+      if (publication && (publication.target === 'draft' || publication.public !== true)) refuse('A private draft link cannot be connected to a name. Publish it publicly first; that is its own approval.');
       if (publication?.state !== 'completed' || publication.verified !== true || !publication.indexDocument) refuse('Choose a completed, retrieval-verified Swarm website publication ID.');
       // A publication with a stable address maps the name to that feed, so
       // later updates of the address need no new transaction.

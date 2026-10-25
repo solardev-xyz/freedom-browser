@@ -623,6 +623,10 @@ function normalizePublicationApproval(value) {
     typeof value.stableAddress.name === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value.stableAddress.name) &&
     /^0x[a-f0-9]{40}$/.test(value.stableAddress.owner)
     ? Object.freeze({ name: value.stableAddress.name, owner: value.stableAddress.owner,
+      // Whether the address already serves something. Anything but a definite
+      // 'no' is shown as possibly existing: approval may re-point a live address.
+      existing: ['yes', 'no'].includes(value.stableAddress.existing) ? value.stableAddress.existing : 'unknown',
+      ...(Number.isSafeInteger(value.stableAddress.latestIndex) && value.stableAddress.latestIndex >= 0 && { latestIndex: value.stableAddress.latestIndex }),
       ...(/^bzz:\/\/[a-f0-9]{64}$/.test(value.stableAddress.currentBzzUrl) && { currentBzzUrl: value.stableAddress.currentBzzUrl }) })
     : null;
   return Object.freeze({

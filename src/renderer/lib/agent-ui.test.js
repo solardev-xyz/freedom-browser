@@ -4609,6 +4609,29 @@ describe('Agent UI', () => {
     expect(summary).toContain('No usable batch yet. Freedom checks again before uploading and never buys postage on its own.');
   });
 
+  test('a stable address with no local record says whether it already exists, never assuming it is new (#741 F)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const owner = `0x${'1'.repeat(40)}`;
+    const summaryFor = async (approvalId, stableAddress) => {
+      ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId, action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+        publication: { kind: 'folder', name: 'dist', target: 'public', public: true, stableAddress: { name: 'site', owner, ...stableAddress } } });
+      const text = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+      ctx.elements['agent-approval-decline'].dispatch('click');
+      await flush();
+      return text;
+    };
+    const live = await summaryFor('a1', { existing: 'yes', latestIndex: 2 });
+    expect(live).toContain('This address already exists (3 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+    expect(live).not.toContain('A new address');
+    expect(await summaryFor('a2', { existing: 'no' })).toContain('A new address is created when this is published');
+    for (const [id, state] of [['a3', { existing: 'unknown' }], ['a4', {}]]) {
+      const text = await summaryFor(id, state);
+      expect(text).toContain('Freedom could not check whether this address already exists');
+      expect(text).not.toContain('A new address');
+    }
+  });
+
   test('publication findings block Publish publicly until each secret is resolved', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });

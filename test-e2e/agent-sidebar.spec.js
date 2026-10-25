@@ -1852,10 +1852,13 @@ test('publication approval offers a private draft link and a stable address, wit
   const draft = await capture({ workspacePath: 'dist', target: 'draft' }, 3 * 86_400 + 600);
   const stable = await capture({ workspacePath: 'dist', stableAddress: 'my-site' }, 45 * 86_400, {
     feedSigner: async () => ({ address: `0x${'5a'.repeat(20)}`, privateKey: `0x${'1'.repeat(64)}` }),
+    // Live already, with no record of it in this browser (a deleted
+    // conversation, a restored vault): the card must not call it new.
+    readFeedState: async () => ({ exists: true, index: 1 }),
   });
   expect(stampReads).toEqual([batchId, batchId]);
   expect(draft.publication).toMatchObject({ target: 'draft', public: false, encrypted: true, postage: { status: 'ready', batchId, expiry: 'soon' } });
-  expect(stable.publication).toMatchObject({ target: 'public', public: true, stableAddress: { name: 'my-site' }, postage: { expiry: 'ok' } });
+  expect(stable.publication).toMatchObject({ target: 'public', public: true, stableAddress: { name: 'my-site', existing: 'yes', latestIndex: 1 }, postage: { expiry: 'ok' } });
   expect(JSON.stringify(stable)).not.toContain('1'.repeat(64));
 
   await configureOllamaAgent(window, ollamaServer);
@@ -1922,7 +1925,8 @@ test('publication approval offers a private draft link and a stable address, wit
   await expect(window.locator('#agent-publication-stable-notice')).toHaveText(
     'Stable address. Later fixes can update this address, but they don’t remove this version: anyone holding its own reference can still retrieve it while its postage is valid.');
   await expect(summary).toContainText('my-site · owned by your Swarm identity');
-  await expect(summary).toContainText('A new address is created when this is published');
+  await expect(summary).toContainText('This address already exists (2 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+  await expect(summary).not.toContainText('A new address');
   await expect(summary).toContainText('45 days');
   await expect(window.locator('#agent-publication-postage-warning')).toBeHidden();
   await expect(approve).toBeEnabled();

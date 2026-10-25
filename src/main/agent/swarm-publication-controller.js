@@ -88,6 +88,15 @@ function stableAddressReceipt(stableAddress) {
   });
 }
 
+// Ant keys a tag on the upload's 32-byte root chunk address. For an
+// encrypted (draft) upload that is the leading 64 hex of the 128-hex
+// reference; the trailing 64 hex are the decryption key and never appear.
+function tagMatchesReference(tagReference, reference) {
+  if (!tagReference) return true;
+  return tagReference === reference ||
+    (/^[a-f0-9]{128}$/.test(reference || '') && tagReference === reference.slice(0, 64));
+}
+
 function publicReceipt(operation) {
   const draft = operation.target === PUBLICATION_TARGETS.DRAFT;
   return Object.freeze({
@@ -111,6 +120,7 @@ function publicReceipt(operation) {
     ...(Number.isSafeInteger(operation.progress) && { progress: operation.progress }),
     ...(operation.indexDocument && { indexDocument: operation.indexDocument }),
     ...(operation.reference && { reference: operation.reference }),
+    ...(operation.unencryptedReference && { unencryptedReference: operation.unencryptedReference }),
     ...(operation.bzzUrl && { bzzUrl: operation.bzzUrl }),
     ...(typeof operation.verified === 'boolean' && { verified: operation.verified }),
     ...(operation.error && { error: operation.error }),
@@ -218,6 +228,7 @@ class SwarmPublicationController {
     this.updateHistoryEntry = options.updateHistoryEntry || publishHistory.updateEntry;
     this.createFeed = options.createFeed || ((...args) => require('../swarm/feed-service').createFeed(...args));
     this.updateFeed = options.updateFeed || ((...args) => require('../swarm/feed-service').updateFeed(...args));
+    this.readFeedState = options.readFeedState || ((...args) => require('../swarm/feed-service').readFeedState(...args));
     // The user's Swarm identity: the Ant node's wallet key from the unlocked
     // vault. Its private key is read only to sign a feed update, never stored.
     this.feedSigner = options.feedSigner || (async () => {
@@ -335,6 +346,8 @@ class SwarmPublicationController {
         ...(stableAddress && { stableAddress: {
           name: stableAddress.name,
           owner: stableAddress.owner,
+          existing: stableAddress.existing,
+          ...(stableAddress.latestIndex !== undefined && { latestIndex: stableAddress.latestIndex }),
           ...(stableAddress.previousBzzUrl && { currentBzzUrl: stableAddress.previousBzzUrl }),
         } }),
         ...(postage && { postage }),
@@ -630,8 +643,12 @@ class SwarmPublicationController {
   #recordUploadResult(operation, result) {
     const draft = operation.target === PUBLICATION_TARGETS.DRAFT;
     if (draft && /^[a-f0-9]{64}$/.test(result?.reference || '')) {
-      // The node ignored Swarm-Encrypt. Never present this as a private link.
-      throw new Error('The node did not encrypt this upload: it returned an unencrypted reference. Treat the content as public, and do not share it as a private draft link.');
+      // The node ignored Swarm-Encrypt. Never present this as a private link,
+      // but record where the now-public content is, so the user can check it.
+      operation.unencryptedReference = result.reference;
+      this.updateHistoryEntry(operation.historyId, { status: 'failed', reference: result.reference, bzzUrl: `bzz://${result.reference}` });
+      operation.failureKnown = true;
+      throw new Error(`The node did not encrypt this upload: it returned the unencrypted reference ${result.reference}. Treat the content as public, and do not share it as a private draft link.`);
     }
     if (!(draft ? /^[a-f0-9]{128}$/ : /^[a-f0-9]{64}$/).test(result?.reference || '') || result.bzzUrl !== `bzz://${result.reference}`) throw new Error('The node returned no valid publication reference. Inspect the upload before retrying.');
     operation.reference = result.reference;
@@ -657,8 +674,8 @@ class SwarmPublicationController {
           const status = observed.value;
           if (Number.isSafeInteger(status.progress)) operation.progress = Math.min(99, Math.max(operation.progress || 0, status.progress));
           this.#emitProgress(operation, onProgress);
-          const matches = !status.reference || status.reference === operation.reference;
-          if (status.done && matches && (!operation.recovered || status.reference === operation.reference)) { confirmed = true; break; }
+          const matches = tagMatchesReference(status.reference, operation.reference);
+          if (status.done && matches && (!operation.recovered || status.reference)) { confirmed = true; break; }
         } catch { /* A failed poll is not evidence of successful publication. */ }
         await this.sleep(this.progressPollMs);
       }
@@ -697,11 +714,26 @@ class SwarmPublicationController {
     }
     const owner = String(signer?.address || '').toLowerCase();
     if (!/^0x[a-f0-9]{40}$/.test(owner)) throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, 'Your Swarm identity is unavailable');
+    const topic = `${STABLE_ADDRESS_TOPIC_PREFIX}${name}`;
     // The latest completed update of this name by this identity, in any
     // conversation: the card says which address is being updated.
     const previous = [...this.operations.values()].filter(item => item.stableAddress?.name === name &&
       item.stableAddress.owner === owner && item.stableAddress.updated === true && item.stableAddress.bzzUrl).at(-1);
-    return { name, owner, topic: `${STABLE_ADDRESS_TOPIC_PREFIX}${name}`,
+    // The address is derived from owner and topic alone, so it can already be
+    // live (and linked to a name) with no local record of it: a deleted
+    // conversation, an evicted record, a restored vault. Ask the network
+    // rather than assume it is new; only a definite "no update yet" says new.
+    let existing = previous ? 'yes' : 'unknown';
+    let latestIndex;
+    if (!previous) {
+      const state = await observe(Promise.resolve().then(() => this.readFeedState(owner, topic)), this.interactiveTimeoutMs);
+      if (state.kind === 'result' && state.value?.exists === true) {
+        existing = 'yes';
+        if (Number.isSafeInteger(state.value.index) && state.value.index >= 0) latestIndex = state.value.index;
+      } else if (state.kind === 'result' && state.value?.exists === false) existing = 'no';
+    }
+    return { name, owner, topic, existing,
+      ...(latestIndex !== undefined && { latestIndex }),
       ...(previous && { previousBzzUrl: previous.stableAddress.bzzUrl }) };
   }
 
