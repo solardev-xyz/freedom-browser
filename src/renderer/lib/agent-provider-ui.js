@@ -1045,7 +1045,9 @@ export function createAgentProviderUi(options = {}) {
     renderModelMenu();
   }
 
-  function renderProviderStatus(status) {
+  // `userAction` marks a status that answers this page's own connect or
+  // select, as opposed to a load or a broadcast-driven refresh.
+  function renderProviderStatus(status, { userAction = false } = {}) {
     state.providerStatus = status;
     const configured = status?.configured === true;
     if (elements.provider) {
@@ -1068,7 +1070,7 @@ export function createAgentProviderUi(options = {}) {
     renderConnectedProviders();
     renderActiveModel();
     context.updateSendAvailability();
-    options.onStatusChange?.(status);
+    options.onStatusChange?.(status, { userAction });
     if (context.view === 'loading') context.showPrimaryView();
     else if (context.view === 'setup') context.setAgentView('setup');
   }
@@ -1137,7 +1139,7 @@ export function createAgentProviderUi(options = {}) {
         setMessage(elements.runMessage, responseMessage(response, 'Could not select model'), true);
         return;
       }
-      renderProviderStatus(response.status);
+      renderProviderStatus(response.status, { userAction: true });
       context.closeComposerPopovers();
     } catch {
       setMessage(elements.runMessage, 'Could not select model', true);
@@ -1291,7 +1293,7 @@ export function createAgentProviderUi(options = {}) {
         );
         return;
       }
-      renderProviderStatus(response.status);
+      renderProviderStatus(response.status, { userAction: true });
       setMessage(
         elements.providerMessage,
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
@@ -1383,7 +1385,7 @@ export function createAgentProviderUi(options = {}) {
         );
         return;
       }
-      renderProviderStatus(response.status);
+      renderProviderStatus(response.status, { userAction: true });
       openProviderDetail(providerId);
       setMessage(elements.providerMessage, `${accountName} connected`);
     } catch {

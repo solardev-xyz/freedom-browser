@@ -1,7 +1,9 @@
 // Only the built-in ordinary start page loads this script. The banner walks a
 // new user into Freedom Agent: "Set up" while AI is off, "Connect a model"
-// while AI is on without one, and nothing once a model is connected. Turning
-// AI on stays in Settings, which is where the user consents to it.
+// while AI is on without one, and nothing once a model is connected. A user
+// who connected a model and then turned AI off is told it is off rather than
+// introduced to it again. Turning AI on stays in Settings, which is where the
+// user consents to it.
 const banner = document.getElementById('ai-invitation');
 const intro = document.getElementById('home-intro');
 const heading = document.getElementById('ai-invitation-heading');
@@ -17,6 +19,12 @@ const STEPS = {
     action: 'Set up',
     href: 'freedom://settings/ai',
   },
+  resume: {
+    heading: 'Freedom Agent is off',
+    byline: 'Your model is still connected. Turn AI on to use Agent again.',
+    action: 'Turn on',
+    href: 'freedom://settings/ai',
+  },
   connect: {
     heading: 'Finish setting up Freedom Agent',
     byline: 'Connect a model to start researching, building and publishing.',
@@ -29,16 +37,20 @@ let settings = null;
 let revision = 0;
 
 // The step this profile is on, or null when there is nothing left to set up
-// (or the setup state could not be read, which hides the banner too).
+// (or, with AI on, the setup state could not be read, which hides it too).
 async function currentStep() {
-  if (settings?.enableAi !== true) return 'enable';
+  const enabled = settings?.enableAi === true;
+  let configured;
   try {
     const state = await freedomAPI.getAgentSetupState();
-    if (!state?.ok) return null;
-    return state.configured ? null : 'connect';
+    configured = state?.ok ? state.configured === true : null;
   } catch {
-    return null;
+    configured = null;
   }
+  // With AI off an unreadable state falls back to the introduction.
+  if (!enabled) return configured ? 'resume' : 'enable';
+  if (configured === null) return null;
+  return configured ? null : 'connect';
 }
 
 async function render() {

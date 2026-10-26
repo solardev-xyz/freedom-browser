@@ -243,6 +243,39 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
   expect(configured?.ok).toBe(true);
   await expect(home.locator('#ai-invitation')).toBeHidden();
+  // A model still connected with AI turned off: say it is off, not "Meet".
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+  await expect(home.locator('#ai-invitation-heading')).toHaveText('Freedom Agent is off');
+  await expect(open).toHaveText('Turn on');
+  await expect(open).toHaveAttribute('href', 'freedom://settings/ai');
+});
+
+// Only a first model connected on this Settings page opens Agent: not one
+// connected elsewhere (another window, the API), and not a reconnect after
+// removing the only one.
+test('Settings opens Agent only for the first model connected on that page', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  await expect(page.locator('#ai-settings-status')).toHaveText('');
+  await expect(page.locator('#ai-open-agent')).toBeHidden();
+  const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
+  expect(configured?.ok).toBe(true);
+  await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await window.waitForTimeout(1000);
+  await expect(window.locator('#agent-sidebar')).toBeHidden();
+  const removed = await window.evaluate(() => window.electronAPI.removeAgentProvider('ollama'));
+  expect(removed?.ok).toBe(true);
+  await expect(page.locator('#ai-open-agent')).toBeHidden();
+  await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
+  await page.locator('#agent-provider-add').click();
+  await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await page.locator('#agent-provider-advanced > summary').click();
+  await page.locator('#agent-ollama-url').fill(baseUrl);
+  await page.locator('#agent-provider-save').click();
+  await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.waitForTimeout(1000);
+  await expect(window.locator('#agent-sidebar')).toBeHidden();
 });
 
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
