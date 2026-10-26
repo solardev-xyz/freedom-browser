@@ -1676,6 +1676,23 @@ describe('profile AI opt-in', () => {
     expect(ctx.service.start).not.toHaveBeenCalled();
     await ctx.dispose();
   });
+  test('home reads only whether a model is connected, also while AI is off', async () => {
+    const home = createSender();
+    const stranger = createSender();
+    let enabled = false;
+    const ctx = register({ isAgentLauncherSender: event => event.sender === home, isEnabled: () => enabled });
+    ctx.providerResolver.getStatus.mockReturnValue({
+      configured: true, providerId: 'ollama', modelId: 'llama3.2', baseUrl: 'http://127.0.0.1:11434/v1',
+    });
+    const read = sender => ctx.ipcMain.handlers.get(IPC.AGENT_SETUP_STATE)({ sender });
+    expect(await read(home)).toEqual({ ok: true, configured: true });
+    enabled = true;
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false });
+    expect(await read(home)).toEqual({ ok: true, configured: false });
+    expect(await read(stranger)).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await ctx.dispose();
+    expect(ctx.ipcMain.handlers.has(IPC.AGENT_SETUP_STATE)).toBe(false);
+  });
   test('off blocks model/auth/discovery/work without erasing stored connection status', async () => {
     const ctx = register({ isEnabled: () => false });
     for (const channel of [IPC.AGENT_START, IPC.AGENT_STEER, IPC.AGENT_RESUME,

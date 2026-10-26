@@ -1113,6 +1113,10 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   line-height: 1.5;
 }
 
+.agent-setup-intro p:first-child {
+  margin-top: 0;
+}
+
 .agent-connected-providers {
   margin-bottom: 18px;
 }

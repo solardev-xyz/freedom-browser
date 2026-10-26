@@ -41,6 +41,15 @@ async function settings(app, window) {
   return page;
 }
 
+// Turning AI on with no model continues to the provider picker; tests about
+// the AI page itself step back to it.
+async function enableAiAndStay(page) {
+  await page.locator('#enable-ai').check();
+  await expect(page).toHaveURL(/#ai\/providers\/add$/);
+  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+  await expect(page).toHaveURL(/#ai$/);
+}
+
 test('fresh profile discovers AI, explicitly enables it, connects in Settings and preserves its draft across disable', async ({ electronApp, window }, testInfo) => {
   const home = await guest(electronApp, 'home');
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
@@ -69,6 +78,10 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  // With no model yet, turning AI on continues to the provider picker.
+  await expect(page).toHaveURL(/#ai\/providers\/add$/);
+  await expect(page.locator('#agent-provider-choices')).toBeVisible();
+  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#enable-ai-restart')).toBeVisible();
   // The button follows this launch, not the click: reopened, Settings still
   // offers the restart this launch needs.
@@ -87,6 +100,9 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#agent-ollama-url').fill(baseUrl);
   await page.locator('#agent-provider-save').click();
   await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
+  // The first model connected opens Agent.
+  await expect(window.locator('#agent-prompt')).toBeVisible();
+  await window.locator('#agent-sidebar-close').click();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   for (const theme of ['dark', 'light']) {
@@ -118,13 +134,11 @@ test('invitation dismissal persists across a real restart without enabling AI', 
   await home.locator('#ai-invitation-dismiss').click();
   await expect(home.locator('#ai-invitation')).toBeHidden();
   await expect(home.locator('#home-intro')).toBeFocused();
-  await expect(home.locator('#whats-new')).toBeHidden();
   expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
   await electronApp.close();
   const restarted = await relaunchApp();
   const restartedHome = await guest(restarted, 'home');
   await expect(restartedHome.locator('#ai-invitation')).toBeHidden();
-  await expect(restartedHome.locator('#whats-new')).toBeHidden();
   const chrome = await restarted.firstWindow();
   await expect(chrome.locator('#agent-toggle-btn')).toBeHidden();
 });
@@ -192,21 +206,19 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   await expect(restartedSettings.locator('#enable-ai-restart')).toBeHidden();
 });
 
-test('What’s new remains discoverable with AI enabled and fits both themes at narrow widths', async ({ electronApp, window }, testInfo) => {
+test('the start-page banner follows setup and fits both themes at narrow widths', async ({ electronApp, window }, testInfo) => {
   test.setTimeout(60_000);
   const home = await guest(electronApp, 'home');
-  await expect(home.locator('#whats-new')).toBeVisible();
-  await expect(home.locator('#ai-invitation-state')).toHaveText('Off');
+  const open = home.locator('#ai-invitation-open');
+  await expect(home.locator('#ai-invitation-heading')).toHaveText('Meet Freedom Agent');
+  await expect(open).toHaveText('Set up');
+  await expect(open).toHaveAttribute('href', 'freedom://settings/ai');
   expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false });
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
-  await expect(home.locator('#ai-invitation')).toBeVisible();
-  await expect(home.locator('#ai-invitation-state')).toHaveText('On');
+  await expect(home.locator('#ai-invitation-heading')).toHaveText('Finish setting up Freedom Agent');
+  await expect(open).toHaveText('Connect a model');
+  await expect(open).toHaveAttribute('href', 'freedom://settings/ai/providers/add');
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
-  await expect(home.locator('.whats-new-row')).toHaveCount(1);
-  await home.locator('#ai-invitation-open').click();
-  await expect(window.locator('#agent-sidebar')).toBeVisible();
-  await expect(home).toHaveURL(/\/pages\/home.html$/);
-  await window.locator('#agent-sidebar-close').click();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
@@ -218,22 +230,19 @@ test('What’s new remains discoverable with AI enabled and fits both themes at 
       }, width);
       await expect.poll(() => home.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await home.locator('#ai-invitation').evaluate(el => {
-        const state = el.querySelector('#ai-invitation-state').getBoundingClientRect();
-        const chevron = el.querySelector('.whats-new-chevron').getBoundingClientRect();
+        const action = el.querySelector('#ai-invitation-open').getBoundingClientRect();
         const dismiss = el.querySelector('#ai-invitation-dismiss').getBoundingClientRect();
-        return state.right <= chevron.left && chevron.right <= dismiss.left && dismiss.right <= innerWidth;
+        return action.right <= dismiss.left && dismiss.right <= el.getBoundingClientRect().right;
       })).toBe(true);
       await home.evaluate(() => scrollTo(0, 0));
       await home.screenshot({ animations: 'disabled',
-        path: testInfo.outputPath(`whats-new-${theme}-${width}.png`) });
-      await home.locator('#ai-invitation').scrollIntoViewIfNeeded();
-      await expect.poll(() => home.locator('#ai-invitation').evaluate(el =>
-        el.getBoundingClientRect().bottom <= innerHeight + 1)).toBe(true);
-      await home.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      await home.screenshot({ animations: 'disabled',
-        path: testInfo.outputPath(`whats-new-${theme}-${width}-bottom.png`) });
+        path: testInfo.outputPath(`setup-banner-${theme}-${width}.png`) });
     }
   }
+  // A connected model finishes setup: the banner goes away on its own.
+  const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
+  expect(configured?.ok).toBe(true);
+  await expect(home.locator('#ai-invitation')).toBeHidden();
 });
 
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
@@ -261,7 +270,7 @@ test('AI Settings is discoverable through navigation and search at narrow width'
 
 test('AI subpages have breadcrumbs, history and deep links without mixing their content', async ({ electronApp, window }, testInfo) => {
   let page = await settings(electronApp, window);
-  await page.locator('#enable-ai').check();
+  await enableAiAndStay(page);
   await expect(page.locator('#ai-settings-links')).toBeVisible();
   await expect(page.locator('#agent-provider-add')).toBeHidden();
   await expect(page.locator('#voice')).toBeHidden();
@@ -361,7 +370,7 @@ test('AI off hides the Agent shortcuts, search results and View menu item until 
 // #782: the AI pages look like the rest of Settings.
 test('AI settings pages share Settings\' selects, intros, headings and destructive confirmation', async ({ electronApp, window }) => {
   const page = await settings(electronApp, window);
-  await page.locator('#enable-ai').check();
+  await enableAiAndStay(page);
   await expect(page.locator('#ai-settings-links')).toBeVisible();
   const style = (selector, props) => page.locator(selector).first().evaluate((el, props) => {
     const cs = getComputedStyle(el);

@@ -35,10 +35,26 @@ const dictation = createDictationSettings(dictationHost, api, {
     } else location.hash = route;
   },
 });
+// Setup runs straight through: turning AI on here continues to the provider
+// picker when no model is connected yet, and the first model connected opens
+// Agent. `configuredBefore` stays null until a real status arrives, so loading
+// a page that already has a model opens nothing.
+let continueToProviders = false;
+let configuredBefore = null;
 const updateNext = (state) => {
   next.hidden = !enabled || state?.configured !== true;
   if (enabled && state?.configured && status.textContent === 'Loading providers…')
     status.textContent = '';
+  if (!enabled || !state) return;
+  const configured = state.configured === true;
+  if (continueToProviders) {
+    continueToProviders = false;
+    // Only from the switch's own page: a user who moved on while the status
+    // loaded stays where they went.
+    if (!configured && location.hash.slice(1).toLowerCase() === 'ai') location.hash = 'ai/providers/add';
+  }
+  if (configuredBefore === false && configured) void api.openAgent();
+  configuredBefore = configured;
 };
 const providerUi = createAgentProviderUi({
   api,
@@ -195,6 +211,7 @@ toggle.addEventListener('change', async () => {
   status.textContent = requested ? 'Enabling AI…' : 'Stopping AI…';
   try {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
+    continueToProviders = requested;
     apply(await api.getSettings());
     if (!requested) status.textContent = 'AI is off. Chats, connections and projects are kept.';
   } catch {

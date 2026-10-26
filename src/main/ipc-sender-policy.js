@@ -25,7 +25,8 @@
  *       INTERNAL the top frame of one of our internal pages
  *                (`renderer/pages/<file>` from internal-pages.json);
  *       SETTINGS the top frame of settings.html;
- *       AGENT_LAUNCHER settings.html or home.html (open the UI only);
+ *       AGENT_LAUNCHER settings.html or home.html (open the UI, and read
+ *                whether a model is connected);
  *       PROFILE_MANAGER settings.html or profiles.html.
  *     `ipc-sender-policy.test.js` parses webview-preload.js and fails if a
  *     channel is added there without a tier here, or given a different tier.
@@ -203,6 +204,7 @@ const WEBVIEW_CHANNEL_TIERS = new Map([
   ...SETTINGS_CHANNELS.map((c) => [c, TIER.SETTINGS]),
   ...PROFILE_MANAGER_CHANNELS.map((c) => [c, TIER.PROFILE_MANAGER]),
   ['agent:open', TIER.AGENT_LAUNCHER],
+  ['agent:setup-state', TIER.AGENT_LAUNCHER],
 ]);
 
 function senderType(event) {
