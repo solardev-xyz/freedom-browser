@@ -337,6 +337,11 @@
   min-width: 0;
 }
 
+/* Setup has no run status under its title: centre the title in the header. */
+.agent-floating[data-presentation='column'][data-agent-view='setup'] .agent-sidebar-title-row {
+  grid-row: title-start / status-end;
+}
+
 .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
   position: relative;
   z-index: 1;

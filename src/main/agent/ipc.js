@@ -81,7 +81,7 @@ function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSetti
   for (const channel of channels) {
     ipcMain.handle(channel, (event) => {
       const settingsRequest = channel.startsWith('agent:provider:') && isProviderSettingsSender?.(event);
-      const launcherRequest = channel === IPC.AGENT_OPEN && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
+      const launcherRequest = [IPC.AGENT_OPEN, IPC.AGENT_SETUP_STATE].includes(channel) && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
       if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
       if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
@@ -1418,6 +1418,7 @@ function registerFreedomAgentIpc(options = {}) {
     IPC.AGENT_PROCESS_STOP, IPC.AGENT_PROCESS_PREVIEW_OPEN, IPC.AGENT_PUBLICATION_OPEN,
     IPC.AGENT_PROVIDER_GET_STATUS, IPC.AGENT_PROVIDER_REMOVE, IPC.AGENT_PROVIDER_CLEAR,
     IPC.AGENT_PROVIDER_CANCEL_LOGIN, IPC.AGENT_ATTACHMENTS_REMOVE, IPC.AGENT_ATTACHMENTS_REVOKE,
+    IPC.AGENT_SETUP_STATE,
   ]);
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
     if (!isEnabled() && !availableWhileOff.has(channel)) {
@@ -1454,6 +1455,17 @@ function registerFreedomAgentIpc(options = {}) {
     if (!window || window.isDestroyed?.()) return { ok: false };
     window.webContents.send('agent:show');
     return { ok: true };
+  });
+  // The start page's setup banner needs one bit: is a model connected. Not the
+  // provider status itself, which stays with Settings and the chrome.
+  handle(IPC.AGENT_SETUP_STATE, (event) => {
+    if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Read Agent setup from the start page or Settings');
+    try {
+      return { ok: true, configured: providerResolver.getStatus()?.configured === true };
+    } catch (error) {
+      return safeProviderError(error);
+    }
   });
   handle(IPC.AGENT_START, handleStart);
   handle(IPC.AGENT_STEER, handleSteer);
@@ -1502,6 +1514,7 @@ function registerFreedomAgentIpc(options = {}) {
   return async () => {
     unsubscribeSettings?.();
     ipcMain.removeHandler?.(IPC.AGENT_OPEN);
+    ipcMain.removeHandler?.(IPC.AGENT_SETUP_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_MCP_CONNECTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STEER);

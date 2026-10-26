@@ -698,15 +698,15 @@ function setAgentView(nextView) {
   const setup = nextView === 'setup';
   elements.browserModeToggle.hidden = nextView !== 'workspace';
   elements.title.hidden = nextView === 'workspace';
-  elements.subtitle.hidden = nextView === 'workspace';
+  // First-run setup says it once: the title names the task, the view's button
+  // the next step.
+  elements.subtitle.hidden = nextView === 'workspace' || (setup && providerStatus?.configured !== true);
   const services = nextView === 'services';
   const canReturn = services || (setup && providerStatus?.configured === true);
   elements.back.hidden = !canReturn;
   elements.title.textContent = services ? 'Services' : setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
   elements.subtitle.textContent = services ? 'Connected tools and integrations' : setup
-    ? canReturn
-      ? 'Add or manage providers'
-      : 'Connect a model to continue'
+    ? canReturn ? 'Add or manage providers' : ''
     : 'Give Agent a task';
   elements.agentFirstToggle.hidden = nextView !== 'workspace';
   closeComposerPopovers();
@@ -1460,7 +1460,8 @@ function showProviderSetup() {
   setScopeHelpOpen(false);
   closeComposerPopovers();
   closePanel();
-  openAiSettings('ai/providers');
+  // Nothing to manage yet: go straight to the provider picker.
+  openAiSettings(providerStatus?.configured === true ? 'ai/providers' : 'ai/providers/add');
 }
 
 function setPanelOpen(nextOpen) {

@@ -35,16 +35,37 @@ const dictation = createDictationSettings(dictationHost, api, {
     } else location.hash = route;
   },
 });
-const updateNext = (state) => {
+// Setup runs straight through: turning AI on here continues to the provider
+// picker when no model is connected yet, and the first model connected opens
+// Agent. "First" is judged from real statuses only (the placeholder a failed
+// load leaves in providerUi.state, which apply() replays, never counts), and
+// only a connect made on this page opens Agent: a model connected in another
+// window, or reconnected after removing one here, opens nothing.
+let continueToProviders = false;
+let sawUnconfigured = false;
+let sawConfigured = false;
+const updateNext = (state, { userAction = false, real = false } = {}) => {
   next.hidden = !enabled || state?.configured !== true;
   if (enabled && state?.configured && status.textContent === 'Loading providers…')
     status.textContent = '';
+  if (!enabled || !state) return;
+  const configured = state.configured === true;
+  if (continueToProviders) {
+    continueToProviders = false;
+    // Only from the switch's own page: a user who moved on while the status
+    // loaded stays where they went.
+    if (!configured && location.hash.slice(1).toLowerCase() === 'ai') location.hash = 'ai/providers/add';
+  }
+  if (!real) return;
+  if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent();
+  if (configured) sawConfigured = true;
+  else sawUnconfigured = true;
 };
 const providerUi = createAgentProviderUi({
   api,
   assetBase: '../assets/provider-logos/',
   elements: { runMessage: document.getElementById('agent-provider-message') },
-  onStatusChange: updateNext,
+  onStatusChange: (state, { userAction }) => updateNext(state, { userAction, real: true }),
   onScreenChange(screen, providerId) {
     const route =
       screen === 'detail'
@@ -195,6 +216,7 @@ toggle.addEventListener('change', async () => {
   status.textContent = requested ? 'Enabling AI…' : 'Stopping AI…';
   try {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
+    continueToProviders = requested;
     apply(await api.getSettings());
     if (!requested) status.textContent = 'AI is off. Chats, connections and projects are kept.';
   } catch {

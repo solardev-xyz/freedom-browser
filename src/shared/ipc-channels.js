@@ -206,6 +206,7 @@ module.exports = {
 
   // Embedded agent IPC is available only through the trusted chrome preload.
   AGENT_OPEN: 'agent:open',
+  AGENT_SETUP_STATE: 'agent:setup-state',
   AGENT_PROVIDER_CHANGED_EVENT: 'agent:provider:changed',
   AGENT_START: 'agent:start',
   AGENT_STEER: 'agent:steer',

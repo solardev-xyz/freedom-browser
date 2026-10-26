@@ -1161,9 +1161,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
   clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
   openAgent: guardAgentLauncherPage('openAgent', () => ipcRenderer.invoke('agent:open')),
+  getAgentSetupState: guardAgentLauncherPage('getAgentSetupState', () => ipcRenderer.invoke('agent:setup-state')),
   onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
     guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),
-  onAgentProviderChanged: guardSettingsPage('onAgentProviderChanged',
+  // Carries no payload; the start page re-reads its setup state on it.
+  onAgentProviderChanged: guardAgentLauncherPage('onAgentProviderChanged',
     guardInternalSubscription('onAgentProviderChanged', 'agent:provider:changed')),
 
   // Ad blocking (settings page)

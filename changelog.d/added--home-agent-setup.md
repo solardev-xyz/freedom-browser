@@ -1,0 +1,1 @@
+- Start-page banner that walks you through setting up Freedom Agent ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))

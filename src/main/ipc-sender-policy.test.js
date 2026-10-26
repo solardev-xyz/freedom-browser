@@ -40,6 +40,12 @@ describe('isSenderAllowed', () => {
     }
     expect(isSenderAllowed('agent:open', web())).toBe(false);
     expect(isSenderAllowed('agent:open', makeEvent({ url: fileUrl('/tmp/pages/home.html') }))).toBe(false);
+    for (const file of ['home.html', 'settings.html']) {
+      expect(isSenderAllowed('agent:setup-state', page(file))).toBe(true);
+    }
+    expect(isSenderAllowed('agent:setup-state', page('history.html'))).toBe(false);
+    expect(isSenderAllowed('agent:setup-state', web())).toBe(false);
+    expect(isSenderAllowed('agent:provider:get-status', page('home.html'))).toBe(false);
     expect(isSenderAllowed('agent:provider:get-catalog', page('home.html'))).toBe(false);
     expect(isSenderAllowed('agent:start', page('home.html'))).toBe(false);
   });

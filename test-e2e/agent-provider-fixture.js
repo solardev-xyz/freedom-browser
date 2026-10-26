@@ -29,6 +29,11 @@ async function openProviderSettings(window) {
       return Boolean(page);
     })
     .toBe(true);
+  // With no model connected the panel goes straight to the provider picker;
+  // callers start from the provider list either way.
+  await expect(page).toHaveURL(/#ai\/providers(\/add)?$/);
+  if (/#ai\/providers\/add$/.test(page.url()))
+    await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'Models & providers' }).click();
   await expect(page).toHaveURL(/#ai\/providers$/);
   await expect(page.locator('#agent-provider-add')).toBeVisible();
   return page;
@@ -50,7 +55,9 @@ async function closeProviderSettings(window) {
       )
     )
     .toBe(false);
-  await window.locator('#agent-toggle-btn').click();
+  // Connecting the first model has already opened Agent.
+  if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
+    await window.locator('#agent-toggle-btn').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
 }
 module.exports.openProviderSettings = openProviderSettings;
