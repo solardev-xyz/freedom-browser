@@ -134,8 +134,11 @@
       .setup-banner-title:focus {
         outline: none;
       }
+      /* Capitals only: the line box keeps room for descenders below them, so
+         the extra top padding is what centres the letters in the pill. */
       .setup-banner-tag {
-        padding: 1px 7px;
+        padding: 5px 7px 1px;
+        line-height: 1;
         border: 1px solid var(--border-strong);
         border-radius: 999px;
         font-size: 10px;
