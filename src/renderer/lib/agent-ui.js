@@ -118,7 +118,6 @@ let attachmentSelectionGeneration = 0;
 let composerDragDepth = 0;
 let conversationResources = [];
 let lastFinishedRunId = null;
-let stopRequestedRunId = null;
 let pendingApproval = null;
 let lastApprovalDecisionAt = -Infinity;
 let lastDisplayedApprovalId = null;
@@ -1945,6 +1944,9 @@ function createTurnView(turn) {
     assistantRow,
     outputSegments: [{ output, text: turn.assistantText || '' }],
     assistantSegmentClosed: false,
+    // Whether the agent moved on (a tool call) after its last text, so that
+    // text was finished rather than cut off by a stop.
+    assistantSegmentEndedByTool: false,
     outcome,
     outcomeIcon,
     outcomeHeadline,
@@ -1974,7 +1976,8 @@ function createTurnView(turn) {
 
 // A message stays where it was spoken. Tool starts and user guidance close
 // the current segment; the next assistant text gets a new bubble after them.
-function closeAssistantSegment(view) {
+function closeAssistantSegment(view, { byTool = false } = {}) {
+  if (byTool) view.assistantSegmentEndedByTool = true;
   if (view.assistantSegmentClosed) return;
   view.assistantSegmentClosed = true;
   const segment = view.outputSegments.at(-1);
@@ -1997,6 +2000,7 @@ function appendAssistantText(view, text) {
     view.section.insertBefore(view.assistantRow, view.outcome);
     view.assistantSegmentClosed = false;
   }
+  view.assistantSegmentEndedByTool = false;
   view.assistantText += text;
   const segment = view.outputSegments.at(-1);
   segment.text += text;
@@ -3130,17 +3134,19 @@ function visibleOutcome(outcome) {
 }
 
 // A stopped turn ends with its own notice, after whatever it managed to say.
-// A caution about the stopped work (an uncertain browser action) keeps its tone.
-function stoppedOutcome(notice, answerCutOff) {
+// A caution about the stopped work (an uncertain browser action) keeps its tone,
+// and the changes made before stopping are still named next to it.
+function stoppedOutcome(outcome, notice, answerCutOff) {
   const caution = notice && notice.kind !== 'interrupted' ? notice : null;
-  const changes = notice?.kind === 'interrupted' ? notice.detail : '';
+  const changes = outcome?.kind === 'interrupted' ? visibleOutcome({ ...outcome, notice: undefined })?.detail || '' : '';
   return {
     ...caution,
     tone: caution?.tone || 'neutral',
     headline: 'Agent stopped',
     detail: [
       answerCutOff ? 'The answer above is incomplete.' : '',
-      caution ? `${caution.headline}. ${caution.detail || ''}`.trim() : changes,
+      caution ? `${caution.headline}. ${caution.detail || ''}`.trim() : '',
+      changes,
     ].filter(Boolean).join(' '),
   };
 }
@@ -3148,7 +3154,7 @@ function stoppedOutcome(notice, answerCutOff) {
 function renderTurnOutcome(view, outcome, error, { stopped = false, answerCutOff = false } = {}) {
   if (!view) return;
   const notice = visibleOutcome(outcome);
-  outcome = stopped || notice?.kind === 'interrupted' ? stoppedOutcome(notice, answerCutOff) : notice;
+  outcome = stopped || notice?.kind === 'interrupted' ? stoppedOutcome(outcome, notice, answerCutOff) : notice;
   view.outcome.hidden = !outcome;
   if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
@@ -3391,7 +3397,7 @@ function addToolRow(event) {
   view.activity.hidden = false;
   view.activity.dataset.state = 'working';
   view.actionCount += 1;
-  closeAssistantSegment(view);
+  closeAssistantSegment(view, { byTool: true });
   let helperList = null;
   if (event.operation === 'delegate_task') {
     helperList = document.createElement('div');
@@ -3695,9 +3701,10 @@ function finishTurnView(runId, event = {}) {
     view.activity.hidden = true;
   }
   const stopped = event.status === 'cancelled';
-  // Text still streaming when the run stopped was cut off mid-answer.
+  // Text still streaming when the run stopped was cut off mid-answer. Guidance
+  // sent mid-stream closes the bubble too, but the answer wasn't finished.
   const lastSegment = view.outputSegments.at(-1);
-  const answerCutOff = stopped && !view.assistantSegmentClosed && Boolean(lastSegment?.text);
+  const answerCutOff = stopped && !view.assistantSegmentEndedByTool && Boolean(lastSegment?.text);
   lastSegment?.output.classList.toggle('incomplete', answerCutOff);
   renderTurnOutcome(view, event.outcome, event.error, { stopped, answerCutOff });
   if (event.status === 'completed') {
@@ -3718,7 +3725,6 @@ function applyReadyConversationState(state) {
   }
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
     ? state.rendererTabId
     : null;
@@ -3888,7 +3894,6 @@ function applyConversationCleared() {
   conversationResources = [];
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
@@ -4167,7 +4172,9 @@ function applyAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     for (const card of turnView(event.runId)?.helperCards.values() || []) { card.stop.hidden = true; card.stop.disabled = true; }
     const status = event.status || 'finished';
-    const wasStopped = status === 'cancelled' && (stopRequestedRunId === event.runId || !aiEnabled);
+    // The service only reports 'cancelled' for a stop (the user's, AI turned
+    // off, a claimed tab, revoked access), so the pill and the turn agree.
+    const wasStopped = status === 'cancelled';
     clearApproval();
     setRunState(
       'idle',
@@ -4191,7 +4198,6 @@ function applyAgentEvent(event) {
     finishTurnView(event.runId, event);
     lastFinishedRunId = event.runId;
     currentRunId = null;
-    stopRequestedRunId = null;
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
     void refreshSessionHistory();
@@ -4440,7 +4446,6 @@ async function stopRun() {
     setApprovalControlsDisabled(true);
     setMessage(elements.approvalMessage, 'Stopping…');
   }
-  stopRequestedRunId = currentRunId;
   setTakeoverDialogOpen(false);
   setRunState('stopping', 'Stopping');
   setMessage(elements.runMessage, 'Stopping Agent…');
@@ -4448,7 +4453,6 @@ async function stopRun() {
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
-      stopRequestedRunId = null;
       setRunState(previousStatus, 'Running');
       if (pendingApproval === approvalAtStop) {
         setApprovalControlsDisabled(false);
@@ -4458,7 +4462,6 @@ async function stopRun() {
       setLiveStatus(currentRunId, 'Continuing…');
     }
   } catch {
-    stopRequestedRunId = null;
     setRunState(previousStatus, 'Running');
     if (pendingApproval === approvalAtStop) {
       setApprovalControlsDisabled(false);
