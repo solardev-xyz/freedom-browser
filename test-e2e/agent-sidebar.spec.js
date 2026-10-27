@@ -1108,7 +1108,10 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(1);
-  await expect(window.locator('#agent-task-pages-note')).toContainText('currently viewing');
+  // The homepage is the surface to browse from but is never shared with a run
+  // (no "Attached page" chip), so the note must not say Agent starts there.
+  await expect(window.locator('#agent-page-context')).toBeHidden();
+  await expect(window.locator('#agent-task-pages-note')).toHaveText('Agent will start without a page.');
   await expect(window.locator('#agent-workspace-nav')).toBeVisible();
   await expect(
     window.locator('#agent-workspace-address-host > .address-bar-container')

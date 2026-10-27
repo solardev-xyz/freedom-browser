@@ -1420,6 +1420,49 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
   });
 
+  test('a new task workspace only says Agent starts from the page it will share', async () => {
+    const tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({ getOpenTabs: () => tabs });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const note = () => ctx.elements['agent-task-pages-note'].textContent;
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start from the page you are currently viewing.');
+
+    // Removing the "Attached page" chip keeps the page on screen, but the run
+    // no longer starts from it, so the workspace must stop saying it does.
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start without a page.');
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace does not claim Agent starts from the homepage', async () => {
+    const homeTab = {
+      id: 7, url: 'file:///app/pages/home.html', title: 'New Tab', favicon: '', isLoading: false, isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    // The homepage stays as the surface to browse from, but is never shared.
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-pages-note'].textContent).toBe('Agent will start without a page.');
+  });
+
   test('keeps the pristine homepage outside a new Agent workspace', async () => {
     const homeTab = {
       id: 7,
