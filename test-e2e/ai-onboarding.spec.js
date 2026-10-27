@@ -119,6 +119,13 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
+  // One "AI is off" message (#835): the note, announced through its live
+  // wrapper; the status line, which said it again, is left empty.
+  await expect(page.locator('#enable-ai')).toBeEnabled();
+  await expect(page.locator('#ai-disabled-note')).toBeVisible();
+  await expect(page.locator('#ai-disabled-note').locator('xpath=..')).toHaveAttribute('aria-live', 'polite');
+  await expect(page.locator('#ai-settings-status')).toBeEmpty();
+  await expect(page.locator('#ai').getByText(/AI is off/)).toHaveCount(1);
   expect(await window.locator('#agent-prompt').inputValue()).toContain('Keep this draft');
   const status = await window.evaluate(() => window.electronAPI.getAgentProviderStatus());
   expect(status.status.configured).toBe(true);
