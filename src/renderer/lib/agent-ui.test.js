@@ -5338,6 +5338,22 @@ describe('selective result notices', () => {
     expect(card.className).toBe('agent-turn-outcome neutral');
     expect(card.children[1].children[0].textContent).toBe('Browser action declined');
   });
+  test('a browser helper\'s declined action is listed as not run, not as failed (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'helper', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task', status: 'succeeded',
+      subagent: { title: 'Order', state: 'completed', mode: 'browser', report: 'Done', browserActions: [
+        { operation: 'browser_click', status: 'succeeded', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'declined', pageTitle: 'Page' },
+        { operation: 'browser_type', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'withdrawn', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'INTERNAL_ERROR', pageTitle: 'Page' },
+      ] } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    const items = report.children.find(child => child.tagName === 'UL').children.map(item => item.textContent);
+    expect(items).toEqual(['✓ click — Page', '• click — Page — Not run; you declined it',
+      '• type — Page — Not run; approval withdrawn', '× click — Page']);
+  });
   test('a stopped action whose approval was granted still reads as a failure', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'approved', userText: 'Place the order' });

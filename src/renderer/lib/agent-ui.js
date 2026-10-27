@@ -3558,7 +3558,9 @@ function finishToolRow(event) {
         const actions = document.createElement('ul');
         for (const action of (receipt.browserActions || []).slice(0, 48)) {
           const item = document.createElement('li');
-          item.textContent = `${action.status === 'succeeded' ? '✓' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}`;
+          // A declined or withdrawn action did not run; it did not fail either.
+          const notRun = action.status === 'failed' ? declinedBeforeRunning(action) : '';
+          item.textContent = `${action.status === 'succeeded' ? '✓' : notRun ? '•' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}${notRun ? ` — ${notRun}` : ''}`;
           actions.appendChild(item);
         }
         details.appendChild(actions);

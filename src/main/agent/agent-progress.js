@@ -1220,11 +1220,21 @@ function buildAgentOutcome(activity, status, error) {
           detail: declinedBrowserActions === 1 ? 'You declined an action, so it did not run.'
             : `You declined ${declinedBrowserActions} actions, so they did not run.` }
         : null;
+  // A helper's receipt records only the decisions that stopped an action, never
+  // an approval, so its actions stay out of the approval counters (which would
+  // otherwise count its declines but not its approvals); the helper sentence
+  // below reports its declines instead.
+  const helperDeclinedItems = actions.filter(item => item?.operation?.startsWith('browser_') &&
+    item.approval === 'declined' && userDeclinedBeforeRunning(item));
+  const helperDeclined = helperDeclinedItems.filter(item => !item.repeatsDecline).length ||
+    Math.min(helperDeclinedItems.length, 1);
+  const helperDeclineNote = helperDeclined && notice?.tone !== 'neutral'
+    ? ` You declined ${helperDeclined} of their actions, so ${helperDeclined === 1 ? 'it' : 'they'} did not run.` : '';
   // The declined notice says it already; the detail does not repeat it.
-  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error,
+  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions.map(item => ({ ...item, helperAction: true }))], status, error,
     { declinedNoticeShown: notice?.tone === 'neutral' });
   return Object.freeze({ ...outcome, ...(notice && { notice }),
-    ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
+    ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs.${helperDeclineNote} Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
   });
 }
 
@@ -1344,15 +1354,18 @@ function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
   });
   // A refused repeat of a declined action showed no prompt; like the declined
   // notice, count it only when its decline was in an earlier turn, and once.
-  const repeatedDeclines = items.filter((item) => item?.approval === 'declined' && item.repeatsDecline).length;
-  const freshDeclines = items.filter((item) => item?.approval === 'declined').length - repeatedDeclines;
+  // Helper actions carry declines but never approvals; buildAgentOutcome
+  // reports their declines itself.
+  const prompted = items.filter((item) => item?.approval && !item.helperAction);
+  const repeatedDeclines = prompted.filter((item) => item.approval === 'declined' && item.repeatsDecline).length;
+  const freshDeclines = prompted.filter((item) => item.approval === 'declined').length - repeatedDeclines;
   const countedRepeats = freshDeclines ? 0 : Math.min(repeatedDeclines, 1);
   const approvals = Object.freeze({
-    requested: items.filter((item) => item?.approval).length - repeatedDeclines + countedRepeats,
-    approved: items.filter((item) => item?.approval === 'approved').length,
-    reviewerApproved: items.filter((item) => item?.approval === 'reviewer_approved').length,
+    requested: prompted.length - repeatedDeclines + countedRepeats,
+    approved: prompted.filter((item) => item.approval === 'approved').length,
+    reviewerApproved: prompted.filter((item) => item.approval === 'reviewer_approved').length,
     declined: freshDeclines + countedRepeats,
-    withdrawn: items.filter((item) => item?.approval === 'withdrawn').length,
+    withdrawn: prompted.filter((item) => item.approval === 'withdrawn').length,
   });
   const destinations = [
     ...new Set(

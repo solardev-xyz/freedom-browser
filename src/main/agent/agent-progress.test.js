@@ -1609,6 +1609,21 @@ test('a browser helper\'s declined action reads as declined, not as an uncertain
   // Without a recorded decline the stopped action is still uncertain.
   const { approval: _approval, ...stopped } = submit;
   expect(buildAgentOutcome([helper([stopped])], 'completed').notice.headline).toBe('Browser action outcome uncertain');
+  // A helper's receipt never records an approval, so its declines stay out of
+  // the approval counters too; the helper sentence reports them instead.
+  const clicked = { operation: OPERATIONS.CLICK, status: 'succeeded', pageId: 'tab_child', origin: 'https://shop.example' };
+  const uncertain = { ...stopped, errorCode: ERROR_CODES.INTERNAL_ERROR };
+  const mixed = buildAgentOutcome([helper([clicked, submit, { ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(mixed.notice.headline).toBe('Browser action outcome uncertain');
+  expect(mixed.counts.approvals).toMatchObject({ requested: 0, approved: 0, declined: 0, withdrawn: 0 });
+  expect(mixed.detail).not.toContain('declined by the user');
+  expect(mixed.detail).toContain('You declined 1 of their actions, so it did not run.');
+  // With the neutral notice showing, the decline is not repeated in the detail.
+  expect(declined.detail).not.toContain('declined');
+  // A parent-prompted decline is still counted alongside the helper's.
+  const parentDecline = { ...submit, pageId: 'page' };
+  expect(buildAgentOutcome([parentDecline, helper([submit, uncertain])], 'completed').counts.approvals)
+    .toMatchObject({ requested: 1, declined: 1 });
   // Only a decline or withdrawal survives normalization, and only on a failed action.
   const [kept] = normalizeSubagentReceipt(helper([{ ...submit, status: 'succeeded', approval: 'approved' }]).subagent).browserActions;
   expect(kept.approval).toBeUndefined();
