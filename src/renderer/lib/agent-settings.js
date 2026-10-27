@@ -44,12 +44,20 @@ const nextHelp = document.getElementById('ai-next-help');
 // only (the placeholder a failed load leaves in providerUi.state, which
 // apply() replays, never counts: the page shows the load error instead), and
 // only a connect made on this page opens Agent: a model connected in another
-// window, or reconnected after removing one here, opens nothing.
+// window, or reconnected after removing one here, opens nothing. realStatus is
+// the status this enable has actually loaded: turning AI off forgets it, so
+// turning it on again offers Connect only once refresh() has loaded a fresh
+// one, and a failed load (which leaves the placeholder without telling us)
+// takes the offer down again.
 let realStatus = null;
+let realStatuses = 0;
 let sawUnconfigured = false;
 let sawConfigured = false;
 const updateNext = (state, { userAction = false, real = false } = {}) => {
-  if (real) realStatus = state;
+  if (real) {
+    realStatus = state;
+    realStatuses += 1;
+  }
   const configured = state?.configured === true;
   const needsModel = !configured && Boolean(state) && state === realStatus;
   next.hidden = !enabled || !(configured || needsModel);
@@ -182,9 +190,23 @@ async function refresh() {
     }
     loaded = catalogReady;
   }
+  const statusesBefore = realStatuses;
   await providerUi.refreshProvider();
   if (current !== revision || !enabled) return;
-  status.textContent = catalogReady ? '' : 'Could not load providers. Open AI settings again to retry.';
+  // A failed status load sets the placeholder without onStatusChange, so the
+  // next-step row would keep whatever it showed before; repaint it from the
+  // placeholder (never real, so no Connect) and say so on this page too, not
+  // only on the providers page's own message line.
+  const statusReady = realStatuses !== statusesBefore;
+  if (!statusReady) {
+    realStatus = null;
+    updateNext(providerUi.state.providerStatus);
+  }
+  status.textContent = !catalogReady
+    ? 'Could not load providers. Open AI settings again to retry.'
+    : !statusReady
+      ? 'Could not load the agent model. Open AI settings again to retry.'
+      : '';
   if (!catalogReady || providerMessage.textContent === 'Loading providers…')
     providerMessage.textContent = status.textContent;
   renderRoute();
@@ -200,6 +222,7 @@ function apply(settings) {
   dictationHost.hidden = !enabled;
   document.getElementById('voice').hidden = !enabled;
   note.hidden = enabled;
+  if (!enabled) realStatus = null;
   updateNext(providerUi.state.providerStatus);
   renderRestart();
   if (!enabled) {

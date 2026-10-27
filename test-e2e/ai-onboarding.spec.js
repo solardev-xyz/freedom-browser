@@ -294,6 +294,48 @@ test('Settings opens Agent only for the first model connected on that page', asy
   await expect(window.locator('#agent-sidebar')).toBeHidden();
 });
 
+// A failed status load offers no "Connect a model": not from the status the
+// page replays when AI is turned off and on again, and not left standing once
+// the load fails. The AI page itself says the load failed.
+test('a failed model status load shows its error on the AI page and no Connect button', async ({ electronApp, window }, testInfo) => {
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', () => ({ ok: false, error: { code: 'TEST_FAILURE', message: 'Status unavailable' } }));
+  });
+  // Record whether Connect is ever on screen, from before the switch until
+  // the load has failed: a stale offer that comes and goes counts too.
+  await page.evaluate(() => {
+    window.__connectSeen = false;
+    const button = document.getElementById('ai-connect-model');
+    const sample = () => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+      window.__connectProbe = requestAnimationFrame(sample);
+    };
+    sample();
+    new MutationObserver(() => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+    }).observe(document.getElementById('ai'), { attributes: true, subtree: true, childList: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
+  await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('ai-status-failed.png') });
+  // A status-only failure on a fresh visit, with the catalogue loading fine.
+  await page.evaluate(() => {
+    window.__beforeReload = true;
+    location.reload();
+  });
+  await expect.poll(() => page.evaluate(() => !window.__beforeReload && document.readyState === 'complete').catch(() => false)).toBe(true);
+  await expect(page.locator('#enable-ai')).toBeChecked();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
+});
+
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
   const page = await settings(electronApp, window);
   await expect(page.locator('.nav-item[data-target="ai"]')).toBeVisible();
