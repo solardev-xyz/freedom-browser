@@ -381,6 +381,25 @@ describe('buildSettingsSearchIndex', () => {
     );
   });
 
+  test("AI's intro keeps its 'AI is off' note inside the live-region wrapper (#835)", () => {
+    // The note moved into an `aria-live` wrapper so revealing it is
+    // announced; `.settings-search-intro` keeps it in the section's intro,
+    // so "chats" or "development servers" still find the AI section.
+    const ai = index().find((entry) => entry.sectionId === 'ai');
+    expect(ai.help).toContain('Your saved chats, connections and projects are kept');
+    expect(ai.help).toContain('Running development servers remain available');
+    expect(search('development servers').some((entry) => entry.sectionId === 'ai')).toBe(true);
+    // Without the marker the wrapped note drops out of the intro.
+    const fragment = parseFragment(
+      '<section class="section" id="demo"><h2 class="section-title">Demo</h2>' +
+        '<div aria-live="polite"><p class="row-help">Wrapped note</p></div>' +
+        '<div class="settings-search-intro" aria-live="polite"><p class="row-help">Marked note</p></div>' +
+        '</section>'
+    );
+    const demo = buildSettingsSearchIndex(fragment, {}).find((entry) => entry.sectionId === 'demo');
+    expect(demo.help).toBe('Marked note');
+  });
+
   test('skips the result list itself, so a search cannot index its own output', () => {
     expect(SOURCE).toContain(`id="${RESULTS_PANEL}"`);
     expect(index().some((entry) => entry.sectionId === RESULTS_PANEL)).toBe(false);
