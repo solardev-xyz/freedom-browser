@@ -327,8 +327,16 @@
         text-underline-offset: 2px;
       }
 
+      /* A flex row, not a block (#834): a control that sits beside another
+         (a "Restart now" button next to a toggle) is centred on it instead of
+         sitting on the text baseline, where a text-less toggle's baseline is
+         its bottom edge. Siblings get the same 8px gap .shortcut-controls
+         and .profile-name-control already use. */
       .row-control {
         flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
 
       .row.sub {
