@@ -90,6 +90,7 @@ function createAgentElements() {
     'agent-provider-models-heading',
     'agent-provider-models-list',
     'agent-provider-models-empty',
+    'agent-provider-models-privacy-hint',
     'agent-provider-key-settings',
     'agent-model-list',
     'agent-subscription-note',
@@ -1828,6 +1829,58 @@ describe('Agent UI', () => {
     expect(preview.children[1].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
     expect(preview.title).toContain('Hardware health is checked when used');
     expect(ctx.elements['agent-model-details'].children[0].children[0].title).toContain('does not mean the hardware has passed');
+  });
+
+  test('provider pages hide the privacy hint and disable refresh until something is connected (#856)', async () => {
+    const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
+    const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
+    const catalog = [
+      { providerId: 'openai', name: 'OpenAI', authType: 'api_key', models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }] },
+      { providerId: 'near-ai', name: 'NEAR AI', canRefresh: true, models: [] },
+      { providerId: 'venice', name: 'Venice', canRefresh: true, models: [] },
+    ];
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Refresh unavailable' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const hint = ctx.elements['agent-provider-models-privacy-hint'];
+    const refresh = ctx.elements['agent-model-refresh'];
+    const open = (providerId) => {
+      ctx.elements['agent-provider-select'].value = providerId;
+      ctx.elements['agent-provider-select'].dispatch('change');
+    };
+    // Not connected, nothing listed: no hint, refresh shown but disabled.
+    for (const providerId of ['near-ai', 'venice']) {
+      open(providerId);
+      expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(false);
+      expect(ctx.elements['agent-provider-models-empty'].textContent).toBe('Connect to discover available models');
+      expect(hint.hidden).toBe(true);
+      expect(refresh.hidden).toBe(false);
+      expect(refresh.disabled).toBe(true);
+    }
+    // A failed refresh must not leave the button enabled on an unconnected provider.
+    refresh.dispatch('click');
+    await flush();
+    expect(refresh.disabled).toBe(true);
+    // Connected lab provider: models listed, but no privacy symbols, so no hint.
+    open('openai');
+    expect(ctx.elements['agent-provider-models-list'].hidden).toBe(false);
+    expect(hint.hidden).toBe(true);
+
+    // Connected NEAR AI with a symbolled model: hint shown, refresh enabled.
+    ctx.electronAPI.refreshAgentProviderModels.mockResolvedValue({
+      ok: true, catalog: catalog.map((entry) => entry.providerId === 'near-ai' ? { ...entry, models: [model] } : entry),
+      status: { configured: true, ...connection, connections: [connection] },
+    });
+    open('near-ai');
+    refresh.dispatch('click');
+    await flush();
+    await flush();
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['Qwen']);
+    expect(hint.hidden).toBe(false);
+    expect(refresh.disabled).toBe(false);
   });
 
   test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {
