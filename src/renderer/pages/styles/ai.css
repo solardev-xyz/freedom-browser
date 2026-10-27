@@ -57,8 +57,10 @@
 :is(#ai, #providers, #voice) .agent-field > span {
   font-weight: 600;
 }
-/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius). */
-:is(#ai, #providers, #voice) input:not([type='checkbox']),
+/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius),
+   and an `.rpc-input` keeps the page-wide Settings input (13 px, 6 px
+   radius), like "Search settings…" (#860). */
+:is(#ai, #providers, #voice) input:not([type='checkbox'], .rpc-input),
 :is(#ai, #providers, #voice) textarea {
   width: 100%;
   min-width: 0;
@@ -257,11 +259,17 @@
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* A search box is prose, not a URL: the page font, like `#settings-search`. */
+#agent-provider-search {
+  font-family: inherit;
+}
+/* Model rows read at the Settings row-title size (#860). */
 #providers .agent-provider-models-list li {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
+  font-size: 14px;
   border-bottom: 1px solid var(--border);
 }
 #providers .agent-provider-models-list li:last-child {
