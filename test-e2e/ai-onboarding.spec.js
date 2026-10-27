@@ -1,5 +1,6 @@
 const http = require('http');
 const { test, expect } = require('./fixtures');
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 
 // An absent choice must remain off even when the rest of the harness opts in.
 test.use({ aiEnabled: null });
@@ -685,8 +686,58 @@ test('AI settings pages share Settings\' selects, intros, headings and destructi
   expect(dialogs).toEqual([]);
 });
 
+// #782/#863: a sheet hanging from the floating panel's header — Set up Agent
+// and Services share the same one-card rules — measured against it.
+const ONE_CARD = {
+  left: 0,
+  right: 0,
+  gap: 0,
+  seam: ['0px', '0px', '0px', '0px', '0px', '0px'],
+  outerCorners: ['16px', '16px'],
+  slack: true,
+  opaque: true,
+  headerOpaque: true,
+  headerShadow: ['inset'],
+};
+const headerShadow = (window) => window.evaluate(() =>
+  getComputedStyle(document.querySelector('#agent-sidebar .agent-sidebar-header')).boxShadow);
+function sheetUnderHeader(window, id) {
+  return window.evaluate((id) => {
+    const sheet = document.getElementById(id);
+    const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
+    const s = sheet.getBoundingClientRect();
+    const h = header.getBoundingClientRect();
+    const content = [...sheet.children].filter((el) => el.getClientRects().length)
+      .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
+    const opaque = (el) => {
+      const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
+      return alpha === undefined || Number(alpha) === 1;
+    };
+    const hs = getComputedStyle(header);
+    const ss = getComputedStyle(sheet);
+    return {
+      left: Math.round(s.left - h.left),
+      right: Math.round(s.right - h.right),
+      gap: Math.round(s.top - h.bottom),
+      seam: [hs.borderBottomWidth, hs.borderBottomLeftRadius, hs.borderBottomRightRadius,
+        ss.borderTopWidth, ss.borderTopLeftRadius, ss.borderTopRightRadius],
+      outerCorners: [hs.borderTopLeftRadius, ss.borderBottomRightRadius],
+      slack: s.bottom - content <= 32,
+      opaque: opaque(sheet),
+      // The header it hangs from too: light theme's glass let the page show through (#803).
+      headerOpaque: opaque(header),
+      // Open, the header keeps only its inset highlight: the card's drop
+      // shadow sits on the sheet, not across the seam (#863).
+      headerShadow: hs.boxShadow.split(/,(?![^(]*\))/)
+        .map((shadow) => (/\binset\b/.test(shadow) ? 'inset' : 'drop')),
+    };
+  }, id);
+}
+
 // #782: Set up Agent is a sheet under its header — same edges, as tall as
-// what it holds, and nothing of the page reads through it.
+// what it holds, and nothing of the page reads through it. #863: the two are
+// one card (no gap, square inner corners, no seam), and the copy names no
+// provider brand.
 test('Set up Agent sheet lines up with its header and both are opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
@@ -701,28 +752,47 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
       if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
         await window.locator('#agent-toggle-btn').click();
       await expect(window.locator('#agent-setup-view')).toBeVisible();
-      await expect.poll(() => window.evaluate(() => {
-        const sheet = document.getElementById('agent-setup-view');
-        const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
-        const s = sheet.getBoundingClientRect();
-        const h = header.getBoundingClientRect();
-        const content = [...sheet.children].filter((el) => el.getClientRects().length)
-          .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
-        const opaque = (el) => {
-          const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
-          return alpha === undefined || Number(alpha) === 1;
-        };
-        return {
-          left: Math.round(s.left - h.left),
-          right: Math.round(s.right - h.right),
-          slack: s.bottom - content <= 32,
-          opaque: opaque(sheet),
-          // The header it hangs from too: light theme's glass let the page show through (#803).
-          headerOpaque: opaque(header),
-        };
-      })).toEqual({ left: 0, right: 0, slack: true, opaque: true, headerOpaque: true });
+      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(ONE_CARD);
+      await expect(window.locator('#agent-setup-view .agent-setup-intro')).toHaveText(
+        'Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.'
+      );
       await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
+      // Closing dissolves the header's inset highlight with its glass instead
+      // of leaving a bright line behind while the panel fades out.
+      await expect.poll(() => headerShadow(window)).toBe('none');
+    }
+  }
+});
+
+// The Services sheet (#agent-mcp-panel) shares Set up Agent's one-card rules
+// (agent-floating.css's :is([data-agent-view='setup'], [data-agent-view='services'])),
+// so it gets the same geometry and close-highlight checks.
+test('Services sheet is one card with its header and its highlight dissolves on close', async ({ electronApp, window }, testInfo) => {
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  await configureOllamaAgent(window, baseUrl);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate((theme) => window.electronAPI.saveSettings({ theme }), theme);
+    for (const width of [600, 1440]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+        win.setMinimumSize(320, 300);
+        win.setContentSize(width, 800);
+      }, width);
+      if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
+        await window.locator('#agent-toggle-btn').click();
+      if (await window.locator('#agent-workspace-view').isVisible()) {
+        await window.locator('#agent-attachment-button').click();
+        await window.locator('#agent-mcp-open').click();
+      }
+      await expect(window.locator('#agent-mcp-panel')).toBeVisible();
+      await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
+      await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-agent-view', 'services');
+      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(ONE_CARD);
+      await window.screenshot({ path: testInfo.outputPath(`services-sheet-${theme}-${width}.png`) });
+      await window.locator('#agent-sidebar-close').click();
+      await expect.poll(() => headerShadow(window)).toBe('none');
     }
   }
 });
