@@ -1798,7 +1798,14 @@ function setRunState(status, label) {
       : status === 'paused'
         ? 'Add guidance and resume…'
         : 'Message Agent…';
-  elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
+  // A conversation keeps the model it started with, so the picker stays
+  // disabled for it. Only a run dims it, though: an idle conversation's model
+  // is a fact the user reads, not a control that is unavailable right now
+  // (#872). `agent.css` keys the undimmed look off this marker.
+  const modelLocked = Boolean(currentConversationId);
+  elements.modelMenuButton.disabled = active || modelLocked;
+  if (!active && modelLocked) elements.modelMenuButton.dataset.modelLock = 'conversation';
+  else delete elements.modelMenuButton.dataset.modelLock;
   elements.approvalModeButton.disabled = active || approvalModeMutationPending;
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
