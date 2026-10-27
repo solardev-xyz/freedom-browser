@@ -385,3 +385,29 @@ test('the model thinking is a closed disclosure above its answer and opens on cl
   await thinking.evaluate(el => el.scrollIntoView({ block: 'start' }));
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('thinking-agent-first-light.png') });
 });
+
+test('the docked transcript scrolls below the header, never beneath it (#866)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1000);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const emit = event => win.webContents.send('agent:event', { runId: 'header-fixture', ...event });
+    emit({ type: 'run_started', userText: 'Explain Swarm postage stamps' });
+    emit({ type: 'assistant_text_delta', text: Array(30).fill('You buy a batch with BZZ, and every upload is stamped against it.').join('\n\n') });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  const scroller = window.locator('.agent-workspace-scroll');
+  await expect.poll(() => scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await scroller.evaluate(el => { el.scrollTop = 300; });
+    // The scroll viewport, and so every bubble and its scrollbar, starts at
+    // the header's lower edge rather than running up beneath its glass.
+    await expect.poll(() => window.evaluate(() => {
+      const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+      const viewport = document.querySelector('.agent-workspace-scroll').getBoundingClientRect();
+      return Math.round(viewport.top - header.bottom);
+    })).toBeGreaterThanOrEqual(0);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`docked-header-${theme}.png`) });
+  }
+});

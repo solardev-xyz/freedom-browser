@@ -460,7 +460,6 @@
 
 .agent-floating[data-presentation='column'] .agent-workspace-view {
   min-height: 0;
-  margin-top: -6px;
   pointer-events: none;
 }
 
@@ -478,8 +477,10 @@
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  /* Fade only the stationary scroll viewport, with the six-pixel edges
-     tucked beneath the header/composer. Neither glass surface is masked. */
+  /* Fade only the stationary scroll viewport. Its top starts at the header's
+     lower edge, not beneath it, so no bubble or scrollbar shows through the
+     header's glass (#866); the six-pixel bottom edge tucks beneath the
+     composer. Neither glass surface is masked. */
   /* theme-literal: black is an opaque alpha mask, not a visible surface */
   mask-image: linear-gradient(to bottom, transparent, black 6px, black calc(100% - 6px), transparent);
 }
