@@ -24,15 +24,14 @@
   --agent-caution: #d6a85f;
   --agent-on-accent: var(--bg);
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
-  /* Floating Agent glass: small translucent surfaces over the live page,
-     blurred through backdrop-filter. The backdrop filter and the tint are
-     chosen together so --text keeps at least 4.5:1 over a white page; the
-     blur averages a busy page down first. `-hidden` is the same filter list
-     at rest, so the two interpolate when a card appears or leaves. */
-  --agent-glass-filter: blur(28px) saturate(1.5) brightness(0.68);
-  --agent-glass-filter-hidden: blur(0px) saturate(1) brightness(1);
-  --agent-glass: rgba(30, 31, 34, 0.64);
-  --agent-glass-raised: rgba(36, 37, 41, 0.78);
+  /* Floating Agent surfaces over the live page (the launcher card, the
+     column's header, Workspace slip and composer, the dictation dialog).
+     They are opaque: a translucent, blurred fill let a patterned page show
+     through the text and turned the dark panel muddy grey over white pages
+     (#865). The panel is the Agent's sheet colour; the suggestion cards
+     below the launcher sit one step above it. */
+  --agent-glass: var(--agent-sheet);
+  --agent-glass-raised: rgb(50, 51, 56);
   --agent-glass-field: rgba(255, 255, 255, 0.06);
   --agent-glass-border: rgba(255, 255, 255, 0.13);
   --agent-glass-highlight: rgba(255, 255, 255, 0.06);
@@ -126,12 +125,8 @@
   --agent-caution: #946000;
   --agent-on-accent: #ffffff;
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
-  /* contrast() lifts a black page before the white tint, so text and the
-     darker muted grey below keep 4.5:1 on light glass over dark pages. */
-  --agent-glass-filter: blur(28px) saturate(1.4) contrast(0.62) brightness(1.24);
-  --agent-glass-filter-hidden: blur(0px) saturate(1) contrast(1) brightness(1);
-  --agent-glass: rgba(250, 250, 251, 0.72);
-  --agent-glass-raised: rgba(255, 255, 255, 0.84);
+  --agent-glass: var(--agent-sheet);
+  --agent-glass-raised: #ffffff;
   --agent-glass-field: rgba(255, 255, 255, 0.62);
   --agent-glass-border: rgba(15, 23, 42, 0.1);
   --agent-glass-highlight: rgba(255, 255, 255, 0.72);

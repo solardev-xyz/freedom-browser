@@ -1594,16 +1594,12 @@ function captureLauncherSnapshot() {
 
 const FLOAT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
-// Glass cards cannot fade with opacity without losing their blur (see
-// agent-floating.css), so they arrive by materialising: blur, tint, border
-// and shadow interpolate from nothing to their resting values.
+// The floating cards arrive by materialising: fill, border and shadow
+// interpolate from nothing to their resting values (see agent-floating.css),
+// while the content inside them fades in on its own.
 function glassHiddenKeyframe(extra = {}) {
-  const hiddenFilter =
-    window.getComputedStyle?.(elements.panel)?.getPropertyValue?.('--agent-glass-filter-hidden')?.trim() ||
-    'blur(0px)';
   return {
     backgroundColor: 'transparent',
-    backdropFilter: hiddenFilter,
     borderColor: 'transparent',
     boxShadow: 'none',
     ...extra,
@@ -1618,7 +1614,7 @@ function materialise(element, transform, delay = 0, fadeContents = true) {
   for (const child of element.children || []) fadeIn(child, delay + 80);
 }
 
-// Only for content that is not itself glass (opacity would disable a blur).
+// For the content inside a card, not the card itself.
 function fadeIn(element, delay = 0) {
   element?.animate?.([{ offset: 0, opacity: 0 }], {
     duration: 260,
