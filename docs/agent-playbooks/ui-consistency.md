@@ -265,6 +265,14 @@ repository instead, as raw links:
    `gh pr edit <N> --body-file` or `gh issue edit <N> --body-file`, then check
    that one URL answers 200.
 
+To show a suggested fix before anyone builds it, make a mockup from the
+running app rather than a drawing: reach the state with the `run-freedom`
+skill, apply the change as injected CSS or a DOM edit (in the guest page for
+Settings and internal pages), screenshot, then remove it. Name the file
+`mock-<what>`, put it under the item it illustrates, and say in the body that
+mockups are illustrations, not implementations, and which part of a fix a
+mockup leaves out.
+
 The repository is public: before uploading, look at every image for secrets,
 real wallet addresses or balances, personal data and private URLs, and use
 test-mode fixtures (`FREEDOM_TEST_MODE=1`, `example.test` hosts) instead.
