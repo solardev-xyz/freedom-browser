@@ -26,6 +26,20 @@ function isLoopbackUrl(value) {
   }
 }
 
+// The form a typed Ollama URL is stored in: main's normalizeOllamaBaseUrl
+// (provider-resolver.js) appends /v1 and drops a trailing slash, so the dirty
+// check compares like with like. Unparseable text is left as typed (dirty).
+function ollamaUrlKey(value) {
+  const text = String(value || '').trim();
+  try {
+    const parsed = new URL(text);
+    parsed.pathname = `${parsed.pathname.replace(/\/+$/, '') || ''}/v1`.replace('/v1/v1', '/v1');
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return text;
+  }
+}
+
 // Shared provider and model UI. Only Settings mounts the configuration form;
 // the conversation host supplies just its model picker and lifecycle callbacks.
 export function createAgentProviderUi(options = {}) {
@@ -413,7 +427,10 @@ export function createAgentProviderUi(options = {}) {
     const connection = providerConnection(providerId);
     if (!connection) return true;
     if (providerId === 'ollama')
-      return elements.ollamaUrl.value.trim() !== (connection.baseUrl || DEFAULT_OLLAMA_URL);
+      return (
+        ollamaUrlKey(elements.ollamaUrl.value) !==
+        ollamaUrlKey(connection.baseUrl || DEFAULT_OLLAMA_URL)
+      );
     if (elements.apiKey.value) return true;
     if (!isCustomProvider(providerId)) return false;
     const ids = [
@@ -440,6 +457,7 @@ export function createAgentProviderUi(options = {}) {
   }
 
   function renderSaveVisibility() {
+    if (!elements.saveProvider || !elements.provider) return;
     const providerId = elements.provider.value;
     elements.saveProvider.hidden =
       providerAuthType(providerId) === 'subscription' || !connectionFormDirty(providerId);
@@ -762,6 +780,8 @@ export function createAgentProviderUi(options = {}) {
     loadCustomModelSettings();
     renderModelDetails();
     renderCompatibilityCheck();
+    // The fields above were just reset to what is stored.
+    renderSaveVisibility();
   }
 
   function renderCustomTransport() {
@@ -1364,6 +1384,9 @@ export function createAgentProviderUi(options = {}) {
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
+      // Show the URL as main stored it (normalized), so the field matches.
+      const savedOllamaUrl = providerId === 'ollama' && providerConnection(providerId)?.baseUrl;
+      if (savedOllamaUrl) elements.ollamaUrl.value = savedOllamaUrl;
       setMessage(
         elements.providerMessage,
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
@@ -1380,6 +1403,8 @@ export function createAgentProviderUi(options = {}) {
       setMessage(elements.providerMessage, 'Could not save model', true);
     } finally {
       elements.saveProvider.disabled = false;
+      // The API key was cleared above on every path; recompute Save.
+      renderSaveVisibility();
     }
   }
 

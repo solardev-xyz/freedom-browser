@@ -5407,6 +5407,72 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-disconnect'].hidden).toBe(true);
   });
 
+  test('Save visibility follows the stored form after a normalized save, a failed save and a field reset (#859)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4', hasApiKey: true };
+    const local = {
+      kind: 'compatible', providerId: 'custom-local', name: 'Local server', modelId: 'm1',
+      baseUrl: 'http://localhost:8080/v1', models: [{ id: 'm1' }],
+    };
+    const moved = { ...ollama, baseUrl: 'http://127.0.0.1:11500/v1' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted, local] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4' }] },
+        { providerId: 'custom-local', name: 'Local server', models: [{ id: 'm1', name: 'm1' }] },
+      ] }),
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Bad key' } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...moved, connections: [moved, hosted, local] },
+      }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const save = ctx.elements['agent-provider-save'];
+    const open = (index) => ctx.elements['agent-connected-provider-list'].children[index].dispatch('click');
+
+    // R1-M2: a failed save clears the key, so nothing is left to save.
+    open(1);
+    ctx.elements['agent-api-key'].value = 'bad-key';
+    ctx.elements['agent-api-key'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalled();
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(save.hidden).toBe(true);
+
+    // R1-M2: re-rendering the model options resets the custom fields to what is stored.
+    open(2);
+    ctx.elements['agent-custom-context'].value = '64000';
+    ctx.elements['agent-custom-context'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(ctx.elements['agent-custom-context'].value).toBe(32768);
+    expect(save.hidden).toBe(true);
+
+    // R1-M1: a URL main would store unchanged is not a change ...
+    open(0);
+    const url = ctx.elements['agent-ollama-url'];
+    url.value = 'http://127.0.0.1:11434/';
+    url.dispatch('input');
+    expect(save.hidden).toBe(true);
+    // ... and after saving one main normalizes, the field matches what is stored.
+    url.value = 'http://127.0.0.1:11500';
+    url.dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11500');
+    expect(url.value).toBe('http://127.0.0.1:11500/v1');
+    expect(save.hidden).toBe(true);
+  });
+
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
     let resolveLogin;
     const loginPromise = new Promise((resolve) => {
