@@ -660,6 +660,11 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
       );
       await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
+      // Closing dissolves the header's inset highlight with its glass instead
+      // of leaving a bright line behind while the panel fades out.
+      await expect.poll(() => window.evaluate(() =>
+        getComputedStyle(document.querySelector('#agent-sidebar .agent-sidebar-header')).boxShadow
+      )).toBe('none');
     }
   }
 });
