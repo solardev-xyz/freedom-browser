@@ -218,7 +218,6 @@ toggle.addEventListener('change', async () => {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
     continueToProviders = requested;
     apply(await api.getSettings());
-    if (!requested) status.textContent = 'AI is off. Chats, connections and projects are kept.';
   } catch {
     toggle.checked = enabled;
     status.textContent = 'Could not change AI settings. Please try again.';
