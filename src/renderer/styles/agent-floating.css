@@ -875,13 +875,31 @@
    width. Header, transcript and composer share the sheet's opaque surface,
    divided by hairlines rather than floating as separate cards. */
 @media (max-width: 719px) {
+  /* The sheet's insets inside the page area. Its height is clamped against
+     both, so a short window shrinks the sheet instead of pushing it up over
+     the Find bar or, with the download shelf showing, out of the page area
+     onto the toolbar. Page hints below read the same bottom inset. */
+  body.agent-floating-column {
+    --agent-sheet-top: 8px;
+    --agent-sheet-bottom: 8px;
+  }
+
+  body.agent-floating-column:has(.find-bar:not([hidden])) {
+    --agent-sheet-top: 54px;
+  }
+
+  body.agent-floating-column.has-visible-downloads {
+    --agent-sheet-bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  }
+
   .agent-floating[data-presentation='column'] .agent-sidebar-inner {
+    --agent-sheet-room: calc(100% - var(--agent-sheet-top, 8px) - var(--agent-sheet-bottom, 8px));
     top: auto;
     right: 8px;
-    bottom: 8px;
+    bottom: var(--agent-sheet-bottom, 8px);
     left: 8px;
     width: auto;
-    height: clamp(min(320px, 100% - 16px), 52%, 100% - 16px);
+    height: clamp(min(320px, var(--agent-sheet-room)), 52%, var(--agent-sheet-room));
     /* clip, not hidden: scrollIntoView must not scroll the header away. */
     overflow: clip;
     pointer-events: auto;
@@ -965,13 +983,20 @@
     scrollbar-width: thin;
   }
 
-  body.agent-floating-column.has-visible-downloads .agent-sidebar-inner {
-    bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  /* A sheet shorter than its header plus composer (agent-ui sets the class)
+     scrolls the composer under the header, like a tall approval card. */
+  body.agent-floating-sheet-cramped .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
 
+  /* Page hints sit 14px above the sheet, with or without downloads. */
   body.agent-floating-column .agent-page-lock-hint,
   body.agent-floating-column .link-status--right {
-    bottom: calc(var(--agent-floating-panel-height, 360px) + var(--download-shelf-height, 0px) + 22px);
+    bottom: calc(var(--agent-floating-panel-height, 360px) + var(--agent-sheet-bottom, 8px) + 14px);
   }
 }
 
