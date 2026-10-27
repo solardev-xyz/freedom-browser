@@ -28,8 +28,8 @@
      column's header, Workspace slip and composer, the dictation dialog).
      They are opaque: a translucent, blurred fill let a patterned page show
      through the text and turned the dark panel muddy grey over white pages
-     (#865). The panel is the Agent's sheet colour; the suggestion cards
-     below the launcher sit one step above it. */
+     (#865). The panel is the Agent's sheet colour; in this theme the
+     suggestion cards below the launcher sit one step lighter than it. */
   --agent-glass: var(--agent-sheet);
   --agent-glass-raised: rgb(50, 51, 56);
   --agent-glass-field: rgba(255, 255, 255, 0.06);
@@ -125,8 +125,10 @@
   --agent-caution: #946000;
   --agent-on-accent: #ffffff;
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
+  /* The panel is already white, so nothing is lighter: the suggestion cards
+     share its fill and stand apart by their border and shadow alone. */
   --agent-glass: var(--agent-sheet);
-  --agent-glass-raised: #ffffff;
+  --agent-glass-raised: var(--agent-sheet);
   --agent-glass-field: rgba(255, 255, 255, 0.62);
   --agent-glass-border: rgba(15, 23, 42, 0.1);
   --agent-glass-highlight: rgba(255, 255, 255, 0.72);

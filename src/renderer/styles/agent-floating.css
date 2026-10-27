@@ -180,7 +180,8 @@
   pointer-events: auto;
 }
 
-/* One step above the launcher card, never darker than it. */
+/* Never darker than the launcher card: one step lighter in dark theme, the
+   same white in light theme, where the border and shadow set them apart. */
 .agent-floating .agent-example {
   background: var(--agent-glass-raised);
   box-shadow: var(--agent-glass-shadow-soft);
