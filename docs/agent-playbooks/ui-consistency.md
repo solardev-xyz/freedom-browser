@@ -230,7 +230,7 @@ as Linux references.
 
 1. Run the tour from `.claude/skills/run-freedom/` in both themes, or at
    least screenshot the touched surface in both, and attach before/after
-   images to the PR.
+   images to the PR (see [Attaching screenshots](#attaching-screenshots-to-pull-requests-and-issues)).
 2. Put the new surface next to its nearest sibling (another settings
    section, another sidebar screen, another internal page) and compare:
    spacing, heading sizes, button styles and verbs, input fonts, empty
@@ -242,3 +242,30 @@ as Linux references.
 5. New CSS in an inline `<style>` block: confirm braces balance (an unclosed
    rule silently swallows everything after it, including the light theme; see
    #223).
+
+## Attaching screenshots to pull requests and issues
+
+`gh` cannot upload images, and committing screenshots to this repository
+bloats its history. Pull requests and issues embed images hosted in the public
+[`solardev-xyz/alan-artifacts`](https://github.com/solardev-xyz/alan-artifacts)
+repository instead, as raw links:
+
+1. Clone it once (a shallow clone is enough):
+   `gh repo clone solardev-xyz/alan-artifacts <dir> -- --depth 1`.
+2. Copy each image to
+   `solardev-xyz/freedom-browser/pr<N>/<yyyymmdd-hhmmss>-<label>.png` for a
+   pull request, or `.../issue<N>/...` for an issue. Labels say what the image
+   shows and which theme, e.g. `before-dark`, `after-decline-light`.
+3. Commit all images for one PR or issue together
+   (`evidence: solardev-xyz/freedom-browser#<N> <what>`), `git pull --rebase`,
+   `git push`.
+4. Embed `![<label>](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/<path>)`
+   in the body under a `## Screenshots` heading, each image after a one-line
+   caption saying what to look at. Edit the body with
+   `gh pr edit <N> --body-file` or `gh issue edit <N> --body-file`, then check
+   that one URL answers 200.
+
+The repository is public: before uploading, look at every image for secrets,
+real wallet addresses or balances, personal data and private URLs, and use
+test-mode fixtures (`FREEDOM_TEST_MODE=1`, `example.test` hosts) instead.
+
