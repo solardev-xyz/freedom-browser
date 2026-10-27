@@ -1010,13 +1010,17 @@ export function createAgentProviderUi(options = {}) {
           state.providerStatus?.modelId === model.modelId;
         option.classList.toggle('active', active);
         option.setAttribute('aria-checked', String(active));
-        const name = document.createElement('span');
-        name.textContent = model.name;
+        // One leading check column, so the selected model reads at a glance and
+        // the privacy symbols and the star keep the trailing edge to themselves.
         const check = document.createElement('span');
         check.className = 'agent-model-check';
+        check.setAttribute('aria-hidden', 'true');
         check.textContent = active ? '✓' : '';
-        option.appendChild(name);
+        const name = document.createElement('span');
+        name.className = 'agent-model-name';
+        name.textContent = model.name;
         option.appendChild(check);
+        option.appendChild(name);
         const privacy = createModelPrivacySymbols(model.privacyInfo);
         option.appendChild(privacy);
         option.title = model.privacyInfo.detail;

@@ -617,6 +617,46 @@ function closeComposerPopovers() {
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
 }
 
+// The model menu opens above its button, right edges aligned, and never grows
+// past the panel header: otherwise a long model list covers the header's
+// expand and close buttons (#869). Offsets, unlike client rects, ignore the
+// transforms the launcher animates with, so the anchor holds mid-animation.
+function offsetWithin(node, ancestor) {
+  let x = 0;
+  let y = 0;
+  while (node && node !== ancestor) {
+    const parent = node.offsetParent;
+    x += node.offsetLeft + (parent && parent !== ancestor ? parent.clientLeft : 0);
+    y += node.offsetTop + (parent && parent !== ancestor ? parent.clientTop : 0);
+    node = parent;
+  }
+  return node === ancestor ? { x, y } : null;
+}
+
+function openModelMenu() {
+  const { modelMenu: menu, modelMenuButton: button } = elements;
+  menu.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  const container = menu.offsetParent;
+  const anchor = container && offsetWithin(button, container);
+  if (!anchor) return;
+  const gap = 6;
+  const right = Math.min(
+    Math.max(0, container.clientWidth - anchor.x - button.offsetWidth),
+    Math.max(0, container.clientWidth - menu.offsetWidth)
+  );
+  menu.style.right = `${right}px`;
+  menu.style.bottom = `${container.clientHeight - anchor.y + gap}px`;
+  const buttonTop = button.getBoundingClientRect().top;
+  let ceiling = 0;
+  for (const header of [panelHeader, elements.agentFirstTitlebar]) {
+    const rect = header?.getBoundingClientRect?.();
+    if (rect && rect.height > 0) ceiling = Math.max(ceiling, rect.bottom);
+  }
+  const room = Math.max(120, buttonTop - gap - ceiling - 4);
+  menu.style.setProperty('--agent-model-menu-room', `${room}px`);
+}
+
 function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
@@ -4568,8 +4608,7 @@ async function chooseAnotherModel(view) {
   // Show every model: an earlier search could hide the alternatives.
   elements.modelMenuSearch.value = '';
   renderModelMenu();
-  elements.modelMenu.hidden = false;
-  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  openModelMenu();
   elements.modelMenuSearch.focus();
 }
 
@@ -5153,8 +5192,7 @@ export function initAgentUi(options = {}) {
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();
-    elements.modelMenu.hidden = !opening;
-    elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
+    if (opening) openModelMenu();
   });
   elements.approvalModeButton.addEventListener('click', () => {
     const opening = elements.approvalModePopover.hidden;

@@ -151,6 +151,33 @@ test('model picker collapses providers while keeping favorites and searchable mo
   const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
   const ollama = menu.getByRole('button', { name: /Ollama/ });
   const search = window.locator('#agent-model-menu-search');
+  // #869: legible type, a single leading check, no hint line, and the menu
+  // anchored above its button without reaching the panel header.
+  const layout = await window.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const menu = rect('#agent-model-menu');
+    const button = rect('#agent-model-menu-button');
+    const header = rect('.agent-sidebar-header');
+    const option = document.querySelector('#agent-model-menu .agent-model-option.active');
+    const group = getComputedStyle(document.querySelector('#agent-model-menu .agent-model-group-label'));
+    return {
+      menuRight: menu.right, buttonRight: button.right,
+      menuBottom: menu.bottom, buttonTop: button.top,
+      menuTop: menu.top, headerBottom: header.bottom,
+      optionFontSize: getComputedStyle(option).fontSize,
+      firstCellText: option.children[0].textContent,
+      groupFontSize: group.fontSize, groupTransform: group.textTransform,
+      menuText: document.querySelector('#agent-model-menu').textContent,
+    };
+  });
+  expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+  expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+  expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  expect(layout.optionFontSize).toBe('13px');
+  expect(layout.firstCellText).toBe('✓');
+  expect(layout.groupFontSize).toBe('12px');
+  expect(layout.groupTransform).toBe('none');
+  expect(layout.menuText).not.toContain('Hover over privacy symbols');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
     await expect(openai).toHaveAttribute('aria-expanded', 'false');
