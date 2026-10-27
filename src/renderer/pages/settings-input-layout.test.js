@@ -147,6 +147,10 @@ describe('settings.html text-field layout', () => {
       expect(bodies.length).toBeGreaterThan(0);
       for (const body of bodies) {
         expect(body).toMatch(/flex-shrink:\s*0/);
+        // A flex row with no wrap holds its field and button on one line, so
+        // its min-content width is their sum and a narrow window overflows;
+        // the inline boxes it replaced could wrap.
+        expect(body).toMatch(/flex-wrap:\s*wrap/);
         expect(body).not.toMatch(/\bflex(?:-grow)?:\s*[1-9]|(?:^|[\s;])(?:min-)?width:/);
       }
     }

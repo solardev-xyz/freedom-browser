@@ -331,10 +331,14 @@
          (a "Restart now" button next to a toggle) is centred on it instead of
          sitting on the text baseline, where a text-less toggle's baseline is
          its bottom edge. Siblings get the same 8px gap .shortcut-controls
-         and .profile-name-control already use. */
+         and .profile-name-control already use. It wraps, like the inline
+         boxes it replaced: a field and its button (the ad-block allow-list
+         entry) stack on a narrow window instead of pushing the Settings column
+         wider than the window. */
       .row-control {
         flex-shrink: 0;
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 8px;
       }
