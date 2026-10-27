@@ -720,8 +720,9 @@ export function createAgentProviderUi(options = {}) {
     elements.customSchema.checked = model?.jsonSchema === true;
   }
   // Ollama has no catalog and never fills the model select (#846): its line
-  // describes the connection's own selected model, the one the list above
-  // marks, and reports nothing Ollama's discovery didn't report.
+  // describes the connection's own saved model (connection.modelId), whether
+  // or not Ollama is the active provider (the list above only marks a model
+  // when it is), and reports nothing Ollama's discovery didn't report.
   function detailsModel(providerId) {
     if (providerId !== 'ollama') return catalogModel(providerId, elements.model.value);
     const modelId = providerConnection(providerId)?.modelId;
