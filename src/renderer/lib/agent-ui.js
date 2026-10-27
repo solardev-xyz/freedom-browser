@@ -4741,7 +4741,8 @@ async function restoreRunState() {
       setRunState('idle', 'Ready');
     }
   } catch {
-    // Idle is the safe renderer default when lifecycle state cannot be restored.
+    // The untouched idle state (status badge hidden, no label) is the safe
+    // renderer default when lifecycle state cannot be restored.
   }
 }
 
