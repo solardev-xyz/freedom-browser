@@ -425,6 +425,74 @@ test('a model status landing after AI is turned off is not replayed as Connect o
   expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
 });
 
+// The Models & providers row names a hosted model by its catalogue name, not
+// its raw id (#862), and only from the status this enable loaded: re-enabling
+// AI replays the status from before the disable, which must not be named
+// until the new enable's own load lands.
+test('the Models & providers row names a hosted model by catalogue name, from this enable\'s status only', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  const catalog = await window.evaluate(() => window.electronAPI.getAgentProviderCatalog());
+  expect(catalog?.ok).toBe(true);
+  // A hosted model whose display name differs from its id, so the row shows
+  // which one it used.
+  const pick = catalog.catalog
+    .filter(provider => provider.authType === 'api_key')
+    .flatMap(provider => (provider.models || []).map(model => ({ providerId: provider.providerId, model })))
+    .find(({ model }) => model.name && model.name !== model.id);
+  expect(pick).toBeTruthy();
+  const hosted = {
+    configured: true, kind: 'hosted', providerId: pick.providerId, modelId: pick.model.id,
+    connections: [{ kind: 'hosted', providerId: pick.providerId, modelId: pick.model.id }],
+  };
+  const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const named = new RegExp(` · ${escape(pick.model.name)}$`);
+  await electronApp.evaluate(({ ipcMain }, status) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', () => ({ ok: true, status }));
+  }, hosted);
+  await page.locator('#enable-ai').uncheck();
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-providers-summary')).toHaveText(named);
+  await expect(page.locator('#ai-providers-summary')).not.toContainText(` · ${pick.model.id}`);
+  // Off, then on again with this enable's status load held: the row must not
+  // name the model from before the disable while it waits.
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#enable-ai')).toBeEnabled();
+  await electronApp.evaluate(({ ipcMain }, status) => {
+    globalThis.__statusCalls = 0;
+    let release;
+    globalThis.__releaseStatus = () => release();
+    const gate = new Promise(resolve => { release = resolve; });
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      globalThis.__statusCalls += 1;
+      await gate;
+      return { ok: true, status };
+    });
+  }, hosted);
+  await page.evaluate(() => {
+    window.__namedSeen = false;
+    const summary = document.getElementById('ai-providers-summary');
+    window.__namedObserver = new MutationObserver(() => {
+      if (summary.textContent.includes(' · ')) window.__namedSeen = true;
+    });
+    window.__namedObserver.observe(summary, { characterData: true, childList: true, subtree: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusCalls)).toBeGreaterThan(0);
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
+  expect(await page.evaluate(() => {
+    window.__namedObserver.disconnect();
+    return window.__namedSeen || document.getElementById('ai-providers-summary').textContent.includes(' · ');
+  })).toBe(false);
+  // Once this enable's own load lands, the row names the model again.
+  await electronApp.evaluate(() => globalThis.__releaseStatus());
+  await expect(page.locator('#ai-providers-summary')).toHaveText(named);
+});
+
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
   const page = await settings(electronApp, window);
   await expect(page.locator('.nav-item[data-target="ai"]')).toBeVisible();
