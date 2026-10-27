@@ -1445,6 +1445,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   display: flex;
   align-items: center;
   gap: 3px;
+  /* Stays right-aligned when the run status badge is hidden (#876). */
+  margin-left: auto;
 }
 
 .agent-lifecycle-actions .agent-text-button {
