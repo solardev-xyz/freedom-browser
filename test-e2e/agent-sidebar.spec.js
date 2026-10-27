@@ -2049,4 +2049,18 @@ test('answer links keep their URL and open in a tab; quotes, code and tables are
     .toContain('docs.ethswarm.org');
   expect(window.url()).toBe(chromeUrl);
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-opened.png') });
+
+  // Agent-first mode's strip lists only the conversation's pages, so a
+  // background tab would be invisible there. Ctrl/Cmd+click opens the link in
+  // the foreground instead, leaving agent-first for the new tab like a click.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  const tabsInAgentFirst = await window.locator('.tab').count();
+  await link.click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
+  await expect(window.locator('.tab')).toHaveCount(tabsInAgentFirst + 1);
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''))
+    .toContain('docs.ethswarm.org');
+  expect(window.url()).toBe(chromeUrl);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-agent-first-ctrl.png') });
 });

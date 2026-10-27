@@ -3609,6 +3609,23 @@ describe('Agent UI', () => {
     link.setAttribute('href', 'javascript:alert(1)');
     expect(click('click').preventDefault).toHaveBeenCalled();
     expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // Agent-first mode's tab strip lists only the conversation's pages, so a
+    // background tab would be invisible there: Ctrl+click and middle-click
+    // open in the foreground instead (and leave agent-first, like a click).
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { metaKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('auxclick');
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(7);
   });
 
   test('falls back to text when completed assistant Markdown cannot be rendered', async () => {

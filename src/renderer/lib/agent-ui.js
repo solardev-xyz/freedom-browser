@@ -2096,8 +2096,9 @@ const AGENT_MARKDOWN_LINK_SCHEMES = /^(?:https?|bzz|ipfs|ipns):/i;
 
 // A link in a chat answer opens in a tab, never in the chrome document itself.
 // Plain click opens a foreground tab (the page the user or Agent is on stays
-// put); Ctrl/Cmd+click and middle-click open a background tab; Shift+click a
-// new window — the same dispositions page links and bookmarks follow.
+// put); Ctrl/Cmd+click and middle-click open a background tab (foreground in
+// agent-first mode, see below); Shift+click a new window — the same
+// dispositions page links and bookmarks follow.
 function handleAgentMarkdownLink(event) {
   const link = event.target?.closest?.('a[href]');
   if (!link || !event.currentTarget?.contains?.(link)) return;
@@ -2110,7 +2111,12 @@ function handleAgentMarkdownLink(event) {
     window.electronAPI?.openUrlInNewWindow?.(url);
     return;
   }
-  const background = Boolean((middle || event.ctrlKey || event.metaKey) && !event.shiftKey);
+  // Agent-first mode's tab strip shows only this conversation's pages, so a
+  // background tab would be invisible and the click would look like a no-op.
+  // Open it in the foreground there instead, which leaves agent-first mode for
+  // the new tab exactly as a plain click does.
+  const background =
+    !agentFirstMode && Boolean((middle || event.ctrlKey || event.metaKey) && !event.shiftKey);
   openLinkInNewTab(url, { background });
 }
 
