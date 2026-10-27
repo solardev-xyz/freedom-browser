@@ -460,6 +460,29 @@ test('AI subpages have breadcrumbs, history and deep links without mixing their 
   await page.goBack();
   await expect(page).toHaveURL(/#ai\/providers\/add$/);
   await expect(page.locator('#agent-provider-search')).toBeVisible();
+  // #897: the provider search is the same control as "Search settings…":
+  // focused, it shows only the accent border (no extra AI-page ring), and
+  // it does not spellcheck provider names.
+  const focusLook = selector => page.evaluate(async sel => {
+    const input = document.querySelector(sel);
+    input.focus();
+    // Let the 0.1s border-color transition finish before reading it.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const style = getComputedStyle(input);
+    const look = {
+      focusVisible: input.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      borderColor: style.borderColor,
+      fontSize: style.fontSize,
+      spellcheck: input.spellcheck,
+    };
+    input.blur();
+    return look;
+  }, selector);
+  const providerLook = await focusLook('#agent-provider-search');
+  expect(providerLook.focusVisible).toBe(true);
+  expect(providerLook.outlineStyle).toBe('none');
+  expect(providerLook).toEqual(await focusLook('#settings-search'));
   await page.goForward();
   await expect(page.locator('#agent-ollama-url')).toHaveValue('http://127.0.0.1:11434/v1');
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();

@@ -76,7 +76,9 @@
 :is(#ai, #providers, #voice) textarea {
   font-family: var(--font-mono);
 }
-:is(#ai, #providers, #voice) input:focus-visible,
+/* An `.rpc-input` keeps the page-wide accent-border focus of "Search
+   settings…" and "Search shortcuts" instead of adding this ring too. */
+:is(#ai, #providers, #voice) input:not(.rpc-input):focus-visible,
 :is(#ai, #providers, #voice) textarea:focus-visible,
 :is(#ai, #providers, #voice) button:focus-visible,
 :is(#ai, #providers, #voice) summary:focus-visible {
