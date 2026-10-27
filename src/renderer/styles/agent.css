@@ -3619,7 +3619,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--agent-danger);
 }
 
-.agent-tool-item.cancelled .agent-tool-state {
+.agent-tool-item.cancelled .agent-tool-state,
+.agent-tool-item.cancelled .agent-tool-page-error {
   color: var(--muted);
 }
 

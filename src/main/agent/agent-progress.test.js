@@ -1537,6 +1537,27 @@ test('does not claim recovery when opening a page succeeds but its final read fa
 });
 
 
+test('a declined approval is reported as declined, not as an uncertain browser outcome (#845)', () => {
+  const typed = { operation: OPERATIONS.TYPE, status: 'succeeded', effect: 'changed', pageId: 'page' };
+  const read = { operation: OPERATIONS.SNAPSHOT, status: 'succeeded', effect: 'observed', pageId: 'page' };
+  const submit = { operation: OPERATIONS.CLICK, status: 'failed', effect: 'changed', pageId: 'page',
+    errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' };
+  const result = buildAgentOutcome([typed, read, submit], 'completed');
+  expect(result.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+    detail: 'You declined an action, so it did not run.' });
+  expect(result.detail).toContain('1 browser action was declined by the user');
+  expect(buildAgentOutcome([typed, read, submit, { ...submit, operation: OPERATIONS.TYPE }], 'completed').notice)
+    .toMatchObject({ headline: 'Browser actions declined', detail: 'You declined 2 actions, so they did not run.' });
+  // Withdrawn approvals did not run either, but the user did not decline them.
+  expect(buildAgentOutcome([typed, read, { ...submit, approval: 'withdrawn' }], 'completed').notice).toBeUndefined();
+  // Cancelling an action the user had approved can still leave effects behind.
+  expect(buildAgentOutcome([typed, read, { ...submit, approval: 'approved' }], 'completed').notice.headline)
+    .toBe('Browser action outcome uncertain');
+  // A declined non-browser approval is not a browser action.
+  expect(buildAgentOutcome([{ operation: 'request_permissions', status: 'failed', approval: 'declined',
+    errorCode: ERROR_CODES.USER_CANCELLED }], 'completed').notice).toBeUndefined();
+});
+
 test('only unresolved browser effects receive an attention notice; verification remains intact', () => {
   const opened = { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', pageId: 'page' };
   expect(buildAgentOutcome([opened], 'completed')).toMatchObject({ verification: 'actions_recorded', counts: { successful: 1 } });

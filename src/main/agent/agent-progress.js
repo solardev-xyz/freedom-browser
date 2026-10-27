@@ -1162,6 +1162,12 @@ function createToolReceipt(operation, options = {}) {
   });
 }
 
+// A declined or withdrawn approval stops the action before it reaches the
+// page, so nothing it would have changed can have taken effect.
+function userDeclinedBeforeRunning(item) {
+  return item?.errorCode === ERROR_CODES.USER_CANCELLED && ['declined', 'withdrawn'].includes(item.approval);
+}
+
 function normalizedEffect(item) {
   if (Object.values(ACTIVITY_EFFECTS).includes(item?.effect)) return item.effect;
   return OPERATION_PROGRESS[item?.operation]?.effect || ACTIVITY_EFFECTS.MANAGED;
@@ -1183,7 +1189,8 @@ function buildAgentOutcome(activity, status, error) {
       .filter(receipt => receipt?.mode === 'browser').flatMap(receipt => receipt.browserActions)] : [item]);
   const uncertainBrowserAction = browserItems.some((item, index) => {
     if (!item?.operation?.startsWith('browser_') || normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED ||
-        !['failed', 'running'].includes(item.status) || CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode)) return false;
+        !['failed', 'running'].includes(item.status) || CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode) ||
+        userDeclinedBeforeRunning(item)) return false;
     const later = browserItems.slice(index + 1);
     if (item.pageTool?.executionRef) return !later.some(next =>
       next.pageTool?.executionRef === item.pageTool.executionRef && next.pageTool.status === 'completed');
@@ -1193,6 +1200,8 @@ function buildAgentOutcome(activity, status, error) {
       [OPERATIONS.SNAPSHOT, OPERATIONS.SCREENSHOT, OPERATIONS.READ_FRAME].includes(next.operation) &&
       item.pageId && next.pageId === item.pageId);
   });
+  const declinedBrowserActions = browserItems.filter(item => item?.operation?.startsWith('browser_') &&
+    item.approval === 'declined' && userDeclinedBeforeRunning(item)).length;
   const unfinishedEdits = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
     .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
     .some(receipt => receipt?.mode === 'edit' && (receipt.writesPending ||
@@ -1201,7 +1210,12 @@ function buildAgentOutcome(activity, status, error) {
     ? { tone: 'caution', headline: 'Browser action outcome uncertain',
       detail: 'An action may have taken effect without a confirmed result. Check the page before repeating it.' }
     : unfinishedEdits ? { tone: 'caution', headline: 'Helper stopped during editing',
-      detail: 'The helper may have left partial changes. Review its file changes before continuing.' } : null;
+      detail: 'The helper may have left partial changes. Review its file changes before continuing.' }
+      : declinedBrowserActions
+        ? { tone: 'neutral', headline: declinedBrowserActions === 1 ? 'Browser action declined' : 'Browser actions declined',
+          detail: declinedBrowserActions === 1 ? 'You declined an action, so it did not run.'
+            : `You declined ${declinedBrowserActions} actions, so they did not run.` }
+        : null;
   return Object.freeze({ ...outcome, ...(notice && { notice }),
     ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
   });
@@ -1318,7 +1332,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
     }
-    if (item.errorCode === ERROR_CODES.USER_CANCELLED && ['declined', 'withdrawn'].includes(item.approval)) return false;
+    if (userDeclinedBeforeRunning(item)) return false;
     return item.status === 'running' || !CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode);
   });
   const approvals = Object.freeze({

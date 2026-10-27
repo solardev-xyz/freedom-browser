@@ -3113,9 +3113,11 @@ function visibleOutcome(outcome) {
   if (!outcome || typeof outcome !== 'object') return null;
   if (outcome.publication?.publicationId) return null;
   if (outcome.kind === 'recovery') return outcome;
-  if (outcome.notice) return outcome.notice;
+  // A neutral notice (a declined action) never outranks an unresolved outcome.
+  const notice = outcome.notice && typeof outcome.notice === 'object' ? outcome.notice : null;
+  if (notice && notice.tone !== 'neutral') return notice;
   if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
-    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : null;
+    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : notice;
   if ([
     'wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_in_flight',
     'swarm_publication_failed', 'swarm_publication_outcome_unknown',
@@ -3126,7 +3128,7 @@ function visibleOutcome(outcome) {
     return { ...outcome, headline: 'Project operation did not complete',
       detail: `${outcome.workspace.command || 'The last project operation'} did not complete. Check the activity for details.` };
   }
-  return null;
+  return notice;
 }
 
 function renderTurnOutcome(view, outcome, error) {
@@ -3301,6 +3303,15 @@ function renderPublication(runId, publication) {
   view.artifactList.hidden = false;
 }
 
+// Declining (or withdrawing) an approval stops the action before it runs, so
+// it neither failed nor can have left effects behind. Returns the row text.
+function declinedBeforeRunning(event, record) {
+  if (event?.errorCode !== 'USER_CANCELLED') return '';
+  const approval = event.approval || record?.row?.dataset.approval;
+  return approval === 'declined' ? 'Not run; you declined it'
+    : approval === 'withdrawn' ? 'Not run; approval withdrawn' : '';
+}
+
 function renderToolPage(record, event, finished = false) {
   record.pageIcon = null;
   record.label.classList.remove('agent-tool-page');
@@ -3332,7 +3343,7 @@ function renderToolPage(record, event, finished = false) {
   if (finished && event.status === 'failed') {
     const error = document.createElement('span');
     error.className = 'agent-tool-page-error';
-    error.textContent = formatToolError(event.errorCode, event.operation);
+    error.textContent = declinedBeforeRunning(event, record) || formatToolError(event.errorCode, event.operation);
     copy.appendChild(error);
   }
   record.label.classList.add('agent-tool-page');
@@ -3442,14 +3453,19 @@ function finishToolRow(event) {
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
-  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || event.status === 'cancelled';
+  const approvalDeclined = declinedBeforeRunning(event, record);
+  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || Boolean(approvalDeclined) ||
+    event.status === 'cancelled';
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
-  if (event.status === 'failed' && event.operation !== 'delegate_task') {
+  if (approvalDeclined) {
+    record.row.title = approvalDeclined;
+    record.label.textContent = `${record.label.textContent} — ${approvalDeclined}`;
+  } else if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
@@ -3573,7 +3589,8 @@ function finishToolRow(event) {
     }
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
-  if (userCancelled) {
+  // A declined approval keeps its own Declined/Withdrawn badge.
+  if (userCancelled && !approvalDeclined) {
     record.approval.textContent = 'Cancelled by you';
     record.approval.hidden = false;
   }
