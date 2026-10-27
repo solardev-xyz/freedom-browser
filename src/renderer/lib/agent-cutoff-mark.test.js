@@ -4,9 +4,16 @@ const { cutOffMarkHost, setCutOffMark, CUTOFF_HOST_CLASS } = require('./agent-cu
 // and don't count as element children, as in the DOM.
 function el(tag, ...kids) {
   const classes = new Set();
+  const childNodes = kids.map(kid => (typeof kid === 'string' ? { nodeType: 3, textContent: kid } : kid));
+  childNodes.forEach((kid, i) => { kid.previousSibling = childNodes[i - 1] || null; });
   const node = {
+    nodeType: 1,
     tagName: tag.toUpperCase(),
+    childNodes,
     children: kids.filter(kid => typeof kid !== 'string'),
+    get lastChild() {
+      return this.childNodes.at(-1) || null;
+    },
     classList: {
       add: name => classes.add(name),
       remove: name => classes.delete(name),
@@ -62,6 +69,11 @@ describe('cutOffMarkHost', () => {
       const li = el('li', 'x ', el('strong', 'y'));
       return [markdown(el('ul', li)), li];
     }],
+    ['whitespace after the last block is not text', () => { const p = el('p', 'x'); return [markdown(el('p', 'a'), p, '\n'), p]; }],
+    ['list item with bare text after a nested list', () => {
+      const li = el('li', 'a', el('ul', el('li', 'b')), 'tail');
+      return [markdown(el('ul', li)), li];
+    }],
   ])('%s: the block the sentence ends in carries the mark', (_name, build) => {
     const [output, host] = build();
     expect(cutOffMarkHost(output)).toBe(host);
@@ -73,6 +85,10 @@ describe('cutOffMarkHost', () => {
     ['rule', () => markdown(el('p', 'a'), el('hr'))],
     ['list item ending in a code block', () => markdown(el('ul', el('li', el('p', 'a'), el('pre', el('code', 'x')))))],
     ['blockquote ending in a code block', () => markdown(el('blockquote', el('pre', el('code', 'x'))))],
+    // DOMPurify keeps the content of a stripped raw `<div>`: '- a\n\n<div>tail'
+    // sanitizes to <ul><li>a</li></ul>tail, and the answer ends in that text.
+    ['list followed by bare text', () => markdown(el('ul', el('li', 'a')), 'tail text')],
+    ['paragraph followed by bare text', () => markdown(el('p', 'a'), '\n', 'tail')],
   ])('%s: the output carries the mark on its own line', (_name, build) => {
     const output = build();
     expect(cutOffMarkHost(output)).toBe(output);

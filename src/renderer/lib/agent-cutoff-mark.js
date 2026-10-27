@@ -9,19 +9,33 @@
 // text actually ends in. When the answer ends in a code block, table or rule
 // there is no sentence to end, so the output itself carries the mark and it
 // sits on its own line below.
+//
+// Text can also trail the last element directly: DOMPurify strips a raw HTML
+// block tag (`<div>tail`) but keeps its content, leaving a bare text node after
+// the last list or paragraph. That text is where the answer ends, so the mark
+// goes on the node holding it, not inside the element before it.
 
 export const CUTOFF_HOST_CLASS = 'agent-cutoff-end';
 
 const TEXT_BLOCKS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 const CONTAINERS = new Set(['UL', 'OL', 'LI', 'BLOCKQUOTE']);
 const OWN_LINE = new Set(['PRE', 'TABLE', 'HR']);
+const TEXT_NODE = 3;
+
+// True when a non-blank text node comes after the last element child of `node`.
+function endsInBareText(node) {
+  for (let child = node.lastChild; child && child !== node.lastElementChild; child = child.previousSibling) {
+    if (child.nodeType === TEXT_NODE && /\S/.test(child.textContent || '')) return true;
+  }
+  return false;
+}
 
 export function cutOffMarkHost(output) {
   if (!output?.classList?.contains('rendered-markdown')) return output;
   let node = output;
   for (;;) {
     const last = node.lastElementChild;
-    if (!last) return node;
+    if (!last || endsInBareText(node)) return node;
     const tag = String(last.tagName || '').toUpperCase();
     if (TEXT_BLOCKS.has(tag)) return last;
     if (CONTAINERS.has(tag)) {
