@@ -83,6 +83,15 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(page.locator('#agent-provider-choices')).toBeVisible();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#enable-ai-restart')).toBeVisible();
+  // The button and the toggle share one centre line, not the text baseline
+  // that left the text-less toggle sitting higher (#834).
+  const middles = await page.evaluate(() =>
+    ['#enable-ai-restart', '#ai .toggle:has(#enable-ai)'].map(sel => {
+      const r = document.querySelector(sel).getBoundingClientRect();
+      return r.top + r.height / 2;
+    }),
+  );
+  expect(Math.abs(middles[0] - middles[1])).toBeLessThanOrEqual(0.5);
   // The button follows this launch, not the click: reopened, Settings still
   // offers the restart this launch needs.
   await page.evaluate(() => {
