@@ -1385,6 +1385,10 @@ function observeComposerHeight() {
     }
     const examplesHeight = elements.examples?.offsetHeight || 0;
     setBodyStyleProperty('--agent-examples-height', `${examplesHeight ? examplesHeight + 12 : 0}px`);
+    // A narrow window shows the conversation as a bottom sheet: page hints
+    // sit above the whole sheet, not just its composer (#874).
+    const panelHeight = panelInner?.getBoundingClientRect?.().height || 0;
+    if (panelHeight > 0) setBodyStyleProperty('--agent-floating-panel-height', `${panelHeight}px`);
     captureLauncherSnapshot();
   };
   update();
@@ -1392,6 +1396,7 @@ function observeComposerHeight() {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
     if (elements.examples) composerResizeObserver.observe(elements.examples);
+    if (panelInner) composerResizeObserver.observe(panelInner);
   }
 }
 

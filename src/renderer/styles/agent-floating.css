@@ -869,11 +869,100 @@
   font-size: 12px;
 }
 
-/* Narrow windows share the corner with browser Find and downloads. Reserve
-   real space instead of letting either cover the conversation's controls. */
+/* Narrow windows (#874): a 408px side column would cover most of the page,
+   so the conversation becomes one full-width bottom sheet instead, about
+   half the height: the page keeps its top half and the chat keeps a usable
+   width. Header, transcript and composer share the sheet's opaque surface,
+   divided by hairlines rather than floating as separate cards. */
 @media (max-width: 719px) {
-  body.agent-floating-column:has(.find-bar:not([hidden])) .agent-sidebar-inner {
-    top: 54px;
+  .agent-floating[data-presentation='column'] .agent-sidebar-inner {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    height: clamp(min(320px, 100% - 16px), 52%, 100% - 16px);
+    /* clip, not hidden: scrollIntoView must not scroll the header away. */
+    overflow: clip;
+    pointer-events: auto;
+    background-color: var(--agent-sheet);
+    border: 1px solid var(--agent-glass-border);
+    border-radius: 18px;
+    box-shadow:
+      var(--agent-glass-shadow),
+      inset 0 1px 0 var(--agent-glass-highlight);
+    transition:
+      background-color 240ms ease,
+      border-color 240ms ease,
+      box-shadow 240ms ease,
+      transform 360ms var(--agent-float-ease);
+  }
+
+  .agent-floating.collapsed[data-presentation='column'] .agent-sidebar-inner {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transform: translateY(28px);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-header,
+  .agent-floating[data-presentation='column'] .agent-composer-wrap,
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    background-color: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-header {
+    margin: 0;
+    padding: 8px 8px 8px 14px;
+    border-bottom: 1px solid var(--agent-glass-border);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-setup-view {
+    border-radius: 0;
+  }
+
+  /* The transcript takes whatever the header and composer leave. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view {
+    flex: 1 1 auto;
+    margin-top: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-body {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-scroll {
+    padding: 12px 12px;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    margin: 0;
+    padding-bottom: 0;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    padding: 4px 6px 6px;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  /* An approval card can be taller than the sheet: the transcript gives up
+     its space first, then the card scrolls inside the composer area so its
+     buttons stay reachable under the header. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view:has(.agent-approval:not([hidden])) > .agent-workspace-body {
+    flex-shrink: 1000;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap:has(.agent-approval:not([hidden])) {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
 
   body.agent-floating-column.has-visible-downloads .agent-sidebar-inner {
@@ -882,7 +971,7 @@
 
   body.agent-floating-column .agent-page-lock-hint,
   body.agent-floating-column .link-status--right {
-    bottom: calc(var(--agent-floating-composer-height, 150px) + var(--download-shelf-height, 0px) + 22px);
+    bottom: calc(var(--agent-floating-panel-height, 360px) + var(--download-shelf-height, 0px) + 22px);
   }
 }
 
