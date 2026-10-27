@@ -97,6 +97,8 @@ export function createAgentProviderUi(options = {}) {
     authCallbackSubmit: byId('agent-auth-callback-submit'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
+    connectMessage: byId('agent-provider-connect-message'),
+    ollamaInstall: byId('agent-ollama-install'),
     ...options.elements,
   };
   const state = options.state || {
@@ -129,6 +131,21 @@ export function createAgentProviderUi(options = {}) {
     element.textContent = text;
     element.classList.toggle('error', error);
   };
+  // The Connect button's result goes in the slot right under it when the
+  // page has one (#858), not the page-wide line far below the form. While
+  // it shows an error the "Connect to discover" placeholder is hidden, and
+  // a failed Ollama connect points at where to get Ollama.
+  let connectError = false;
+  function setConnectMessage(text = '', error = false) {
+    const slot = elements.connectMessage;
+    if (!slot) return setMessage(elements.providerMessage, text, error);
+    setMessage(slot, text, error);
+    if (text) setMessage(elements.providerMessage, '');
+    connectError = Boolean(text) && error;
+    if (elements.ollamaInstall)
+      elements.ollamaInstall.hidden = !(connectError && elements.provider.value === 'ollama');
+    elements.providerModelsEmpty.hidden = connectError || !elements.providerModelsList.hidden;
+  }
   const isCustomProvider = (id) => id === 'openai-compatible' || id?.startsWith('custom-');
   function providerName(providerId) {
     return (
@@ -438,7 +455,7 @@ export function createAgentProviderUi(options = {}) {
     );
     elements.providerModelsList.scrollTop = 0;
     elements.providerModelsList.hidden = !available.length;
-    elements.providerModelsEmpty.hidden = Boolean(available.length);
+    elements.providerModelsEmpty.hidden = Boolean(available.length) || connectError;
     elements.providerModelsEmpty.textContent = models.length
       ? 'No models meet the current requirements'
       : connection
@@ -464,6 +481,7 @@ export function createAgentProviderUi(options = {}) {
     elements.providerBrowser.hidden = screen !== 'browser';
     elements.providerDetail.hidden = screen !== 'detail';
     setMessage(elements.providerMessage, '');
+    setConnectMessage('');
     if (screen === 'browser') elements.providerSearch.focus();
     if (!applyingSettingsRoute) options.onScreenChange?.(screen, elements.provider.value);
   }
@@ -798,10 +816,15 @@ export function createAgentProviderUi(options = {}) {
     }, TRANSIENT_MESSAGE_MS);
   }
 
-  async function refreshModelCatalog({ background = false } = {}) {
+  async function refreshModelCatalog({ background = false, connecting = false } = {}) {
     const providerId = elements.provider.value;
+    const report = connecting
+      ? setConnectMessage
+      : (text, error) => setMessage(elements.providerMessage, text, error);
     elements.modelRefresh.disabled = true;
-    if (!background) setMessage(elements.providerMessage, 'Refreshing model catalog…');
+    // A manual refresh supersedes an earlier Connect result under the button.
+    if (!background && !connecting) setConnectMessage('');
+    if (!background) report('Refreshing model catalog…');
     try {
       const response = await api.refreshAgentProviderModels(
         providerId,
@@ -809,8 +832,7 @@ export function createAgentProviderUi(options = {}) {
       );
       if (!response?.ok) {
         if (!background)
-          setMessage(
-            elements.providerMessage,
+          report(
             responseMessage(
               response,
               'Could not refresh models. Your previous catalog is still available.'
@@ -824,15 +846,12 @@ export function createAgentProviderUi(options = {}) {
       renderProviderFields();
       renderConnectedProviders();
       renderActiveModel();
-      if (!background) setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
+      if (!background && !connecting)
+        setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
       return true;
     } catch {
       if (!background)
-        setMessage(
-          elements.providerMessage,
-          'Could not refresh models. Your previous catalog is still available.',
-          true
-        );
+        report('Could not refresh models. Your previous catalog is still available.', true);
     } finally {
       elements.modelRefresh.disabled = false;
     }
@@ -1171,10 +1190,10 @@ export function createAgentProviderUi(options = {}) {
     const connection = providerConnection(providerId);
     const consequence =
       connection.kind === 'hosted' || connection.hasApiKey
-      ? ' Its saved API key is deleted from this device.'
-      : connection.kind === 'subscription'
-        ? ' You will need to sign in again to reconnect.'
-        : '';
+        ? ' Its saved API key is deleted from this device.'
+        : connection.kind === 'subscription'
+          ? ' You will need to sign in again to reconnect.'
+          : '';
     elements.providerDisconnectQuestion.textContent = `Disconnect ${providerName(providerId)} from Agent?${consequence}`;
     confirm.hidden = false;
     elements.providerDisconnect.hidden = true;
@@ -1217,10 +1236,7 @@ export function createAgentProviderUi(options = {}) {
     const privacyPolicy = elements.privacyPolicy.value;
     const adding = !providerConnection(providerId);
     elements.saveProvider.disabled = true;
-    setMessage(
-      elements.providerMessage,
-      providerId === 'ollama' ? 'Finding installed models…' : 'Saving…'
-    );
+    setConnectMessage(providerId === 'ollama' ? 'Finding installed models…' : 'Saving…');
     try {
       let response;
       if (
@@ -1231,15 +1247,11 @@ export function createAgentProviderUi(options = {}) {
       ) {
         // Some catalogs require the entered key. Discover them as part of connecting,
         // without making users select a model in the connection form.
-        if (!(await refreshModelCatalog())) return;
+        if (!(await refreshModelCatalog({ connecting: true }))) return;
         elements.privacyPolicy.value = privacyPolicy;
         renderModelOptions(providerId);
         if (!elements.model.value) {
-          setMessage(
-            elements.providerMessage,
-            'No supported models meet this privacy setting',
-            true
-          );
+          setConnectMessage('No supported models meet this privacy setting', true);
           return;
         }
       }
@@ -1298,16 +1310,11 @@ export function createAgentProviderUi(options = {}) {
       }
       elements.apiKey.value = '';
       if (!response?.ok) {
-        setMessage(
-          elements.providerMessage,
-          responseMessage(response, 'Could not save model'),
-          true
-        );
+        setConnectMessage(responseMessage(response, 'Could not save model'), true);
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
-      setMessage(
-        elements.providerMessage,
+      setConnectMessage(
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
       );
       if (isCustomProvider(providerId)) {
@@ -1319,7 +1326,7 @@ export function createAgentProviderUi(options = {}) {
       }
     } catch {
       elements.apiKey.value = '';
-      setMessage(elements.providerMessage, 'Could not save model', true);
+      setConnectMessage('Could not save model', true);
     } finally {
       elements.saveProvider.disabled = false;
     }

@@ -117,6 +117,8 @@ function createAgentElements() {
     'agent-subscription-method-title',
     'agent-subscription-method-help',
     'agent-provider-message',
+    'agent-provider-connect-message',
+    'agent-ollama-install',
     'agent-page-contexts',
     'agent-page-context',
     'agent-page-context-label',
@@ -5276,6 +5278,61 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('a failed connect reports under the button, hides the placeholder and points at Ollama (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const failure = 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.';
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: { code: 'AGENT_OLLAMA_DISCOVERY_FAILED', message: failure } })
+        .mockResolvedValueOnce({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const install = ctx.elements['agent-ollama-install'];
+    const placeholder = ctx.elements['agent-provider-models-empty'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(false);
+    expect(install.hidden).toBe(true);
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(failure);
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('');
+    expect(install.hidden).toBe(false);
+    expect(placeholder.hidden).toBe(true);
+    // Re-rendering the provider form keeps the placeholder hidden behind the error.
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(true);
+
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    expect(slot.classList.contains('error')).toBe(false);
+    expect(install.hidden).toBe(true);
+  });
+
+  test('a failed hosted connect reports under the button without the Ollama pointer (#858)', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Invalid API key' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = ctx.elements['agent-model-select'].children[0]?.value || 'gpt-5';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-connect-message'].textContent).toBeTruthy();
+    expect(ctx.elements['agent-provider-connect-message'].classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
   });
 
   test('Ollama details describe the connected model right after connecting (#846)', async () => {

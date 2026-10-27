@@ -1047,13 +1047,31 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(providerPage.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
   await expect(providerPage.locator('#agent-ollama-model')).toHaveCount(0);
   await providerPage.locator('#agent-provider-advanced > summary').click();
+  // Nothing listens on port 1: the error lands right under the button with
+  // a pointer to Ollama's download page, not at the bottom of the page (#858).
+  const connectMessage = providerPage.locator('#agent-provider-connect-message');
+  await providerPage.locator('#agent-ollama-url').fill('http://127.0.0.1:1/v1');
+  await providerPage.locator('#agent-provider-save').click();
+  await expect(connectMessage).toHaveText(/Could not load models from Ollama/);
+  await expect(connectMessage).toHaveClass(/error/);
+  await expect(providerPage.locator('#agent-provider-message')).toHaveText('');
+  await expect(providerPage.locator('#agent-provider-models-empty')).toBeHidden();
+  const install = providerPage.locator('#agent-ollama-install');
+  await expect(install).toBeVisible();
+  await expect(install.getByRole('link', { name: 'Download it from ollama.com' })).toHaveAttribute(
+    'href', 'https://ollama.com/download'
+  );
+  const buttonBox = await providerPage.locator('#agent-provider-save').boundingBox();
+  const messageBox = await connectMessage.boundingBox();
+  expect(messageBox.y - (buttonBox.y + buttonBox.height)).toBeGreaterThanOrEqual(0);
+  expect(messageBox.y - (buttonBox.y + buttonBox.height)).toBeLessThan(24);
+
   await providerPage.locator('#agent-ollama-url').fill(ollamaServer);
   await providerPage.locator('#agent-provider-save').click();
 
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(providerPage.locator('#agent-provider-message')).toHaveText(
-    'Ollama models ready'
-  );
+  await expect(connectMessage).toHaveText('Ollama models ready');
+  await expect(install).toBeHidden();
   await expect(providerPage.locator('#ai-provider-settings')).toBeVisible();
   await expect(providerPage.locator('#agent-provider-models-list')).toContainText('freedom-e2e-no-server');
   await expect(window.locator('#agent-model-menu')).toBeHidden();
