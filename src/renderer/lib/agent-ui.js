@@ -1,6 +1,7 @@
 import { createAgentPrivacy } from './agent-privacy.js';
 import { createAgentProviderUi } from './agent-provider-ui.js';
 import { createAgentDictation } from './agent-dictation.js';
+import { carryOverPrompt } from './agent-carry-over.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -3156,6 +3157,8 @@ function renderTurnOutcome(view, outcome, error) {
   view.outcomeIcon.textContent = icons[tone];
   view.outcomeHeadline.textContent = outcome.headline || 'Run finished';
   view.outcomeDetail.textContent = outcome.detail || '';
+  // A stopped plain chat has nothing to add to its headline.
+  view.outcomeDetail.hidden = !outcome.detail;
   view.outcomeNextStep.textContent = outcome.nextStep ? `Next: ${outcome.nextStep}` : '';
   view.outcomeNextStep.hidden = !outcome.nextStep;
   view.outcomeTechnicalDetail.textContent = outcome.technicalDetails || '';
@@ -4371,10 +4374,15 @@ async function clearConversation() {
 }
 
 // The model is fixed for a conversation, so choosing another one means a new
-// chat. Carry the failed request into the composer and open the model menu.
+// chat. Carry the earlier exchange and the failed request into the composer,
+// where the user can see and edit them, and open the model menu.
 async function chooseAnotherModel(view) {
-  if (currentRunStatus !== 'idle' || !view || view !== [...turnViews.values()].at(-1)) return;
-  const prompt = typeof view.userText === 'string' ? view.userText : '';
+  const turns = [...turnViews.values()];
+  if (currentRunStatus !== 'idle' || !view || view !== turns.at(-1)) return;
+  const prompt = carryOverPrompt(turns.map((turn) => ({
+    userText: turn.userText,
+    assistantText: turn.assistantText,
+  })));
   view.outcomeChooseModel.disabled = true;
   if (currentConversationId && !(await clearConversation())) {
     view.outcomeChooseModel.disabled = false;

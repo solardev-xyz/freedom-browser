@@ -1060,6 +1060,25 @@ describe('Agent progress projection', () => {
     expect(outcome.detail).not.toMatch(/browser/i);
   });
 
+  test('a stopped plain chat has no detail, not a stray space or browser sentence', () => {
+    const outcome = buildAgentOutcome([], 'cancelled');
+    expect(outcome).toMatchObject({ kind: 'interrupted', headline: 'Run stopped', detail: '' });
+  });
+
+  test('an interrupted plain chat explains only that the stop point is unknown', () => {
+    const outcome = buildAgentOutcome([], 'interrupted');
+    expect(outcome.detail).toBe('Freedom cannot confirm where the task stopped.');
+  });
+
+  test('a stopped run that touched a page keeps the browser sentence', () => {
+    const outcome = buildAgentOutcome(
+      [{ operation: OPERATIONS.SNAPSHOT, status: 'failed', pageId: 'tab_1',
+        errorCode: ERROR_CODES.STALE_ELEMENT_REFERENCE }],
+      'cancelled'
+    );
+    expect(outcome.detail).toBe('Freedom did not verify any browser changes.');
+  });
+
   test('keeps the browser sentence when a browser action ran without changing anything', () => {
     const outcome = buildAgentOutcome(
       [{ operation: OPERATIONS.SNAPSHOT, status: 'failed', pageId: 'tab_1',

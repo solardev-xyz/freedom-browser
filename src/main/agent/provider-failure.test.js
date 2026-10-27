@@ -7,11 +7,35 @@ const {
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
+  isPermanentModelFailure,
   providerFailurePresentation,
   providerRetryCount,
 } = require('./provider-failure');
 
 describe('provider failure classification', () => {
+  test.each([
+    'Model temporarily unavailable, please retry',
+    '503: {"error":{"message":"The model is unavailable due to high load"}}',
+    'model "gpt-x" is overloaded, try again later',
+  ])('treats capacity wording about a model as a transient outage: %s', (message) => {
+    const failure = classifyProviderFailure(message);
+    expect(failure.category).toBe(PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE);
+    expect(failure.recovery).toBe(PROVIDER_FAILURE_RECOVERY.TRANSIENT);
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+  });
+
+  test.each([
+    ['500: {"message":"model \\"qwen3:8b\\" not found, try pulling it first"}', true],
+    ['The model `gpt-9` does not exist or you do not have access to it.', true],
+    ['unknown model: foo', true],
+    // Ambiguous: also how capacity outages are worded, so Pi keeps retrying it.
+    ['model unavailable', false],
+    ['503 service unavailable', false],
+    ['500 internal server error', false],
+  ])('only vetoes retries for wording that names a missing model: %s', (message, permanent) => {
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(permanent);
+  });
+
   test.each([
     ['401 invalid API key sk-secret', PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION],
     ['insufficient_quota: billing limit', PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT],

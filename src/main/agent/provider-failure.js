@@ -291,6 +291,29 @@ function matches(value, pattern) {
   return pattern.test(value);
 }
 
+const MODEL_UNAVAILABLE_PATTERN =
+  /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i;
+// Wording that says the model exists but cannot serve this request right now:
+// "Model temporarily unavailable, please retry", "model is unavailable due to
+// high load". That is a capacity problem, not a missing model.
+const TEMPORARY_CAPACITY_PATTERN =
+  /(?:temporar(?:y|ily)|high (?:load|demand)|overload|over capacity|at capacity|capacity (?:issue|limit|constraint)|busy|(?:try|retry) (?:again )?later|please (?:try again|retry)|retry (?:in|after))/i;
+// Only wording that names the model itself as absent. A bare "model
+// unavailable" is ambiguous (it is also how capacity outages are worded), so
+// it is not treated as permanent.
+const PERMANENT_MODEL_FAILURE_PATTERN =
+  /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i;
+
+// True only when retrying cannot help because the provider says the selected
+// model does not exist (or this account cannot use it). Used to veto Pi's own
+// transport-text retry policy, so it is deliberately narrower than the
+// MODEL_UNAVAILABLE presentation category: when in doubt, let Pi retry.
+function isPermanentModelFailure(value) {
+  if (value?.category) return false;
+  const text = combinedFailureText(value);
+  return matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && !matches(text, TEMPORARY_CAPACITY_PATTERN);
+}
+
 function classifyProviderFailure(value) {
   if (Object.values(PROVIDER_FAILURE_CATEGORIES).includes(value?.category)) {
     const presentation = FAILURE_PRESENTATIONS[value.category];
@@ -332,13 +355,10 @@ function classifyProviderFailure(value) {
     )
   ) {
     category = PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT;
-  } else if (
-    matches(
-      text,
-      /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i
-    )
-  ) {
-    category = PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
+  } else if (matches(text, MODEL_UNAVAILABLE_PATTERN)) {
+    category = matches(text, TEMPORARY_CAPACITY_PATTERN)
+      ? PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE
+      : PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
   } else if (
     matches(
       text,
@@ -694,6 +714,7 @@ module.exports = {
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
+  isPermanentModelFailure,
   mostInformativeProviderFailure,
   providerFailurePresentation,
   providerRetryCount,

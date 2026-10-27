@@ -495,6 +495,12 @@ describe('isolated Pi session factory', () => {
         assert.match(missing.last.errorMessage, /not found/);
         const transient = await run(503, 'service unavailable');
         assert.equal(transient.retries.length, 1, 'a transient 503 must still be retried');
+        // Capacity wording that mentions the model is still a transient outage.
+        for (const wording of ['Model temporarily unavailable, please retry', 'model unavailable',
+          'The model is unavailable due to high load']) {
+          const capacity = await run(503, wording);
+          assert.equal(capacity.retries.length, 1, wording + ' must still be retried');
+        }
         process.stdout.write('passed');
       })().catch(error => { console.error(error); process.exit(1); });
     `;
