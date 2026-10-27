@@ -393,6 +393,31 @@ test('Stop cancels a streaming provider request', async ({ window }) => {
   await expect.poll(() => streamingResponseClosed).toBe(true);
 });
 
+// #877: light --border equals light --bg, so the status pill's outline used
+// to vanish against its own fill in light theme while dark showed it.
+test('the Stopped status pill keeps a visible outline in both themes', async ({ window }) => {
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 3_000 });
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  for (const theme of ['dark', 'light']) {
+    const pill = await window.evaluate((light) => {
+      if (light) document.documentElement.setAttribute('data-theme', 'light');
+      else document.documentElement.removeAttribute('data-theme');
+      const style = getComputedStyle(document.getElementById('agent-run-status'));
+      return { width: style.borderTopWidth, border: style.borderTopColor, fill: style.backgroundColor };
+    }, theme === 'light');
+    expect(pill.width, theme).toBe('1px');
+    expect(pill.border, theme).not.toBe(pill.fill);
+  }
+  await window.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+  await exitAgentFirst(window);
+});
+
 test('turning AI off aborts a streaming request and restores the conversation after re-enabling', async ({ window }) => {
   streamingResponseClosed = false;
   await configureFixtureProvider(window);
