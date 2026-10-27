@@ -1785,8 +1785,9 @@
           <!-- The note is the one "AI is off" message (#835): the live status
                below only reports progress and errors. The wrapper stays in the
                tree so a screen reader announces the note when turning AI off
-               reveals it. -->
-          <div aria-live="polite"><p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p></div>
+               reveals it. `.settings-search-intro` keeps the note in the
+               section's search intro, as it was before the wrapper. -->
+          <div class="settings-search-intro" aria-live="polite"><p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p></div>
           <p class="rpc-status" id="ai-settings-status" aria-live="polite"></p>
           <div class="card ai-settings-links settings-search-skip" id="ai-settings-links" hidden>
             <a class="net-row" href="#ai/providers"><span class="net-row-text"><span class="net-row-name">Models &amp; providers</span><span class="net-row-sub">Connect accounts and manage local models</span></span><span class="net-chevron" aria-hidden="true">›</span></a>
