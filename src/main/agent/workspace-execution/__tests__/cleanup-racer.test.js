@@ -234,6 +234,13 @@ test('reports no overlap when a cleanup removes the target inside an idle hold',
     // removed until the racer has swapped since the attempt was armed, so the
     // race can no longer end on a removal that raced nothing. (An attempt that
     // fails on the pin first is retried, as any failed attempt is.)
+    //
+    // No claim about `preserved` here: `fs.promises.rm` is not confined, and
+    // the gate forces a swap *during* the attempt, so it can lstat `sub` as a
+    // directory, find a link there by the time it reads or unlinks inside it,
+    // and delete outside files through it. Whether a cleanup survives that is
+    // what the platform tests (and the path-walking control below) check; this
+    // test checks only that the gate makes every removal come with an overlap.
     const report = await raceCleanup({
       target: path.join(fixture, 'work'),
       outside: path.join(fixture, 'outside'),
@@ -243,7 +250,7 @@ test('reports no overlap when a cleanup removes the target inside an idle hold',
       gate: true,
       cleanup: plainCleanup,
     });
-    expect(report).toMatchObject({ preserved: true, removed: true, lastError: null });
+    expect(report).toMatchObject({ removed: true, lastError: null });
     if (report.final.reason === 'target-removed') expect(report.overlapped).toBe(true);
   }
 );
