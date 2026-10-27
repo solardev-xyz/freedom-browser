@@ -5,6 +5,7 @@ const { ERROR_CODES } = require('../automation/contract/errors');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents } = require('./subagent-receipt');
 const {
+  PROVIDER_FAILURE_CATEGORIES,
   classifyProviderFailure,
   providerFailurePresentation,
   providerRetryCount,
@@ -1747,7 +1748,9 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     });
   }
 
-  let browserState = 'Freedom did not verify any browser changes.';
+  const hasBrowserActivity = items.some((item) => !nonBrowserObservations.has(item?.operation));
+  // A plain chat that never touched a page has no browser state to report.
+  let browserState = hasBrowserActivity ? 'Freedom did not verify any browser changes.' : '';
   const uncertainBrowserChanges = uncertainChanges.filter(
     (item) => !nonBrowserObservations.has(item?.operation)
   );
@@ -1760,7 +1763,6 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     browserState = `${changedBrowserCount} earlier browser ${changedBrowserCount === 1 ? 'change remains' : 'changes remain'} in place.`;
   }
   if (workspaceCommands.length) {
-    const hasBrowserActivity = items.some((item) => !nonBrowserObservations.has(item?.operation));
     const completedFileChanges = workspaceCommands.some((receipt) =>
       ['file_write', 'file_edit'].includes(receipt.kind) && receipt.state === 'completed'
     );
@@ -1775,15 +1777,15 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
       verification: counts.successful ? 'partial' : 'none',
       tone: 'neutral',
       headline: 'Run stopped',
-      detail: `${browserState}${destinationNote}`,
+      detail: `${browserState}${destinationNote}`.trim(),
       destinations,
       counts,
     });
   }
   if (status === 'interrupted') {
-    const interruptionDetail = uncertainChanges.length
+    const interruptionDetail = (uncertainChanges.length
       ? `${browserState}${destinationNote}`
-      : `${browserState}${destinationNote} Freedom cannot confirm where the task stopped.`;
+      : `${browserState}${destinationNote} Freedom cannot confirm where the task stopped.`).trim();
     return Object.freeze({
       kind: 'recovery',
       verification: counts.successful ? 'partial' : 'none',
@@ -1860,7 +1862,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     verification: counts.successful ? 'partial' : 'none',
     tone: 'danger',
     headline: providerPresentation ? 'Model connection failed' : 'Agent stopped before completion',
-    detail: `${failureExplanation} ${browserState}${destinationNote}`,
+    detail: `${failureExplanation} ${browserState}${destinationNote}`.trim(),
     ...(providerPresentation?.technicalDetails && {
       technicalDetails: providerPresentation.technicalDetails,
     }),
@@ -1870,6 +1872,9 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
       : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
     canRetry: !retryNeedsReview && providerPresentation?.recovery === 'transient',
+    ...(providerPresentation?.category === PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE && {
+      providerAction: 'choose_model',
+    }),
     counts,
   });
 }
