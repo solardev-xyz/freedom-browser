@@ -336,7 +336,8 @@ test('software rendering profiles long-chat scrolling over a playing video', asy
     // Timing is evidence, not a hardware-independent pass threshold.
     expect(metrics.frames).toBeGreaterThan(0);
     expect(metrics.movingBubbleBlur).toBe('none');
-    expect(metrics.composerBlur).toContain('blur');
+    // The floating cards are opaque, with no backdrop blur (#865).
+    expect(metrics.composerBlur).toBe('none');
     expect(metrics.scrollTop).toBe(0);
   } finally { await closeApp(app); }
 });
