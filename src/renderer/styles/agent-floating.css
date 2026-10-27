@@ -169,14 +169,32 @@
 }
 
 /* The ideas sit inside the launcher card, under the composer, so they share
-   its glass, border and shadow instead of floating over the page (#864). */
+   its glass, border and shadow instead of floating over the page (#864).
+   The card is max-height capped and the view only reserves the composer, so
+   when a long draft grows the composer the ideas give way: they shrink and
+   scroll inside the card rather than painting past its bottom edge. They
+   give way last: the greeting above (which scrolls itself) shrinks 1000x
+   harder, so it absorbs the shortfall first, and only once it is frozen at
+   its min-height does flex hand the rest to the ideas. (A fractional shrink
+   on the ideas would not do it: flex scales the shortfall down when the
+   unfrozen shrink factors sum below 1.) The
+   4px padding (taken out of the margin) keeps the cards where they were and
+   leaves room for their focus outline, which the scroller would clip. */
 .agent-floating[data-presentation='launcher'] .agent-workspace-view {
   min-height: var(--agent-composer-height, 160px);
 }
 
+.agent-floating[data-presentation='launcher'] .agent-workspace-view > .agent-workspace-body {
+  flex-shrink: 1000;
+}
+
 .agent-floating[data-presentation='launcher'] .agent-examples {
-  flex: 0 0 auto;
-  margin: 0 14px 14px;
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 10px 10px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .agent-floating[data-presentation='column'] .agent-examples {

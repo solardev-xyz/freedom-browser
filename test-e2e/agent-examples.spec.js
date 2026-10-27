@@ -188,6 +188,19 @@ test('examples and composer remain reachable in both themes, small windows and A
             expect(cards.x).toBeGreaterThanOrEqual(glass.x);
             expect(cards.x + cards.width).toBeLessThanOrEqual(glass.x + glass.width);
             expect(cards.y + cards.height).toBeLessThanOrEqual(glass.y + glass.height);
+            // With no draft the ideas never become a scroller of their own.
+            expect(await window.locator('#agent-examples').evaluate(e => e.scrollHeight - e.clientHeight)).toBe(0);
+            // A long draft grows the composer to its cap; the ideas must still
+            // end inside the card instead of spilling over the page (#864).
+            await window.locator('#agent-prompt').fill(Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n'));
+            await expect.poll(() => window.evaluate(() => {
+              const glass = document.querySelector('.agent-sidebar-inner').getBoundingClientRect();
+              const examples = document.getElementById('agent-examples').getBoundingClientRect();
+              const composer = document.getElementById('agent-composer-wrap').getBoundingClientRect();
+              return examples.bottom <= glass.bottom + 0.5 && composer.bottom <= glass.bottom + 0.5;
+            }), `${theme} ${width}x${height} long draft`).toBe(true);
+            await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}x${height}-draft.png`) });
+            await window.locator('#agent-prompt').fill('');
           }
         }
         await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}-${mode}.png`) });
