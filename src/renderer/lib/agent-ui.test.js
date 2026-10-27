@@ -3691,6 +3691,57 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
   });
 
+  test.each([
+    ['completed', 'Complete'],
+    ['cancelled', 'Stopped'],
+  ])('keeps a take-over pill on an Agent-held tab after the run ends (%s)', async (status, label) => {
+    let owned = true;
+    const ctx = await loadAgentUi({
+      isTabAgentOwned: (tabId) => owned && tabId === 7,
+      electronAPI: {
+        claimAgentTab: jest.fn().mockImplementation(async () => {
+          owned = false;
+          return { ok: true, claimed: true, state: { status: 'ready', taskTabs: [], agentTabs: [] } };
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Open the page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex') ?? null).toBeNull();
+    if (status === 'cancelled') {
+      ctx.elements['agent-run'].dispatch('click');
+      await flush();
+      expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    }
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe(label);
+    // The tab is still in Agent custody, so the hint stays, but only as a pill.
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(true);
+    expect(ctx.elements['agent-page-lock-hint'].textContent).toBe(
+      'Agent still holds this tab · Click to take over'
+    );
+    // The page-sized trigger leaves the Tab order, and the wheel over the pill
+    // still scrolls the page.
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex')).toBe('-1');
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).not.toHaveBeenCalled();
+
+    // No run to pause: the click hands the tab back without the run dialog.
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(7);
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+  });
+
   test('morphs the composer into a decision surface until approval resolves', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';

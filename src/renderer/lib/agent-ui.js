@@ -952,6 +952,16 @@ function activePageIsControlled() {
   );
 }
 
+// A tab Agent opened stays in its custody after the run ends (Complete,
+// Stopped): navigation and the address bar stay locked until the user claims
+// it. The page itself stays usable, so instead of the full interlock only the
+// hint pill shows, and clicking it hands the tab back.
+function activeHeldTabId() {
+  if (currentRunStatus !== 'idle' || activePageIsControlled()) return null;
+  const activeTab = openTabs.find((tab) => tab.isActive) || getActiveTab();
+  return Number.isSafeInteger(activeTab?.id) && isTabAgentOwned(activeTab.id) ? activeTab.id : null;
+}
+
 function setTakeoverDialogOpen(open) {
   const shouldOpen = open === true && activePageIsControlled() && currentRunStatus === 'running';
   elements.takeoverDialog.hidden = !shouldOpen;
@@ -964,14 +974,28 @@ function setTakeoverDialogOpen(open) {
 
 function renderPageInterlock() {
   const locked = activePageIsControlled();
-  elements.pageInterlock.hidden = !locked;
-  elements.pageInterlock.setAttribute('aria-hidden', String(!locked));
-  elements.pageLockHint.textContent =
-    currentRunStatus === 'pausing'
+  const held = !locked && activeHeldTabId() !== null;
+  elements.pageInterlock.hidden = !locked && !held;
+  elements.pageInterlock.setAttribute('aria-hidden', String(!locked && !held));
+  elements.pageInterlock.classList.toggle('held', held);
+  elements.pageLockHint.textContent = held
+    ? 'Agent still holds this tab · Click to take over'
+    : currentRunStatus === 'pausing'
       ? 'Taking over…'
       : currentRunStatus === 'stopping'
         ? 'Stopping Agent…'
         : 'Agent is controlling this page · Click to take over';
+  // In held mode the trigger is an invisible page-sized button: keep it out of
+  // the Tab order so a stray Space/Enter can't release the tab. The pill stays
+  // clickable, and the tab badge and tab context menu remain the keyboard path.
+  if (held) elements.pageLockTrigger.setAttribute('tabindex', '-1');
+  else elements.pageLockTrigger.removeAttribute('tabindex');
+  elements.pageLockTrigger.setAttribute(
+    'aria-label',
+    held
+      ? 'Agent still holds this tab. Click to take over.'
+      : 'Agent is controlling this page. Click to take over.'
+  );
   if (!locked || currentRunStatus !== 'running') setTakeoverDialogOpen(false);
 }
 
@@ -4886,8 +4910,15 @@ export function initAgentUi(options = {}) {
     if (dictationBusy) { void dictation.finish({ send: true }); return; }
     if (!elements.run.disabled) submitComposer();
   });
-  elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
-  elements.pageInterlock.addEventListener('wheel', (event) => event.preventDefault(), {
+  elements.pageLockTrigger.addEventListener('click', () => {
+    const heldTabId = activeHeldTabId();
+    if (heldTabId !== null) void claimAgentOwnedTab(heldTabId);
+    else requestTakeoverConfirmation();
+  });
+  // Over the held pill the page stays usable, so let the wheel scroll it.
+  elements.pageInterlock.addEventListener('wheel', (event) => {
+    if (!elements.pageInterlock.classList.contains('held')) event.preventDefault();
+  }, {
     passive: false,
   });
   elements.pageInterlock.addEventListener('contextmenu', (event) => event.preventDefault());
