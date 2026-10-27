@@ -242,10 +242,13 @@ function pageContextTab() {
     return openTabs.find((tab) => tab.id === conversationRendererTabId) || null;
   }
   const tab = getActiveTab();
-  if (!isShareablePage(tab) || isTabAgentOwned(tab.id) || dismissedPageContextTabId === tab.id) {
-    return null;
-  }
-  return tab;
+  return newTaskStartsFrom(tab) ? tab : null;
+}
+
+// The one rule for "a new task starts from this page": the page-context chip,
+// startRun() and the new-task workspace note all use it, so they agree.
+function newTaskStartsFrom(tab) {
+  return isShareablePage(tab) && !isTabAgentOwned(tab.id) && dismissedPageContextTabId !== tab.id;
 }
 
 function pageContextLabel(tab) {
@@ -910,9 +913,19 @@ function workspacePages() {
   const activeTab = openTabs.find((tab) => tab.isActive);
   if (currentConversationId) return [...projected, ...openTabs.filter((tab) => tab.kind === 'workspace-viewer' && tab.conversationId === currentConversationId)
     .map((tab) => ({ rendererTabId: tab.id, agentActive: false, tab }))];
-  return activeTab
-    ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
-    : [];
+  // A new task's workspace shows the user's own page. A page Agent opened, or a
+  // viewer, belongs to an earlier chat: showing it would present another
+  // chat's page as this task's (#851).
+  if (!activeTab || isTabAgentOwned(activeTab.id) || activeTab.kind === 'workspace-viewer') return [];
+  // Whether the task actually starts from it is pageContextTab()'s rule, not
+  // just "it is showing": the homepage, an internal page, or a page whose chip
+  // the user removed stays visible here but is not shared with the run.
+  return [{
+    rendererTabId: activeTab.id,
+    agentActive: false,
+    tab: activeTab,
+    startsHere: newTaskStartsFrom(activeTab),
+  }];
 }
 
 function ensureWorkspacePageVisible() {
@@ -938,7 +951,9 @@ function renderTaskPages() {
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Pages and read-only viewers belonging to this conversation are shown.'
-    : 'Agent will start from the page you are currently viewing.';
+    : pages.some((entry) => entry.startsHere)
+      ? 'Agent will start from the page you are currently viewing.'
+      : 'Agent will start without a page.';
 }
 
 function activePageIsControlled() {
@@ -5089,6 +5104,7 @@ export function initAgentUi(options = {}) {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
     renderPageContext();
+    renderTaskPages();
     elements.prompt.focus();
   });
   elements.newChat.addEventListener('click', clearConversation);
