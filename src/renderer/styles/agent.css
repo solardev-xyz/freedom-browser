@@ -1039,6 +1039,8 @@ body.agent-first-mode .agent-user-message {
 
 body.agent-first-mode .agent-output.rendered-markdown p,
 body.agent-first-mode .agent-output.rendered-markdown pre,
+body.agent-first-mode .agent-output.rendered-markdown blockquote,
+body.agent-first-mode .agent-output.rendered-markdown .agent-code-block,
 body.agent-first-mode .agent-output.rendered-markdown ul,
 body.agent-first-mode .agent-output.rendered-markdown ol {
   margin-bottom: 14px;
@@ -3226,11 +3228,98 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 7px;
+  /* scrollbar-color inherits; the conversation scroller's pale thumb is
+     invisible on a light code block, which then looked cut off (#848). */
+  scrollbar-color: color-mix(in srgb, var(--text) 32%, transparent) transparent;
+}
+
+.agent-output.rendered-markdown table {
+  scrollbar-color: color-mix(in srgb, var(--text) 32%, transparent) transparent;
 }
 
 .agent-output.rendered-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.92em;
+}
+
+.agent-output.rendered-markdown :not(pre) > code {
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 4px;
+}
+
+/* Only a link that kept its URL looks like one: the sanitizer leaves an
+   <a> with no href for a scheme a tab cannot open. */
+.agent-output.rendered-markdown a[href] {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.agent-output.rendered-markdown blockquote {
+  margin: 0 0 9px;
+  padding: 4px 0 4px 11px;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 0 6px 6px 0;
+}
+
+.agent-output.rendered-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* A code block is wrapped so its Copy button stays put while the code
+   scrolls sideways. */
+.agent-code-block {
+  position: relative;
+  margin: 0 0 9px;
+}
+
+/* Beats the agent-first margin rule above: the wrapper carries the gap. */
+body .agent-output.rendered-markdown .agent-code-block > pre {
+  margin-bottom: 0;
+}
+
+.agent-code-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 2px 7px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, var(--bg));
+  border-radius: 5px;
+  box-shadow: -8px 0 8px var(--bg);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+/* Drawn from data-state so the label never joins the answer's text. */
+.agent-code-copy::before {
+  content: 'Copy';
+}
+
+.agent-code-copy[data-state='copied']::before {
+  content: 'Copied';
+}
+
+.agent-code-copy[data-state='failed']::before {
+  content: 'Copy failed';
+}
+
+.agent-code-block:hover .agent-code-copy,
+.agent-code-copy:focus-visible,
+.agent-code-copy:not([data-state='idle']) {
+  opacity: 1;
+}
+
+.agent-code-copy:hover {
+  color: var(--text);
 }
 
 .agent-output.rendered-markdown table {
@@ -3246,7 +3335,9 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   padding: 6px 9px;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid var(--agent-divider);
+  /* --agent-divider is only defined in agent-first mode; without the
+     fallback the declaration was invalid and the rows had no lines (#848). */
+  border-bottom: 1px solid var(--agent-divider, var(--border));
 }
 
 .agent-output.rendered-markdown th {

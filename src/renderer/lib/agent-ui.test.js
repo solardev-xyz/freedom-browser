@@ -467,6 +467,7 @@ async function loadAgentUi(options = {}) {
   const setAgentTabCustody = jest.fn();
   const setAgentTabClaimHandler = jest.fn();
   const switchTab = jest.fn();
+  const openLinkInNewTab = jest.fn();
   const setTabStripProjection = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
@@ -503,9 +504,11 @@ async function loadAgentUi(options = {}) {
       return jest.fn();
     },
     switchTab,
+    openLinkInNewTab,
   });
   await flush();
   return {
+    openLinkInNewTab,
     mod,
     openSettings,
     elements,
@@ -755,7 +758,7 @@ describe('Agent UI', () => {
     const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
     expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
     expect(body.classList.contains('rendered-markdown')).toBe(true);
-    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual([]);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual(['href']);
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
   });
@@ -3541,17 +3544,71 @@ describe('Agent UI', () => {
 
     expect(sanitize).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ ALLOWED_ATTR: [] })
+      expect.objectContaining({ ALLOWED_ATTR: ['href'] })
     );
     const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
     expect(allowedTags).not.toContain('img');
-    expect(allowedTags).not.toContain('a');
+    expect(allowedTags).toContain('a');
+    // Links keep their URL (#848), but only for schemes a tab can open.
+    const uriPattern = sanitize.mock.calls[0][1].ALLOWED_URI_REGEXP;
+    for (const url of ['https://docs.ethswarm.org/x', 'http://a.test', 'bzz://site.eth/', 'ipfs://bafy', 'ipns://k51']) {
+      expect(uriPattern.test(url)).toBe(true);
+    }
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'freedom://settings', 'docs.ethswarm.org']) {
+      expect(uriPattern.test(url)).toBe(false);
+    }
     expect(allowedTags).toEqual(
       expect.arrayContaining(['table', 'thead', 'tbody', 'tr', 'th', 'td'])
     );
     expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
       '<p>Safe response</p>'
     );
+  });
+
+  test('links in a rendered answer open in a tab instead of navigating the chrome (#848)', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p><a href="https://docs.ethswarm.org/">the docs</a></p>') },
+        DOMPurify: { sanitize: jest.fn((html) => html) },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Summarize' });
+    ctx.emit({ type: 'assistant_text_delta', conversationId: 'conversation_test', runId: 'run_test', text: '[the docs](https://docs.ethswarm.org/)' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    expect(output.classList.contains('rendered-markdown')).toBe(true);
+    // The fake DOM does not parse innerHTML; stand in the parsed link.
+    const link = ctx.document.createElement('a');
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    output.appendChild(link);
+    const click = (type, extra = {}) => {
+      const event = { type, target: link, currentTarget: output, button: type === 'auxclick' ? 1 : 0, preventDefault: jest.fn(), ...extra };
+      output.dispatch(type, event);
+      return event;
+    };
+
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    expect(click('auxclick').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    click('click', { ctrlKey: true, shiftKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    ctx.electronAPI.openUrlInNewWindow = jest.fn();
+    click('click', { shiftKey: true });
+    expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith('https://docs.ethswarm.org/');
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // A right-click auxclick is not an activation; a scheme the sanitizer
+    // should have dropped is never opened even if it reaches the DOM.
+    click('auxclick', { button: 2 });
+    link.setAttribute('href', 'javascript:alert(1)');
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
   });
 
   test('falls back to text when completed assistant Markdown cannot be rendered', async () => {
