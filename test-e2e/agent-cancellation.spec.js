@@ -804,3 +804,39 @@ test('Find stays usable without handing keyboard input to an Agent-controlled pa
   await expect(window.locator('#agent-run-status')).toHaveText('Running');
   await stopAndExpectReusable(window);
 });
+
+// A segment closed by guidance is rendered as markdown, so the cut-off mark has
+// to sit inside its last text block, not in an anonymous box on a line of its
+// own under it. Measured in the real stylesheet: adding the mark must not add
+// a line, and it must be drawn by the block the sentence actually ends in.
+test('the cut-off mark ends the last sentence of a markdown answer', async ({ window }) => {
+  const cases = [
+    { html: '<p>Comparing the first</p>', host: 'p' },
+    { html: '<p>Intro</p><h3>Comparing the first</h3>', host: 'h3' },
+    { html: '<ul><li>One</li><li>Comparing the first</li></ul>', host: 'li' },
+    { html: '<ol><li><p>One</p></li><li><p>Comparing the first</p></li></ol>', host: 'li > p' },
+    { html: '<ul><li>One<ul><li>Comparing the first</li></ul></li></ul>', host: 'li li' },
+    { html: '<blockquote><p>Comparing the first</p></blockquote>', host: 'blockquote > p' },
+    { text: 'Comparing the first', host: null },
+  ];
+  const results = await window.evaluate((list) => list.map(({ html, text, host }) => {
+    const output = document.createElement('div');
+    output.className = html ? 'agent-output rendered-markdown' : 'agent-output';
+    output.style.cssText = 'position:fixed;left:0;top:0;width:400px';
+    if (html) output.innerHTML = html;
+    else output.textContent = text;
+    document.body.append(output);
+    const before = output.getBoundingClientRect().height;
+    output.classList.add('incomplete');
+    const after = output.getBoundingClientRect().height;
+    const target = host ? [...output.querySelectorAll(host)].at(-1) : output;
+    const mark = getComputedStyle(target, '::after').content;
+    const container = host ? getComputedStyle(output, '::after').content : mark;
+    output.remove();
+    return { host, grew: after - before, mark, container };
+  }), cases);
+  for (const result of results) {
+    expect(result, result.host || 'plain text').toMatchObject({ grew: 0, mark: '" …"' });
+    if (result.host) expect(result.container, result.host).toBe('none');
+  }
+});
