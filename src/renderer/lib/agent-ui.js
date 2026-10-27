@@ -908,7 +908,10 @@ function workspacePages() {
   const activeTab = openTabs.find((tab) => tab.isActive);
   if (currentConversationId) return [...projected, ...openTabs.filter((tab) => tab.kind === 'workspace-viewer' && tab.conversationId === currentConversationId)
     .map((tab) => ({ rendererTabId: tab.id, agentActive: false, tab }))];
-  return activeTab
+  // A new task starts from the user's own page. A page Agent opened, or a
+  // viewer, belongs to an earlier chat: pageContextTab() won't share it, so
+  // showing it here would present another chat's page as this task's (#851).
+  return activeTab && !isTabAgentOwned(activeTab.id) && activeTab.kind !== 'workspace-viewer'
     ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
     : [];
 }

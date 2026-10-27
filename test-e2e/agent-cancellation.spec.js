@@ -731,8 +731,18 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('4');
+  // The workspace shows the previous chat's Agent page; a new task must not
+  // inherit it (#851).
+  await openAgentPane(window, 'workspace');
+  await expect(window.locator('#agent-page-surface webview:not(.hidden)')).toBeVisible();
+  // At this compact width the open pane covers the conversation's New chat.
+  await window.locator('#agent-workspace-sidebar-toggle').click();
   await window.locator('#agent-new-chat').click();
-  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await expect(window.locator('#agent-first-title')).toHaveText('New task');
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
+  await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(0);
+  await expect(window.locator('#agent-page-surface webview:not(.hidden)')).toBeHidden();
+  await expect(window.locator('#agent-workspace-sidebar-toggle')).toBeDisabled();
   await exitAgentFirst(window);
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');

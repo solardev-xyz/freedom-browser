@@ -1382,6 +1382,44 @@ describe('Agent UI', () => {
     );
   });
 
+  test('a new task workspace leaves out the previous chat\'s page and viewers (#851)', async () => {
+    let agentOwned = false;
+    let tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: false },
+      { id: 8, url: 'https://news.example.test/', title: 'Example News', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      isTabAgentOwned: (tabId) => agentOwned && tabId === 8,
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+
+    // A user's own page is where a new task starts, so it is shown.
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(false);
+
+    // The same page opened by Agent belongs to an earlier chat.
+    agentOwned = true;
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+    expect(ctx.elements['agent-task-pages-empty'].hidden).toBe(false);
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(true);
+    expect(ctx.elements['agent-workspace-sidebar-toggle'].disabled).toBe(true);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [],
+    });
+
+    // So does another chat's read-only workspace viewer.
+    agentOwned = false;
+    tabs = [{ id: 9, kind: 'workspace-viewer', conversationId: 'conversation_old', title: 'notes.md', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+  });
+
   test('keeps the pristine homepage outside a new Agent workspace', async () => {
     const homeTab = {
       id: 7,
