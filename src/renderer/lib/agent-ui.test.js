@@ -1769,6 +1769,8 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-status'].textContent).toBe('Not connected');
     expect(ctx.elements['agent-hosted-fields'].classList.contains('hidden')).toBe(true);
     expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
+    // The storage note is help text under the field (#857), not a placeholder.
+    expect(ctx.elements['agent-api-key'].placeholder).toBe('');
   });
 
   test('a late catalogue response cannot overwrite a newer Settings connection change', async () => {

@@ -62,7 +62,15 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await providerPage.locator('#agent-custom-name').fill('Fixture gateway');
     await providerPage.locator('#agent-custom-url').fill(baseUrl);
     await expect(providerPage.locator('#agent-custom-transport')).toContainText('without transport encryption');
+    // #857: the storage note is help text that stays visible, the
+    // placeholder is a prose hint in the page font, and typed keys stay mono.
+    await expect(providerPage.locator('#agent-api-key')).toHaveAttribute('placeholder', 'Optional, leave empty if not required');
+    await expect(providerPage.locator('#agent-api-key-help')).toHaveText('Stored encrypted on this device.');
+    expect(await providerPage.locator('#agent-api-key').evaluate(el => [
+      getComputedStyle(el).fontFamily, getComputedStyle(el, '::placeholder').fontFamily,
+    ])).toEqual([expect.stringMatching(/monospace/), expect.stringMatching(/IBM Plex Sans/)]);
     await providerPage.locator('#agent-api-key').fill('fixture-only-key');
+    await expect(providerPage.locator('#agent-api-key-help')).toBeVisible();
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
       await providerPage.locator('#providers').screenshot({ path: testInfo.outputPath(`custom-provider-connect-${theme}.png`) });

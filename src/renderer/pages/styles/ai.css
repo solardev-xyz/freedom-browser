@@ -74,6 +74,16 @@
 :is(#ai, #providers, #voice) textarea {
   font-family: var(--font-mono);
 }
+/* Monospace is for the typed URL or key; a placeholder is a hint in prose,
+   so it gets the page font back (#857). */
+:is(#ai, #providers, #voice) input::placeholder,
+:is(#ai, #providers, #voice) textarea::placeholder {
+  font-family:
+    'IBM Plex Sans',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
 :is(#ai, #providers, #voice) input:focus-visible,
 :is(#ai, #providers, #voice) textarea:focus-visible,
 :is(#ai, #providers, #voice) button:focus-visible,
