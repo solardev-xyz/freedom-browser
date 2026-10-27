@@ -481,3 +481,16 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
     expect(section('ens')).toContain('choose which servers Freedom');
   });
 });
+
+describe('settings.html AI heading (#838)', () => {
+  test('the AI section heading carries no Beta pill', () => {
+    const ai = section('ai');
+    expect(ai).toMatch(/^\s*<h2 class="section-title">AI<\/h2>/);
+    expect(ai.slice(0, ai.indexOf('section-description'))).not.toContain('resolver-badge');
+  });
+
+  test('the start-page banner keeps its Beta tag', () => {
+    const home = fs.readFileSync(path.join(__dirname, 'home.html'), 'utf8');
+    expect(home).toContain('<span class="setup-banner-tag">Beta</span>');
+  });
+});
