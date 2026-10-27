@@ -1685,13 +1685,44 @@ describe('profile AI opt-in', () => {
       configured: true, providerId: 'ollama', modelId: 'llama3.2', baseUrl: 'http://127.0.0.1:11434/v1',
     });
     const read = sender => ctx.ipcMain.handlers.get(IPC.AGENT_SETUP_STATE)({ sender });
-    expect(await read(home)).toEqual({ ok: true, configured: true });
+    expect(await read(home)).toEqual({ ok: true, configured: true, kept: false });
     enabled = true;
     ctx.providerResolver.getStatus.mockReturnValue({ configured: false });
-    expect(await read(home)).toEqual({ ok: true, configured: false });
+    expect(await read(home)).toEqual({ ok: true, configured: false, kept: false });
     expect(await read(stranger)).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
     await ctx.dispose();
     expect(ctx.ipcMain.handlers.has(IPC.AGENT_SETUP_STATE)).toBe(false);
+  });
+  test('setup state says whether anything is kept while AI is off, without naming it (#854)', async () => {
+    const settingsPage = createSender();
+    let sessions = [];
+    let services = [];
+    const mcpConnections = { list: jest.fn(() => services) };
+    const ctx = register({
+      isEnabled: () => false,
+      isProviderSettingsSender: event => event.sender === settingsPage,
+      listConversations: jest.fn(() => sessions),
+      mcpConnections,
+    });
+    ctx.service.listConversations = jest.fn(() => sessions);
+    const read = () => ctx.ipcMain.handlers.get(IPC.AGENT_SETUP_STATE)({ sender: settingsPage });
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [] });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: false });
+    // A saved chat (a project is a saved chat too).
+    sessions = [{ conversationId: 'c1', title: 'Notes' }];
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    sessions = [];
+    // A model connection, even one that is not the selected model.
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [{ providerId: 'ollama' }] });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [] });
+    // A connected service.
+    services = [{ id: 'a', name: 'Notes', url: 'https://example.com/mcp' }];
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    // A store that cannot be read counts as nothing kept, not as an error.
+    mcpConnections.list.mockImplementation(() => { throw new Error('keyring'); });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: false });
+    await ctx.dispose();
   });
   test('off blocks model/auth/discovery/work without erasing stored connection status', async () => {
     const ctx = register({ isEnabled: () => false });
