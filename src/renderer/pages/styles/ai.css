@@ -414,9 +414,12 @@
 #voice .agent-connected-provider-list {
   margin: 0;
 }
-/* AI subpages label their groups in sentence case, the way the provider
-   picker's `.agent-provider-group-label` ("Model labs") does (#861), not in
-   the rest of Settings' 12 px uppercase `.subsection-title` category style. */
+/* The Voice dictation page (only) labels its groups in sentence case, the
+   way the provider picker's `.agent-provider-group-label` ("Model labs") does
+   (#861), not in the rest of Settings' 12 px uppercase `.subsection-title`
+   category style. A deliberate exception (see ui-consistency.md, Settings
+   sections): don't widen this selector to other pages without the same kind
+   of decision. */
 #voice .subsection-title {
   font-weight: 400;
   letter-spacing: normal;
