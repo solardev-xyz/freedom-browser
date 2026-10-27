@@ -698,8 +698,10 @@ function setAgentView(nextView) {
   elements.mcpPanel.hidden = nextView !== 'services';
   elements.workspaceView.hidden = nextView !== 'workspace';
   const setup = nextView === 'setup';
-  elements.browserModeToggle.hidden = nextView !== 'workspace';
-  elements.title.hidden = nextView === 'workspace';
+  // The floating launcher is titled "Agent"; the column shows the
+  // conversation title instead (agent-floating.css hides this heading there).
+  // The browser/Agent-first switch is the header's expand button.
+  elements.title.hidden = false;
   // First-run setup says it once: the title names the task, the view's button
   // the next step.
   elements.subtitle.hidden = nextView === 'workspace' || (setup && providerStatus?.configured !== true);
@@ -759,13 +761,11 @@ function setScopeHelpOpen(open) {
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
-  const { modeMenu, modeAgent, modeBrowser } = elements;
-  const modeToggle = agentFirstMode ? elements.modeToggle : elements.browserModeToggle;
+  const { modeMenu, modeAgent, modeBrowser, modeToggle } = elements;
   if (!open) {
     modeMenu.hidePopover?.();
     modeMenu.hidden = true;
-    elements.modeToggle.setAttribute('aria-expanded', 'false');
-    elements.browserModeToggle.setAttribute('aria-expanded', 'false');
+    modeToggle.setAttribute('aria-expanded', 'false');
     if (restoreFocus) modeToggle.focus();
     return;
   }
@@ -1292,7 +1292,7 @@ function setAgentFirstMode(nextMode) {
     'aria-label',
     agentFirstMode ? 'Return to browser view' : 'Make Agent the main view'
   );
-  elements.agentFirstToggle.title = agentFirstMode ? 'Browser view' : 'Agent-first view';
+  elements.agentFirstToggle.title = agentFirstMode ? 'Return to browser view' : 'Make Agent the main view';
   if (agentFirstMode) {
     openTabs = getOpenTabs();
     renderTaskPages();
@@ -4763,7 +4763,6 @@ export function initAgentUi(options = {}) {
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
     sessionSidebar: byId('agent-session-sidebar'),
     modeToggle: byId('agent-mode-toggle'),
-    browserModeToggle: byId('agent-browser-mode-toggle'),
     modeMenu: byId('agent-mode-menu'),
     modeAgent: byId('agent-mode-agent'),
     modeBrowser: byId('agent-mode-browser'),
@@ -5003,16 +5002,14 @@ export function initAgentUi(options = {}) {
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
-  for (const toggle of [elements.modeToggle, elements.browserModeToggle]) {
-    toggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
-    toggle.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        setModeMenuOpen(true);
-        (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
-      }
-    });
-  }
+  elements.modeToggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
+  elements.modeToggle.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setModeMenuOpen(true);
+      (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
+    }
+  });
   elements.modeAgent.addEventListener('click', () => {
     if (agentFirstMode) setModeMenuOpen(false, true);
     else setAgentFirstMode(true);
@@ -5021,7 +5018,7 @@ export function initAgentUi(options = {}) {
     if (!agentFirstMode) setModeMenuOpen(false, true);
     else {
       setAgentFirstMode(false);
-      elements.browserModeToggle.focus();
+      elements.agentFirstToggle.focus();
     }
   });
   elements.modeMenu.addEventListener('keydown', (event) => {
@@ -5176,7 +5173,7 @@ export function initAgentUi(options = {}) {
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
-    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
+    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target)) setModeMenuOpen(false);
     if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');

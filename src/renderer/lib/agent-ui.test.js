@@ -24,7 +24,6 @@ function createAgentElements() {
     'agent-workspace-sidebar-toggle',
     'agent-session-sidebar',
     'agent-mode-toggle',
-    'agent-browser-mode-toggle',
     'agent-mode-menu',
     'agent-mode-agent',
     'agent-mode-browser',
@@ -3527,20 +3526,18 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
     expect(browser.getAttribute('aria-checked')).toBe('true');
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
-    const browserToggle = ctx.elements['agent-browser-mode-toggle'];
-    expect(browserToggle.hidden).toBe(false);
-    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(true);
+    // The floating panel is titled "Agent", not a "Freedom Browser" mode
+    // switch (#867); its expand button is the way back to Agent-first.
+    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Agent');
     expect(ctx.elements['agent-sidebar-subtitle'].hidden).toBe(true);
-    browserToggle.dispatch('click');
-    expect(menu.hidden).toBe(false);
-    expect(browserToggle.getAttribute('aria-expanded')).toBe('true');
-    browser.dispatch('click');
-    expect(menu.hidden).toBe(true);
-    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
-    browserToggle.dispatch('click');
-    agent.dispatch('click');
-    expect(menu.hidden).toBe(true);
+    const expand = ctx.elements['agent-first-toggle'];
+    expect(expand.hidden).toBe(false);
+    expect(expand.title).toBe('Make Agent the main view');
+    expect(expand.getAttribute('aria-label')).toBe('Make Agent the main view');
+    expand.dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(expand.title).toBe('Return to browser view');
     expect(agent.getAttribute('aria-checked')).toBe('true');
   });
 

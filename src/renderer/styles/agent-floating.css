@@ -359,10 +359,6 @@
   grid-area: actions;
 }
 
-.agent-floating[data-presentation='column'] #agent-browser-mode-toggle {
-  display: none;
-}
-
 .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-float-title {
   display: block;
   min-width: 0;
