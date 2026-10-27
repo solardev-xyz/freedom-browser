@@ -139,10 +139,16 @@ export function createAgentProviderUi(options = {}) {
   // The Connect button's result goes in the slot right under it when the
   // page has one (#858), not the page-wide line far below the form. While
   // it shows an error the "Connect to discover" placeholder is hidden. Only
-  // an Ollama connect that could not reach a server at all points at where
-  // to get Ollama: "no models installed", "too many models" or a refused
-  // URL all come from an Ollama that is evidently there already. The slot
-  // is cleared when the privacy setting it was checked against changes.
+  // AGENT_OLLAMA_DISCOVERY_FAILED points at where to get Ollama. That code
+  // covers more than "no server answered": main also raises it when
+  // something at the URL answered /api/tags with a non-2xx status, an
+  // oversized or malformed body, no `models` array, or a model name it
+  // rejects (provider-resolver.js configureOllama). Main cannot tell those
+  // apart from "not Ollama at all", so a running Ollama with a broken reply
+  // can still see the pointer next to the "make sure Ollama is running"
+  // error. "No models installed", "too many models" or a refused URL never
+  // show it: those come from an Ollama that is evidently there already. The
+  // slot is cleared when the privacy setting it was checked against changes.
   let connectError = false;
   function setConnectMessage(text = '', error = false, { suggestOllamaInstall = false } = {}) {
     const slot = elements.connectMessage;
