@@ -32,6 +32,12 @@ describe('provider failure classification', () => {
     ['model unavailable', false],
     ['503 service unavailable', false],
     ['500 internal server error', false],
+    // Generation errors that merely mention the model are not a missing model.
+    ['500 model generated invalid JSON', false],
+    ['500 model returned invalid tool call', false],
+    ['model gpt-4o is invalid', true],
+    ["model 'freedom-test' is unsupported", true],
+    ['model `gpt-x` is invalid', true],
   ])('only vetoes retries for wording that names a missing model: %s', (message, permanent) => {
     expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(permanent);
   });
@@ -50,6 +56,26 @@ describe('provider failure classification', () => {
   ])('classifies %s', (message, category) => {
     expect(classifyProviderFailure(message).category).toBe(category);
   });
+
+  test.each([
+    '503 model unavailable',
+    '502: {"error":{"message":"model unavailable"}}',
+    '500 model returned invalid tool call',
+  ])('a retried server error mentioning the model stays a transient outage: %s', (message) => {
+    const failure = classifyProviderFailure(message);
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+    expect(failure.category).toBe(PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE);
+    expect(failure.recovery).toBe(PROVIDER_FAILURE_RECOVERY.TRANSIENT);
+  });
+
+  test.each(['404 model unavailable', 'model unavailable'])(
+    'ambiguous model wording without a server error still points at the model: %s',
+    (message) => {
+      expect(classifyProviderFailure(message).category).toBe(
+        PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE
+      );
+    }
+  );
 
   test('distinguishes transient failures from provider setup and request problems', () => {
     expect(classifyProviderFailure('503 service unavailable').recovery).toBe(

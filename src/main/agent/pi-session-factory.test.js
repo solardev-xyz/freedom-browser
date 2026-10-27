@@ -501,6 +501,9 @@ describe('isolated Pi session factory', () => {
           const capacity = await run(503, wording);
           assert.equal(capacity.retries.length, 1, wording + ' must still be retried');
         }
+        // A generation error that mentions the model is not a missing model.
+        const generation = await run(500, 'model generated invalid JSON');
+        assert.equal(generation.retries.length, 1, 'a generation error must still be retried');
         process.stdout.write('passed');
       })().catch(error => { console.error(error); process.exit(1); });
     `;

@@ -291,8 +291,16 @@ function matches(value, pattern) {
   return pattern.test(value);
 }
 
-const MODEL_UNAVAILABLE_PATTERN =
-  /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i;
+// The token allowed between "model" and the verdict must be a quoted name or
+// look like a model id (it carries a digit or one of `-_.:/`, as in gpt-4o,
+// qwen3:8b, org/model): "model generated invalid JSON" or "model returned
+// invalid tool call" are generation errors, not a missing model. "not found"
+// and "unavailable" are unambiguous enough to keep any one-word name.
+const MODEL_NAME = String.raw`(?:'[^']+'|"[^"]+"|\x60[^\x60]+\x60|[\w]*[\d\-.:/][\w\-.:/]*)`;
+const MODEL_UNAVAILABLE_PATTERN = new RegExp(
+  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable)|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)`,
+  'i'
+);
 // Wording that says the model exists but cannot serve this request right now:
 // "Model temporarily unavailable, please retry", "model is unavailable due to
 // high load". That is a capacity problem, not a missing model.
@@ -301,8 +309,10 @@ const TEMPORARY_CAPACITY_PATTERN =
 // Only wording that names the model itself as absent. A bare "model
 // unavailable" is ambiguous (it is also how capacity outages are worded), so
 // it is not treated as permanent.
-const PERMANENT_MODEL_FAILURE_PATTERN =
-  /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i;
+const PERMANENT_MODEL_FAILURE_PATTERN = new RegExp(
+  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?not found|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)`,
+  'i'
+);
 
 // True only when retrying cannot help because the provider says the selected
 // model does not exist (or this account cannot use it). Used to veto Pi's own
@@ -311,7 +321,9 @@ const PERMANENT_MODEL_FAILURE_PATTERN =
 function isPermanentModelFailure(value) {
   if (value?.category) return false;
   const text = combinedFailureText(value);
-  return matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && !matches(text, TEMPORARY_CAPACITY_PATTERN);
+  return (
+    matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && !matches(text, TEMPORARY_CAPACITY_PATTERN)
+  );
 }
 
 function classifyProviderFailure(value) {
@@ -356,9 +368,16 @@ function classifyProviderFailure(value) {
   ) {
     category = PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT;
   } else if (matches(text, MODEL_UNAVAILABLE_PATTERN)) {
-    category = matches(text, TEMPORARY_CAPACITY_PATTERN)
-      ? PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE
-      : PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
+    // Ambiguous wording ("503 model unavailable") that came with a server
+    // error is the shape Pi retries (isPermanentModelFailure is false), so
+    // once those retries are spent it is still a capacity outage: offer
+    // Retry, not "choose another model".
+    const ambiguousServerError =
+      !matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && safeHttpStatus(value, text) >= 500;
+    category =
+      matches(text, TEMPORARY_CAPACITY_PATTERN) || ambiguousServerError
+        ? PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE
+        : PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
   } else if (
     matches(
       text,
