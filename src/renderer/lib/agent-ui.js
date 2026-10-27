@@ -633,6 +633,11 @@ function offsetWithin(node, ancestor) {
   return node === ancestor ? { x, y } : null;
 }
 
+function closeModelMenu() {
+  elements.modelMenu.hidden = true;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'false');
+}
+
 function openModelMenu() {
   elements.modelMenu.hidden = false;
   elements.modelMenuButton.setAttribute('aria-expanded', 'true');
@@ -1320,6 +1325,11 @@ async function refreshWorkspaceProjection() {
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
+  // The model menu's right/bottom/room are measured for the layout it opened
+  // in, and the switch animates the columns (so re-measuring now would read a
+  // mid-transition layout). Close it, like the mode menu; reopening measures
+  // the new layout.
+  closeModelMenu();
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);

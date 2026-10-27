@@ -290,6 +290,26 @@ test('model menu stays between its button and the header in every layout', async
   await openExpanded();
   expectBetween(await measure('#agent-first-titlebar'));
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-short.png') });
+
+  // Leaving Agent-first by a path that is not a click (a click elsewhere
+  // already closes the menu through the document handler) must not leave the
+  // menu open at Agent-first's geometry. A run that lands while the menu is
+  // open ties the workspace to its conversation; Cmd/Ctrl+T (the File menu
+  // accelerator when the page has focus) then opens a page outside it, which
+  // drops Agent-first with the panel still open.
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.webContents.send('agent:event', { runId: 'run_model_menu_agent_first', conversationId: 'model_menu', type: 'run_started', userText: 'Review this page' });
+  });
+  await expect(button).toBeDisabled();
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('new-tab').click());
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-left-agent-first.png') });
+  await expect(menu).toBeHidden();
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {
