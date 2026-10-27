@@ -4079,6 +4079,54 @@ describe('FreedomAgentService', () => {
     expect(normalizePiEvent({ ...event, result: { content: [{ type: 'text', text: 'Other failure' }] } }).errorCode).toBeUndefined();
   });
 
+  test('forwards the model thinking to the panel and its state, never to saved history', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let clock = 1_000;
+    const { service } = createService(fake, { historyStore, now: jest.fn(() => clock) });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Research this page' }));
+    const update = (assistantMessageEvent) => fake.emit({ type: 'message_update', assistantMessageEvent });
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Visible but never saved. ' });
+    clock = 3_500;
+    update({ type: 'thinking_delta', delta: 'Still thinking.' });
+    update({ type: 'thinking_end', content: 'Visible but never saved. Still thinking.' });
+    update({ type: 'text_delta', delta: 'Done.' });
+    // A provider that never sends thinking_end is closed by its answer.
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Unclosed.' });
+    clock = 4_500;
+    update({ type: 'text_delta', delta: ' More.' });
+
+    expect(events.filter((event) => event.type.startsWith('assistant_')).map(
+      ({ type, text, durationMs, textOffset }) => ({ type, text, durationMs, textOffset })
+    )).toEqual([
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 0 },
+      { type: 'assistant_thinking_delta', text: 'Visible but never saved. ', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_delta', text: 'Still thinking.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 2_500, textOffset: undefined },
+      { type: 'assistant_text_delta', text: 'Done.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 5 },
+      { type: 'assistant_thinking_delta', text: 'Unclosed.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 1_000, textOffset: undefined },
+      { type: 'assistant_text_delta', text: ' More.', durationMs: undefined, textOffset: undefined },
+    ]);
+    expect(service.getState().transcript[0].thinking).toEqual([
+      { text: 'Visible but never saved. Still thinking.', textOffset: 0, timelineOrder: 0, durationMs: 2_500 },
+      { text: 'Unclosed.', textOffset: 5, timelineOrder: 0, durationMs: 1_000 },
+    ]);
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    const saved = JSON.stringify(Object.values(historyStore).map((method) => method.mock?.calls));
+    expect(saved).toContain('Done. More.');
+    expect(saved).not.toContain('never saved');
+    expect(saved).not.toContain('Unclosed');
+  });
+
   test('normalizes only the safe event subset and known tool errors', () => {
     expect(normalizePiEvent({ type: 'turn_start' })).toEqual({ type: 'run_thinking' });
     expect(

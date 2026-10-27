@@ -340,3 +340,48 @@ test('software rendering profiles long-chat scrolling over a playing video', asy
     expect(metrics.scrollTop).toBe(0);
   } finally { await closeApp(app); }
 });
+
+test('the model thinking is a closed disclosure above its answer and opens on click', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1000);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const emit = event => win.webContents.send('agent:event', { runId: 'thinking-fixture', ...event });
+    emit({ type: 'run_started', userText: 'Explain Swarm postage stamps' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: '**Recalling how batches work**\n\nA batch is bought with BZZ; ' });
+    emit({ type: 'assistant_thinking_delta', text: 'each upload is stamped against it, and it expires when its balance runs out.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_000 });
+    emit({ type: 'assistant_text_delta', text: 'Here is a summary of **Swarm postage stamps**.\n\n' + Array(6).fill('You buy a batch with BZZ, and every upload is stamped against it.').join('\n\n') });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 3_000, actionCount: 0 });
+  });
+  const turn = window.locator('.agent-turn[data-run-id="thinking-fixture"]');
+  const thinking = turn.locator('.agent-thinking');
+  await expect(thinking).toHaveCount(1);
+  await expect(thinking).not.toHaveAttribute('open', '');
+  await expect(thinking.locator('summary')).toHaveText('Thinking · 2s');
+  await expect(thinking.locator('.agent-thinking-text')).toBeHidden();
+  // Above the answer, below the question.
+  expect(await turn.evaluate(section => {
+    const order = [...section.children];
+    return order.indexOf(section.querySelector('.agent-thinking')) < order.indexOf(section.querySelector('.agent-message-row.assistant')) &&
+      order.indexOf(section.querySelector('.agent-message-row.user')) < order.indexOf(section.querySelector('.agent-thinking'));
+  })).toBe(true);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await thinking.evaluate(el => { el.open = false; el.scrollIntoView({ block: 'start' }); });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`thinking-closed-${theme}.png`) });
+    await thinking.locator('summary').click();
+    await expect(thinking).toHaveAttribute('open', '');
+    await expect(thinking.locator('.agent-thinking-text')).toBeVisible();
+    await expect(thinking.locator('.agent-thinking-text strong')).toHaveText('Recalling how batches work');
+    await expect(thinking.locator('.agent-thinking-text')).toContainText('expires when its balance runs out.');
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`thinking-open-${theme}.png`) });
+  }
+  // Agent-first mode shows the same disclosure in its full-width transcript.
+  await window.locator('#agent-first-toggle').click();
+  await expect(thinking.locator('summary')).toBeVisible();
+  await expect(thinking.locator('.agent-thinking-text')).toBeVisible();
+  await thinking.evaluate(el => el.scrollIntoView({ block: 'start' }));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('thinking-agent-first-light.png') });
+});

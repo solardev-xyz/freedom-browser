@@ -1963,6 +1963,7 @@ function createTurnView(turn) {
     liveStatusLabel,
     userText: turn.userText || '',
     assistantText: turn.assistantText || '',
+    thinkingBlocks: [],
     actionCount: 0,
   };
   turnViews.set(turn.runId, view);
@@ -2003,6 +2004,54 @@ function appendAssistantText(view, text) {
   // Keep the streaming text node rather than replacing an ever-growing answer.
   if (view.output.lastChild?.nodeType === 3) view.output.lastChild.appendData(text);
   else view.output.insertAdjacentText('beforeend', text);
+}
+
+// The model's thinking sits collapsed above the answer it led to, so long
+// reasoning never pushes the answer down. Text is rendered like the answer:
+// plain while it streams, sanitized Markdown once the block ends.
+function startThinkingBlock(view) {
+  if (view.outputSegments.at(-1).text) closeAssistantSegment(view);
+  endThinkingBlock(view);
+  const details = document.createElement('details');
+  details.className = 'agent-thinking';
+  details.open = false;
+  details.dataset.state = 'thinking';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Thinking…';
+  const body = document.createElement('div');
+  body.className = 'agent-thinking-text';
+  details.appendChild(summary);
+  details.appendChild(body);
+  view.section.insertBefore(details, view.assistantSegmentClosed ? view.outcome : view.assistantRow);
+  const block = { details, summary, body, text: '', open: true };
+  view.thinkingBlocks.push(block);
+  return block;
+}
+
+function appendThinkingText(view, text) {
+  if (!text) return;
+  const current = view.thinkingBlocks.at(-1);
+  const block = current?.open ? current : startThinkingBlock(view);
+  block.text += text;
+  if (block.body.lastChild?.nodeType === 3) block.body.lastChild.appendData(text);
+  else block.body.insertAdjacentText('beforeend', text);
+}
+
+function endThinkingBlock(view, durationMs) {
+  const block = view.thinkingBlocks.at(-1);
+  if (!block?.open) return;
+  block.open = false;
+  if (!block.text.trim()) {
+    // Some providers send an empty or redacted thinking block: nothing to show.
+    block.details.remove();
+    view.thinkingBlocks.pop();
+    return;
+  }
+  block.details.dataset.state = 'done';
+  block.summary.textContent = Number.isFinite(durationMs)
+    ? `Thinking · ${formatDuration(durationMs)}`
+    : 'Thinking';
+  renderAgentMarkdown(block.body, block.text);
 }
 
 function setLiveStatus(runId, label, { active = true } = {}) {
@@ -2139,18 +2188,27 @@ function restoreTranscript(transcript = []) {
     const view = createTurnView({ ...turn, assistantText: '', guidance: [] });
     const text = turn.assistantText || '';
     const entries = [
+      ...(Array.isArray(turn.thinking) ? turn.thinking : [])
+        .filter(item => typeof item?.text === 'string' && item.text)
+        .map(item => ({ kind: 'thinking', item })),
       ...(Array.isArray(turn.activity) ? turn.activity : []).map(item => ({ kind: 'tool', item })),
       ...(Array.isArray(turn.guidance) ? turn.guidance : []).map(item => ({ kind: 'guidance', item })),
     ].map(entry => ({ ...entry, offset: Number.isSafeInteger(entry.item.textOffset)
       ? Math.max(0, Math.min(text.length, entry.item.textOffset)) : 0 }));
     // Older history has no offsets: retain its work before the final answer.
+    // Thinking precedes the tool call or guidance it shares a position with.
     entries.sort((a, b) => a.offset - b.offset ||
-      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0));
+      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0) ||
+      (a.kind === 'thinking' ? 0 : 1) - (b.kind === 'thinking' ? 0 : 1));
     let cursor = 0;
     for (const { kind, item, offset } of entries) {
       appendAssistantText(view, text.slice(cursor, offset));
       cursor = offset;
-      if (kind === 'guidance') createGuidanceView(turn.runId, item);
+      if (kind === 'thinking') {
+        startThinkingBlock(view);
+        appendThinkingText(view, item.text);
+        endThinkingBlock(view, item.durationMs);
+      } else if (kind === 'guidance') createGuidanceView(turn.runId, item);
       else {
         addToolRow({ ...item, runId: turn.runId });
         if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
@@ -3665,6 +3723,7 @@ function finishTurnView(runId, event = {}) {
   const view = turnView(runId);
   if (!view) return;
   clearLiveStatus(runId);
+  endThinkingBlock(view);
   view.activity.dataset.state = [...view.toolList.children].some(row => row.classList.contains('failed')) ? 'failed' : 'done';
   const actionCount = Number.isSafeInteger(event.actionCount)
     ? event.actionCount
@@ -4023,6 +4082,15 @@ function applyAgentEvent(event) {
       setMessage(elements.runMessage, 'Applying your guidance…');
       setLiveStatus(event.runId, 'Applying your guidance…');
     }
+  } else if (event.type === 'assistant_thinking_start') {
+    const view = turnView(event.runId);
+    if (view) startThinkingBlock(view);
+  } else if (event.type === 'assistant_thinking_delta' && typeof event.text === 'string') {
+    const view = turnView(event.runId);
+    if (view) appendThinkingText(view, event.text);
+  } else if (event.type === 'assistant_thinking_end') {
+    const view = turnView(event.runId);
+    if (view) endThinkingBlock(view, event.durationMs);
   } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;

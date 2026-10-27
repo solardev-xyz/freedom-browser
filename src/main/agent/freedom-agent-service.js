@@ -1231,6 +1231,14 @@ class FreedomAgentService {
       startedAt: turn.startedAt,
       ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
       activity: turn.activity.map((item) => ({ ...item })),
+      thinking: (turn.thinking || [])
+        .filter((block) => block.text)
+        .map(({ text, textOffset, timelineOrder, durationMs }) => ({
+          text,
+          textOffset,
+          timelineOrder,
+          ...(Number.isFinite(durationMs) && { durationMs }),
+        })),
       attachments: Array.isArray(turn.attachments)
         ? turn.attachments.map((item) => ({ ...item }))
         : [],
@@ -1776,6 +1784,9 @@ class FreedomAgentService {
       promptImages: [],
       reasoningProgressSource: '',
       reasoningProgress: '',
+      // The model's own thinking, shown collapsed above the answer it led to.
+      // Kept in memory for this conversation only: never logged or persisted.
+      thinking: [],
     };
     this.activeRun = run;
     let conversation = existingConversation;
@@ -2716,6 +2727,7 @@ class FreedomAgentService {
       if (guidance) this.#setGuidanceStatus(run, guidance, 'applying');
     }
     if (event?.type === 'message_end' && event.message?.role === 'assistant') {
+      this.#endThinking(run);
       run.lastAssistant = {
         stopReason: event.message.stopReason,
       };
@@ -2734,11 +2746,19 @@ class FreedomAgentService {
     if (event?.type === 'message_update' && assistantMessageEvent?.type === 'thinking_start') {
       run.reasoningProgressSource = '';
       run.reasoningProgress = '';
+      this.#startThinking(run);
+    } else if (
+      event?.type === 'message_update' &&
+      ['thinking_end', 'text_start', 'text_delta', 'toolcall_start'].includes(assistantMessageEvent?.type)
+    ) {
+      // A provider that never closes its thinking block has closed it by answering.
+      this.#endThinking(run);
     } else if (
       event?.type === 'message_update' &&
       assistantMessageEvent?.type === 'thinking_delta' &&
       typeof assistantMessageEvent.delta === 'string'
     ) {
+      this.#appendThinking(run, assistantMessageEvent.delta);
       run.reasoningProgressSource =
         `${run.reasoningProgressSource}${assistantMessageEvent.delta}`.slice(
           -MAX_REASONING_PROGRESS_SOURCE_CHARS
@@ -3523,6 +3543,39 @@ class FreedomAgentService {
     conversation.restored = true;
     conversation.disposal = Promise.allSettled([conversation.disposal, disposal]);
     return conversation.disposal;
+  }
+
+  #startThinking(run) {
+    this.#endThinking(run);
+    const block = {
+      text: '',
+      textOffset: run.assistantText.length,
+      timelineOrder: run.activity.length + run.guidance.length,
+      startedAt: this.now(),
+      open: true,
+    };
+    run.thinking.push(block);
+    this.#emit(run, {
+      type: 'assistant_thinking_start',
+      textOffset: block.textOffset,
+      timelineOrder: block.timelineOrder,
+    });
+    return block;
+  }
+
+  #appendThinking(run, text) {
+    if (!text) return;
+    const block = run.thinking.at(-1)?.open ? run.thinking.at(-1) : this.#startThinking(run);
+    block.text += text;
+    this.#emit(run, { type: 'assistant_thinking_delta', text });
+  }
+
+  #endThinking(run) {
+    const block = run.thinking.at(-1);
+    if (!block?.open) return;
+    block.open = false;
+    block.durationMs = Math.max(0, this.now() - block.startedAt);
+    this.#emit(run, { type: 'assistant_thinking_end', durationMs: block.durationMs });
   }
 
   #emit(run, event) {

@@ -618,6 +618,74 @@ describe('Agent UI', () => {
       : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
   });
 
+  function timeline(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-thinking')) {
+        return [`${row.open ? 'open' : 'closed'} ${row.children[0].textContent}: ${row.children[1].textContent}`];
+      }
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('shows the model thinking as a closed disclosure above the answer it led to', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Plan the ' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Plan the ']);
+    emit({ type: 'assistant_thinking_delta', text: 'search.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_400 });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'read', operation: 'browser_snapshot' });
+    emit({ type: 'tool_finished', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    // An empty (redacted) block shows nothing.
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_end', durationMs: 100 });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Verify the dates.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 61_000 });
+    emit({ type: 'assistant_text_delta', text: 'Final answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(timeline(ctx)).toEqual([
+      'Research',
+      'closed Thinking · 2s: Plan the search.',
+      'Checking.',
+      'closed Thinking · 1m 1s: Verify the dates.',
+      'Final answer.',
+    ]);
+  });
+
+  test('a thinking block the run ends inside is closed without a duration', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_delta', text: 'Half a thought' });
+    emit({ type: 'run_finished', status: 'cancelled' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking: Half a thought']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-thinking').dataset.state).toBe('done');
+  });
+
+  test('restores thinking at its place in the turn', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          thinking: [
+            { text: 'Plan.', textOffset: 0, timelineOrder: 0, durationMs: 3_000 },
+            { text: '', textOffset: 9, timelineOrder: 1 },
+            { text: 'Check.', textOffset: 9, timelineOrder: 1, durationMs: 1_000 },
+          ],
+          activity: [{ toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded', textOffset: 9, timelineOrder: 0 }],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual([
+      'Research', 'closed Thinking · 3s: Plan.', 'Starting.', 'closed Thinking · 1s: Check.', 'Final answer.',
+    ]);
+  });
+
   test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
     const ctx = await loadAgentUi({ electronAPI: {
       getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
