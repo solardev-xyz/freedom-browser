@@ -47,6 +47,7 @@ import {
   subscribeTabPresentation,
   getTabPresentation,
   createWorkspaceViewerTab,
+  openInNewTabWithTarget,
 } from './lib/tabs.js';
 import {
   initNavigation,
@@ -944,6 +945,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,
     subscribeTabPresentation,
     switchTab,
+    openLinkInNewTab: (url, { background } = {}) =>
+      openInNewTabWithTarget(url, null, { background }),
   }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu({

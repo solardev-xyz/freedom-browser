@@ -1969,3 +1969,98 @@ test('publication card follows one job through waiting, confirmation and complet
     }
   }
 });
+
+test('answer links keep their URL and open in a tab; quotes, code and tables are styled (#848)', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await configureOllamaAgent(window, ollamaServer);
+  const markdown = [
+    'Here is a summary of **Swarm postage stamps**.',
+    '',
+    '> Stamps are not refundable.',
+    '',
+    '| Depth | Capacity |',
+    '| --- | --- |',
+    '| 17 | 512 MB |',
+    '| 20 | 4 GB |',
+    '',
+    'Inline `code` and a block:',
+    '',
+    '```',
+    'ant stamps buy --depth 20 --amount 1000000000 --label a-rather-long-label-that-overflows',
+    '```',
+    '',
+    'Read more at [the docs](https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch).',
+    'Not a link: [run this](javascript:alert(1)).',
+  ].join('\n');
+  await electronApp.evaluate(({ BrowserWindow }, text) => {
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'markdown', userText: 'Explain Swarm postage stamps' },
+      { type: 'assistant_text_delta', conversationId: 'markdown', text },
+      { type: 'run_finished', conversationId: 'markdown', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'run_markdown', ...event });
+  }, markdown);
+  const output = window.locator('.agent-output.rendered-markdown');
+  await expect(output).toBeVisible();
+
+  const link = output.getByRole('link', { name: 'the docs' });
+  await expect(link).toHaveAttribute('href', 'https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch');
+  await expect(link).toHaveAttribute('title', 'https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch');
+  // A scheme a tab cannot open keeps its text and loses its URL.
+  await expect(output.getByRole('link', { name: 'run this' })).toHaveCount(0);
+  await expect(output).toContainText('Not a link: run this.');
+
+  const styles = await output.evaluate((element) => {
+    const css = (selector) => getComputedStyle(element.querySelector(selector));
+    const pre = element.querySelector('pre');
+    return {
+      quoteBar: css('blockquote').borderLeftWidth,
+      inlineCode: css('p > code').backgroundColor,
+      cellLine: css('td').borderBottomWidth,
+      preScrollbar: css('pre').scrollbarColor,
+      preOverflows: pre.scrollWidth > pre.clientWidth,
+      copyButton: element.querySelector('.agent-code-block > .agent-code-copy')?.getAttribute('aria-label'),
+      textHasNoButtonLabel: !element.textContent.includes('Copy'),
+    };
+  });
+  expect(styles.quoteBar).toBe('3px');
+  expect(styles.inlineCode).not.toBe('rgba(0, 0, 0, 0)');
+  expect(styles.cellLine).toBe('1px');
+  expect(styles.preScrollbar).not.toBe('auto');
+  expect(styles.preOverflows).toBe(true);
+  expect(styles.copyButton).toBe('Copy code');
+  expect(styles.textHasNoButtonLabel).toBe(true);
+
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => { if (value === 'light') document.documentElement.dataset.theme = value; else delete document.documentElement.dataset.theme; }, theme);
+    await output.locator('pre').hover();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`markdown-${theme}.png`) });
+  }
+
+  await electronApp.evaluate(({ clipboard }) => clipboard.writeText(''));
+  await output.locator('.agent-code-copy').click();
+  await expect(output.locator('.agent-code-copy')).toHaveAttribute('data-state', 'copied');
+  expect(await electronApp.evaluate(({ clipboard }) => clipboard.readText())).toContain('ant stamps buy --depth 20');
+
+  const chromeUrl = window.url();
+  const tabsBefore = await window.locator('.tab').count();
+  await link.click();
+  await expect(window.locator('.tab')).toHaveCount(tabsBefore + 1);
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''))
+    .toContain('docs.ethswarm.org');
+  expect(window.url()).toBe(chromeUrl);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-opened.png') });
+
+  // Agent-first mode's strip lists only the conversation's pages, so a
+  // background tab would be invisible there. Ctrl/Cmd+click opens the link in
+  // the foreground instead, leaving agent-first for the new tab like a click.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  const tabsInAgentFirst = await window.locator('.tab').count();
+  await link.click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
+  await expect(window.locator('.tab')).toHaveCount(tabsInAgentFirst + 1);
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''))
+    .toContain('docs.ethswarm.org');
+  expect(window.url()).toBe(chromeUrl);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-agent-first-ctrl.png') });
+});

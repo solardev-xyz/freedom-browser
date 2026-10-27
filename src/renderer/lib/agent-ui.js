@@ -95,6 +95,7 @@ let getActiveTab = () => null;
 let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
 let switchToTab = () => {};
+let openLinkInNewTab = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
@@ -2115,6 +2116,77 @@ function formatDuration(durationMs) {
   return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
+const AGENT_MARKDOWN_LINK_SCHEMES = /^(?:https?|bzz|ipfs|ipns):/i;
+
+// A link in a chat answer opens in a tab, never in the chrome document itself.
+// Plain click opens a foreground tab (the page the user or Agent is on stays
+// put); Ctrl/Cmd+click and middle-click open a background tab (foreground in
+// agent-first mode, see below); Shift+click a new window — the same
+// dispositions page links and bookmarks follow.
+function handleAgentMarkdownLink(event) {
+  const link = event.target?.closest?.('a[href]');
+  if (!link || !event.currentTarget?.contains?.(link)) return;
+  if (event.type === 'auxclick' && event.button !== 1) return;
+  event.preventDefault();
+  const url = link.getAttribute('href');
+  if (!url || !AGENT_MARKDOWN_LINK_SCHEMES.test(url)) return;
+  const middle = event.type === 'auxclick';
+  if (!middle && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    window.electronAPI?.openUrlInNewWindow?.(url);
+    return;
+  }
+  // Agent-first mode's tab strip shows only this conversation's pages, so a
+  // background tab would be invisible and the click would look like a no-op.
+  // Open it in the foreground there instead, which leaves agent-first mode for
+  // the new tab exactly as a plain click does.
+  const background =
+    !agentFirstMode && Boolean((middle || event.ctrlKey || event.metaKey) && !event.shiftKey);
+  openLinkInNewTab(url, { background });
+}
+
+function decorateAgentMarkdown(output) {
+  if (!output.agentMarkdownLinksBound) {
+    output.agentMarkdownLinksBound = true;
+    output.addEventListener('click', handleAgentMarkdownLink);
+    output.addEventListener('auxclick', handleAgentMarkdownLink);
+  }
+  for (const link of output.querySelectorAll?.('a[href]') || []) {
+    // The chrome has no status bar, so the tooltip is where the destination
+    // shows before the click.
+    link.title = link.getAttribute('href');
+    link.className = 'agent-markdown-link';
+  }
+  for (const pre of output.querySelectorAll?.('pre') || []) {
+    const block = document.createElement('div');
+    block.className = 'agent-code-block';
+    pre.parentNode.insertBefore(block, pre);
+    block.appendChild(pre);
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'agent-code-copy';
+    // The label is drawn by CSS from data-state, so the button adds nothing to
+    // the answer's textContent (helper-report previews read it) or to a text
+    // selection copied out of the answer.
+    const setState = (state, label) => {
+      copy.dataset.state = state;
+      copy.setAttribute('aria-label', label);
+    };
+    setState('idle', 'Copy code');
+    copy.addEventListener('click', async () => {
+      try {
+        const result = await window.electronAPI.copyText(pre.textContent);
+        if (result?.success === false) throw new Error(result.error || 'Copy failed');
+        setState('copied', 'Code copied');
+      } catch {
+        setState('failed', 'Copy failed');
+      }
+      clearTimeout(copy.resetTimer);
+      copy.resetTimer = setTimeout(() => setState('idle', 'Copy code'), 1500);
+    });
+    block.appendChild(copy);
+  }
+}
+
 function renderAgentMarkdown(output, text) {
   if (!text || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
   try {
@@ -2146,9 +2218,14 @@ function renderAgentMarkdown(output, text) {
         'tr',
         'th',
         'td',
+        'a',
       ],
-      ALLOWED_ATTR: [],
+      // Links keep their URL (#848), but only for schemes a tab can open;
+      // DOMPurify drops any other href and leaves the link text.
+      ALLOWED_ATTR: ['href'],
+      ALLOWED_URI_REGEXP: AGENT_MARKDOWN_LINK_SCHEMES,
     });
+    decorateAgentMarkdown(output);
     output.classList.add('rendered-markdown');
   } catch {
     output.textContent = text;
@@ -4728,6 +4805,8 @@ export function initAgentUi(options = {}) {
   isTabAgentOwned =
     typeof options.isTabAgentOwned === 'function' ? options.isTabAgentOwned : () => false;
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
+  openLinkInNewTab =
+    typeof options.openLinkInNewTab === 'function' ? options.openLinkInNewTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   setAgentTabCustody =
