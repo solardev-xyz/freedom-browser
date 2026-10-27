@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Agent shows the model's thinking as a closed "Thinking" row above its answer; open it to read how the model reached the answer. The thinking stays out of saved conversation history ([#873](https://github.com/solardev-xyz/freedom-browser/issues/873))
