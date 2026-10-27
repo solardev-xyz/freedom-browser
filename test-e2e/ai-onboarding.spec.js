@@ -336,6 +336,63 @@ test('a failed model status load shows its error on the AI page and no Connect b
   await expect(page.locator('#ai-connect-model')).toBeHidden();
 });
 
+// A status that lands after AI was turned off (a refresh still in flight) is
+// not the status the next enable has loaded: re-enabling must not replay it as
+// a "Connect a model" offer before its own refresh settles.
+test('a model status landing after AI is turned off is not replayed as Connect on the next enable', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  await page.locator('#enable-ai').uncheck();
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__statusCalls = 0;
+    globalThis.__statusAnswered = false;
+    let release;
+    globalThis.__releaseStatus = () => release();
+    const gate = new Promise(resolve => { release = resolve; });
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      globalThis.__statusCalls += 1;
+      await gate;
+      globalThis.__statusAnswered = true;
+      return { ok: true, status: { configured: false, connections: [] } };
+    });
+  });
+  // Enable, then turn AI off while that enable's status load is in flight.
+  await page.locator('#enable-ai').check();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusCalls)).toBeGreaterThan(0);
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#enable-ai')).toBeEnabled();
+  await electronApp.evaluate(() => globalThis.__releaseStatus());
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusAnswered)).toBe(true);
+  // Let the late reply reach the page and run onStatusChange.
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 300)));
+  // The next enable's own load is slow and then fails.
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return { ok: false, error: { code: 'TEST_FAILURE', message: 'Status unavailable' } };
+    });
+  });
+  await page.evaluate(() => {
+    window.__connectSeen = false;
+    const button = document.getElementById('ai-connect-model');
+    const sample = () => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+      window.__connectProbe = requestAnimationFrame(sample);
+    };
+    sample();
+    new MutationObserver(() => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+    }).observe(document.getElementById('ai'), { attributes: true, subtree: true, childList: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
+});
+
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
   const page = await settings(electronApp, window);
   await expect(page.locator('.nav-item[data-target="ai"]')).toBeVisible();

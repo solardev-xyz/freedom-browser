@@ -48,13 +48,15 @@ const nextHelp = document.getElementById('ai-next-help');
 // the status this enable has actually loaded: turning AI off forgets it, so
 // turning it on again offers Connect only once refresh() has loaded a fresh
 // one, and a failed load (which leaves the placeholder without telling us)
-// takes the offer down again.
+// takes the offer down again. A status that lands while AI is off (a refresh
+// still in flight when it was turned off) is not recorded, so it cannot undo
+// that reset and be replayed by the next enable.
 let realStatus = null;
 let realStatuses = 0;
 let sawUnconfigured = false;
 let sawConfigured = false;
 const updateNext = (state, { userAction = false, real = false } = {}) => {
-  if (real) {
+  if (real && enabled) {
     realStatus = state;
     realStatuses += 1;
   }
