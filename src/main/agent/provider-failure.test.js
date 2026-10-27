@@ -44,6 +44,12 @@ describe('provider failure classification', () => {
     ['500 model called tool "browser_open" which does not exist', false],
     ['500 model runner process does not exist', false],
     ['tool does not exist for this model', false],
+    // A bare word before "not found" is a runner/file, not a model id.
+    ['500 model runner not found', false],
+    ['500 model file not found', false],
+    ['model not found', true],
+    ['model llama3 not found', true],
+    ['500: {"message":"model \\"mistral\\" not found"}', true],
   ])('only vetoes retries for wording that names a missing model: %s', (message, permanent) => {
     expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(permanent);
   });
@@ -64,11 +70,25 @@ describe('provider failure classification', () => {
   });
 
   test.each([
+    '404 The model mistral does not exist',
+    '400 model phi is unsupported',
+    '400 model mistral is invalid',
+    '404 model mistral not found',
+  ])('a bare-word model name still cards as a missing model on a 4xx: %s', (message) => {
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+    expect(classifyProviderFailure(message).category).toBe(
+      PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE
+    );
+  });
+
+  test.each([
     '503 model unavailable',
     '502: {"error":{"message":"model unavailable"}}',
     '500 model returned invalid tool call',
     '500 model called tool "browser_open" which does not exist',
     '500 model runner process does not exist',
+    '500 model runner not found',
+    '500 model file not found',
   ])('a retried server error mentioning the model stays a transient outage: %s', (message) => {
     const failure = classifyProviderFailure(message);
     expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);

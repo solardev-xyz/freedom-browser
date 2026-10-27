@@ -293,21 +293,33 @@ function matches(value, pattern) {
   return pattern.test(value);
 }
 
-// The token allowed between "model" and the verdict must be a quoted name or
-// look like a model id (it carries a digit or one of `-_.:/`, as in gpt-4o,
-// qwen3:8b, org/model): "model generated invalid JSON" or "model returned
-// invalid tool call" are generation errors, not a missing model. "not found"
-// and "unavailable" are unambiguous enough to keep any one-word name.
-const MODEL_NAME = String.raw`(?:'[^']+'|"[^"]+"|\x60[^\x60]+\x60|[\w]*[\d\-.:/][\w\-.:/]*)`;
+// Two strengths of "the model is missing" wording share one shape: "model",
+// optionally a name, optionally "is", then a verdict.
+//
+// MODEL_UNAVAILABLE_PATTERN picks the error card's category, so it takes any
+// one-word name ("The model mistral does not exist", "model phi is
+// unsupported"): for a 4xx Pi never retries anyway, and the card's "Choose
+// another model" is the right offer. A 5xx that only this broad pattern
+// matches is still shown as a transient outage (see classifyProviderFailure).
+//
+// PERMANENT_MODEL_FAILURE_PATTERN vetoes Pi's own retry, so its name token
+// must be quoted or look like a model id (a digit or one of `-_.:/`, as in
+// gpt-4o, qwen3:8b, org/model): "model generated invalid JSON", "model
+// runner not found" or "model file not found" are generation/runner errors,
+// not a missing model, and should keep Pi's retry. A JSON-escaped quote
+// (`model \"qwen3:8b\" not found` inside an error body) counts as quoted.
+const ANY_MODEL_NAME = String.raw`(?:'[^']+'|"[^"]+"|\x60[^\x60]+\x60|\S+)`;
+const MODEL_NAME = String.raw`(?:\\"[^"\\]+\\"|'[^']+'|"[^"]+"|\x60[^\x60]+\x60|[\w]*[\d\-.:/][\w\-.:/]*)`;
 // "does not exist" counts only when its subject is the model itself ("The
-// model `gpt-9` does not exist", "model does not exist"), with the same
-// name-shaped token rule as above. An unanchored `model.*does not exist`
-// would also read "model called tool \"browser_open\" which does not exist" or
-// "model runner process does not exist" (generation/runner errors) as a
-// missing model and veto Pi's retry.
-const MODEL_DOES_NOT_EXIST = String.raw`model\s+(?:${MODEL_NAME}\s+)?does not exist`;
+// model `gpt-9` does not exist", "model does not exist"). An unanchored
+// `model.*does not exist` would also read "model called tool \"browser_open\"
+// which does not exist" or "model runner process does not exist"
+// (generation/runner errors) as a missing model.
+function modelVerdict(name, verdicts) {
+  return String.raw`model\s+(?:${name}\s+)?(?:is\s+)?(?:${verdicts})`;
+}
 const MODEL_UNAVAILABLE_PATTERN = new RegExp(
-  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable)|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|${MODEL_DOES_NOT_EXIST}|no access to model)`,
+  String.raw`(?:${modelVerdict(ANY_MODEL_NAME, 'not found|unavailable|unsupported|invalid|does not exist')}|unknown model|no access to model)`,
   'i'
 );
 // Wording that says the model exists but cannot serve this request right now:
@@ -319,7 +331,7 @@ const TEMPORARY_CAPACITY_PATTERN =
 // unavailable" is ambiguous (it is also how capacity outages are worded), so
 // it is not treated as permanent.
 const PERMANENT_MODEL_FAILURE_PATTERN = new RegExp(
-  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?not found|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|${MODEL_DOES_NOT_EXIST}|no access to model)`,
+  String.raw`(?:${modelVerdict(MODEL_NAME, 'not found|unsupported|invalid|does not exist')}|unknown model|no access to model)`,
   'i'
 );
 
