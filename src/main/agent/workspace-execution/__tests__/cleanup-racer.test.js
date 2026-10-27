@@ -276,8 +276,6 @@ test('reports no overlap when a cleanup removes the target inside an idle hold',
   }
 );
 
-const gatedTest = process.platform === 'win32' ? test.skip : test;
-
 // The canaries the racer planted for the current arm, as `arm` left them.
 const canariesIn = (target) => {
   try {
@@ -302,7 +300,7 @@ const renameAwayPinned = async (target) => {
   await fs.promises.rm(quarantine, { recursive: true, force: true });
 };
 
-gatedTest(
+(process.platform === 'win32' ? test.skip : test)(
   'arming pins the target and swaps only once a cleanup has deleted something',
   async () => {
     const target = path.join(fixture, 'work');
@@ -340,13 +338,21 @@ gatedTest(
       // A deletion after the swap: the cleanup was running on both sides of it.
       fs.unlinkSync(path.join(target, canaries[1]));
       expect((await racer.counts()).raced).toBe(armed.raced + 1);
+      // Unpinned with nothing left to settle, the rest of the 20s hold is
+      // idle: the racer must not keep polling the directory and spin a core
+      // against the cleanup it is racing (R3-M1). A busy watcher burns about
+      // as much CPU as wall time; an idle one, next to nothing.
+      const cpuBefore = await racer.cpu();
+      await sleep(1000);
+      const cpuAfter = await racer.cpu();
+      expect(cpuAfter - cpuBefore).toBeLessThan(300_000);
     } finally {
       await racer.stop();
     }
   }
 );
 
-gatedTest(
+(process.platform === 'win32' ? test.skip : test)(
   'the gate does not count a swap that came before the cleanup reached the tree',
   async () => {
     // R2-F1: the first version of the gate swapped as soon as it was armed,
@@ -375,34 +381,37 @@ gatedTest(
   }
 );
 
-gatedTest('the gate counts a swap with cleanup deletions on both sides of it', async () => {
-  const target = path.join(fixture, 'work');
-  const hold = path.join(target, 'hold');
-  const report = await raceCleanup({
-    target,
-    outside: path.join(fixture, 'outside'),
-    names: racerNames(4),
-    linkType,
-    holdMs: 5000,
-    gate: true,
-    cleanup: async (cleanupTarget) => {
-      const [first, second] = canariesIn(cleanupTarget);
-      fs.unlinkSync(path.join(cleanupTarget, first));
-      // The racer's swap, which releases the pin.
-      if (!(await waitFor(() => !fs.existsSync(hold)))) throw new Error('never released');
-      fs.unlinkSync(path.join(cleanupTarget, second));
-      await renameAwayPinned(cleanupTarget);
-    },
-  });
-  expect(report).toMatchObject({
-    overlapped: true,
-    attempts: 1,
-    preserved: true,
-    removed: true,
-    firstError: null,
-    final: { reason: 'target-removed', raced: 1 },
-  });
-});
+(process.platform === 'win32' ? test.skip : test)(
+  'the gate counts a swap with cleanup deletions on both sides of it',
+  async () => {
+    const target = path.join(fixture, 'work');
+    const hold = path.join(target, 'hold');
+    const report = await raceCleanup({
+      target,
+      outside: path.join(fixture, 'outside'),
+      names: racerNames(4),
+      linkType,
+      holdMs: 5000,
+      gate: true,
+      cleanup: async (cleanupTarget) => {
+        const [first, second] = canariesIn(cleanupTarget);
+        fs.unlinkSync(path.join(cleanupTarget, first));
+        // The racer's swap, which releases the pin.
+        if (!(await waitFor(() => !fs.existsSync(hold)))) throw new Error('never released');
+        fs.unlinkSync(path.join(cleanupTarget, second));
+        await renameAwayPinned(cleanupTarget);
+      },
+    });
+    expect(report).toMatchObject({
+      overlapped: true,
+      attempts: 1,
+      preserved: true,
+      removed: true,
+      firstError: null,
+      final: { reason: 'target-removed', raced: 1 },
+    });
+  }
+);
 
 // A spawned `rm`, as the macOS cleanup is: it reaches the tree only after its
 // own start-up, which the first version of the gate swapped through.
@@ -413,19 +422,22 @@ const spawnedRm = (target) =>
     child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`rm exited ${code}`))));
   });
 
-gatedTest('under the gate, a spawned rm removes the target only after racing a swap', async () => {
-  const report = await raceCleanup({
-    target: path.join(fixture, 'work'),
-    outside: path.join(fixture, 'outside'),
-    names: racerNames(4),
-    linkType,
-    gate: true,
-    cleanup: spawnedRm,
-  });
-  expect(report).toMatchObject({ removed: true, lastError: null });
-  if (report.final.reason === 'target-removed') expect(report.overlapped).toBe(true);
-  if (report.overlapped) expect(report.final.raced).toBeGreaterThan(0);
-});
+(process.platform === 'win32' ? test.skip : test)(
+  'under the gate, a spawned rm removes the target only after racing a swap',
+  async () => {
+    const report = await raceCleanup({
+      target: path.join(fixture, 'work'),
+      outside: path.join(fixture, 'outside'),
+      names: racerNames(4),
+      linkType,
+      gate: true,
+      cleanup: spawnedRm,
+    });
+    expect(report).toMatchObject({ removed: true, lastError: null });
+    if (report.final.reason === 'target-removed') expect(report.overlapped).toBe(true);
+    if (report.overlapped) expect(report.final.raced).toBeGreaterThan(0);
+  }
+);
 
 test('reports the outside files a path-walking cleanup deleted through the link', async () => {
   // The negative control: the same race the platform tests run, against a

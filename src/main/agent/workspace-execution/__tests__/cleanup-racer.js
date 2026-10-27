@@ -115,6 +115,10 @@ async function race({ target, outside, names, linkType, holdMs, maxMs }) {
       settle();
       process.send({ type: 'counts', counts: { ...counts } });
     }
+    if (message === 'cpu') {
+      const { user, system } = process.cpuUsage();
+      process.send({ type: 'cpu', micros: user + system });
+    }
     if (message === 'stop') {
       stopping = true;
       wake?.();
@@ -167,6 +171,14 @@ async function race({ target, outside, names, linkType, holdMs, maxMs }) {
         settle();
         const gone = canariesGone(target, arm.canaries);
         if (gone === null || (arm.pinned && gone > 0)) return finish();
+        // Unpinned with no swap left to settle, there is nothing to watch for:
+        // stop polling and sit out the rest of the hold idle, rather than
+        // spinning a core on readdir for up to `holdMs`. A later arm restarts
+        // the watch through `watchHold`.
+        if (!arm.pinned && !arm.pending) {
+          watching = false;
+          return;
+        }
         setImmediate(watch);
       };
       watchHold = () => {
@@ -315,6 +327,14 @@ function startCleanupRacer({
       return message.type === 'armed'
         ? { ...message.counts, pinned: message.pinned }
         : { ...final, pinned: false };
+    },
+    /** CPU time the racer has used so far, in microseconds; null once stopped. */
+    async cpu() {
+      if (final) return null;
+      const reply = next(['cpu', 'done']);
+      if (child.connected) child.send('cpu', ignoreSendError);
+      const message = await reply;
+      return message.type === 'cpu' ? message.micros : null;
     },
     /** Stop racing (if it has not already) and return the final counts. */
     async stop() {
