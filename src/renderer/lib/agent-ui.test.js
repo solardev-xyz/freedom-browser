@@ -3710,6 +3710,7 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex') ?? null).toBeNull();
     if (status === 'cancelled') {
       ctx.elements['agent-run'].dispatch('click');
       await flush();
@@ -3724,6 +3725,12 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-page-lock-hint'].textContent).toBe(
       'Agent still holds this tab · Click to take over'
     );
+    // The page-sized trigger leaves the Tab order, and the wheel over the pill
+    // still scrolls the page.
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex')).toBe('-1');
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).not.toHaveBeenCalled();
 
     // No run to pause: the click hands the tab back without the run dialog.
     ctx.elements['agent-page-lock-trigger'].dispatch('click');

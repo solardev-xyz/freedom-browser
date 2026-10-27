@@ -771,6 +771,21 @@ test('a tab Agent still holds after the run keeps a take-over pill that hands it
     return element.contains(hit);
   });
   expect(hitsInterlock).toBe(false);
+  // The invisible page-sized trigger is out of the Tab order.
+  await expect(window.locator('#agent-page-lock-trigger')).toHaveAttribute('tabindex', '-1');
+  // Closing Find gives the keyboard back to the page, not to the trigger, so a
+  // Space to scroll can't silently claim the tab.
+  await window.locator('#webview-container webview:not(.hidden)').click({ position: { x: 20, y: 20 } });
+  await window.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
+  await expect(window.locator('#find-bar')).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(window.locator('#find-bar')).toBeHidden();
+  await expect
+    .poll(() => window.evaluate(() => document.activeElement?.id || document.activeElement?.tagName))
+    .not.toBe('agent-page-lock-trigger');
+  await window.keyboard.press('Space');
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(5);
+  await expect(interlock).toHaveClass(/held/);
   if (process.env.AGENT_HELD_SHOT) {
     await window.screenshot({ path: `${process.env.AGENT_HELD_SHOT}-held.png` });
   }

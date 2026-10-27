@@ -917,7 +917,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     getActiveWebview,
     restoreFocus: (webview) => {
       const interlock = document.getElementById('agent-page-interlock');
-      if (interlock && !interlock.hidden) {
+      // `.held` is an idle Agent-held tab: only a take-over pill shows and the
+      // page stays usable, so focus goes back to the page. Parking it on the
+      // page-sized trigger would make the next Space/Enter claim the tab.
+      if (interlock && !interlock.hidden && !interlock.classList.contains('held')) {
         // Find is read-only; closing it must not bypass Take over by giving
         // the guest keyboard input while Agent is still controlling it.
         document.getElementById('agent-page-lock-trigger')?.focus();

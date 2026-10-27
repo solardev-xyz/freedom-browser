@@ -985,6 +985,11 @@ function renderPageInterlock() {
       : currentRunStatus === 'stopping'
         ? 'Stopping Agent…'
         : 'Agent is controlling this page · Click to take over';
+  // In held mode the trigger is an invisible page-sized button: keep it out of
+  // the Tab order so a stray Space/Enter can't release the tab. The pill stays
+  // clickable, and the tab badge and tab context menu remain the keyboard path.
+  if (held) elements.pageLockTrigger.setAttribute('tabindex', '-1');
+  else elements.pageLockTrigger.removeAttribute('tabindex');
   elements.pageLockTrigger.setAttribute(
     'aria-label',
     held
@@ -4910,7 +4915,10 @@ export function initAgentUi(options = {}) {
     if (heldTabId !== null) void claimAgentOwnedTab(heldTabId);
     else requestTakeoverConfirmation();
   });
-  elements.pageInterlock.addEventListener('wheel', (event) => event.preventDefault(), {
+  // Over the held pill the page stays usable, so let the wheel scroll it.
+  elements.pageInterlock.addEventListener('wheel', (event) => {
+    if (!elements.pageInterlock.classList.contains('held')) event.preventDefault();
+  }, {
     passive: false,
   });
   elements.pageInterlock.addEventListener('contextmenu', (event) => event.preventDefault());
