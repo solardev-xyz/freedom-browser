@@ -20,7 +20,6 @@ dialog.agent-dictation-panel {
   margin: auto;
   padding: 22px;
   background: var(--agent-glass);
-  backdrop-filter: var(--agent-glass-filter);
   border-color: var(--agent-glass-border);
   box-shadow: var(--agent-glass-shadow);
 }
