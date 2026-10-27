@@ -638,11 +638,11 @@ test.describe('renderer screenshots', () => {
         await expect(page.locator('#enable-ai')).not.toBeChecked();
         await snap(surfaces, window, `${theme}-54-settings-ai-off`, { mask: scrollbar });
         await page.locator('#enable-ai').check();
-        // With no model yet the switch continues to the provider picker; the
-        // baseline is the AI page itself.
-        await expect(page).toHaveURL(/#ai\/providers\/add$/);
-        await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+        // With no model yet the switch stays on the AI page and offers
+        // "Connect a model" (#836).
         await expect(page.locator('#ai-settings-links')).toBeVisible();
+        await expect(page.locator('#ai-connect-model')).toBeVisible();
+        await expect(page).toHaveURL(/#ai$/);
         await expect(page.locator('#ai-settings-status')).toBeEmpty({ timeout: 30_000 });
         await snap(surfaces, window, `${theme}-55-settings-ai-on`, { mask: scrollbar });
         await page.locator('#enable-ai').uncheck();

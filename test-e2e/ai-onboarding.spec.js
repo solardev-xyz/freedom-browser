@@ -41,12 +41,11 @@ async function settings(app, window) {
   return page;
 }
 
-// Turning AI on with no model continues to the provider picker; tests about
-// the AI page itself step back to it.
+// Turning AI on with no model stays on the AI page and offers the next step
+// (#836) rather than navigating to the provider picker.
 async function enableAiAndStay(page) {
   await page.locator('#enable-ai').check();
-  await expect(page).toHaveURL(/#ai\/providers\/add$/);
-  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
   await expect(page).toHaveURL(/#ai$/);
 }
 
@@ -78,10 +77,25 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
-  // With no model yet, turning AI on continues to the provider picker.
+  // With no model yet, turning AI on stays on the AI page and offers
+  // "Connect a model" instead of navigating under the user's hand (#836).
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
+  await expect(page.locator('#ai-open-agent')).toBeHidden();
+  await expect(page.locator('#ai-next-help')).toHaveText('Choose a provider account or a local model for Agent to use.');
+  await window.waitForTimeout(500);
+  await expect(page).toHaveURL(/#ai$/);
+  await expect(page.locator('#enable-ai-restart')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-on-no-model-${theme}.png`) });
+  }
+  // The offered step leads to the provider picker.
+  await page.locator('#ai-connect-model').click();
   await expect(page).toHaveURL(/#ai\/providers\/add$/);
   await expect(page.locator('#agent-provider-choices')).toBeVisible();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+  await expect(page).toHaveURL(/#ai$/);
   await expect(page.locator('#enable-ai-restart')).toBeVisible();
   // The button and the toggle share one centre line, not the text baseline
   // that left the text-less toggle sitting higher (#834).
@@ -114,6 +128,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await window.locator('#agent-sidebar-close').click();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -278,11 +293,13 @@ test('Settings opens Agent only for the first model connected on that page', asy
   const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
   expect(configured?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
   await window.waitForTimeout(1000);
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   const removed = await window.evaluate(() => window.electronAPI.removeAgentProvider('ollama'));
   expect(removed?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeHidden();
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await page.locator('#agent-provider-add').click();
   await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
@@ -292,6 +309,105 @@ test('Settings opens Agent only for the first model connected on that page', asy
   await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
   await window.waitForTimeout(1000);
   await expect(window.locator('#agent-sidebar')).toBeHidden();
+});
+
+// A failed status load offers no "Connect a model": not from the status the
+// page replays when AI is turned off and on again, and not left standing once
+// the load fails. The AI page itself says the load failed.
+test('a failed model status load shows its error on the AI page and no Connect button', async ({ electronApp, window }, testInfo) => {
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', () => ({ ok: false, error: { code: 'TEST_FAILURE', message: 'Status unavailable' } }));
+  });
+  // Record whether Connect is ever on screen, from before the switch until
+  // the load has failed: a stale offer that comes and goes counts too.
+  await page.evaluate(() => {
+    window.__connectSeen = false;
+    const button = document.getElementById('ai-connect-model');
+    const sample = () => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+      window.__connectProbe = requestAnimationFrame(sample);
+    };
+    sample();
+    new MutationObserver(() => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+    }).observe(document.getElementById('ai'), { attributes: true, subtree: true, childList: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
+  await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('ai-status-failed.png') });
+  // A status-only failure on a fresh visit, with the catalogue loading fine.
+  await page.evaluate(() => {
+    window.__beforeReload = true;
+    location.reload();
+  });
+  await expect.poll(() => page.evaluate(() => !window.__beforeReload && document.readyState === 'complete').catch(() => false)).toBe(true);
+  await expect(page.locator('#enable-ai')).toBeChecked();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
+});
+
+// A status that lands after AI was turned off (a refresh still in flight) is
+// not the status the next enable has loaded: re-enabling must not replay it as
+// a "Connect a model" offer before its own refresh settles.
+test('a model status landing after AI is turned off is not replayed as Connect on the next enable', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  await page.locator('#enable-ai').uncheck();
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__statusCalls = 0;
+    globalThis.__statusAnswered = false;
+    let release;
+    globalThis.__releaseStatus = () => release();
+    const gate = new Promise(resolve => { release = resolve; });
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      globalThis.__statusCalls += 1;
+      await gate;
+      globalThis.__statusAnswered = true;
+      return { ok: true, status: { configured: false, connections: [] } };
+    });
+  });
+  // Enable, then turn AI off while that enable's status load is in flight.
+  await page.locator('#enable-ai').check();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusCalls)).toBeGreaterThan(0);
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#enable-ai')).toBeEnabled();
+  await electronApp.evaluate(() => globalThis.__releaseStatus());
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusAnswered)).toBe(true);
+  // Let the late reply reach the page and run onStatusChange.
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 300)));
+  // The next enable's own load is slow and then fails.
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return { ok: false, error: { code: 'TEST_FAILURE', message: 'Status unavailable' } };
+    });
+  });
+  await page.evaluate(() => {
+    window.__connectSeen = false;
+    const button = document.getElementById('ai-connect-model');
+    const sample = () => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+      window.__connectProbe = requestAnimationFrame(sample);
+    };
+    sample();
+    new MutationObserver(() => {
+      if (button.getClientRects().length) window.__connectSeen = true;
+    }).observe(document.getElementById('ai'), { attributes: true, subtree: true, childList: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
+  await expect(page.locator('#ai-next-step')).toBeHidden();
+  expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
 });
 
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {

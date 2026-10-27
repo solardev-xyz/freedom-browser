@@ -35,28 +35,42 @@ const dictation = createDictationSettings(dictationHost, api, {
     } else location.hash = route;
   },
 });
-// Setup runs straight through: turning AI on here continues to the provider
-// picker when no model is connected yet, and the first model connected opens
-// Agent. "First" is judged from real statuses only (the placeholder a failed
-// load leaves in providerUi.state, which apply() replays, never counts), and
+const connect = document.getElementById('ai-connect-model');
+const nextHelp = document.getElementById('ai-next-help');
+// Turning AI on only turns it on (#836): with no model connected yet, the
+// next-step row offers "Connect a model" (the provider picker) instead of
+// navigating there under the user's hand. The first model connected on this
+// page then opens Agent. "First" and "no model" are judged from real statuses
+// only (the placeholder a failed load leaves in providerUi.state, which
+// apply() replays, never counts: the page shows the load error instead), and
 // only a connect made on this page opens Agent: a model connected in another
-// window, or reconnected after removing one here, opens nothing.
-let continueToProviders = false;
+// window, or reconnected after removing one here, opens nothing. realStatus is
+// the status this enable has actually loaded: turning AI off forgets it, so
+// turning it on again offers Connect only once refresh() has loaded a fresh
+// one, and a failed load (which leaves the placeholder without telling us)
+// takes the offer down again. A status that lands while AI is off (a refresh
+// still in flight when it was turned off) is not recorded, so it cannot undo
+// that reset and be replayed by the next enable.
+let realStatus = null;
+let realStatuses = 0;
 let sawUnconfigured = false;
 let sawConfigured = false;
 const updateNext = (state, { userAction = false, real = false } = {}) => {
-  next.hidden = !enabled || state?.configured !== true;
-  if (enabled && state?.configured && status.textContent === 'Loading providers…')
-    status.textContent = '';
-  if (!enabled || !state) return;
-  const configured = state.configured === true;
-  if (continueToProviders) {
-    continueToProviders = false;
-    // Only from the switch's own page: a user who moved on while the status
-    // loaded stays where they went.
-    if (!configured && location.hash.slice(1).toLowerCase() === 'ai') location.hash = 'ai/providers/add';
+  if (real && enabled) {
+    realStatus = state;
+    realStatuses += 1;
   }
-  if (!real) return;
+  const configured = state?.configured === true;
+  const needsModel = !configured && Boolean(state) && state === realStatus;
+  next.hidden = !enabled || !(configured || needsModel);
+  open.hidden = !configured;
+  connect.hidden = configured;
+  nextHelp.textContent = configured
+    ? 'Your current conversation and draft stay in place.'
+    : 'Choose a provider account or a local model for Agent to use.';
+  if (enabled && configured && status.textContent === 'Loading providers…')
+    status.textContent = '';
+  if (!enabled || !state || !real) return;
   if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent();
   if (configured) sawConfigured = true;
   else sawUnconfigured = true;
@@ -178,9 +192,23 @@ async function refresh() {
     }
     loaded = catalogReady;
   }
+  const statusesBefore = realStatuses;
   await providerUi.refreshProvider();
   if (current !== revision || !enabled) return;
-  status.textContent = catalogReady ? '' : 'Could not load providers. Open AI settings again to retry.';
+  // A failed status load sets the placeholder without onStatusChange, so the
+  // next-step row would keep whatever it showed before; repaint it from the
+  // placeholder (never real, so no Connect) and say so on this page too, not
+  // only on the providers page's own message line.
+  const statusReady = realStatuses !== statusesBefore;
+  if (!statusReady) {
+    realStatus = null;
+    updateNext(providerUi.state.providerStatus);
+  }
+  status.textContent = !catalogReady
+    ? 'Could not load providers. Open AI settings again to retry.'
+    : !statusReady
+      ? 'Could not load the agent model. Open AI settings again to retry.'
+      : '';
   if (!catalogReady || providerMessage.textContent === 'Loading providers…')
     providerMessage.textContent = status.textContent;
   renderRoute();
@@ -196,6 +224,7 @@ function apply(settings) {
   dictationHost.hidden = !enabled;
   document.getElementById('voice').hidden = !enabled;
   note.hidden = enabled;
+  if (!enabled) realStatus = null;
   updateNext(providerUi.state.providerStatus);
   renderRestart();
   if (!enabled) {
@@ -216,7 +245,6 @@ toggle.addEventListener('change', async () => {
   status.textContent = requested ? 'Enabling AI…' : 'Stopping AI…';
   try {
     if (!(await api.saveSettings({ enableAi: requested }))) throw new Error();
-    continueToProviders = requested;
     apply(await api.getSettings());
   } catch {
     toggle.checked = enabled;
@@ -227,6 +255,9 @@ toggle.addEventListener('change', async () => {
   }
 });
 restart.addEventListener('click', () => api.relaunchApp());
+connect.addEventListener('click', () => {
+  if (enabled) location.hash = 'ai/providers/add';
+});
 open.addEventListener('click', async () => {
   if (!enabled) return;
   const response = await api.openAgent();
