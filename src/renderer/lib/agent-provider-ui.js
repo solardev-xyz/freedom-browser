@@ -353,7 +353,10 @@ export function createAgentProviderUi(options = {}) {
         ? 'Refresh to discover current models. No prompts are sent.'
         : 'Bundled model catalog';
     if (!isOllama) renderModelOptions(providerId);
-    else renderProviderModelPreview(providerId);
+    else {
+      renderProviderModelPreview(providerId);
+      renderModelDetails();
+    }
     const subscriptionConnected = Boolean(
       isClaude
         ? providerConnection('anthropic-claude')
@@ -716,9 +719,17 @@ export function createAgentProviderUi(options = {}) {
     elements.customReasoning.checked = model?.reasoning === true;
     elements.customSchema.checked = model?.jsonSchema === true;
   }
+  // Ollama has no catalog and never fills the model select (#846): its line
+  // describes the connection's own selected model, the one the list above
+  // marks, and reports nothing Ollama's discovery didn't report.
+  function detailsModel(providerId) {
+    if (providerId !== 'ollama') return catalogModel(providerId, elements.model.value);
+    const modelId = providerConnection(providerId)?.modelId;
+    return modelId ? { id: modelId, name: modelId } : undefined;
+  }
   function renderModelDetails() {
     const providerId = elements.provider.value;
-    const model = catalogModel(providerId, elements.model.value);
+    const model = detailsModel(providerId);
     const parts = [];
     if (model) {
       parts.push(model.id);

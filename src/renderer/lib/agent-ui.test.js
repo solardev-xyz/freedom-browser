@@ -5153,6 +5153,56 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
   });
 
+  test('Ollama details describe the connected model right after connecting (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama] },
+      }),
+    } });
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    // Right after connecting: the connected model, not "No matching models".
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+    expect(ctx.elements['agent-model-details'].hidden).toBe(false);
+  });
+
+  test('Ollama details do not keep another provider\'s model on a later visit (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4', contextWindow: 8192 }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    // Another provider's page fills the same line with its own model...
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('gpt-4 · 8,192 context · Tool support not reported');
+
+    // ...which must not survive into Ollama's page on a later visit.
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+  });
+
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
     let resolveLogin;
     const loginPromise = new Promise((resolve) => {
