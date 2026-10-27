@@ -462,6 +462,10 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ...(subagent && { subagent }),
       ...(subagents && { subagents }),
       ...(errorCode && { errorCode }),
+      // The controller refused a repeat of an action the user already
+      // declined, with no new prompt; the step was declined, not failed.
+      ...(failed && errorCode === ERROR_CODES.USER_CANCELLED && toolOutcome?.approval === 'declined' &&
+        { approval: 'declined', repeatsDecline: true }),
     };
   }
   if (event.type === 'auto_retry_start') {
@@ -2871,6 +2875,10 @@ class FreedomAgentService {
     if (normalized.subagent) item.subagent = normalized.subagent;
     if (normalized.subagents) item.subagents = normalized.subagents;
     if (normalized.artifacts) item.artifacts = normalized.artifacts;
+    if (!item.approval && normalized.repeatsDecline && normalized.approval === 'declined') {
+      item.approval = 'declined';
+      item.repeatsDecline = true;
+    }
     if (item.approval) normalized.approval = item.approval;
     return true;
   }
@@ -2915,6 +2923,9 @@ class FreedomAgentService {
           outcome.errorCode.length <= 120)) && {
         errorCode: outcome.errorCode,
       }),
+      // Refused because the user declined this same action earlier (#845).
+      ...(outcome.status === 'failed' && outcome.errorCode === ERROR_CODES.USER_CANCELLED &&
+        outcome.approval === 'declined' && { approval: 'declined' }),
       ...(normalizeArtifact(outcome.artifact) && {
         artifact: normalizeArtifact(outcome.artifact),
       }),

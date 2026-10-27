@@ -1183,7 +1183,6 @@ function buildAgentOutcome(activity, status, error) {
     .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
     .filter(receipt => receipt?.mode === 'browser');
   const actions = helpers.flatMap(receipt => receipt.browserActions);
-  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error);
   const browserItems = items.flatMap(item => item?.operation === SUBAGENT_TOOL_NAME
     ? [item, ...(normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
       .filter(receipt => receipt?.mode === 'browser').flatMap(receipt => receipt.browserActions)] : [item]);
@@ -1200,8 +1199,13 @@ function buildAgentOutcome(activity, status, error) {
       [OPERATIONS.SNAPSHOT, OPERATIONS.SCREENSHOT, OPERATIONS.READ_FRAME].includes(next.operation) &&
       item.pageId && next.pageId === item.pageId);
   });
-  const declinedBrowserActions = browserItems.filter(item => item?.operation?.startsWith('browser_') &&
-    item.approval === 'declined' && userDeclinedBeforeRunning(item)).length;
+  // A repeat the controller refused because of an earlier decline is the same
+  // action, so it is not counted twice (but still counts if that decline was
+  // in an earlier turn).
+  const declinedItems = browserItems.filter(item => item?.operation?.startsWith('browser_') &&
+    item.approval === 'declined' && userDeclinedBeforeRunning(item));
+  const declinedBrowserActions = declinedItems.filter(item => !item.repeatsDecline).length ||
+    Math.min(declinedItems.length, 1);
   const unfinishedEdits = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
     .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
     .some(receipt => receipt?.mode === 'edit' && (receipt.writesPending ||
@@ -1216,12 +1220,15 @@ function buildAgentOutcome(activity, status, error) {
           detail: declinedBrowserActions === 1 ? 'You declined an action, so it did not run.'
             : `You declined ${declinedBrowserActions} actions, so they did not run.` }
         : null;
+  // The declined notice says it already; the detail does not repeat it.
+  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error,
+    { declinedNoticeShown: notice?.tone === 'neutral' });
   return Object.freeze({ ...outcome, ...(notice && { notice }),
     ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
   });
 }
 
-function buildAgentOutcomeFromReceipts(activity, status, error) {
+function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
   const items = Array.isArray(activity) ? activity : [];
   const editingHelpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
     .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
@@ -1398,7 +1405,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     : '';
   const approvalNote = approvals.approved
     ? ` ${approvals.approved} browser ${approvals.approved === 1 ? 'action was' : 'actions were'} approved by the user.`
-    : approvals.declined
+    : approvals.declined && !options.declinedNoticeShown
       ? ` ${approvals.declined} browser ${approvals.declined === 1 ? 'action was' : 'actions were'} declined by the user.`
       : '';
   const destinationNote = destinations.length

@@ -3463,7 +3463,8 @@ function finishToolRow(event) {
   record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
   if (approvalDeclined) {
-    record.row.title = approvalDeclined;
+    // The row says what happened; the tooltip says why it matters.
+    record.row.title = 'This action never reached the page, so nothing it would have changed took effect.';
     record.label.textContent = `${record.label.textContent} — ${approvalDeclined}`;
   } else if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);

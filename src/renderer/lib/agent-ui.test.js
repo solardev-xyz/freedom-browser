@@ -5304,6 +5304,9 @@ describe('selective result notices', () => {
     ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', label: 'Click “Place order”' });
     ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', status: 'failed',
       errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', repeatsDecline: true, label: 'Click “Place order”' });
     ctx.emit({ type: 'run_finished', runId: 'declined', status: 'completed', actionCount: 2, durationMs: 8000, outcome: {
       kind: 'completed', verification: 'result_observed', tone: 'success', headline: 'Result checked in the browser',
       notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
@@ -5315,6 +5318,13 @@ describe('selective result notices', () => {
     expect(rows[1].children[0].textContent).toBe('•');
     expect(rows[1].children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
     expect(rows[1].children[2].textContent).toBe('Declined');
+    // The tooltip explains the row rather than repeating it.
+    expect(rows[1].title).toBe('This action never reached the page, so nothing it would have changed took effect.');
+    // A retry refused because of the earlier decline (no new prompt) reads the same.
+    const retry = rows[2];
+    expect(retry.dataset.state).toBe('cancelled');
+    expect(retry.classList.contains('failed')).toBe(false);
+    expect(retry.children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
     // A page-bound step keeps its declined wording in the page row too.
     ctx.emit({ type: 'run_started', runId: 'page', userText: 'Place the order' });
     ctx.emit({ type: 'tool_started', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click' });

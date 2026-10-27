@@ -567,6 +567,7 @@ class FreedomBrowserToolError extends Error {
     this.code = error.code;
     this.retryable = error.retryable === true;
     if (error.suggestedAction) this.suggestedAction = error.suggestedAction;
+    if (error.code === ERROR_CODES.USER_CANCELLED && error.declined === true) this.declined = true;
   }
 }
 
@@ -893,6 +894,8 @@ async function createFreedomBrowserTools(options = {}) {
             ...receipt,
             errorCode:
               error instanceof FreedomBrowserToolError ? error.code : ERROR_CODES.INTERNAL_ERROR,
+            // Refused because the user declined this same action earlier.
+            ...(error instanceof FreedomBrowserToolError && error.declined && { approval: 'declined' }),
           });
           const guidance = recovery.record(
             spec.operation, { ...params, tabId: targetTabId }, null, error

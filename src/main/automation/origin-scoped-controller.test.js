@@ -911,8 +911,10 @@ describe('OriginScopedAutomationController', () => {
       error: { code: ERROR_CODES.USER_CANCELLED, retryable: false },
     });
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
-    await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
+    const repeat = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
     expect(requestApproval).toHaveBeenCalledTimes(1);
+    // The repeat is refused with no prompt; it says why, so it reads as declined (#845).
+    expect(repeat.error).toMatchObject({ code: ERROR_CODES.USER_CANCELLED, declined: true });
   });
 
   test('does not make a withdrawn approval sticky across a later attempt', async () => {
@@ -927,12 +929,12 @@ describe('OriginScopedAutomationController', () => {
       requestApproval,
     });
 
-    await expect(
-      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
-    ).resolves.toMatchObject({
+    const withdrawn = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
+    expect(withdrawn).toMatchObject({
       ok: false,
       error: { code: ERROR_CODES.USER_CANCELLED, retryable: false },
     });
+    expect(withdrawn.error.declined).toBeUndefined();
     await expect(
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
     ).resolves.toMatchObject({ ok: true });
@@ -1556,7 +1558,10 @@ test('declining a native response never dispatches it or prompts again for the s
   const requestApproval = jest.fn(async () => 'declined');
   const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval });
   const input = { tabId: 'tab_assigned', dialogRef: dialog.dialogRef, accept: true };
-  for (let i = 0; i < 2; i++) expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, input)).error.code).toBe('USER_CANCELLED');
+  const first = await scoped.execute(OPERATIONS.HANDLE_DIALOG, input);
+  expect(first.error.code).toBe('USER_CANCELLED');
+  expect(first.error.declined).toBeUndefined();
+  expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, input)).error).toMatchObject({ code: 'USER_CANCELLED', declined: true });
   expect(requestApproval).toHaveBeenCalledTimes(1);
   expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.HANDLE_DIALOG)).toBe(false);
 });
@@ -1625,7 +1630,7 @@ test('rediscovery cannot bypass a declined tool invocation in the same run', asy
   const call = () => scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', arguments: {} });
   expect((await call()).error.code).toBe('USER_CANCELLED');
   controller.inspectAction.mockResolvedValue({ ok: true, result: { ...tool, toolRef: 'second' } });
-  expect((await call()).error.code).toBe('USER_CANCELLED');
+  expect((await call()).error).toMatchObject({ code: 'USER_CANCELLED', declined: true });
   expect(requestApproval).toHaveBeenCalledTimes(1);
   expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL)).toBe(false);
 });

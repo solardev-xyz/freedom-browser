@@ -3534,6 +3534,33 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
+  test('a retry the controller refused because of an earlier decline reads as declined (#845)', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const { onToolOutcome } = dependencies.createTools.mock.calls[0][0];
+    const step = (toolCallId, operation, outcome, isError) => {
+      fake.emit({ type: 'tool_execution_start', toolCallId, toolName: operation, args: {} });
+      onToolOutcome({ toolCallId, operation, pageId: 'tab_assigned', ...outcome });
+      fake.emit({ type: 'tool_execution_end', toolCallId, toolName: operation,
+        result: { content: [{ type: 'text', text: 'result' }] }, isError });
+    };
+    step('call_type', OPERATIONS.TYPE, { status: 'succeeded' }, false);
+    step('call_read', OPERATIONS.SNAPSHOT, { status: 'succeeded' }, false);
+    // No approval prompt ran for this call: the controller refused it from its
+    // declined-actions set and the tool layer reported approval 'declined'.
+    step('call_retry', OPERATIONS.CLICK,
+      { status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' }, true);
+    expect(events.filter(event => event.type === 'tool_finished').at(-1)).toMatchObject({
+      toolCallId: 'call_retry', status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(events.at(-1).outcome.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+      detail: 'You declined an action, so it did not run.' });
+  });
+
   test('retains only the safe node summary for progress and completion evidence', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

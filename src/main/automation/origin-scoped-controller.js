@@ -102,6 +102,9 @@ function errorEnvelope(state, code, message, options = {}) {
       code,
       message,
       retryable: options.retryable === true,
+      // A repeat of an action the user already declined is refused without a
+      // new prompt; say so, so the transcript reads it as declined, not failed.
+      ...(options.declined === true && { declined: true }),
     },
   };
 }
@@ -628,7 +631,7 @@ class OriginScopedAutomationController {
       const expectedPageTool = JSON.stringify(tool);
       const { toolRef: _toolRef, ...decisionTool } = tool;
       const key = `${input.tabId}:${JSON.stringify(decisionTool)}`;
-      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This page tool invocation was declined');
+      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This page tool invocation was declined', { declined: true });
       if (typeof execution.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Page tool invocations require approval');
       const monitored = await this.controller.preparePageDialogs?.(input.tabId);
       if (monitored?.ok && monitored.result.dialog)
@@ -665,7 +668,7 @@ class OriginScopedAutomationController {
       if (!this.#acceptRequestedOrigin(dialog.url)) return this.#originDenied(state);
       const expectedDialog = JSON.stringify({ ...dialog, accept: input.accept, promptText: input.promptText });
       const key = `${input.tabId}:${expectedDialog}`;
-      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This dialog response was declined');
+      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This dialog response was declined', { declined: true });
       if (typeof execution.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Dialog responses require approval');
       const label = dialog.navigationCancelled
         ? (input.accept ? 'Leave page and retry the cancelled navigation' : 'Stay on this page')
@@ -1025,7 +1028,8 @@ class OriginScopedAutomationController {
       return errorEnvelope(
         state,
         ERROR_CODES.USER_CANCELLED,
-        'The user declined this website interaction'
+        'The user declined this website interaction',
+        { declined: true }
       );
     }
     let interaction = null;

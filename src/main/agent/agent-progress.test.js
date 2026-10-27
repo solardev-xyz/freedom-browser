@@ -1545,7 +1545,18 @@ test('a declined approval is reported as declined, not as an uncertain browser o
   const result = buildAgentOutcome([typed, read, submit], 'completed');
   expect(result.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
     detail: 'You declined an action, so it did not run.' });
-  expect(result.detail).toContain('1 browser action was declined by the user');
+  // The notice carries the decline; the detail does not repeat it.
+  expect(result.detail).not.toContain('declined');
+  // Without the notice (an uncertain action outranks it) the detail still says so.
+  const uncertain = { operation: OPERATIONS.CLICK, status: 'failed', effect: 'changed', pageId: 'other',
+    errorCode: ERROR_CODES.INTERNAL_ERROR };
+  expect(buildAgentOutcome([typed, read, submit, uncertain], 'completed').detail)
+    .toContain('1 browser action was declined by the user');
+  // The model retrying the declined click is refused without a new prompt
+  // (origin-scoped-controller's declinedActions); it is the same declined action.
+  const retry = { ...submit, repeatsDecline: true };
+  expect(buildAgentOutcome([typed, read, submit, retry], 'completed').notice).toEqual({ tone: 'neutral',
+    headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' });
   expect(buildAgentOutcome([typed, read, submit, { ...submit, operation: OPERATIONS.TYPE }], 'completed').notice)
     .toMatchObject({ headline: 'Browser actions declined', detail: 'You declined 2 actions, so they did not run.' });
   // Withdrawn approvals did not run either, but the user did not decline them.
