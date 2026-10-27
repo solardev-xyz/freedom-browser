@@ -183,8 +183,11 @@ test('examples and composer remain reachable in both themes, small windows and A
           const composer = await window.locator('#agent-composer-wrap').boundingBox();
           expect(cards.y).toBeGreaterThanOrEqual(composer.y + composer.height);
           if (mode === 'floating') {
+            // Inside the launcher card, sharing its glass (#864).
             const glass = await window.locator('.agent-sidebar-inner').boundingBox();
-            expect(cards.y).toBeGreaterThan(glass.y + glass.height + 8);
+            expect(cards.x).toBeGreaterThanOrEqual(glass.x);
+            expect(cards.x + cards.width).toBeLessThanOrEqual(glass.x + glass.width);
+            expect(cards.y + cards.height).toBeLessThanOrEqual(glass.y + glass.height);
           }
         }
         await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}-${mode}.png`) });

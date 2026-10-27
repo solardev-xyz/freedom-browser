@@ -468,6 +468,7 @@ async function loadAgentUi(options = {}) {
   const setAgentTabClaimHandler = jest.fn();
   const switchTab = jest.fn();
   const openLinkInNewTab = jest.fn();
+  const openStartPage = jest.fn();
   const setTabStripProjection = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
@@ -505,10 +506,12 @@ async function loadAgentUi(options = {}) {
     },
     switchTab,
     openLinkInNewTab,
+    openStartPage,
   });
   await flush();
   return {
     openLinkInNewTab,
+    openStartPage,
     mod,
     openSettings,
     elements,
@@ -812,6 +815,65 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
     expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Set up Agent');
     expect(ctx.elements['agent-run'].disabled).toBe(true);
+  });
+
+  describe('Settings opening Agent on a start page (#864)', () => {
+    const settingsTab = { id: 3, url: 'freedom://settings/ai/providers/ollama', title: 'Settings', isActive: true };
+    async function load(tabs, options = {}) {
+      let showAgent;
+      const ctx = await loadAgentUi({
+        getOpenTabs: () => tabs,
+        ...options,
+        electronAPI: {
+          onShowAgent: jest.fn((callback) => {
+            showAgent = callback;
+            return jest.fn();
+          }),
+        },
+      });
+      return { ctx, showAgent, panel: ctx.elements['agent-sidebar'] };
+    }
+
+    test('opens a new start page before showing the panel, not over the page that asked', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      ctx.openStartPage.mockImplementation(() => {
+        expect(panel.classList.contains('collapsed')).toBe(true);
+      });
+      showAgent({ freshPage: true });
+      expect(ctx.openStartPage).toHaveBeenCalledTimes(1);
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+      expect(panel.dataset.presentation).toBe('launcher');
+    });
+
+    test('reuses an open start page Agent is not driving, and stays on an active one', async () => {
+      const home = 'file:///app/pages/home.html';
+      const tabs = [
+        settingsTab,
+        { id: 4, url: home, title: 'Agent', isActive: false },
+        { id: 5, url: home, title: 'Viewer', isActive: false, kind: 'workspace-viewer' },
+        { id: 6, url: home, title: 'New Tab', isActive: false },
+      ];
+      const { ctx, showAgent } = await load(tabs, { isTabAgentOwned: (id) => id === 4 });
+      showAgent({ freshPage: true });
+      expect(ctx.switchTab).toHaveBeenCalledWith(6);
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+
+      const onHome = await load([{ id: 6, url: home, title: 'New Tab', isActive: true }]);
+      onHome.showAgent({ freshPage: true });
+      expect(onHome.ctx.switchTab).not.toHaveBeenCalled();
+      expect(onHome.ctx.openStartPage).not.toHaveBeenCalled();
+      expect(onHome.panel.classList.contains('collapsed')).toBe(false);
+    });
+
+    test('a plain open (start page, the Open Agent button) stays on the current page', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      showAgent({ freshPage: false });
+      showAgent();
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+    });
   });
 
   test('floats over the page: centred before a task, a right column once one runs, inert while closed', async () => {

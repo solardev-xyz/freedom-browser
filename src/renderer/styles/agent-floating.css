@@ -168,28 +168,15 @@
   min-height: 0;
 }
 
-/* The ideas float below the launcher, outside its painted glass rectangle. */
-.agent-floating[data-presentation='launcher'][data-agent-view='workspace'] .agent-sidebar-inner {
-  max-height: calc(100% - var(--agent-launcher-top) - var(--agent-examples-height, 156px) - 24px);
-}
-
+/* The ideas sit inside the launcher card, under the composer, so they share
+   its glass, border and shadow instead of floating over the page (#864). */
 .agent-floating[data-presentation='launcher'] .agent-workspace-view {
-  position: relative;
   min-height: var(--agent-composer-height, 160px);
 }
 
 .agent-floating[data-presentation='launcher'] .agent-examples {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 14px;
-  left: 14px;
-  margin: 0;
-  pointer-events: auto;
-}
-
-.agent-floating .agent-example {
-  background: var(--agent-bubble-agent);
-  box-shadow: var(--agent-glass-shadow-soft);
+  flex: 0 0 auto;
+  margin: 0 14px 14px;
 }
 
 .agent-floating[data-presentation='column'] .agent-examples {

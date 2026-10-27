@@ -123,9 +123,19 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#agent-ollama-url').fill(baseUrl);
   await page.locator('#agent-provider-save').click();
   await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
-  // The first model connected opens Agent.
+  // The first model connected opens Agent on the start page, not over the
+  // Settings form, which stays open in its own tab (#864).
   await expect(window.locator('#agent-prompt')).toBeVisible();
+  const activeUrl = () => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '');
+  await expect.poll(activeUrl).toContain('/pages/home.html');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`first-connect-agent-${theme}.png`) });
+  }
   await window.locator('#agent-sidebar-close').click();
+  await window.locator('.tab', { hasText: 'Settings' }).click();
+  await expect.poll(activeUrl).toContain('/pages/settings.html');
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();

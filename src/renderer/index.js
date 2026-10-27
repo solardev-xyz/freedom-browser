@@ -947,6 +947,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     switchTab,
     openLinkInNewTab: (url, { background } = {}) =>
       openInNewTabWithTarget(url, null, { background }),
+    openStartPage: () => createTab(),
   }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu({
