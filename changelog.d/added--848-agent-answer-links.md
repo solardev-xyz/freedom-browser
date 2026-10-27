@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Links in answers keep their address and open in a new tab; quotes, inline code and tables are formatted, and code blocks scroll in both themes and have a Copy button ([#848](https://github.com/solardev-xyz/freedom-browser/issues/848))
