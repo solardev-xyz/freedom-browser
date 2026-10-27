@@ -1206,6 +1206,18 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     return { composerWidth: composer.width, menuWidth: menu.width };
   });
   expect(Math.abs(broadAttachmentMenu.menuWidth - broadAttachmentMenu.composerWidth)).toBeLessThan(2);
+  // #870: every item stacks its description under its label (as the approval
+  // and mode menus do), and Open project has its own icon, not Add folder's.
+  const attachmentItems = await window.evaluate(() =>
+    [...document.querySelectorAll('#agent-attachment-menu [role="menuitem"]')].map((item) => {
+      const label = item.querySelector('strong').getBoundingClientRect();
+      const note = item.querySelector('small').getBoundingClientRect();
+      return { id: item.id, stacked: note.top >= label.bottom - 1 && Math.abs(note.left - label.left) < 1, icon: item.querySelector('svg').innerHTML };
+    }));
+  expect(attachmentItems.length).toBe(4);
+  expect(attachmentItems.every((item) => item.stacked)).toBe(true);
+  const iconOf = (id) => attachmentItems.find((item) => item.id === id).icon;
+  expect(iconOf('agent-open-project')).not.toBe(iconOf('agent-attach-folder'));
   await window.locator('[data-test="agent-attachment"]').click();
   await expect(window.locator('#agent-attachment-menu')).toBeHidden();
   await window.locator('#agent-approval-mode-button').click();

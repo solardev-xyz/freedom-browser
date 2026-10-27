@@ -1800,11 +1800,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   flex: 0 0 auto;
 }
 
-.agent-attachment-menu span {
+/* One item layout for every composer menu (Add, approvals, Freedom mode,
+   dictation): label with its description underneath, never beside it. */
+.agent-attachment-menu button > span {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .agent-attachment-menu strong {
@@ -1813,11 +1815,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-attachment-menu small {
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-composer {
