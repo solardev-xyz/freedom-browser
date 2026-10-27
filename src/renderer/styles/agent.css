@@ -4102,8 +4102,9 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-connected-provider { width: 100%; text-align: left; cursor: pointer; }
 .agent-connected-provider:hover { border-color: var(--muted); }
 .agent-connected-provider > span { font-size: 20px; color: var(--muted); }
-#agent-provider-disconnect { margin-bottom: 8px; }
-#agent-provider-connection-fields > .agent-config-actions:has(> button[hidden]:only-child) { display: none; }
+/* Save shows only with unsaved changes and Disconnect only when connected (#859);
+   with neither, the row takes no space. */
+#agent-provider-actions:not(:has(> button:not([hidden]))) { display: none; }
 
 /* Page-provided actions are discovery shortcuts, not execution controls. */
 .agent-page-actions {

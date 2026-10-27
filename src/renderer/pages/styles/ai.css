@@ -120,9 +120,9 @@
   font-size: 13px;
   line-height: 1.6;
 }
-/* The "Connected" status line sits right above Disconnect (and the
-   confirmation that replaces it); give them the gap the fields have (#803). */
-#providers :is(#agent-provider-disconnect, .agent-disconnect-confirm) {
+/* The confirmation replaces Disconnect in the Save / Disconnect row (#859),
+   which may then be empty and hidden; keep the gap the fields have (#803). */
+#providers .agent-disconnect-confirm {
   margin-top: 12px;
 }
 #providers .agent-disconnect-confirm p {
@@ -368,8 +368,20 @@
   overflow-wrap: anywhere;
 }
 #providers .agent-settings-model-name button[aria-pressed='true'] {
-  color: var(--accent);
   font-weight: 600;
+}
+/* The model new chats use is named, not only coloured (#859). */
+#providers .agent-model-default-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: 1px;
 }
 
 /* Keep the new selected entry above AA on its accent-tinted background. */

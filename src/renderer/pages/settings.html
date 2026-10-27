@@ -1846,11 +1846,6 @@
                 <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
               </div>
               <div id="agent-provider-connection-fields">
-                <button id="agent-provider-disconnect" class="agent-button secondary danger" type="button" hidden>Disconnect</button>
-                <div id="agent-provider-disconnect-confirm" class="agent-disconnect-confirm" role="group" aria-labelledby="agent-provider-disconnect-question" hidden>
-                  <p id="agent-provider-disconnect-question"></p>
-                  <div class="agent-config-actions"><button id="agent-provider-disconnect-accept" class="agent-button secondary danger" type="button">Disconnect</button><button id="agent-provider-disconnect-cancel" class="agent-button secondary" type="button">Cancel</button></div>
-                </div>
                 <div id="agent-custom-fields" hidden>
                   <label class="agent-field"><span>Connection name</span><input id="agent-custom-name" type="text" maxlength="80" placeholder="My AI server" /></label>
                   <label class="agent-field"><span>API base URL</span><input id="agent-custom-url" type="url" maxlength="2048" spellcheck="false" placeholder="https://example.com/v1" /></label>
@@ -1870,7 +1865,11 @@
                   <label class="agent-field"><span>Privacy requirement</span><select id="agent-privacy-policy"></select></label>
                   <button id="agent-privacy-save" class="agent-text-button" type="button">Save privacy setting</button>
                 </div>
-                <div class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button></div>
+                <div id="agent-provider-actions" class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button><button id="agent-provider-disconnect" class="agent-button secondary danger" type="button" hidden>Disconnect</button></div>
+                <div id="agent-provider-disconnect-confirm" class="agent-disconnect-confirm" role="group" aria-labelledby="agent-provider-disconnect-question" hidden>
+                  <p id="agent-provider-disconnect-question"></p>
+                  <div class="agent-config-actions"><button id="agent-provider-disconnect-accept" class="agent-button secondary danger" type="button">Disconnect</button><button id="agent-provider-disconnect-cancel" class="agent-button secondary" type="button">Cancel</button></div>
+                </div>
                 <section class="agent-provider-models" aria-labelledby="agent-provider-models-heading">
                   <div class="agent-provider-models-heading">
                     <h4 id="agent-provider-models-heading">Available models</h4>
