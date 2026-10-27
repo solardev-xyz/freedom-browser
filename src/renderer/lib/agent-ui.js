@@ -2206,8 +2206,11 @@ function restoreTranscript(transcript = []) {
       cursor = offset;
       if (kind === 'thinking') {
         startThinkingBlock(view);
-        appendThinkingText(view, item.text);
-        endThinkingBlock(view, item.durationMs);
+        // Main keeps only the start of very long thinking; mark the cut.
+        appendThinkingText(view, item.truncated ? `${item.text}\n\n…` : item.text);
+        // A block still streaming stays open, so the live deltas that follow
+        // extend it instead of starting a second disclosure.
+        if (item.open !== true) endThinkingBlock(view, item.durationMs);
       } else if (kind === 'guidance') createGuidanceView(turn.runId, item);
       else {
         addToolRow({ ...item, runId: turn.runId });

@@ -686,6 +686,37 @@ describe('Agent UI', () => {
     ]);
   });
 
+  test('a panel restored mid-thought keeps extending the same thinking block', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'running', runId: 'run_live', conversationId: 'conversation_live', transcript: [{
+          runId: 'run_live', userText: 'Research', assistantText: '', status: 'running',
+          thinking: [{ text: 'Half a ', textOffset: 0, timelineOrder: 0, open: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Half a ']);
+    const emit = event => ctx.emit({ runId: 'run_live', ...event });
+    emit({ type: 'assistant_thinking_delta', text: 'thought.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 4_000 });
+    emit({ type: 'assistant_text_delta', text: 'Answer.' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking · 4s: Half a thought.', 'Answer.']);
+  });
+
+  test('restored thinking main cut short is marked as cut', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Answer.', status: 'completed',
+          thinking: [{ text: 'Long start', textOffset: 0, timelineOrder: 0, durationMs: 2_000, truncated: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)[1]).toMatch(/^closed Thinking · 2s: Long start\s*…$/);
+  });
+
   test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
     const ctx = await loadAgentUi({ electronAPI: {
       getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {

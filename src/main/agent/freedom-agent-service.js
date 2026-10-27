@@ -65,6 +65,10 @@ const AGENT_EVENT_VERSION = 1;
 const MAX_AGENT_PROMPT_LENGTH = 32_000;
 const MAX_REASONING_PROGRESS_SOURCE_CHARS = 8_192;
 const MAX_REASONING_PROGRESS_LABEL_CHARS = 140;
+// Thinking streams to the open panel in full, but only this much of a turn's
+// thinking is kept in memory to rebuild the panel when it reopens, so a verbose
+// model can't grow the session (and every getState over IPC) without bound.
+const MAX_RETAINED_THINKING_CHARS = 32_768;
 const DEFAULT_AGENT_STOP_GRACE_MS = 3_000;
 const AGENT_ERROR_CODES = Object.freeze({
   BUSY: 'AGENT_BUSY',
@@ -1233,11 +1237,14 @@ class FreedomAgentService {
       activity: turn.activity.map((item) => ({ ...item })),
       thinking: (turn.thinking || [])
         .filter((block) => block.text)
-        .map(({ text, textOffset, timelineOrder, durationMs }) => ({
+        .map(({ text, textOffset, timelineOrder, durationMs, open, truncated }) => ({
           text,
           textOffset,
           timelineOrder,
           ...(Number.isFinite(durationMs) && { durationMs }),
+          // Still streaming: the panel keeps it open so later deltas extend it.
+          ...(open === true && { open: true }),
+          ...(truncated === true && { truncated: true }),
         })),
       attachments: Array.isArray(turn.attachments)
         ? turn.attachments.map((item) => ({ ...item }))
@@ -3566,7 +3573,10 @@ class FreedomAgentService {
   #appendThinking(run, text) {
     if (!text) return;
     const block = run.thinking.at(-1)?.open ? run.thinking.at(-1) : this.#startThinking(run);
-    block.text += text;
+    const retained = run.thinking.reduce((sum, item) => sum + item.text.length, 0);
+    const room = Math.max(0, MAX_RETAINED_THINKING_CHARS - retained);
+    if (text.length > room) block.truncated = true;
+    if (room) block.text += text.slice(0, room);
     this.#emit(run, { type: 'assistant_thinking_delta', text });
   }
 
