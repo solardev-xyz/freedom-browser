@@ -1342,11 +1342,16 @@ function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
     if (userDeclinedBeforeRunning(item)) return false;
     return item.status === 'running' || !CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode);
   });
+  // A refused repeat of a declined action showed no prompt; like the declined
+  // notice, count it only when its decline was in an earlier turn, and once.
+  const repeatedDeclines = items.filter((item) => item?.approval === 'declined' && item.repeatsDecline).length;
+  const freshDeclines = items.filter((item) => item?.approval === 'declined').length - repeatedDeclines;
+  const countedRepeats = freshDeclines ? 0 : Math.min(repeatedDeclines, 1);
   const approvals = Object.freeze({
-    requested: items.filter((item) => item?.approval).length,
+    requested: items.filter((item) => item?.approval).length - repeatedDeclines + countedRepeats,
     approved: items.filter((item) => item?.approval === 'approved').length,
     reviewerApproved: items.filter((item) => item?.approval === 'reviewer_approved').length,
-    declined: items.filter((item) => item?.approval === 'declined').length,
+    declined: freshDeclines + countedRepeats,
     withdrawn: items.filter((item) => item?.approval === 'withdrawn').length,
   });
   const destinations = [

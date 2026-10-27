@@ -468,16 +468,18 @@ describe('Pi browser tool adapter', () => {
     const onToolOutcome = jest.fn();
     const declinedError = (declined) => ({ ok: false, error: {
       code: ERROR_CODES.USER_CANCELLED, message: 'The user declined this website interaction', retryable: false,
-      ...(declined && { declined: true }) } });
+      ...(declined ? { declined: true } : { approval: 'declined' }) } });
     const controller = { execute: jest.fn().mockResolvedValueOnce(declinedError(false)).mockResolvedValueOnce(declinedError(true)) };
     const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
     const click = tools.find((tool) => tool.name === OPERATIONS.CLICK);
     await expect(click.execute('call_first', { ref: 'ref_submit' })).rejects.toThrow();
-    // The first decline gets its approval from the prompt itself.
-    expect(onToolOutcome.mock.calls[0][0].approval).toBeUndefined();
+    // The first decline carries its prompt's decision (a browser helper has no
+    // parent activity item for it), but is not a repeat.
+    expect(onToolOutcome.mock.calls[0][0]).toMatchObject({ approval: 'declined' });
+    expect(onToolOutcome.mock.calls[0][0].repeatsDecline).toBeUndefined();
     await expect(click.execute('call_retry', { ref: 'ref_submit' })).rejects.toThrow();
     expect(onToolOutcome.mock.calls[1][0]).toMatchObject({ toolCallId: 'call_retry', status: 'failed',
-      errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' });
+      errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined', repeatsDecline: true });
   });
 
   test('tells the model not to retry a download cancelled by the user', async () => {

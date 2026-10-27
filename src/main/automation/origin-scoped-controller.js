@@ -105,6 +105,10 @@ function errorEnvelope(state, code, message, options = {}) {
       // A repeat of an action the user already declined is refused without a
       // new prompt; say so, so the transcript reads it as declined, not failed.
       ...(options.declined === true && { declined: true }),
+      // The user just declined or withdrew this action's own prompt. Browser
+      // helpers have no parent activity item to carry that approval, so the
+      // receipt reads it from here.
+      ...(['declined', 'withdrawn'].includes(options.approval) && { approval: options.approval }),
     },
   };
 }
@@ -644,7 +648,8 @@ class OriginScopedAutomationController {
       const decisionStatus = typeof decision === 'object' ? decision?.status : decision;
       if (decisionStatus !== 'approved' && decisionStatus !== true) {
         if (decisionStatus !== 'withdrawn') this.declinedActions.add(key);
-        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Page tool approval was declined or withdrawn');
+        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Page tool approval was declined or withdrawn',
+          { approval: decisionStatus === 'withdrawn' ? 'withdrawn' : 'declined' });
       }
       const current = await this.#readState(input.tabId);
       if (!current.ok) return current;
@@ -684,7 +689,8 @@ class OriginScopedAutomationController {
       });
       if (decision !== 'approved' && decision !== true) {
         if (decision !== 'withdrawn') this.declinedActions.add(key);
-        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Dialog response approval was declined or withdrawn');
+        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Dialog response approval was declined or withdrawn',
+          { approval: decision === 'withdrawn' ? 'withdrawn' : 'declined' });
       }
       const current = await this.#readState(input.tabId);
       if (!current.ok) return current;
@@ -1115,14 +1121,16 @@ class OriginScopedAutomationController {
       ...(interaction && { interaction }),
     });
     if (decision === 'withdrawn') {
-      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Interaction approval was withdrawn');
+      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Interaction approval was withdrawn',
+        { approval: 'withdrawn' });
     }
     if (decision !== 'approved' && decision !== true) {
       this.declinedActions.add(actionKey);
       return errorEnvelope(
         state,
         ERROR_CODES.USER_CANCELLED,
-        'The user declined this website interaction'
+        'The user declined this website interaction',
+        { approval: 'declined' }
       );
     }
 

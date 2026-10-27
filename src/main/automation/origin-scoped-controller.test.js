@@ -908,7 +908,7 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
     ).resolves.toMatchObject({
       ok: false,
-      error: { code: ERROR_CODES.USER_CANCELLED, retryable: false },
+      error: { code: ERROR_CODES.USER_CANCELLED, retryable: false, approval: 'declined' },
     });
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
     const repeat = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
@@ -932,7 +932,7 @@ describe('OriginScopedAutomationController', () => {
     const withdrawn = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
     expect(withdrawn).toMatchObject({
       ok: false,
-      error: { code: ERROR_CODES.USER_CANCELLED, retryable: false },
+      error: { code: ERROR_CODES.USER_CANCELLED, retryable: false, approval: 'withdrawn' },
     });
     expect(withdrawn.error.declined).toBeUndefined();
     await expect(
@@ -1559,7 +1559,7 @@ test('declining a native response never dispatches it or prompts again for the s
   const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval });
   const input = { tabId: 'tab_assigned', dialogRef: dialog.dialogRef, accept: true };
   const first = await scoped.execute(OPERATIONS.HANDLE_DIALOG, input);
-  expect(first.error.code).toBe('USER_CANCELLED');
+  expect(first.error).toMatchObject({ code: 'USER_CANCELLED', approval: 'declined' });
   expect(first.error.declined).toBeUndefined();
   expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, input)).error).toMatchObject({ code: 'USER_CANCELLED', declined: true });
   expect(requestApproval).toHaveBeenCalledTimes(1);
@@ -1628,7 +1628,7 @@ test('rediscovery cannot bypass a declined tool invocation in the same run', asy
   const requestApproval = jest.fn(async () => 'declined');
   const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval });
   const call = () => scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', arguments: {} });
-  expect((await call()).error.code).toBe('USER_CANCELLED');
+  expect((await call()).error).toMatchObject({ code: 'USER_CANCELLED', approval: 'declined' });
   controller.inspectAction.mockResolvedValue({ ok: true, result: { ...tool, toolRef: 'second' } });
   expect((await call()).error).toMatchObject({ code: 'USER_CANCELLED', declined: true });
   expect(requestApproval).toHaveBeenCalledTimes(1);

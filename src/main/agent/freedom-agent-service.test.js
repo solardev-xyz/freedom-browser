@@ -3551,10 +3551,16 @@ describe('FreedomAgentService', () => {
     step('call_read', OPERATIONS.SNAPSHOT, { status: 'succeeded' }, false);
     // No approval prompt ran for this call: the controller refused it from its
     // declined-actions set and the tool layer reported approval 'declined'.
-    step('call_retry', OPERATIONS.CLICK,
+    // A fresh decline's outcome also names its approval, but the parent takes
+    // that from the prompt; on its own it does not mark the step as a repeat.
+    step('call_fresh', OPERATIONS.SNAPSHOT,
       { status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' }, true);
+    expect(events.filter(event => event.type === 'tool_finished').at(-1)).not.toHaveProperty('repeatsDecline');
+    step('call_retry', OPERATIONS.CLICK,
+      { status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined', repeatsDecline: true }, true);
     expect(events.filter(event => event.type === 'tool_finished').at(-1)).toMatchObject({
-      toolCallId: 'call_retry', status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' });
+      toolCallId: 'call_retry', status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined',
+      repeatsDecline: true });
     fake.prompt.resolve();
     await service.waitForIdle();
     expect(events.at(-1).outcome.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',

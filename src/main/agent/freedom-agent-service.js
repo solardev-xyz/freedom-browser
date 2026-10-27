@@ -465,7 +465,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       // The controller refused a repeat of an action the user already
       // declined, with no new prompt; the step was declined, not failed.
       ...(failed && errorCode === ERROR_CODES.USER_CANCELLED && toolOutcome?.approval === 'declined' &&
-        { approval: 'declined', repeatsDecline: true }),
+        toolOutcome.repeatsDecline === true && { approval: 'declined', repeatsDecline: true }),
     };
   }
   if (event.type === 'auto_retry_start') {
@@ -2924,8 +2924,10 @@ class FreedomAgentService {
         errorCode: outcome.errorCode,
       }),
       // Refused because the user declined this same action earlier (#845).
+      // (A fresh decline's approval comes from its own prompt instead.)
       ...(outcome.status === 'failed' && outcome.errorCode === ERROR_CODES.USER_CANCELLED &&
-        outcome.approval === 'declined' && { approval: 'declined' }),
+        outcome.approval === 'declined' && outcome.repeatsDecline === true &&
+        { approval: 'declined', repeatsDecline: true }),
       ...(normalizeArtifact(outcome.artifact) && {
         artifact: normalizeArtifact(outcome.artifact),
       }),

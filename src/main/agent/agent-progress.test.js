@@ -1557,6 +1557,14 @@ test('a declined approval is reported as declined, not as an uncertain browser o
   const retry = { ...submit, repeatsDecline: true };
   expect(buildAgentOutcome([typed, read, submit, retry], 'completed').notice).toEqual({ tone: 'neutral',
     headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' });
+  // No prompt was shown for the retry, so it is not a second approval either,
+  // even when a caution notice outranks the declined one and the detail says so.
+  const withRetry = buildAgentOutcome([typed, read, submit, retry, uncertain], 'completed');
+  expect(withRetry.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(withRetry.detail).toContain('1 browser action was declined by the user');
+  // A retry whose decline was in an earlier turn still counts, once.
+  expect(buildAgentOutcome([retry, retry, uncertain], 'completed').counts.approvals)
+    .toMatchObject({ requested: 1, declined: 1 });
   expect(buildAgentOutcome([typed, read, submit, { ...submit, operation: OPERATIONS.TYPE }], 'completed').notice)
     .toMatchObject({ headline: 'Browser actions declined', detail: 'You declined 2 actions, so they did not run.' });
   // Withdrawn approvals did not run either, but the user did not decline them.
@@ -1583,4 +1591,25 @@ test('only unresolved browser effects receive an attention notice; verification 
     taskId: `delegate_${'b'.repeat(24)}`, title: 'Browse', state: 'completed', mode: 'browser', browserActions: [failed],
   } };
   expect(buildAgentOutcome([helper, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
+});
+
+test('a browser helper\'s declined action reads as declined, not as an uncertain outcome (#845)', () => {
+  const { normalizeSubagentReceipt } = require('./subagent-receipt');
+  const submit = { operation: OPERATIONS.CLICK, status: 'failed', pageId: 'tab_child', origin: 'https://shop.example',
+    errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' };
+  const helper = (browserActions) => ({ operation: 'delegate_task', status: 'succeeded', subagent: {
+    taskId: `delegate_${'c'.repeat(24)}`, title: 'Order', state: 'completed', mode: 'browser', browserActions } });
+  expect(normalizeSubagentReceipt(helper([submit, { ...submit, repeatsDecline: true }]).subagent).browserActions)
+    .toEqual([expect.objectContaining({ approval: 'declined' }),
+      expect.objectContaining({ approval: 'declined', repeatsDecline: true })]);
+  const declined = buildAgentOutcome([helper([submit, { ...submit, repeatsDecline: true }])], 'completed');
+  expect(declined.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+    detail: 'You declined an action, so it did not run.' });
+  expect(buildAgentOutcome([helper([{ ...submit, approval: 'withdrawn' }])], 'completed').notice).toBeUndefined();
+  // Without a recorded decline the stopped action is still uncertain.
+  const { approval: _approval, ...stopped } = submit;
+  expect(buildAgentOutcome([helper([stopped])], 'completed').notice.headline).toBe('Browser action outcome uncertain');
+  // Only a decline or withdrawal survives normalization, and only on a failed action.
+  const [kept] = normalizeSubagentReceipt(helper([{ ...submit, status: 'succeeded', approval: 'approved' }]).subagent).browserActions;
+  expect(kept.approval).toBeUndefined();
 });
