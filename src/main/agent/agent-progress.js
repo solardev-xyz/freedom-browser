@@ -1226,13 +1226,19 @@ function buildAgentOutcome(activity, status, error) {
   // below reports its declines instead.
   const helperDeclinedItems = actions.filter(item => item?.operation?.startsWith('browser_') &&
     item.approval === 'declined' && userDeclinedBeforeRunning(item));
+  // A refused repeat counts only when no fresh decline exists on either side
+  // of the parent/helper boundary, and then once in total (on the parent side
+  // if it has one), so one user decision is never told twice.
+  const parentRepeats = items.some(item => item?.operation?.startsWith('browser_') &&
+    item.approval === 'declined' && item.repeatsDecline && userDeclinedBeforeRunning(item));
+  const countRefusedRepeat = !declinedItems.some(item => !item.repeatsDecline);
   const helperDeclined = helperDeclinedItems.filter(item => !item.repeatsDecline).length ||
-    Math.min(helperDeclinedItems.length, 1);
+    (countRefusedRepeat && !parentRepeats ? Math.min(helperDeclinedItems.length, 1) : 0);
   const helperDeclineNote = helperDeclined && notice?.tone !== 'neutral'
     ? ` You declined ${helperDeclined} of their actions, so ${helperDeclined === 1 ? 'it' : 'they'} did not run.` : '';
   // The declined notice says it already; the detail does not repeat it.
   const outcome = buildAgentOutcomeFromReceipts([...items, ...actions.map(item => ({ ...item, helperAction: true }))], status, error,
-    { declinedNoticeShown: notice?.tone === 'neutral' });
+    { declinedNoticeShown: notice?.tone === 'neutral', countRefusedRepeat });
   return Object.freeze({ ...outcome, ...(notice && { notice }),
     ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs.${helperDeclineNote} Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
   });
@@ -1359,7 +1365,9 @@ function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
   const prompted = items.filter((item) => item?.approval && !item.helperAction);
   const repeatedDeclines = prompted.filter((item) => item.approval === 'declined' && item.repeatsDecline).length;
   const freshDeclines = prompted.filter((item) => item.approval === 'declined').length - repeatedDeclines;
-  const countedRepeats = freshDeclines ? 0 : Math.min(repeatedDeclines, 1);
+  // buildAgentOutcome decides this across the parent/helper boundary.
+  const countRefusedRepeat = options.countRefusedRepeat ?? !freshDeclines;
+  const countedRepeats = countRefusedRepeat ? Math.min(repeatedDeclines, 1) : 0;
   const approvals = Object.freeze({
     requested: prompted.length - repeatedDeclines + countedRepeats,
     approved: prompted.filter((item) => item.approval === 'approved').length,

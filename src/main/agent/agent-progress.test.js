@@ -1624,6 +1624,24 @@ test('a browser helper\'s declined action reads as declined, not as an uncertain
   const parentDecline = { ...submit, pageId: 'page' };
   expect(buildAgentOutcome([parentDecline, helper([submit, uncertain])], 'completed').counts.approvals)
     .toMatchObject({ requested: 1, declined: 1 });
+  // A decline that crosses the boundary is one user decision: the parent's
+  // refused retry of a helper's decline, or the helper's refused retry of the
+  // parent's, is not told twice in the detail.
+  const parentRetry = { ...submit, repeatsDecline: true };
+  const parentRetried = buildAgentOutcome([helper([submit, uncertain]), parentRetry], 'completed');
+  expect(parentRetried.counts.approvals).toMatchObject({ requested: 0, declined: 0 });
+  expect(parentRetried.detail).not.toContain('declined by the user');
+  expect(parentRetried.detail).toContain('You declined 1 of their actions, so it did not run.');
+  const helperRetried = buildAgentOutcome([parentDecline, helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(helperRetried.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(helperRetried.detail).not.toContain('of their actions');
+  // Refused repeats on both sides of a decline from an earlier turn count once.
+  const bothRetried = buildAgentOutcome([parentRetry, helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(bothRetried.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(bothRetried.detail).not.toContain('of their actions');
+  // A helper-only refused repeat from an earlier turn still reads once.
+  expect(buildAgentOutcome([helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed').detail)
+    .toContain('You declined 1 of their actions, so it did not run.');
   // Only a decline or withdrawal survives normalization, and only on a failed action.
   const [kept] = normalizeSubagentReceipt(helper([{ ...submit, status: 'succeeded', approval: 'approved' }]).subagent).browserActions;
   expect(kept.approval).toBeUndefined();
