@@ -1,0 +1,4 @@
+- Agent no longer retries a request for a model the provider does not have, and its error card now offers a way out ([#849](https://github.com/solardev-xyz/freedom-browser/issues/849))
+  - An Ollama model that was never pulled showed "Reconnecting · attempt 2 of 2" before failing; it now fails straight away
+  - The card offers "Choose another model", which starts a new chat with the request kept and the model menu open, and "Open Models"
+  - A plain chat that never touched a page no longer says "Freedom did not verify any browser changes"

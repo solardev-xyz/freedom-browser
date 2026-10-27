@@ -1,6 +1,7 @@
 import { createAgentPrivacy } from './agent-privacy.js';
 import { createAgentProviderUi } from './agent-provider-ui.js';
 import { createAgentDictation } from './agent-dictation.js';
+import { carryOverPrompt } from './agent-carry-over.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -95,6 +96,7 @@ let getActiveTab = () => null;
 let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
 let switchToTab = () => {};
+let openLinkInNewTab = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
@@ -952,6 +954,16 @@ function activePageIsControlled() {
   );
 }
 
+// A tab Agent opened stays in its custody after the run ends (Complete,
+// Stopped): navigation and the address bar stay locked until the user claims
+// it. The page itself stays usable, so instead of the full interlock only the
+// hint pill shows, and clicking it hands the tab back.
+function activeHeldTabId() {
+  if (currentRunStatus !== 'idle' || activePageIsControlled()) return null;
+  const activeTab = openTabs.find((tab) => tab.isActive) || getActiveTab();
+  return Number.isSafeInteger(activeTab?.id) && isTabAgentOwned(activeTab.id) ? activeTab.id : null;
+}
+
 function setTakeoverDialogOpen(open) {
   const shouldOpen = open === true && activePageIsControlled() && currentRunStatus === 'running';
   elements.takeoverDialog.hidden = !shouldOpen;
@@ -964,14 +976,28 @@ function setTakeoverDialogOpen(open) {
 
 function renderPageInterlock() {
   const locked = activePageIsControlled();
-  elements.pageInterlock.hidden = !locked;
-  elements.pageInterlock.setAttribute('aria-hidden', String(!locked));
-  elements.pageLockHint.textContent =
-    currentRunStatus === 'pausing'
+  const held = !locked && activeHeldTabId() !== null;
+  elements.pageInterlock.hidden = !locked && !held;
+  elements.pageInterlock.setAttribute('aria-hidden', String(!locked && !held));
+  elements.pageInterlock.classList.toggle('held', held);
+  elements.pageLockHint.textContent = held
+    ? 'Agent still holds this tab · Click to take over'
+    : currentRunStatus === 'pausing'
       ? 'Taking over…'
       : currentRunStatus === 'stopping'
         ? 'Stopping Agent…'
         : 'Agent is controlling this page · Click to take over';
+  // In held mode the trigger is an invisible page-sized button: keep it out of
+  // the Tab order so a stray Space/Enter can't release the tab. The pill stays
+  // clickable, and the tab badge and tab context menu remain the keyboard path.
+  if (held) elements.pageLockTrigger.setAttribute('tabindex', '-1');
+  else elements.pageLockTrigger.removeAttribute('tabindex');
+  elements.pageLockTrigger.setAttribute(
+    'aria-label',
+    held
+      ? 'Agent still holds this tab. Click to take over.'
+      : 'Agent is controlling this page. Click to take over.'
+  );
   if (!locked || currentRunStatus !== 'running') setTakeoverDialogOpen(false);
 }
 
@@ -1827,6 +1853,8 @@ function createTurnView(turn) {
     previous.toolList.removeAttribute('id');
     previous.outcomeActions.hidden = true;
     previous.outcomeRetry.hidden = true;
+    previous.outcomeChooseModel.hidden = true;
+    previous.outcomeOpenModels.hidden = true;
   }
 
   const section = document.createElement('section');
@@ -1889,6 +1917,18 @@ function createTurnView(turn) {
   outcomeRetry.textContent = 'Retry';
   outcomeRetry.addEventListener('click', () => void retryProviderTurn(view));
   outcomeActions.appendChild(outcomeRetry);
+  const outcomeChooseModel = document.createElement('button');
+  outcomeChooseModel.type = 'button';
+  outcomeChooseModel.textContent = 'Choose another model';
+  outcomeChooseModel.hidden = true;
+  outcomeChooseModel.addEventListener('click', () => void chooseAnotherModel(view));
+  outcomeActions.appendChild(outcomeChooseModel);
+  const outcomeOpenModels = document.createElement('button');
+  outcomeOpenModels.type = 'button';
+  outcomeOpenModels.textContent = 'Open Models';
+  outcomeOpenModels.hidden = true;
+  outcomeOpenModels.addEventListener('click', () => showProviderSetup());
+  outcomeActions.appendChild(outcomeOpenModels);
   outcomeCopy.appendChild(outcomeHeadline);
   outcomeCopy.appendChild(outcomeDetail);
   outcomeCopy.appendChild(outcomeNextStep);
@@ -1954,6 +1994,8 @@ function createTurnView(turn) {
     outcomeTechnicalDetail,
     outcomeActions,
     outcomeRetry,
+    outcomeChooseModel,
+    outcomeOpenModels,
     artifactList,
     helperCards: new Map(),
     activity,
@@ -2140,6 +2182,77 @@ function formatDuration(durationMs) {
   return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
+const AGENT_MARKDOWN_LINK_SCHEMES = /^(?:https?|bzz|ipfs|ipns):/i;
+
+// A link in a chat answer opens in a tab, never in the chrome document itself.
+// Plain click opens a foreground tab (the page the user or Agent is on stays
+// put); Ctrl/Cmd+click and middle-click open a background tab (foreground in
+// agent-first mode, see below); Shift+click a new window — the same
+// dispositions page links and bookmarks follow.
+function handleAgentMarkdownLink(event) {
+  const link = event.target?.closest?.('a[href]');
+  if (!link || !event.currentTarget?.contains?.(link)) return;
+  if (event.type === 'auxclick' && event.button !== 1) return;
+  event.preventDefault();
+  const url = link.getAttribute('href');
+  if (!url || !AGENT_MARKDOWN_LINK_SCHEMES.test(url)) return;
+  const middle = event.type === 'auxclick';
+  if (!middle && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    window.electronAPI?.openUrlInNewWindow?.(url);
+    return;
+  }
+  // Agent-first mode's tab strip shows only this conversation's pages, so a
+  // background tab would be invisible and the click would look like a no-op.
+  // Open it in the foreground there instead, which leaves agent-first mode for
+  // the new tab exactly as a plain click does.
+  const background =
+    !agentFirstMode && Boolean((middle || event.ctrlKey || event.metaKey) && !event.shiftKey);
+  openLinkInNewTab(url, { background });
+}
+
+function decorateAgentMarkdown(output) {
+  if (!output.agentMarkdownLinksBound) {
+    output.agentMarkdownLinksBound = true;
+    output.addEventListener('click', handleAgentMarkdownLink);
+    output.addEventListener('auxclick', handleAgentMarkdownLink);
+  }
+  for (const link of output.querySelectorAll?.('a[href]') || []) {
+    // The chrome has no status bar, so the tooltip is where the destination
+    // shows before the click.
+    link.title = link.getAttribute('href');
+    link.className = 'agent-markdown-link';
+  }
+  for (const pre of output.querySelectorAll?.('pre') || []) {
+    const block = document.createElement('div');
+    block.className = 'agent-code-block';
+    pre.parentNode.insertBefore(block, pre);
+    block.appendChild(pre);
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'agent-code-copy';
+    // The label is drawn by CSS from data-state, so the button adds nothing to
+    // the answer's textContent (helper-report previews read it) or to a text
+    // selection copied out of the answer.
+    const setState = (state, label) => {
+      copy.dataset.state = state;
+      copy.setAttribute('aria-label', label);
+    };
+    setState('idle', 'Copy code');
+    copy.addEventListener('click', async () => {
+      try {
+        const result = await window.electronAPI.copyText(pre.textContent);
+        if (result?.success === false) throw new Error(result.error || 'Copy failed');
+        setState('copied', 'Code copied');
+      } catch {
+        setState('failed', 'Copy failed');
+      }
+      clearTimeout(copy.resetTimer);
+      copy.resetTimer = setTimeout(() => setState('idle', 'Copy code'), 1500);
+    });
+    block.appendChild(copy);
+  }
+}
+
 function renderAgentMarkdown(output, text) {
   if (!text || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
   try {
@@ -2171,9 +2284,14 @@ function renderAgentMarkdown(output, text) {
         'tr',
         'th',
         'td',
+        'a',
       ],
-      ALLOWED_ATTR: [],
+      // Links keep their URL (#848), but only for schemes a tab can open;
+      // DOMPurify drops any other href and leaves the link text.
+      ALLOWED_ATTR: ['href'],
+      ALLOWED_URI_REGEXP: AGENT_MARKDOWN_LINK_SCHEMES,
     });
+    decorateAgentMarkdown(output);
     output.classList.add('rendered-markdown');
   } catch {
     output.textContent = text;
@@ -3201,6 +3319,8 @@ function renderTurnOutcome(view, outcome, error) {
   view.outcomeIcon.textContent = icons[tone];
   view.outcomeHeadline.textContent = outcome.headline || 'Run finished';
   view.outcomeDetail.textContent = outcome.detail || '';
+  // A stopped plain chat has nothing to add to its headline.
+  view.outcomeDetail.hidden = !outcome.detail;
   view.outcomeNextStep.textContent = outcome.nextStep ? `Next: ${outcome.nextStep}` : '';
   view.outcomeNextStep.hidden = !outcome.nextStep;
   view.outcomeTechnicalDetail.textContent = outcome.technicalDetails || '';
@@ -3211,9 +3331,15 @@ function renderTurnOutcome(view, outcome, error) {
     error?.code === 'PROVIDER_ERROR' &&
     typeof view.userText === 'string' &&
     Boolean(view.userText.trim());
-  view.outcomeActions.hidden = !canRetry;
+  // A missing model will not appear by retrying: offer a new chat with
+  // another model, or the provider setup where the model can be made available.
+  const canChooseModel = outcome.providerAction === 'choose_model' && error?.code === 'PROVIDER_ERROR';
+  view.outcomeActions.hidden = !canRetry && !canChooseModel;
   view.outcomeRetry.hidden = !canRetry;
   view.outcomeRetry.disabled = false;
+  view.outcomeChooseModel.hidden = !canChooseModel;
+  view.outcomeChooseModel.disabled = false;
+  view.outcomeOpenModels.hidden = !canChooseModel;
   view.outcome.hidden = false;
 }
 
@@ -4395,7 +4521,7 @@ function submitComposer({ allowStop = false, sharePage = true } = {}) {
 
 async function clearConversation() {
   dictation?.cancel();
-  if (!currentConversationId || currentRunStatus !== 'idle') return;
+  if (!currentConversationId || currentRunStatus !== 'idle') return false;
   elements.newChat.disabled = true;
   setMessage(elements.runMessage, 'Starting a new chat…');
   try {
@@ -4407,14 +4533,44 @@ async function clearConversation() {
         true
       );
       elements.newChat.disabled = false;
-      return;
+      return false;
     }
     applyConversationCleared();
     elements.prompt.focus();
+    return true;
   } catch {
     setMessage(elements.runMessage, 'Could not start a new chat', true);
     elements.newChat.disabled = false;
+    return false;
   }
+}
+
+// The model is fixed for a conversation, so choosing another one means a new
+// chat. Carry the earlier exchange and the failed request into the composer,
+// where the user can see and edit them, and open the model menu.
+async function chooseAnotherModel(view) {
+  const turns = [...turnViews.values()];
+  if (currentRunStatus !== 'idle' || !view || view !== turns.at(-1)) return;
+  const prompt = carryOverPrompt(turns.map((turn) => ({
+    userText: turn.userText,
+    assistantText: turn.assistantText,
+  })));
+  view.outcomeChooseModel.disabled = true;
+  if (currentConversationId && !(await clearConversation())) {
+    view.outcomeChooseModel.disabled = false;
+    return;
+  }
+  if (prompt.trim() && !elements.prompt.value.trim()) {
+    elements.prompt.value = prompt;
+    updateSendAvailability();
+  }
+  closeComposerPopovers();
+  // Show every model: an earlier search could hide the alternatives.
+  elements.modelMenuSearch.value = '';
+  renderModelMenu();
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  elements.modelMenuSearch.focus();
 }
 
 async function startNewSessionFromSidebar() {
@@ -4775,6 +4931,8 @@ export function initAgentUi(options = {}) {
   isTabAgentOwned =
     typeof options.isTabAgentOwned === 'function' ? options.isTabAgentOwned : () => false;
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
+  openLinkInNewTab =
+    typeof options.openLinkInNewTab === 'function' ? options.openLinkInNewTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   setAgentTabCustody =
@@ -4957,8 +5115,15 @@ export function initAgentUi(options = {}) {
     if (dictationBusy) { void dictation.finish({ send: true }); return; }
     if (!elements.run.disabled) submitComposer();
   });
-  elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
-  elements.pageInterlock.addEventListener('wheel', (event) => event.preventDefault(), {
+  elements.pageLockTrigger.addEventListener('click', () => {
+    const heldTabId = activeHeldTabId();
+    if (heldTabId !== null) void claimAgentOwnedTab(heldTabId);
+    else requestTakeoverConfirmation();
+  });
+  // Over the held pill the page stays usable, so let the wheel scroll it.
+  elements.pageInterlock.addEventListener('wheel', (event) => {
+    if (!elements.pageInterlock.classList.contains('held')) event.preventDefault();
+  }, {
     passive: false,
   });
   elements.pageInterlock.addEventListener('contextmenu', (event) => event.preventDefault());
