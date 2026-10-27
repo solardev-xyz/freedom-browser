@@ -41,12 +41,11 @@ async function settings(app, window) {
   return page;
 }
 
-// Turning AI on with no model continues to the provider picker; tests about
-// the AI page itself step back to it.
+// Turning AI on with no model stays on the AI page and offers the next step
+// (#836) rather than navigating to the provider picker.
 async function enableAiAndStay(page) {
   await page.locator('#enable-ai').check();
-  await expect(page).toHaveURL(/#ai\/providers\/add$/);
-  await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
   await expect(page).toHaveURL(/#ai$/);
 }
 
@@ -78,11 +77,25 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
-  // With no model yet, turning AI on continues to the provider picker.
+  // With no model yet, turning AI on stays on the AI page and offers
+  // "Connect a model" instead of navigating under the user's hand (#836).
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
+  await expect(page.locator('#ai-open-agent')).toBeHidden();
+  await expect(page.locator('#ai-next-help')).toHaveText('Choose a provider account or a local model for Agent to use.');
+  await window.waitForTimeout(500);
+  await expect(page).toHaveURL(/#ai$/);
+  await expect(page.locator('#enable-ai-restart')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-on-no-model-${theme}.png`) });
+  }
+  // The offered step leads to the provider picker.
+  await page.locator('#ai-connect-model').click();
   await expect(page).toHaveURL(/#ai\/providers\/add$/);
   await expect(page.locator('#agent-provider-choices')).toBeVisible();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
-  await expect(page.locator('#enable-ai-restart')).toBeVisible();
+  await expect(page).toHaveURL(/#ai$/);
   // The button follows this launch, not the click: reopened, Settings still
   // offers the restart this launch needs.
   await page.evaluate(() => {
@@ -105,6 +118,7 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await window.locator('#agent-sidebar-close').click();
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -262,11 +276,13 @@ test('Settings opens Agent only for the first model connected on that page', asy
   const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
   expect(configured?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-connect-model')).toBeHidden();
   await window.waitForTimeout(1000);
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   const removed = await window.evaluate(() => window.electronAPI.removeAgentProvider('ollama'));
   expect(removed?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeHidden();
+  await expect(page.locator('#ai-connect-model')).toBeVisible();
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await page.locator('#agent-provider-add').click();
   await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
