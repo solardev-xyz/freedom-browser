@@ -947,6 +947,12 @@ body.agent-first-mode .agent-workspace-nav {
   display: flex;
 }
 
+/* The open sessions column's + already starts a new chat (#875); offer the
+   transcript's own New chat only while that column is collapsed. */
+body.agent-first-mode:not(.agent-session-sidebar-closed) #agent-new-chat {
+  display: none;
+}
+
 body.agent-first-mode.agent-session-sidebar-closed .agent-session-resizer,
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-workspace-resizer {
   pointer-events: none;

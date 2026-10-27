@@ -1451,6 +1451,27 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 
+  // Agent-first offers New chat once (#875): the open sessions column's +
+  // covers it, and the transcript's own button returns only once that column
+  // is collapsed.
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-session-new-chat')).toBeVisible();
+  await expect(window.locator('#agent-session-new-chat')).toBeEnabled();
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-new-chat')).toBeVisible();
+  await expect(window.locator('#agent-new-chat')).toBeEnabled();
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-new-chat')).toBeVisible();
+
   await window.locator('#agent-approval-mode-button').click();
   await window.locator('#agent-approval-mode-allow').click();
   await expect(window.locator('#agent-active-approval-mode-label')).toHaveText(

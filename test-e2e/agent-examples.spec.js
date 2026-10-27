@@ -97,7 +97,9 @@ test('each example starts immediately once, while a typed draft stays protected'
     await expect(prompt).toHaveValue('');
     expect(inferenceRequests.length).toBe(count + 1);
     expect(JSON.stringify(inferenceRequests[count].messages)).toContain(text);
-    await window.locator('#agent-new-chat').click();
+    // Agent-first shows only one New chat: the sessions column's + while that
+    // column is open (wide windows), the transcript's button otherwise (#875).
+    await window.locator('#agent-new-chat:visible, #agent-session-new-chat:visible').click();
     await expect(examples).toBeVisible();
     if (agentFirst) await window.keyboard.press('Escape');
   }
