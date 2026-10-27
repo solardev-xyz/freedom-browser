@@ -446,6 +446,72 @@ describe('isolated Pi session factory', () => {
     })).toBe('passed');
   });
 
+  test('real Pi does not auto-retry a missing model, but still retries a transient failure', () => {
+    const script = `
+      (async () => {
+        const assert = require('node:assert/strict');
+        const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+        const { createIsolatedPiSession } = require('./src/main/agent/pi-session-factory');
+        const sdk = await loadPiSdk();
+        const runtime = await sdk.ModelRuntime.create({
+          credentials: { read: async () => undefined, list: async () => [] },
+          modelsPath: null, modelsStorePath: null, refreshOnCreate: false,
+          allowModelNetwork: false,
+        });
+        runtime.registerProvider('freedom-test', {
+          baseUrl: 'https://provider.invalid/v1', api: 'openai-completions',
+          models: [{ id: 'qwen3:8b', name: 'Test', reasoning: false, input: ['text'],
+            contextWindow: 128000, maxTokens: 1024,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            compat: { supportsDeveloperRole: false } }],
+        });
+        await runtime.setRuntimeApiKey('freedom-test', 'test-not-a-credential');
+        const run = async (status, message) => {
+          let requests = 0;
+          globalThis.fetch = async () => {
+            requests++;
+            return new Response(JSON.stringify({ error: { message } }),
+              { status, headers: { 'content-type': 'application/json' } });
+          };
+          const created = await createIsolatedPiSession({ sdk, modelRuntime: runtime,
+            model: runtime.getModel('freedom-test', 'qwen3:8b') });
+          const retries = [];
+          created.session.subscribe(event => {
+            if (event.type !== 'auto_retry_start') return;
+            retries.push(event);
+            // The positive control only needs to see Pi schedule the retry.
+            created.session.abort();
+          });
+          try {
+            await created.session.prompt('hello').catch(() => {});
+            return { requests, retries, last: created.session.agent.state.messages.at(-1) };
+          } finally { created.session.dispose(); }
+        };
+        // Ollama reports a model that was never pulled as HTTP 500.
+        const missing = await run(500, 'model "qwen3:8b" not found, try pulling it first');
+        assert.equal(missing.requests, 1);
+        assert.equal(missing.retries.length, 0);
+        assert.equal(missing.last.stopReason, 'error');
+        assert.match(missing.last.errorMessage, /not found/);
+        const transient = await run(503, 'service unavailable');
+        assert.equal(transient.retries.length, 1, 'a transient 503 must still be retried');
+        // Capacity wording that mentions the model is still a transient outage.
+        for (const wording of ['Model temporarily unavailable, please retry', 'model unavailable',
+          'The model is unavailable due to high load']) {
+          const capacity = await run(503, wording);
+          assert.equal(capacity.retries.length, 1, wording + ' must still be retried');
+        }
+        // A generation error that mentions the model is not a missing model.
+        const generation = await run(500, 'model generated invalid JSON');
+        assert.equal(generation.retries.length, 1, 'a generation error must still be retried');
+        process.stdout.write('passed');
+      })().catch(error => { console.error(error); process.exit(1); });
+    `;
+    expect(execFileSync(process.execPath, ['-e', script], {
+      cwd: repositoryRoot, encoding: 'utf8', timeout: 15000,
+    })).toBe('passed');
+  });
+
   test('creates a real Pi session with restored visible context and no hidden persistence', () => {
     const script = `
       (async () => {
