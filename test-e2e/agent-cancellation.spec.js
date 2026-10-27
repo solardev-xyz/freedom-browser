@@ -739,6 +739,72 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#webview-container webview:not(.hidden)')).toBeVisible();
 });
 
+test('a tab Agent still holds after the run keeps a take-over pill that hands it back', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 800));
+  for (let index = 1; index <= 5; index += 1) {
+    await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
+      body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
+    });
+  }
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('CREATE_FIVE_TASK_TABS');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
+  await expect(window.locator('[data-test="tab"].active.agent-owned')).toHaveCount(1);
+  await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', true);
+
+  // The run is over but the tab is still Agent's: say so, and how to undo it.
+  const interlock = window.locator('[data-test="agent-page-interlock"]');
+  const hint = window.locator('#agent-page-lock-hint');
+  await expect(interlock).toBeVisible();
+  await expect(interlock).toHaveClass(/held/);
+  await expect(hint).toBeVisible();
+  await expect(hint).toHaveText('Agent still holds this tab · Click to take over');
+  // Only the pill takes clicks; the page under the rest of the overlay stays usable.
+  const hitsInterlock = await interlock.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + 20, rect.top + 20);
+    return element.contains(hit);
+  });
+  expect(hitsInterlock).toBe(false);
+  // The invisible page-sized trigger is out of the Tab order.
+  await expect(window.locator('#agent-page-lock-trigger')).toHaveAttribute('tabindex', '-1');
+  // Closing Find gives the keyboard back to the page, not to the trigger, so a
+  // Space to scroll can't silently claim the tab.
+  await window.locator('#webview-container webview:not(.hidden)').click({ position: { x: 20, y: 20 } });
+  await window.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
+  await expect(window.locator('#find-bar')).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(window.locator('#find-bar')).toBeHidden();
+  await expect
+    .poll(() => window.evaluate(() => document.activeElement?.id || document.activeElement?.tagName))
+    .not.toBe('agent-page-lock-trigger');
+  await window.keyboard.press('Space');
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(5);
+  await expect(interlock).toHaveClass(/held/);
+  if (process.env.AGENT_HELD_SHOT) {
+    await window.screenshot({ path: `${process.env.AGENT_HELD_SHOT}-held.png` });
+  }
+
+  await hint.click();
+  await expect(window.locator('#agent-run-message')).toHaveText(
+    'This tab is now yours. Agent no longer controls it.'
+  );
+  await expect(window.locator('[data-test="tab"].active.agent-owned')).toHaveCount(0);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(4);
+  await expect(interlock).toBeHidden();
+  await expect(window.locator('#agent-takeover-dialog')).toBeHidden();
+  await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', false);
+  await expect(window.locator('#reload-btn')).toBeEnabled();
+  if (process.env.AGENT_HELD_SHOT) {
+    await window.screenshot({ path: `${process.env.AGENT_HELD_SHOT}-claimed.png` });
+  }
+});
+
 test('Stop cancels an in-flight browser navigation', async ({ window, harness }) => {
   await harness.setContentFixture(SLOW_NAVIGATION_URL, {
     body: '<!doctype html><title>Still loading</title><p>Navigation started</p>',

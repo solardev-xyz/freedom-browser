@@ -467,6 +467,7 @@ async function loadAgentUi(options = {}) {
   const setAgentTabCustody = jest.fn();
   const setAgentTabClaimHandler = jest.fn();
   const switchTab = jest.fn();
+  const openLinkInNewTab = jest.fn();
   const setTabStripProjection = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
@@ -503,9 +504,11 @@ async function loadAgentUi(options = {}) {
       return jest.fn();
     },
     switchTab,
+    openLinkInNewTab,
   });
   await flush();
   return {
+    openLinkInNewTab,
     mod,
     openSettings,
     elements,
@@ -755,7 +758,7 @@ describe('Agent UI', () => {
     const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
     expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
     expect(body.classList.contains('rendered-markdown')).toBe(true);
-    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual([]);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual(['href']);
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
   });
@@ -3541,17 +3544,88 @@ describe('Agent UI', () => {
 
     expect(sanitize).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ ALLOWED_ATTR: [] })
+      expect.objectContaining({ ALLOWED_ATTR: ['href'] })
     );
     const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
     expect(allowedTags).not.toContain('img');
-    expect(allowedTags).not.toContain('a');
+    expect(allowedTags).toContain('a');
+    // Links keep their URL (#848), but only for schemes a tab can open.
+    const uriPattern = sanitize.mock.calls[0][1].ALLOWED_URI_REGEXP;
+    for (const url of ['https://docs.ethswarm.org/x', 'http://a.test', 'bzz://site.eth/', 'ipfs://bafy', 'ipns://k51']) {
+      expect(uriPattern.test(url)).toBe(true);
+    }
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'freedom://settings', 'docs.ethswarm.org']) {
+      expect(uriPattern.test(url)).toBe(false);
+    }
     expect(allowedTags).toEqual(
       expect.arrayContaining(['table', 'thead', 'tbody', 'tr', 'th', 'td'])
     );
     expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
       '<p>Safe response</p>'
     );
+  });
+
+  test('links in a rendered answer open in a tab instead of navigating the chrome (#848)', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p><a href="https://docs.ethswarm.org/">the docs</a></p>') },
+        DOMPurify: { sanitize: jest.fn((html) => html) },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Summarize' });
+    ctx.emit({ type: 'assistant_text_delta', conversationId: 'conversation_test', runId: 'run_test', text: '[the docs](https://docs.ethswarm.org/)' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    expect(output.classList.contains('rendered-markdown')).toBe(true);
+    // The fake DOM does not parse innerHTML; stand in the parsed link.
+    const link = ctx.document.createElement('a');
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    output.appendChild(link);
+    const click = (type, extra = {}) => {
+      const event = { type, target: link, currentTarget: output, button: type === 'auxclick' ? 1 : 0, preventDefault: jest.fn(), ...extra };
+      output.dispatch(type, event);
+      return event;
+    };
+
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    expect(click('auxclick').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    click('click', { ctrlKey: true, shiftKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    ctx.electronAPI.openUrlInNewWindow = jest.fn();
+    click('click', { shiftKey: true });
+    expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith('https://docs.ethswarm.org/');
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // A right-click auxclick is not an activation; a scheme the sanitizer
+    // should have dropped is never opened even if it reaches the DOM.
+    click('auxclick', { button: 2 });
+    link.setAttribute('href', 'javascript:alert(1)');
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // Agent-first mode's tab strip lists only the conversation's pages, so a
+    // background tab would be invisible there: Ctrl+click and middle-click
+    // open in the foreground instead (and leave agent-first, like a click).
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { metaKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('auxclick');
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(7);
   });
 
   test('falls back to text when completed assistant Markdown cannot be rendered', async () => {
@@ -3689,6 +3763,57 @@ describe('Agent UI', () => {
     ctx.elements['agent-run'].dispatch('click');
     await flush();
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+  });
+
+  test.each([
+    ['completed', 'Complete'],
+    ['cancelled', 'Stopped'],
+  ])('keeps a take-over pill on an Agent-held tab after the run ends (%s)', async (status, label) => {
+    let owned = true;
+    const ctx = await loadAgentUi({
+      isTabAgentOwned: (tabId) => owned && tabId === 7,
+      electronAPI: {
+        claimAgentTab: jest.fn().mockImplementation(async () => {
+          owned = false;
+          return { ok: true, claimed: true, state: { status: 'ready', taskTabs: [], agentTabs: [] } };
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Open the page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex') ?? null).toBeNull();
+    if (status === 'cancelled') {
+      ctx.elements['agent-run'].dispatch('click');
+      await flush();
+      expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    }
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe(label);
+    // The tab is still in Agent custody, so the hint stays, but only as a pill.
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(true);
+    expect(ctx.elements['agent-page-lock-hint'].textContent).toBe(
+      'Agent still holds this tab · Click to take over'
+    );
+    // The page-sized trigger leaves the Tab order, and the wheel over the pill
+    // still scrolls the page.
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex')).toBe('-1');
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).not.toHaveBeenCalled();
+
+    // No run to pause: the click hands the tab back without the run dialog.
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(7);
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
   });
 
   test('morphs the composer into a decision surface until approval resolves', async () => {
@@ -5151,6 +5276,56 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('Ollama details describe the connected model right after connecting (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama] },
+      }),
+    } });
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    // Right after connecting: the connected model, not "No matching models".
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+    expect(ctx.elements['agent-model-details'].hidden).toBe(false);
+  });
+
+  test('Ollama details do not keep another provider\'s model on a later visit (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4', contextWindow: 8192 }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    // Another provider's page fills the same line with its own model...
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('gpt-4 · 8,192 context · Tool support not reported');
+
+    // ...which must not survive into Ollama's page on a later visit.
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
   });
 
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
