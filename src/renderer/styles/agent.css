@@ -1800,8 +1800,14 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   flex: 0 0 auto;
 }
 
-/* One item layout for every composer menu (Add, approvals, Freedom mode,
-   dictation): label with its description underneath, never beside it. */
+/* Label with its description underneath, never beside it, matching the
+   approval and Freedom-mode menus (which have their own rules and are not
+   matched here). This rule reaches every `.agent-attachment-menu`: the Add
+   menu and the dictation menu, which shares the class. In the dictation
+   menu the `.agent-dictation-menu-copy` and `.agent-dictation-menu-check`
+   spans are also direct `button > span` children; agent-dictation.css
+   overrides their `display` (grid / block), so keep those overrides if this
+   rule changes. */
 .agent-attachment-menu button > span {
   display: flex;
   min-width: 0;
