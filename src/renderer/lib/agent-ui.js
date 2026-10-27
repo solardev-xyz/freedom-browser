@@ -1827,6 +1827,8 @@ function createTurnView(turn) {
     previous.toolList.removeAttribute('id');
     previous.outcomeActions.hidden = true;
     previous.outcomeRetry.hidden = true;
+    previous.outcomeChooseModel.hidden = true;
+    previous.outcomeOpenModels.hidden = true;
   }
 
   const section = document.createElement('section');
@@ -1889,6 +1891,18 @@ function createTurnView(turn) {
   outcomeRetry.textContent = 'Retry';
   outcomeRetry.addEventListener('click', () => void retryProviderTurn(view));
   outcomeActions.appendChild(outcomeRetry);
+  const outcomeChooseModel = document.createElement('button');
+  outcomeChooseModel.type = 'button';
+  outcomeChooseModel.textContent = 'Choose another model';
+  outcomeChooseModel.hidden = true;
+  outcomeChooseModel.addEventListener('click', () => void chooseAnotherModel(view));
+  outcomeActions.appendChild(outcomeChooseModel);
+  const outcomeOpenModels = document.createElement('button');
+  outcomeOpenModels.type = 'button';
+  outcomeOpenModels.textContent = 'Open Models';
+  outcomeOpenModels.hidden = true;
+  outcomeOpenModels.addEventListener('click', () => showProviderSetup());
+  outcomeActions.appendChild(outcomeOpenModels);
   outcomeCopy.appendChild(outcomeHeadline);
   outcomeCopy.appendChild(outcomeDetail);
   outcomeCopy.appendChild(outcomeNextStep);
@@ -1954,6 +1968,8 @@ function createTurnView(turn) {
     outcomeTechnicalDetail,
     outcomeActions,
     outcomeRetry,
+    outcomeChooseModel,
+    outcomeOpenModels,
     artifactList,
     helperCards: new Map(),
     activity,
@@ -3150,9 +3166,15 @@ function renderTurnOutcome(view, outcome, error) {
     error?.code === 'PROVIDER_ERROR' &&
     typeof view.userText === 'string' &&
     Boolean(view.userText.trim());
-  view.outcomeActions.hidden = !canRetry;
+  // A missing model will not appear by retrying: offer a new chat with
+  // another model, or the provider setup where the model can be made available.
+  const canChooseModel = outcome.providerAction === 'choose_model' && error?.code === 'PROVIDER_ERROR';
+  view.outcomeActions.hidden = !canRetry && !canChooseModel;
   view.outcomeRetry.hidden = !canRetry;
   view.outcomeRetry.disabled = false;
+  view.outcomeChooseModel.hidden = !canChooseModel;
+  view.outcomeChooseModel.disabled = false;
+  view.outcomeOpenModels.hidden = !canChooseModel;
   view.outcome.hidden = false;
 }
 
@@ -4324,7 +4346,7 @@ function submitComposer({ allowStop = false, sharePage = true } = {}) {
 
 async function clearConversation() {
   dictation?.cancel();
-  if (!currentConversationId || currentRunStatus !== 'idle') return;
+  if (!currentConversationId || currentRunStatus !== 'idle') return false;
   elements.newChat.disabled = true;
   setMessage(elements.runMessage, 'Starting a new chat…');
   try {
@@ -4336,14 +4358,39 @@ async function clearConversation() {
         true
       );
       elements.newChat.disabled = false;
-      return;
+      return false;
     }
     applyConversationCleared();
     elements.prompt.focus();
+    return true;
   } catch {
     setMessage(elements.runMessage, 'Could not start a new chat', true);
     elements.newChat.disabled = false;
+    return false;
   }
+}
+
+// The model is fixed for a conversation, so choosing another one means a new
+// chat. Carry the failed request into the composer and open the model menu.
+async function chooseAnotherModel(view) {
+  if (currentRunStatus !== 'idle' || !view || view !== [...turnViews.values()].at(-1)) return;
+  const prompt = typeof view.userText === 'string' ? view.userText : '';
+  view.outcomeChooseModel.disabled = true;
+  if (currentConversationId && !(await clearConversation())) {
+    view.outcomeChooseModel.disabled = false;
+    return;
+  }
+  if (prompt.trim() && !elements.prompt.value.trim()) {
+    elements.prompt.value = prompt;
+    updateSendAvailability();
+  }
+  closeComposerPopovers();
+  // Show every model: an earlier search could hide the alternatives.
+  elements.modelMenuSearch.value = '';
+  renderModelMenu();
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  elements.modelMenuSearch.focus();
 }
 
 async function startNewSessionFromSidebar() {

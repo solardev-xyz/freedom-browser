@@ -6,15 +6,24 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 
+// Chat requests the discovery-only Ollama fixture refused, per test.
+const ollamaChatRequests = { count: 0 };
+
 const test = baseTest.extend({
   ollamaServer: async ({ electronApp: _electronApp }, use) => {
+    ollamaChatRequests.count = 0;
     const server = http.createServer((request, response) => {
       response.setHeader('Content-Type', 'application/json');
       if (request.method === 'GET' && request.url === '/api/tags') {
         response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
       } else {
-        response.writeHead(404);
-        response.end(JSON.stringify({ error: 'Model unavailable in discovery-only fixture' }));
+        // Ollama answers a chat request for a model it does not have with
+        // HTTP 500 (#849), which generic retry policies treat as transient.
+        ollamaChatRequests.count += 1;
+        response.writeHead(500);
+        response.end(JSON.stringify({
+          error: { message: 'model "freedom-e2e-no-server" not found, try pulling it first' },
+        }));
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -1419,7 +1428,18 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('.agent-turn-outcome-technical')).toContainText(
     'Technical details'
   );
-  await expect(window.locator('.agent-turn-outcome-actions')).toBeHidden();
+  // A missing model is not retried, and a chat that never touched a page
+  // says nothing about browser changes (#849).
+  expect(ollamaChatRequests.count).toBe(1);
+  await expect(window.locator('.agent-turn-outcome')).not.toContainText('browser');
+  await expect(window.locator('.agent-turn-outcome')).toContainText(
+    'Next: Choose another model for a new chat'
+  );
+  await expect(window.locator('.agent-turn-outcome-actions')).toBeVisible();
+  await expect(window.locator('.agent-turn-outcome-actions button:visible')).toHaveText([
+    'Choose another model',
+    'Open Models',
+  ]);
   await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
@@ -1437,11 +1457,20 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     'Approval setting updated for the next message.'
   );
 
-  await window.locator('#agent-new-chat').click();
+  await window.locator('.agent-turn-outcome-actions').getByRole('button', { name: 'Choose another model' }).click();
   await expect(window.locator('#agent-empty-state')).toBeVisible();
   await expect(window.locator('#agent-transcript')).toBeHidden();
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
   await expect(window.locator('#agent-model-menu-button')).toBeEnabled();
+  await expect(window.locator('#agent-model-menu')).toBeVisible();
+  await expect(window.locator('#agent-model-menu-button')).toHaveAttribute('aria-expanded', 'true');
+  await expect(window.locator('#agent-model-menu-search')).toHaveValue('');
+  await expect(window.locator('#agent-model-menu-list')).toContainText('freedom-e2e-no-server');
+  await expect(window.locator('#agent-model-menu-list')).toContainText(hostedModelName);
+  await expect(window.locator('#agent-prompt')).toHaveValue('Summarize this page');
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
+  await window.keyboard.press('Escape');
+  await window.locator('#agent-prompt').fill('');
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(1);

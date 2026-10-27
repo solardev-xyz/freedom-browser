@@ -87,7 +87,7 @@ const FAILURE_PRESENTATIONS = Object.freeze({
     retryMessage: 'The selected model is unavailable from this provider.',
     terminalMessage:
       'The selected model is unavailable from this provider. Choose another model or update the provider setup.',
-    nextStep: 'Choose another model or update the provider setup, then continue.',
+    nextStep: 'Choose another model for a new chat, or make this model available from the provider and send the request again.',
   }),
   [PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE]: Object.freeze({
     recovery: PROVIDER_FAILURE_RECOVERY.CHANGE_REQUEST,

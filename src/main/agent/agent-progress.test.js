@@ -1050,8 +1050,41 @@ describe('Agent progress projection', () => {
   test('marks a retry safe only when Freedom verified no browser changes', () => {
     const outcome = buildAgentOutcome([], 'failed', { code: 'PROVIDER_ERROR' });
     expect(outcome).toMatchObject({ retrySafety: 'safe' });
-    expect(outcome.detail).toContain('did not verify any browser changes');
     expect(outcome.nextStep).toContain('Try continuing once');
+    expect(outcome).not.toHaveProperty('providerAction');
+  });
+
+  test('omits browser state from a failed plain chat that never touched a page', () => {
+    const outcome = buildAgentOutcome([], 'failed', { code: 'PROVIDER_ERROR' });
+    expect(outcome.detail).toBe('The model provider could not complete the request.');
+    expect(outcome.detail).not.toMatch(/browser/i);
+  });
+
+  test('keeps the browser sentence when a browser action ran without changing anything', () => {
+    const outcome = buildAgentOutcome(
+      [{ operation: OPERATIONS.SNAPSHOT, status: 'failed', pageId: 'tab_1',
+        errorCode: ERROR_CODES.STALE_ELEMENT_REFERENCE }],
+      'failed',
+      { code: 'PROVIDER_ERROR' }
+    );
+    expect(outcome.detail).toContain('Freedom did not verify any browser changes.');
+  });
+
+  test('offers a model choice, not a retry, when the provider has no such model', () => {
+    const outcome = buildAgentOutcome([], 'failed', {
+      code: 'PROVIDER_ERROR',
+      message: '500: {"message":"model \\"qwen3:8b\\" not found, try pulling it first"}',
+      provider: { label: 'Ollama', modelId: 'qwen3:8b' },
+    });
+    expect(outcome).toMatchObject({
+      kind: 'recovery',
+      headline: 'Model connection failed',
+      detail: 'Ollama using qwen3:8b cannot use the selected model.',
+      providerAction: 'choose_model',
+      canRetry: false,
+      retrySafety: 'safe',
+    });
+    expect(outcome.nextStep).toContain('Choose another model for a new chat');
   });
 
   test('reconstructs provider recovery evidence from persisted safe error copy', () => {

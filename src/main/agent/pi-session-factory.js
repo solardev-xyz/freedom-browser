@@ -6,7 +6,7 @@ const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { createBuiltInSkillReadTool, getBuiltInSkills } = require('./builtin-skills');
 const { isTrustedBuiltInToolOverride } = require('./pi-trusted-tools');
 const { VIRTUAL_AGENT_CWD } = require('./pi-virtual-paths');
-const { classifyProviderFailure } = require('./provider-failure');
+const { PROVIDER_FAILURE_CATEGORIES, classifyProviderFailure } = require('./provider-failure');
 
 const BUILTIN_PI_TOOL_NAMES = new Set([
   'read',
@@ -335,6 +335,7 @@ When asked which model or provider you are using, report these configured identi
   });
 
   liveSession = result.session;
+  preventPermanentProviderRetries(result.session);
 
   // Pi marks returned results successful unless its after-tool hook says otherwise.
   // Preserve Pi's hook and carry only our adapter-owned failure marker through it.
@@ -353,6 +354,26 @@ When asked which model or provider you are using, report these configured identi
     sessionManager,
     settingsManager,
     toolNames,
+  };
+}
+
+// Pi's retry policy matches transport text such as "500", so a provider that
+// reports a missing model with HTTP 500 (Ollama: `model "x" not found, try
+// pulling it first`) would be retried as if it were transient. A missing
+// model cannot fix itself between attempts, so veto those retries. Both of
+// Pi's retry decisions (agent-end and turn-end) go through _isRetryableError;
+// pi-session-factory.test.js pins that against the installed Pi version.
+function isPermanentProviderFailure(message) {
+  if (message?.stopReason !== 'error') return false;
+  return classifyProviderFailure(message).category === PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
+}
+
+function preventPermanentProviderRetries(session) {
+  const isRetryable = session?._isRetryableError;
+  if (typeof isRetryable !== 'function') return;
+  session._isRetryableError = function freedomIsRetryableError(message) {
+    if (isPermanentProviderFailure(message)) return false;
+    return Reflect.apply(isRetryable, this, [message]);
   };
 }
 
