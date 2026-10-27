@@ -634,9 +634,17 @@ function offsetWithin(node, ancestor) {
 }
 
 function openModelMenu() {
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  positionModelMenu();
+}
+
+// Runs on open and again on every window resize while the menu is open: a
+// shorter window moves the button up but not the header, so a room measured
+// at open time would let the menu climb over the header.
+function positionModelMenu() {
   const { modelMenu: menu, modelMenuButton: button } = elements;
-  menu.hidden = false;
-  button.setAttribute('aria-expanded', 'true');
+  if (menu.hidden) return;
   const container = menu.offsetParent;
   const anchor = container && offsetWithin(button, container);
   if (!anchor) return;
@@ -5253,6 +5261,7 @@ export function initAgentUi(options = {}) {
     syncCompactAgentLayout();
     closeSessionContextMenu();
     setModeMenuOpen(false);
+    positionModelMenu();
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;

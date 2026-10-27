@@ -266,18 +266,29 @@ test('model menu stays between its button and the header in every layout', async
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first.png') });
 
   // A very short window leaves under the old 120px floor between the button
-  // and the title bar; the menu shrinks instead of covering it.
+  // and the title bar; the menu shrinks instead of covering it. Shrink it with
+  // the menu still open: the resize itself must re-measure the room, since the
+  // button moves up while the title bar stays put.
   await electronApp.evaluate(({ BrowserWindow }) => {
     const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     target.setMinimumSize(1, 1);
     target.setContentSize(target.getContentBounds().width, 220);
   });
   await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThan(240);
-  await window.keyboard.press('Escape');
-  await openExpanded();
+  await expect(menu).toBeVisible();
+  await expect.poll(async () => {
+    const layout = await measure('#agent-first-titlebar');
+    return layout.menuTop - layout.headerBottom;
+  }).toBeGreaterThanOrEqual(0);
   const short = await measure('#agent-first-titlebar');
   expect(short.buttonTop - short.headerBottom).toBeLessThan(130);
   expectBetween(short);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-resized-open.png') });
+
+  // Reopening in the short window measures the same way.
+  await window.keyboard.press('Escape');
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-short.png') });
 });
 
