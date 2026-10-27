@@ -208,9 +208,18 @@
 #providers .agent-provider-method {
   margin: 12px 0;
 }
-#providers .agent-provider-indicator.active,
-#providers .agent-provider-method-state.active {
+#providers .agent-provider-indicator.active {
   color: var(--accent);
+}
+/* An unconnected method row shows the provider list's chevron (the row is the
+   button); a connected one says so in the status green the badge uses (#855). */
+#providers .agent-provider-method-state:not(.active) {
+  flex-shrink: 0;
+  font-size: 18px;
+}
+#providers .agent-provider-method-state.active {
+  flex-shrink: 0;
+  color: var(--success);
 }
 #providers .agent-card-heading,
 #providers .agent-provider-models-heading {

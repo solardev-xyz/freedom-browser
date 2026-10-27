@@ -276,7 +276,7 @@ test('Meta subscription sign-in shows device codes, cancels and connects in both
   await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
   await expect(providerPage.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
-  await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('Connect');
+  await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('›');
   await providerPage.locator('#agent-provider-chatgpt').click();
   await providerPage.locator('#agent-provider-disconnect').click();
   await expect(providerPage.locator('#agent-provider-disconnect-question')).toContainText('sign in again');
