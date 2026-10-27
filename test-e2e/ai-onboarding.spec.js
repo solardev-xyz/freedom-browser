@@ -603,7 +603,9 @@ test('AI settings pages share Settings\' selects, intros, headings and destructi
 });
 
 // #782: Set up Agent is a sheet under its header — same edges, as tall as
-// what it holds, and nothing of the page reads through it.
+// what it holds, and nothing of the page reads through it. #863: the two are
+// one card (no gap, square inner corners, no seam), and the copy names no
+// provider brand.
 test('Set up Agent sheet lines up with its header and both are opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
@@ -629,15 +631,33 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
           const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
           return alpha === undefined || Number(alpha) === 1;
         };
+        const hs = getComputedStyle(header);
+        const ss = getComputedStyle(sheet);
         return {
           left: Math.round(s.left - h.left),
           right: Math.round(s.right - h.right),
+          gap: Math.round(s.top - h.bottom),
+          seam: [hs.borderBottomWidth, hs.borderBottomLeftRadius, hs.borderBottomRightRadius,
+            ss.borderTopWidth, ss.borderTopLeftRadius, ss.borderTopRightRadius],
+          outerCorners: [hs.borderTopLeftRadius, ss.borderBottomRightRadius],
           slack: s.bottom - content <= 32,
           opaque: opaque(sheet),
           // The header it hangs from too: light theme's glass let the page show through (#803).
           headerOpaque: opaque(header),
         };
-      })).toEqual({ left: 0, right: 0, slack: true, opaque: true, headerOpaque: true });
+      })).toEqual({
+        left: 0,
+        right: 0,
+        gap: 0,
+        seam: ['0px', '0px', '0px', '0px', '0px', '0px'],
+        outerCorners: ['16px', '16px'],
+        slack: true,
+        opaque: true,
+        headerOpaque: true,
+      });
+      await expect(window.locator('#agent-setup-view .agent-setup-intro')).toHaveText(
+        'Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.'
+      );
       await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
     }
