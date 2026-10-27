@@ -12,14 +12,11 @@
   border-radius: 50%;
   color: var(--text);
   cursor: default;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+  transition: background-color 0.2s ease;
 }
 
 .agent-toggle-btn:hover:not(:disabled),
 .agent-toggle-btn[aria-expanded='true'] {
-  color: var(--accent);
   background: var(--agent-hover-1);
 }
 
