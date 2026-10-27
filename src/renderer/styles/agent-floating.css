@@ -297,6 +297,7 @@
 .agent-floating[data-presentation='column'] .agent-output:not(:empty),
 .agent-floating[data-presentation='column'] .agent-subagent-report,
 .agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking,
 .agent-floating[data-presentation='column'] .agent-live-status {
   background: var(--agent-bubble-agent);
   border: 1px solid var(--agent-bubble-border);
@@ -588,7 +589,8 @@
 /* Activity: a quiet capsule ("Worked for 42s · 11 actions") that opens into
    a timeline. The list keeps every step, failure and approval; the step
    glyphs stay in the text for assistive technology and become dots here. */
-.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]) {
+.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking {
   width: fit-content;
   max-width: 94%;
   padding: 5px 12px 5px 10px;
@@ -597,13 +599,15 @@
   border-radius: 999px;
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity[open]:not([hidden]) {
+.agent-floating[data-presentation='column'] .agent-turn-activity[open]:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking[open] {
   width: 94%;
   padding: 7px 14px 9px 12px;
   border-radius: 16px;
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity > summary {
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary,
+.agent-floating[data-presentation='column'] .agent-thinking > summary {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -612,7 +616,8 @@
   line-height: 1.4;
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity > summary::-webkit-details-marker {
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::-webkit-details-marker,
+.agent-floating[data-presentation='column'] .agent-thinking > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -626,7 +631,8 @@
   opacity: 0.85;
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity > summary::after {
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::after,
+.agent-floating[data-presentation='column'] .agent-thinking > summary::after {
   width: 6px;
   height: 6px;
   flex: 0 0 auto;
@@ -638,11 +644,13 @@
   transition: transform 160ms ease;
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity[open] > summary::after {
+.agent-floating[data-presentation='column'] .agent-turn-activity[open] > summary::after,
+.agent-floating[data-presentation='column'] .agent-thinking[open] > summary::after {
   transform: translateY(-2px) rotate(45deg);
 }
 
-.agent-floating[data-presentation='column'] .agent-turn-activity > summary:focus-visible {
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary:focus-visible,
+.agent-floating[data-presentation='column'] .agent-thinking > summary:focus-visible {
   border-radius: 6px;
   outline: 2px solid var(--accent);
   outline-offset: 3px;
