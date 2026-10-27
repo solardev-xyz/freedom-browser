@@ -250,6 +250,8 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   await expect(open).toHaveText('Connect a model');
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai/providers/add');
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  // #861: the pill reads "Beta" as rendered, like Settings' .resolver-badge.
+  expect(await home.locator('.setup-banner-tag').evaluate(el => el.innerText)).toBe('Beta');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(home.locator('html')).toHaveAttribute('data-theme', theme);

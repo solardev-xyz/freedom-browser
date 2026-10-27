@@ -414,6 +414,14 @@
 #voice .agent-connected-provider-list {
   margin: 0;
 }
+/* AI subpages label their groups in sentence case, the way the provider
+   picker's `.agent-provider-group-label` ("Model labs") does (#861), not in
+   the rest of Settings' 12 px uppercase `.subsection-title` category style. */
+#voice .subsection-title {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .voice-settings-group {
   display: grid;
   gap: 12px;
