@@ -4079,6 +4079,90 @@ describe('FreedomAgentService', () => {
     expect(normalizePiEvent({ ...event, result: { content: [{ type: 'text', text: 'Other failure' }] } }).errorCode).toBeUndefined();
   });
 
+  test('forwards the model thinking to the panel and its state, never to saved history', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let clock = 1_000;
+    const { service } = createService(fake, { historyStore, now: jest.fn(() => clock) });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Research this page' }));
+    const update = (assistantMessageEvent) => fake.emit({ type: 'message_update', assistantMessageEvent });
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Visible but never saved. ' });
+    clock = 3_500;
+    update({ type: 'thinking_delta', delta: 'Still thinking.' });
+    update({ type: 'thinking_end', content: 'Visible but never saved. Still thinking.' });
+    update({ type: 'text_delta', delta: 'Done.' });
+    // A provider that never sends thinking_end is closed by its answer.
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Unclosed.' });
+    // Mid-thought, the state marks the block open so a panel restored now
+    // keeps extending it rather than closing it and starting a second one.
+    expect(service.getState().transcript[0].thinking[1]).toEqual(
+      { text: 'Unclosed.', textOffset: 5, timelineOrder: 0, open: true }
+    );
+    clock = 4_500;
+    update({ type: 'text_delta', delta: ' More.' });
+
+    expect(events.filter((event) => event.type.startsWith('assistant_')).map(
+      ({ type, text, durationMs, textOffset }) => ({ type, text, durationMs, textOffset })
+    )).toEqual([
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 0 },
+      { type: 'assistant_thinking_delta', text: 'Visible but never saved. ', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_delta', text: 'Still thinking.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 2_500, textOffset: undefined },
+      { type: 'assistant_text_delta', text: 'Done.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 5 },
+      { type: 'assistant_thinking_delta', text: 'Unclosed.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 1_000, textOffset: undefined },
+      { type: 'assistant_text_delta', text: ' More.', durationMs: undefined, textOffset: undefined },
+    ]);
+    expect(service.getState().transcript[0].thinking).toEqual([
+      { text: 'Visible but never saved. Still thinking.', textOffset: 0, timelineOrder: 0, durationMs: 2_500 },
+      { text: 'Unclosed.', textOffset: 5, timelineOrder: 0, durationMs: 1_000 },
+    ]);
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    const saved = JSON.stringify(Object.values(historyStore).map((method) => method.mock?.calls));
+    expect(saved).toContain('Done. More.');
+    expect(saved).not.toContain('never saved');
+    expect(saved).not.toContain('Unclosed');
+  });
+
+  test('streams long thinking in full but keeps only a bounded start of it in state', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Think hard' }));
+    const update = (assistantMessageEvent) => fake.emit({ type: 'message_update', assistantMessageEvent });
+    const chunk = 'x'.repeat(10_000);
+    update({ type: 'thinking_start' });
+    for (let i = 0; i < 3; i += 1) update({ type: 'thinking_delta', delta: chunk });
+    update({ type: 'thinking_end' });
+    update({ type: 'text_delta', delta: 'Answer.' });
+    update({ type: 'thinking_start' });
+    for (let i = 0; i < 100; i += 1) update({ type: 'thinking_delta', delta: chunk });
+    update({ type: 'thinking_end' });
+
+    const streamed = events.filter((event) => event.type === 'assistant_thinking_delta');
+    expect(streamed.reduce((sum, event) => sum + event.text.length, 0)).toBe(1_030_000);
+    const thinking = service.getState().transcript[0].thinking;
+    expect(thinking.map(({ text, truncated }) => ({ length: text.length, truncated }))).toEqual([
+      { length: 30_000, truncated: undefined },
+      { length: 2_768, truncated: true },
+    ]);
+    // Once the budget is spent, a further block keeps nothing and is dropped.
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'More.' });
+    update({ type: 'thinking_end' });
+    expect(service.getState().transcript[0].thinking).toHaveLength(2);
+  });
+
   test('normalizes only the safe event subset and known tool errors', () => {
     expect(normalizePiEvent({ type: 'turn_start' })).toEqual({ type: 'run_thinking' });
     expect(

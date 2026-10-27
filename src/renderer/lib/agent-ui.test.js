@@ -621,6 +621,105 @@ describe('Agent UI', () => {
       : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
   });
 
+  function timeline(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-thinking')) {
+        return [`${row.open ? 'open' : 'closed'} ${row.children[0].textContent}: ${row.children[1].textContent}`];
+      }
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('shows the model thinking as a closed disclosure above the answer it led to', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Plan the ' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Plan the ']);
+    emit({ type: 'assistant_thinking_delta', text: 'search.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_400 });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'read', operation: 'browser_snapshot' });
+    emit({ type: 'tool_finished', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    // An empty (redacted) block shows nothing.
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_end', durationMs: 100 });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Verify the dates.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 61_000 });
+    emit({ type: 'assistant_text_delta', text: 'Final answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(timeline(ctx)).toEqual([
+      'Research',
+      'closed Thinking · 2s: Plan the search.',
+      'Checking.',
+      'closed Thinking · 1m 1s: Verify the dates.',
+      'Final answer.',
+    ]);
+  });
+
+  test('a thinking block the run ends inside is closed without a duration', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_delta', text: 'Half a thought' });
+    emit({ type: 'run_finished', status: 'cancelled' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking: Half a thought']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-thinking').dataset.state).toBe('done');
+  });
+
+  test('restores thinking at its place in the turn', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          thinking: [
+            { text: 'Plan.', textOffset: 0, timelineOrder: 0, durationMs: 3_000 },
+            { text: '', textOffset: 9, timelineOrder: 1 },
+            { text: 'Check.', textOffset: 9, timelineOrder: 1, durationMs: 1_000 },
+          ],
+          activity: [{ toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded', textOffset: 9, timelineOrder: 0 }],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual([
+      'Research', 'closed Thinking · 3s: Plan.', 'Starting.', 'closed Thinking · 1s: Check.', 'Final answer.',
+    ]);
+  });
+
+  test('a panel restored mid-thought keeps extending the same thinking block', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'running', runId: 'run_live', conversationId: 'conversation_live', transcript: [{
+          runId: 'run_live', userText: 'Research', assistantText: '', status: 'running',
+          thinking: [{ text: 'Half a ', textOffset: 0, timelineOrder: 0, open: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Half a ']);
+    const emit = event => ctx.emit({ runId: 'run_live', ...event });
+    emit({ type: 'assistant_thinking_delta', text: 'thought.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 4_000 });
+    emit({ type: 'assistant_text_delta', text: 'Answer.' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking · 4s: Half a thought.', 'Answer.']);
+  });
+
+  test('restored thinking main cut short is marked as cut', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Answer.', status: 'completed',
+          thinking: [{ text: 'Long start', textOffset: 0, timelineOrder: 0, durationMs: 2_000, truncated: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)[1]).toMatch(/^closed Thinking · 2s: Long start\s*…$/);
+  });
+
   test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
     const ctx = await loadAgentUi({ electronAPI: {
       getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
@@ -1383,6 +1482,87 @@ describe('Agent UI', () => {
       'Continue this work in a new chat',
       'sensitive_actions'
     );
+  });
+
+  test('a new task workspace leaves out the previous chat\'s page and viewers (#851)', async () => {
+    let agentOwned = false;
+    let tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: false },
+      { id: 8, url: 'https://news.example.test/', title: 'Example News', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      isTabAgentOwned: (tabId) => agentOwned && tabId === 8,
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+
+    // A user's own page is where a new task starts, so it is shown.
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(false);
+
+    // The same page opened by Agent belongs to an earlier chat.
+    agentOwned = true;
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+    expect(ctx.elements['agent-task-pages-empty'].hidden).toBe(false);
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(true);
+    expect(ctx.elements['agent-workspace-sidebar-toggle'].disabled).toBe(true);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [],
+    });
+
+    // So does another chat's read-only workspace viewer.
+    agentOwned = false;
+    tabs = [{ id: 9, kind: 'workspace-viewer', conversationId: 'conversation_old', title: 'notes.md', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+  });
+
+  test('a new task workspace only says Agent starts from the page it will share', async () => {
+    const tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({ getOpenTabs: () => tabs });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const note = () => ctx.elements['agent-task-pages-note'].textContent;
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start from the page you are currently viewing.');
+
+    // Removing the "Attached page" chip keeps the page on screen, but the run
+    // no longer starts from it, so the workspace must stop saying it does.
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start without a page.');
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace does not claim Agent starts from the homepage', async () => {
+    const homeTab = {
+      id: 7, url: 'file:///app/pages/home.html', title: 'New Tab', favicon: '', isLoading: false, isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    // The homepage stays as the surface to browse from, but is never shared.
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-pages-note'].textContent).toBe('Agent will start without a page.');
   });
 
   test('keeps the pristine homepage outside a new Agent workspace', async () => {
