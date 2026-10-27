@@ -138,18 +138,24 @@ export function createAgentProviderUi(options = {}) {
   };
   // The Connect button's result goes in the slot right under it when the
   // page has one (#858), not the page-wide line far below the form. While
-  // it shows an error the "Connect to discover" placeholder is hidden, and
-  // a failed Ollama connect points at where to get Ollama. The slot is
-  // cleared when the privacy setting it was checked against changes.
+  // it shows an error the "Connect to discover" placeholder is hidden. Only
+  // an Ollama connect that could not reach a server at all points at where
+  // to get Ollama: "no models installed", "too many models" or a refused
+  // URL all come from an Ollama that is evidently there already. The slot
+  // is cleared when the privacy setting it was checked against changes.
   let connectError = false;
-  function setConnectMessage(text = '', error = false) {
+  function setConnectMessage(text = '', error = false, { suggestOllamaInstall = false } = {}) {
     const slot = elements.connectMessage;
     if (!slot) return setMessage(elements.providerMessage, text, error);
     setMessage(slot, text, error);
     if (text) setMessage(elements.providerMessage, '');
     connectError = Boolean(text) && error;
     if (elements.ollamaInstall)
-      elements.ollamaInstall.hidden = !(connectError && elements.provider.value === 'ollama');
+      elements.ollamaInstall.hidden = !(
+        connectError &&
+        suggestOllamaInstall &&
+        elements.provider.value === 'ollama'
+      );
     elements.providerModelsEmpty.hidden = connectError || !elements.providerModelsList.hidden;
   }
   const isCustomProvider = (id) => id === 'openai-compatible' || id?.startsWith('custom-');
@@ -1319,7 +1325,10 @@ export function createAgentProviderUi(options = {}) {
       }
       elements.apiKey.value = '';
       if (!response?.ok) {
-        setConnectMessage(responseMessage(response, 'Could not save model'), true);
+        setConnectMessage(responseMessage(response, 'Could not save model'), true, {
+          suggestOllamaInstall:
+            providerId === 'ollama' && response?.error?.code === 'AGENT_OLLAMA_DISCOVERY_FAILED',
+        });
         return;
       }
       renderProviderStatus(response.status, { userAction: true });

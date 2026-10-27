@@ -5318,6 +5318,30 @@ describe('Agent UI', () => {
     expect(install.hidden).toBe(true);
   });
 
+  test.each([
+    ['AGENT_OLLAMA_NO_MODELS', 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.'],
+    ['AGENT_OLLAMA_MODEL_LIMIT', 'This Ollama server has more than the supported 128 models.'],
+    ['AGENT_PROVIDER_INVALID', 'Ollama URL must be absolute'],
+    [undefined, undefined],
+  ])('a %s connect error does not suggest downloading Ollama (#858)', async (code, message) => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue(
+        code ? { ok: false, error: { code, message } } : { ok: false }
+      ),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(message || 'Could not save model');
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+  });
+
   test('a later bottom-line report clears the Connect result under the button (#858)', async () => {
     const ollama = {
       kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
