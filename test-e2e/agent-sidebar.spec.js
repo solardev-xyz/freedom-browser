@@ -200,6 +200,87 @@ test('model picker collapses providers while keeping favorites and searchable mo
   }
 });
 
+// #869: the model menu sits above its button and below whatever header bounds
+// it, in the docked column and in Agent-first too, not just the launcher, and
+// a short window shrinks it rather than letting it climb over that header.
+test('model menu stays between its button and the header in every layout', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate((_electron, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    AgentProviderResolver.prototype.getStatus = () => ({
+      configured: true, providerId: 'openai', modelId: 'favorite',
+      connections: [{ kind: 'hosted', providerId: 'openai', modelId: 'favorite', favoriteModelIds: ['favorite'] }],
+    });
+    AgentProviderResolver.prototype.getCatalog = async () => [{
+      providerId: 'openai', name: 'OpenAI',
+      models: Array.from({ length: 30 }, (_, index) => ({ id: index ? `model-${index}` : 'favorite', name: `Model ${index}` })),
+    }];
+  }, repositoryRoot);
+  await window.reload();
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  const menu = window.locator('#agent-model-menu');
+  const button = window.locator('#agent-model-menu-button');
+  const measure = (headerSelector) => window.evaluate((selector) => {
+    const rect = (node) => node.getBoundingClientRect();
+    const menu = rect(document.querySelector('#agent-model-menu'));
+    const button = rect(document.querySelector('#agent-model-menu-button'));
+    const header = rect(document.querySelector(selector));
+    return { menuTop: menu.top, menuBottom: menu.bottom, menuRight: menu.right, menuHeight: menu.height,
+      buttonTop: button.top, buttonRight: button.right, headerBottom: header.bottom, headerHeight: header.height };
+  }, headerSelector);
+  const openExpanded = async () => {
+    if (await menu.isHidden()) await button.click();
+    await expect(menu).toBeVisible();
+    const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
+    if (await openai.getAttribute('aria-expanded') === 'false') await openai.click();
+    await expect(menu.getByRole('menuitemradio', { name: 'Model 29' })).toBeAttached();
+  };
+  const expectBetween = (layout) => {
+    expect(layout.headerHeight).toBeGreaterThan(0);
+    expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+    expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+    expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  };
+
+  // Docked column: a finished run with no saved conversation keeps the model
+  // button usable while the transcript turns the launcher into the column.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => target.webContents.send('agent:event', { runId: 'run_model_menu_column', ...event });
+    emit({ type: 'run_started', userText: 'Review this page' });
+    emit({ type: 'assistant_delta', text: 'A short answer.' });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  await expect(window.locator('body')).toHaveClass(/agent-floating-column/);
+  await expect(button).toBeEnabled();
+  await openExpanded();
+  expectBetween(await measure('.agent-sidebar-header'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-column.png') });
+  await window.keyboard.press('Escape');
+
+  // Agent-first: the title bar, not the hidden panel header, is the ceiling.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-first-titlebar')).toBeVisible();
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first.png') });
+
+  // A very short window leaves under the old 120px floor between the button
+  // and the title bar; the menu shrinks instead of covering it.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.setMinimumSize(1, 1);
+    target.setContentSize(target.getContentBounds().width, 220);
+  });
+  await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThan(240);
+  await window.keyboard.press('Escape');
+  await openExpanded();
+  const short = await measure('#agent-first-titlebar');
+  expect(short.buttonTop - short.headerBottom).toBeLessThan(130);
+  expectBetween(short);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-short.png') });
+});
+
 test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {
   // Exercise the real IPC/store/UI without opening an external browser or using
   // real credentials. Native Pi OAuth and refresh are tested at the HTTP boundary.

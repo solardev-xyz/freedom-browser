@@ -653,7 +653,9 @@ function openModelMenu() {
     const rect = header?.getBoundingClientRect?.();
     if (rect && rect.height > 0) ceiling = Math.max(ceiling, rect.bottom);
   }
-  const room = Math.max(120, buttonTop - gap - ceiling - 4);
+  // No minimum height: in a very short window a cramped menu (its list scrolls)
+  // is better than one that covers the header's expand and close buttons.
+  const room = Math.max(0, buttonTop - gap - ceiling - 4);
   menu.style.setProperty('--agent-model-menu-room', `${room}px`);
 }
 
