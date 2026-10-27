@@ -38,7 +38,7 @@ const APPROVAL_MODES = Object.freeze({
   ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
 });
 const APPROVAL_MODE_LABELS = Object.freeze({
-  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask frequently',
+  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every time',
   [APPROVAL_MODES.SENSITIVE_ACTIONS]: 'Ask when needed',
   [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Fewer interruptions',
 });
