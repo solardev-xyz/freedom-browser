@@ -3205,6 +3205,12 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   white-space: normal;
 }
 
+/* A stopped run's last answer was cut off mid-stream. */
+.agent-output.incomplete::after {
+  content: ' …';
+  color: var(--muted);
+}
+
 .agent-output.rendered-markdown > :first-child {
   margin-top: 0;
 }

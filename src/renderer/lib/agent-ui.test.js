@@ -3614,10 +3614,98 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
     expect(ctx.elements['agent-run-message'].textContent).toBe('Stopping Agent…');
 
-    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Working on it, comparing' });
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: { kind: 'interrupted', tone: 'neutral', headline: 'Run stopped', counts: { changed: 0 } },
+    });
     expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
-    expect(ctx.elements['agent-run-message'].textContent).toBe('Agent stopped.');
+    // The stop notice belongs to the turn it ended, after its partial answer,
+    // not in the status line above the transcript.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const output = turn.querySelector('.agent-output');
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(output.textContent).toBe('Working on it, comparing');
+    expect(output.classList.contains('incomplete')).toBe(true);
+    expect(outcome.hidden).toBe(false);
+    expect(turn.children.indexOf(outcome)).toBeGreaterThan(turn.children.indexOf(output.parentNode));
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('a stop with an uncertain browser action keeps the caution inside the stop notice', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        counts: { changed: 0 },
+        notice: {
+          tone: 'caution',
+          headline: 'Browser action outcome uncertain',
+          detail: 'Check the page before repeating it.',
+        },
+      },
+    });
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.className).toBe('agent-turn-outcome caution');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Browser action outcome uncertain. Check the page before repeating it.'
+    );
+  });
+
+  test('a stop between tool calls notes the stop without marking finished text as cut off', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Opening the page.' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_1',
+      operation: 'browser_navigate',
+      label: 'Open page',
+    });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        detail: '1 earlier browser change remains in place.',
+        counts: { changed: 1 },
+      },
+    });
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(false);
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(false);
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Changes made before stopping remain in place. Review the activity before continuing.'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
   });
 
   test('intercepts the controlled page before takeover and resumes from the composer', async () => {

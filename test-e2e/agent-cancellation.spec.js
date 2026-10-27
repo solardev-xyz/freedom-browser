@@ -352,13 +352,23 @@ async function openSharedStartPage(window, harness) {
   await expect(window.locator('#agent-page-contexts')).not.toHaveAttribute('hidden', '');
 }
 
-async function stopAndExpectReusable(window) {
+async function stopAndExpectReusable(window, { answerCutOff = false } = {}) {
   const startedAt = Date.now();
   await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 3_000 });
   expect(Date.now() - startedAt).toBeLessThan(3_000);
-  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
+  await expect(window.locator('#agent-run-message')).toHaveText('');
+  await expect(window.locator('.agent-turn').last().locator('.agent-turn-outcome strong')).toHaveText(
+    'Agent stopped'
+  );
+  if (answerCutOff) {
+    const stoppedTurn = window.locator('.agent-turn').last();
+    await expect(stoppedTurn.locator('.agent-output')).toHaveClass(/\bincomplete\b/);
+    await expect(stoppedTurn.locator('.agent-turn-outcome')).toContainText(
+      'The answer above is incomplete.'
+    );
+  }
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
@@ -389,7 +399,7 @@ test('Stop cancels a streaming provider request', async ({ window }) => {
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
 
-  await stopAndExpectReusable(window);
+  await stopAndExpectReusable(window, { answerCutOff: true });
   await expect.poll(() => streamingResponseClosed).toBe(true);
 });
 

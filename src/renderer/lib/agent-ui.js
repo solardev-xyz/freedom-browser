@@ -3129,9 +3129,26 @@ function visibleOutcome(outcome) {
   return null;
 }
 
-function renderTurnOutcome(view, outcome, error) {
+// A stopped turn ends with its own notice, after whatever it managed to say.
+// A caution about the stopped work (an uncertain browser action) keeps its tone.
+function stoppedOutcome(notice, answerCutOff) {
+  const caution = notice && notice.kind !== 'interrupted' ? notice : null;
+  const changes = notice?.kind === 'interrupted' ? notice.detail : '';
+  return {
+    ...caution,
+    tone: caution?.tone || 'neutral',
+    headline: 'Agent stopped',
+    detail: [
+      answerCutOff ? 'The answer above is incomplete.' : '',
+      caution ? `${caution.headline}. ${caution.detail || ''}`.trim() : changes,
+    ].filter(Boolean).join(' '),
+  };
+}
+
+function renderTurnOutcome(view, outcome, error, { stopped = false, answerCutOff = false } = {}) {
   if (!view) return;
-  outcome = visibleOutcome(outcome);
+  const notice = visibleOutcome(outcome);
+  outcome = stopped || notice?.kind === 'interrupted' ? stoppedOutcome(notice, answerCutOff) : notice;
   view.outcome.hidden = !outcome;
   if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
@@ -3677,7 +3694,12 @@ function finishTurnView(runId, event = {}) {
   } else {
     view.activity.hidden = true;
   }
-  renderTurnOutcome(view, event.outcome, event.error);
+  const stopped = event.status === 'cancelled';
+  // Text still streaming when the run stopped was cut off mid-answer.
+  const lastSegment = view.outputSegments.at(-1);
+  const answerCutOff = stopped && !view.assistantSegmentClosed && Boolean(lastSegment?.text);
+  lastSegment?.output.classList.toggle('incomplete', answerCutOff);
+  renderTurnOutcome(view, event.outcome, event.error, { stopped, answerCutOff });
   if (event.status === 'completed') {
     for (const segment of view.outputSegments) {
       if (!segment.output.classList.contains('rendered-markdown')) renderAgentMarkdown(segment.output, segment.text);
@@ -4158,7 +4180,9 @@ function applyAgentEvent(event) {
             : status
     );
     if (wasStopped) {
-      setMessage(elements.runMessage, 'Agent stopped.');
+      // The turn itself carries the stop notice after its partial answer; the
+      // status line above the transcript is only a fallback when there's no turn.
+      setMessage(elements.runMessage, turnView(event.runId) ? '' : 'Agent stopped.');
     } else if (event.error?.message && event.error.code !== 'PROVIDER_ERROR') {
       setMessage(elements.runMessage, event.error.message, true);
     } else {

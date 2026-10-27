@@ -1111,7 +1111,10 @@ test('Stop cancels a run while form approval is pending', async ({ window, harne
   await window.locator('#agent-approval-stop').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
-  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
+  await expect(window.locator('#agent-run-message')).toHaveText('');
+  await expect(window.locator('.agent-turn').last().locator('.agent-turn-outcome strong')).toHaveText(
+    'Agent stopped'
+  );
   await expect(window.locator('#agent-approval')).toBeHidden();
   const pageConfirmation = await window.evaluate(() =>
     document
