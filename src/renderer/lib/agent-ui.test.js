@@ -3721,6 +3721,7 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
     const turn = ctx.elements['agent-transcript'].children[0];
     expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(true);
+    expect(turn.querySelector('.agent-output').classList.contains('agent-cutoff-end')).toBe(true);
     const outcome = turn.querySelector('.agent-turn-outcome');
     expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
     expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');

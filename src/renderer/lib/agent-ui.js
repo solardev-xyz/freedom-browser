@@ -4,6 +4,7 @@ import { createAgentDictation } from './agent-dictation.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
+import { setCutOffMark } from './agent-cutoff-mark.js';
 import {
   DOMAIN_APPROVAL_SOURCE,
   domainApprovalHeading,
@@ -3705,7 +3706,7 @@ function finishTurnView(runId, event = {}) {
   // sent mid-stream closes the bubble too, but the answer wasn't finished.
   const lastSegment = view.outputSegments.at(-1);
   const answerCutOff = stopped && !view.assistantSegmentEndedByTool && Boolean(lastSegment?.text);
-  lastSegment?.output.classList.toggle('incomplete', answerCutOff);
+  setCutOffMark(lastSegment?.output, answerCutOff);
   renderTurnOutcome(view, event.outcome, event.error, { stopped, answerCutOff });
   if (event.status === 'completed') {
     for (const segment of view.outputSegments) {

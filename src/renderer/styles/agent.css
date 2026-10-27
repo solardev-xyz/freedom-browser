@@ -3206,18 +3206,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 /* A stopped run's last answer was cut off mid-stream. The mark belongs at the
-   end of the cut-off sentence: on rendered markdown (guidance sent mid-answer
-   closes the bubble as markdown) an ::after on the container would be an
-   anonymous box below the last block, so put it inside the last text block —
-   a paragraph, heading, list item (tight or loose, one level of nesting) or
-   quoted paragraph. A code block, table or rule keeps it on its own line. */
-.agent-output.incomplete:not(.rendered-markdown)::after,
-.agent-output.incomplete.rendered-markdown > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
-.agent-output.incomplete.rendered-markdown > blockquote:last-child > p:last-child::after,
-.agent-output.incomplete.rendered-markdown > :is(ul, ol):last-child > li:last-child:not(:has(> :is(p, ul, ol, pre, blockquote)))::after,
-.agent-output.incomplete.rendered-markdown > :is(ul, ol):last-child > li:last-child > p:last-child::after,
-.agent-output.incomplete.rendered-markdown > :is(ul, ol):last-child > li:last-child > :is(ul, ol):last-child > li:last-child:not(:has(> :is(p, ul, ol, pre, blockquote)))::after,
-.agent-output.incomplete.rendered-markdown:has(> :is(pre, table, hr):last-child)::after {
+   end of the cut-off sentence, so it is drawn by the block that sentence ends
+   in — the output itself for plain text, the deepest last paragraph, heading
+   or list item for markdown at any nesting. agent-cutoff-mark.js picks that
+   block; an answer ending in a code block, table or rule marks the output, so
+   the mark sits on its own line below. */
+.agent-output.incomplete.agent-cutoff-end::after,
+.agent-output.incomplete .agent-cutoff-end::after {
   content: ' …';
   color: var(--muted);
 }
