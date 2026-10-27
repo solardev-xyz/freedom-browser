@@ -2325,6 +2325,17 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   display: none;
 }
 
+/* An idle Agent-held tab: the page stays usable, only the pill takes clicks. */
+.agent-page-interlock.held,
+.agent-page-interlock.held .agent-page-lock-trigger {
+  pointer-events: none;
+}
+
+.agent-page-interlock.held .agent-page-lock-hint {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
 .agent-page-interlock.dialog-open {
   /* The confirmation must sit above the floating conversation (z-index 40). */
   z-index: 45;
