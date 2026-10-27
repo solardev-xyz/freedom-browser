@@ -401,13 +401,14 @@ test('the docked transcript scrolls below the header, never beneath it (#866)', 
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     await scroller.evaluate(el => { el.scrollTop = 300; });
-    // The scroll viewport, and so every bubble and its scrollbar, starts at
-    // the header's lower edge rather than running up beneath its glass.
+    // The scroll viewport, and so every bubble and its scrollbar, starts
+    // exactly at the header's lower edge: not running up beneath its glass
+    // (negative) and not leaving a gap the page shows through (positive).
     await expect.poll(() => window.evaluate(() => {
       const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
       const viewport = document.querySelector('.agent-workspace-scroll').getBoundingClientRect();
       return Math.round(viewport.top - header.bottom);
-    })).toBeGreaterThanOrEqual(0);
+    })).toBe(0);
     await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`docked-header-${theme}.png`) });
   }
 });
