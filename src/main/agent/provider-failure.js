@@ -87,7 +87,8 @@ const FAILURE_PRESENTATIONS = Object.freeze({
     retryMessage: 'The selected model is unavailable from this provider.',
     terminalMessage:
       'The selected model is unavailable from this provider. Choose another model or update the provider setup.',
-    nextStep: 'Choose another model for a new chat, or make this model available from the provider and send the request again.',
+    nextStep:
+      'Choose another model for a new chat, or make this model available from the provider and send the request again.',
   }),
   [PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE]: Object.freeze({
     recovery: PROVIDER_FAILURE_RECOVERY.CHANGE_REQUEST,
@@ -125,7 +126,8 @@ const FAILURE_PRESENTATIONS = Object.freeze({
     retryMessage: 'The model provider request failed for an unknown reason.',
     terminalMessage:
       'The model provider request failed. Freedom could not determine whether the problem is transient.',
-    nextStep: 'Try continuing once. If it fails again, check the provider setup or choose another model.',
+    nextStep:
+      'Try continuing once. If it fails again, check the provider setup or choose another model.',
   }),
 });
 
@@ -297,8 +299,15 @@ function matches(value, pattern) {
 // invalid tool call" are generation errors, not a missing model. "not found"
 // and "unavailable" are unambiguous enough to keep any one-word name.
 const MODEL_NAME = String.raw`(?:'[^']+'|"[^"]+"|\x60[^\x60]+\x60|[\w]*[\d\-.:/][\w\-.:/]*)`;
+// "does not exist" counts only when its subject is the model itself ("The
+// model `gpt-9` does not exist", "model does not exist"), with the same
+// name-shaped token rule as above. An unanchored `model.*does not exist`
+// would also read "model called tool \"browser_open\" which does not exist" or
+// "model runner process does not exist" (generation/runner errors) as a
+// missing model and veto Pi's retry.
+const MODEL_DOES_NOT_EXIST = String.raw`model\s+(?:${MODEL_NAME}\s+)?does not exist`;
 const MODEL_UNAVAILABLE_PATTERN = new RegExp(
-  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable)|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)`,
+  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable)|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|${MODEL_DOES_NOT_EXIST}|no access to model)`,
   'i'
 );
 // Wording that says the model exists but cannot serve this request right now:
@@ -310,7 +319,7 @@ const TEMPORARY_CAPACITY_PATTERN =
 // unavailable" is ambiguous (it is also how capacity outages are worded), so
 // it is not treated as permanent.
 const PERMANENT_MODEL_FAILURE_PATTERN = new RegExp(
-  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?not found|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)`,
+  String.raw`(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?not found|model\s+(?:${MODEL_NAME}\s+)?(?:is\s+)?(?:unsupported|invalid)|unknown model|${MODEL_DOES_NOT_EXIST}|no access to model)`,
   'i'
 );
 
@@ -483,8 +492,8 @@ function sanitizeProviderDetail(value) {
 function hasConcreteProviderEvidence(failure) {
   return Boolean(
     failure?.httpStatus ||
-      failure?.networkCode ||
-      (failure?.cause && !NON_SPECIFIC_CAUSES.has(failure.cause))
+    failure?.networkCode ||
+    (failure?.cause && !NON_SPECIFIC_CAUSES.has(failure.cause))
   );
 }
 
@@ -553,17 +562,11 @@ function normalizeAttemptSummary(value, retryCount) {
   const automaticRetries = normalizeRetryCount(value.automaticRetries ?? retryCount);
   const total = Math.max(
     1,
-    Math.min(
-      21,
-      Number.isSafeInteger(value.total) ? value.total : automaticRetries + 1
-    )
+    Math.min(21, Number.isSafeInteger(value.total) ? value.total : automaticRetries + 1)
   );
   const observedFailures = Math.max(
     0,
-    Math.min(
-      total,
-      Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0
-    )
+    Math.min(total, Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0)
   );
   const reasons = Array.isArray(value.reasons)
     ? value.reasons.slice(-total).map((failure) => classifyProviderFailure(failure))

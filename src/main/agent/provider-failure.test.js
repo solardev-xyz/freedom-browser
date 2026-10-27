@@ -38,6 +38,12 @@ describe('provider failure classification', () => {
     ['model gpt-4o is invalid', true],
     ["model 'freedom-test' is unsupported", true],
     ['model `gpt-x` is invalid', true],
+    ['model does not exist', true],
+    ["Model 'qwen3:8b' does not exist", true],
+    // "does not exist" about something the model did, not the model itself.
+    ['500 model called tool "browser_open" which does not exist', false],
+    ['500 model runner process does not exist', false],
+    ['tool does not exist for this model', false],
   ])('only vetoes retries for wording that names a missing model: %s', (message, permanent) => {
     expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(permanent);
   });
@@ -61,6 +67,8 @@ describe('provider failure classification', () => {
     '503 model unavailable',
     '502: {"error":{"message":"model unavailable"}}',
     '500 model returned invalid tool call',
+    '500 model called tool "browser_open" which does not exist',
+    '500 model runner process does not exist',
   ])('a retried server error mentioning the model stays a transient outage: %s', (message) => {
     const failure = classifyProviderFailure(message);
     expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
