@@ -20,8 +20,10 @@ const { spawn } = require('node:child_process');
 
 const SUBDIRECTORY = 'sub';
 const PRESERVED = 'preserved';
+// The gate's pin: a read-only directory holding one file, which a cleanup
+// running as an ordinary user cannot empty, so it cannot remove the target.
+const HOLD = 'hold';
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function present(file) {
@@ -45,17 +47,65 @@ function removeLink(link) {
   }
 }
 
+// The gate (`raceCleanup({ gate: true })`, POSIX only). Pinning the tree with
+// a directory the cleanup cannot empty, and releasing it only once a link has
+// been swapped in, means no cleanup attempt can remove the target before the
+// racer has swapped during it.
+function pinTarget(target) {
+  const hold = path.join(target, HOLD);
+  if (present(hold)) return;
+  fs.mkdirSync(hold);
+  fs.writeFileSync(path.join(hold, 'pin'), 'pin');
+  fs.chmodSync(hold, 0o555);
+}
+
+function unpinTarget(target) {
+  const hold = path.join(target, HOLD);
+  if (!present(hold)) return;
+  fs.chmodSync(hold, 0o755);
+  fs.rmSync(hold, { recursive: true, force: true });
+}
+
 async function race({ target, outside, names, linkType, holdMs, maxMs }) {
   const sub = path.join(target, SUBDIRECTORY);
   const counts = { directories: 0, links: 0, errors: 0 };
   let stopping = false;
   let announced = false;
+  let armed = false;
+  let wake = null;
   let generation = 0;
   let reason = 'deadline';
   process.on('message', (message) => {
     if (message === 'counts') process.send({ type: 'counts', counts: { ...counts } });
-    if (message === 'stop') stopping = true;
+    if (message === 'stop') {
+      stopping = true;
+      wake?.();
+    }
+    if (message === 'arm') {
+      // Pin the tree, then cut the current hold short so the next swap starts
+      // now rather than after a link has sat idle in place.
+      let pinned = false;
+      try {
+        pinTarget(target);
+        pinned = true;
+        armed = true;
+      } catch {
+        // The target is gone; the loop will notice and report it.
+      }
+      process.send({ type: 'armed', pinned, counts: { ...counts } });
+      wake?.();
+    }
   });
+  const hold = () =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, holdMs);
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    }).finally(() => {
+      wake = null;
+    });
   // Set the current real directory aside under a fresh name, so the cleanup
   // still has it to walk while the link takes its place.
   const setAside = () => fs.renameSync(sub, path.join(target, `moved-${generation++}`));
@@ -74,11 +124,15 @@ async function race({ target, outside, names, linkType, holdMs, maxMs }) {
       setAside();
       fs.symlinkSync(outside, sub, linkType);
       counts.links += 1;
+      if (armed) {
+        armed = false;
+        unpinTarget(target);
+      }
       if (!announced) {
         announced = true;
         process.send({ type: 'ready' });
       }
-      await sleep(holdMs);
+      await hold();
       removeLink(sub);
     } catch {
       if (!present(target)) {
@@ -97,6 +151,11 @@ async function race({ target, outside, names, linkType, holdMs, maxMs }) {
       }
       await tick();
     }
+  }
+  try {
+    unpinTarget(target);
+  } catch {
+    // Leave it for the caller's final cleanup to report as `removed: false`.
   }
   process.send({ type: 'done', counts: { ...counts }, reason }, () => process.disconnect());
 }
@@ -121,6 +180,9 @@ function startCleanupRacer({
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     }
   );
+  // A racer that has just seen the target go is already disconnecting: a send
+  // that loses that race fails with EPIPE, and the exit settles the waiter.
+  const ignoreSendError = () => {};
   let final = null;
   const waiters = new Set();
   const settle = (message) => {
@@ -153,13 +215,27 @@ function startCleanupRacer({
     async counts() {
       if (final) return final;
       const reply = next(['counts', 'done']);
-      if (child.connected) child.send('counts');
+      if (child.connected) child.send('counts', ignoreSendError);
       const message = await reply;
       return message.type === 'counts' ? message.counts : final;
     },
+    /**
+     * Pin the target until the racer's next swap, and start that swap now.
+     * Returns the counts at the moment of pinning, or the final ones if the
+     * racer has already stopped.
+     */
+    async arm() {
+      if (final) return { ...final, pinned: false };
+      const reply = next(['armed', 'done']);
+      if (child.connected) child.send('arm', ignoreSendError);
+      const message = await reply;
+      return message.type === 'armed'
+        ? { ...message.counts, pinned: message.pinned }
+        : { ...final, pinned: false };
+    },
     /** Stop racing (if it has not already) and return the final counts. */
     async stop() {
-      if (!final && child.connected) child.send('stop');
+      if (!final && child.connected) child.send('stop', ignoreSendError);
       return exited;
     },
     exited,
@@ -184,6 +260,18 @@ function startCleanupRacer({
  * user with Defender on, #779), which says nothing about the cleanup.
  * Once the racer has stopped, `cleanup` runs again and `removed` says
  * whether the target is gone.
+ *
+ * Retrying only covers attempts that fail. An attempt that *succeeds* inside
+ * one of the racer's idle holds, with the link sitting still in place, removes
+ * the target without a swap and ends the race with `overlapped: false` (#843:
+ * the macOS `sandbox-exec rm` sometimes did; a plain `rm -rf` on Linux does
+ * every time). `gate: true` closes that: before each attempt the racer pins
+ * the target with a read-only directory (see `pinTarget`) that it releases
+ * only after its next swap, and starts that swap at once. A cleanup running as
+ * an ordinary user then cannot remove the target unless a link was swapped in
+ * after the attempt began, so a removed target always comes with
+ * `overlapped: true`. POSIX permissions only: not for Windows, and not for a
+ * cleanup running as root.
  */
 async function raceCleanup({
   target,
@@ -194,6 +282,7 @@ async function raceCleanup({
   holdMs,
   maxMs,
   attempts = 10,
+  gate = false,
 }) {
   await fs.promises.mkdir(target, { recursive: true });
   await fs.promises.mkdir(outside, { recursive: true });
@@ -209,6 +298,11 @@ async function raceCleanup({
     let start = before;
     while (made < attempts) {
       made += 1;
+      if (gate) {
+        start = await racer.arm();
+        // The racer has stopped (its deadline), so there is nothing to race.
+        if (!start.pinned) break;
+      }
       try {
         await cleanup(target);
       } catch (error) {
@@ -269,4 +363,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startCleanupRacer, raceCleanup, racerNames, SUBDIRECTORY };
+module.exports = {
+  startCleanupRacer,
+  raceCleanup,
+  racerNames,
+  pinTarget,
+  unpinTarget,
+  SUBDIRECTORY,
+};
