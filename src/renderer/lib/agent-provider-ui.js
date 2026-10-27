@@ -130,11 +130,17 @@ export function createAgentProviderUi(options = {}) {
     if (!element) return;
     element.textContent = text;
     element.classList.toggle('error', error);
+    // Any later action that reports in the page-wide line (disconnect,
+    // refresh, test prompt, sign-in, preferences) supersedes the Connect
+    // result, so stale text never sits under the button beside it.
+    if (text && element === elements.providerMessage && elements.connectMessage?.textContent)
+      setConnectMessage('');
   };
   // The Connect button's result goes in the slot right under it when the
   // page has one (#858), not the page-wide line far below the form. While
   // it shows an error the "Connect to discover" placeholder is hidden, and
-  // a failed Ollama connect points at where to get Ollama.
+  // a failed Ollama connect points at where to get Ollama. The slot is
+  // cleared when the privacy setting it was checked against changes.
   let connectError = false;
   function setConnectMessage(text = '', error = false) {
     const slot = elements.connectMessage;
@@ -825,6 +831,15 @@ export function createAgentProviderUi(options = {}) {
     // A manual refresh supersedes an earlier Connect result under the button.
     if (!background && !connecting) setConnectMessage('');
     if (!background) report('Refreshing model catalog…');
+    // Connect-time discovery only runs for a provider that is not connected
+    // yet, so there is no previous catalog to fall back on: don't say there is.
+    const failure = connecting
+      ? 'Could not load this provider’s models. Try connecting again.'
+      : 'Could not refresh models. Your previous catalog is still available.';
+    const failureMessage = (response) =>
+      connecting && (!response?.error || response.error.code === 'AGENT_CATALOG_UNAVAILABLE')
+        ? failure
+        : responseMessage(response, failure);
     try {
       const response = await api.refreshAgentProviderModels(
         providerId,
@@ -832,13 +847,7 @@ export function createAgentProviderUi(options = {}) {
       );
       if (!response?.ok) {
         if (!background)
-          report(
-            responseMessage(
-              response,
-              'Could not refresh models. Your previous catalog is still available.'
-            ),
-            true
-          );
+          report(failureMessage(response), true);
         return;
       }
       state.providerCatalog = response.catalog;
@@ -851,7 +860,7 @@ export function createAgentProviderUi(options = {}) {
       return true;
     } catch {
       if (!background)
-        report('Could not refresh models. Your previous catalog is still available.', true);
+        report(failure, true);
     } finally {
       elements.modelRefresh.disabled = false;
     }
@@ -1495,9 +1504,10 @@ export function createAgentProviderUi(options = {}) {
       context.setAgentView('workspace');
       context.focusComposer();
     });
-    elements.privacyPolicy.addEventListener('change', () =>
-      renderModelOptions(elements.provider.value)
-    );
+    elements.privacyPolicy.addEventListener('change', () => {
+      setConnectMessage('');
+      renderModelOptions(elements.provider.value);
+    });
     elements.privacySave.addEventListener('click', () =>
       saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value })
     );

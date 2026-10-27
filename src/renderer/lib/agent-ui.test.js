@@ -5318,6 +5318,100 @@ describe('Agent UI', () => {
     expect(install.hidden).toBe(true);
   });
 
+  test('a later bottom-line report clears the Connect result under the button (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+      removeAgentProvider: jest.fn().mockResolvedValue({ ok: false }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    ctx.elements['agent-provider-disconnect'].dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Could not disconnect Ollama');
+    expect(slot.textContent).toBe('');
+  });
+
+  test('changing the privacy setting clears a Connect error and brings the placeholder back (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'open', name: 'Open', privacy: 'anonymized', tools: true },
+      ] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    const slot = ctx.elements['agent-provider-connect-message'];
+    expect(slot.textContent).toBe('No supported models meet this privacy setting');
+    ctx.elements['agent-privacy-policy'].value = 'standard';
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(slot.textContent).toBe('');
+    expect(slot.classList.contains('error')).toBe(false);
+  });
+
+  test('a connect-time catalog failure does not promise a previous catalog (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All']], models: [] };
+    const refresh = jest.fn()
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_UNAVAILABLE',
+        message: 'Could not refresh models. The previous catalog is still available.',
+      } })
+      .mockRejectedValueOnce(new Error('ipc'))
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_AUTH_FAILED', message: 'The provider did not accept this API key.',
+      } })
+      .mockResolvedValueOnce({ ok: false });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: refresh,
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const connect = async () => {
+      ctx.elements['agent-api-key'].value = 'test-key';
+      ctx.elements['agent-provider-save'].dispatch('click');
+      await flush();
+      await flush();
+    };
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    expect(slot.classList.contains('error')).toBe(true);
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    await connect();
+    expect(slot.textContent).toBe('The provider did not accept this API key.');
+    // A manual refresh still reports in the bottom line with the old wording.
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'Could not refresh models. Your previous catalog is still available.'
+    );
+  });
+
   test('a failed hosted connect reports under the button without the Ollama pointer (#858)', async () => {
     const ctx = await loadAgentUi({ electronAPI: {
       configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Invalid API key' } }),
