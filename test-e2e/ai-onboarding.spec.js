@@ -106,6 +106,15 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
     }),
   );
   expect(Math.abs(middles[0] - middles[1])).toBeLessThanOrEqual(0.5);
+  // ...with the row's 16px gap between them, not the 8px that left the
+  // button almost touching the switch and inside its focus ring (#862).
+  const gap = await page.evaluate(() =>
+    document.querySelector('#ai .toggle:has(#enable-ai)').getBoundingClientRect().left -
+    document.querySelector('#enable-ai-restart').getBoundingClientRect().right,
+  );
+  expect(gap).toBeGreaterThanOrEqual(16);
+  // No model yet: the row says what it is for.
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
   // The button follows this launch, not the click: reopened, Settings still
   // offers the restart this launch needs.
   await page.evaluate(() => {
@@ -129,6 +138,8 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();
+  // The Models & providers row names the connected model (#862).
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Ollama · freedom-onboarding-fixture');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -294,12 +305,16 @@ test('Settings opens Agent only for the first model connected on that page', asy
   expect(configured?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();
+  // A model connected elsewhere is named here too.
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Ollama · freedom-onboarding-fixture');
   await window.waitForTimeout(1000);
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   const removed = await window.evaluate(() => window.electronAPI.removeAgentProvider('ollama'));
   expect(removed?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeHidden();
   await expect(page.locator('#ai-connect-model')).toBeVisible();
+  // Removing the model takes its name off the row again (#862).
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await page.locator('#agent-provider-add').click();
   await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();

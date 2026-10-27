@@ -37,6 +37,8 @@ const dictation = createDictationSettings(dictationHost, api, {
 });
 const connect = document.getElementById('ai-connect-model');
 const nextHelp = document.getElementById('ai-next-help');
+const summary = document.getElementById('ai-providers-summary');
+const SUMMARY_DEFAULT = summary.textContent;
 // Turning AI on only turns it on (#836): with no model connected yet, the
 // next-step row offers "Connect a model" (the provider picker) instead of
 // navigating there under the user's hand. The first model connected on this
@@ -68,6 +70,13 @@ const updateNext = (state, { userAction = false, real = false } = {}) => {
   nextHelp.textContent = configured
     ? 'Your current conversation and draft stay in place.'
     : 'Choose a provider account or a local model for Agent to use.';
+  // The Models & providers row names the model Agent uses (#862), from the
+  // status this enable loaded only: a status left over from before AI was
+  // turned off, or the placeholder a failed load leaves, shows the default.
+  summary.textContent =
+    configured && state === realStatus
+      ? `${providerUi.providerName(state.providerId)} · ${providerUi.modelName(state.providerId, state.modelId)}`
+      : SUMMARY_DEFAULT;
   if (enabled && configured && status.textContent === 'Loading providers…')
     status.textContent = '';
   if (!enabled || !state || !real) return;
