@@ -79,13 +79,17 @@ test('an authorized root identity rejects a replacement ordinary directory', asy
 // S1 under an active race: a surviving process keeps swapping `work/sub`
 // between a real directory and a link to `outside` for as long as the cleanup
 // runs. The write-confined `rm` may fail while the tree keeps refilling, but it
-// must never delete through the link.
+// must never delete through the link. `gate` keeps an attempt from removing the
+// whole tree inside one of the racer's idle holds, before any swap: that ended
+// the race with `overlapped: false` now and then (#843), the outside files
+// untouched.
 (process.platform === 'darwin' ? test : test.skip)('restricted cleanup keeps the outside target while a surviving process swaps a subdirectory for a link', async () => {
   const report = await raceCleanup({
     target: path.join(fixture, 'work'),
     outside: path.join(fixture, 'outside'),
     names: racerNames(),
     cleanup: removeSandboxTree,
+    gate: true,
   });
   expect(report).toMatchObject({ overlapped: true, preserved: true, removed: true, missing: [] });
 }, 60_000);
