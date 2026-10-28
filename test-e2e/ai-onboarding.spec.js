@@ -615,7 +615,17 @@ const ONE_CARD = {
   opaque: true,
   headerOpaque: true,
   headerShadow: ['inset'],
+  sheetFrame: 'own',
 };
+// Below 720px the panel is a full-width bottom sheet (#874) that draws the
+// card's edge, corners and drop shadow itself: the sheet under the header is
+// its flat, opaque body rather than a second card floating inside it.
+const ONE_CARD_IN_BOTTOM_SHEET = {
+  ...ONE_CARD,
+  outerCorners: ['16px', '0px'],
+  sheetFrame: 'flat',
+};
+const oneCardAt = (width) => (width < 720 ? ONE_CARD_IN_BOTTOM_SHEET : ONE_CARD);
 const headerShadow = (window) => window.evaluate(() =>
   getComputedStyle(document.querySelector('#agent-sidebar .agent-sidebar-header')).boxShadow);
 function sheetUnderHeader(window, id) {
@@ -647,6 +657,8 @@ function sheetUnderHeader(window, id) {
       // shadow sits on the sheet, not across the seam (#863).
       headerShadow: hs.boxShadow.split(/,(?![^(]*\))/)
         .map((shadow) => (/\binset\b/.test(shadow) ? 'inset' : 'drop')),
+      // Whether the sheet draws a card of its own (drop shadow, bottom edge).
+      sheetFrame: ss.boxShadow === 'none' && ss.borderBottomWidth === '0px' ? 'flat' : 'own',
     };
   }, id);
 }
@@ -669,7 +681,7 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
       if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
         await window.locator('#agent-toggle-btn').click();
       await expect(window.locator('#agent-setup-view')).toBeVisible();
-      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(ONE_CARD);
+      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(oneCardAt(width));
       await expect(window.locator('#agent-setup-view .agent-setup-intro')).toHaveText(
         'Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.'
       );
@@ -706,7 +718,7 @@ test('Services sheet is one card with its header and its highlight dissolves on 
       await expect(window.locator('#agent-mcp-panel')).toBeVisible();
       await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
       await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-agent-view', 'services');
-      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(ONE_CARD);
+      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(oneCardAt(width));
       await window.screenshot({ path: testInfo.outputPath(`services-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
       await expect.poll(() => headerShadow(window)).toBe('none');

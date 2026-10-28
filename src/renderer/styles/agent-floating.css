@@ -969,8 +969,15 @@
     border-bottom: 1px solid var(--agent-glass-border);
   }
 
+  /* Set up Agent and Services (#863's one card) are the sheet's body here:
+     the sheet already draws the card's edge, corners and drop shadow, so a
+     second card of their own would float half-way down it. The header keeps
+     #863's seamless join above them. */
   .agent-floating[data-presentation='column'] .agent-setup-view {
+    background: inherit;
+    border: 0;
     border-radius: 0;
+    box-shadow: none;
   }
 
   /* The transcript takes whatever the header and composer leave. */
