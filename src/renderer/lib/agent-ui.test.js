@@ -1483,6 +1483,87 @@ describe('Agent UI', () => {
     );
   });
 
+  test('a new task workspace leaves out the previous chat\'s page and viewers (#851)', async () => {
+    let agentOwned = false;
+    let tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: false },
+      { id: 8, url: 'https://news.example.test/', title: 'Example News', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      isTabAgentOwned: (tabId) => agentOwned && tabId === 8,
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+
+    // A user's own page is where a new task starts, so it is shown.
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(false);
+
+    // The same page opened by Agent belongs to an earlier chat.
+    agentOwned = true;
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+    expect(ctx.elements['agent-task-pages-empty'].hidden).toBe(false);
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(true);
+    expect(ctx.elements['agent-workspace-sidebar-toggle'].disabled).toBe(true);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [],
+    });
+
+    // So does another chat's read-only workspace viewer.
+    agentOwned = false;
+    tabs = [{ id: 9, kind: 'workspace-viewer', conversationId: 'conversation_old', title: 'notes.md', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+  });
+
+  test('a new task workspace only says Agent starts from the page it will share', async () => {
+    const tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({ getOpenTabs: () => tabs });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const note = () => ctx.elements['agent-task-pages-note'].textContent;
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start from the page you are currently viewing.');
+
+    // Removing the "Attached page" chip keeps the page on screen, but the run
+    // no longer starts from it, so the workspace must stop saying it does.
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start without a page.');
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace does not claim Agent starts from the homepage', async () => {
+    const homeTab = {
+      id: 7, url: 'file:///app/pages/home.html', title: 'New Tab', favicon: '', isLoading: false, isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    // The homepage stays as the surface to browse from, but is never shared.
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-pages-note'].textContent).toBe('Agent will start without a page.');
+  });
+
   test('keeps the pristine homepage outside a new Agent workspace', async () => {
     const homeTab = {
       id: 7,
@@ -3272,12 +3353,17 @@ describe('Agent UI', () => {
     });
 
     let row = ctx.elements['agent-session-list'].children[0];
-    expect(row.children).toHaveLength(2);
+    expect(row.children.map(child => child.className)).toEqual([
+      'agent-session-select', 'agent-session-more', 'agent-session-actions',
+    ]);
     expect(row.children[0].children).toHaveLength(1);
     row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    expect(row.children[1].hidden).toBe(false);
-    row.children[1].children[0].dispatch('click');
-    const renameInput = row.children.at(-1);
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[0].dispatch('click');
+    // The inline field takes the title's place; the ⋯ trigger steps aside.
+    const renameInput = row.children[1];
+    expect(renameInput.getAttribute('aria-label')).toBe('Session title');
+    expect(row.querySelector('.agent-session-more').hidden).toBe(true);
     renameInput.value = 'Renamed title';
     renameInput.dispatch('keydown', { key: 'Enter', preventDefault: jest.fn(), stopPropagation: jest.fn() });
     await flush();
@@ -3287,8 +3373,11 @@ describe('Agent UI', () => {
     );
 
     row = ctx.elements['agent-session-list'].children[0];
-    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    row.children[1].children[1].dispatch('click');
+    expect(row.querySelector('.agent-session-more').hidden).toBeFalsy();
+    // The visible ⋯ trigger opens the same menu right-click does.
+    row.children[1].dispatch('click', { preventDefault: jest.fn() });
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[1].dispatch('click');
     await flush();
     expect(global.window.confirm).toHaveBeenCalledWith(
       'Delete “Original title”? This cannot be undone.'
@@ -3307,29 +3396,72 @@ describe('Agent UI', () => {
     });
     const [first, second] = ctx.elements['agent-session-list'].children;
     const select = first.children[0];
-    const menu = first.children[1];
+    const more = first.children[1];
+    const menu = first.children[2];
     jest.spyOn(select, 'focus');
+    jest.spyOn(more, 'focus');
     jest.spyOn(menu.children[0], 'focus');
     jest.spyOn(menu.children[1], 'focus');
     const keyboard = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
     select.dispatch('keydown', keyboard);
     expect(keyboard.preventDefault).toHaveBeenCalled();
     expect(menu.hidden).toBe(false);
-    expect(select.getAttribute('aria-expanded')).toBe('true');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
     expect(menu.children[0].focus).toHaveBeenCalled();
     menu.dispatch('keydown', { key: 'End', preventDefault: jest.fn() });
     expect(menu.children[1].focus).toHaveBeenCalled();
     ctx.document.handlers.keydown( { key: 'Escape', preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
     expect(select.focus).toHaveBeenCalled();
-    expect(select.getAttribute('aria-expanded')).toBe('false');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    // Opened from ⋯: its own click (bubbling to document) must not close it,
+    // a second click toggles it shut, and focus returns to ⋯, not the title.
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalled();
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(2);
+
+    // Shift+F10 / the ContextMenu key with ⋯ focused: off macOS it reaches
+    // the row as a coordinate-less contextmenu targeting ⋯; on macOS Chromium
+    // fires no contextmenu, so ⋯'s own keydown has to open it. Either way ⋯ is
+    // the opener: the menu anchors under it and Escape hands focus back to it.
+    select.setRect({ left: 10, bottom: 40 });
+    more.setRect({ left: 200, bottom: 44 });
+    global.window.innerHeight = 800;
+    select.focus.mockClear();
+    const moreKey = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    more.dispatch('keydown', moreKey);
+    expect(moreKey.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    more.focus.mockClear();
+    first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(1);
+    expect(select.focus).not.toHaveBeenCalled();
 
     select.dispatch('keydown', keyboard);
     second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
-    expect(second.children[1].hidden).toBe(false);
+    expect(second.children[2].hidden).toBe(false);
     ctx.document.handlers.click( { target: ctx.document.body });
-    expect(second.children[1].hidden).toBe(true);
+    expect(second.children[2].hidden).toBe(true);
     select.dispatch('keydown', keyboard);
     ctx.document.handlers.scroll();
     expect(menu.hidden).toBe(true);

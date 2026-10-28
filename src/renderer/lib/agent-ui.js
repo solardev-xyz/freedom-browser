@@ -242,10 +242,13 @@ function pageContextTab() {
     return openTabs.find((tab) => tab.id === conversationRendererTabId) || null;
   }
   const tab = getActiveTab();
-  if (!isShareablePage(tab) || isTabAgentOwned(tab.id) || dismissedPageContextTabId === tab.id) {
-    return null;
-  }
-  return tab;
+  return newTaskStartsFrom(tab) ? tab : null;
+}
+
+// The one rule for "a new task starts from this page": the page-context chip,
+// startRun() and the new-task workspace note all use it, so they agree.
+function newTaskStartsFrom(tab) {
+  return isShareablePage(tab) && !isTabAgentOwned(tab.id) && dismissedPageContextTabId !== tab.id;
 }
 
 function pageContextLabel(tab) {
@@ -783,12 +786,12 @@ function setModeMenuOpen(open, restoreFocus = false) {
 
 function closeSessionContextMenu(restoreFocus = false) {
   if (!sessionContextMenu) return;
-  const { actions, select } = sessionContextMenu;
+  const { actions, more, returnFocus } = sessionContextMenu;
   actions.hidePopover?.();
   actions.hidden = true;
-  select.setAttribute('aria-expanded', 'false');
+  more.setAttribute('aria-expanded', 'false');
   sessionContextMenu = null;
-  if (restoreFocus) select.focus();
+  if (restoreFocus) returnFocus.focus();
 }
 
 function renderSessionSidebar() {
@@ -808,10 +811,21 @@ function renderSessionSidebar() {
     const title = document.createElement('span');
     title.textContent = session.title || 'Untitled session';
     select.title = session.title || 'Untitled session';
-    select.setAttribute('aria-haspopup', 'menu');
-    select.setAttribute('aria-expanded', 'false');
     select.appendChild(title);
     select.addEventListener('click', () => openSavedSession(session.conversationId));
+
+    // Visible trigger for the same menu right-click opens: shown on row
+    // hover/focus (agent.css), so Rename/Delete are discoverable without
+    // knowing about the context menu.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'agent-session-more';
+    more.disabled = currentRunStatus !== 'idle';
+    more.textContent = '⋯';
+    more.title = 'Session options';
+    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
 
     const actions = document.createElement('div');
     actions.className = 'agent-session-actions';
@@ -838,16 +852,16 @@ function renderSessionSidebar() {
     });
     actions.appendChild(rename);
     actions.appendChild(remove);
-    const openMenu = (event, keyboard = false) => {
+    const openMenu = (event, keyboard = false, trigger = select) => {
       event.preventDefault();
       closeSessionContextMenu();
       setModeMenuOpen(false);
       if (currentRunStatus !== 'idle') return;
       actions.hidden = false;
       actions.showPopover?.();
-      select.setAttribute('aria-expanded', 'true');
-      sessionContextMenu = { actions, select, row };
-      const anchor = select.getBoundingClientRect();
+      more.setAttribute('aria-expanded', 'true');
+      sessionContextMenu = { actions, more, row, returnFocus: trigger };
+      const anchor = trigger.getBoundingClientRect();
       const bounds = actions.getBoundingClientRect();
       const x = keyboard ? anchor.left : event.clientX;
       const y = keyboard ? anchor.bottom : event.clientY;
@@ -855,12 +869,31 @@ function renderSessionSidebar() {
       actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
       rename.focus();
     };
-    row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
-    select.addEventListener('keydown', (event) => {
-      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-        openMenu(event, true);
+    // A right-click (or, off macOS, a context-menu key event) can land on ⋯
+    // itself: then it is the opener, so the menu anchors under it and focus
+    // returns to it.
+    row.addEventListener('contextmenu', (event) =>
+      openMenu(event, !event.clientX && !event.clientY, more.contains(event.target) ? more : select)
+    );
+    more.addEventListener('click', (event) => {
+      if (sessionContextMenu?.actions === actions) {
+        event.preventDefault();
+        closeSessionContextMenu(true);
+        return;
       }
+      openMenu(event, true, more);
     });
+    // Shift+F10 / the ContextMenu key: handled as a key, not only through the
+    // row's contextmenu listener, because Chromium on macOS never turns them
+    // into a contextmenu event. preventDefault() here stops the platforms
+    // that do from opening the menu a second time.
+    for (const trigger of [select, more]) {
+      trigger.addEventListener('keydown', (event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          openMenu(event, true, trigger);
+        }
+      });
+    }
     actions.addEventListener('keydown', (event) => {
       if (event.key === 'Tab') {
         closeSessionContextMenu(true);
@@ -873,6 +906,7 @@ function renderSessionSidebar() {
     });
 
     row.appendChild(select);
+    row.appendChild(more);
     row.appendChild(actions);
     return row;
   });
@@ -910,9 +944,19 @@ function workspacePages() {
   const activeTab = openTabs.find((tab) => tab.isActive);
   if (currentConversationId) return [...projected, ...openTabs.filter((tab) => tab.kind === 'workspace-viewer' && tab.conversationId === currentConversationId)
     .map((tab) => ({ rendererTabId: tab.id, agentActive: false, tab }))];
-  return activeTab
-    ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
-    : [];
+  // A new task's workspace shows the user's own page. A page Agent opened, or a
+  // viewer, belongs to an earlier chat: showing it would present another
+  // chat's page as this task's (#851).
+  if (!activeTab || isTabAgentOwned(activeTab.id) || activeTab.kind === 'workspace-viewer') return [];
+  // Whether the task actually starts from it is pageContextTab()'s rule, not
+  // just "it is showing": the homepage, an internal page, or a page whose chip
+  // the user removed stays visible here but is not shared with the run.
+  return [{
+    rendererTabId: activeTab.id,
+    agentActive: false,
+    tab: activeTab,
+    startsHere: newTaskStartsFrom(activeTab),
+  }];
 }
 
 function ensureWorkspacePageVisible() {
@@ -938,7 +982,9 @@ function renderTaskPages() {
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Pages and read-only viewers belonging to this conversation are shown.'
-    : 'Agent will start from the page you are currently viewing.';
+    : pages.some((entry) => entry.startsHere)
+      ? 'Agent will start from the page you are currently viewing.'
+      : 'Agent will start without a page.';
 }
 
 function activePageIsControlled() {
@@ -1594,16 +1640,12 @@ function captureLauncherSnapshot() {
 
 const FLOAT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
-// Glass cards cannot fade with opacity without losing their blur (see
-// agent-floating.css), so they arrive by materialising: blur, tint, border
-// and shadow interpolate from nothing to their resting values.
+// The floating cards arrive by materialising: fill, border and shadow
+// interpolate from nothing to their resting values (see agent-floating.css),
+// while the content inside them fades in on its own.
 function glassHiddenKeyframe(extra = {}) {
-  const hiddenFilter =
-    window.getComputedStyle?.(elements.panel)?.getPropertyValue?.('--agent-glass-filter-hidden')?.trim() ||
-    'blur(0px)';
   return {
     backgroundColor: 'transparent',
-    backdropFilter: hiddenFilter,
     borderColor: 'transparent',
     boxShadow: 'none',
     ...extra,
@@ -1618,7 +1660,7 @@ function materialise(element, transform, delay = 0, fadeContents = true) {
   for (const child of element.children || []) fadeIn(child, delay + 80);
 }
 
-// Only for content that is not itself glass (opacity would disable a blur).
+// For the content inside a card, not the card itself.
 function fadeIn(element, delay = 0) {
   element?.animate?.([{ offset: 0, opacity: 0 }], {
     duration: 260,
@@ -3988,13 +4030,17 @@ async function renameSavedSession(session, row, select) {
   input.setAttribute('aria-label', 'Session title');
   input.maxLength = 120;
   input.value = session.title || '';
+  const more = row.querySelector('.agent-session-more');
   select.hidden = true;
-  row.appendChild(input);
+  if (more) more.hidden = true;
+  select.after(input);
   const title = await new Promise(resolve => {
     let settled = false;
     const finish = value => {
       if (settled) return;
-      settled = true; input.remove(); select.hidden = false; resolve(value);
+      settled = true; input.remove(); select.hidden = false;
+      if (more) more.hidden = false;
+      resolve(value);
     };
     input.addEventListener('keydown', event => {
       if (!['Enter', 'Escape'].includes(event.key)) return;
@@ -5090,6 +5136,7 @@ export function initAgentUi(options = {}) {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
     renderPageContext();
+    renderTaskPages();
     elements.prompt.focus();
   });
   elements.newChat.addEventListener('click', clearConversation);
@@ -5174,7 +5221,7 @@ export function initAgentUi(options = {}) {
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
     if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target)) setModeMenuOpen(false);
-    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
+    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target) && !sessionContextMenu.more.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
       if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;

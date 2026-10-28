@@ -1559,6 +1559,7 @@ export function createAgentProviderUi(options = {}) {
     state,
     showSettingsPage,
     providerName,
+    modelName,
     providerPageTitle,
     invalidateCatalog,
     providerPrivacyMessage,
