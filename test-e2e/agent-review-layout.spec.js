@@ -45,6 +45,22 @@ async function resize(electronApp, width, height = 800) {
   })).toBe(true);
 }
 
+// Painted colour of one window pixel (CSS px), read back from the compositor:
+// a gradient's stops aren't visible through getComputedStyle.
+async function pixel(electronApp, x, y) {
+  return electronApp.evaluate(async ({ BrowserWindow }, point) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const image = await win.webContents.capturePage();
+    const scale = image.getSize().width / win.getContentSize()[0];
+    const at = (Math.round(point.y * scale) * image.getSize().width + Math.round(point.x * scale)) * 4;
+    const [b, g, r] = image.toBitmap().subarray(at, at + 3);
+    return [r, g, b];
+  }, { x: Math.round(x), y: Math.round(y) });
+}
+
+// Gradient stops rasterise a unit or two off a flat fill of the same colour.
+const samePaint = (a, b) => a.every((channel, i) => Math.abs(channel - b[i]) <= 2);
+
 async function hit(window, selector) {
   return window.locator(selector).evaluate(element => {
     const r = element.getBoundingClientRect();
@@ -93,10 +109,29 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
     await window.locator('#agent-session-sidebar-toggle').click();
     await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+    // The title bar above an open overlay takes the overlay's colour across
+    // its whole width, not just the toggle's slot, then the conversation's
+    // past its edge (#879).
+    const bar = await window.locator('#agent-first-titlebar').evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return { y: r.top + r.height / 2, right: r.right };
+    });
+    const sessions = window.locator('[data-test="agent-session-sidebar"]');
+    await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+    await expect(sessions).toHaveCSS('opacity', '1');
+    const sessionsEdge = await sessions.evaluate(el => el.getBoundingClientRect().right);
+    const sessionsSlot = await pixel(electronApp, 4, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, sessionsEdge - 20, bar.y), sessionsSlot)).toBe(true);
+    expect(samePaint(await pixel(electronApp, sessionsEdge + 20, bar.y), sessionsSlot)).toBe(false);
     await window.locator('#agent-workspace-sidebar-toggle').click();
     await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
     await expect(window.locator('#agent-page-surface')).toHaveCSS('transform', 'none');
+    const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
+    const workspaceSlot = await pixel(electronApp, bar.right - 2, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, workspaceEdge + 20, bar.y), workspaceSlot)).toBe(true);
+    // Dark paints the conversation and the Workspace with the same --bg.
+    if (theme === 'light') expect(samePaint(await pixel(electronApp, workspaceEdge - 20, bar.y), workspaceSlot)).toBe(false);
     await expect(window.locator('#agent-task-pages')).toBeVisible();
     await expect.poll(() => hit(window, '#address-input')).toBe(true);
     await expect.poll(() => window.evaluate(() => {

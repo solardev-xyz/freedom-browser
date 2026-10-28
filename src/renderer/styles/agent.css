@@ -4389,12 +4389,46 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 /* At this width three side-by-side panes leave no usable conversation.
    The existing session/workspace toggles instead open one overlay at a time. */
 @media (max-width: 1100px) {
-  body.agent-first-mode .agent-first-titlebar {
-    grid-template-columns: 54px minmax(0, 1fr) 42px;
+  body.agent-first-mode {
+    --agent-compact-session-slot: 54px;
+    --agent-compact-workspace-slot: 42px;
   }
 
-  html[data-platform='darwin'] body.agent-first-mode .agent-first-titlebar {
-    grid-template-columns: 118px minmax(0, 1fr) 42px;
+  html[data-platform='darwin'] body.agent-first-mode {
+    --agent-compact-session-slot: 118px;
+  }
+
+  body.agent-first-mode .agent-first-titlebar {
+    grid-template-columns:
+      var(--agent-compact-session-slot) minmax(0, 1fr) var(--agent-compact-workspace-slot);
+  }
+
+  /* Here the side slots are only a toggle wide, so an open overlay runs on
+     under the title bar's centre. Paint the overlay's colour and edge across
+     the centre too, so the title bar above each column still takes that
+     column's colour, as in the wide layout (#879). */
+  body.agent-first-mode:not(.agent-session-sidebar-closed) .agent-first-titlebar-center {
+    --agent-overlay-edge: calc(
+      min(var(--agent-session-sidebar-width, 242px), 100vw - 48px) - var(--agent-compact-session-slot)
+    );
+    background-image: linear-gradient(
+      to right,
+      var(--agent-sessions-surface) calc(var(--agent-overlay-edge) - 1px),
+      var(--agent-divider) 0 var(--agent-overlay-edge),
+      transparent 0
+    );
+  }
+
+  body.agent-first-mode:not(.agent-workspace-sidebar-closed) .agent-first-titlebar-center {
+    --agent-overlay-edge: calc(
+      min(var(--agent-workspace-sidebar-width), 100vw - 48px) - var(--agent-compact-workspace-slot)
+    );
+    background-image: linear-gradient(
+      to left,
+      var(--bg) calc(var(--agent-overlay-edge) - 1px),
+      var(--agent-divider) 0 var(--agent-overlay-edge),
+      transparent 0
+    );
   }
 
   body.agent-first-mode .agent-sidebar { min-width: 0; }
