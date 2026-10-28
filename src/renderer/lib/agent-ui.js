@@ -869,8 +869,9 @@ function renderSessionSidebar() {
       actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
       rename.focus();
     };
-    // The key/right-click can land on ⋯ itself (Shift+F10 with it focused): then
-    // it is the opener, so the menu anchors under it and focus returns to it.
+    // A right-click (or, off macOS, a context-menu key event) can land on ⋯
+    // itself: then it is the opener, so the menu anchors under it and focus
+    // returns to it.
     row.addEventListener('contextmenu', (event) =>
       openMenu(event, !event.clientX && !event.clientY, more.contains(event.target) ? more : select)
     );
@@ -882,11 +883,17 @@ function renderSessionSidebar() {
       }
       openMenu(event, true, more);
     });
-    select.addEventListener('keydown', (event) => {
-      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-        openMenu(event, true);
-      }
-    });
+    // Shift+F10 / the ContextMenu key: handled as a key, not only through the
+    // row's contextmenu listener, because Chromium on macOS never turns them
+    // into a contextmenu event. preventDefault() here stops the platforms
+    // that do from opening the menu a second time.
+    for (const trigger of [select, more]) {
+      trigger.addEventListener('keydown', (event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          openMenu(event, true, trigger);
+        }
+      });
+    }
     actions.addEventListener('keydown', (event) => {
       if (event.key === 'Tab') {
         closeSessionContextMenu(true);

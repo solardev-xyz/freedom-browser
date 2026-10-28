@@ -3431,20 +3431,30 @@ describe('Agent UI', () => {
     expect(menu.hidden).toBe(true);
     expect(more.focus).toHaveBeenCalledTimes(2);
 
-    // Shift+F10 / the ContextMenu key with ⋯ focused reaches the row as a
-    // coordinate-less contextmenu targeting ⋯: it is the opener, so the menu
-    // anchors under it and Escape hands focus back to it, not the title.
+    // Shift+F10 / the ContextMenu key with ⋯ focused: off macOS it reaches
+    // the row as a coordinate-less contextmenu targeting ⋯; on macOS Chromium
+    // fires no contextmenu, so ⋯'s own keydown has to open it. Either way ⋯ is
+    // the opener: the menu anchors under it and Escape hands focus back to it.
     select.setRect({ left: 10, bottom: 40 });
     more.setRect({ left: 200, bottom: 44 });
     global.window.innerHeight = 800;
     select.focus.mockClear();
+    const moreKey = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    more.dispatch('keydown', moreKey);
+    expect(moreKey.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    more.focus.mockClear();
     first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
     expect(menu.hidden).toBe(false);
     expect(menu.style.left).toBe('200px');
     expect(menu.style.top).toBe('44px');
     ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
-    expect(more.focus).toHaveBeenCalledTimes(3);
+    expect(more.focus).toHaveBeenCalledTimes(1);
     expect(select.focus).not.toHaveBeenCalled();
 
     select.dispatch('keydown', keyboard);
