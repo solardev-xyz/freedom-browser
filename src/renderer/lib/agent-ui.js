@@ -4948,6 +4948,7 @@ export function initAgentUi(options = {}) {
     close: byId('agent-sidebar-close'),
     agentFirstToggle: byId('agent-first-toggle'),
     agentFirstTitlebar: byId('agent-first-titlebar'),
+    agentFirstReduce: byId('agent-first-reduce'),
     agentFirstTitle: byId('agent-first-title'),
     sessionSidebarToggle: byId('agent-session-sidebar-toggle'),
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
@@ -5193,6 +5194,12 @@ export function initAgentUi(options = {}) {
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
+  // Full view's own way back (#921): the panel header, and the expand button
+  // with it, is hidden while Agent is the main view.
+  elements.agentFirstReduce.addEventListener('click', () => {
+    setAgentFirstMode(false);
+    elements.agentFirstToggle.focus();
+  });
   elements.modeToggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
   elements.modeToggle.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

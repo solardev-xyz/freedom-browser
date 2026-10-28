@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - When Agent is the main view, its title bar has a reduce button at the right that returns to the Agent panel on the same chat ([#921](https://github.com/solardev-xyz/freedom-browser/issues/921))
