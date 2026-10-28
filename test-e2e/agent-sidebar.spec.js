@@ -1509,6 +1509,45 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     await reopenedWindow.locator('#agent-session-list .agent-session-select').click();
     await expect(reopenedWindow.locator('.agent-user-message')).toHaveText('Summarize this page');
     await expect(reopenedWindow.locator('#agent-task-page-count')).toHaveText('0');
+
+    // #880: Rename/Delete are reachable from a visible "⋯" button on hover
+    // and focus, not only from right-click.
+    const sessionRow = reopenedWindow.locator('#agent-session-list .agent-session-row');
+    const sessionMore = sessionRow.locator('.agent-session-more');
+    const sessionMenu = sessionRow.locator('.agent-session-actions');
+    await reopenedWindow.locator('#agent-prompt').focus();
+    await reopenedWindow.mouse.move(700, 500);
+    await expect(sessionMore).toBeHidden();
+    await sessionRow.hover();
+    await expect(sessionMore).toBeVisible();
+    await expect(sessionMore).toHaveAccessibleName('Options for Summarize this page');
+    await sessionMore.click();
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'true');
+    await expect(sessionMenu.getByRole('menuitem')).toHaveText(['Rename', 'Delete']);
+    await sessionMore.click();
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await reopenedWindow.keyboard.press('Enter');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'false');
+    await sessionRow.locator('.agent-session-select').click({ button: 'right' });
+    await expect(sessionMenu).toBeVisible();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await sessionRow.hover();
+    await sessionMore.click();
+    await sessionMenu.getByRole('menuitem', { name: 'Rename' }).click();
+    const renameInput = sessionRow.getByRole('textbox', { name: 'Session title' });
+    await expect(renameInput).toBeFocused();
+    await expect(sessionMore).toBeHidden();
+    await renameInput.fill('Renamed session');
+    await renameInput.press('Enter');
+    await expect(reopenedWindow.locator('#agent-session-list')).toContainText('Renamed session');
   } finally {
     await reopened.close();
   }

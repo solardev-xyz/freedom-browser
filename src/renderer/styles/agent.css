@@ -472,6 +472,52 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
   white-space: nowrap;
 }
 
+/* Row options: shown on hover/focus (and while its menu is open) so
+   Rename/Delete are discoverable without knowing about right-click. */
+.agent-session-more {
+  display: none;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-session-row:hover .agent-session-more,
+.agent-session-row:focus-within .agent-session-more,
+.agent-session-more[aria-expanded='true'] {
+  display: inline-flex;
+}
+
+
+.agent-session-more:hover,
+.agent-session-more:focus-visible,
+.agent-session-more[aria-expanded='true'] {
+  color: var(--text);
+  background: var(--agent-hover-08);
+}
+
+@media (hover: none) {
+  .agent-session-more {
+    display: inline-flex;
+  }
+}
+
+/* Nothing to offer mid-run (the menu refuses to open), and none while the
+   row is being renamed inline. */
+.agent-session-row .agent-session-more:disabled,
+.agent-session-row .agent-session-more[hidden] {
+  display: none;
+}
+
 .agent-session-history-empty {
   color: var(--muted);
   font-size: 12px;

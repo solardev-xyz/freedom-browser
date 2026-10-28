@@ -786,12 +786,12 @@ function setModeMenuOpen(open, restoreFocus = false) {
 
 function closeSessionContextMenu(restoreFocus = false) {
   if (!sessionContextMenu) return;
-  const { actions, select } = sessionContextMenu;
+  const { actions, more, returnFocus } = sessionContextMenu;
   actions.hidePopover?.();
   actions.hidden = true;
-  select.setAttribute('aria-expanded', 'false');
+  more.setAttribute('aria-expanded', 'false');
   sessionContextMenu = null;
-  if (restoreFocus) select.focus();
+  if (restoreFocus) returnFocus.focus();
 }
 
 function renderSessionSidebar() {
@@ -811,10 +811,21 @@ function renderSessionSidebar() {
     const title = document.createElement('span');
     title.textContent = session.title || 'Untitled session';
     select.title = session.title || 'Untitled session';
-    select.setAttribute('aria-haspopup', 'menu');
-    select.setAttribute('aria-expanded', 'false');
     select.appendChild(title);
     select.addEventListener('click', () => openSavedSession(session.conversationId));
+
+    // Visible trigger for the same menu right-click opens: shown on row
+    // hover/focus (agent.css), so Rename/Delete are discoverable without
+    // knowing about the context menu.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'agent-session-more';
+    more.disabled = currentRunStatus !== 'idle';
+    more.textContent = '⋯';
+    more.title = 'Session options';
+    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
 
     const actions = document.createElement('div');
     actions.className = 'agent-session-actions';
@@ -841,16 +852,16 @@ function renderSessionSidebar() {
     });
     actions.appendChild(rename);
     actions.appendChild(remove);
-    const openMenu = (event, keyboard = false) => {
+    const openMenu = (event, keyboard = false, trigger = select) => {
       event.preventDefault();
       closeSessionContextMenu();
       setModeMenuOpen(false);
       if (currentRunStatus !== 'idle') return;
       actions.hidden = false;
       actions.showPopover?.();
-      select.setAttribute('aria-expanded', 'true');
-      sessionContextMenu = { actions, select, row };
-      const anchor = select.getBoundingClientRect();
+      more.setAttribute('aria-expanded', 'true');
+      sessionContextMenu = { actions, more, row, returnFocus: trigger };
+      const anchor = trigger.getBoundingClientRect();
       const bounds = actions.getBoundingClientRect();
       const x = keyboard ? anchor.left : event.clientX;
       const y = keyboard ? anchor.bottom : event.clientY;
@@ -859,6 +870,14 @@ function renderSessionSidebar() {
       rename.focus();
     };
     row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
+    more.addEventListener('click', (event) => {
+      if (sessionContextMenu?.actions === actions) {
+        event.preventDefault();
+        closeSessionContextMenu(true);
+        return;
+      }
+      openMenu(event, true, more);
+    });
     select.addEventListener('keydown', (event) => {
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
         openMenu(event, true);
@@ -876,6 +895,7 @@ function renderSessionSidebar() {
     });
 
     row.appendChild(select);
+    row.appendChild(more);
     row.appendChild(actions);
     return row;
   });
@@ -3999,13 +4019,17 @@ async function renameSavedSession(session, row, select) {
   input.setAttribute('aria-label', 'Session title');
   input.maxLength = 120;
   input.value = session.title || '';
+  const more = row.querySelector('.agent-session-more');
   select.hidden = true;
-  row.appendChild(input);
+  if (more) more.hidden = true;
+  select.after(input);
   const title = await new Promise(resolve => {
     let settled = false;
     const finish = value => {
       if (settled) return;
-      settled = true; input.remove(); select.hidden = false; resolve(value);
+      settled = true; input.remove(); select.hidden = false;
+      if (more) more.hidden = false;
+      resolve(value);
     };
     input.addEventListener('keydown', event => {
       if (!['Enter', 'Escape'].includes(event.key)) return;
@@ -5189,7 +5213,7 @@ export function initAgentUi(options = {}) {
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
     if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
-    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
+    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target) && !sessionContextMenu.more.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
       if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;
