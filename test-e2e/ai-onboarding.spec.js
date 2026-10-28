@@ -183,11 +183,11 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(page.locator('#enable-ai')).toBeEnabled();
   await expect(page.locator('#ai-disabled-note')).toBeVisible();
   // It sits a card's note distance below the switch card, not 4px (#854).
-  const gap = await page.evaluate(() =>
+  const noteGap = await page.evaluate(() =>
     document.getElementById('ai-disabled-note').getBoundingClientRect().top -
       document.querySelector('#ai > .card').getBoundingClientRect().bottom,
   );
-  expect(gap).toBeGreaterThanOrEqual(16);
+  expect(noteGap).toBeGreaterThanOrEqual(16);
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
