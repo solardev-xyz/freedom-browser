@@ -307,8 +307,8 @@
   background: color-mix(in srgb, var(--agent-bubble-agent) 70%, var(--bg));
 }
 
-/* Compact header: title over status on the left; New chat, help and the
-   window controls on the right. Long statuses ellipsize under the title. */
+/* Compact header: title over status on the left; the New chat (compose)
+   icon, help and the window controls on the right. Long statuses ellipsize under the title. */
 .agent-floating[data-presentation='column'] .agent-sidebar-header {
   display: grid;
   grid-template-areas:
@@ -395,11 +395,6 @@
 
 .agent-floating[data-presentation='column'] .agent-sidebar-header .agent-lifecycle-actions {
   grid-area: lifecycle;
-}
-
-.agent-floating[data-presentation='column'] .agent-sidebar-header #agent-new-chat {
-  min-height: 28px;
-  padding: 5px 9px;
 }
 
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]) {

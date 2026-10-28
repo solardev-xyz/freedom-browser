@@ -123,9 +123,14 @@
   display: none;
 }
 
-.agent-icon-btn:hover {
+.agent-icon-btn:hover:not(:disabled) {
   color: var(--text);
   background: var(--agent-hover-1);
+}
+
+/* New chat stays visible but unavailable while a run is active. */
+.agent-icon-btn:disabled {
+  opacity: 0.45;
 }
 
 .agent-icon-btn svg {

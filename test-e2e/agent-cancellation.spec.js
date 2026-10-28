@@ -381,6 +381,29 @@ async function stopAndExpectReusable(window, { answerCutOff = false } = {}) {
   await expect(window.locator('#agent-output')).toHaveText('READY');
 }
 
+// New chat is a compose (pencil-on-square) icon button, sized like the other
+// header icons, in the floating header and in Agent-first's sessions column
+// (#868). Its name lives in aria-label/title, not in visible text.
+const COMPOSE_ICON_PATHS = [
+  'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7',
+  'M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+];
+
+async function expectComposeIconButton(window, selector) {
+  const button = window.locator(selector);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAccessibleName('New chat');
+  await expect(button).toHaveAttribute('title', 'New chat');
+  await expect(button).toHaveText('');
+  const paths = await button.locator('svg path').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('d'))
+  );
+  expect(paths).toEqual(COMPOSE_ICON_PATHS);
+  const box = await button.boundingBox();
+  expect(Math.round(box.width)).toBe(28);
+  expect(Math.round(box.height)).toBe(28);
+}
+
 async function takeOverControlledPage(window) {
   const interlock = window.locator('[data-test="agent-page-interlock"]');
   await expect(interlock).toBeVisible();
@@ -398,6 +421,10 @@ test('Stop cancels a streaming provider request', async ({ window }) => {
   await window.locator('#agent-prompt').fill('STREAM_CANCEL');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  // During a run the floating header carries New chat as a disabled icon.
+  await expect(window.locator('.agent-sidebar-header #agent-new-chat')).toHaveCount(1);
+  await expectComposeIconButton(window, '#agent-new-chat');
+  await expect(window.locator('#agent-new-chat')).toBeDisabled();
 
   await stopAndExpectReusable(window, { answerCutOff: true });
   await expect.poll(() => streamingResponseClosed).toBe(true);
@@ -715,6 +742,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('0');
 
   await openAgentPane(window, 'session');
+  await expectComposeIconButton(window, '#agent-session-new-chat');
   const firstSession = window
     .locator('#agent-session-list .agent-session-row')
     .filter({ hasText: 'CREATE_FIVE_TASK_TABS' })
