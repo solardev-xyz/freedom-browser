@@ -208,14 +208,10 @@ html[data-platform='darwin'] body.agent-first-mode .agent-first-title {
   left: 0;
   width: var(--agent-session-sidebar-width, 242px);
   content: '';
-  background: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+  background: var(--agent-sessions-surface);
   box-shadow: inset -1px 0 0 var(--agent-divider, var(--border));
   transform: translateX(0);
   transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-[data-theme='light'] .agent-first-titlebar-left::before {
-  background: color-mix(in srgb, var(--bg) 94%, var(--text));
 }
 
 .agent-first-titlebar-left .agent-titlebar-button {
@@ -239,6 +235,7 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   gap: 10px;
   min-width: 0;
   padding: 0 12px;
+  background: var(--agent-conversation-surface);
 }
 
 .agent-first-titlebar-right {
@@ -820,7 +817,17 @@ body.agent-first-mode .title-bar {
   border-bottom: 0;
 }
 
+/* The two Agent-first columns, as the Settings page lays out its own: the
+   conversation sits on the page background and the sessions list on a
+   sidebar tint, with the selected session in the accent like the selected
+   Settings section (#879). In the light theme --bg is the chrome's grey,
+   so the conversation takes --toolbar (white) instead. The title bar above
+   each column paints the same token, so the columns run to the top. */
 body.agent-first-mode {
+  --agent-conversation-surface: var(--bg);
+  --agent-sessions-surface: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+  --agent-session-active-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --agent-session-active-text: var(--accent);
   --agent-browser-address: var(--bg);
   --agent-browser-chrome: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
   --agent-divider: color-mix(in srgb, var(--border) 42%, var(--bg));
@@ -837,23 +844,39 @@ body.agent-first-mode .app-body {
   overflow: clip;
 }
 
+[data-theme='light'] body.agent-first-mode {
+  --agent-conversation-surface: var(--toolbar);
+  --agent-sessions-surface: color-mix(in srgb, var(--bg) 40%, var(--toolbar));
+  --agent-session-active-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+  /* --accent alone is 3.6:1 on the tinted row; a quarter of --text brings
+     it to 5:1. */
+  --agent-session-active-text: color-mix(in srgb, var(--accent) 75%, var(--text));
+}
+
 body.agent-first-mode,
 body.agent-first-mode .app-body,
-body.agent-first-mode .agent-sidebar,
-body.agent-first-mode .agent-sidebar-inner,
-body.agent-first-mode .agent-workspace-view,
-body.agent-first-mode .agent-workspace-scroll,
 body.agent-first-mode .agent-page-surface,
 body.agent-first-mode .agent-task-pages {
   background: var(--bg);
 }
 
-body.agent-first-mode .agent-session-sidebar {
-  background: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+body.agent-first-mode .agent-sidebar,
+body.agent-first-mode .agent-sidebar-inner,
+body.agent-first-mode .agent-workspace-view,
+body.agent-first-mode .agent-workspace-scroll {
+  background: var(--agent-conversation-surface);
 }
 
-[data-theme='light'] body.agent-first-mode .agent-session-sidebar {
-  background: color-mix(in srgb, var(--bg) 94%, var(--text));
+body.agent-first-mode .agent-session-sidebar {
+  background: var(--agent-sessions-surface);
+}
+
+body.agent-first-mode .agent-session-row.active {
+  background: var(--agent-session-active-bg);
+}
+
+body.agent-first-mode .agent-session-row.active .agent-session-select {
+  color: var(--agent-session-active-text);
 }
 
 body.agent-first-mode .agent-first-titlebar {
@@ -879,7 +902,7 @@ body.agent-first-mode.agent-session-sidebar-closed {
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left {
-  background: var(--bg);
+  background: var(--agent-conversation-surface);
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left::before {
@@ -930,6 +953,11 @@ body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
 
 body.agent-first-mode.agent-workspace-sidebar-closed {
   --agent-workspace-titlebar-width: 42px;
+}
+
+/* Closed, the Workspace's title-bar slot sits over the conversation. */
+body.agent-first-mode.agent-workspace-sidebar-closed .agent-first-titlebar-right {
+  background: var(--agent-conversation-surface);
 }
 
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-task-pages {
@@ -1014,7 +1042,7 @@ body.agent-first-mode .agent-composer-wrap {
   padding: 0 var(--agent-composer-gutter) 20px;
   margin: 0 auto;
   border-top: 0;
-  background: var(--bg);
+  background: var(--agent-conversation-surface);
   pointer-events: none;
 }
 

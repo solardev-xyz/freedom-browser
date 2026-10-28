@@ -123,6 +123,70 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
 });
 
+test('Agent-first columns paint like Settings: page background, sidebar tint, accent selection (#879)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1280);
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();
+  // The fixture run is never saved, so give the list a selected row and a
+  // neighbour the way renderSessionSidebar() builds them.
+  await window.evaluate(() => {
+    const list = document.querySelector('.agent-session-list');
+    for (const active of [true, false]) {
+      const row = document.createElement('div');
+      row.className = active ? 'agent-session-row active' : 'agent-session-row';
+      row.dataset.test = active ? 'fixture-active-session' : 'fixture-session';
+      const select = document.createElement('button');
+      select.className = 'agent-session-select';
+      select.append(Object.assign(document.createElement('span'), { textContent: 'Fixture session' }));
+      row.append(select);
+      list.append(row);
+    }
+  });
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    const paint = await window.evaluate(() => {
+      const bg = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+      const probe = document.createElement('div');
+      document.body.append(probe);
+      const resolve = value => { probe.style.color = value; return getComputedStyle(probe).color; };
+      const tokens = {
+        bg: resolve('var(--bg)'),
+        toolbar: resolve('var(--toolbar)'),
+        accent: resolve('var(--accent)'),
+      };
+      probe.remove();
+      return {
+        ...tokens,
+        conversation: bg('#agent-sidebar'),
+        scroll: bg('.agent-workspace-scroll'),
+        composer: bg('.agent-composer-wrap'),
+        title: bg('.agent-first-titlebar-center'),
+        sessions: bg('[data-test="agent-session-sidebar"]'),
+        sessionsTitle: getComputedStyle(document.querySelector('.agent-first-titlebar-left'), '::before').backgroundColor,
+        active: bg('[data-test="fixture-active-session"]'),
+        idle: bg('[data-test="fixture-session"]'),
+        activeText: getComputedStyle(document.querySelector('[data-test="fixture-active-session"] .agent-session-select')).color,
+        idleText: getComputedStyle(document.querySelector('[data-test="fixture-session"] .agent-session-select')).color,
+      };
+    });
+    // Light: the conversation is the page's white, not the chrome's grey.
+    expect(paint.conversation).toBe(theme === 'light' ? paint.toolbar : paint.bg);
+    if (theme === 'light') expect(paint.conversation).toBe('rgb(255, 255, 255)');
+    for (const part of [paint.scroll, paint.composer, paint.title]) expect(part).toBe(paint.conversation);
+    // The sessions column is its own tint, and runs up into the title bar.
+    expect(paint.sessions).not.toBe(paint.conversation);
+    expect(paint.sessionsTitle).toBe(paint.sessions);
+    // The selected session carries an accent tint and accent-coloured title.
+    expect(paint.idle).toBe('rgba(0, 0, 0, 0)');
+    expect(paint.active).toMatch(/^color\(srgb|^rgba\(/);
+    expect(paint.active).not.toBe(paint.idle);
+    expect(paint.activeText).not.toBe(paint.idleText);
+    if (theme === 'dark') expect(paint.activeText).toBe(paint.accent);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`agent-first-columns-${theme}.png`) });
+  }
+});
+
 test('narrow chrome keeps the address field and native controls within the window', async ({ electronApp, window }) => {
   for (const width of [380, 500]) {
     await resize(electronApp, width);
