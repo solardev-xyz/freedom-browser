@@ -151,6 +151,33 @@ test('model picker collapses providers while keeping favorites and searchable mo
   const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
   const ollama = menu.getByRole('button', { name: /Ollama/ });
   const search = window.locator('#agent-model-menu-search');
+  // #869: legible type, a single leading check, no hint line, and the menu
+  // anchored above its button without reaching the panel header.
+  const layout = await window.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const menu = rect('#agent-model-menu');
+    const button = rect('#agent-model-menu-button');
+    const header = rect('.agent-sidebar-header');
+    const option = document.querySelector('#agent-model-menu .agent-model-option.active');
+    const group = getComputedStyle(document.querySelector('#agent-model-menu .agent-model-group-label'));
+    return {
+      menuRight: menu.right, buttonRight: button.right,
+      menuBottom: menu.bottom, buttonTop: button.top,
+      menuTop: menu.top, headerBottom: header.bottom,
+      optionFontSize: getComputedStyle(option).fontSize,
+      firstCellText: option.children[0].textContent,
+      groupFontSize: group.fontSize, groupTransform: group.textTransform,
+      menuText: document.querySelector('#agent-model-menu').textContent,
+    };
+  });
+  expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+  expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+  expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  expect(layout.optionFontSize).toBe('13px');
+  expect(layout.firstCellText).toBe('✓');
+  expect(layout.groupFontSize).toBe('12px');
+  expect(layout.groupTransform).toBe('none');
+  expect(layout.menuText).not.toContain('Hover over privacy symbols');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
     await expect(openai).toHaveAttribute('aria-expanded', 'false');
@@ -171,6 +198,118 @@ test('model picker collapses providers while keeping favorites and searchable mo
     await expect(openai).toHaveAttribute('aria-expanded', 'false');
     await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toHaveCount(0);
   }
+});
+
+// #869: the model menu sits above its button and below whatever header bounds
+// it, in the docked column and in Agent-first too, not just the launcher, and
+// a short window shrinks it rather than letting it climb over that header.
+test('model menu stays between its button and the header in every layout', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate((_electron, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    AgentProviderResolver.prototype.getStatus = () => ({
+      configured: true, providerId: 'openai', modelId: 'favorite',
+      connections: [{ kind: 'hosted', providerId: 'openai', modelId: 'favorite', favoriteModelIds: ['favorite'] }],
+    });
+    AgentProviderResolver.prototype.getCatalog = async () => [{
+      providerId: 'openai', name: 'OpenAI',
+      models: Array.from({ length: 30 }, (_, index) => ({ id: index ? `model-${index}` : 'favorite', name: `Model ${index}` })),
+    }];
+  }, repositoryRoot);
+  await window.reload();
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  const menu = window.locator('#agent-model-menu');
+  const button = window.locator('#agent-model-menu-button');
+  const measure = (headerSelector) => window.evaluate((selector) => {
+    const rect = (node) => node.getBoundingClientRect();
+    const menu = rect(document.querySelector('#agent-model-menu'));
+    const button = rect(document.querySelector('#agent-model-menu-button'));
+    const header = rect(document.querySelector(selector));
+    return { menuTop: menu.top, menuBottom: menu.bottom, menuRight: menu.right, menuHeight: menu.height,
+      buttonTop: button.top, buttonRight: button.right, headerBottom: header.bottom, headerHeight: header.height };
+  }, headerSelector);
+  const openExpanded = async () => {
+    if (await menu.isHidden()) await button.click();
+    await expect(menu).toBeVisible();
+    const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
+    if (await openai.getAttribute('aria-expanded') === 'false') await openai.click();
+    await expect(menu.getByRole('menuitemradio', { name: 'Model 29' })).toBeAttached();
+  };
+  const expectBetween = (layout) => {
+    expect(layout.headerHeight).toBeGreaterThan(0);
+    expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+    expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+    expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  };
+
+  // Docked column: a finished run with no saved conversation keeps the model
+  // button usable while the transcript turns the launcher into the column.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => target.webContents.send('agent:event', { runId: 'run_model_menu_column', ...event });
+    emit({ type: 'run_started', userText: 'Review this page' });
+    emit({ type: 'assistant_delta', text: 'A short answer.' });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  await expect(window.locator('body')).toHaveClass(/agent-floating-column/);
+  await expect(button).toBeEnabled();
+  await openExpanded();
+  expectBetween(await measure('.agent-sidebar-header'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-column.png') });
+  await window.keyboard.press('Escape');
+
+  // Agent-first: the title bar, not the hidden panel header, is the ceiling.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-first-titlebar')).toBeVisible();
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first.png') });
+
+  // A very short window leaves under the old 120px floor between the button
+  // and the title bar; the menu shrinks instead of covering it. Shrink it with
+  // the menu still open: the resize itself must re-measure the room, since the
+  // button moves up while the title bar stays put.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.setMinimumSize(1, 1);
+    target.setContentSize(target.getContentBounds().width, 220);
+  });
+  await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThan(240);
+  await expect(menu).toBeVisible();
+  await expect.poll(async () => {
+    const layout = await measure('#agent-first-titlebar');
+    return layout.menuTop - layout.headerBottom;
+  }).toBeGreaterThanOrEqual(0);
+  const short = await measure('#agent-first-titlebar');
+  expect(short.buttonTop - short.headerBottom).toBeLessThan(130);
+  expectBetween(short);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-resized-open.png') });
+
+  // Reopening in the short window measures the same way.
+  await window.keyboard.press('Escape');
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-short.png') });
+
+  // Leaving Agent-first by a path that is not a click (a click elsewhere
+  // already closes the menu through the document handler) must not leave the
+  // menu open at Agent-first's geometry. A run that lands while the menu is
+  // open ties the workspace to its conversation; Cmd/Ctrl+T (the File menu
+  // accelerator when the page has focus) then opens a page outside it, which
+  // drops Agent-first with the panel still open.
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.webContents.send('agent:event', { runId: 'run_model_menu_agent_first', conversationId: 'model_menu', type: 'run_started', userText: 'Review this page' });
+  });
+  await expect(button).toBeDisabled();
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('new-tab').click());
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-left-agent-first.png') });
+  await expect(menu).toBeHidden();
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {

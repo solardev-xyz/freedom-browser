@@ -2177,10 +2177,10 @@ describe('Agent UI', () => {
     ctx.elements['agent-toggle-btn'].dispatch('click');
     await flush();
     expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(1);
-    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].children[0].textContent).toBe('One');
+    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].querySelector('.agent-model-name').textContent).toBe('One');
     ctx.elements['agent-model-menu-search'].value = 'two';
     ctx.elements['agent-model-menu-search'].dispatch('input');
-    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].children[0].textContent).toBe('Two');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].querySelector('.agent-model-name').textContent).toBe('Two');
     ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[1].dispatch('click');
     await flush();
     expect(ctx.electronAPI.setAgentProviderPreferences).toHaveBeenCalledWith('openai', { favoriteModelIds: ['one', 'two'] });
@@ -2205,11 +2205,16 @@ describe('Agent UI', () => {
     await flush();
     const children = () => ctx.elements['agent-model-menu-list'].children;
     const headers = () => children().filter((item) => item.className === 'agent-model-group-label');
-    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].children[0].textContent);
+    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].querySelector('.agent-model-name').textContent);
     expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
     expect(names()).toEqual(['One']);
     headers()[0].dispatch('click', { stopPropagation() {} });
     expect(names()).toEqual(['One', 'Two']);
+    // A single leading check marks the selected model; the star stays last.
+    const rows = children().filter((item) => item.className === 'agent-model-row');
+    expect(rows.map((row) => row.children[0].children[0].className)).toEqual(['agent-model-check', 'agent-model-check']);
+    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['✓', '']);
+    expect(rows.map((row) => row.children.at(-1).className)).toEqual(['agent-model-star', 'agent-model-star']);
     expect(headers()[1].getAttribute('aria-expanded')).toBe('false');
     headers()[0].dispatch('click', { stopPropagation() {} });
     headers()[1].dispatch('click', { stopPropagation() {} });
@@ -5772,7 +5777,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
     expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
     const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
-    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
+    expect(rows.map((row) => row.children[0].querySelector('.agent-model-name').textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
     expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(true);
     expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(false);

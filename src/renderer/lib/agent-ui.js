@@ -623,6 +623,61 @@ function closeComposerPopovers() {
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
 }
 
+// The model menu opens above its button, right edges aligned, and never grows
+// past the panel header: otherwise a long model list covers the header's
+// expand and close buttons (#869). Offsets, unlike client rects, ignore the
+// transforms the launcher animates with, so the anchor holds mid-animation.
+function offsetWithin(node, ancestor) {
+  let x = 0;
+  let y = 0;
+  while (node && node !== ancestor) {
+    const parent = node.offsetParent;
+    x += node.offsetLeft + (parent && parent !== ancestor ? parent.clientLeft : 0);
+    y += node.offsetTop + (parent && parent !== ancestor ? parent.clientTop : 0);
+    node = parent;
+  }
+  return node === ancestor ? { x, y } : null;
+}
+
+function closeModelMenu() {
+  elements.modelMenu.hidden = true;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'false');
+}
+
+function openModelMenu() {
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  positionModelMenu();
+}
+
+// Runs on open and again on every window resize while the menu is open: a
+// shorter window moves the button up but not the header, so a room measured
+// at open time would let the menu climb over the header.
+function positionModelMenu() {
+  const { modelMenu: menu, modelMenuButton: button } = elements;
+  if (menu.hidden) return;
+  const container = menu.offsetParent;
+  const anchor = container && offsetWithin(button, container);
+  if (!anchor) return;
+  const gap = 6;
+  const right = Math.min(
+    Math.max(0, container.clientWidth - anchor.x - button.offsetWidth),
+    Math.max(0, container.clientWidth - menu.offsetWidth)
+  );
+  menu.style.right = `${right}px`;
+  menu.style.bottom = `${container.clientHeight - anchor.y + gap}px`;
+  const buttonTop = button.getBoundingClientRect().top;
+  let ceiling = 0;
+  for (const header of [panelHeader, elements.agentFirstTitlebar]) {
+    const rect = header?.getBoundingClientRect?.();
+    if (rect && rect.height > 0) ceiling = Math.max(ceiling, rect.bottom);
+  }
+  // No minimum height: in a very short window a cramped menu (its list scrolls)
+  // is better than one that covers the header's expand and close buttons.
+  const room = Math.max(0, buttonTop - gap - ceiling - 4);
+  menu.style.setProperty('--agent-model-menu-room', `${room}px`);
+}
+
 function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
@@ -1319,6 +1374,11 @@ async function refreshWorkspaceProjection() {
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
+  // The model menu's right/bottom/room are measured for the layout it opened
+  // in, and the switch animates the columns (so re-measuring now would read a
+  // mid-transition layout). Close it, like the mode menu; reopening measures
+  // the new layout.
+  closeModelMenu();
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -4681,8 +4741,7 @@ async function chooseAnotherModel(view) {
   // Show every model: an earlier search could hide the alternatives.
   elements.modelMenuSearch.value = '';
   renderModelMenu();
-  elements.modelMenu.hidden = false;
-  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  openModelMenu();
   elements.modelMenuSearch.focus();
 }
 
@@ -5263,8 +5322,7 @@ export function initAgentUi(options = {}) {
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();
-    elements.modelMenu.hidden = !opening;
-    elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
+    if (opening) openModelMenu();
   });
   elements.approvalModeButton.addEventListener('click', () => {
     const opening = elements.approvalModePopover.hidden;
@@ -5323,6 +5381,7 @@ export function initAgentUi(options = {}) {
     syncCompactAgentLayout();
     closeSessionContextMenu();
     setModeMenuOpen(false);
+    positionModelMenu();
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
