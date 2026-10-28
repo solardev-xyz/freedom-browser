@@ -21,6 +21,21 @@ const renderRestart = () => {
 };
 let enabled = false;
 let revision = 0;
+// "Show the banner again" (#881): offered while the start page hides its
+// Freedom Agent banner because the user dismissed the step the profile is on.
+const { aiInvitationStep, dismissedAiInvitationStep } = window.freedomAiInvitation;
+const invitationRow = document.getElementById('ai-invitation-reset-row');
+const invitationReset = document.getElementById('ai-invitation-reset');
+let currentSettings = null;
+let invitationRevision = 0;
+async function renderInvitationReset() {
+  const settings = currentSettings;
+  const dismissed = dismissedAiInvitationStep(settings);
+  const current = ++invitationRevision;
+  const step = dismissed ? await aiInvitationStep(settings, () => api.getAgentSetupState()) : null;
+  if (current !== invitationRevision) return;
+  invitationRow.hidden = !step || step !== dismissed;
+}
 let pending = false;
 let loaded = false;
 const dictationHost = document.getElementById('ai-dictation-settings');
@@ -224,6 +239,8 @@ async function refresh() {
 }
 
 function apply(settings) {
+  currentSettings = settings;
+  void renderInvitationReset();
   const changed = enabled !== (settings?.enableAi === true);
   enabled = settings?.enableAi === true;
   toggle.checked = enabled;
@@ -264,6 +281,19 @@ toggle.addEventListener('change', async () => {
   }
 });
 restart.addEventListener('click', () => api.relaunchApp());
+invitationReset.addEventListener('click', async () => {
+  invitationReset.disabled = true;
+  try {
+    if (!(await api.saveSettings({ aiInvitationDismissed: false }))) throw new Error();
+    invitationRow.hidden = true;
+    // The button disappeared; keep keyboard focus in the section.
+    toggle.focus();
+  } catch {
+    status.textContent = 'Could not show the banner again. Please try again.';
+  } finally {
+    invitationReset.disabled = false;
+  }
+});
 connect.addEventListener('click', () => {
   if (enabled) location.hash = 'ai/providers/add';
 });
@@ -275,6 +305,8 @@ open.addEventListener('click', async () => {
 api.onSettingsUpdated?.(apply);
 api.onAgentProviderAuthEvent?.(providerUi.handleProviderAuthEvent);
 api.onAgentProviderChanged?.(() => {
+  // A model connected or removed changes the start page's step.
+  void renderInvitationReset();
   if (!enabled) return;
   // A different Settings tab may have changed a connection. Keep a partially
   // edited form intact; the next visit refreshes its model catalogue.

@@ -64,13 +64,45 @@ describe('settings-store', () => {
     fs.writeFileSync(path.join(userDataDir, 'settings.json'), JSON.stringify({ enableAi: value }));
     const { mod } = loadSettingsStore({ userDataDir });
     expect(mod.loadSettings().enableAi).toBe(false);
-    mod.saveSettings({ enableAi: true, aiInvitationDismissed: true });
-    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    mod.saveSettings({ enableAi: true, aiInvitationDismissed: 'connect' });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: 'connect' });
     mod.saveSettings({ enableAi: 'false', aiInvitationDismissed: 0 });
-    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: true });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: true, aiInvitationDismissed: 'connect' });
     mod.saveSettings({ enableAi: false });
     const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
-    expect(persisted).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
+    expect(persisted).toMatchObject({ enableAi: false, aiInvitationDismissed: 'connect' });
+  });
+
+  // #881: a dismissal records the setup step it hid, so later steps still show.
+  test.each([
+    [true, 'enable'],
+    ['enable', 'enable'],
+    ['connect', 'connect'],
+    ['resume', 'resume'],
+    [false, false],
+    [undefined, false],
+    ['true', false],
+    ['other', false],
+    [1, false],
+    [null, false],
+  ])('the dismissed start-page step loads from %p as %p', (stored, loaded) => {
+    fs.writeFileSync(path.join(userDataDir, 'settings.json'), JSON.stringify({ aiInvitationDismissed: stored }));
+    const { mod } = loadSettingsStore({ userDataDir });
+    expect(mod.loadSettings().aiInvitationDismissed).toBe(loaded);
+  });
+
+  test('only a setup step or false can be saved as the dismissed start-page step', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+    for (const step of ['enable', 'connect', 'resume']) {
+      mod.saveSettings({ aiInvitationDismissed: step });
+      expect(mod.loadSettings().aiInvitationDismissed).toBe(step);
+    }
+    for (const invalid of [true, 'other', 1, null, {}]) {
+      mod.saveSettings({ aiInvitationDismissed: invalid });
+      expect(mod.loadSettings().aiInvitationDismissed).toBe('resume');
+    }
+    mod.saveSettings({ aiInvitationDismissed: false });
+    expect(mod.loadSettings().aiInvitationDismissed).toBe(false);
   });
 
   test('merges persisted settings with defaults and applies the saved theme', () => {
@@ -618,9 +650,9 @@ describe('settings-store', () => {
     expect(fs.existsSync(path.join(userDataDir, 'settings.json'))).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith('[settings] refused enableAi from webview/file');
 
-    expect(save(page('home.html'), { aiInvitationDismissed: true })).toBe(true);
+    expect(save(page('home.html'), { aiInvitationDismissed: 'enable' })).toBe(true);
     expect(save(page('history.html'), { showBookmarkBar: true })).toBe(true);
-    expect(mod.loadSettings()).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
+    expect(mod.loadSettings()).toMatchObject({ enableAi: false, aiInvitationDismissed: 'enable' });
 
     expect(save(page('settings.html'), { enableAi: true })).toBe(true);
     expect(mod.loadSettings().enableAi).toBe(true);

@@ -1810,6 +1810,11 @@
             <button class="btn primary" id="ai-open-agent" type="button" aria-describedby="ai-next-help">Open Agent</button>
             <span class="row-help" id="ai-next-help">Your current conversation and draft stay in place.</span>
           </div>
+          <!-- Offered while the start page's Freedom Agent banner is hidden
+               because the user dismissed the step it is on (#881). -->
+          <div class="ai-invitation-reset" id="ai-invitation-reset-row" hidden>
+            <button class="agent-text-button" id="ai-invitation-reset" type="button">Show the Freedom Agent banner on the start page again</button>
+          </div>
         </section>
         <section class="section panel" id="providers" data-nav="ai" data-search-title="Models &amp; providers" hidden>
           <nav class="ai-breadcrumbs" id="ai-provider-breadcrumbs" aria-label="Breadcrumb"></nav>
@@ -2096,6 +2101,7 @@
 
     <script src="scripts/settings.js"></script>
     <script src="scripts/settings-updates.js"></script>
+    <script src="scripts/ai-invitation-step.js"></script>
     <script type="module" src="../lib/agent-settings.js"></script>
   </body>
 </html>

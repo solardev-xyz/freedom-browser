@@ -32,9 +32,23 @@ const RENAMED_KEYS = {
 // Swarm node now always starts able to publish, so there is nothing to pick.
 const REMOVED_KEYS = new Set(['enableRadicleIntegration', 'antNodeMode', 'beeNodeMode']);
 
+const AI_INVITATION_STEPS = ['enable', 'connect', 'resume'];
+const isAiInvitationDismissed = (value) => value === false || AI_INVITATION_STEPS.includes(value);
+
+// Before #881 a dismissal was stored as `true`, which hid every step. The
+// banner the user could dismiss was usually the introduction, so `true` reads
+// as that step: a later step ("Finish setting up", "Agent is off") shows again.
+function normalizeAiInvitationDismissed(value) {
+  if (value === true) return 'enable';
+  return AI_INVITATION_STEPS.includes(value) ? value : false;
+}
+
 const DEFAULT_SETTINGS = {
   theme: 'system',
   enableAi: false,
+  // The Freedom Agent setup step whose start-page banner the user dismissed
+  // ('enable', 'connect' or 'resume'; see pages/scripts/ai-invitation-step.js),
+  // or false. Only that step stays hidden, so a later step still shows (#881).
   aiInvitationDismissed: false,
   enableIdentityWallet: true,
   startAntAtLaunch: true,
@@ -250,7 +264,7 @@ function loadSettings() {
       }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
       cachedSettings.enableAi = parsed.enableAi === true;
-      cachedSettings.aiInvitationDismissed = parsed.aiInvitationDismissed === true;
+      cachedSettings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
     } else {
       cachedSettings = { ...DEFAULT_SETTINGS };
     }
@@ -325,7 +339,8 @@ function saveSettings(newSettings) {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
 
-        if (['enableAi', 'aiInvitationDismissed'].includes(key) && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'enableAi' && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'aiInvitationDismissed' && !isAiInvitationDismissed(newSettings[key])) continue;
 
         if (key === 'shortcutOverrides') {
           // The conflict pass has to run here too, not just at load: this is

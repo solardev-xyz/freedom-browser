@@ -210,7 +210,9 @@
   }
 
   .agent-floating[data-presentation='launcher'] .agent-example-detail,
-  .agent-floating-ghost-greeting .agent-example-detail {
+  .agent-floating-ghost-greeting .agent-example-detail,
+  .agent-floating[data-presentation='launcher'] .agent-empty-state-icon,
+  .agent-floating-ghost-greeting .agent-empty-state-icon {
     display: none;
   }
 
@@ -220,8 +222,7 @@
   }
 }
 
-.agent-floating[data-presentation='launcher'] .agent-run-header,
-.agent-floating[data-presentation='launcher'] .agent-empty-state-icon {
+.agent-floating[data-presentation='launcher'] .agent-run-header {
   display: none;
 }
 
@@ -233,29 +234,12 @@
   margin: 6px 0 0;
 }
 
+/* The shared empty state (agent.css), placed in the card and tinted for
+   the glass; its size and alignment come from the component. */
 .agent-floating[data-presentation='launcher'] .agent-empty-state,
 .agent-floating-ghost-greeting {
-  max-width: none;
-  margin: 14px 0 18px;
+  margin: 14px auto 18px;
   color: var(--agent-glass-muted);
-  text-align: left;
-}
-
-.agent-floating[data-presentation='launcher'] .agent-empty-state h3,
-.agent-floating-ghost-greeting h3 {
-  color: var(--text);
-  font-size: 22px;
-  font-weight: 640;
-  letter-spacing: -0.015em;
-  line-height: 1.25;
-}
-
-.agent-floating[data-presentation='launcher'] .agent-empty-state p,
-.agent-floating-ghost-greeting p {
-  max-width: 46ch;
-  margin-top: 6px;
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .agent-floating[data-presentation='launcher'] .agent-composer-wrap {
@@ -335,6 +319,11 @@
 
 /* Setup has no run status under its title: centre the title in the header. */
 .agent-floating[data-presentation='column'][data-agent-view='setup'] .agent-sidebar-title-row {
+  grid-row: title-start / status-end;
+}
+
+/* A new task has no run status either (#876): centre the title the same way. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header:has(#agent-run-status[hidden]) .agent-sidebar-title-row {
   grid-row: title-start / status-end;
 }
 
@@ -852,10 +841,6 @@
 .agent-floating-ghost-greeting {
   position: absolute;
   margin: 0;
-}
-
-.agent-floating-ghost-greeting .agent-empty-state-icon {
-  display: none;
 }
 
 /* Page chrome that lives in the column's corner moves out of its way. */
