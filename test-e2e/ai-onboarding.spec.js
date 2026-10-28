@@ -1,5 +1,6 @@
 const http = require('http');
 const { test, expect } = require('./fixtures');
+const { configureOllamaAgent } = require('./agent-provider-fixture');
 
 // An absent choice must remain off even when the rest of the harness opts in.
 test.use({ aiEnabled: null });
@@ -106,6 +107,15 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
     }),
   );
   expect(Math.abs(middles[0] - middles[1])).toBeLessThanOrEqual(0.5);
+  // ...with the row's 16px gap between them, not the 8px that left the
+  // button almost touching the switch and inside its focus ring (#862).
+  const gap = await page.evaluate(() =>
+    document.querySelector('#ai .toggle:has(#enable-ai)').getBoundingClientRect().left -
+    document.querySelector('#enable-ai-restart').getBoundingClientRect().right,
+  );
+  expect(gap).toBeGreaterThanOrEqual(16);
+  // No model yet: the row says what it is for.
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
   // The button follows this launch, not the click: reopened, Settings still
   // offers the restart this launch needs.
   await page.evaluate(() => {
@@ -129,6 +139,8 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();
+  // The Models & providers row names the connected model (#862).
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Ollama · freedom-onboarding-fixture');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -294,12 +306,16 @@ test('Settings opens Agent only for the first model connected on that page', asy
   expect(configured?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();
+  // A model connected elsewhere is named here too.
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Ollama · freedom-onboarding-fixture');
   await window.waitForTimeout(1000);
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   const removed = await window.evaluate(() => window.electronAPI.removeAgentProvider('ollama'));
   expect(removed?.ok).toBe(true);
   await expect(page.locator('#ai-open-agent')).toBeHidden();
   await expect(page.locator('#ai-connect-model')).toBeVisible();
+  // Removing the model takes its name off the row again (#862).
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
   await page.getByRole('link', { name: /Models & providers.*Connect accounts/ }).click();
   await page.locator('#agent-provider-add').click();
   await page.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
@@ -408,6 +424,74 @@ test('a model status landing after AI is turned off is not replayed as Connect o
   await expect(page.locator('#ai-settings-status')).toHaveText('Could not load the agent model. Open AI settings again to retry.');
   await expect(page.locator('#ai-next-step')).toBeHidden();
   expect(await page.evaluate(() => window.__connectSeen)).toBe(false);
+});
+
+// The Models & providers row names a hosted model by its catalogue name, not
+// its raw id (#862), and only from the status this enable loaded: re-enabling
+// AI replays the status from before the disable, which must not be named
+// until the new enable's own load lands.
+test('the Models & providers row names a hosted model by catalogue name, from this enable\'s status only', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const page = await settings(electronApp, window);
+  await enableAiAndStay(page);
+  const catalog = await window.evaluate(() => window.electronAPI.getAgentProviderCatalog());
+  expect(catalog?.ok).toBe(true);
+  // A hosted model whose display name differs from its id, so the row shows
+  // which one it used.
+  const pick = catalog.catalog
+    .filter(provider => provider.authType === 'api_key')
+    .flatMap(provider => (provider.models || []).map(model => ({ providerId: provider.providerId, model })))
+    .find(({ model }) => model.name && model.name !== model.id);
+  expect(pick).toBeTruthy();
+  const hosted = {
+    configured: true, kind: 'hosted', providerId: pick.providerId, modelId: pick.model.id,
+    connections: [{ kind: 'hosted', providerId: pick.providerId, modelId: pick.model.id }],
+  };
+  const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const named = new RegExp(` · ${escape(pick.model.name)}$`);
+  await electronApp.evaluate(({ ipcMain }, status) => {
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', () => ({ ok: true, status }));
+  }, hosted);
+  await page.locator('#enable-ai').uncheck();
+  await page.locator('#enable-ai').check();
+  await expect(page.locator('#ai-open-agent')).toBeVisible();
+  await expect(page.locator('#ai-providers-summary')).toHaveText(named);
+  await expect(page.locator('#ai-providers-summary')).not.toContainText(` · ${pick.model.id}`);
+  // Off, then on again with this enable's status load held: the row must not
+  // name the model from before the disable while it waits.
+  await page.locator('#enable-ai').uncheck();
+  await expect(page.locator('#enable-ai')).toBeEnabled();
+  await electronApp.evaluate(({ ipcMain }, status) => {
+    globalThis.__statusCalls = 0;
+    let release;
+    globalThis.__releaseStatus = () => release();
+    const gate = new Promise(resolve => { release = resolve; });
+    ipcMain.removeHandler('agent:provider:get-status');
+    ipcMain.handle('agent:provider:get-status', async () => {
+      globalThis.__statusCalls += 1;
+      await gate;
+      return { ok: true, status };
+    });
+  }, hosted);
+  await page.evaluate(() => {
+    window.__namedSeen = false;
+    const summary = document.getElementById('ai-providers-summary');
+    window.__namedObserver = new MutationObserver(() => {
+      if (summary.textContent.includes(' · ')) window.__namedSeen = true;
+    });
+    window.__namedObserver.observe(summary, { characterData: true, childList: true, subtree: true });
+  });
+  await page.locator('#enable-ai').check();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__statusCalls)).toBeGreaterThan(0);
+  await expect(page.locator('#ai-providers-summary')).toHaveText('Connect accounts and manage local models');
+  expect(await page.evaluate(() => {
+    window.__namedObserver.disconnect();
+    return window.__namedSeen || document.getElementById('ai-providers-summary').textContent.includes(' · ');
+  })).toBe(false);
+  // Once this enable's own load lands, the row names the model again.
+  await electronApp.evaluate(() => globalThis.__releaseStatus());
+  await expect(page.locator('#ai-providers-summary')).toHaveText(named);
 });
 
 test('AI Settings is discoverable through navigation and search at narrow width', async ({ electronApp, window }, testInfo) => {
@@ -602,8 +686,58 @@ test('AI settings pages share Settings\' selects, intros, headings and destructi
   expect(dialogs).toEqual([]);
 });
 
+// #782/#863: a sheet hanging from the floating panel's header — Set up Agent
+// and Services share the same one-card rules — measured against it.
+const ONE_CARD = {
+  left: 0,
+  right: 0,
+  gap: 0,
+  seam: ['0px', '0px', '0px', '0px', '0px', '0px'],
+  outerCorners: ['16px', '16px'],
+  slack: true,
+  opaque: true,
+  headerOpaque: true,
+  headerShadow: ['inset'],
+};
+const headerShadow = (window) => window.evaluate(() =>
+  getComputedStyle(document.querySelector('#agent-sidebar .agent-sidebar-header')).boxShadow);
+function sheetUnderHeader(window, id) {
+  return window.evaluate((id) => {
+    const sheet = document.getElementById(id);
+    const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
+    const s = sheet.getBoundingClientRect();
+    const h = header.getBoundingClientRect();
+    const content = [...sheet.children].filter((el) => el.getClientRects().length)
+      .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
+    const opaque = (el) => {
+      const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
+      return alpha === undefined || Number(alpha) === 1;
+    };
+    const hs = getComputedStyle(header);
+    const ss = getComputedStyle(sheet);
+    return {
+      left: Math.round(s.left - h.left),
+      right: Math.round(s.right - h.right),
+      gap: Math.round(s.top - h.bottom),
+      seam: [hs.borderBottomWidth, hs.borderBottomLeftRadius, hs.borderBottomRightRadius,
+        ss.borderTopWidth, ss.borderTopLeftRadius, ss.borderTopRightRadius],
+      outerCorners: [hs.borderTopLeftRadius, ss.borderBottomRightRadius],
+      slack: s.bottom - content <= 32,
+      opaque: opaque(sheet),
+      // The header it hangs from too: light theme's glass let the page show through (#803).
+      headerOpaque: opaque(header),
+      // Open, the header keeps only its inset highlight: the card's drop
+      // shadow sits on the sheet, not across the seam (#863).
+      headerShadow: hs.boxShadow.split(/,(?![^(]*\))/)
+        .map((shadow) => (/\binset\b/.test(shadow) ? 'inset' : 'drop')),
+    };
+  }, id);
+}
+
 // #782: Set up Agent is a sheet under its header — same edges, as tall as
-// what it holds, and nothing of the page reads through it.
+// what it holds, and nothing of the page reads through it. #863: the two are
+// one card (no gap, square inner corners, no seam), and the copy names no
+// provider brand.
 test('Set up Agent sheet lines up with its header and both are opaque at narrow and wide widths', async ({ electronApp, window }, testInfo) => {
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
@@ -618,28 +752,47 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
       if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
         await window.locator('#agent-toggle-btn').click();
       await expect(window.locator('#agent-setup-view')).toBeVisible();
-      await expect.poll(() => window.evaluate(() => {
-        const sheet = document.getElementById('agent-setup-view');
-        const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
-        const s = sheet.getBoundingClientRect();
-        const h = header.getBoundingClientRect();
-        const content = [...sheet.children].filter((el) => el.getClientRects().length)
-          .reduce((bottom, el) => Math.max(bottom, el.getBoundingClientRect().bottom), 0);
-        const opaque = (el) => {
-          const alpha = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/)[1].split(',')[3];
-          return alpha === undefined || Number(alpha) === 1;
-        };
-        return {
-          left: Math.round(s.left - h.left),
-          right: Math.round(s.right - h.right),
-          slack: s.bottom - content <= 32,
-          opaque: opaque(sheet),
-          // The header it hangs from too: light theme's glass let the page show through (#803).
-          headerOpaque: opaque(header),
-        };
-      })).toEqual({ left: 0, right: 0, slack: true, opaque: true, headerOpaque: true });
+      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(ONE_CARD);
+      await expect(window.locator('#agent-setup-view .agent-setup-intro')).toHaveText(
+        'Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.'
+      );
       await window.screenshot({ path: testInfo.outputPath(`setup-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
+      // Closing dissolves the header's inset highlight with its glass instead
+      // of leaving a bright line behind while the panel fades out.
+      await expect.poll(() => headerShadow(window)).toBe('none');
+    }
+  }
+});
+
+// The Services sheet (#agent-mcp-panel) shares Set up Agent's one-card rules
+// (agent-floating.css's :is([data-agent-view='setup'], [data-agent-view='services'])),
+// so it gets the same geometry and close-highlight checks.
+test('Services sheet is one card with its header and its highlight dissolves on close', async ({ electronApp, window }, testInfo) => {
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  await configureOllamaAgent(window, baseUrl);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate((theme) => window.electronAPI.saveSettings({ theme }), theme);
+    for (const width of [600, 1440]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+        win.setMinimumSize(320, 300);
+        win.setContentSize(width, 800);
+      }, width);
+      if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
+        await window.locator('#agent-toggle-btn').click();
+      if (await window.locator('#agent-workspace-view').isVisible()) {
+        await window.locator('#agent-attachment-button').click();
+        await window.locator('#agent-mcp-open').click();
+      }
+      await expect(window.locator('#agent-mcp-panel')).toBeVisible();
+      await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
+      await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-agent-view', 'services');
+      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(ONE_CARD);
+      await window.screenshot({ path: testInfo.outputPath(`services-sheet-${theme}-${width}.png`) });
+      await window.locator('#agent-sidebar-close').click();
+      await expect.poll(() => headerShadow(window)).toBe('none');
     }
   }
 });
