@@ -320,10 +320,10 @@ export function createAgentProviderUi(options = {}) {
     elements.modelRefresh.disabled = !connection;
     elements.apiKey.placeholder =
       isCustom && !connection
-        ? 'Optional — leave empty if not required'
+        ? 'Optional, leave empty if not required'
         : connection
           ? 'Leave empty to keep your saved key'
-          : 'Stored encrypted on this device';
+          : '';
     elements.saveProvider.textContent = isOllama
       ? connection
         ? 'Save connection'

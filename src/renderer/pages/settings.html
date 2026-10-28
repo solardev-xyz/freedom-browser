@@ -1872,7 +1872,7 @@
                   <p class="agent-catalog-status">If discovery is unavailable, enter the model IDs supplied by your server.</p>
                   <label id="agent-custom-clear-key-field" class="agent-field"><span><input id="agent-custom-clear-key" type="checkbox" /> Remove saved API key</span></label>
                 </div>
-                <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
+                <div id="agent-api-key-field"><label class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="agent-api-key-help" /></label><p id="agent-api-key-help" class="agent-catalog-status">Stored encrypted on this device.</p></div>
                 <div id="agent-subscription-fields" class="hidden">
                   <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
                   <div id="agent-auth-code" class="agent-auth-code" hidden><span id="agent-auth-code-instruction">Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
