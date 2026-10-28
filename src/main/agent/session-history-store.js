@@ -175,6 +175,8 @@ function normalizeActivityItem(item) {
     ...(intent && { intent }),
     ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
     ...(ACTIVITY_APPROVALS.has(item.approval) && { approval: item.approval }),
+    // A refused repeat of a declined action; the outcome counts it once (#845).
+    ...(item.approval === 'declined' && item.repeatsDecline === true && { repeatsDecline: true }),
     ...(origin && { origin }),
     ...(pageTitle && { pageTitle }),
     ...(destinationOrigin && { destinationOrigin }),

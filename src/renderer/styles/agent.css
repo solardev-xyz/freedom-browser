@@ -3861,7 +3861,8 @@ body .agent-output.rendered-markdown .agent-code-block > pre {
   color: var(--agent-danger);
 }
 
-.agent-tool-item.cancelled .agent-tool-state {
+.agent-tool-item.cancelled .agent-tool-state,
+.agent-tool-item.cancelled .agent-tool-page-error {
   color: var(--muted);
 }
 

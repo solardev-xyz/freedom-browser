@@ -5709,6 +5709,90 @@ describe('selective result notices', () => {
     expect(card.hidden).toBe(false);
     expect(card.children[1].children[1].textContent).toBe('Receipt details');
   });
+  test('a declined approval renders as a neutral, not-run step and summary (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'declined', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', repeatsDecline: true, label: 'Click “Place order”' });
+    ctx.emit({ type: 'run_finished', runId: 'declined', status: 'completed', actionCount: 2, durationMs: 8000, outcome: {
+      kind: 'completed', verification: 'result_observed', tone: 'success', headline: 'Result checked in the browser',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const transcript = ctx.elements['agent-transcript'];
+    const rows = transcript.querySelectorAll('.agent-tool-item');
+    expect(rows[1].dataset.state).toBe('cancelled');
+    expect(rows[1].classList.contains('failed')).toBe(false);
+    expect(rows[1].children[0].textContent).toBe('•');
+    expect(rows[1].children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    expect(rows[1].children[2].textContent).toBe('Declined');
+    // The tooltip explains the row rather than repeating it.
+    expect(rows[1].title).toBe('This action never reached the page, so nothing it would have changed took effect.');
+    // A retry refused because of the earlier decline (no new prompt) reads the same.
+    const retry = rows[2];
+    expect(retry.dataset.state).toBe('cancelled');
+    expect(retry.classList.contains('failed')).toBe(false);
+    expect(retry.children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    // A page-bound step keeps its declined wording in the page row too.
+    ctx.emit({ type: 'run_started', runId: 'page', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Clicked https://shop.test', origin: 'https://shop.test' });
+    expect(ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-page-error').at(-1).textContent)
+      .toBe('Not run; you declined it');
+    expect(transcript.querySelector('.agent-turn-activity').dataset.state).toBe('done');
+    const card = transcript.querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.className).toBe('agent-turn-outcome neutral');
+    expect(card.children[1].children[0].textContent).toBe('Browser action declined');
+  });
+  test('a browser helper\'s declined action is listed as not run, not as failed (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'helper', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task', status: 'succeeded',
+      subagent: { title: 'Order', state: 'completed', mode: 'browser', report: 'Done', browserActions: [
+        { operation: 'browser_click', status: 'succeeded', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'declined', pageTitle: 'Page' },
+        { operation: 'browser_type', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'withdrawn', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'INTERNAL_ERROR', pageTitle: 'Page' },
+      ] } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    const items = report.children.find(child => child.tagName === 'UL').children.map(item => item.textContent);
+    expect(items).toEqual(['✓ click — Page', '• click — Page — Not run; you declined it',
+      '• type — Page — Not run; approval withdrawn', '× click — Page']);
+  });
+  test('a stopped action whose approval was granted still reads as a failure', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'approved', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'approved' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', label: 'Click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'withdrawn', label: 'Click' });
+    const [approvedRow, withdrawnRow] = ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-item');
+    expect(withdrawnRow.dataset.state).toBe('cancelled');
+    expect(withdrawnRow.children[1].textContent).toBe('Click — Not run; approval withdrawn');
+    expect(withdrawnRow.children[2].textContent).toBe('Withdrawn');
+    expect(approvedRow.dataset.state).toBe('failed');
+    expect(approvedRow.children[1].textContent).toContain('effects may remain');
+  });
+  test('a neutral declined notice never hides an unresolved outcome', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'mixed', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'mixed', status: 'completed', outcome: {
+      kind: 'completed', verification: 'wallet_broadcast', tone: 'caution', headline: 'Check this result', detail: 'Receipt details',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
   test('shows a concise uncertainty notice instead of routine verification counts', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'uncertain', userText: 'Do the task' });
