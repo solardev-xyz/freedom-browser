@@ -14,6 +14,32 @@ const PROVIDER_NAMES = Object.freeze({
   'near-ai': 'NEAR AI',
   ollama: 'Ollama',
 });
+const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434/v1';
+
+// A model server on this device: localhost, 127.0.0.0/8 or ::1.
+function isLoopbackUrl(value) {
+  try {
+    const host = new URL(value).hostname;
+    return host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+// The form a typed Ollama URL is stored in: main's normalizeOllamaBaseUrl
+// (provider-resolver.js) appends /v1 and drops a trailing slash, so the dirty
+// check compares like with like. Unparseable text is left as typed (dirty).
+function ollamaUrlKey(value) {
+  const text = String(value || '').trim();
+  try {
+    const parsed = new URL(text);
+    parsed.pathname = `${parsed.pathname.replace(/\/+$/, '') || ''}/v1`.replace('/v1/v1', '/v1');
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return text;
+  }
+}
+
 // Shared provider and model UI. Only Settings mounts the configuration form;
 // the conversation host supplies just its model picker and lifecycle callbacks.
 export function createAgentProviderUi(options = {}) {
@@ -59,6 +85,7 @@ export function createAgentProviderUi(options = {}) {
     providerModelsHeading: byId('agent-provider-models-heading'),
     providerModelsList: byId('agent-provider-models-list'),
     providerModelsEmpty: byId('agent-provider-models-empty'),
+    providerModelsPrivacyHint: byId('agent-provider-models-privacy-hint'),
     keySettings: byId('agent-provider-key-settings'),
     subscriptionNote: byId('agent-subscription-note'),
     connectedProviders: byId('agent-connected-providers'),
@@ -97,6 +124,8 @@ export function createAgentProviderUi(options = {}) {
     authCallbackSubmit: byId('agent-auth-callback-submit'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
+    connectMessage: byId('agent-provider-connect-message'),
+    ollamaInstall: byId('agent-ollama-install'),
     ...options.elements,
   };
   const state = options.state || {
@@ -128,7 +157,40 @@ export function createAgentProviderUi(options = {}) {
     if (!element) return;
     element.textContent = text;
     element.classList.toggle('error', error);
+    // Any later action that reports in the page-wide line (disconnect,
+    // refresh, test prompt, sign-in, preferences) supersedes the Connect
+    // result, so stale text never sits under the button beside it.
+    if (text && element === elements.providerMessage && elements.connectMessage?.textContent)
+      setConnectMessage('');
   };
+  // The Connect button's result goes in the slot right under it when the
+  // page has one (#858), not the page-wide line far below the form. While
+  // it shows an error the "Connect to discover" placeholder is hidden. Only
+  // AGENT_OLLAMA_DISCOVERY_FAILED points at where to get Ollama. That code
+  // covers more than "no server answered": main also raises it when
+  // something at the URL answered /api/tags with a non-2xx status, an
+  // oversized or malformed body, no `models` array, or a model name it
+  // rejects (provider-resolver.js configureOllama). Main cannot tell those
+  // apart from "not Ollama at all", so a running Ollama with a broken reply
+  // can still see the pointer next to the "make sure Ollama is running"
+  // error. "No models installed", "too many models" or a refused URL never
+  // show it: those come from an Ollama that is evidently there already. The
+  // slot is cleared when the privacy setting it was checked against changes.
+  let connectError = false;
+  function setConnectMessage(text = '', error = false, { suggestOllamaInstall = false } = {}) {
+    const slot = elements.connectMessage;
+    if (!slot) return setMessage(elements.providerMessage, text, error);
+    setMessage(slot, text, error);
+    if (text) setMessage(elements.providerMessage, '');
+    connectError = Boolean(text) && error;
+    if (elements.ollamaInstall)
+      elements.ollamaInstall.hidden = !(
+        connectError &&
+        suggestOllamaInstall &&
+        elements.provider.value === 'ollama'
+      );
+    elements.providerModelsEmpty.hidden = connectError || !elements.providerModelsList.hidden;
+  }
   const isCustomProvider = (id) => id === 'openai-compatible' || id?.startsWith('custom-');
   function providerName(providerId) {
     return (
@@ -276,9 +338,14 @@ export function createAgentProviderUi(options = {}) {
     }
     elements.testProvider.textContent = isCustom ? 'Check compatibility' : 'Send test prompt';
     elements.testProvider.disabled = compatibilityCheckPending;
+    // A model on this device bills no tokens (#859).
+    const charges =
+      isOllama || (isCustom && isLoopbackUrl(connection?.baseUrl))
+        ? ''
+        : ' Token charges may apply.';
     elements.testProviderNote.textContent = isCustom
-      ? 'Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared. Token charges may apply.'
-      : 'Sends only “Reply with OK.” to this model. Token charges may apply.';
+      ? `Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared.${charges}`
+      : `Sends only “Reply with OK.” to this model.${charges}`;
     elements.providerHeading.textContent = providerName(providerId);
     elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
     elements.providerStatus.classList.toggle('active', Boolean(connection));
@@ -292,7 +359,7 @@ export function createAgentProviderUi(options = {}) {
       'hidden',
       !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !providerLoginPending)
     );
-    elements.saveProvider.hidden = isSubscription;
+    renderSaveVisibility();
     elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
     elements.subscriptionNote.hidden = Boolean(connection) && !canUpgradeChatgpt;
     elements.subscriptionNote.textContent = canUpgradeChatgpt
@@ -315,13 +382,14 @@ export function createAgentProviderUi(options = {}) {
     elements.provider.disabled = providerLoginPending;
     elements.model.disabled = providerLoginPending;
     elements.modelRefresh.hidden = !isOllama && !descriptor?.canRefresh;
-    elements.modelRefresh.disabled = (isOllama || isSubscription || isCustom) && !connection;
+    // Nothing to refresh until the provider is connected (#856).
+    elements.modelRefresh.disabled = !connection;
     elements.apiKey.placeholder =
       isCustom && !connection
-        ? 'Optional — leave empty if not required'
+        ? 'Optional, leave empty if not required'
         : connection
           ? 'Leave empty to keep your saved key'
-          : 'Stored encrypted on this device';
+          : '';
     elements.saveProvider.textContent = isOllama
       ? connection
         ? 'Save connection'
@@ -329,6 +397,10 @@ export function createAgentProviderUi(options = {}) {
       : connection
         ? 'Save connection'
         : 'Connect provider';
+    // Connecting is the page's main action (#855): filled until the provider is
+    // connected, then outlined for the follow-up "Save connection".
+    elements.saveProvider.classList.toggle('primary', !connection);
+    elements.saveProvider.classList.toggle('secondary', Boolean(connection));
     elements.modelDetails.hidden = !connection;
     elements.testProvider.hidden = !connection;
     if (!connection) closeDisconnectConfirm();
@@ -378,16 +450,66 @@ export function createAgentProviderUi(options = {}) {
     const apiConnected = Boolean(
       providerConnection(isClaude ? 'anthropic' : isMeta ? 'meta' : 'openai')
     );
-    elements.chatgptConnectionState.textContent = subscriptionConnected ? 'Connected' : 'Connect';
-    elements.apiConnectionState.textContent = apiConnected ? 'Connected' : 'Connect';
-    elements.chatgptConnectionState.classList.toggle('active', subscriptionConnected);
-    elements.apiConnectionState.classList.toggle('active', apiConnected);
+    // The whole row is the button, so an unconnected method shows the provider
+    // list's chevron rather than a "Connect" label; a connected one keeps its
+    // "Connected" status (#855).
+    renderMethodState(elements.chatgptConnectionState, subscriptionConnected);
+    renderMethodState(elements.apiConnectionState, apiConnected);
     if (choosingProviderMethod) {
       elements.providerHeading.textContent = providerPageTitle(providerId);
       elements.providerStatus.textContent =
         subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
       elements.providerStatus.classList.toggle('active', subscriptionConnected || apiConnected);
     }
+  }
+
+  function renderMethodState(element, connected) {
+    element.textContent = connected ? 'Connected' : '›';
+    element.classList.toggle('active', connected);
+    if (connected) element.removeAttribute('aria-hidden');
+    else element.setAttribute('aria-hidden', 'true');
+  }
+
+  // A connected provider's Save shows only once a field it would save differs
+  // from what is stored (#859); a new connection always offers it.
+  function connectionFormDirty(providerId) {
+    const connection = providerConnection(providerId);
+    if (!connection) return true;
+    if (providerId === 'ollama')
+      return (
+        ollamaUrlKey(elements.ollamaUrl.value) !==
+        ollamaUrlKey(connection.baseUrl || DEFAULT_OLLAMA_URL)
+      );
+    if (elements.apiKey.value) return true;
+    if (!isCustomProvider(providerId)) return false;
+    const ids = [
+      ...new Set(
+        elements.customModels.value
+          .split(/[,\n]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      ),
+    ];
+    const savedIds = (connection.models || []).map((m) => m.id);
+    const model = catalogModel(providerId, elements.model.value);
+    return (
+      elements.customClearKey.checked ||
+      elements.customName.value.trim() !== (connection.name || '') ||
+      ids.join('\n') !== savedIds.join('\n') ||
+      (Boolean(elements.model.value) && elements.model.value !== connection.modelId) ||
+      Number(elements.customContext.value) !== (model?.contextWindow || 32768) ||
+      Number(elements.customOutput.value) !== (model?.maxTokens || 4096) ||
+      elements.customVision.checked !== (model?.vision === true) ||
+      elements.customReasoning.checked !== (model?.reasoning === true) ||
+      elements.customSchema.checked !== (model?.jsonSchema === true)
+    );
+  }
+
+  function renderSaveVisibility() {
+    if (!elements.saveProvider || !elements.provider) return;
+    const providerId = elements.provider.value;
+    elements.saveProvider.hidden =
+      providerAuthType(providerId) === 'subscription' || !connectionFormDirty(providerId);
   }
 
   function renderProviderModelPreview(providerId) {
@@ -406,12 +528,14 @@ export function createAgentProviderUi(options = {}) {
     elements.providerModelsHeading.textContent = available.length
       ? `Available models · ${available.length}`
       : 'Available models';
+    let hasPrivacySymbols = false;
     elements.providerModelsList.replaceChildren(
       ...available.map((model) => {
         const row = document.createElement('li');
         const name = document.createElement('span');
         name.textContent = model.name || model.id;
         const info = modelPrivacyInfo(providerId, model, connection?.baseUrl);
+        if (info.symbols.length) hasPrivacySymbols = true;
         const privacy = createModelPrivacySymbols(info);
         row.appendChild(name);
         row.appendChild(privacy);
@@ -422,15 +546,18 @@ export function createAgentProviderUi(options = {}) {
           select.type = 'button';
           select.textContent = model.name || model.id;
           select.setAttribute('aria-label', `Use ${model.name || model.id} for new chats`);
-          select.setAttribute(
-            'aria-pressed',
-            String(
-              state.providerStatus?.providerId === providerId &&
-                state.providerStatus?.modelId === model.id
-            )
-          );
+          const isDefault =
+            state.providerStatus?.providerId === providerId &&
+            state.providerStatus?.modelId === model.id;
+          select.setAttribute('aria-pressed', String(isDefault));
           select.addEventListener('click', () => selectModel(providerId, model.id));
           name.replaceChildren(select);
+          if (isDefault) {
+            const tag = document.createElement('span');
+            tag.className = 'agent-model-default-tag';
+            tag.textContent = 'Default';
+            name.appendChild(tag);
+          }
         }
         row.title = `${model.id}\n${info.detail}`;
         return row;
@@ -438,7 +565,10 @@ export function createAgentProviderUi(options = {}) {
     );
     elements.providerModelsList.scrollTop = 0;
     elements.providerModelsList.hidden = !available.length;
-    elements.providerModelsEmpty.hidden = Boolean(available.length);
+    elements.providerModelsEmpty.hidden = Boolean(available.length) || connectError;
+    // The hover hint only explains symbols that are actually on screen (#856).
+    if (elements.providerModelsPrivacyHint)
+      elements.providerModelsPrivacyHint.hidden = !hasPrivacySymbols;
     elements.providerModelsEmpty.textContent = models.length
       ? 'No models meet the current requirements'
       : connection
@@ -464,6 +594,7 @@ export function createAgentProviderUi(options = {}) {
     elements.providerBrowser.hidden = screen !== 'browser';
     elements.providerDetail.hidden = screen !== 'detail';
     setMessage(elements.providerMessage, '');
+    setConnectMessage('');
     if (screen === 'browser') elements.providerSearch.focus();
     if (!applyingSettingsRoute) options.onScreenChange?.(screen, elements.provider.value);
   }
@@ -476,7 +607,7 @@ export function createAgentProviderUi(options = {}) {
     elements.model.value = providerConnection(providerId)?.modelId || '';
     if (providerId === 'ollama') {
       const connection = providerConnection(providerId);
-      elements.ollamaUrl.value = connection?.baseUrl || 'http://127.0.0.1:11434/v1';
+      elements.ollamaUrl.value = connection?.baseUrl || DEFAULT_OLLAMA_URL;
     }
     if (isCustomProvider(providerId)) {
       const connection = providerConnection(providerId);
@@ -704,6 +835,8 @@ export function createAgentProviderUi(options = {}) {
     loadCustomModelSettings();
     renderModelDetails();
     renderCompatibilityCheck();
+    // The fields above were just reset to what is stored.
+    renderSaveVisibility();
   }
 
   function renderCustomTransport() {
@@ -798,10 +931,24 @@ export function createAgentProviderUi(options = {}) {
     }, TRANSIENT_MESSAGE_MS);
   }
 
-  async function refreshModelCatalog({ background = false } = {}) {
+  async function refreshModelCatalog({ background = false, connecting = false } = {}) {
     const providerId = elements.provider.value;
+    const report = connecting
+      ? setConnectMessage
+      : (text, error) => setMessage(elements.providerMessage, text, error);
     elements.modelRefresh.disabled = true;
-    if (!background) setMessage(elements.providerMessage, 'Refreshing model catalog…');
+    // A manual refresh supersedes an earlier Connect result under the button.
+    if (!background && !connecting) setConnectMessage('');
+    if (!background) report('Refreshing model catalog…');
+    // Connect-time discovery only runs for a provider that is not connected
+    // yet, so there is no previous catalog to fall back on: don't say there is.
+    const failure = connecting
+      ? 'Could not load this provider’s models. Try connecting again.'
+      : 'Could not refresh models. Your previous catalog is still available.';
+    const failureMessage = (response) =>
+      connecting && (!response?.error || response.error.code === 'AGENT_CATALOG_UNAVAILABLE')
+        ? failure
+        : responseMessage(response, failure);
     try {
       const response = await api.refreshAgentProviderModels(
         providerId,
@@ -809,14 +956,7 @@ export function createAgentProviderUi(options = {}) {
       );
       if (!response?.ok) {
         if (!background)
-          setMessage(
-            elements.providerMessage,
-            responseMessage(
-              response,
-              'Could not refresh models. Your previous catalog is still available.'
-            ),
-            true
-          );
+          report(failureMessage(response), true);
         return;
       }
       state.providerCatalog = response.catalog;
@@ -824,17 +964,14 @@ export function createAgentProviderUi(options = {}) {
       renderProviderFields();
       renderConnectedProviders();
       renderActiveModel();
-      if (!background) setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
+      if (!background && !connecting)
+        setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
       return true;
     } catch {
       if (!background)
-        setMessage(
-          elements.providerMessage,
-          'Could not refresh models. Your previous catalog is still available.',
-          true
-        );
+        report(failure, true);
     } finally {
-      elements.modelRefresh.disabled = false;
+      elements.modelRefresh.disabled = !providerConnection(elements.provider.value);
     }
   }
 
@@ -1010,13 +1147,17 @@ export function createAgentProviderUi(options = {}) {
           state.providerStatus?.modelId === model.modelId;
         option.classList.toggle('active', active);
         option.setAttribute('aria-checked', String(active));
-        const name = document.createElement('span');
-        name.textContent = model.name;
+        // One leading check column, so the selected model reads at a glance and
+        // the privacy symbols and the star keep the trailing edge to themselves.
         const check = document.createElement('span');
         check.className = 'agent-model-check';
+        check.setAttribute('aria-hidden', 'true');
         check.textContent = active ? '✓' : '';
-        option.appendChild(name);
+        const name = document.createElement('span');
+        name.className = 'agent-model-name';
+        name.textContent = model.name;
         option.appendChild(check);
+        option.appendChild(name);
         const privacy = createModelPrivacySymbols(model.privacyInfo);
         option.appendChild(privacy);
         option.title = model.privacyInfo.detail;
@@ -1051,9 +1192,13 @@ export function createAgentProviderUi(options = {}) {
     elements.activeModelLabel.textContent = configured
       ? modelName(selected.providerId, selected.modelId)
       : 'Choose model';
-    elements.modelMenuButton.title = configured
+    const modelTitle = configured
       ? `${providerName(selected.providerId)} · ${selected.modelId}`
       : '';
+    elements.modelMenuButton.title =
+      modelTitle && context.conversationId
+        ? `${modelTitle}. This conversation keeps its model; start a new chat to use another.`
+        : modelTitle;
     renderModelMenu();
   }
 
@@ -1074,7 +1219,7 @@ export function createAgentProviderUi(options = {}) {
       ) {
         elements.provider.value = status.providerId;
         if (status.providerId === 'ollama') {
-          elements.ollamaUrl.value = status.baseUrl || 'http://127.0.0.1:11434/v1';
+          elements.ollamaUrl.value = status.baseUrl || DEFAULT_OLLAMA_URL;
         }
       }
     }
@@ -1171,10 +1316,10 @@ export function createAgentProviderUi(options = {}) {
     const connection = providerConnection(providerId);
     const consequence =
       connection.kind === 'hosted' || connection.hasApiKey
-      ? ' Its saved API key is deleted from this device.'
-      : connection.kind === 'subscription'
-        ? ' You will need to sign in again to reconnect.'
-        : '';
+        ? ' Its saved API key is deleted from this device.'
+        : connection.kind === 'subscription'
+          ? ' You will need to sign in again to reconnect.'
+          : '';
     elements.providerDisconnectQuestion.textContent = `Disconnect ${providerName(providerId)} from Agent?${consequence}`;
     confirm.hidden = false;
     elements.providerDisconnect.hidden = true;
@@ -1217,10 +1362,7 @@ export function createAgentProviderUi(options = {}) {
     const privacyPolicy = elements.privacyPolicy.value;
     const adding = !providerConnection(providerId);
     elements.saveProvider.disabled = true;
-    setMessage(
-      elements.providerMessage,
-      providerId === 'ollama' ? 'Finding installed models…' : 'Saving…'
-    );
+    setConnectMessage(providerId === 'ollama' ? 'Finding installed models…' : 'Saving…');
     try {
       let response;
       if (
@@ -1231,15 +1373,11 @@ export function createAgentProviderUi(options = {}) {
       ) {
         // Some catalogs require the entered key. Discover them as part of connecting,
         // without making users select a model in the connection form.
-        if (!(await refreshModelCatalog())) return;
+        if (!(await refreshModelCatalog({ connecting: true }))) return;
         elements.privacyPolicy.value = privacyPolicy;
         renderModelOptions(providerId);
         if (!elements.model.value) {
-          setMessage(
-            elements.providerMessage,
-            'No supported models meet this privacy setting',
-            true
-          );
+          setConnectMessage('No supported models meet this privacy setting', true);
           return;
         }
       }
@@ -1298,16 +1436,17 @@ export function createAgentProviderUi(options = {}) {
       }
       elements.apiKey.value = '';
       if (!response?.ok) {
-        setMessage(
-          elements.providerMessage,
-          responseMessage(response, 'Could not save model'),
-          true
-        );
+        setConnectMessage(responseMessage(response, 'Could not save model'), true, {
+          suggestOllamaInstall:
+            providerId === 'ollama' && response?.error?.code === 'AGENT_OLLAMA_DISCOVERY_FAILED',
+        });
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
-      setMessage(
-        elements.providerMessage,
+      // Show the URL as main stored it (normalized), so the field matches.
+      const savedOllamaUrl = providerId === 'ollama' && providerConnection(providerId)?.baseUrl;
+      if (savedOllamaUrl) elements.ollamaUrl.value = savedOllamaUrl;
+      setConnectMessage(
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
       );
       if (isCustomProvider(providerId)) {
@@ -1319,9 +1458,11 @@ export function createAgentProviderUi(options = {}) {
       }
     } catch {
       elements.apiKey.value = '';
-      setMessage(elements.providerMessage, 'Could not save model', true);
+      setConnectMessage('Could not save model', true);
     } finally {
       elements.saveProvider.disabled = false;
+      // The API key was cleared above on every path; recompute Save.
+      renderSaveVisibility();
     }
   }
 
@@ -1471,7 +1612,23 @@ export function createAgentProviderUi(options = {}) {
       loadCustomModelSettings();
       renderModelDetails();
       renderCompatibilityCheck();
+      renderSaveVisibility();
     });
+    for (const field of [
+      elements.apiKey,
+      elements.ollamaUrl,
+      elements.customName,
+      elements.customModels,
+      elements.customClearKey,
+      elements.customContext,
+      elements.customOutput,
+      elements.customVision,
+      elements.customReasoning,
+      elements.customSchema,
+    ]) {
+      field?.addEventListener('input', renderSaveVisibility);
+      field?.addEventListener('change', renderSaveVisibility);
+    }
     elements.modelRefresh.addEventListener('click', () => refreshModelCatalog());
     elements.testProvider.addEventListener('click', testProviderConnection);
     elements.compatibilityContinue.addEventListener('click', async () => {
@@ -1488,9 +1645,10 @@ export function createAgentProviderUi(options = {}) {
       context.setAgentView('workspace');
       context.focusComposer();
     });
-    elements.privacyPolicy.addEventListener('change', () =>
-      renderModelOptions(elements.provider.value)
-    );
+    elements.privacyPolicy.addEventListener('change', () => {
+      setConnectMessage('');
+      renderModelOptions(elements.provider.value);
+    });
     elements.privacySave.addEventListener('click', () =>
       saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value })
     );

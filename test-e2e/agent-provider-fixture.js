@@ -39,23 +39,19 @@ async function openProviderSettings(window) {
   return page;
 }
 
+// Connecting the first model opens Agent on a start page, leaving Settings in
+// its own background tab (#864); a later connection leaves Settings in front.
+// Either way, close the Settings tab and make sure Agent is open.
 async function closeProviderSettings(window) {
-  await expect
-    .poll(() =>
-      window.evaluate(() =>
-        document.querySelector('webview:not(.hidden)')?.getURL().includes('/pages/settings.html')
-      )
-    )
-    .toBe(true);
-  await window.locator('.tab.active .tab-close').click();
-  await expect
-    .poll(() =>
-      window.evaluate(() =>
-        document.querySelector('webview:not(.hidden)')?.getURL().includes('/pages/settings.html')
-      )
-    )
-    .toBe(false);
-  // Connecting the first model has already opened Agent.
+  const settingsTabId = () =>
+    window.evaluate(() =>
+      [...document.querySelectorAll('webview')]
+        .find((webview) => webview.getURL().includes('/pages/settings.html'))?.dataset.tabId ?? null
+    );
+  await expect.poll(settingsTabId).not.toBeNull();
+  const tabId = await settingsTabId();
+  await window.locator(`.tab[data-tab-id="${tabId}"] .tab-close`).click();
+  await expect.poll(settingsTabId).toBeNull();
   if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
     await window.locator('#agent-toggle-btn').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();

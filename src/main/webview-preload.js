@@ -1160,7 +1160,8 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId })),
   removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
   clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
-  openAgent: guardAgentLauncherPage('openAgent', () => ipcRenderer.invoke('agent:open')),
+  openAgent: guardAgentLauncherPage('openAgent', (options) =>
+    options?.freshPage === true ? ipcRenderer.invoke('agent:open', { freshPage: true }) : ipcRenderer.invoke('agent:open')),
   getAgentSetupState: guardAgentLauncherPage('getAgentSetupState', () => ipcRenderer.invoke('agent:setup-state')),
   onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
     guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),

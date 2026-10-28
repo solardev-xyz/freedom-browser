@@ -123,9 +123,14 @@
   display: none;
 }
 
-.agent-icon-btn:hover {
+.agent-icon-btn:hover:not(:disabled) {
   color: var(--text);
   background: var(--agent-hover-1);
+}
+
+/* New chat stays visible but unavailable while a run is active. */
+.agent-icon-btn:disabled {
+  opacity: 0.45;
 }
 
 .agent-icon-btn svg {
@@ -323,8 +328,7 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   height: 16px;
 }
 
-.agent-session-sidebar-header .agent-mode-toggle,
-.agent-sidebar-header .agent-mode-toggle {
+.agent-session-sidebar-header .agent-mode-toggle {
   display: flex;
   align-items: center;
   background: transparent;
@@ -1002,6 +1006,12 @@ body.agent-first-mode .agent-workspace-nav {
   display: flex;
 }
 
+/* The open sessions column's + already starts a new chat (#875); offer the
+   transcript's own New chat only while that column is collapsed. */
+body.agent-first-mode:not(.agent-session-sidebar-closed) #agent-new-chat {
+  display: none;
+}
+
 body.agent-first-mode.agent-session-sidebar-closed .agent-session-resizer,
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-workspace-resizer {
   pointer-events: none;
@@ -1257,7 +1267,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 #agent-privacy-controls { margin: 18px 0; padding-top: 14px; border-top: 1px solid var(--border); }
 #agent-privacy-controls[hidden] { display: none; }
 .agent-connected-provider-copy { flex: 1; }
-.agent-model-menu-search { margin-bottom: 6px; font-size: 12px; }
+.agent-model-menu-search { margin-bottom: 6px; padding: 7px 10px; font-size: 13px; }
 
 .agent-workspace-view {
   container-name: agent-workspace-view;
@@ -1673,6 +1683,13 @@ body.agent-first-mode .agent-empty-state {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 
+/* Light --border is the same colour as light --bg (#dfe1e5), so the badge's
+   outline vanished against its own fill: draw it from the text colour
+   instead, about as far from the fill as dark's --border is from dark --bg. */
+[data-theme='light'] .agent-badge:not(.active) {
+  border-color: color-mix(in srgb, var(--text) 25%, var(--bg));
+}
+
 .agent-field {
   display: flex;
   flex-direction: column;
@@ -1874,11 +1891,19 @@ body.agent-first-mode .agent-empty-state {
   flex: 0 0 auto;
 }
 
-.agent-attachment-menu span {
+/* Label with its description underneath, never beside it, matching the
+   approval and Freedom-mode menus (which have their own rules and are not
+   matched here). This rule reaches every `.agent-attachment-menu`: the Add
+   menu and the dictation menu, which shares the class. In the dictation
+   menu the `.agent-dictation-menu-copy` and `.agent-dictation-menu-check`
+   spans are also direct `button > span` children; agent-dictation.css
+   overrides their `display` (grid / block), so keep those overrides if this
+   rule changes. */
+.agent-attachment-menu button > span {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .agent-attachment-menu strong {
@@ -1887,11 +1912,8 @@ body.agent-first-mode .agent-empty-state {
 }
 
 .agent-attachment-menu small {
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-composer {
@@ -2332,6 +2354,18 @@ body.agent-first-mode .agent-empty-state {
   opacity: 0.5;
 }
 
+/* The model picker of an idle conversation is disabled because the
+   conversation keeps its model, not because anything is busy: show the name
+   at the normal secondary colour, and don't light it up on hover (#872). */
+.agent-composer-chip[data-model-lock='conversation']:disabled {
+  opacity: 1;
+}
+
+.agent-composer-chip[data-model-lock='conversation']:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
 .agent-send-button {
   display: flex;
   flex: 0 0 auto;
@@ -2523,8 +2557,31 @@ body.agent-first-mode .agent-empty-state {
 .agent-model-menu {
   right: 54px;
   width: min(270px, calc(100% - 72px));
-  max-height: min(360px, calc(100vh - 120px));
+  /* agent-ui.js anchors the menu above the model button and sets the room
+     left between that button and the panel header, so it never covers the
+     header's expand/close buttons. */
+  max-height: min(360px, var(--agent-model-menu-room, calc(100vh - 120px)));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Only the model list scrolls: search and Manage models stay in reach however
+   little room the panel leaves above the composer. */
+#agent-model-menu-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+}
+
+#agent-model-menu-list::-webkit-scrollbar { width: 6px; }
+#agent-model-menu-list::-webkit-scrollbar-button { display: none; }
+#agent-model-menu-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+.agent-model-menu-search,
+.agent-model-menu > .agent-popover-divider,
+.agent-model-menu > .agent-popover-action {
+  flex-shrink: 0;
 }
 
 .agent-approval-mode-popover {
@@ -2543,15 +2600,13 @@ body.agent-first-mode .agent-empty-state {
   width: 100%;
   min-height: 32px;
   padding: 6px 8px;
-  color: var(--muted);
+  color: var(--text);
   background: transparent;
   border: 0;
   border-radius: 7px;
   text-align: left;
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .agent-model-group-label:not(:disabled):hover {
@@ -2587,7 +2642,7 @@ body.agent-first-mode .agent-empty-state {
   min-height: 32px;
   padding: 7px 8px;
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
   text-align: left;
   background: transparent;
   border: 0;
@@ -2599,9 +2654,6 @@ body.agent-first-mode .agent-empty-state {
   background: var(--agent-hover-08);
 }
 
-.agent-model-option.active {
-  color: var(--accent);
-}
 
 .agent-popover-divider {
   height: 1px;
@@ -3293,6 +3345,18 @@ body.agent-first-mode .agent-empty-state {
   white-space: normal;
 }
 
+/* A stopped run's last answer was cut off mid-stream. The mark belongs at the
+   end of the cut-off sentence, so it is drawn by the block that sentence ends
+   in — the output itself for plain text, the deepest last paragraph, heading
+   or list item for markdown at any nesting. agent-cutoff-mark.js picks that
+   block; an answer ending in a code block, table or rule marks the output, so
+   the mark sits on its own line below. */
+.agent-output.incomplete.agent-cutoff-end::after,
+.agent-output.incomplete .agent-cutoff-end::after {
+  content: ' …';
+  color: var(--muted);
+}
+
 .agent-output.rendered-markdown > :first-child {
   margin-top: 0;
 }
@@ -3861,7 +3925,8 @@ body .agent-output.rendered-markdown .agent-code-block > pre {
   color: var(--agent-danger);
 }
 
-.agent-tool-item.cancelled .agent-tool-state {
+.agent-tool-item.cancelled .agent-tool-state,
+.agent-tool-item.cancelled .agent-tool-page-error {
   color: var(--muted);
 }
 
@@ -4187,28 +4252,25 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-provider-logo-dark { display: none; }
 [data-theme="dark"] .agent-provider-logo-light { display: none; }
 [data-theme="dark"] .agent-provider-logo-dark { display: block; }
-.agent-provider-indicator { flex-shrink: 0; color: var(--muted); font-size: 18px; }
-.agent-provider-indicator.active { color: var(--accent); font-size: 14px; }
 .agent-provider-method {
   margin-top: 10px;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-.agent-provider-method-state { font-size: 11px; color: var(--muted); }
-.agent-provider-method-state.active { color: var(--accent); }
 .agent-model-row { display: flex; align-items: center; gap: 3px; min-width: 0; border-radius: 7px; }
 .agent-model-row .agent-model-option { flex: 1; min-width: 0; text-align: left; }
-.agent-model-row .agent-model-option { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 8px; }
+.agent-model-row .agent-model-option { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; }
 .agent-model-privacy { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--muted); }
 .agent-model-privacy:empty { display: none; }
-.agent-model-option:has(> .agent-model-privacy:empty) > span:first-child { grid-column: 1 / 3; }
+.agent-model-option:has(> .agent-model-privacy:empty) > .agent-model-name { grid-column: 2 / 4; }
 .agent-model-privacy-symbol { display: inline-flex; width: 18px; height: 18px; cursor: help; }
 .agent-model-privacy-symbol svg { width: 100%; height: 100%; }
-.agent-model-option > .agent-model-privacy { grid-column: 2; grid-row: 1; }
-.agent-model-check { grid-column: 3; grid-row: 1; }
+.agent-model-option > .agent-model-privacy { grid-column: 3; grid-row: 1; }
+.agent-model-check { grid-column: 1; grid-row: 1; color: var(--accent); font-size: 12px; text-align: center; }
+.agent-model-name { grid-column: 2; grid-row: 1; }
 .agent-model-privacy-detail { display: flex; margin-top: 8px; line-height: 1.5; }
-.agent-model-row .agent-model-option > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.agent-model-row .agent-model-option > .agent-model-name { overflow: hidden; text-overflow: ellipsis; }
 .agent-model-star { flex: 0 0 30px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
 .agent-model-star[aria-pressed="true"] { color: var(--accent); }
 .agent-model-star:hover { background: var(--bg); }
@@ -4242,8 +4304,9 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-connected-provider { width: 100%; text-align: left; cursor: pointer; }
 .agent-connected-provider:hover { border-color: var(--muted); }
 .agent-connected-provider > span { font-size: 20px; color: var(--muted); }
-#agent-provider-disconnect { margin-bottom: 8px; }
-#agent-provider-connection-fields > .agent-config-actions:has(> button[hidden]:only-child) { display: none; }
+/* Save shows only with unsaved changes and Disconnect only when connected (#859);
+   with neither, the row takes no space. */
+#agent-provider-actions:not(:has(> button:not([hidden]))) { display: none; }
 
 /* Page-provided actions are discovery shortcuts, not execution controls. */
 .agent-page-actions {
@@ -4430,7 +4493,6 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-task-page-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
 .agent-task-page-list .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-subagent-report .agent-helper-stop { color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 50%; }
-.agent-model-menu > .agent-catalog-status { padding: 6px 10px; }
 
 /* At this width three side-by-side panes leave no usable conversation.
    The existing session/workspace toggles instead open one overlay at a time. */

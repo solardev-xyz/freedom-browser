@@ -352,13 +352,23 @@ async function openSharedStartPage(window, harness) {
   await expect(window.locator('#agent-page-contexts')).not.toHaveAttribute('hidden', '');
 }
 
-async function stopAndExpectReusable(window) {
+async function stopAndExpectReusable(window, { answerCutOff = false } = {}) {
   const startedAt = Date.now();
   await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 3_000 });
   expect(Date.now() - startedAt).toBeLessThan(3_000);
-  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
+  await expect(window.locator('#agent-run-message')).toHaveText('');
+  await expect(window.locator('.agent-turn').last().locator('.agent-turn-outcome strong')).toHaveText(
+    'Agent stopped'
+  );
+  if (answerCutOff) {
+    const stoppedTurn = window.locator('.agent-turn').last();
+    await expect(stoppedTurn.locator('.agent-output')).toHaveClass(/\bincomplete\b/);
+    await expect(stoppedTurn.locator('.agent-turn-outcome')).toContainText(
+      'The answer above is incomplete.'
+    );
+  }
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
@@ -369,6 +379,29 @@ async function stopAndExpectReusable(window) {
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toHaveText('READY');
+}
+
+// New chat is a compose (pencil-on-square) icon button, sized like the other
+// header icons, in the floating header and in Agent-first's sessions column
+// (#868). Its name lives in aria-label/title, not in visible text.
+const COMPOSE_ICON_PATHS = [
+  'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7',
+  'M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+];
+
+async function expectComposeIconButton(window, selector) {
+  const button = window.locator(selector);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAccessibleName('New chat');
+  await expect(button).toHaveAttribute('title', 'New chat');
+  await expect(button).toHaveText('');
+  const paths = await button.locator('svg path').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('d'))
+  );
+  expect(paths).toEqual(COMPOSE_ICON_PATHS);
+  const box = await button.boundingBox();
+  expect(Math.round(box.width)).toBe(28);
+  expect(Math.round(box.height)).toBe(28);
 }
 
 async function takeOverControlledPage(window) {
@@ -388,9 +421,38 @@ test('Stop cancels a streaming provider request', async ({ window }) => {
   await window.locator('#agent-prompt').fill('STREAM_CANCEL');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  // During a run the floating header carries New chat as a disabled icon.
+  await expect(window.locator('.agent-sidebar-header #agent-new-chat')).toHaveCount(1);
+  await expectComposeIconButton(window, '#agent-new-chat');
+  await expect(window.locator('#agent-new-chat')).toBeDisabled();
 
-  await stopAndExpectReusable(window);
+  await stopAndExpectReusable(window, { answerCutOff: true });
   await expect.poll(() => streamingResponseClosed).toBe(true);
+});
+
+// #877: light --border equals light --bg, so the status pill's outline used
+// to vanish against its own fill in light theme while dark showed it.
+test('the Stopped status pill keeps a visible outline in both themes', async ({ window }) => {
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 3_000 });
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  for (const theme of ['dark', 'light']) {
+    const pill = await window.evaluate((light) => {
+      if (light) document.documentElement.setAttribute('data-theme', 'light');
+      else document.documentElement.removeAttribute('data-theme');
+      const style = getComputedStyle(document.getElementById('agent-run-status'));
+      return { width: style.borderTopWidth, border: style.borderTopColor, fill: style.backgroundColor };
+    }, theme === 'light');
+    expect(pill.width, theme).toBe('1px');
+    expect(pill.border, theme).not.toBe(pill.fill);
+  }
+  await window.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+  await exitAgentFirst(window);
 });
 
 test('turning AI off aborts a streaming request and restores the conversation after re-enabling', async ({ window }) => {
@@ -705,6 +767,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('0');
 
   await openAgentPane(window, 'session');
+  await expectComposeIconButton(window, '#agent-session-new-chat');
   const firstSession = window
     .locator('#agent-session-list .agent-session-row')
     .filter({ hasText: 'CREATE_FIVE_TASK_TABS' })
@@ -869,4 +932,66 @@ test('Find stays usable without handing keyboard input to an Agent-controlled pa
   await expect(window.locator('#agent-takeover-dialog')).toBeHidden();
   await expect(window.locator('#agent-run-status')).toHaveText('Running');
   await stopAndExpectReusable(window);
+});
+
+// A segment closed by guidance is rendered as markdown, so the cut-off mark has
+// to sit inside its last text block, at whatever depth that is, not in an
+// anonymous box on a line of its own under it. Rendered with the app's own
+// marked and the real stylesheet + agent-cutoff-mark.js: adding the mark must
+// not add a line, exactly one element must draw it, and it must be the block
+// the sentence actually ends in.
+test('the cut-off mark ends the last sentence of a markdown answer', async ({ window }) => {
+  const cases = [
+    { md: 'Comparing the first', host: 'p' },
+    { md: 'Intro\n\n### Comparing the first', host: 'h3' },
+    { md: '- One\n- Comparing the first', host: 'li' },
+    { md: '1. One\n\n2. Comparing the first', host: 'li > p' },
+    { md: '- One\n  - Comparing the first', host: 'li li' },
+    { md: '- a\n\n  - Comparing the first\n\n  - b\n\n  - Comparing the first', host: 'li li > p' },
+    { md: '- a\n  - b\n    - Comparing the first', host: 'li li li' },
+    { md: '> Comparing the first', host: 'blockquote > p' },
+    { md: '> > Comparing the first', host: 'blockquote blockquote > p' },
+    { md: '> Intro\n>\n> - Comparing the first', host: 'blockquote li' },
+    { text: 'Comparing the first', host: null },
+  ];
+  const ownLine = ['```\nconst x = 1;\n```', '- a\n\n  ```\n  code\n  ```', '> ```\n> code\n> ```', 'a\n\n---'];
+  const results = await window.evaluate(async ({ cases, ownLine }) => {
+    const { setCutOffMark } = await import(new URL('lib/agent-cutoff-mark.js', window.location.href).href);
+    const build = (md, text) => {
+      const output = document.createElement('div');
+      output.className = md != null ? 'agent-output rendered-markdown' : 'agent-output';
+      output.style.cssText = 'position:fixed;left:0;top:0;width:400px';
+      if (md != null) output.innerHTML = window.marked.parse(md, { gfm: true, breaks: true });
+      else output.textContent = text;
+      document.body.append(output);
+      return output;
+    };
+    const drawers = output => [output, ...output.querySelectorAll('*')]
+      .filter(e => getComputedStyle(e, '::after').content === '" …"');
+    const marked = cases.map(({ md, text, host }) => {
+      const output = build(md, text);
+      const before = output.getBoundingClientRect().height;
+      setCutOffMark(output, true);
+      const after = output.getBoundingClientRect().height;
+      const target = host ? [...output.querySelectorAll(host)].at(-1) : output;
+      const found = drawers(output);
+      const html = output.innerHTML;
+      output.remove();
+      return { host, html, grew: after - before, count: found.length, isTarget: found[0] === target };
+    });
+    const own = ownLine.map(md => {
+      const output = build(md);
+      setCutOffMark(output, true);
+      const found = drawers(output);
+      output.remove();
+      return { md, count: found.length, isOutput: found[0] === output };
+    });
+    return { marked, own };
+  }, { cases, ownLine });
+  for (const result of results.marked) {
+    expect(result, `${result.host || 'plain text'}: ${result.html}`).toMatchObject({ grew: 0, count: 1, isTarget: true });
+  }
+  for (const result of results.own) {
+    expect(result, result.md).toMatchObject({ count: 1, isOutput: true });
+  }
 });

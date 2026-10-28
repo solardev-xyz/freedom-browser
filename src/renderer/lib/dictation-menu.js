@@ -30,12 +30,18 @@ export function createDictationMenu({ host, button, api, canOpen, onOpening = ()
     if (checked !== undefined) item.setAttribute('aria-checked', String(checked));
     if (providerId) item.dataset.providerId = providerId;
     item.disabled = disabled;
-    const mark = document.createElement('span'); mark.className = 'agent-dictation-menu-check';
-    mark.textContent = checked ? '✓' : ''; mark.setAttribute('aria-hidden', 'true');
     const copy = document.createElement('span'); copy.className = 'agent-dictation-menu-copy';
     const title = document.createElement('strong'); title.textContent = label; copy.appendChild(title);
     if (detail) { const note = document.createElement('small'); note.textContent = detail; copy.appendChild(note); }
-    item.appendChild(mark); item.appendChild(copy); host.appendChild(item); rows.push(item);
+    item.appendChild(copy);
+    // Trailing check, as in the approval and Freedom-mode menus; plain actions
+    // (the Settings row) get no reserved gutter.
+    if (checked !== undefined) {
+      const mark = document.createElement('span'); mark.className = 'agent-dictation-menu-check';
+      mark.textContent = checked ? '✓' : ''; mark.setAttribute('aria-hidden', 'true');
+      item.appendChild(mark);
+    }
+    host.appendChild(item); rows.push(item);
     item.addEventListener('click', () => { if (!saving && !item.disabled) action(); });
     return item;
   };

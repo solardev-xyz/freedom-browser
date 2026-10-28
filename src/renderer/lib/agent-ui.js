@@ -5,6 +5,7 @@ import { carryOverPrompt } from './agent-carry-over.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
+import { setCutOffMark } from './agent-cutoff-mark.js';
 import {
   DOMAIN_APPROVAL_SOURCE,
   domainApprovalHeading,
@@ -38,7 +39,7 @@ const APPROVAL_MODES = Object.freeze({
   ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
 });
 const APPROVAL_MODE_LABELS = Object.freeze({
-  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask frequently',
+  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every time',
   [APPROVAL_MODES.SENSITIVE_ACTIONS]: 'Ask when needed',
   [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Fewer interruptions',
 });
@@ -97,6 +98,7 @@ let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
 let switchToTab = () => {};
 let openLinkInNewTab = () => {};
+let openStartPage = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
@@ -120,7 +122,6 @@ let attachmentSelectionGeneration = 0;
 let composerDragDepth = 0;
 let conversationResources = [];
 let lastFinishedRunId = null;
-let stopRequestedRunId = null;
 let pendingApproval = null;
 let lastApprovalDecisionAt = -Infinity;
 let lastDisplayedApprovalId = null;
@@ -211,15 +212,17 @@ function setMessage(element, message = '', isError = false) {
   element.classList.toggle('error', isError);
 }
 
-function isShareablePage(tab) {
-  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
-  if (
+function isStartPage(tab) {
+  return typeof tab?.url === 'string' && (
     tab.url === homeUrl ||
     tab.url === 'freedom://home' ||
     (tab.url.startsWith('file:') && tab.url.endsWith('/pages/home.html'))
-  ) {
-    return false;
-  }
+  );
+}
+
+function isShareablePage(tab) {
+  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
+  if (isStartPage(tab)) return false;
   try {
     return ['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(new URL(tab.url).protocol);
   } catch {
@@ -620,6 +623,61 @@ function closeComposerPopovers() {
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
 }
 
+// The model menu opens above its button, right edges aligned, and never grows
+// past the panel header: otherwise a long model list covers the header's
+// expand and close buttons (#869). Offsets, unlike client rects, ignore the
+// transforms the launcher animates with, so the anchor holds mid-animation.
+function offsetWithin(node, ancestor) {
+  let x = 0;
+  let y = 0;
+  while (node && node !== ancestor) {
+    const parent = node.offsetParent;
+    x += node.offsetLeft + (parent && parent !== ancestor ? parent.clientLeft : 0);
+    y += node.offsetTop + (parent && parent !== ancestor ? parent.clientTop : 0);
+    node = parent;
+  }
+  return node === ancestor ? { x, y } : null;
+}
+
+function closeModelMenu() {
+  elements.modelMenu.hidden = true;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'false');
+}
+
+function openModelMenu() {
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  positionModelMenu();
+}
+
+// Runs on open and again on every window resize while the menu is open: a
+// shorter window moves the button up but not the header, so a room measured
+// at open time would let the menu climb over the header.
+function positionModelMenu() {
+  const { modelMenu: menu, modelMenuButton: button } = elements;
+  if (menu.hidden) return;
+  const container = menu.offsetParent;
+  const anchor = container && offsetWithin(button, container);
+  if (!anchor) return;
+  const gap = 6;
+  const right = Math.min(
+    Math.max(0, container.clientWidth - anchor.x - button.offsetWidth),
+    Math.max(0, container.clientWidth - menu.offsetWidth)
+  );
+  menu.style.right = `${right}px`;
+  menu.style.bottom = `${container.clientHeight - anchor.y + gap}px`;
+  const buttonTop = button.getBoundingClientRect().top;
+  let ceiling = 0;
+  for (const header of [panelHeader, elements.agentFirstTitlebar]) {
+    const rect = header?.getBoundingClientRect?.();
+    if (rect && rect.height > 0) ceiling = Math.max(ceiling, rect.bottom);
+  }
+  // No minimum height: in a very short window a cramped menu (its list scrolls)
+  // is better than one that covers the header's expand and close buttons.
+  const room = Math.max(0, buttonTop - gap - ceiling - 4);
+  menu.style.setProperty('--agent-model-menu-room', `${room}px`);
+}
+
 function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
@@ -701,8 +759,10 @@ function setAgentView(nextView) {
   elements.mcpPanel.hidden = nextView !== 'services';
   elements.workspaceView.hidden = nextView !== 'workspace';
   const setup = nextView === 'setup';
-  elements.browserModeToggle.hidden = nextView !== 'workspace';
-  elements.title.hidden = nextView === 'workspace';
+  // The floating launcher is titled "Agent"; the column shows the
+  // conversation title instead (agent-floating.css hides this heading there).
+  // The browser/Agent-first switch is the header's expand button.
+  elements.title.hidden = false;
   // First-run setup says it once: the title names the task, the view's button
   // the next step.
   elements.subtitle.hidden = nextView === 'workspace' || (setup && providerStatus?.configured !== true);
@@ -762,13 +822,11 @@ function setScopeHelpOpen(open) {
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
-  const { modeMenu, modeAgent, modeBrowser } = elements;
-  const modeToggle = agentFirstMode ? elements.modeToggle : elements.browserModeToggle;
+  const { modeMenu, modeAgent, modeBrowser, modeToggle } = elements;
   if (!open) {
     modeMenu.hidePopover?.();
     modeMenu.hidden = true;
-    elements.modeToggle.setAttribute('aria-expanded', 'false');
-    elements.browserModeToggle.setAttribute('aria-expanded', 'false');
+    modeToggle.setAttribute('aria-expanded', 'false');
     if (restoreFocus) modeToggle.focus();
     return;
   }
@@ -1316,6 +1374,11 @@ async function refreshWorkspaceProjection() {
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
+  // The model menu's right/bottom/room are measured for the layout it opened
+  // in, and the switch animates the columns (so re-measuring now would read a
+  // mid-transition layout). Close it, like the mode menu; reopening measures
+  // the new layout.
+  closeModelMenu();
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -1338,7 +1401,7 @@ function setAgentFirstMode(nextMode) {
     'aria-label',
     agentFirstMode ? 'Return to browser view' : 'Make Agent the main view'
   );
-  elements.agentFirstToggle.title = agentFirstMode ? 'Browser view' : 'Agent-first view';
+  elements.agentFirstToggle.title = agentFirstMode ? 'Return to browser view' : 'Make Agent the main view';
   if (agentFirstMode) {
     openTabs = getOpenTabs();
     renderTaskPages();
@@ -1414,8 +1477,18 @@ function observeComposerHeight() {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
-    const examplesHeight = elements.examples?.offsetHeight || 0;
-    setBodyStyleProperty('--agent-examples-height', `${examplesHeight ? examplesHeight + 12 : 0}px`);
+    // A narrow window shows the conversation as a bottom sheet: page hints
+    // sit above the whole sheet, not just its composer (#874).
+    const panelHeight = panelInner?.getBoundingClientRect?.().height || 0;
+    if (panelHeight > 0) setBodyStyleProperty('--agent-floating-panel-height', `${panelHeight}px`);
+    // A short window with Find and downloads open can leave the sheet less
+    // room than its header and composer need: the composer then scrolls
+    // under the header instead of the sheet spilling over the page chrome.
+    // scrollHeight stays the composer's natural height while it scrolls.
+    const header = panelInner?.querySelector?.('.agent-sidebar-header');
+    const room = panelInner?.clientHeight || 0;
+    const needed = (header?.offsetHeight || 0) + (elements.composerWrap.scrollHeight || 0);
+    document.body?.classList?.toggle('agent-floating-sheet-cramped', room > 0 && needed > room + 1);
     captureLauncherSnapshot();
   };
   update();
@@ -1423,6 +1496,7 @@ function observeComposerHeight() {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
     if (elements.examples) composerResizeObserver.observe(elements.examples);
+    if (panelInner) composerResizeObserver.observe(panelInner);
   }
 }
 
@@ -1807,6 +1881,18 @@ function openPanel() {
   document.dispatchEvent(new CustomEvent('agent-sidebar-opened'));
 }
 
+// Settings opens Agent once the first model is connected; the floating panel
+// would otherwise cover the form the user was just filling in (#864). Move to
+// a start page first: the active one, another open one Agent isn't driving,
+// or a new one. Agent-first mode replaces the page view anyway.
+function showStartPage() {
+  if (!aiEnabled || isPrivateWindow() || isSignatureInFlight() || agentFirstMode) return;
+  if (isStartPage(getActiveTab())) return;
+  const open = getOpenTabs().find(tab => !tab.kind && isStartPage(tab) && !isTabAgentOwned(tab.id));
+  if (open) switchToTab(open.id);
+  else openStartPage();
+}
+
 function togglePanel() {
   if (panelOpen) closePanel();
   else openPanel();
@@ -1825,7 +1911,14 @@ function setRunState(status, label) {
       : status === 'paused'
         ? 'Add guidance and resume…'
         : 'Message Agent…';
-  elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
+  // A conversation keeps the model it started with, so the picker stays
+  // disabled for it. Only a run dims it, though: an idle conversation's model
+  // is a fact the user reads, not a control that is unavailable right now
+  // (#872). `agent.css` keys the undimmed look off this marker.
+  const modelLocked = Boolean(currentConversationId);
+  elements.modelMenuButton.disabled = active || modelLocked;
+  if (!active && modelLocked) elements.modelMenuButton.dataset.modelLock = 'conversation';
+  else delete elements.modelMenuButton.dataset.modelLock;
   elements.approvalModeButton.disabled = active || approvalModeMutationPending;
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
@@ -2030,6 +2123,9 @@ function createTurnView(turn) {
     assistantRow,
     outputSegments: [{ output, text: turn.assistantText || '' }],
     assistantSegmentClosed: false,
+    // Whether the agent moved on (a tool call) after its last text, so that
+    // text was finished rather than cut off by a stop.
+    assistantSegmentEndedByTool: false,
     outcome,
     outcomeIcon,
     outcomeHeadline,
@@ -2062,7 +2158,8 @@ function createTurnView(turn) {
 
 // A message stays where it was spoken. Tool starts and user guidance close
 // the current segment; the next assistant text gets a new bubble after them.
-function closeAssistantSegment(view) {
+function closeAssistantSegment(view, { byTool = false } = {}) {
+  if (byTool) view.assistantSegmentEndedByTool = true;
   if (view.assistantSegmentClosed) return;
   view.assistantSegmentClosed = true;
   const segment = view.outputSegments.at(-1);
@@ -2085,6 +2182,7 @@ function appendAssistantText(view, text) {
     view.section.insertBefore(view.assistantRow, view.outcome);
     view.assistantSegmentClosed = false;
   }
+  view.assistantSegmentEndedByTool = false;
   view.assistantText += text;
   const segment = view.outputSegments.at(-1);
   segment.text += text;
@@ -3337,9 +3435,11 @@ function visibleOutcome(outcome) {
   if (!outcome || typeof outcome !== 'object') return null;
   if (outcome.publication?.publicationId) return null;
   if (outcome.kind === 'recovery') return outcome;
-  if (outcome.notice) return outcome.notice;
+  // A neutral notice (a declined action) never outranks an unresolved outcome.
+  const notice = outcome.notice && typeof outcome.notice === 'object' ? outcome.notice : null;
+  if (notice && notice.tone !== 'neutral') return notice;
   if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
-    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : null;
+    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : notice;
   if ([
     'wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_in_flight',
     'swarm_publication_failed', 'swarm_publication_outcome_unknown',
@@ -3350,12 +3450,31 @@ function visibleOutcome(outcome) {
     return { ...outcome, headline: 'Project operation did not complete',
       detail: `${outcome.workspace.command || 'The last project operation'} did not complete. Check the activity for details.` };
   }
-  return null;
+  return notice;
 }
 
-function renderTurnOutcome(view, outcome, error) {
+// A stopped turn ends with its own notice, after whatever it managed to say.
+// A caution about the stopped work (an uncertain browser action) keeps its tone,
+// and the changes made before stopping are still named next to it.
+function stoppedOutcome(outcome, notice, answerCutOff) {
+  const caution = notice && notice.kind !== 'interrupted' ? notice : null;
+  const changes = outcome?.kind === 'interrupted' ? visibleOutcome({ ...outcome, notice: undefined })?.detail || '' : '';
+  return {
+    ...caution,
+    tone: caution?.tone || 'neutral',
+    headline: 'Agent stopped',
+    detail: [
+      answerCutOff ? 'The answer above is incomplete.' : '',
+      caution ? `${caution.headline}. ${caution.detail || ''}`.trim() : '',
+      changes,
+    ].filter(Boolean).join(' '),
+  };
+}
+
+function renderTurnOutcome(view, outcome, error, { stopped = false, answerCutOff = false } = {}) {
   if (!view) return;
-  outcome = visibleOutcome(outcome);
+  const notice = visibleOutcome(outcome);
+  outcome = stopped || notice?.kind === 'interrupted' ? stoppedOutcome(outcome, notice, answerCutOff) : notice;
   view.outcome.hidden = !outcome;
   if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
@@ -3533,6 +3652,15 @@ function renderPublication(runId, publication) {
   view.artifactList.hidden = false;
 }
 
+// Declining (or withdrawing) an approval stops the action before it runs, so
+// it neither failed nor can have left effects behind. Returns the row text.
+function declinedBeforeRunning(event, record) {
+  if (event?.errorCode !== 'USER_CANCELLED') return '';
+  const approval = event.approval || record?.row?.dataset.approval;
+  return approval === 'declined' ? 'Not run; you declined it'
+    : approval === 'withdrawn' ? 'Not run; approval withdrawn' : '';
+}
+
 function renderToolPage(record, event, finished = false) {
   record.pageIcon = null;
   record.label.classList.remove('agent-tool-page');
@@ -3564,7 +3692,7 @@ function renderToolPage(record, event, finished = false) {
   if (finished && event.status === 'failed') {
     const error = document.createElement('span');
     error.className = 'agent-tool-page-error';
-    error.textContent = formatToolError(event.errorCode, event.operation);
+    error.textContent = declinedBeforeRunning(event, record) || formatToolError(event.errorCode, event.operation);
     copy.appendChild(error);
   }
   record.label.classList.add('agent-tool-page');
@@ -3606,7 +3734,7 @@ function addToolRow(event) {
   view.activity.hidden = false;
   view.activity.dataset.state = 'working';
   view.actionCount += 1;
-  closeAssistantSegment(view);
+  closeAssistantSegment(view, { byTool: true });
   let helperList = null;
   if (event.operation === 'delegate_task') {
     helperList = document.createElement('div');
@@ -3674,14 +3802,20 @@ function finishToolRow(event) {
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
-  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || event.status === 'cancelled';
+  const approvalDeclined = declinedBeforeRunning(event, record);
+  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || Boolean(approvalDeclined) ||
+    event.status === 'cancelled';
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
-  if (event.status === 'failed' && event.operation !== 'delegate_task') {
+  if (approvalDeclined) {
+    // The row says what happened; the tooltip says why it matters.
+    record.row.title = 'This action never reached the page, so nothing it would have changed took effect.';
+    record.label.textContent = `${record.label.textContent} — ${approvalDeclined}`;
+  } else if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
@@ -3773,7 +3907,9 @@ function finishToolRow(event) {
         const actions = document.createElement('ul');
         for (const action of (receipt.browserActions || []).slice(0, 48)) {
           const item = document.createElement('li');
-          item.textContent = `${action.status === 'succeeded' ? '✓' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}`;
+          // A declined or withdrawn action did not run; it did not fail either.
+          const notRun = action.status === 'failed' ? declinedBeforeRunning(action) : '';
+          item.textContent = `${action.status === 'succeeded' ? '✓' : notRun ? '•' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}${notRun ? ` — ${notRun}` : ''}`;
           actions.appendChild(item);
         }
         details.appendChild(actions);
@@ -3805,7 +3941,8 @@ function finishToolRow(event) {
     }
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
-  if (userCancelled) {
+  // A declined approval keeps its own Declined/Withdrawn badge.
+  if (userCancelled && !approvalDeclined) {
     record.approval.textContent = 'Cancelled by you';
     record.approval.hidden = false;
   }
@@ -3910,7 +4047,13 @@ function finishTurnView(runId, event = {}) {
   } else {
     view.activity.hidden = true;
   }
-  renderTurnOutcome(view, event.outcome, event.error);
+  const stopped = event.status === 'cancelled';
+  // Text still streaming when the run stopped was cut off mid-answer. Guidance
+  // sent mid-stream closes the bubble too, but the answer wasn't finished.
+  const lastSegment = view.outputSegments.at(-1);
+  const answerCutOff = stopped && !view.assistantSegmentEndedByTool && Boolean(lastSegment?.text);
+  setCutOffMark(lastSegment?.output, answerCutOff);
+  renderTurnOutcome(view, event.outcome, event.error, { stopped, answerCutOff });
   if (event.status === 'completed') {
     for (const segment of view.outputSegments) {
       if (!segment.output.classList.contains('rendered-markdown')) renderAgentMarkdown(segment.output, segment.text);
@@ -3929,7 +4072,6 @@ function applyReadyConversationState(state) {
   }
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
     ? state.rendererTabId
     : null;
@@ -4103,7 +4245,6 @@ function applyConversationCleared() {
   conversationResources = [];
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
@@ -4391,7 +4532,9 @@ function applyAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     for (const card of turnView(event.runId)?.helperCards.values() || []) { card.stop.hidden = true; card.stop.disabled = true; }
     const status = event.status || 'finished';
-    const wasStopped = status === 'cancelled' && (stopRequestedRunId === event.runId || !aiEnabled);
+    // The service only reports 'cancelled' for a stop (the user's, AI turned
+    // off, a claimed tab, revoked access), so the pill and the turn agree.
+    const wasStopped = status === 'cancelled';
     clearApproval();
     setRunState(
       'idle',
@@ -4404,7 +4547,9 @@ function applyAgentEvent(event) {
             : status
     );
     if (wasStopped) {
-      setMessage(elements.runMessage, 'Agent stopped.');
+      // The turn itself carries the stop notice after its partial answer; the
+      // status line above the transcript is only a fallback when there's no turn.
+      setMessage(elements.runMessage, turnView(event.runId) ? '' : 'Agent stopped.');
     } else if (event.error?.message && event.error.code !== 'PROVIDER_ERROR') {
       setMessage(elements.runMessage, event.error.message, true);
     } else {
@@ -4413,7 +4558,6 @@ function applyAgentEvent(event) {
     finishTurnView(event.runId, event);
     lastFinishedRunId = event.runId;
     currentRunId = null;
-    stopRequestedRunId = null;
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
     void refreshSessionHistory();
@@ -4617,8 +4761,7 @@ async function chooseAnotherModel(view) {
   // Show every model: an earlier search could hide the alternatives.
   elements.modelMenuSearch.value = '';
   renderModelMenu();
-  elements.modelMenu.hidden = false;
-  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  openModelMenu();
   elements.modelMenuSearch.focus();
 }
 
@@ -4692,7 +4835,6 @@ async function stopRun() {
     setApprovalControlsDisabled(true);
     setMessage(elements.approvalMessage, 'Stopping…');
   }
-  stopRequestedRunId = currentRunId;
   setTakeoverDialogOpen(false);
   setRunState('stopping', 'Stopping');
   setMessage(elements.runMessage, 'Stopping Agent…');
@@ -4700,7 +4842,6 @@ async function stopRun() {
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
-      stopRequestedRunId = null;
       setRunState(previousStatus, 'Running');
       if (pendingApproval === approvalAtStop) {
         setApprovalControlsDisabled(false);
@@ -4710,7 +4851,6 @@ async function stopRun() {
       setLiveStatus(currentRunId, 'Continuing…');
     }
   } catch {
-    stopRequestedRunId = null;
     setRunState(previousStatus, 'Running');
     if (pendingApproval === approvalAtStop) {
       setApprovalControlsDisabled(false);
@@ -4813,7 +4953,6 @@ export function initAgentUi(options = {}) {
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
     sessionSidebar: byId('agent-session-sidebar'),
     modeToggle: byId('agent-mode-toggle'),
-    browserModeToggle: byId('agent-browser-mode-toggle'),
     modeMenu: byId('agent-mode-menu'),
     modeAgent: byId('agent-mode-agent'),
     modeBrowser: byId('agent-mode-browser'),
@@ -4983,6 +5122,7 @@ export function initAgentUi(options = {}) {
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   openLinkInNewTab =
     typeof options.openLinkInNewTab === 'function' ? options.openLinkInNewTab : () => {};
+  openStartPage = typeof options.openStartPage === 'function' ? options.openStartPage : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   setAgentTabCustody =
@@ -5053,16 +5193,14 @@ export function initAgentUi(options = {}) {
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
-  for (const toggle of [elements.modeToggle, elements.browserModeToggle]) {
-    toggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
-    toggle.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        setModeMenuOpen(true);
-        (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
-      }
-    });
-  }
+  elements.modeToggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
+  elements.modeToggle.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setModeMenuOpen(true);
+      (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
+    }
+  });
   elements.modeAgent.addEventListener('click', () => {
     if (agentFirstMode) setModeMenuOpen(false, true);
     else setAgentFirstMode(true);
@@ -5071,7 +5209,7 @@ export function initAgentUi(options = {}) {
     if (!agentFirstMode) setModeMenuOpen(false, true);
     else {
       setAgentFirstMode(false);
-      elements.browserModeToggle.focus();
+      elements.agentFirstToggle.focus();
     }
   });
   elements.modeMenu.addEventListener('keydown', (event) => {
@@ -5204,8 +5342,7 @@ export function initAgentUi(options = {}) {
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();
-    elements.modelMenu.hidden = !opening;
-    elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
+    if (opening) openModelMenu();
   });
   elements.approvalModeButton.addEventListener('click', () => {
     const opening = elements.approvalModePopover.hidden;
@@ -5227,7 +5364,7 @@ export function initAgentUi(options = {}) {
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
-    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
+    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target)) setModeMenuOpen(false);
     if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target) && !sessionContextMenu.more.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
@@ -5264,6 +5401,7 @@ export function initAgentUi(options = {}) {
     syncCompactAgentLayout();
     closeSessionContextMenu();
     setModeMenuOpen(false);
+    positionModelMenu();
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
@@ -5330,7 +5468,10 @@ export function initAgentUi(options = {}) {
     summonPanel();
   });
   window.electronAPI?.onToggleAgent?.(() => summonPanel());
-  window.electronAPI?.onShowAgent?.(() => openPanel());
+  window.electronAPI?.onShowAgent?.((request) => {
+    if (request?.freshPage === true) showStartPage();
+    openPanel();
+  });
   window.electronAPI?.onAiSettingsChanged?.(applyAiSettings);
   window.electronAPI?.onAgentProviderChanged?.(() => {
     if (!aiEnabled) return;

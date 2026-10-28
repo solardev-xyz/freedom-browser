@@ -62,13 +62,33 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await providerPage.locator('#agent-custom-name').fill('Fixture gateway');
     await providerPage.locator('#agent-custom-url').fill(baseUrl);
     await expect(providerPage.locator('#agent-custom-transport')).toContainText('without transport encryption');
+    // #857: the storage note is help text that stays visible, the
+    // placeholder is a prose hint in the page font, and typed keys stay mono.
+    await expect(providerPage.locator('#agent-api-key')).toHaveAttribute('placeholder', 'Optional, leave empty if not required');
+    await expect(providerPage.locator('#agent-api-key-help')).toHaveText('Stored encrypted on this device.');
+    expect(await providerPage.locator('#agent-api-key').evaluate(el => [
+      getComputedStyle(el).fontFamily, getComputedStyle(el, '::placeholder').fontFamily,
+    ])).toEqual([expect.stringMatching(/monospace/), expect.stringMatching(/IBM Plex Sans/)]);
     await providerPage.locator('#agent-api-key').fill('fixture-only-key');
+    await expect(providerPage.locator('#agent-api-key-help')).toBeVisible();
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
       await providerPage.locator('#providers').screenshot({ path: testInfo.outputPath(`custom-provider-connect-${theme}.png`) });
     }
+    // Connecting the first model opens Agent on a start page and leaves this
+    // Settings tab in the background (#864), but only once the page has seen
+    // its own "no model" status: the next-step row shows only then. Wait for
+    // it, so the switch happens on every runner and not just on a slow one,
+    // then bring Settings back. A background guest gets no animation frames
+    // on macOS, so an element screenshot of it waits for "stable" forever.
+    await expect.poll(() => providerPage.locator('#ai-next-step').evaluate(el => !el.hidden)).toBe(true);
     await providerPage.locator('#agent-provider-save').click();
     await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 20000 });
+    const activeUrl = () => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '');
+    await expect.poll(activeUrl).toContain('/pages/home.html');
+    await expect(window.locator('#agent-toggle-btn')).toHaveAttribute('aria-expanded', 'true');
+    await window.locator('.tab', { hasText: 'Settings' }).click();
+    await expect.poll(activeUrl).toContain('/pages/settings.html');
     await expect(providerPage.locator('#agent-provider-models-list')).toContainText('fast');
     // The Settings tab receives its own change broadcast before the reply.
     await providerPage.getByRole('button', { name: 'Favorite smart', exact: true }).click();
