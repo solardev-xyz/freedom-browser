@@ -3865,6 +3865,24 @@ describe('Agent UI', () => {
     expect(expand.getAttribute('aria-pressed')).toBe('false');
   });
 
+  test('the reduce button says what the expand toggle says in full view, and promises no shortcut (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+    const tag = html.match(/<button\s[^>]*id="agent-first-reduce"[^>]*>/)[0];
+    const attr = (name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))[1];
+    // One wording for both the mouse and the screen reader, matching the
+    // toggle's own full-view label. Esc is not named: a focused workspace
+    // page owns the keyboard and the shell's Escape handler never sees it.
+    expect(attr('aria-label')).toBe(expand.getAttribute('aria-label'));
+    expect(attr('title')).toBe(expand.title);
+    expect(attr('title')).not.toMatch(/esc/i);
+  });
+
   test('delegates workspace address editing policy to shared browser navigation', async () => {
     const ctx = await loadAgentUi();
 

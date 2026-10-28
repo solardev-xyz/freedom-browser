@@ -401,8 +401,8 @@ test('the full view title bar has a reduce button back to the panel on the same 
   await openConversation(electronApp, window);
   const reduce = window.locator('#agent-first-reduce');
   const workspaceToggle = window.locator('#agent-workspace-sidebar-toggle');
-  await expect(reduce).toHaveAttribute('aria-label', 'Return to the Agent panel');
-  await expect(reduce).toHaveAttribute('title', 'Exit full view (Esc)');
+  await expect(reduce).toHaveAttribute('aria-label', 'Return to browser view');
+  await expect(reduce).toHaveAttribute('title', 'Return to browser view');
   // Wide and compact layouts, with the Workspace open and closed: the button
   // sits right of the workspace toggle, both reachable, in both themes.
   for (const width of [1440, 900]) {
