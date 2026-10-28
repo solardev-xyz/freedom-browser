@@ -932,7 +932,11 @@
     box-shadow: none;
   }
 
+  /* The header is part of the sheet's surface, but paints it itself
+     (inherited from the sheet, so it follows the collapse fade) rather than
+     going transparent: nothing of the page may read through it (#803). */
   .agent-floating[data-presentation='column'] .agent-sidebar-header {
+    background-color: inherit;
     margin: 0;
     padding: 8px 8px 8px 14px;
     border-bottom: 1px solid var(--agent-glass-border);
