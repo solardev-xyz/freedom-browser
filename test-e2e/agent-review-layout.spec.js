@@ -45,6 +45,22 @@ async function resize(electronApp, width, height = 800) {
   })).toBe(true);
 }
 
+// Painted colour of one window pixel (CSS px), read back from the compositor:
+// a gradient's stops aren't visible through getComputedStyle.
+async function pixel(electronApp, x, y) {
+  return electronApp.evaluate(async ({ BrowserWindow }, point) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const image = await win.webContents.capturePage();
+    const scale = image.getSize().width / win.getContentSize()[0];
+    const at = (Math.round(point.y * scale) * image.getSize().width + Math.round(point.x * scale)) * 4;
+    const [b, g, r] = image.toBitmap().subarray(at, at + 3);
+    return [r, g, b];
+  }, { x: Math.round(x), y: Math.round(y) });
+}
+
+// Gradient stops rasterise a unit or two off a flat fill of the same colour.
+const samePaint = (a, b) => a.every((channel, i) => Math.abs(channel - b[i]) <= 2);
+
 async function hit(window, selector) {
   return window.locator(selector).evaluate(element => {
     const r = element.getBoundingClientRect();
@@ -136,10 +152,31 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
     await window.locator('#agent-session-sidebar-toggle').click();
     await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+    // The title bar above an open overlay takes the overlay's colour across
+    // its whole width, not just the toggle's slot, then the conversation's
+    // past its edge (#879). Sample a row near the bar's top edge, above the
+    // chat title: on macOS the traffic-light slot pushes the title right
+    // across the overlay's edge, so mid-height would read glyphs, not paint.
+    const bar = await window.locator('#agent-first-titlebar').evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return { y: r.top + 3, right: r.right };
+    });
+    const sessions = window.locator('[data-test="agent-session-sidebar"]');
+    await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+    await expect(sessions).toHaveCSS('opacity', '1');
+    const sessionsEdge = await sessions.evaluate(el => el.getBoundingClientRect().right);
+    const sessionsSlot = await pixel(electronApp, 4, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, sessionsEdge - 20, bar.y), sessionsSlot)).toBe(true);
+    expect(samePaint(await pixel(electronApp, sessionsEdge + 20, bar.y), sessionsSlot)).toBe(false);
     await window.locator('#agent-workspace-sidebar-toggle').click();
     await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
     await expect(window.locator('#agent-page-surface')).toHaveCSS('transform', 'none');
+    const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
+    const workspaceSlot = await pixel(electronApp, bar.right - 2, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, workspaceEdge + 20, bar.y), workspaceSlot)).toBe(true);
+    // Dark paints the conversation and the Workspace with the same --bg.
+    if (theme === 'light') expect(samePaint(await pixel(electronApp, workspaceEdge - 20, bar.y), workspaceSlot)).toBe(false);
     await expect(window.locator('#agent-task-pages')).toBeVisible();
     await expect.poll(() => hit(window, '#address-input')).toBe(true);
     await expect.poll(() => window.evaluate(() => {
@@ -164,6 +201,70 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
   await window.locator('#agent-mode-toggle').click();
   await window.locator('#agent-mode-browser').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+});
+
+test('Agent-first columns paint like Settings: page background, sidebar tint, accent selection (#879)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1280);
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();
+  // The fixture run is never saved, so give the list a selected row and a
+  // neighbour the way renderSessionSidebar() builds them.
+  await window.evaluate(() => {
+    const list = document.querySelector('.agent-session-list');
+    for (const active of [true, false]) {
+      const row = document.createElement('div');
+      row.className = active ? 'agent-session-row active' : 'agent-session-row';
+      row.dataset.test = active ? 'fixture-active-session' : 'fixture-session';
+      const select = document.createElement('button');
+      select.className = 'agent-session-select';
+      select.append(Object.assign(document.createElement('span'), { textContent: 'Fixture session' }));
+      row.append(select);
+      list.append(row);
+    }
+  });
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    const paint = await window.evaluate(() => {
+      const bg = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+      const probe = document.createElement('div');
+      document.body.append(probe);
+      const resolve = value => { probe.style.color = value; return getComputedStyle(probe).color; };
+      const tokens = {
+        bg: resolve('var(--bg)'),
+        toolbar: resolve('var(--toolbar)'),
+        accent: resolve('var(--accent)'),
+      };
+      probe.remove();
+      return {
+        ...tokens,
+        conversation: bg('#agent-sidebar'),
+        scroll: bg('.agent-workspace-scroll'),
+        composer: bg('.agent-composer-wrap'),
+        title: bg('.agent-first-titlebar-center'),
+        sessions: bg('[data-test="agent-session-sidebar"]'),
+        sessionsTitle: getComputedStyle(document.querySelector('.agent-first-titlebar-left'), '::before').backgroundColor,
+        active: bg('[data-test="fixture-active-session"]'),
+        idle: bg('[data-test="fixture-session"]'),
+        activeText: getComputedStyle(document.querySelector('[data-test="fixture-active-session"] .agent-session-select')).color,
+        idleText: getComputedStyle(document.querySelector('[data-test="fixture-session"] .agent-session-select')).color,
+      };
+    });
+    // Light: the conversation is the page's white, not the chrome's grey.
+    expect(paint.conversation).toBe(theme === 'light' ? paint.toolbar : paint.bg);
+    if (theme === 'light') expect(paint.conversation).toBe('rgb(255, 255, 255)');
+    for (const part of [paint.scroll, paint.composer, paint.title]) expect(part).toBe(paint.conversation);
+    // The sessions column is its own tint, and runs up into the title bar.
+    expect(paint.sessions).not.toBe(paint.conversation);
+    expect(paint.sessionsTitle).toBe(paint.sessions);
+    // The selected session carries an accent tint and accent-coloured title.
+    expect(paint.idle).toBe('rgba(0, 0, 0, 0)');
+    expect(paint.active).toMatch(/^color\(srgb|^rgba\(/);
+    expect(paint.active).not.toBe(paint.idle);
+    expect(paint.activeText).not.toBe(paint.idleText);
+    if (theme === 'dark') expect(paint.activeText).toBe(paint.accent);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`agent-first-columns-${theme}.png`) });
+  }
 });
 
 test('narrow chrome keeps the address field and native controls within the window', async ({ electronApp, window }) => {

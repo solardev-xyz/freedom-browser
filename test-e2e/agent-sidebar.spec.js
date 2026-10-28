@@ -1362,14 +1362,23 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
       getComputedStyle(document.querySelector(selector)).backgroundColor;
     return {
       titlebar: background('.title-bar'),
+      sessionsTitlebar: getComputedStyle(
+        document.querySelector('.agent-first-titlebar-left'), '::before'
+      ).backgroundColor,
+      conversationTitlebar: background('.agent-first-titlebar-center'),
+      workspaceTitlebar: background('.agent-first-titlebar-right'),
       sessions: background('#agent-session-sidebar'),
       conversation: background('#agent-sidebar'),
       workspace: background('#agent-task-pages'),
       composer: background('.agent-composer-wrap'),
     };
   });
-  expect(unifiedChrome.sessions).not.toBe(unifiedChrome.titlebar);
-  expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
+  // Each column runs up through the title-bar slot above it (#879): in the
+  // light theme the conversation is white while the chrome stays grey.
+  expect(unifiedChrome.sessions).not.toBe(unifiedChrome.conversation);
+  expect(unifiedChrome.sessionsTitlebar).toBe(unifiedChrome.sessions);
+  expect(unifiedChrome.conversationTitlebar).toBe(unifiedChrome.conversation);
+  expect(unifiedChrome.workspaceTitlebar).toBe(unifiedChrome.workspace);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
   // The composer strip hides messages scrolling underneath its bottom gutter.
   expect(unifiedChrome.composer).toBe(unifiedChrome.conversation);
@@ -1574,14 +1583,16 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     sidebarDisplay: getComputedStyle(document.querySelector('#agent-session-sidebar')).display,
     headerBackground: getComputedStyle(document.querySelector('.agent-first-titlebar-left'))
       .backgroundColor,
-    titlebarBackground: getComputedStyle(document.querySelector('.title-bar')).backgroundColor,
+    // With the sessions column closed, its slot sits over the conversation.
+    conversationBackground: getComputedStyle(document.querySelector('#agent-sidebar'))
+      .backgroundColor,
     slidingSurfaceTransform: getComputedStyle(
       document.querySelector('.agent-first-titlebar-left'),
       '::before'
     ).transform,
   }));
   expect(closedSessionChrome.sidebarDisplay).toBe('flex');
-  expect(closedSessionChrome.headerBackground).toBe(closedSessionChrome.titlebarBackground);
+  expect(closedSessionChrome.headerBackground).toBe(closedSessionChrome.conversationBackground);
   expect(closedSessionChrome.slidingSurfaceTransform).not.toBe('none');
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-workspace-sidebar-closed/);
