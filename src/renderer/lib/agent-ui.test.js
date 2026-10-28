@@ -1122,6 +1122,8 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.elements['agent-prompt'].value).toBe('Build a small browser game');
     expect(ctx.elements['agent-examples'].children[0].disabled).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
@@ -2354,11 +2356,16 @@ describe('Agent UI', () => {
       runId: 'run_test',
       status: 'completed',
     });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(false);
 
     ctx.elements['agent-new-chat'].dispatch('click');
     await flush();
 
     expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    // A fresh task names no run state (#876): no "Idle" badge.
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
     expect(ctx.elements['agent-transcript'].children).toHaveLength(0);
     expect(ctx.elements['agent-transcript'].hidden).toBe(true);
     expect(ctx.elements['agent-empty-state'].hidden).toBe(false);
@@ -3354,12 +3361,17 @@ describe('Agent UI', () => {
     });
 
     let row = ctx.elements['agent-session-list'].children[0];
-    expect(row.children).toHaveLength(2);
+    expect(row.children.map(child => child.className)).toEqual([
+      'agent-session-select', 'agent-session-more', 'agent-session-actions',
+    ]);
     expect(row.children[0].children).toHaveLength(1);
     row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    expect(row.children[1].hidden).toBe(false);
-    row.children[1].children[0].dispatch('click');
-    const renameInput = row.children.at(-1);
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[0].dispatch('click');
+    // The inline field takes the title's place; the ⋯ trigger steps aside.
+    const renameInput = row.children[1];
+    expect(renameInput.getAttribute('aria-label')).toBe('Session title');
+    expect(row.querySelector('.agent-session-more').hidden).toBe(true);
     renameInput.value = 'Renamed title';
     renameInput.dispatch('keydown', { key: 'Enter', preventDefault: jest.fn(), stopPropagation: jest.fn() });
     await flush();
@@ -3369,8 +3381,11 @@ describe('Agent UI', () => {
     );
 
     row = ctx.elements['agent-session-list'].children[0];
-    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    row.children[1].children[1].dispatch('click');
+    expect(row.querySelector('.agent-session-more').hidden).toBeFalsy();
+    // The visible ⋯ trigger opens the same menu right-click does.
+    row.children[1].dispatch('click', { preventDefault: jest.fn() });
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[1].dispatch('click');
     await flush();
     expect(global.window.confirm).toHaveBeenCalledWith(
       'Delete “Original title”? This cannot be undone.'
@@ -3389,29 +3404,72 @@ describe('Agent UI', () => {
     });
     const [first, second] = ctx.elements['agent-session-list'].children;
     const select = first.children[0];
-    const menu = first.children[1];
+    const more = first.children[1];
+    const menu = first.children[2];
     jest.spyOn(select, 'focus');
+    jest.spyOn(more, 'focus');
     jest.spyOn(menu.children[0], 'focus');
     jest.spyOn(menu.children[1], 'focus');
     const keyboard = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
     select.dispatch('keydown', keyboard);
     expect(keyboard.preventDefault).toHaveBeenCalled();
     expect(menu.hidden).toBe(false);
-    expect(select.getAttribute('aria-expanded')).toBe('true');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
     expect(menu.children[0].focus).toHaveBeenCalled();
     menu.dispatch('keydown', { key: 'End', preventDefault: jest.fn() });
     expect(menu.children[1].focus).toHaveBeenCalled();
     ctx.document.handlers.keydown( { key: 'Escape', preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
     expect(select.focus).toHaveBeenCalled();
-    expect(select.getAttribute('aria-expanded')).toBe('false');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    // Opened from ⋯: its own click (bubbling to document) must not close it,
+    // a second click toggles it shut, and focus returns to ⋯, not the title.
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalled();
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(2);
+
+    // Shift+F10 / the ContextMenu key with ⋯ focused: off macOS it reaches
+    // the row as a coordinate-less contextmenu targeting ⋯; on macOS Chromium
+    // fires no contextmenu, so ⋯'s own keydown has to open it. Either way ⋯ is
+    // the opener: the menu anchors under it and Escape hands focus back to it.
+    select.setRect({ left: 10, bottom: 40 });
+    more.setRect({ left: 200, bottom: 44 });
+    global.window.innerHeight = 800;
+    select.focus.mockClear();
+    const moreKey = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    more.dispatch('keydown', moreKey);
+    expect(moreKey.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    more.focus.mockClear();
+    first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(1);
+    expect(select.focus).not.toHaveBeenCalled();
 
     select.dispatch('keydown', keyboard);
     second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
-    expect(second.children[1].hidden).toBe(false);
+    expect(second.children[2].hidden).toBe(false);
     ctx.document.handlers.click( { target: ctx.document.body });
-    expect(second.children[1].hidden).toBe(true);
+    expect(second.children[2].hidden).toBe(true);
     select.dispatch('keydown', keyboard);
     ctx.document.handlers.scroll();
     expect(menu.hidden).toBe(true);

@@ -786,12 +786,12 @@ function setModeMenuOpen(open, restoreFocus = false) {
 
 function closeSessionContextMenu(restoreFocus = false) {
   if (!sessionContextMenu) return;
-  const { actions, select } = sessionContextMenu;
+  const { actions, more, returnFocus } = sessionContextMenu;
   actions.hidePopover?.();
   actions.hidden = true;
-  select.setAttribute('aria-expanded', 'false');
+  more.setAttribute('aria-expanded', 'false');
   sessionContextMenu = null;
-  if (restoreFocus) select.focus();
+  if (restoreFocus) returnFocus.focus();
 }
 
 function renderSessionSidebar() {
@@ -811,10 +811,21 @@ function renderSessionSidebar() {
     const title = document.createElement('span');
     title.textContent = session.title || 'Untitled session';
     select.title = session.title || 'Untitled session';
-    select.setAttribute('aria-haspopup', 'menu');
-    select.setAttribute('aria-expanded', 'false');
     select.appendChild(title);
     select.addEventListener('click', () => openSavedSession(session.conversationId));
+
+    // Visible trigger for the same menu right-click opens: shown on row
+    // hover/focus (agent.css), so Rename/Delete are discoverable without
+    // knowing about the context menu.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'agent-session-more';
+    more.disabled = currentRunStatus !== 'idle';
+    more.textContent = '⋯';
+    more.title = 'Session options';
+    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
 
     const actions = document.createElement('div');
     actions.className = 'agent-session-actions';
@@ -841,16 +852,16 @@ function renderSessionSidebar() {
     });
     actions.appendChild(rename);
     actions.appendChild(remove);
-    const openMenu = (event, keyboard = false) => {
+    const openMenu = (event, keyboard = false, trigger = select) => {
       event.preventDefault();
       closeSessionContextMenu();
       setModeMenuOpen(false);
       if (currentRunStatus !== 'idle') return;
       actions.hidden = false;
       actions.showPopover?.();
-      select.setAttribute('aria-expanded', 'true');
-      sessionContextMenu = { actions, select, row };
-      const anchor = select.getBoundingClientRect();
+      more.setAttribute('aria-expanded', 'true');
+      sessionContextMenu = { actions, more, row, returnFocus: trigger };
+      const anchor = trigger.getBoundingClientRect();
       const bounds = actions.getBoundingClientRect();
       const x = keyboard ? anchor.left : event.clientX;
       const y = keyboard ? anchor.bottom : event.clientY;
@@ -858,12 +869,31 @@ function renderSessionSidebar() {
       actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
       rename.focus();
     };
-    row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
-    select.addEventListener('keydown', (event) => {
-      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-        openMenu(event, true);
+    // A right-click (or, off macOS, a context-menu key event) can land on ⋯
+    // itself: then it is the opener, so the menu anchors under it and focus
+    // returns to it.
+    row.addEventListener('contextmenu', (event) =>
+      openMenu(event, !event.clientX && !event.clientY, more.contains(event.target) ? more : select)
+    );
+    more.addEventListener('click', (event) => {
+      if (sessionContextMenu?.actions === actions) {
+        event.preventDefault();
+        closeSessionContextMenu(true);
+        return;
       }
+      openMenu(event, true, more);
     });
+    // Shift+F10 / the ContextMenu key: handled as a key, not only through the
+    // row's contextmenu listener, because Chromium on macOS never turns them
+    // into a contextmenu event. preventDefault() here stops the platforms
+    // that do from opening the menu a second time.
+    for (const trigger of [select, more]) {
+      trigger.addEventListener('keydown', (event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          openMenu(event, true, trigger);
+        }
+      });
+    }
     actions.addEventListener('keydown', (event) => {
       if (event.key === 'Tab') {
         closeSessionContextMenu(true);
@@ -876,6 +906,7 @@ function renderSessionSidebar() {
     });
 
     row.appendChild(select);
+    row.appendChild(more);
     row.appendChild(actions);
     return row;
   });
@@ -1799,7 +1830,10 @@ function setRunState(status, label) {
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
+  // A fresh task has nothing to report: an "Idle" pill told the user nothing
+  // (#876), so the badge only appears once there is a real state to name.
   elements.runStatus.textContent = label;
+  elements.runStatus.hidden = !label;
   elements.runStatus.classList.toggle('active', active);
   updateSendAvailability();
   renderPageInterlock();
@@ -3999,13 +4033,17 @@ async function renameSavedSession(session, row, select) {
   input.setAttribute('aria-label', 'Session title');
   input.maxLength = 120;
   input.value = session.title || '';
+  const more = row.querySelector('.agent-session-more');
   select.hidden = true;
-  row.appendChild(input);
+  if (more) more.hidden = true;
+  select.after(input);
   const title = await new Promise(resolve => {
     let settled = false;
     const finish = value => {
       if (settled) return;
-      settled = true; input.remove(); select.hidden = false; resolve(value);
+      settled = true; input.remove(); select.hidden = false;
+      if (more) more.hidden = false;
+      resolve(value);
     };
     input.addEventListener('keydown', event => {
       if (!['Enter', 'Escape'].includes(event.key)) return;
@@ -4072,7 +4110,7 @@ function applyConversationCleared() {
   renderWorkspaceProcesses([]);
   renderTaskPages();
   resetConversationUi();
-  setRunState('idle', 'Idle');
+  setRunState('idle', '');
   renderSessionSidebar();
   void refreshSessionHistory();
   void refreshWorkspaceProjection();
@@ -4427,7 +4465,7 @@ async function startRun(options = {}) {
       }
       if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
       pendingPromptText = '';
-      setRunState('idle', 'Idle');
+      setRunState('idle', '');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       focusComposer({ preserveExplicitFocus: true });
       return false;
@@ -4457,7 +4495,7 @@ async function startRun(options = {}) {
     }
     if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
     pendingPromptText = '';
-    setRunState('idle', 'Idle');
+    setRunState('idle', '');
     setMessage(elements.runMessage, 'Could not start the agent', true);
     focusComposer({ preserveExplicitFocus: true });
     return false;
@@ -4738,7 +4776,8 @@ async function restoreRunState() {
       setRunState('idle', 'Ready');
     }
   } catch {
-    // Idle is the safe renderer default when lifecycle state cannot be restored.
+    // The untouched idle state (status badge hidden, no label) is the safe
+    // renderer default when lifecycle state cannot be restored.
   }
 }
 
@@ -5189,7 +5228,7 @@ export function initAgentUi(options = {}) {
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
     if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
-    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
+    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target) && !sessionContextMenu.more.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
       if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;

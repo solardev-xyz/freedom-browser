@@ -1738,7 +1738,7 @@
           </div>
 
           <div id="agent-setup-view" class="agent-view agent-setup-view" hidden>
-            <div class="agent-setup-intro"><p>Agent works with the AI model you choose: a ChatGPT or Claude subscription, an API key, or a model running on this computer.</p></div>
+            <div class="agent-setup-intro"><p>Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.</p></div>
             <button id="agent-open-ai-settings" class="agent-button primary" type="button">Connect a model</button>
             <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
           </div>
@@ -1765,7 +1765,7 @@
             <div id="agent-workspace-body" class="agent-workspace-body">
               <div class="agent-workspace-scroll">
                 <div class="agent-run-header">
-                  <span id="agent-run-status" class="agent-badge">Idle</span>
+                  <span id="agent-run-status" class="agent-badge" hidden></span>
                   <div class="agent-lifecycle-actions">
                     <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
                       New chat
