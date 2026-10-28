@@ -1147,7 +1147,7 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await window.locator('#agent-approval-mode-button').click();
   await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
   await expect(window.locator('#agent-approval-mode-every')).toContainText(
-    'Ask frequently'
+    'Ask every time'
   );
   await expect(window.locator('#agent-approval-mode-sensitive')).toBeEnabled();
   await expect(window.locator('#agent-approval-mode-sensitive')).toContainText(

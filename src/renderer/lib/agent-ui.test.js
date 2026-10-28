@@ -1808,6 +1808,13 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
     expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
 
+    ctx.elements['agent-approval-mode-every'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask every time');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('true');
+
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
+
     ctx.elements['agent-prompt'].value = 'Compare these sources';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
