@@ -323,8 +323,7 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   height: 16px;
 }
 
-.agent-session-sidebar-header .agent-mode-toggle,
-.agent-sidebar-header .agent-mode-toggle {
+.agent-session-sidebar-header .agent-mode-toggle {
   display: flex;
   align-items: center;
   background: transparent;
