@@ -111,10 +111,12 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
     // The title bar above an open overlay takes the overlay's colour across
     // its whole width, not just the toggle's slot, then the conversation's
-    // past its edge (#879).
+    // past its edge (#879). Sample a row near the bar's top edge, above the
+    // chat title: on macOS the traffic-light slot pushes the title right
+    // across the overlay's edge, so mid-height would read glyphs, not paint.
     const bar = await window.locator('#agent-first-titlebar').evaluate(el => {
       const r = el.getBoundingClientRect();
-      return { y: r.top + r.height / 2, right: r.right };
+      return { y: r.top + 3, right: r.right };
     });
     const sessions = window.locator('[data-test="agent-session-sidebar"]');
     await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
