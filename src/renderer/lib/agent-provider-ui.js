@@ -59,6 +59,7 @@ export function createAgentProviderUi(options = {}) {
     providerModelsHeading: byId('agent-provider-models-heading'),
     providerModelsList: byId('agent-provider-models-list'),
     providerModelsEmpty: byId('agent-provider-models-empty'),
+    providerModelsPrivacyHint: byId('agent-provider-models-privacy-hint'),
     keySettings: byId('agent-provider-key-settings'),
     subscriptionNote: byId('agent-subscription-note'),
     connectedProviders: byId('agent-connected-providers'),
@@ -315,7 +316,8 @@ export function createAgentProviderUi(options = {}) {
     elements.provider.disabled = providerLoginPending;
     elements.model.disabled = providerLoginPending;
     elements.modelRefresh.hidden = !isOllama && !descriptor?.canRefresh;
-    elements.modelRefresh.disabled = (isOllama || isSubscription || isCustom) && !connection;
+    // Nothing to refresh until the provider is connected (#856).
+    elements.modelRefresh.disabled = !connection;
     elements.apiKey.placeholder =
       isCustom && !connection
         ? 'Optional — leave empty if not required'
@@ -406,12 +408,14 @@ export function createAgentProviderUi(options = {}) {
     elements.providerModelsHeading.textContent = available.length
       ? `Available models · ${available.length}`
       : 'Available models';
+    let hasPrivacySymbols = false;
     elements.providerModelsList.replaceChildren(
       ...available.map((model) => {
         const row = document.createElement('li');
         const name = document.createElement('span');
         name.textContent = model.name || model.id;
         const info = modelPrivacyInfo(providerId, model, connection?.baseUrl);
+        if (info.symbols.length) hasPrivacySymbols = true;
         const privacy = createModelPrivacySymbols(info);
         row.appendChild(name);
         row.appendChild(privacy);
@@ -439,6 +443,9 @@ export function createAgentProviderUi(options = {}) {
     elements.providerModelsList.scrollTop = 0;
     elements.providerModelsList.hidden = !available.length;
     elements.providerModelsEmpty.hidden = Boolean(available.length);
+    // The hover hint only explains symbols that are actually on screen (#856).
+    if (elements.providerModelsPrivacyHint)
+      elements.providerModelsPrivacyHint.hidden = !hasPrivacySymbols;
     elements.providerModelsEmpty.textContent = models.length
       ? 'No models meet the current requirements'
       : connection
@@ -834,7 +841,7 @@ export function createAgentProviderUi(options = {}) {
           true
         );
     } finally {
-      elements.modelRefresh.disabled = false;
+      elements.modelRefresh.disabled = !providerConnection(elements.provider.value);
     }
   }
 
