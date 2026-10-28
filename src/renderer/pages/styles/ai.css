@@ -208,9 +208,19 @@
 #providers .agent-provider-method {
   margin: 12px 0;
 }
+/* An unconnected method row shows the provider list's chevron (the row is the
+   button); a connected one says so in the status green the badge uses (#855),
+   and so does the provider list's ✓ one click earlier, so "connected" reads in
+   one colour on both pages. These rows only exist in settings.html, so this
+   sheet (not the chrome's agent.css) is where they are styled. */
+#providers .agent-provider-method-state:not(.active) {
+  flex-shrink: 0;
+  font-size: 18px;
+}
 #providers .agent-provider-indicator.active,
 #providers .agent-provider-method-state.active {
-  color: var(--accent);
+  flex-shrink: 0;
+  color: var(--success);
 }
 #providers .agent-card-heading,
 #providers .agent-provider-models-heading {

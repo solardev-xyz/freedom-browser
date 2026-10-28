@@ -1947,7 +1947,11 @@ describe('Agent UI', () => {
     choice.dispatch('click');
     expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
     expect(ctx.elements['agent-provider-chatgpt-state'].textContent).toBe('Connected');
-    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('Connect');
+    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('›');
+    expect(ctx.elements['agent-provider-api-state'].getAttribute('aria-hidden')).toBe('true');
+    expect(ctx.elements['agent-provider-api-state'].classList.contains('active')).toBe(false);
+    expect(ctx.elements['agent-provider-chatgpt-state'].getAttribute('aria-hidden')).toBeFalsy();
+    expect(ctx.elements['agent-provider-chatgpt-state'].classList.contains('active')).toBe(true);
     ctx.elements['agent-provider-api'].dispatch('click');
     expect(ctx.elements['agent-provider-status'].textContent).toBe('Not connected');
     expect(ctx.elements['agent-hosted-fields'].classList.contains('hidden')).toBe(true);
@@ -5698,6 +5702,8 @@ describe('Agent UI', () => {
     ctx.elements['agent-provider-select'].value = 'ollama';
     ctx.elements['agent-provider-select'].dispatch('change');
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Connect to Ollama');
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(false);
     ctx.elements['agent-provider-save'].dispatch('click');
     await flush();
     expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11434/v1');
@@ -5707,6 +5713,8 @@ describe('Agent UI', () => {
     const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
     expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(false);
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
     expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);

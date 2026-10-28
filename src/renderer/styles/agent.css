@@ -4200,16 +4200,12 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-provider-logo-dark { display: none; }
 [data-theme="dark"] .agent-provider-logo-light { display: none; }
 [data-theme="dark"] .agent-provider-logo-dark { display: block; }
-.agent-provider-indicator { flex-shrink: 0; color: var(--muted); font-size: 18px; }
-.agent-provider-indicator.active { color: var(--accent); font-size: 14px; }
 .agent-provider-method {
   margin-top: 10px;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-.agent-provider-method-state { font-size: 11px; color: var(--muted); }
-.agent-provider-method-state.active { color: var(--accent); }
 .agent-model-row { display: flex; align-items: center; gap: 3px; min-width: 0; border-radius: 7px; }
 .agent-model-row .agent-model-option { flex: 1; min-width: 0; text-align: left; }
 .agent-model-row .agent-model-option { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 8px; }

@@ -331,6 +331,10 @@ export function createAgentProviderUi(options = {}) {
       : connection
         ? 'Save connection'
         : 'Connect provider';
+    // Connecting is the page's main action (#855): filled until the provider is
+    // connected, then outlined for the follow-up "Save connection".
+    elements.saveProvider.classList.toggle('primary', !connection);
+    elements.saveProvider.classList.toggle('secondary', Boolean(connection));
     elements.modelDetails.hidden = !connection;
     elements.testProvider.hidden = !connection;
     if (!connection) closeDisconnectConfirm();
@@ -380,16 +384,24 @@ export function createAgentProviderUi(options = {}) {
     const apiConnected = Boolean(
       providerConnection(isClaude ? 'anthropic' : isMeta ? 'meta' : 'openai')
     );
-    elements.chatgptConnectionState.textContent = subscriptionConnected ? 'Connected' : 'Connect';
-    elements.apiConnectionState.textContent = apiConnected ? 'Connected' : 'Connect';
-    elements.chatgptConnectionState.classList.toggle('active', subscriptionConnected);
-    elements.apiConnectionState.classList.toggle('active', apiConnected);
+    // The whole row is the button, so an unconnected method shows the provider
+    // list's chevron rather than a "Connect" label; a connected one keeps its
+    // "Connected" status (#855).
+    renderMethodState(elements.chatgptConnectionState, subscriptionConnected);
+    renderMethodState(elements.apiConnectionState, apiConnected);
     if (choosingProviderMethod) {
       elements.providerHeading.textContent = providerPageTitle(providerId);
       elements.providerStatus.textContent =
         subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
       elements.providerStatus.classList.toggle('active', subscriptionConnected || apiConnected);
     }
+  }
+
+  function renderMethodState(element, connected) {
+    element.textContent = connected ? 'Connected' : '›';
+    element.classList.toggle('active', connected);
+    if (connected) element.removeAttribute('aria-hidden');
+    else element.setAttribute('aria-hidden', 'true');
   }
 
   function renderProviderModelPreview(providerId) {
