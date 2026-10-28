@@ -1074,9 +1074,13 @@ export function createAgentProviderUi(options = {}) {
     elements.activeModelLabel.textContent = configured
       ? modelName(selected.providerId, selected.modelId)
       : 'Choose model';
-    elements.modelMenuButton.title = configured
+    const modelTitle = configured
       ? `${providerName(selected.providerId)} · ${selected.modelId}`
       : '';
+    elements.modelMenuButton.title =
+      modelTitle && context.conversationId
+        ? `${modelTitle}. This conversation keeps its model; start a new chat to use another.`
+        : modelTitle;
     renderModelMenu();
   }
 

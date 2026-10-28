@@ -2064,6 +2064,31 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-active-model-label'].textContent).toBe('local-model');
   });
 
+  test('an idle conversation keeps its model picker locked but not dimmed; a run dims it (#872)', async () => {
+    const ctx = await loadAgentUi();
+    const button = ctx.elements['agent-model-menu-button'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', providerId: 'openai', modelId: 'gpt-4.1-mini' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBeUndefined();
+
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBe('conversation');
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini. This conversation keeps its model; start a new chat to use another.');
+
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+  });
+
   test('shows model privacy capabilities in the picker and setup before any inference', async () => {
     const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
     const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };

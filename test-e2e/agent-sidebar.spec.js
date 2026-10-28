@@ -1603,6 +1603,20 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
+  // The conversation keeps its model, but the name must not look disabled:
+  // same opacity and colour as the enabled approval chip beside it (#872).
+  const chipStyle = selector =>
+    window.locator(selector).evaluate(element => {
+      const style = getComputedStyle(element);
+      return { opacity: style.opacity, color: style.color };
+    });
+  expect(await chipStyle('#agent-model-menu-button')).toEqual(
+    await chipStyle('#agent-approval-mode-button')
+  );
+  await window.locator('#agent-model-menu-button').hover({ force: true });
+  expect(await chipStyle('#agent-model-menu-button')).toEqual(
+    await chipStyle('#agent-approval-mode-button')
+  );
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 
   await window.locator('#agent-approval-mode-button').click();

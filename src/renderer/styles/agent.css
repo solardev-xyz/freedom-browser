@@ -2341,6 +2341,18 @@ body.agent-first-mode .agent-empty-state {
   opacity: 0.5;
 }
 
+/* The model picker of an idle conversation is disabled because the
+   conversation keeps its model, not because anything is busy: show the name
+   at the normal secondary colour, and don't light it up on hover (#872). */
+.agent-composer-chip[data-model-lock='conversation']:disabled {
+  opacity: 1;
+}
+
+.agent-composer-chip[data-model-lock='conversation']:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
 .agent-send-button {
   display: flex;
   flex: 0 0 auto;
