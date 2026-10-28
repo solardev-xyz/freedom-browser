@@ -1448,12 +1448,16 @@ function registerFreedomAgentIpc(options = {}) {
     }
   });
 
-  handle(IPC.AGENT_OPEN, (event) => {
+  // `freshPage` asks the chrome to move to a start page before it shows the
+  // panel, so Agent does not open over the page that asked for it (Settings
+  // after the first model is connected, #864).
+  handle(IPC.AGENT_OPEN, (event, request) => {
     if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open Agent from the start page or Settings');
     const window = getOwnerWindow?.(event.sender);
     if (!window || window.isDestroyed?.()) return { ok: false };
-    window.webContents.send('agent:show');
+    if (request?.freshPage === true) window.webContents.send('agent:show', { freshPage: true });
+    else window.webContents.send('agent:show');
     return { ok: true };
   });
   // The start page's setup banner needs one bit: is a model connected. Not the

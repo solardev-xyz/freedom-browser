@@ -202,7 +202,11 @@ describe('webview-preload', () => {
       protocol: 'file:', pathname: `/app/pages/${file}`, href: `file:///app/pages/${file}`,
     } });
     await exposures.freedomAPI.openAgent();
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:open');
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.openAgent({ freshPage: true });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open', { freshPage: true });
+    await exposures.freedomAPI.openAgent({ freshPage: 1, other: 'x' });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
     await exposures.freedomAPI.getAgentSetupState();
     expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:setup-state');
     if (file === 'home.html') {

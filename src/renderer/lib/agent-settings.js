@@ -118,7 +118,8 @@ const updateNext = (state, { userAction = false, real = false } = {}) => {
   if (enabled && configured && status.textContent === 'Loading providers…')
     status.textContent = '';
   if (!enabled || !state || !real) return;
-  if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent();
+  // On a start page, not over this form (#864).
+  if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent({ freshPage: true });
   if (configured) sawConfigured = true;
   else sawUnconfigured = true;
 };

@@ -1663,6 +1663,13 @@ describe('profile AI opt-in', () => {
       isEnabled: () => enabled, getOwnerWindow: () => ({ webContents: { send } }) });
     expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toEqual({ ok: true });
     expect(send).toHaveBeenCalledWith('agent:show');
+    // Settings' first connect asks for a start page (#864); only a literal
+    // true is relayed.
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home }, { freshPage: true })).toEqual({ ok: true });
+    expect(send).toHaveBeenLastCalledWith('agent:show', { freshPage: true });
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home }, { freshPage: 'yes' })).toEqual({ ok: true });
+    expect(send).toHaveBeenLastCalledWith('agent:show');
+    send.mockClear();
     for (const channel of [IPC.AGENT_START, IPC.AGENT_PROVIDER_GET_CATALOG]) {
       expect(await ctx.ipcMain.handlers.get(channel)({ sender: home }, {})).toMatchObject({
         ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
@@ -1672,7 +1679,7 @@ describe('profile AI opt-in', () => {
     expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toMatchObject({
       ok: false, error: { code: 'AGENT_DISABLED' },
     });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
     expect(ctx.service.start).not.toHaveBeenCalled();
     await ctx.dispose();
   });

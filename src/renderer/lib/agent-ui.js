@@ -98,6 +98,7 @@ let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
 let switchToTab = () => {};
 let openLinkInNewTab = () => {};
+let openStartPage = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
@@ -211,15 +212,17 @@ function setMessage(element, message = '', isError = false) {
   element.classList.toggle('error', isError);
 }
 
-function isShareablePage(tab) {
-  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
-  if (
+function isStartPage(tab) {
+  return typeof tab?.url === 'string' && (
     tab.url === homeUrl ||
     tab.url === 'freedom://home' ||
     (tab.url.startsWith('file:') && tab.url.endsWith('/pages/home.html'))
-  ) {
-    return false;
-  }
+  );
+}
+
+function isShareablePage(tab) {
+  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
+  if (isStartPage(tab)) return false;
   try {
     return ['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(new URL(tab.url).protocol);
   } catch {
@@ -1414,8 +1417,6 @@ function observeComposerHeight() {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
-    const examplesHeight = elements.examples?.offsetHeight || 0;
-    setBodyStyleProperty('--agent-examples-height', `${examplesHeight ? examplesHeight + 12 : 0}px`);
     captureLauncherSnapshot();
   };
   update();
@@ -1805,6 +1806,18 @@ function openPanel() {
     renderModelMenu();
   });
   document.dispatchEvent(new CustomEvent('agent-sidebar-opened'));
+}
+
+// Settings opens Agent once the first model is connected; the floating panel
+// would otherwise cover the form the user was just filling in (#864). Move to
+// a start page first: the active one, another open one Agent isn't driving,
+// or a new one. Agent-first mode replaces the page view anyway.
+function showStartPage() {
+  if (!aiEnabled || isPrivateWindow() || isSignatureInFlight() || agentFirstMode) return;
+  if (isStartPage(getActiveTab())) return;
+  const open = getOpenTabs().find(tab => !tab.kind && isStartPage(tab) && !isTabAgentOwned(tab.id));
+  if (open) switchToTab(open.id);
+  else openStartPage();
 }
 
 function togglePanel() {
@@ -5031,6 +5044,7 @@ export function initAgentUi(options = {}) {
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   openLinkInNewTab =
     typeof options.openLinkInNewTab === 'function' ? options.openLinkInNewTab : () => {};
+  openStartPage = typeof options.openStartPage === 'function' ? options.openStartPage : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   setAgentTabCustody =
@@ -5378,7 +5392,10 @@ export function initAgentUi(options = {}) {
     summonPanel();
   });
   window.electronAPI?.onToggleAgent?.(() => summonPanel());
-  window.electronAPI?.onShowAgent?.(() => openPanel());
+  window.electronAPI?.onShowAgent?.((request) => {
+    if (request?.freshPage === true) showStartPage();
+    openPanel();
+  });
   window.electronAPI?.onAiSettingsChanged?.(applyAiSettings);
   window.electronAPI?.onAgentProviderChanged?.(() => {
     if (!aiEnabled) return;

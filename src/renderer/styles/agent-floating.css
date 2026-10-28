@@ -161,30 +161,41 @@
   min-height: 0;
 }
 
-/* The ideas float below the launcher, outside its painted card. */
-.agent-floating[data-presentation='launcher'][data-agent-view='workspace'] .agent-sidebar-inner {
-  max-height: calc(100% - var(--agent-launcher-top) - var(--agent-examples-height, 156px) - 24px);
-}
-
+/* The ideas sit inside the launcher card, under the composer, so they share
+   its glass, border and shadow instead of floating over the page (#864).
+   The card is max-height capped and the view only reserves the composer, so
+   when a long draft grows the composer the ideas give way: they shrink and
+   scroll inside the card rather than painting past its bottom edge. They
+   give way last: the greeting above (which scrolls itself) shrinks 1000x
+   harder, so it absorbs the shortfall first, and only once it is frozen at
+   its min-height does flex hand the rest to the ideas. (A fractional shrink
+   on the ideas would not do it: flex scales the shortfall down when the
+   unfrozen shrink factors sum below 1.) The
+   4px padding (taken out of the margin) keeps the cards where they were and
+   leaves room for their focus outline, which the scroller would clip. */
 .agent-floating[data-presentation='launcher'] .agent-workspace-view {
-  position: relative;
   min-height: var(--agent-composer-height, 160px);
 }
 
-.agent-floating[data-presentation='launcher'] .agent-examples {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 14px;
-  left: 14px;
-  margin: 0;
-  pointer-events: auto;
+.agent-floating[data-presentation='launcher'] .agent-workspace-view > .agent-workspace-body {
+  flex-shrink: 1000;
 }
 
-/* Never darker than the launcher card: one step lighter in dark theme, the
-   same white in light theme, where the border and shadow set them apart. */
-.agent-floating .agent-example {
+.agent-floating[data-presentation='launcher'] .agent-examples {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 10px 10px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Never darker than the launcher card they sit in: one step lighter in dark
+   theme, the same white in light theme, where the border sets them apart.
+   No shadow of their own: the scroller above would clip it at its edges, and
+   the card already carries one (#864, #865). */
+.agent-floating[data-presentation='launcher'] .agent-example {
   background: var(--agent-glass-raised);
-  box-shadow: var(--agent-glass-shadow-soft);
 }
 
 .agent-floating[data-presentation='column'] .agent-examples {
