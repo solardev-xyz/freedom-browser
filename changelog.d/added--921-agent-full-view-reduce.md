@@ -1,0 +1,2 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Agent's full view has a reduce button at the right of its title bar that returns to the Agent panel on the same chat; its tooltip names the Esc shortcut too ([#921](https://github.com/solardev-xyz/freedom-browser/issues/921))

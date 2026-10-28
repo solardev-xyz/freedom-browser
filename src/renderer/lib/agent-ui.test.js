@@ -19,6 +19,7 @@ function createAgentElements() {
     'agent-sidebar-close',
     'agent-first-toggle',
     'agent-first-titlebar',
+    'agent-first-reduce',
     'agent-first-title',
     'agent-session-sidebar-toggle',
     'agent-workspace-sidebar-toggle',
@@ -3838,6 +3839,30 @@ describe('Agent UI', () => {
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
     expect(expand.title).toBe('Return to browser view');
     expect(agent.getAttribute('aria-checked')).toBe('true');
+  });
+
+  test('the full view reduce button returns to the panel on the same chat (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-prompt'].value = 'draft kept across the switch';
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const reduce = ctx.elements['agent-first-reduce'];
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
+    jest.spyOn(expand, 'focus');
+    reduce.dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(ctx.elements['agent-mode-browser'].getAttribute('aria-checked')).toBe('true');
+    expect(ctx.elements['agent-prompt'].value).toBe('draft kept across the switch');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    // Focus lands on the button that leads back into full view.
+    expect(expand.focus).toHaveBeenCalled();
+    expect(expand.getAttribute('aria-pressed')).toBe('false');
   });
 
   test('delegates workspace address editing policy to shared browser navigation', async () => {

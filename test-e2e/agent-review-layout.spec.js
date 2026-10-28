@@ -397,6 +397,54 @@ test('ordinary tab menus exclude Claim and long Agent-first content scrolls with
   }
 });
 
+test('the full view title bar has a reduce button back to the panel on the same chat (#921)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  const reduce = window.locator('#agent-first-reduce');
+  const workspaceToggle = window.locator('#agent-workspace-sidebar-toggle');
+  await expect(reduce).toHaveAttribute('aria-label', 'Return to the Agent panel');
+  await expect(reduce).toHaveAttribute('title', 'Exit full view (Esc)');
+  // Wide and compact layouts, with the Workspace open and closed: the button
+  // sits right of the workspace toggle, both reachable, in both themes.
+  for (const width of [1440, 900]) {
+    await resize(electronApp, width);
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      await window.locator('#agent-first-toggle').click();
+      await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+      await expect(window.locator('.agent-sidebar-header')).toBeHidden();
+      for (const closed of [false, true]) {
+        if (closed !== await window.locator('body').evaluate(b => b.classList.contains('agent-workspace-sidebar-closed'))) {
+          await workspaceToggle.click();
+        }
+        await expect.poll(() => hit(window, '#agent-first-reduce')).toBe(true);
+        await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
+        const layout = await window.evaluate(() => {
+          const rect = selector => document.querySelector(selector).getBoundingClientRect();
+          const reduce = rect('#agent-first-reduce');
+          const toggle = rect('#agent-workspace-sidebar-toggle');
+          const slot = rect('.agent-first-titlebar-right');
+          return { reduceLeft: reduce.left, reduceRight: reduce.right, toggleRight: toggle.right, slotRight: slot.right, reduceTop: reduce.top, toggleTop: toggle.top };
+        });
+        expect(layout.reduceLeft).toBeGreaterThanOrEqual(layout.toggleRight - 0.5);
+        expect(layout.reduceRight).toBeLessThanOrEqual(layout.slotRight + 0.5);
+        expect(Math.abs(layout.reduceTop - layout.toggleTop)).toBeLessThan(1);
+        await reduce.hover();
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`reduce-${width}-${theme}-${closed ? 'workspace-closed' : 'workspace-open'}.png`) });
+      }
+      await reduce.click();
+      await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+      await expect(window.locator('#agent-first-titlebar')).toBeHidden();
+      // Back in the panel it came from, on the same chat, with the expand
+      // button (the way back into full view) focused.
+      await expect(window.locator('#agent-sidebar')).toBeVisible();
+      await expect(window.locator('#agent-sidebar')).not.toHaveClass(/collapsed/);
+      await expect(window.locator('#agent-transcript')).toContainText('A short answer.');
+      await expect(window.locator('#agent-first-toggle')).toBeFocused();
+      await expect(window.locator('#agent-first-toggle')).toHaveAttribute('aria-pressed', 'false');
+    }
+  }
+});
+
 test('before-paint platform styling leaves Linux window controls and Agent pane toggles reachable', async ({ electronApp, window }) => {
   await openConversation(electronApp, window);
   await window.locator('#agent-first-toggle').click();
@@ -409,6 +457,7 @@ test('before-paint platform styling leaves Linux window controls and Agent pane 
     await expect.poll(() => hit(window, '#close-btn')).toBe(true);
     await expect.poll(() => hit(window, '#agent-session-sidebar-toggle')).toBe(true);
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
+    await expect.poll(() => hit(window, '#agent-first-reduce')).toBe(true);
     await expect(window.locator('.agent-first-titlebar-left')).toHaveCSS('padding-left', '12px');
   }
   await window.locator('#agent-workspace-sidebar-toggle').click();

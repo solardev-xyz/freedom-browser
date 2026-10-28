@@ -247,6 +247,7 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   position: relative;
   display: flex;
   align-items: center;
+  padding-right: 6px;
   overflow: hidden;
   background: var(--bg);
 }
@@ -1010,8 +1011,9 @@ body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
   visibility: hidden;
 }
 
+/* Room for the workspace toggle and the reduce button (#921). */
 body.agent-first-mode.agent-workspace-sidebar-closed {
-  --agent-workspace-titlebar-width: 42px;
+  --agent-workspace-titlebar-width: 72px;
 }
 
 /* Closed, the Workspace's title-bar slot sits over the conversation. */
@@ -4527,7 +4529,7 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 @media (max-width: 1100px) {
   body.agent-first-mode {
     --agent-compact-session-slot: 54px;
-    --agent-compact-workspace-slot: 42px;
+    --agent-compact-workspace-slot: 72px;
   }
 
   html[data-platform='darwin'] body.agent-first-mode {
