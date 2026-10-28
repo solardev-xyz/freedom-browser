@@ -67,16 +67,27 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   const page = await guest(electronApp, 'settings');
   await expect(page.locator('#enable-ai')).not.toBeChecked();
   await expect(page.locator('#ai-provider-settings')).toBeHidden();
+  // A fresh profile has nothing saved, so it is not told its saved chats,
+  // connections and projects are kept, and with AI off there is no restart
+  // to talk about yet (#854).
+  await expect.poll(() => page.evaluate(() => window.freedomAPI.getAgentSetupState())).toEqual({ ok: true, configured: false, kept: false });
+  // The note ships hidden, so "hidden" holds before Settings has applied
+  // anything; give the page's own setup read time to land first.
+  await window.waitForTimeout(500);
+  await expect(page.locator('#ai-disabled-note')).toBeHidden();
+  await expect(page.locator('#ai').getByText(/AI is off/)).toBeHidden();
+  await expect(page.locator('#enable-ai-restart-help')).toBeHidden();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-off-${theme}.png`) });
   }
-  // Page tools (WebMCP) are decided at launch: the row says so and offers
-  // the restart once AI is turned on (#803).
+  // Page tools (WebMCP) are decided at launch: once AI is turned on the row
+  // says so and offers the restart, together (#803, #854).
   await expect(page.locator('#enable-ai-restart-help')).toHaveText('Page tools that websites offer Agent take effect after restart.');
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
+  await expect(page.locator('#enable-ai-restart-help')).toBeVisible();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
   // With no model yet, turning AI on stays on the AI page and offers
   // "Connect a model" instead of navigating under the user's hand (#836).
@@ -133,9 +144,19 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await page.locator('#agent-ollama-url').fill(baseUrl);
   await page.locator('#agent-provider-save').click();
   await expect(page.locator('#agent-provider-status')).toHaveText('Connected');
-  // The first model connected opens Agent.
+  // The first model connected opens Agent on the start page, not over the
+  // Settings form, which stays open in its own tab (#864).
   await expect(window.locator('#agent-prompt')).toBeVisible();
+  const activeUrl = () => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '');
+  await expect.poll(activeUrl).toContain('/pages/home.html');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`first-connect-agent-${theme}.png`) });
+  }
   await window.locator('#agent-sidebar-close').click();
+  await window.locator('.tab', { hasText: 'Settings' }).click();
+  await expect.poll(activeUrl).toContain('/pages/settings.html');
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
   await expect(page.locator('#ai-open-agent')).toBeVisible();
   await expect(page.locator('#ai-connect-model')).toBeHidden();
@@ -155,10 +176,23 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
+  await expect(page.locator('#enable-ai-restart-help')).toBeHidden();
   // One "AI is off" message (#835): the note, announced through its live
-  // wrapper; the status line, which said it again, is left empty.
+  // wrapper; the status line, which said it again, is left empty. A model is
+  // connected now, so there is something kept to tell about (#854).
   await expect(page.locator('#enable-ai')).toBeEnabled();
   await expect(page.locator('#ai-disabled-note')).toBeVisible();
+  // It sits a card's note distance below the switch card, not 4px (#854).
+  const noteGap = await page.evaluate(() =>
+    document.getElementById('ai-disabled-note').getBoundingClientRect().top -
+      document.querySelector('#ai > .card').getBoundingClientRect().bottom,
+  );
+  expect(noteGap).toBeGreaterThanOrEqual(16);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-off-kept-${theme}.png`) });
+  }
   await expect(page.locator('#ai-disabled-note').locator('xpath=..')).toHaveAttribute('aria-live', 'polite');
   await expect(page.locator('#ai-settings-status')).toBeEmpty();
   await expect(page.locator('#ai').getByText(/AI is off/)).toHaveCount(1);
@@ -294,7 +328,7 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   const restartedChrome = restarted.windows().find(page => page.url().endsWith('/renderer/index.html'));
   const restartedSettings = await settings(restarted, restartedChrome);
   await expect(restartedSettings.locator('#enable-ai')).toBeChecked();
-  await expect(restartedSettings.locator('#enable-ai-restart-help')).toBeVisible();
+  await expect(restartedSettings.locator('#enable-ai-restart-help')).toBeHidden();
   await expect(restartedSettings.locator('#enable-ai-restart')).toBeHidden();
   await restartedSettings.locator('#enable-ai').uncheck();
   await expect(restartedChrome.locator('#agent-toggle-btn')).toBeHidden();
@@ -316,6 +350,8 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   await expect(open).toHaveText('Connect a model');
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai/providers/add');
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
+  // #861: the pill reads "Beta" as rendered, like Settings' .resolver-badge.
+  expect(await home.locator('.setup-banner-tag').evaluate(el => el.innerText)).toBe('Beta');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
@@ -598,6 +634,29 @@ test('AI subpages have breadcrumbs, history and deep links without mixing their 
   await page.goBack();
   await expect(page).toHaveURL(/#ai\/providers\/add$/);
   await expect(page.locator('#agent-provider-search')).toBeVisible();
+  // #897: the provider search is the same control as "Search settings…":
+  // focused, it shows only the accent border (no extra AI-page ring), and
+  // it does not spellcheck provider names.
+  const focusLook = selector => page.evaluate(async sel => {
+    const input = document.querySelector(sel);
+    input.focus();
+    // Let the 0.1s border-color transition finish before reading it.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const style = getComputedStyle(input);
+    const look = {
+      focusVisible: input.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      borderColor: style.borderColor,
+      fontSize: style.fontSize,
+      spellcheck: input.spellcheck,
+    };
+    input.blur();
+    return look;
+  }, selector);
+  const providerLook = await focusLook('#agent-provider-search');
+  expect(providerLook.focusVisible).toBe(true);
+  expect(providerLook.outlineStyle).toBe('none');
+  expect(providerLook).toEqual(await focusLook('#settings-search'));
   await page.goForward();
   await expect(page.locator('#agent-ollama-url')).toHaveValue('http://127.0.0.1:11434/v1');
   await page.locator('#ai-provider-breadcrumbs').getByRole('link', { name: 'AI', exact: true }).click();
@@ -752,7 +811,17 @@ const ONE_CARD = {
   opaque: true,
   headerOpaque: true,
   headerShadow: ['inset'],
+  sheetFrame: 'own',
 };
+// Below 720px the panel is a full-width bottom sheet (#874) that draws the
+// card's edge, corners and drop shadow itself: the sheet under the header is
+// its flat, opaque body rather than a second card floating inside it.
+const ONE_CARD_IN_BOTTOM_SHEET = {
+  ...ONE_CARD,
+  outerCorners: ['16px', '0px'],
+  sheetFrame: 'flat',
+};
+const oneCardAt = (width) => (width < 720 ? ONE_CARD_IN_BOTTOM_SHEET : ONE_CARD);
 const headerShadow = (window) => window.evaluate(() =>
   getComputedStyle(document.querySelector('#agent-sidebar .agent-sidebar-header')).boxShadow);
 function sheetUnderHeader(window, id) {
@@ -784,6 +853,8 @@ function sheetUnderHeader(window, id) {
       // shadow sits on the sheet, not across the seam (#863).
       headerShadow: hs.boxShadow.split(/,(?![^(]*\))/)
         .map((shadow) => (/\binset\b/.test(shadow) ? 'inset' : 'drop')),
+      // Whether the sheet draws a card of its own (drop shadow, bottom edge).
+      sheetFrame: ss.boxShadow === 'none' && ss.borderBottomWidth === '0px' ? 'flat' : 'own',
     };
   }, id);
 }
@@ -806,7 +877,7 @@ test('Set up Agent sheet lines up with its header and both are opaque at narrow 
       if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) !== 'true')
         await window.locator('#agent-toggle-btn').click();
       await expect(window.locator('#agent-setup-view')).toBeVisible();
-      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(ONE_CARD);
+      await expect.poll(() => sheetUnderHeader(window, 'agent-setup-view')).toEqual(oneCardAt(width));
       await expect(window.locator('#agent-setup-view .agent-setup-intro')).toHaveText(
         'Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.'
       );
@@ -843,7 +914,7 @@ test('Services sheet is one card with its header and its highlight dissolves on 
       await expect(window.locator('#agent-mcp-panel')).toBeVisible();
       await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
       await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-agent-view', 'services');
-      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(ONE_CARD);
+      await expect.poll(() => sheetUnderHeader(window, 'agent-mcp-panel')).toEqual(oneCardAt(width));
       await window.screenshot({ path: testInfo.outputPath(`services-sheet-${theme}-${width}.png`) });
       await window.locator('#agent-sidebar-close').click();
       await expect.poll(() => headerShadow(window)).toBe('none');

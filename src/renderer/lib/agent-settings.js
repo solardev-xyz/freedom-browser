@@ -14,10 +14,33 @@ const open = document.getElementById('ai-open-agent');
 // title-bar row does (#803). Keyed on what this launch decided, not on the
 // toggle: reopening Settings still offers it, and turning AI off and on again
 // in a launch that has page tools does not. null (unknown) offers nothing.
+// Its "take effect after restart" line goes with it (#854): with AI off, or in
+// a launch that already has page tools, there is nothing to restart for.
 const restart = document.getElementById('enable-ai-restart');
+const restartHelp = document.getElementById('enable-ai-restart-help');
 let webMcpAtLaunch = null;
 const renderRestart = () => {
   restart.hidden = !(enabled && webMcpAtLaunch === false);
+  restartHelp.hidden = restart.hidden;
+};
+// The "AI is off" note says saved chats, connections and projects are kept, so
+// it shows only when main reports one of them exists (#854): a fresh profile
+// turning nothing on gets no note at all. Asked each time AI is (re)seen off; a
+// reply landing after AI was turned on again, or after a newer ask, is dropped.
+let kept = false;
+let keptCheck = 0;
+const renderNote = () => {
+  note.hidden = enabled || !kept;
+};
+const checkKept = () => {
+  const current = ++keptCheck;
+  Promise.resolve(api.getAgentSetupState?.())
+    .then((state) => {
+      if (current !== keptCheck || enabled) return;
+      kept = state?.ok === true && state.kept === true;
+      renderNote();
+    })
+    .catch(() => {});
 };
 let enabled = false;
 let revision = 0;
@@ -95,7 +118,8 @@ const updateNext = (state, { userAction = false, real = false } = {}) => {
   if (enabled && configured && status.textContent === 'Loading providers…')
     status.textContent = '';
   if (!enabled || !state || !real) return;
-  if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent();
+  // On a start page, not over this form (#864).
+  if (configured && userAction && sawUnconfigured && !sawConfigured) void api.openAgent({ freshPage: true });
   if (configured) sawConfigured = true;
   else sawUnconfigured = true;
 };
@@ -249,8 +273,11 @@ function apply(settings) {
   document.getElementById('providers').hidden = !enabled;
   dictationHost.hidden = !enabled;
   document.getElementById('voice').hidden = !enabled;
-  note.hidden = enabled;
-  if (!enabled) realStatus = null;
+  renderNote();
+  if (!enabled) {
+    realStatus = null;
+    checkKept();
+  } else keptCheck += 1;
   updateNext(providerUi.state.providerStatus);
   renderRestart();
   if (!enabled) {

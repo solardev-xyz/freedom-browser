@@ -1402,9 +1402,11 @@
               stroke="currentColor"
               stroke-width="1.8"
               stroke-linecap="round"
+              stroke-linejoin="round"
               aria-hidden="true"
             >
-              <path d="M12 5v14M5 12h14" />
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
             </svg>
           </button>
         </div>
@@ -1630,20 +1632,6 @@
                   <path d="m15 18-6-6 6-6" />
                 </svg>
               </button>
-              <button
-                id="agent-browser-mode-toggle"
-                class="agent-mode-toggle"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded="false"
-                aria-controls="agent-mode-menu"
-                hidden
-              >
-                <span>Freedom Browser</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </button>
               <div>
                 <h2 id="agent-sidebar-title">Agent</h2>
                 <p id="agent-sidebar-subtitle">Give Agent a task</p>
@@ -1688,7 +1676,7 @@
                 id="agent-first-toggle"
                 aria-label="Make Agent the main view"
                 aria-pressed="false"
-                title="Agent-first view"
+                title="Make Agent the main view"
                 data-test="agent-first-toggle"
                 hidden
               >
@@ -1767,8 +1755,26 @@
                 <div class="agent-run-header">
                   <span id="agent-run-status" class="agent-badge" hidden></span>
                   <div class="agent-lifecycle-actions">
-                    <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
-                      New chat
+                    <button
+                      id="agent-new-chat"
+                      class="agent-icon-btn"
+                      type="button"
+                      aria-label="New chat"
+                      title="New chat"
+                      hidden
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                        <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+                      </svg>
                     </button>
                   </div>
                 </div>
@@ -1852,8 +1858,10 @@
                   <span><strong>Add folder…</strong><small>Read-only for this conversation</small></span>
                 </button>
                 <button id="agent-open-project" type="button" role="menuitem">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                    <path d="m10 11-2 2.5 2 2.5" />
+                    <path d="m14 11 2 2.5-2 2.5" />
                   </svg>
                   <span><strong>Open project…</strong><small>Start a chat with an existing project</small></span>
                 </button>
@@ -2153,7 +2161,6 @@
               <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
                 <input id="agent-model-menu-search" class="agent-model-menu-search" type="search" placeholder="Search all connected models…" aria-label="Search connected models" autocomplete="off" />
                 <div id="agent-model-menu-list"></div>
-                <p class="agent-catalog-status">Hover over privacy symbols for details</p>
                 <div class="agent-popover-divider"></div>
                 <button id="agent-manage-providers" class="agent-popover-action" type="button">
                   Manage models…
@@ -2179,7 +2186,7 @@
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Ask frequently</strong>
+                      <strong>Ask every time</strong>
                       <small>Review each page interaction. Project work continues within permissions you have granted.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>

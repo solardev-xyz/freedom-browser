@@ -38,6 +38,9 @@ function normalizeSubagentReceipt(value) {
         .slice(0, 48).map(action => Object.freeze({ operation: action.operation, status: action.status,
           ...(typeof action.pageId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(action.pageId) && { pageId: action.pageId }),
           ...(typeof action.errorCode === 'string' && /^[A-Z_]{1,80}$/.test(action.errorCode) && { errorCode: action.errorCode }),
+          // A declined or withdrawn helper action did not run (#845).
+          ...(action.status === 'failed' && ['declined', 'withdrawn'].includes(action.approval) && { approval: action.approval }),
+          ...(action.status === 'failed' && action.approval === 'declined' && action.repeatsDecline === true && { repeatsDecline: true }),
           ...(typeof action.label === 'string' && { label: action.label.replace(/\p{Cc}/gu, ' ').slice(0, 160) }),
           origin: originScopeForUrl(action.origin) || '',
           pageTitle: typeof action.pageTitle === 'string' ? action.pageTitle.replace(/\p{Cc}/gu, ' ').slice(0, 160) : '',

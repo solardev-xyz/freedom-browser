@@ -300,7 +300,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('agent:provider:changed', handler);
   },
   onShowAgent: callback => {
-    const handler = () => callback();
+    const handler = (_event, options) => callback({ freshPage: options?.freshPage === true });
     ipcRenderer.on('agent:show', handler);
     return () => ipcRenderer.removeListener('agent:show', handler);
   },

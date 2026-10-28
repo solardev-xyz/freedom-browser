@@ -57,8 +57,10 @@
 :is(#ai, #providers, #voice) .agent-field > span {
   font-weight: 600;
 }
-/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius). */
-:is(#ai, #providers, #voice) input:not([type='checkbox']),
+/* Selects keep the page-wide `select` style (chevron, 13 px, 6 px radius),
+   and an `.rpc-input` keeps the page-wide Settings input (13 px, 6 px
+   radius), like "Search settings…" (#860). */
+:is(#ai, #providers, #voice) input:not([type='checkbox'], .rpc-input),
 :is(#ai, #providers, #voice) textarea {
   width: 100%;
   min-width: 0;
@@ -74,7 +76,19 @@
 :is(#ai, #providers, #voice) textarea {
   font-family: var(--font-mono);
 }
-:is(#ai, #providers, #voice) input:focus-visible,
+/* Monospace is for the typed URL or key; a placeholder is a hint in prose,
+   so it gets the page font back (#857). */
+:is(#ai, #providers, #voice) input::placeholder,
+:is(#ai, #providers, #voice) textarea::placeholder {
+  font-family:
+    'IBM Plex Sans',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+/* An `.rpc-input` keeps the page-wide accent-border focus of "Search
+   settings…" and "Search shortcuts" instead of adding this ring too. */
+:is(#ai, #providers, #voice) input:not(.rpc-input):focus-visible,
 :is(#ai, #providers, #voice) textarea:focus-visible,
 :is(#ai, #providers, #voice) button:focus-visible,
 :is(#ai, #providers, #voice) summary:focus-visible {
@@ -120,9 +134,9 @@
   font-size: 13px;
   line-height: 1.6;
 }
-/* The "Connected" status line sits right above Disconnect (and the
-   confirmation that replaces it); give them the gap the fields have (#803). */
-#providers :is(#agent-provider-disconnect, .agent-disconnect-confirm) {
+/* The confirmation replaces Disconnect in the Save / Disconnect row (#859),
+   which may then be empty and hidden; keep the gap the fields have (#803). */
+#providers .agent-disconnect-confirm {
   margin-top: 12px;
 }
 #providers .agent-disconnect-confirm p {
@@ -208,9 +222,19 @@
 #providers .agent-provider-method {
   margin: 12px 0;
 }
+/* An unconnected method row shows the provider list's chevron (the row is the
+   button); a connected one says so in the status green the badge uses (#855),
+   and so does the provider list's ✓ one click earlier, so "connected" reads in
+   one colour on both pages. These rows only exist in settings.html, so this
+   sheet (not the chrome's agent.css) is where they are styled. */
+#providers .agent-provider-method-state:not(.active) {
+  flex-shrink: 0;
+  font-size: 18px;
+}
 #providers .agent-provider-indicator.active,
 #providers .agent-provider-method-state.active {
-  color: var(--accent);
+  flex-shrink: 0;
+  color: var(--success);
 }
 #providers .agent-card-heading,
 #providers .agent-provider-models-heading {
@@ -257,11 +281,17 @@
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* A search box is prose, not a URL: the page font, like `#settings-search`. */
+#agent-provider-search {
+  font-family: inherit;
+}
+/* Model rows read at the Settings row-title size (#860). */
 #providers .agent-provider-models-list li {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
+  font-size: 14px;
   border-bottom: 1px solid var(--border);
 }
 #providers .agent-provider-models-list li:last-child {
@@ -311,6 +341,22 @@
 }
 :is(#providers, #voice) .error {
   color: var(--danger);
+}
+/* The Connect button's own result sits right under it (#858): the
+   general message line at the bottom of the page is out of view on a
+   tall provider form. Empty lines take no room. */
+#providers .agent-provider-connect-feedback {
+  margin: -8px 0 16px;
+}
+#providers .agent-provider-connect-feedback:not(:has(.agent-message:not(:empty), #agent-ollama-install:not([hidden]))) {
+  display: none;
+}
+#providers .agent-provider-connect-feedback p {
+  margin: 0;
+}
+#providers .agent-provider-connect-feedback a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 #providers .agent-compatibility,
 #providers .agent-auth-code {
@@ -379,8 +425,20 @@
   overflow-wrap: anywhere;
 }
 #providers .agent-settings-model-name button[aria-pressed='true'] {
-  color: var(--accent);
   font-weight: 600;
+}
+/* The model new chats use is named, not only coloured (#859). */
+#providers .agent-model-default-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: 1px;
 }
 
 /* Keep the new selected entry above AA on its accent-tinted background. */
@@ -424,6 +482,17 @@
 #voice .subsection-title,
 #voice .agent-connected-provider-list {
   margin: 0;
+}
+/* The Voice dictation page (only) labels its groups in sentence case, the
+   way the provider picker's `.agent-provider-group-label` ("Model labs") does
+   (#861), not in the rest of Settings' 12 px uppercase `.subsection-title`
+   category style. A deliberate exception (see ui-consistency.md, Settings
+   sections): don't widen this selector to other pages without the same kind
+   of decision. */
+#voice .subsection-title {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
 }
 .voice-settings-group {
   display: grid;

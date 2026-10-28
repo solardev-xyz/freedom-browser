@@ -161,30 +161,41 @@
   min-height: 0;
 }
 
-/* The ideas float below the launcher, outside its painted card. */
-.agent-floating[data-presentation='launcher'][data-agent-view='workspace'] .agent-sidebar-inner {
-  max-height: calc(100% - var(--agent-launcher-top) - var(--agent-examples-height, 156px) - 24px);
-}
-
+/* The ideas sit inside the launcher card, under the composer, so they share
+   its glass, border and shadow instead of floating over the page (#864).
+   The card is max-height capped and the view only reserves the composer, so
+   when a long draft grows the composer the ideas give way: they shrink and
+   scroll inside the card rather than painting past its bottom edge. They
+   give way last: the greeting above (which scrolls itself) shrinks 1000x
+   harder, so it absorbs the shortfall first, and only once it is frozen at
+   its min-height does flex hand the rest to the ideas. (A fractional shrink
+   on the ideas would not do it: flex scales the shortfall down when the
+   unfrozen shrink factors sum below 1.) The
+   4px padding (taken out of the margin) keeps the cards where they were and
+   leaves room for their focus outline, which the scroller would clip. */
 .agent-floating[data-presentation='launcher'] .agent-workspace-view {
-  position: relative;
   min-height: var(--agent-composer-height, 160px);
 }
 
-.agent-floating[data-presentation='launcher'] .agent-examples {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 14px;
-  left: 14px;
-  margin: 0;
-  pointer-events: auto;
+.agent-floating[data-presentation='launcher'] .agent-workspace-view > .agent-workspace-body {
+  flex-shrink: 1000;
 }
 
-/* Never darker than the launcher card: one step lighter in dark theme, the
-   same white in light theme, where the border and shadow set them apart. */
-.agent-floating .agent-example {
+.agent-floating[data-presentation='launcher'] .agent-examples {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 10px 10px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Never darker than the launcher card they sit in: one step lighter in dark
+   theme, the same white in light theme, where the border sets them apart.
+   No shadow of their own: the scroller above would clip it at its edges, and
+   the card already carries one (#864, #865). */
+.agent-floating[data-presentation='launcher'] .agent-example {
   background: var(--agent-glass-raised);
-  box-shadow: var(--agent-glass-shadow-soft);
 }
 
 .agent-floating[data-presentation='column'] .agent-examples {
@@ -296,8 +307,8 @@
   background: color-mix(in srgb, var(--agent-bubble-agent) 70%, var(--bg));
 }
 
-/* Compact header: title over status on the left; New chat, help and the
-   window controls on the right. Long statuses ellipsize under the title. */
+/* Compact header: title over status on the left; the New chat (compose)
+   icon, help and the window controls on the right. Long statuses ellipsize under the title. */
 .agent-floating[data-presentation='column'] .agent-sidebar-header {
   display: grid;
   grid-template-areas:
@@ -343,10 +354,6 @@
   grid-area: actions;
 }
 
-.agent-floating[data-presentation='column'] #agent-browser-mode-toggle {
-  display: none;
-}
-
 .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-float-title {
   display: block;
   min-width: 0;
@@ -388,11 +395,6 @@
 
 .agent-floating[data-presentation='column'] .agent-sidebar-header .agent-lifecycle-actions {
   grid-area: lifecycle;
-}
-
-.agent-floating[data-presentation='column'] .agent-sidebar-header #agent-new-chat {
-  min-height: 28px;
-  padding: 5px 9px;
 }
 
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]) {
@@ -463,7 +465,6 @@
 
 .agent-floating[data-presentation='column'] .agent-workspace-view {
   min-height: 0;
-  margin-top: -6px;
   pointer-events: none;
 }
 
@@ -481,8 +482,10 @@
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  /* Fade only the stationary scroll viewport, with the six-pixel edges
-     tucked beneath the header/composer. Neither glass surface is masked. */
+  /* Fade only the stationary scroll viewport. Its top starts at the header's
+     lower edge, not beneath it, so no bubble or scrollbar shows through the
+     header's glass (#866); the six-pixel bottom edge tucks beneath the
+     composer. Neither glass surface is masked. */
   /* theme-literal: black is an opaque alpha mask, not a visible surface */
   mask-image: linear-gradient(to bottom, transparent, black 6px, black calc(100% - 6px), transparent);
 }
@@ -881,20 +884,145 @@
   font-size: 12px;
 }
 
-/* Narrow windows share the corner with browser Find and downloads. Reserve
-   real space instead of letting either cover the conversation's controls. */
+/* Narrow windows (#874): a 408px side column would cover most of the page,
+   so the conversation becomes one full-width bottom sheet instead, about
+   half the height: the page keeps its top half and the chat keeps a usable
+   width. Header, transcript and composer share the sheet's opaque surface,
+   divided by hairlines rather than floating as separate cards. */
 @media (max-width: 719px) {
-  body.agent-floating-column:has(.find-bar:not([hidden])) .agent-sidebar-inner {
-    top: 54px;
+  /* The sheet's insets inside the page area. Its height is clamped against
+     both, so a short window shrinks the sheet instead of pushing it up over
+     the Find bar or, with the download shelf showing, out of the page area
+     onto the toolbar. Page hints below read the same bottom inset. */
+  body.agent-floating-column {
+    --agent-sheet-top: 8px;
+    --agent-sheet-bottom: 8px;
   }
 
-  body.agent-floating-column.has-visible-downloads .agent-sidebar-inner {
-    bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  body.agent-floating-column:has(.find-bar:not([hidden])) {
+    --agent-sheet-top: 54px;
   }
 
+  body.agent-floating-column.has-visible-downloads {
+    --agent-sheet-bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-inner {
+    --agent-sheet-room: calc(100% - var(--agent-sheet-top, 8px) - var(--agent-sheet-bottom, 8px));
+    top: auto;
+    right: 8px;
+    bottom: var(--agent-sheet-bottom, 8px);
+    left: 8px;
+    width: auto;
+    height: clamp(min(320px, var(--agent-sheet-room)), 52%, var(--agent-sheet-room));
+    /* clip, not hidden: scrollIntoView must not scroll the header away. */
+    overflow: clip;
+    pointer-events: auto;
+    background-color: var(--agent-sheet);
+    border: 1px solid var(--agent-glass-border);
+    border-radius: 18px;
+    box-shadow:
+      var(--agent-glass-shadow),
+      inset 0 1px 0 var(--agent-glass-highlight);
+    transition:
+      background-color 240ms ease,
+      border-color 240ms ease,
+      box-shadow 240ms ease,
+      transform 360ms var(--agent-float-ease);
+  }
+
+  .agent-floating.collapsed[data-presentation='column'] .agent-sidebar-inner {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transform: translateY(28px);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-header,
+  .agent-floating[data-presentation='column'] .agent-composer-wrap,
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    background-color: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* The header is part of the sheet's surface, but paints it itself
+     (inherited from the sheet, so it follows the collapse fade) rather than
+     going transparent: nothing of the page may read through it (#803). */
+  .agent-floating[data-presentation='column'] .agent-sidebar-header {
+    background-color: inherit;
+    margin: 0;
+    padding: 8px 8px 8px 14px;
+    border-bottom: 1px solid var(--agent-glass-border);
+  }
+
+  /* Set up Agent and Services (#863's one card) are the sheet's body here:
+     the sheet already draws the card's edge, corners and drop shadow, so a
+     second card of their own would float half-way down it. The header keeps
+     #863's seamless join above them. */
+  .agent-floating[data-presentation='column'] .agent-setup-view {
+    background: inherit;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* The transcript takes whatever the header and composer leave. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view {
+    flex: 1 1 auto;
+    margin-top: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-body {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-scroll {
+    padding: 12px 12px;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    margin: 0;
+    padding-bottom: 0;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    padding: 4px 6px 6px;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  /* An approval card can be taller than the sheet: the transcript gives up
+     its space first, then the card scrolls inside the composer area so its
+     buttons stay reachable under the header. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view:has(.agent-approval:not([hidden])) > .agent-workspace-body {
+    flex-shrink: 1000;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap:has(.agent-approval:not([hidden])) {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  /* A sheet shorter than its header plus composer (agent-ui sets the class)
+     scrolls the composer under the header, like a tall approval card. */
+  body.agent-floating-sheet-cramped .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  /* Page hints sit 14px above the sheet, with or without downloads. */
   body.agent-floating-column .agent-page-lock-hint,
   body.agent-floating-column .link-status--right {
-    bottom: calc(var(--agent-floating-composer-height, 150px) + var(--download-shelf-height, 0px) + 22px);
+    bottom: calc(var(--agent-floating-panel-height, 360px) + var(--agent-sheet-bottom, 8px) + 14px);
   }
 }
 

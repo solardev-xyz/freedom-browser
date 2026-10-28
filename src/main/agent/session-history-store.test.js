@@ -149,6 +149,25 @@ test('reviewer approval provenance survives history normalization without its pr
   expect(JSON.stringify(item)).not.toMatch(/private|isCurrent/);
 });
 
+test('a refused repeat of a declined action keeps its marker, so a restored outcome counts one decline (#845)', () => {
+  const { buildAgentOutcome } = require('./agent-progress');
+  const { ERROR_CODES } = require('../automation/contract/errors');
+  const submit = { toolCallId: 'submit', operation: 'browser_click', status: 'failed', effect: 'changed',
+    pageId: 'page', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' };
+  const restored = normalizeActivity([
+    { toolCallId: 'type', operation: 'browser_type', status: 'succeeded', effect: 'changed', pageId: 'page' },
+    { toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded', effect: 'observed', pageId: 'page' },
+    submit, { ...submit, toolCallId: 'retry', repeatsDecline: true },
+  ]);
+  expect(restored.at(-1).repeatsDecline).toBe(true);
+  expect(restored.at(-2).repeatsDecline).toBeUndefined();
+  expect(buildAgentOutcome(restored, 'completed').notice).toEqual({ tone: 'neutral',
+    headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' });
+  // The marker means nothing without a decline, so it is not kept on its own.
+  const [approved] = normalizeActivity([{ ...submit, approval: 'approved', repeatsDecline: true }]);
+  expect(approved.repeatsDecline).toBeUndefined();
+});
+
 describe('AgentSessionHistoryStore', () => {
   let userDataDir;
   let store;

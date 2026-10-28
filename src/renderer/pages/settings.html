@@ -759,6 +759,12 @@
         margin: 8px 0 0 0;
       }
 
+      /* A note under a card sits as far below it as the other notes under
+         a card (the ad blocker's attribution line), not 4px (#854). */
+      #ai-disabled-note {
+        margin-top: 16px;
+      }
+
       .rpc-status {
         font-size: 12px;
         margin-top: 8px;
@@ -1786,7 +1792,7 @@
               <div class="row-body">
                 <label class="row-label" for="enable-ai">Enable AI features</label>
                 <p class="row-help" id="enable-ai-help">Off by default. Your provider receives the prompts and content shared with Agent.</p>
-                <p class="row-help" id="enable-ai-restart-help">Page tools that websites offer Agent take effect after restart.</p>
+                <p class="row-help" id="enable-ai-restart-help" hidden>Page tools that websites offer Agent take effect after restart.</p>
               </div>
               <div class="row-control">
                 <button type="button" id="enable-ai-restart" class="btn" hidden>Restart now</button>
@@ -1798,8 +1804,10 @@
                below only reports progress and errors. The wrapper stays in the
                tree so a screen reader announces the note when turning AI off
                reveals it. `.settings-search-intro` keeps the note in the
-               section's search intro, as it was before the wrapper. -->
-          <div class="settings-search-intro" aria-live="polite"><p class="row-help" id="ai-disabled-note">AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p></div>
+               section's search intro, as it was before the wrapper. It ships
+               hidden: agent-settings.js shows it only while AI is off and
+               something is actually kept (#854). -->
+          <div class="settings-search-intro" aria-live="polite"><p class="row-help" id="ai-disabled-note" hidden>AI is off. Your saved chats, connections and projects are kept. Running development servers remain available.</p></div>
           <p class="rpc-status" id="ai-settings-status" aria-live="polite"></p>
           <div class="card ai-settings-links settings-search-skip" id="ai-settings-links" hidden>
             <a class="net-row" href="#ai/providers"><span class="net-row-text"><span class="net-row-name">Models &amp; providers</span><span class="net-row-sub" id="ai-providers-summary">Connect accounts and manage local models</span></span><span class="net-chevron" aria-hidden="true">›</span></a>
@@ -1830,7 +1838,7 @@
             <div id="agent-provider-browser" hidden>
               <button id="agent-provider-list-back" class="agent-text-button" type="button">Providers</button>
               <p class="section-description">Choose a service or connect your own model server.</p>
-              <input id="agent-provider-search" type="search" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" />
+              <div class="rpc-row"><input id="agent-provider-search" class="rpc-input" type="search" placeholder="Search providers…" aria-label="Search providers" spellcheck="false" autocomplete="off" /></div>
               <div id="agent-provider-choices" class="agent-provider-choices"></div>
             </div>
             <section id="agent-provider-detail" aria-labelledby="agent-provider-form-heading" hidden>
@@ -1847,15 +1855,10 @@
               <select id="agent-provider-select" hidden aria-label="Provider"></select>
               <div id="agent-provider-methods" hidden>
                 <p class="agent-catalog-status">How would you like to connect?</p>
-                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong id="agent-subscription-method-title">ChatGPT subscription</strong><span id="agent-subscription-method-help">Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
-                <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
+                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong id="agent-subscription-method-title">ChatGPT subscription</strong><span id="agent-subscription-method-help">Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state" aria-hidden="true">›</span></button>
+                <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state" aria-hidden="true">›</span></button>
               </div>
               <div id="agent-provider-connection-fields">
-                <button id="agent-provider-disconnect" class="agent-button secondary danger" type="button" hidden>Disconnect</button>
-                <div id="agent-provider-disconnect-confirm" class="agent-disconnect-confirm" role="group" aria-labelledby="agent-provider-disconnect-question" hidden>
-                  <p id="agent-provider-disconnect-question"></p>
-                  <div class="agent-config-actions"><button id="agent-provider-disconnect-accept" class="agent-button secondary danger" type="button">Disconnect</button><button id="agent-provider-disconnect-cancel" class="agent-button secondary" type="button">Cancel</button></div>
-                </div>
                 <div id="agent-custom-fields" hidden>
                   <label class="agent-field"><span>Connection name</span><input id="agent-custom-name" type="text" maxlength="80" placeholder="My AI server" /></label>
                   <label class="agent-field"><span>API base URL</span><input id="agent-custom-url" type="url" maxlength="2048" spellcheck="false" placeholder="https://example.com/v1" /></label>
@@ -1864,7 +1867,7 @@
                   <p class="agent-catalog-status">If discovery is unavailable, enter the model IDs supplied by your server.</p>
                   <label id="agent-custom-clear-key-field" class="agent-field"><span><input id="agent-custom-clear-key" type="checkbox" /> Remove saved API key</span></label>
                 </div>
-                <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
+                <div id="agent-api-key-field"><label class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="agent-api-key-help" /></label><p id="agent-api-key-help" class="agent-catalog-status">Stored encrypted on this device.</p></div>
                 <div id="agent-subscription-fields" class="hidden">
                   <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
                   <div id="agent-auth-code" class="agent-auth-code" hidden><span id="agent-auth-code-instruction">Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
@@ -1875,14 +1878,22 @@
                   <label class="agent-field"><span>Privacy requirement</span><select id="agent-privacy-policy"></select></label>
                   <button id="agent-privacy-save" class="agent-text-button" type="button">Save privacy setting</button>
                 </div>
-                <div class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button></div>
+                <div id="agent-provider-actions" class="agent-config-actions"><button id="agent-provider-save" class="agent-button primary" type="button">Connect provider</button><button id="agent-provider-disconnect" class="agent-button secondary danger" type="button" hidden>Disconnect</button></div>
+                <div id="agent-provider-disconnect-confirm" class="agent-disconnect-confirm" role="group" aria-labelledby="agent-provider-disconnect-question" hidden>
+                  <p id="agent-provider-disconnect-question"></p>
+                  <div class="agent-config-actions"><button id="agent-provider-disconnect-accept" class="agent-button secondary danger" type="button">Disconnect</button><button id="agent-provider-disconnect-cancel" class="agent-button secondary" type="button">Cancel</button></div>
+                </div>
+                <div id="agent-provider-connect-feedback" class="agent-provider-connect-feedback">
+                  <p id="agent-provider-connect-message" class="agent-message" aria-live="polite"></p>
+                  <p id="agent-ollama-install" class="agent-catalog-status row-help" hidden>Don’t have Ollama? <a href="https://ollama.com/download" target="_blank" rel="noreferrer">Download it from ollama.com</a></p>
+                </div>
                 <section class="agent-provider-models" aria-labelledby="agent-provider-models-heading">
                   <div class="agent-provider-models-heading">
                     <h4 id="agent-provider-models-heading">Available models</h4>
                     <button id="agent-model-refresh" class="agent-provider-models-refresh" type="button" aria-label="Refresh available models" title="Refresh available models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
                   </div>
                   <ul id="agent-provider-models-list" class="agent-provider-models-list" aria-labelledby="agent-provider-models-heading" tabindex="0" hidden></ul>
-                  <p class="agent-catalog-status">Hover over privacy symbols for details. Hardware checks run when used.</p>
+                  <p id="agent-provider-models-privacy-hint" class="agent-catalog-status" hidden>Hover over privacy symbols for details. Hardware checks run when used.</p>
                   <p id="agent-provider-models-empty" class="agent-provider-models-empty">Connect to discover available models</p>
                 </section>
                 <details id="agent-provider-advanced" class="agent-provider-advanced">

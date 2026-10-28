@@ -84,7 +84,7 @@ The reviewer must also refer commands that involve payments, messages, publishin
 private-data disclosure, account/legal consent, destructive changes, or global
 installation to the human. This semantic policy is not a claim that the runtime
 can prove all hidden effects of arbitrary scripts. Existing browser-intent
-classification remains separate. **Ask frequently** and **Fewer interruptions**
+classification remains separate. **Ask every time** and **Fewer interruptions**
 retain their existing command-access approval behavior.
 
 Full access is deferred. Broader automatic project grants, per-file editing
@@ -117,7 +117,7 @@ sheet when needed. Ask Agent to request the
 installed `npm` executable for the exact command `npm --version` in `.` and run
 it without networking. If executable access is not already available, a confident
 review should show **Approved by reviewer** in activity; uncertain review should
-show the usual human sheet. Repeat in **Ask frequently** to check the human path.
+show the usual human sheet. Repeat in **Ask every time** to check the human path.
 Stop during **Reviewing command access…** to verify that no late approval appears.
 Initial project editing and publishing should still show their existing sheets.
 
