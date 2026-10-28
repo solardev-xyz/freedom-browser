@@ -329,6 +329,13 @@
   font-size: 24px;
   letter-spacing: 0.1em;
 }
+/* "Restart now" sits beside the Enable switch (#803). The shared 8px
+   .row-control gap leaves the button almost touching the switch, and the
+   switch's own focus ring (4px offset, below) inside it; the row's 16px gap
+   between text and control keeps them apart (#862). */
+#ai .row-control {
+  gap: 16px;
+}
 #ai .ai-next-step {
   display: flex;
   flex-wrap: wrap;
@@ -337,6 +344,10 @@
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
+}
+/* Line the text button's label up with the section's left edge. */
+#ai .ai-invitation-reset {
+  margin: 12px 0 0 -12px;
 }
 #ai .ai-next-step .row-help {
   flex: 1;
