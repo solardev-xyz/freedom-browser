@@ -342,6 +342,22 @@
 :is(#providers, #voice) .error {
   color: var(--danger);
 }
+/* The Connect button's own result sits right under it (#858): the
+   general message line at the bottom of the page is out of view on a
+   tall provider form. Empty lines take no room. */
+#providers .agent-provider-connect-feedback {
+  margin: -8px 0 16px;
+}
+#providers .agent-provider-connect-feedback:not(:has(.agent-message:not(:empty), #agent-ollama-install:not([hidden]))) {
+  display: none;
+}
+#providers .agent-provider-connect-feedback p {
+  margin: 0;
+}
+#providers .agent-provider-connect-feedback a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 #providers .agent-compatibility,
 #providers .agent-auth-code {
   border: 1px solid var(--border);

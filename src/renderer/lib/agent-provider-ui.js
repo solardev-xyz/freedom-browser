@@ -98,6 +98,8 @@ export function createAgentProviderUi(options = {}) {
     authCallbackSubmit: byId('agent-auth-callback-submit'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
+    connectMessage: byId('agent-provider-connect-message'),
+    ollamaInstall: byId('agent-ollama-install'),
     ...options.elements,
   };
   const state = options.state || {
@@ -129,7 +131,40 @@ export function createAgentProviderUi(options = {}) {
     if (!element) return;
     element.textContent = text;
     element.classList.toggle('error', error);
+    // Any later action that reports in the page-wide line (disconnect,
+    // refresh, test prompt, sign-in, preferences) supersedes the Connect
+    // result, so stale text never sits under the button beside it.
+    if (text && element === elements.providerMessage && elements.connectMessage?.textContent)
+      setConnectMessage('');
   };
+  // The Connect button's result goes in the slot right under it when the
+  // page has one (#858), not the page-wide line far below the form. While
+  // it shows an error the "Connect to discover" placeholder is hidden. Only
+  // AGENT_OLLAMA_DISCOVERY_FAILED points at where to get Ollama. That code
+  // covers more than "no server answered": main also raises it when
+  // something at the URL answered /api/tags with a non-2xx status, an
+  // oversized or malformed body, no `models` array, or a model name it
+  // rejects (provider-resolver.js configureOllama). Main cannot tell those
+  // apart from "not Ollama at all", so a running Ollama with a broken reply
+  // can still see the pointer next to the "make sure Ollama is running"
+  // error. "No models installed", "too many models" or a refused URL never
+  // show it: those come from an Ollama that is evidently there already. The
+  // slot is cleared when the privacy setting it was checked against changes.
+  let connectError = false;
+  function setConnectMessage(text = '', error = false, { suggestOllamaInstall = false } = {}) {
+    const slot = elements.connectMessage;
+    if (!slot) return setMessage(elements.providerMessage, text, error);
+    setMessage(slot, text, error);
+    if (text) setMessage(elements.providerMessage, '');
+    connectError = Boolean(text) && error;
+    if (elements.ollamaInstall)
+      elements.ollamaInstall.hidden = !(
+        connectError &&
+        suggestOllamaInstall &&
+        elements.provider.value === 'ollama'
+      );
+    elements.providerModelsEmpty.hidden = connectError || !elements.providerModelsList.hidden;
+  }
   const isCustomProvider = (id) => id === 'openai-compatible' || id?.startsWith('custom-');
   function providerName(providerId) {
     return (
@@ -454,7 +489,7 @@ export function createAgentProviderUi(options = {}) {
     );
     elements.providerModelsList.scrollTop = 0;
     elements.providerModelsList.hidden = !available.length;
-    elements.providerModelsEmpty.hidden = Boolean(available.length);
+    elements.providerModelsEmpty.hidden = Boolean(available.length) || connectError;
     // The hover hint only explains symbols that are actually on screen (#856).
     if (elements.providerModelsPrivacyHint)
       elements.providerModelsPrivacyHint.hidden = !hasPrivacySymbols;
@@ -483,6 +518,7 @@ export function createAgentProviderUi(options = {}) {
     elements.providerBrowser.hidden = screen !== 'browser';
     elements.providerDetail.hidden = screen !== 'detail';
     setMessage(elements.providerMessage, '');
+    setConnectMessage('');
     if (screen === 'browser') elements.providerSearch.focus();
     if (!applyingSettingsRoute) options.onScreenChange?.(screen, elements.provider.value);
   }
@@ -817,10 +853,24 @@ export function createAgentProviderUi(options = {}) {
     }, TRANSIENT_MESSAGE_MS);
   }
 
-  async function refreshModelCatalog({ background = false } = {}) {
+  async function refreshModelCatalog({ background = false, connecting = false } = {}) {
     const providerId = elements.provider.value;
+    const report = connecting
+      ? setConnectMessage
+      : (text, error) => setMessage(elements.providerMessage, text, error);
     elements.modelRefresh.disabled = true;
-    if (!background) setMessage(elements.providerMessage, 'Refreshing model catalog…');
+    // A manual refresh supersedes an earlier Connect result under the button.
+    if (!background && !connecting) setConnectMessage('');
+    if (!background) report('Refreshing model catalog…');
+    // Connect-time discovery only runs for a provider that is not connected
+    // yet, so there is no previous catalog to fall back on: don't say there is.
+    const failure = connecting
+      ? 'Could not load this provider’s models. Try connecting again.'
+      : 'Could not refresh models. Your previous catalog is still available.';
+    const failureMessage = (response) =>
+      connecting && (!response?.error || response.error.code === 'AGENT_CATALOG_UNAVAILABLE')
+        ? failure
+        : responseMessage(response, failure);
     try {
       const response = await api.refreshAgentProviderModels(
         providerId,
@@ -828,14 +878,7 @@ export function createAgentProviderUi(options = {}) {
       );
       if (!response?.ok) {
         if (!background)
-          setMessage(
-            elements.providerMessage,
-            responseMessage(
-              response,
-              'Could not refresh models. Your previous catalog is still available.'
-            ),
-            true
-          );
+          report(failureMessage(response), true);
         return;
       }
       state.providerCatalog = response.catalog;
@@ -843,15 +886,12 @@ export function createAgentProviderUi(options = {}) {
       renderProviderFields();
       renderConnectedProviders();
       renderActiveModel();
-      if (!background) setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
+      if (!background && !connecting)
+        setTransientMessage(elements.providerMessage, 'Model catalog refreshed');
       return true;
     } catch {
       if (!background)
-        setMessage(
-          elements.providerMessage,
-          'Could not refresh models. Your previous catalog is still available.',
-          true
-        );
+        report(failure, true);
     } finally {
       elements.modelRefresh.disabled = !providerConnection(elements.provider.value);
     }
@@ -1198,10 +1238,10 @@ export function createAgentProviderUi(options = {}) {
     const connection = providerConnection(providerId);
     const consequence =
       connection.kind === 'hosted' || connection.hasApiKey
-      ? ' Its saved API key is deleted from this device.'
-      : connection.kind === 'subscription'
-        ? ' You will need to sign in again to reconnect.'
-        : '';
+        ? ' Its saved API key is deleted from this device.'
+        : connection.kind === 'subscription'
+          ? ' You will need to sign in again to reconnect.'
+          : '';
     elements.providerDisconnectQuestion.textContent = `Disconnect ${providerName(providerId)} from Agent?${consequence}`;
     confirm.hidden = false;
     elements.providerDisconnect.hidden = true;
@@ -1244,10 +1284,7 @@ export function createAgentProviderUi(options = {}) {
     const privacyPolicy = elements.privacyPolicy.value;
     const adding = !providerConnection(providerId);
     elements.saveProvider.disabled = true;
-    setMessage(
-      elements.providerMessage,
-      providerId === 'ollama' ? 'Finding installed models…' : 'Saving…'
-    );
+    setConnectMessage(providerId === 'ollama' ? 'Finding installed models…' : 'Saving…');
     try {
       let response;
       if (
@@ -1258,15 +1295,11 @@ export function createAgentProviderUi(options = {}) {
       ) {
         // Some catalogs require the entered key. Discover them as part of connecting,
         // without making users select a model in the connection form.
-        if (!(await refreshModelCatalog())) return;
+        if (!(await refreshModelCatalog({ connecting: true }))) return;
         elements.privacyPolicy.value = privacyPolicy;
         renderModelOptions(providerId);
         if (!elements.model.value) {
-          setMessage(
-            elements.providerMessage,
-            'No supported models meet this privacy setting',
-            true
-          );
+          setConnectMessage('No supported models meet this privacy setting', true);
           return;
         }
       }
@@ -1325,16 +1358,14 @@ export function createAgentProviderUi(options = {}) {
       }
       elements.apiKey.value = '';
       if (!response?.ok) {
-        setMessage(
-          elements.providerMessage,
-          responseMessage(response, 'Could not save model'),
-          true
-        );
+        setConnectMessage(responseMessage(response, 'Could not save model'), true, {
+          suggestOllamaInstall:
+            providerId === 'ollama' && response?.error?.code === 'AGENT_OLLAMA_DISCOVERY_FAILED',
+        });
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
-      setMessage(
-        elements.providerMessage,
+      setConnectMessage(
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
       );
       if (isCustomProvider(providerId)) {
@@ -1346,7 +1377,7 @@ export function createAgentProviderUi(options = {}) {
       }
     } catch {
       elements.apiKey.value = '';
-      setMessage(elements.providerMessage, 'Could not save model', true);
+      setConnectMessage('Could not save model', true);
     } finally {
       elements.saveProvider.disabled = false;
     }
@@ -1515,9 +1546,10 @@ export function createAgentProviderUi(options = {}) {
       context.setAgentView('workspace');
       context.focusComposer();
     });
-    elements.privacyPolicy.addEventListener('change', () =>
-      renderModelOptions(elements.provider.value)
-    );
+    elements.privacyPolicy.addEventListener('change', () => {
+      setConnectMessage('');
+      renderModelOptions(elements.provider.value);
+    });
     elements.privacySave.addEventListener('click', () =>
       saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value })
     );

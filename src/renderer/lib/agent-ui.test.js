@@ -117,6 +117,8 @@ function createAgentElements() {
     'agent-subscription-method-title',
     'agent-subscription-method-help',
     'agent-provider-message',
+    'agent-provider-connect-message',
+    'agent-ollama-install',
     'agent-page-contexts',
     'agent-page-context',
     'agent-page-context-label',
@@ -5823,6 +5825,179 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('a failed connect reports under the button, hides the placeholder and points at Ollama (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const failure = 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.';
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: { code: 'AGENT_OLLAMA_DISCOVERY_FAILED', message: failure } })
+        .mockResolvedValueOnce({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const install = ctx.elements['agent-ollama-install'];
+    const placeholder = ctx.elements['agent-provider-models-empty'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(false);
+    expect(install.hidden).toBe(true);
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(failure);
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('');
+    expect(install.hidden).toBe(false);
+    expect(placeholder.hidden).toBe(true);
+    // Re-rendering the provider form keeps the placeholder hidden behind the error.
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(true);
+
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    expect(slot.classList.contains('error')).toBe(false);
+    expect(install.hidden).toBe(true);
+  });
+
+  test.each([
+    ['AGENT_OLLAMA_NO_MODELS', 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.'],
+    ['AGENT_OLLAMA_MODEL_LIMIT', 'This Ollama server has more than the supported 128 models.'],
+    ['AGENT_PROVIDER_INVALID', 'Ollama URL must be absolute'],
+    [undefined, undefined],
+  ])('a %s connect error does not suggest downloading Ollama (#858)', async (code, message) => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue(
+        code ? { ok: false, error: { code, message } } : { ok: false }
+      ),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(message || 'Could not save model');
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+  });
+
+  test('a later bottom-line report clears the Connect result under the button (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+      removeAgentProvider: jest.fn().mockResolvedValue({ ok: false }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    ctx.elements['agent-provider-disconnect'].dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Could not disconnect Ollama');
+    expect(slot.textContent).toBe('');
+  });
+
+  test('changing the privacy setting clears a Connect error and brings the placeholder back (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'open', name: 'Open', privacy: 'anonymized', tools: true },
+      ] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    const slot = ctx.elements['agent-provider-connect-message'];
+    expect(slot.textContent).toBe('No supported models meet this privacy setting');
+    ctx.elements['agent-privacy-policy'].value = 'standard';
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(slot.textContent).toBe('');
+    expect(slot.classList.contains('error')).toBe(false);
+  });
+
+  test('a connect-time catalog failure does not promise a previous catalog (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All']], models: [] };
+    const refresh = jest.fn()
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_UNAVAILABLE',
+        message: 'Could not refresh models. The previous catalog is still available.',
+      } })
+      .mockRejectedValueOnce(new Error('ipc'))
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_AUTH_FAILED', message: 'The provider did not accept this API key.',
+      } })
+      .mockResolvedValueOnce({ ok: false });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: refresh,
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const connect = async () => {
+      ctx.elements['agent-api-key'].value = 'test-key';
+      ctx.elements['agent-provider-save'].dispatch('click');
+      await flush();
+      await flush();
+    };
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    expect(slot.classList.contains('error')).toBe(true);
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    await connect();
+    expect(slot.textContent).toBe('The provider did not accept this API key.');
+    // A manual refresh still reports in the bottom line with the old wording.
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'Could not refresh models. Your previous catalog is still available.'
+    );
+  });
+
+  test('a failed hosted connect reports under the button without the Ollama pointer (#858)', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Invalid API key' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = ctx.elements['agent-model-select'].children[0]?.value || 'gpt-5';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-connect-message'].textContent).toBeTruthy();
+    expect(ctx.elements['agent-provider-connect-message'].classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
   });
 
   test('Ollama details describe the connected model right after connecting (#846)', async () => {
