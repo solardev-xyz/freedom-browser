@@ -3,7 +3,8 @@
 // while AI is on without one, and nothing once a model is connected. A user
 // who connected a model and then turned AI off is told it is off rather than
 // introduced to it again. Turning AI on stays in Settings, which is where the
-// user consents to it.
+// user consents to it. Dismissing the banner hides the step it was showing;
+// Settings → AI can show it again.
 const banner = document.getElementById('ai-invitation');
 const intro = document.getElementById('home-intro');
 const heading = document.getElementById('ai-invitation-heading');
@@ -33,37 +34,28 @@ const STEPS = {
   },
 };
 
+const { aiInvitationStep, dismissedAiInvitationStep } = window.freedomAiInvitation;
+
 let settings = null;
 let revision = 0;
+// The step the banner is showing, which the dismiss button hides.
+let shown = null;
 
-// The step this profile is on, or null when there is nothing left to set up
-// (or, with AI on, the setup state could not be read, which hides it too).
-async function currentStep() {
-  const enabled = settings?.enableAi === true;
-  let configured;
-  try {
-    const state = await freedomAPI.getAgentSetupState();
-    configured = state?.ok ? state.configured === true : null;
-  } catch {
-    configured = null;
-  }
-  // With AI off an unreadable state falls back to the introduction.
-  if (!enabled) return configured ? 'resume' : 'enable';
-  if (configured === null) return null;
-  return configured ? null : 'connect';
-}
-
+// A dismissal hides only the step it was made on (#881): reaching a different
+// step (turning AI on, or off again after connecting a model) shows the banner
+// again.
 async function render() {
   if (!settings) return;
   const current = ++revision;
-  const step = settings.aiInvitationDismissed === true ? null : await currentStep();
+  const step = await aiInvitationStep(settings, () => freedomAPI.getAgentSetupState());
   if (current !== revision) return;
-  banner.hidden = !step;
-  if (!step) return;
-  heading.textContent = STEPS[step].heading;
-  byline.textContent = STEPS[step].byline;
-  open.textContent = STEPS[step].action;
-  open.href = STEPS[step].href;
+  shown = step && step !== dismissedAiInvitationStep(settings) ? step : null;
+  banner.hidden = !shown;
+  if (!shown) return;
+  heading.textContent = STEPS[shown].heading;
+  byline.textContent = STEPS[shown].byline;
+  open.textContent = STEPS[shown].action;
+  open.href = STEPS[shown].href;
 }
 
 function apply(next) {
@@ -72,9 +64,11 @@ function apply(next) {
 }
 
 dismiss.addEventListener('click', async () => {
+  const step = shown;
+  if (!step) return;
   dismiss.disabled = true;
   try {
-    if (!(await freedomAPI.saveSettings({ aiInvitationDismissed: true }))) throw new Error();
+    if (!(await freedomAPI.saveSettings({ aiInvitationDismissed: step }))) throw new Error();
     banner.hidden = true;
     // The banner disappeared; return keyboard focus to the introduction.
     intro.focus();

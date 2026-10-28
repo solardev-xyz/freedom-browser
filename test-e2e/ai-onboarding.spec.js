@@ -166,13 +166,67 @@ test('invitation dismissal persists across a real restart without enabling AI', 
   await home.locator('#ai-invitation-dismiss').click();
   await expect(home.locator('#ai-invitation')).toBeHidden();
   await expect(home.locator('#home-intro')).toBeFocused();
-  expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false, aiInvitationDismissed: true });
+  expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false, aiInvitationDismissed: 'enable' });
   await electronApp.close();
   const restarted = await relaunchApp();
   const restartedHome = await guest(restarted, 'home');
   await expect(restartedHome.locator('#ai-invitation')).toBeHidden();
   const chrome = await restarted.firstWindow();
   await expect(chrome.locator('#agent-toggle-btn')).toBeHidden();
+});
+
+// #881: a dismissal hides only the step it was made on. Reaching a later step
+// shows the banner again, and Settings → AI offers to show a dismissed step's
+// banner again only while that dismissal is what hides it.
+test('dismissing one setup step leaves the later ones, and Settings can show the banner again', async ({ electronApp, window }) => {
+  test.setTimeout(60_000);
+  const stored = async () => (await window.evaluate(() => window.electronAPI.getSettings())).aiInvitationDismissed;
+  const home = await guest(electronApp, 'home');
+  const heading = home.locator('#ai-invitation-heading');
+  await expect(heading).toHaveText('Meet Freedom Agent');
+  await home.locator('#ai-invitation-dismiss').click();
+  await expect(home.locator('#ai-invitation')).toBeHidden();
+  expect(await stored()).toBe('enable');
+
+  // AI on without a model: the dismissed introduction does not hide this step.
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
+  await expect(home.locator('#ai-invitation')).toBeVisible();
+  await expect(heading).toHaveText('Finish setting up Freedom Agent');
+  await home.locator('#ai-invitation-dismiss').click();
+  await expect(home.locator('#ai-invitation')).toBeHidden();
+  expect(await stored()).toBe('connect');
+
+  // A connected model, then AI off: "Agent is off" shows despite both earlier
+  // dismissals.
+  const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
+  expect(configured?.ok).toBe(true);
+  await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+  await expect(home.locator('#ai-invitation')).toBeVisible();
+  await expect(heading).toHaveText('Freedom Agent is off');
+  await home.locator('#ai-invitation-dismiss').click();
+  await expect(home.locator('#ai-invitation')).toBeHidden();
+  expect(await stored()).toBe('resume');
+
+  const page = await settings(electronApp, window);
+  const reset = page.locator('#ai-invitation-reset');
+  await expect(reset).toBeVisible();
+  await expect(reset).toHaveText('Show the Freedom Agent banner on the start page again');
+  // AI on with the model connected: the start page has nothing to show, so
+  // Settings offers nothing to bring back; AI off again hides "resume" again.
+  await page.locator('#enable-ai').check();
+  await expect(reset).toBeHidden();
+  await page.locator('#enable-ai').uncheck();
+  await expect(reset).toBeVisible();
+  await reset.click();
+  await expect(reset).toBeHidden();
+  await expect(page.locator('#enable-ai')).toBeFocused();
+  expect(await stored()).toBe(false);
+
+  await window.locator('#address-input').fill('freedom://home');
+  await window.locator('#address-input').press('Enter');
+  const back = await guest(electronApp, 'home');
+  await expect(back.locator('#ai-invitation')).toBeVisible();
+  await expect(back.locator('#ai-invitation-heading')).toHaveText('Freedom Agent is off');
 });
 
 // #777: the AI switch is the consent step, so the start page cannot flip it
@@ -207,7 +261,7 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   expect(await home.evaluate(() => window.freedomAPI.saveSettings({ enableAi: true }))).toBe(false);
   expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false });
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
-  expect(await home.evaluate(() => window.freedomAPI.saveSettings({ aiInvitationDismissed: true }))).toBe(true);
+  expect(await home.evaluate(() => window.freedomAPI.saveSettings({ aiInvitationDismissed: 'enable' }))).toBe(true);
   expect(await modelContext(electronApp)).toEqual([true, 'undefined']);
 
   const page = await settings(electronApp, window);

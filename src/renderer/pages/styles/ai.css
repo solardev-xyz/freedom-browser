@@ -338,6 +338,10 @@
   padding-top: 20px;
   border-top: 1px solid var(--border);
 }
+/* Line the text button's label up with the section's left edge. */
+#ai .ai-invitation-reset {
+  margin: 12px 0 0 -12px;
+}
 #ai .ai-next-step .row-help {
   flex: 1;
   min-width: 180px;

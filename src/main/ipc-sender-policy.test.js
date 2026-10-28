@@ -154,7 +154,7 @@ describe('isSenderAllowed', () => {
       expect(refusedSettingsKeys(page(file), { enableAi: true, theme: 'dark' })).toEqual(['enableAi']);
       expect(refusedSettingsKeys(page(file), { theme: 'dark' })).toEqual([]);
     }
-    expect(refusedSettingsKeys(page('home.html'), { aiInvitationDismissed: true })).toEqual([]);
+    expect(refusedSettingsKeys(page('home.html'), { aiInvitationDismissed: 'enable' })).toEqual([]);
     expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), { enableAi: true })).toEqual(['enableAi']);
     expect(refusedSettingsKeys(makeEvent({ url: fileUrl('/tmp/pages/settings.html') }), { enableAi: true })).toEqual(['enableAi']);
     expect(refusedSettingsKeys(web(), { enableAi: true })).toEqual(['enableAi']);
