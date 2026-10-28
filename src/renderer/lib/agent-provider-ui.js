@@ -14,6 +14,32 @@ const PROVIDER_NAMES = Object.freeze({
   'near-ai': 'NEAR AI',
   ollama: 'Ollama',
 });
+const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434/v1';
+
+// A model server on this device: localhost, 127.0.0.0/8 or ::1.
+function isLoopbackUrl(value) {
+  try {
+    const host = new URL(value).hostname;
+    return host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+// The form a typed Ollama URL is stored in: main's normalizeOllamaBaseUrl
+// (provider-resolver.js) appends /v1 and drops a trailing slash, so the dirty
+// check compares like with like. Unparseable text is left as typed (dirty).
+function ollamaUrlKey(value) {
+  const text = String(value || '').trim();
+  try {
+    const parsed = new URL(text);
+    parsed.pathname = `${parsed.pathname.replace(/\/+$/, '') || ''}/v1`.replace('/v1/v1', '/v1');
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return text;
+  }
+}
+
 // Shared provider and model UI. Only Settings mounts the configuration form;
 // the conversation host supplies just its model picker and lifecycle callbacks.
 export function createAgentProviderUi(options = {}) {
@@ -312,9 +338,14 @@ export function createAgentProviderUi(options = {}) {
     }
     elements.testProvider.textContent = isCustom ? 'Check compatibility' : 'Send test prompt';
     elements.testProvider.disabled = compatibilityCheckPending;
+    // A model on this device bills no tokens (#859).
+    const charges =
+      isOllama || (isCustom && isLoopbackUrl(connection?.baseUrl))
+        ? ''
+        : ' Token charges may apply.';
     elements.testProviderNote.textContent = isCustom
-      ? 'Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared. Token charges may apply.'
-      : 'Sends only “Reply with OK.” to this model. Token charges may apply.';
+      ? `Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared.${charges}`
+      : `Sends only “Reply with OK.” to this model.${charges}`;
     elements.providerHeading.textContent = providerName(providerId);
     elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
     elements.providerStatus.classList.toggle('active', Boolean(connection));
@@ -328,7 +359,7 @@ export function createAgentProviderUi(options = {}) {
       'hidden',
       !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !providerLoginPending)
     );
-    elements.saveProvider.hidden = isSubscription;
+    renderSaveVisibility();
     elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
     elements.subscriptionNote.hidden = Boolean(connection) && !canUpgradeChatgpt;
     elements.subscriptionNote.textContent = canUpgradeChatgpt
@@ -439,6 +470,48 @@ export function createAgentProviderUi(options = {}) {
     else element.setAttribute('aria-hidden', 'true');
   }
 
+  // A connected provider's Save shows only once a field it would save differs
+  // from what is stored (#859); a new connection always offers it.
+  function connectionFormDirty(providerId) {
+    const connection = providerConnection(providerId);
+    if (!connection) return true;
+    if (providerId === 'ollama')
+      return (
+        ollamaUrlKey(elements.ollamaUrl.value) !==
+        ollamaUrlKey(connection.baseUrl || DEFAULT_OLLAMA_URL)
+      );
+    if (elements.apiKey.value) return true;
+    if (!isCustomProvider(providerId)) return false;
+    const ids = [
+      ...new Set(
+        elements.customModels.value
+          .split(/[,\n]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      ),
+    ];
+    const savedIds = (connection.models || []).map((m) => m.id);
+    const model = catalogModel(providerId, elements.model.value);
+    return (
+      elements.customClearKey.checked ||
+      elements.customName.value.trim() !== (connection.name || '') ||
+      ids.join('\n') !== savedIds.join('\n') ||
+      (Boolean(elements.model.value) && elements.model.value !== connection.modelId) ||
+      Number(elements.customContext.value) !== (model?.contextWindow || 32768) ||
+      Number(elements.customOutput.value) !== (model?.maxTokens || 4096) ||
+      elements.customVision.checked !== (model?.vision === true) ||
+      elements.customReasoning.checked !== (model?.reasoning === true) ||
+      elements.customSchema.checked !== (model?.jsonSchema === true)
+    );
+  }
+
+  function renderSaveVisibility() {
+    if (!elements.saveProvider || !elements.provider) return;
+    const providerId = elements.provider.value;
+    elements.saveProvider.hidden =
+      providerAuthType(providerId) === 'subscription' || !connectionFormDirty(providerId);
+  }
+
   function renderProviderModelPreview(providerId) {
     const connection = providerConnection(providerId);
     const models =
@@ -473,15 +546,18 @@ export function createAgentProviderUi(options = {}) {
           select.type = 'button';
           select.textContent = model.name || model.id;
           select.setAttribute('aria-label', `Use ${model.name || model.id} for new chats`);
-          select.setAttribute(
-            'aria-pressed',
-            String(
-              state.providerStatus?.providerId === providerId &&
-                state.providerStatus?.modelId === model.id
-            )
-          );
+          const isDefault =
+            state.providerStatus?.providerId === providerId &&
+            state.providerStatus?.modelId === model.id;
+          select.setAttribute('aria-pressed', String(isDefault));
           select.addEventListener('click', () => selectModel(providerId, model.id));
           name.replaceChildren(select);
+          if (isDefault) {
+            const tag = document.createElement('span');
+            tag.className = 'agent-model-default-tag';
+            tag.textContent = 'Default';
+            name.appendChild(tag);
+          }
         }
         row.title = `${model.id}\n${info.detail}`;
         return row;
@@ -531,7 +607,7 @@ export function createAgentProviderUi(options = {}) {
     elements.model.value = providerConnection(providerId)?.modelId || '';
     if (providerId === 'ollama') {
       const connection = providerConnection(providerId);
-      elements.ollamaUrl.value = connection?.baseUrl || 'http://127.0.0.1:11434/v1';
+      elements.ollamaUrl.value = connection?.baseUrl || DEFAULT_OLLAMA_URL;
     }
     if (isCustomProvider(providerId)) {
       const connection = providerConnection(providerId);
@@ -759,6 +835,8 @@ export function createAgentProviderUi(options = {}) {
     loadCustomModelSettings();
     renderModelDetails();
     renderCompatibilityCheck();
+    // The fields above were just reset to what is stored.
+    renderSaveVisibility();
   }
 
   function renderCustomTransport() {
@@ -1141,7 +1219,7 @@ export function createAgentProviderUi(options = {}) {
       ) {
         elements.provider.value = status.providerId;
         if (status.providerId === 'ollama') {
-          elements.ollamaUrl.value = status.baseUrl || 'http://127.0.0.1:11434/v1';
+          elements.ollamaUrl.value = status.baseUrl || DEFAULT_OLLAMA_URL;
         }
       }
     }
@@ -1365,6 +1443,9 @@ export function createAgentProviderUi(options = {}) {
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
+      // Show the URL as main stored it (normalized), so the field matches.
+      const savedOllamaUrl = providerId === 'ollama' && providerConnection(providerId)?.baseUrl;
+      if (savedOllamaUrl) elements.ollamaUrl.value = savedOllamaUrl;
       setConnectMessage(
         providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
       );
@@ -1380,6 +1461,8 @@ export function createAgentProviderUi(options = {}) {
       setConnectMessage('Could not save model', true);
     } finally {
       elements.saveProvider.disabled = false;
+      // The API key was cleared above on every path; recompute Save.
+      renderSaveVisibility();
     }
   }
 
@@ -1529,7 +1612,23 @@ export function createAgentProviderUi(options = {}) {
       loadCustomModelSettings();
       renderModelDetails();
       renderCompatibilityCheck();
+      renderSaveVisibility();
     });
+    for (const field of [
+      elements.apiKey,
+      elements.ollamaUrl,
+      elements.customName,
+      elements.customModels,
+      elements.customClearKey,
+      elements.customContext,
+      elements.customOutput,
+      elements.customVision,
+      elements.customReasoning,
+      elements.customSchema,
+    ]) {
+      field?.addEventListener('input', renderSaveVisibility);
+      field?.addEventListener('change', renderSaveVisibility);
+    }
     elements.modelRefresh.addEventListener('click', () => refreshModelCatalog());
     elements.testProvider.addEventListener('click', testProviderConnection);
     elements.compatibilityContinue.addEventListener('click', async () => {
