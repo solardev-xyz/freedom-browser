@@ -936,6 +936,21 @@ test('domain approval card names the action, lists the summary and labels the co
       expect(await window.evaluate(() => [document.documentElement, document.getElementById('agent-approval')]
         .every(element => element.scrollWidth <= element.clientWidth))).toBe(true);
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-${width}-${theme}.png`) });
+      if (width === 600) {
+        // A narrow window's bottom sheet is shorter than this card (#874): the
+        // card scrolls inside the sheet, under a header that stays in place.
+        await window.locator('#agent-approval-approve').scrollIntoViewIfNeeded();
+        const reach = await window.evaluate(() => {
+          const button = document.getElementById('agent-approval-approve').getBoundingClientRect();
+          const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+          const sheet = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
+          const hit = document.elementFromPoint(button.x + button.width / 2, button.y + button.height / 2);
+          return { hit: hit?.closest('#agent-approval-approve') !== null, headerTop: header.top - sheet.top, inside: button.bottom <= sheet.bottom };
+        });
+        expect(reach).toEqual({ hit: true, headerTop: expect.any(Number), inside: true });
+        expect(reach.headerTop).toBeLessThanOrEqual(2);
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-approve-${theme}.png`) });
+      }
     }
   }
   // Step 2 pays the quote plus the disclosed buffer: the Amount row is the
@@ -2344,4 +2359,53 @@ test('answer links keep their URL and open in a tab; quotes, code and tables are
     .toContain('docs.ethswarm.org');
   expect(window.url()).toBe(chromeUrl);
   await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-agent-first-ctrl.png') });
+});
+
+test('a narrow window shows the floating conversation as a bottom sheet, not a side column (#874)', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'narrow', userText: 'Summarise this page' },
+      { type: 'assistant_text_delta', conversationId: 'narrow', text: 'The page has three top stories:\n\n- Swarm mainnet hits 10k nodes\n- ENS v2 ships\n- Freedom 0.9 released' },
+      { type: 'run_finished', conversationId: 'narrow', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'run_narrow', ...event });
+  });
+  await expect(window.locator('.agent-output.rendered-markdown')).toBeVisible();
+  await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
+  const setWidth = width => electronApp.evaluate(({ BrowserWindow }, width) => {
+    const win = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    win.setMinimumSize(320, 300);
+    win.setContentSize(width, 800);
+  }, width);
+  const geometry = () => window.evaluate(() => {
+    const body = document.querySelector('.app-body').getBoundingClientRect();
+    const panel = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
+    const composer = document.querySelector('#agent-sidebar .agent-composer-wrap').getBoundingClientRect();
+    const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+    return { body, panel, composer, header, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+  });
+
+  // Wide: the side column, the page keeps its left side.
+  await setWidth(1000);
+  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(1000);
+  await expect.poll(async () => (await geometry()).panel.width).toBeLessThanOrEqual(410);
+
+  // Narrow: one full-width sheet over the bottom half, the page keeps the top.
+  await setWidth(600);
+  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(600);
+  await expect.poll(async () => (await geometry()).panel.width).toBeGreaterThan(560);
+  const { body, panel, composer, header, overflow } = await geometry();
+  expect(overflow).toBe(0);
+  expect(body.bottom - panel.bottom).toBeLessThanOrEqual(12);
+  expect(panel.top - body.top).toBeGreaterThan(body.height * 0.4);
+  expect(panel.height).toBeGreaterThan(300);
+  expect(header.top).toBeGreaterThanOrEqual(panel.top);
+  expect(composer.bottom).toBeLessThanOrEqual(panel.bottom + 1);
+  await expect(window.locator('.agent-output.rendered-markdown')).toBeVisible();
+  await expect(window.locator('#agent-composer')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`narrow-sheet-${theme}.png`) });
+  }
 });

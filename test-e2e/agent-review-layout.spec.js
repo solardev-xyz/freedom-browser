@@ -83,6 +83,49 @@ test('floating conversation leaves the page interactive and shares narrow corner
   }
 });
 
+test('a short narrow window keeps the bottom sheet inside the page area, below Find and above downloads (#874)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  const geometry = () => window.evaluate(() => {
+    const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+    return { body: rect('.app-body'), panel: rect('#agent-sidebar .agent-sidebar-inner'), find: rect('#find-bar'), status: rect('#link-status') };
+  });
+  // The link-status pill shares the page hints' offset above the sheet.
+  await window.evaluate(() => {
+    const status = document.getElementById('link-status');
+    document.getElementById('link-status-url').textContent = 'https://example.com/a-hovered-link';
+    status.hidden = false;
+    status.classList.add('visible', 'link-status--right');
+  });
+  let id = 8100;
+  for (const [width, height] of [[600, 500], [600, 450], [400, 450], [360, 450]]) {
+    await resize(electronApp, width, height);
+    for (const download of [false, true]) {
+      await window.evaluate(async ({ download, id }) => {
+        const { handleDownloadUpdate } = await import('./lib/downloads-ui.js');
+        if (download) handleDownloadUpdate({ id, state: 'progressing', filename: 'A long downloaded document.pdf', received_bytes: 50, total_bytes: 100 });
+        document.getElementById('find-bar').hidden = false;
+      }, { download, id: id++ });
+      if (download) await expect.poll(() => hit(window, '[data-test="download-cancel"]')).toBe(true);
+      await expect.poll(() => hit(window, '#find-bar-input')).toBe(true);
+      await expect.poll(() => hit(window, '#address-input')).toBe(true);
+      // Too short for header and composer: the composer scrolls in the sheet.
+      await window.locator('#agent-run').scrollIntoViewIfNeeded();
+      await expect.poll(() => hit(window, '#agent-run')).toBe(true);
+      await expect.poll(() => hit(window, '#agent-sidebar-close')).toBe(true);
+      const { body, panel, find, status } = await geometry();
+      expect(panel.top).toBeGreaterThanOrEqual(body.top);
+      expect(panel.top).toBeGreaterThanOrEqual(find.bottom);
+      // Same 14px gap above the sheet with or without the download shelf.
+      expect(panel.top - status.bottom).toBeGreaterThanOrEqual(12);
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`short-${width}x${height}${download ? '-download' : ''}.png`) });
+      // Without Find the sheet may grow back towards the top, never past it.
+      await window.evaluate(() => { document.getElementById('find-bar').hidden = true; });
+      await expect.poll(async () => (await geometry()).panel.top).toBeGreaterThanOrEqual(body.top);
+      if (download) await window.locator('[data-test="download-close"]').click();
+    }
+  }
+});
+
 test('Agent-first compact overlays, address menus and fullscreen restore work in both themes', async ({ electronApp, window }, testInfo) => {
   await openConversation(electronApp, window);
   await resize(electronApp, 600);

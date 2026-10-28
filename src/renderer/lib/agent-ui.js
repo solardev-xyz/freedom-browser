@@ -1477,6 +1477,18 @@ function observeComposerHeight() {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
+    // A narrow window shows the conversation as a bottom sheet: page hints
+    // sit above the whole sheet, not just its composer (#874).
+    const panelHeight = panelInner?.getBoundingClientRect?.().height || 0;
+    if (panelHeight > 0) setBodyStyleProperty('--agent-floating-panel-height', `${panelHeight}px`);
+    // A short window with Find and downloads open can leave the sheet less
+    // room than its header and composer need: the composer then scrolls
+    // under the header instead of the sheet spilling over the page chrome.
+    // scrollHeight stays the composer's natural height while it scrolls.
+    const header = panelInner?.querySelector?.('.agent-sidebar-header');
+    const room = panelInner?.clientHeight || 0;
+    const needed = (header?.offsetHeight || 0) + (elements.composerWrap.scrollHeight || 0);
+    document.body?.classList?.toggle('agent-floating-sheet-cramped', room > 0 && needed > room + 1);
     captureLauncherSnapshot();
   };
   update();
@@ -1484,6 +1496,7 @@ function observeComposerHeight() {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
     if (elements.examples) composerResizeObserver.observe(elements.examples);
+    if (panelInner) composerResizeObserver.observe(panelInner);
   }
 }
 
