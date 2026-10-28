@@ -1,2 +1,2 @@
-- Sites with a dark theme, such as x.com, fill the whole window with their own background again instead of showing white around their columns ([#923](https://github.com/solardev-xyz/freedom-browser/issues/923))
-  - Pages without colours of their own still show black text on white with Freedom in dark theme, and pages that follow the system's dark mode get their own light text again
+- Sites with a dark theme, such as x.com, now fill the whole window with their own background instead of showing white around their columns ([#923](https://github.com/solardev-xyz/freedom-browser/issues/923))
+  - Pages without colours of their own still show black text on white with Freedom in dark theme, and pages that follow the system's dark mode now get their own light text
