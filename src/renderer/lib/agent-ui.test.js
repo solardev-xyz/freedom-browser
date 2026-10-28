@@ -3431,6 +3431,22 @@ describe('Agent UI', () => {
     expect(menu.hidden).toBe(true);
     expect(more.focus).toHaveBeenCalledTimes(2);
 
+    // Shift+F10 / the ContextMenu key with ⋯ focused reaches the row as a
+    // coordinate-less contextmenu targeting ⋯: it is the opener, so the menu
+    // anchors under it and Escape hands focus back to it, not the title.
+    select.setRect({ left: 10, bottom: 40 });
+    more.setRect({ left: 200, bottom: 44 });
+    global.window.innerHeight = 800;
+    select.focus.mockClear();
+    first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(3);
+    expect(select.focus).not.toHaveBeenCalled();
+
     select.dispatch('keydown', keyboard);
     second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);

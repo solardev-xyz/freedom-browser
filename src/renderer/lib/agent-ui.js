@@ -869,7 +869,11 @@ function renderSessionSidebar() {
       actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
       rename.focus();
     };
-    row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
+    // The key/right-click can land on ⋯ itself (Shift+F10 with it focused): then
+    // it is the opener, so the menu anchors under it and focus returns to it.
+    row.addEventListener('contextmenu', (event) =>
+      openMenu(event, !event.clientX && !event.clientY, more.contains(event.target) ? more : select)
+    );
     more.addEventListener('click', (event) => {
       if (sessionContextMenu?.actions === actions) {
         event.preventDefault();

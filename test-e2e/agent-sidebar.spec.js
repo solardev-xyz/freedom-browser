@@ -1518,8 +1518,12 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     await reopenedWindow.locator('#agent-prompt').focus();
     await reopenedWindow.mouse.move(700, 500);
     await expect(sessionMore).toBeHidden();
+    const sessionTitle = sessionRow.locator('.agent-session-select');
+    const restingTitleWidth = (await sessionTitle.boundingBox()).width;
     await sessionRow.hover();
     await expect(sessionMore).toBeVisible();
+    // Revealing ⋯ must not narrow the title (and re-ellipsise it under the pointer).
+    expect((await sessionTitle.boundingBox()).width).toBe(restingTitleWidth);
     await expect(sessionMore).toHaveAccessibleName('Options for Summarize this page');
     await sessionMore.click();
     await expect(sessionMenu).toBeVisible();
@@ -1535,6 +1539,13 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     await expect(sessionMenu).toBeHidden();
     await expect(sessionMore).toBeFocused();
     await expect(sessionMore).toHaveAttribute('aria-expanded', 'false');
+    // Shift+F10 with ⋯ focused: ⋯ is the opener, so Escape returns focus to it.
+    await reopenedWindow.keyboard.press('Shift+F10');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
     await sessionRow.locator('.agent-session-select').click({ button: 'right' });
     await expect(sessionMenu).toBeVisible();
     await reopenedWindow.keyboard.press('Escape');
