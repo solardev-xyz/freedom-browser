@@ -222,6 +222,40 @@ test('Voice settings use service cards and detail pages in both themes, preservi
   const voice = settings.locator('#ai-dictation-settings');
   await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('In use');
   await expect(voice.getByLabel('Dictation service')).toHaveCount(0);
+  // #861: group labels read in sentence case, styled like the provider
+  // picker's "Model labs" label, not as uppercase category headings.
+  const labelStyle = (element) => {
+    const style = getComputedStyle(element);
+    return {
+      text: element.innerText,
+      fontSize: style.fontSize,
+      fontWeight: style.fontWeight,
+      letterSpacing: style.letterSpacing,
+      textTransform: style.textTransform,
+      color: style.color,
+    };
+  };
+  const voiceLabels = await voice.locator('.subsection-title').evaluateAll(
+    (elements, fn) => elements.map(new Function(`return ${fn}`)()),
+    labelStyle.toString()
+  );
+  expect(voiceLabels.map(label => label.text)).toEqual(['On your device', 'Connected services', 'Preferences']);
+  const providerLabel = await settings.evaluate((fn) => {
+    const label = document.createElement('div');
+    label.className = 'agent-provider-group-label';
+    label.textContent = 'Model labs';
+    document.querySelector('#providers').appendChild(label);
+    const providers = document.querySelector('#providers');
+    const hidden = providers.hidden;
+    providers.hidden = false;
+    const style = new Function(`return ${fn}`)()(label);
+    providers.hidden = hidden;
+    label.remove();
+    return style;
+  }, labelStyle.toString());
+  for (const label of voiceLabels) {
+    expect({ ...label, text: undefined }).toEqual({ ...providerLabel, text: undefined });
+  }
   await voice.getByLabel('Dictation language').selectOption('de');
   await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.language)).toBe('de');
   await voice.getByRole('link', { name: /OpenAI/ }).click();
