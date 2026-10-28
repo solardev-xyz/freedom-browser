@@ -1122,6 +1122,8 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.elements['agent-prompt'].value).toBe('Build a small browser game');
     expect(ctx.elements['agent-examples'].children[0].disabled).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
@@ -2354,11 +2356,16 @@ describe('Agent UI', () => {
       runId: 'run_test',
       status: 'completed',
     });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(false);
 
     ctx.elements['agent-new-chat'].dispatch('click');
     await flush();
 
     expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    // A fresh task names no run state (#876): no "Idle" badge.
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
     expect(ctx.elements['agent-transcript'].children).toHaveLength(0);
     expect(ctx.elements['agent-transcript'].hidden).toBe(true);
     expect(ctx.elements['agent-empty-state'].hidden).toBe(false);

@@ -322,6 +322,11 @@
   grid-row: title-start / status-end;
 }
 
+/* A new task has no run status either (#876): centre the title the same way. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header:has(#agent-run-status[hidden]) .agent-sidebar-title-row {
+  grid-row: title-start / status-end;
+}
+
 .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
   position: relative;
   z-index: 1;

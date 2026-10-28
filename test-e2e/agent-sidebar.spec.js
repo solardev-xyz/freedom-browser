@@ -1104,12 +1104,15 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(panel).toHaveClass(/collapsed/);
   await toggle.click();
   await expect(window.locator('#agent-prompt')).toBeFocused();
+  await expect(window.locator('#agent-run-status')).toBeHidden();
 
   const agentFirstToggle = window.locator('[data-test="agent-first-toggle"]');
   await expect(agentFirstToggle).toBeVisible();
   await agentFirstToggle.click();
   await expect(window.locator('#agent-prompt')).toBeFocused();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  // A new task names no run state: no "Idle" badge above the empty state (#876).
+  await expect(window.locator('#agent-run-status')).toBeHidden();
   await expect(window.locator('.toolbar')).toBeHidden();
   await expect(window.locator('#agent-first-titlebar')).toBeVisible();
   await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();

@@ -1830,7 +1830,10 @@ function setRunState(status, label) {
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
+  // A fresh task has nothing to report: an "Idle" pill told the user nothing
+  // (#876), so the badge only appears once there is a real state to name.
   elements.runStatus.textContent = label;
+  elements.runStatus.hidden = !label;
   elements.runStatus.classList.toggle('active', active);
   updateSendAvailability();
   renderPageInterlock();
@@ -4107,7 +4110,7 @@ function applyConversationCleared() {
   renderWorkspaceProcesses([]);
   renderTaskPages();
   resetConversationUi();
-  setRunState('idle', 'Idle');
+  setRunState('idle', '');
   renderSessionSidebar();
   void refreshSessionHistory();
   void refreshWorkspaceProjection();
@@ -4462,7 +4465,7 @@ async function startRun(options = {}) {
       }
       if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
       pendingPromptText = '';
-      setRunState('idle', 'Idle');
+      setRunState('idle', '');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       focusComposer({ preserveExplicitFocus: true });
       return false;
@@ -4492,7 +4495,7 @@ async function startRun(options = {}) {
     }
     if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
     pendingPromptText = '';
-    setRunState('idle', 'Idle');
+    setRunState('idle', '');
     setMessage(elements.runMessage, 'Could not start the agent', true);
     focusComposer({ preserveExplicitFocus: true });
     return false;
@@ -4773,7 +4776,8 @@ async function restoreRunState() {
       setRunState('idle', 'Ready');
     }
   } catch {
-    // Idle is the safe renderer default when lifecycle state cannot be restored.
+    // The untouched idle state (status badge hidden, no label) is the safe
+    // renderer default when lifecycle state cannot be restored.
   }
 }
 
