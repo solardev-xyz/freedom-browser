@@ -1878,11 +1878,19 @@ body.agent-first-mode .agent-empty-state {
   flex: 0 0 auto;
 }
 
-.agent-attachment-menu span {
+/* Label with its description underneath, never beside it, matching the
+   approval and Freedom-mode menus (which have their own rules and are not
+   matched here). This rule reaches every `.agent-attachment-menu`: the Add
+   menu and the dictation menu, which shares the class. In the dictation
+   menu the `.agent-dictation-menu-copy` and `.agent-dictation-menu-check`
+   spans are also direct `button > span` children; agent-dictation.css
+   overrides their `display` (grid / block), so keep those overrides if this
+   rule changes. */
+.agent-attachment-menu button > span {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .agent-attachment-menu strong {
@@ -1891,11 +1899,8 @@ body.agent-first-mode .agent-empty-state {
 }
 
 .agent-attachment-menu small {
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-composer {

@@ -118,6 +118,22 @@ test('chevron opens a compact provider menu in both themes; selection does not r
       await expect(menu).toBeVisible();
       await expect(menu.getByRole('menuitemradio', { name: /OpenRouter/ })).toHaveAttribute('aria-checked', 'true');
       await expect(menu.getByRole('menuitem', { name: 'Voice dictation settings…' })).toBeInViewport();
+      // #870: the check trails the active option (as in the approval menu);
+      // the plain Settings action reserves no empty check gutter, so its label
+      // lines up with the provider labels.
+      const layout = await menu.evaluate(host => {
+        const radios = [...host.querySelectorAll('[role="menuitemradio"]')];
+        const settings = host.querySelector('[role="menuitem"]');
+        const left = item => item.querySelector('strong').getBoundingClientRect().left;
+        return {
+          checkLast: radios.every(item => item.lastElementChild.classList.contains('agent-dictation-menu-check')),
+          checks: radios.map(item => item.querySelector('.agent-dictation-menu-check').textContent),
+          settingsCheck: settings.querySelectorAll('.agent-dictation-menu-check').length,
+          aligned: radios.every(item => Math.abs(left(item) - left(settings)) < 1),
+        };
+      });
+      expect(layout).toMatchObject({ checkLast: true, settingsCheck: 0, aligned: true });
+      expect(layout.checks.filter(mark => mark === '✓').length).toBe(1);
       await expect(window.locator('#agent-dictation-panel')).toBeHidden();
       await expect(window.locator('#agent-dictation')).toBeInViewport();
       await window.screenshot({ path: testInfo.outputPath(`dictation-menu-${theme}-${width}.png`) });
