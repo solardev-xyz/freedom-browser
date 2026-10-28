@@ -472,6 +472,61 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
   white-space: nowrap;
 }
 
+/* Row options: shown on hover/focus (and while its menu is open) so
+   Rename/Delete are discoverable without knowing about right-click. Its slot
+   is always laid out and only its opacity toggles, so revealing it never
+   narrows the title and re-ellipsises it under the pointer. Opacity, not
+   visibility: a visibility:hidden button drops out of the focus order, so
+   Shift+Tab from the next row's title would skip it (it is only revealed by
+   :focus-within once focus is already inside the row). */
+.agent-session-more {
+  display: inline-flex;
+  opacity: 0;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-session-row:hover .agent-session-more,
+.agent-session-row:focus-within .agent-session-more,
+.agent-session-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.agent-session-more:hover,
+.agent-session-more:focus-visible,
+.agent-session-more[aria-expanded='true'] {
+  color: var(--text);
+  background: var(--agent-hover-08);
+}
+
+@media (hover: none) {
+  .agent-session-more {
+    opacity: 1;
+  }
+}
+
+/* Nothing to offer mid-run (the menu refuses to open); the slot stays so
+   titles don't shift when a run starts or ends. While the row is renamed
+   inline the button is dropped and the field takes its space. */
+.agent-session-row .agent-session-more:disabled {
+  visibility: hidden;
+}
+
+.agent-session-row .agent-session-more[hidden] {
+  display: none;
+}
+
 .agent-session-history-empty {
   color: var(--muted);
   font-size: 12px;

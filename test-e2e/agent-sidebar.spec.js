@@ -1509,6 +1509,66 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     await reopenedWindow.locator('#agent-session-list .agent-session-select').click();
     await expect(reopenedWindow.locator('.agent-user-message')).toHaveText('Summarize this page');
     await expect(reopenedWindow.locator('#agent-task-page-count')).toHaveText('0');
+
+    // #880: Rename/Delete are reachable from a visible "⋯" button on hover
+    // and focus, not only from right-click.
+    const sessionRow = reopenedWindow.locator('#agent-session-list .agent-session-row');
+    const sessionMore = sessionRow.locator('.agent-session-more');
+    const sessionMenu = sessionRow.locator('.agent-session-actions');
+    await reopenedWindow.locator('#agent-prompt').focus();
+    await reopenedWindow.mouse.move(700, 500);
+    // Hidden by opacity (it stays in the focus order), so not `toBeHidden()`.
+    await expect(sessionMore).toHaveCSS('opacity', '0');
+    const sessionTitle = sessionRow.locator('.agent-session-select');
+    const restingTitleWidth = (await sessionTitle.boundingBox()).width;
+    await sessionRow.hover();
+    await expect(sessionMore).toHaveCSS('opacity', '1');
+    // Revealing ⋯ must not narrow the title (and re-ellipsise it under the pointer).
+    expect((await sessionTitle.boundingBox()).width).toBe(restingTitleWidth);
+    await expect(sessionMore).toHaveAccessibleName('Options for Summarize this page');
+    await sessionMore.click();
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'true');
+    await expect(sessionMenu.getByRole('menuitem')).toHaveText(['Rename', 'Delete']);
+    await sessionMore.click();
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await reopenedWindow.keyboard.press('Enter');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'false');
+    // Backward focus navigation reaches ⋯ too: leaving the row and coming back
+    // with Shift+Tab lands on ⋯, not on the title before it.
+    await reopenedWindow.mouse.move(700, 500);
+    await reopenedWindow.keyboard.press('Tab');
+    await expect(sessionMore).not.toBeFocused();
+    await expect(sessionMore).toHaveCSS('opacity', '0');
+    await reopenedWindow.keyboard.press('Shift+Tab');
+    await expect(sessionMore).toBeFocused();
+    await expect(sessionMore).toHaveCSS('opacity', '1');
+    // Shift+F10 with ⋯ focused: ⋯ is the opener, so Escape returns focus to it.
+    await reopenedWindow.keyboard.press('Shift+F10');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await sessionRow.locator('.agent-session-select').click({ button: 'right' });
+    await expect(sessionMenu).toBeVisible();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await sessionRow.hover();
+    await sessionMore.click();
+    await sessionMenu.getByRole('menuitem', { name: 'Rename' }).click();
+    const renameInput = sessionRow.getByRole('textbox', { name: 'Session title' });
+    await expect(renameInput).toBeFocused();
+    await expect(sessionMore).toBeHidden();
+    await renameInput.fill('Renamed session');
+    await renameInput.press('Enter');
+    await expect(reopenedWindow.locator('#agent-session-list')).toContainText('Renamed session');
   } finally {
     await reopened.close();
   }
