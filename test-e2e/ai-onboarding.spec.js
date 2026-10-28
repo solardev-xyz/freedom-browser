@@ -67,16 +67,27 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   const page = await guest(electronApp, 'settings');
   await expect(page.locator('#enable-ai')).not.toBeChecked();
   await expect(page.locator('#ai-provider-settings')).toBeHidden();
+  // A fresh profile has nothing saved, so it is not told its saved chats,
+  // connections and projects are kept, and with AI off there is no restart
+  // to talk about yet (#854).
+  await expect.poll(() => page.evaluate(() => window.freedomAPI.getAgentSetupState())).toEqual({ ok: true, configured: false, kept: false });
+  // The note ships hidden, so "hidden" holds before Settings has applied
+  // anything; give the page's own setup read time to land first.
+  await window.waitForTimeout(500);
+  await expect(page.locator('#ai-disabled-note')).toBeHidden();
+  await expect(page.locator('#ai').getByText(/AI is off/)).toBeHidden();
+  await expect(page.locator('#enable-ai-restart-help')).toBeHidden();
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-off-${theme}.png`) });
   }
-  // Page tools (WebMCP) are decided at launch: the row says so and offers
-  // the restart once AI is turned on (#803).
+  // Page tools (WebMCP) are decided at launch: once AI is turned on the row
+  // says so and offers the restart, together (#803, #854).
   await expect(page.locator('#enable-ai-restart-help')).toHaveText('Page tools that websites offer Agent take effect after restart.');
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
   await page.locator('#enable-ai').check();
+  await expect(page.locator('#enable-ai-restart-help')).toBeVisible();
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
   // With no model yet, turning AI on stays on the AI page and offers
   // "Connect a model" instead of navigating under the user's hand (#836).
@@ -155,10 +166,23 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
   await expect(window.locator('#agent-sidebar')).toBeHidden();
   await expect(page.locator('#enable-ai-restart')).toBeHidden();
+  await expect(page.locator('#enable-ai-restart-help')).toBeHidden();
   // One "AI is off" message (#835): the note, announced through its live
-  // wrapper; the status line, which said it again, is left empty.
+  // wrapper; the status line, which said it again, is left empty. A model is
+  // connected now, so there is something kept to tell about (#854).
   await expect(page.locator('#enable-ai')).toBeEnabled();
   await expect(page.locator('#ai-disabled-note')).toBeVisible();
+  // It sits a card's note distance below the switch card, not 4px (#854).
+  const gap = await page.evaluate(() =>
+    document.getElementById('ai-disabled-note').getBoundingClientRect().top -
+      document.querySelector('#ai > .card').getBoundingClientRect().bottom,
+  );
+  expect(gap).toBeGreaterThanOrEqual(16);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ai-off-kept-${theme}.png`) });
+  }
   await expect(page.locator('#ai-disabled-note').locator('xpath=..')).toHaveAttribute('aria-live', 'polite');
   await expect(page.locator('#ai-settings-status')).toBeEmpty();
   await expect(page.locator('#ai').getByText(/AI is off/)).toHaveCount(1);
@@ -294,7 +318,7 @@ test('with AI off pages get no WebMCP, the start page cannot enable AI, and Sett
   const restartedChrome = restarted.windows().find(page => page.url().endsWith('/renderer/index.html'));
   const restartedSettings = await settings(restarted, restartedChrome);
   await expect(restartedSettings.locator('#enable-ai')).toBeChecked();
-  await expect(restartedSettings.locator('#enable-ai-restart-help')).toBeVisible();
+  await expect(restartedSettings.locator('#enable-ai-restart-help')).toBeHidden();
   await expect(restartedSettings.locator('#enable-ai-restart')).toBeHidden();
   await restartedSettings.locator('#enable-ai').uncheck();
   await expect(restartedChrome.locator('#agent-toggle-btn')).toBeHidden();

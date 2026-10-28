@@ -1457,12 +1457,24 @@ function registerFreedomAgentIpc(options = {}) {
     return { ok: true };
   });
   // The start page's setup banner needs one bit: is a model connected. Not the
-  // provider status itself, which stays with Settings and the chrome.
+  // provider status itself, which stays with Settings and the chrome. Settings'
+  // "AI is off" note needs one more: is anything kept while AI is off (a saved
+  // chat or project, a model connection, a connected service), so a fresh
+  // profile is not told its saved data is kept (#854). Counts only, no names.
+  const somethingKept = (status) => {
+    const has = (read) => {
+      try { return read() > 0; } catch { return false; }
+    };
+    return has(() => service.listConversations()?.length) ||
+      has(() => status?.connections?.length) ||
+      has(() => options.mcpConnections?.list()?.length);
+  };
   handle(IPC.AGENT_SETUP_STATE, (event) => {
     if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Read Agent setup from the start page or Settings');
     try {
-      return { ok: true, configured: providerResolver.getStatus()?.configured === true };
+      const status = providerResolver.getStatus();
+      return { ok: true, configured: status?.configured === true, kept: somethingKept(status) };
     } catch (error) {
       return safeProviderError(error);
     }
