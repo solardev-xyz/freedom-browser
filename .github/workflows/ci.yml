@@ -983,6 +983,11 @@ jobs:
       # `error-page.spec.js` covers the error page's title and node-state copy
       # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
       # Settings > Appearance rather than the OS scheme (#233).
+      # `page-dark-background.spec.js` is the web-page side of the same theme
+      # question: in both app themes, a page's own background (x.com's dark
+      # <body>-only one, a prefers-color-scheme: dark one) reaches the window,
+      # and an unstyled page stays black on white, read from the composited
+      # pixels of the real tab <webview> (#923).
       # `updates.spec.js` drives the auto-update state through both surfaces it
       # paints, Settings > Updates and the hamburger update row (#87).
       #
@@ -1014,6 +1019,7 @@ jobs:
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js
+          test-e2e/page-dark-background.spec.js
           test-e2e/updates.spec.js
           test-e2e/swarm-cache.spec.js
 
