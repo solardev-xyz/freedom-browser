@@ -3293,6 +3293,18 @@ body.agent-first-mode .agent-empty-state {
   white-space: normal;
 }
 
+/* A stopped run's last answer was cut off mid-stream. The mark belongs at the
+   end of the cut-off sentence, so it is drawn by the block that sentence ends
+   in — the output itself for plain text, the deepest last paragraph, heading
+   or list item for markdown at any nesting. agent-cutoff-mark.js picks that
+   block; an answer ending in a code block, table or rule marks the output, so
+   the mark sits on its own line below. */
+.agent-output.incomplete.agent-cutoff-end::after,
+.agent-output.incomplete .agent-cutoff-end::after {
+  content: ' …';
+  color: var(--muted);
+}
+
 .agent-output.rendered-markdown > :first-child {
   margin-top: 0;
 }
