@@ -474,11 +474,14 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 
 /* Row options: shown on hover/focus (and while its menu is open) so
    Rename/Delete are discoverable without knowing about right-click. Its slot
-   is always laid out and only its visibility toggles, so revealing it never
-   narrows the title and re-ellipsises it under the pointer. */
+   is always laid out and only its opacity toggles, so revealing it never
+   narrows the title and re-ellipsises it under the pointer. Opacity, not
+   visibility: a visibility:hidden button drops out of the focus order, so
+   Shift+Tab from the next row's title would skip it (it is only revealed by
+   :focus-within once focus is already inside the row). */
 .agent-session-more {
   display: inline-flex;
-  visibility: hidden;
+  opacity: 0;
   flex: none;
   align-items: center;
   justify-content: center;
@@ -497,7 +500,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 .agent-session-row:hover .agent-session-more,
 .agent-session-row:focus-within .agent-session-more,
 .agent-session-more[aria-expanded='true'] {
-  visibility: visible;
+  opacity: 1;
 }
 
 .agent-session-more:hover,
@@ -509,7 +512,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 
 @media (hover: none) {
   .agent-session-more {
-    visibility: visible;
+    opacity: 1;
   }
 }
 
