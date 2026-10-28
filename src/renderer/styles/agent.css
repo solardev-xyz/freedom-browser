@@ -1457,8 +1457,16 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--agent-danger-soft);
 }
 
+/* The one empty state: a centred sparkle, heading and line, with the
+   composer and suggestion cards under it. The floating launcher
+   (agent-floating.css) only places it and tints it for the glass;
+   Agent-first sizes it up. */
 .agent-empty-state {
-  max-width: 250px;
+  --agent-empty-icon-size: 18px;
+  --agent-empty-heading-size: 16px;
+  --agent-empty-line-size: 13px;
+
+  max-width: 46ch;
   margin: 72px auto 0;
   color: var(--muted);
   text-align: center;
@@ -1469,21 +1477,30 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-empty-state-icon {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--accent);
-  font-size: 25px;
+  font-size: var(--agent-empty-icon-size);
+  line-height: 1;
 }
 
 .agent-empty-state h3 {
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--agent-empty-heading-size);
   font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
 .agent-empty-state p {
-  margin-top: 7px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: var(--agent-empty-line-size);
   line-height: 1.5;
+}
+
+body.agent-first-mode .agent-empty-state {
+  --agent-empty-icon-size: 22px;
+  --agent-empty-heading-size: 19px;
+  --agent-empty-line-size: 14px;
 }
 
 .agent-examples {
