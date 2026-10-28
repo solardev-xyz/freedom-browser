@@ -1683,6 +1683,13 @@ body.agent-first-mode .agent-empty-state {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 
+/* Light --border is the same colour as light --bg (#dfe1e5), so the badge's
+   outline vanished against its own fill: draw it from the text colour
+   instead, about as far from the fill as dark's --border is from dark --bg. */
+[data-theme='light'] .agent-badge:not(.active) {
+  border-color: color-mix(in srgb, var(--text) 25%, var(--bg));
+}
+
 .agent-field {
   display: flex;
   flex-direction: column;
