@@ -174,8 +174,11 @@ describe('ant keystore password (K-3)', () => {
     const sealed = keystore.sealedPasswordPath(dataDir);
 
     const realRename = fs.renameSync;
+    // The rename goes through the directory's handle (/proc/self/fd/… on Linux).
     jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-      if (to === sealed) throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      if (path.basename(to) === path.basename(sealed)) {
+        throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      }
       return realRename(from, to);
     });
     expect(await keystore.sealPassword(dataDir, 'pw-after')).toBe(false);
@@ -415,7 +418,9 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     const sealed = keystore.sealedPasswordPath(dataDir);
     const realRename = fs.renameSync;
     const rename = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-      if (to === sealed) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      if (path.basename(to) === path.basename(sealed)) {
+        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      }
       return realRename(from, to);
     });
 

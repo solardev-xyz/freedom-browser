@@ -10,12 +10,7 @@ const IPC = require('../shared/ipc-channels');
 const registry = require('./networks/network-registry');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
-const {
-  readPrivateFile,
-  repairPrivateDir,
-  repairPrivateFile,
-  writePrivateFileSync,
-} = require('./private-files');
+const { openPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { readConfigPassword, yamlPasswordScalar } = require('./swarm/ant-config-password');
 const {
@@ -399,24 +394,44 @@ async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
  * @returns {Promise<{configPath: string, sealedPassword: string|null}>}
  */
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
-  return keystorePassword.withKeystoreLock(dataDir, () =>
-    writeConfigLocked(dataDir, apiPort, p2pPort)
-  );
+  // The data directory and its keys/ are opened once, never through a link,
+  // and every key and config read or write below goes through those
+  // handles. A keys/ that is a link, or not ours, stops the start before
+  // anything is written (K-3).
+  return keystorePassword.withKeystoreLock(dataDir, () => {
+    const data = openPrivateDir(dataDir);
+    let keys;
+    try {
+      keys = data.openDir('keys', { create: false });
+    } catch (err) {
+      data.close();
+      throw err;
+    }
+    // writeConfig closes the handles once it is done.
+    return writeConfig(data, keys, dataDir, apiPort, p2pPort);
+  });
 }
 
-async function writeConfigLocked(dataDir, apiPort, p2pPort) {
+async function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
+  try {
+    return await writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort);
+  } finally {
+    data.close();
+  }
+}
+
+async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   keystorePassword.removeStaleSealStaging(dataDir);
 
   // The password an existing config.yaml still gives Ant, if any
   let configPassword = { kind: 'none' };
-  if (fs.existsSync(configPath)) {
-    try {
-      // Never through a link planted at the name (K-3).
-      configPassword = readConfigPassword(readPrivateFile(configPath)?.toString('utf-8') || '');
-    } catch {
-      log.warn('[Ant] Could not read the existing config');
-    }
+  try {
+    // Never through a link planted at the name (K-3).
+    const existingConfig = data.read(CONFIG_FILE);
+    if (existingConfig) configPassword = readConfigPassword(existingConfig.toString('utf-8'));
+  } catch {
+    log.warn('[Ant] Could not read the existing config');
   }
 
   const hasKeystore = fs.existsSync(path.join(dataDir, 'keys', 'swarm.key'));
@@ -444,7 +459,7 @@ async function writeConfigLocked(dataDir, apiPort, p2pPort) {
   });
 
   // config.yaml can hold the keystore password: owner-only (K-3).
-  writePrivateFileSync(configPath, configContent);
+  data.write(CONFIG_FILE, configContent);
   log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
   // Identity handling. Unlike bee, antd has no `init` subcommand: when an
@@ -453,9 +468,9 @@ async function writeConfigLocked(dataDir, apiPort, p2pPort) {
   // (`identity.json`) on start. So there is no separate init step to run.
   const keysDir = path.join(dataDir, 'keys');
   const swarmKeyPath = path.join(keysDir, 'swarm.key');
-  // Keys an older build wrote with the umask's modes (K-3).
-  repairPrivateDir(keysDir);
-  repairPrivateFile(swarmKeyPath);
+  // Keys an older build wrote with the umask's modes (K-3); opening keys/
+  // narrowed the directory.
+  keys?.repair('swarm.key');
 
   if (fs.existsSync(swarmKeyPath)) {
     log.info('[Ant] Using existing/injected keys from', keysDir);
