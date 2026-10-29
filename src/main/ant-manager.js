@@ -17,6 +17,7 @@ const {
   writePrivateFileSync,
 } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
+const { readConfigPassword, yamlPasswordScalar } = require('./swarm/ant-config-password');
 const {
   getActiveProfile,
   getReservedProfilePorts,
@@ -114,6 +115,13 @@ function getAntBinaryPath() {
 
 function getAntDataPath() {
   return getAntDataDir();
+}
+
+// The profile directory that owns this node's --password-file handoffs
+// (swarm/ant-keystore-password.js handoffRoot): the active profile's, or
+// the one the Ant data directory sits in.
+function getHandoffBaseDir() {
+  return getActiveProfile()?.userDataDir || path.dirname(getAntDataPath());
 }
 
 function getProfileAntConfig() {
@@ -249,10 +257,16 @@ function buildAntConfigContent({
   apiPort,
   p2pPort,
   password,
+  rawPasswordLine = null,
   resolverRpcEndpoint,
   swapEnable = true,
   cacheCapacityBytes = antCache.DEFAULT_CACHE_BYTES,
 }) {
+  // The keystore password, as a YAML scalar Ant decodes back to it exactly,
+  // or a line it reads that Freedom does not decode, kept as it was.
+  let passwordLine = '';
+  if (rawPasswordLine) passwordLine = `${rawPasswordLine}\n`;
+  else if (password) passwordLine = `password: ${yamlPasswordScalar(password)}\n`;
   return `# Ant node configuration (bee-compatible keys)
 api-addr: 127.0.0.1:${apiPort}
 p2p-addr: :${p2pPort}
@@ -264,7 +278,7 @@ resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
 cache-capacity: ${antCache.cacheCapacityChunks(cacheCapacityBytes)}
 data-dir: ${dataDir}
-${password ? `password: ${password}\n` : ''}`;
+${passwordLine}`;
 }
 
 function isSwapEnabledSetting() {
@@ -319,57 +333,98 @@ function isManagedAntNode() {
  * keychain (handed to antd as a --password-file) or stays in config.yaml
  * (no OS keyring). See swarm/ant-keystore-password.js.
  *
+ * `configPassword` is what config.yaml gives Ant (swarm/ant-config-password.js):
+ * a decoded password, a line Freedom does not decode (kept for Ant to read,
+ * never sealed), or none.
+ *
  * Never mints a new password while keys/swarm.key exists: that keystore
  * opens only with the password it was written with, and a fresh one would
  * leave it undecryptable (e.g. the bee-data migration carried over the
  * keystore but not its password). The start fails with the re-inject error
  * instead, and the next vault unlock re-injects the key.
+ *
+ * @returns {Promise<{password: string|null, rawPasswordLine: string|null,
+ *   sealed: boolean}>}
  */
 async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
+  const hadSeal = keystorePassword.hasSealedPassword(dataDir);
   let sealedPassword = null;
+  let unsealError = null;
   try {
     sealedPassword = await keystorePassword.unsealPassword(dataDir);
   } catch (err) {
-    if (hasKeystore) throw err;
+    unsealError = err;
+  }
+  if (sealedPassword) return { password: sealedPassword, rawPasswordLine: null, sealed: true };
+
+  if (configPassword.kind === 'raw') {
+    log.warn('[Ant] Leaving a config.yaml password Freedom does not decode for Ant to read');
+    return { password: null, rawPasswordLine: configPassword.line, sealed: false };
+  }
+  if (configPassword.kind === 'value') {
+    // A seal that won't open is left alone: the config.yaml password is used
+    // as it is, and only a config.yaml without a seal beside it is migrated.
+    if (hadSeal) {
+      log.warn('[Ant] The sealed keystore password will not open; using the one in config.yaml');
+      return { password: configPassword.value, rawPasswordLine: null, sealed: false };
+    }
+    // A password an older build (or a keyring-less one) kept in config.yaml
+    // moves into the keychain when there is one; its line goes only once the
+    // seal is verified (sealPassword).
+    return {
+      password: configPassword.value,
+      rawPasswordLine: null,
+      sealed: await keystorePassword.sealPassword(dataDir, configPassword.value),
+    };
+  }
+  if (unsealError) {
+    if (hasKeystore) throw unsealError;
     // No keystore needs it any more: drop the copy that will not open.
     keystorePassword.forgetSealedPassword(dataDir);
-  }
-  if (sealedPassword) return { password: sealedPassword, sealed: true };
-
-  // A password an older build (or a keyring-less one) kept in config.yaml
-  // moves into the keychain when there is one.
-  if (configPassword) {
-    return {
-      password: configPassword,
-      sealed: await keystorePassword.sealPassword(dataDir, configPassword),
-    };
   }
   if (hasKeystore) throw new keystorePassword.KeystorePasswordUnavailableError();
 
   const password = require('crypto').randomBytes(32).toString('hex');
-  return { password, sealed: await keystorePassword.sealPassword(dataDir, password) };
+  return {
+    password,
+    rawPasswordLine: null,
+    sealed: await keystorePassword.sealPassword(dataDir, password),
+  };
 }
 
-async function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
-  const configPath = path.join(dataDir, CONFIG_FILE);
+/**
+ * Write config.yaml for this start and settle the keystore password (K-3).
+ * Runs under the data directory's keystore lock, so injection and automatic
+ * recovery never interleave with it.
+ * @returns {Promise<{configPath: string, sealedPassword: string|null}>}
+ */
+function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
+  return keystorePassword.withKeystoreLock(dataDir, () =>
+    writeConfigLocked(dataDir, apiPort, p2pPort)
+  );
+}
 
-  // The password an existing config.yaml still carries, if any
-  let configPassword;
+async function writeConfigLocked(dataDir, apiPort, p2pPort) {
+  const configPath = path.join(dataDir, CONFIG_FILE);
+  keystorePassword.removeStaleSealStaging(dataDir);
+
+  // The password an existing config.yaml still gives Ant, if any
+  let configPassword = { kind: 'none' };
   if (fs.existsSync(configPath)) {
     try {
       // Never through a link planted at the name (K-3).
-      const existingConfig = readPrivateFile(configPath)?.toString('utf-8') || '';
-      const passwordMatch = existingConfig.match(/^password:\s*(.+)$/m);
-      if (passwordMatch) {
-        configPassword = passwordMatch[1].trim();
-      }
+      configPassword = readConfigPassword(readPrivateFile(configPath)?.toString('utf-8') || '');
     } catch {
       log.warn('[Ant] Could not read the existing config');
     }
   }
 
   const hasKeystore = fs.existsSync(path.join(dataDir, 'keys', 'swarm.key'));
-  const { password, sealed } = await resolveKeystorePassword(dataDir, configPassword, hasKeystore);
+  const { password, rawPasswordLine, sealed } = await resolveKeystorePassword(
+    dataDir,
+    configPassword,
+    hasKeystore
+  );
 
   const resolverRpcEndpoint = getPrimaryEthereumRpcUrl();
 
@@ -382,6 +437,7 @@ async function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     // A sealed password never goes into the file; antd gets it through
     // --password-file at spawn.
     password: sealed ? null : password,
+    rawPasswordLine,
     resolverRpcEndpoint,
     swapEnable: isSwapEnabledSetting(),
     cacheCapacityBytes: resolveCacheCapacityBytes(dataDir),
@@ -660,6 +716,19 @@ async function startAnt() {
   const generation = ++startGeneration;
   updateState(STATUS.STARTING);
 
+  // --password-file handoffs a killed launch of this profile left behind
+  // (K-3), whatever this start then does: reuse its orphaned antd, which
+  // read its password long ago, or spawn a new one. This process holds the
+  // profile lock, the sweep runs under the keystore lock (at once when no
+  // injection or recovery holds it), and it skips the handoffs this
+  // process's own starts still own.
+  const handoffBaseDir = getHandoffBaseDir();
+  void keystorePassword
+    .withKeystoreLock(getAntDataPath(), () =>
+      keystorePassword.sweepAbandonedHandoffs(handoffBaseDir)
+    )
+    .catch((err) => log.warn('[Ant] Could not sweep password handoffs:', err.message));
+
   const profileConfig = getProfileAntConfig();
   const managedProfileNode = isManagedAntConfig(profileConfig);
 
@@ -911,7 +980,7 @@ async function startAnt() {
   let passwordFile = null;
   if (sealedPassword) {
     try {
-      passwordFile = keystorePassword.writePasswordFile(sealedPassword);
+      passwordFile = keystorePassword.writePasswordFile(sealedPassword, getHandoffBaseDir());
     } catch (err) {
       await closeChainBridge(bridge);
       log.error('[Ant] Could not write the keystore password file:', err.message);
@@ -1334,6 +1403,15 @@ function createAntLifecycle(deps = {}) {
     },
     // The last start could not open keys/swarm.key (K-3).
     needsKeyReinjection: deps.needsKeyReinjection || (() => keystoreNeedsReinjection),
+    // Automatic recovery refused to overwrite the keystore (it holds
+    // another identity): say so, and stop asking each unlock to retry.
+    refuseKeyReinjection:
+      deps.refuseKeyReinjection ||
+      ((message) => {
+        keystoreNeedsReinjection = false;
+        updateState(STATUS.ERROR, message);
+        setStatusMessage('ant', message);
+      }),
   };
 }
 

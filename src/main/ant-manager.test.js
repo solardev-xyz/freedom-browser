@@ -266,6 +266,13 @@ function loadAntManagerModule(options = {}) {
     mkdirSync: jest.fn(),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
+    lstatSync: jest.fn((target, opts) => {
+      if (fsMock.existsSync(target)) return { isSymbolicLink: () => false };
+      if (opts?.throwIfNoEntry === false) return undefined;
+      throw Object.assign(new Error(`ENOENT: ${target}`), { code: 'ENOENT' });
+    }),
+    readdirSync: jest.fn(() => []),
+    rmSync: jest.fn(),
   };
   // private-files.js over the same fake fs: reads and writes land on
   // fsMock, repairs are recorded.
@@ -597,8 +604,8 @@ describe('ant-manager', () => {
     const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
     const remove = jest.fn();
     const keystorePassword = {
-      REINJECT_MESSAGE: real.REINJECT_MESSAGE,
-      KeystorePasswordUnavailableError: real.KeystorePasswordUnavailableError,
+      ...real,
+      hasSealedPassword: jest.fn(() => false),
       unsealPassword: jest.fn(() => null),
       // An older build's password in config.yaml moves into the keychain.
       sealPassword: jest.fn(() => true),
@@ -624,7 +631,11 @@ describe('ant-manager', () => {
     expect(keystorePassword.sealPassword).toHaveBeenCalledWith(dataDir, 'legacy-keystore-password');
     const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
     expect(config).not.toMatch(/^password:/m);
-    expect(keystorePassword.writePasswordFile).toHaveBeenCalledWith('legacy-keystore-password');
+    // In the profile's own handoff directory, never the shared temp dir.
+    expect(keystorePassword.writePasswordFile).toHaveBeenCalledWith(
+      'legacy-keystore-password',
+      DEFAULT_USER_DATA_DIR
+    );
     expect(ctx.spawnedProcesses[0].args).toContain('--password-file=/tmp/freedom-ant-test/password');
     expect(ctx.log.info.mock.calls.flat().join(' ')).not.toContain('legacy-keystore-password');
     expect(remove).not.toHaveBeenCalled();
@@ -648,8 +659,8 @@ describe('ant-manager', () => {
     const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
     const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
     const keystorePassword = {
-      REINJECT_MESSAGE: real.REINJECT_MESSAGE,
-      KeystorePasswordUnavailableError: real.KeystorePasswordUnavailableError,
+      ...real,
+      hasSealedPassword: jest.fn(() => true),
       unsealPassword: jest.fn(() => {
         throw new real.KeystorePasswordUnavailableError(new Error('keychain reset'));
       }),

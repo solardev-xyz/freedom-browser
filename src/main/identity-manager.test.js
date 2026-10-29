@@ -1088,11 +1088,38 @@ describe('Swarm keystore password (K-3)', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  // The vault's derived Swarm account, and another identity's.
+  const VAULT_BEE = '0x' + 'b2'.repeat(20);
+  const OTHER_BEE = '0x' + 'a1'.repeat(20);
+  const antDir = () => path.join(root, 'ant');
+  const swarmKeyPath = () => path.join(antDir(), 'keys', 'swarm.key');
+  // A Web3 v3 keystore's unencrypted `address` (no 0x, lowercase); the
+  // password it was "encrypted" with is recorded so a test can check the
+  // pair on disk.
+  const writeKeystore = (address, password = 'lost-password') => {
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(
+      swarmKeyPath(),
+      JSON.stringify({ address: address.slice(2).toLowerCase(), version: 3, password })
+    );
+  };
+  const keystoreOnDisk = () => JSON.parse(fs.readFileSync(swarmKeyPath(), 'utf8'));
+
   function load(safeStorage) {
     const identityMock = {
       ...makeRestartIdentityMock(),
       getMnemonic: jest.fn(() => 'test test test test test test test test test test test about'),
     };
+    identityMock.deriveAllKeys = jest.fn(() => ({
+      userWallet: { address: '0xuser', privateKey: '0x01' },
+      beeWallet: { address: VAULT_BEE, privateKey: '0x02' },
+      ipfsKey: { privateKey: '0x03', publicKey: '0x04' },
+      radicleKey: { privateKey: '0x05', publicKey: '0x06' },
+    }));
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password) => {
+      expect(privateKey).toBe('0x02');
+      writeKeystore(VAULT_BEE, password);
+    });
     const { mod } = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: path.join(root, 'identity'),
       electronOverrides: { safeStorage },
@@ -1146,7 +1173,10 @@ describe('Swarm keystore password (K-3)', () => {
 
   test('an unlock re-encrypts the keystore the node could not open, then starts it', async () => {
     const { mod, identityMock, keystore } = load(keychain());
-    const start = jest.fn(async () => {});
+    writeKeystore(VAULT_BEE);
+    const start = jest.fn(async () => {
+      needed = false;
+    });
     let needed = true;
     mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
 
@@ -1169,6 +1199,114 @@ describe('Swarm keystore password (K-3)', () => {
     await mod.unlockVault('password123');
     await new Promise((resolve) => setImmediate(resolve));
     expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+  });
+
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // The K-3 review's reproduction: a keystore for account A, its sealed
+  // password lost, and a vault that derives account B. Recovery must keep
+  // A's keystore, the only encrypted copy of A's key, not write B's over it.
+  test("recovery never overwrites another identity's keystore", async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const start = jest.fn(async () => {});
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledWith(
+      'Swarm keystore belongs to a different identity: re-inject manually'
+    );
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(keystore.IDENTITY_MISMATCH_MESSAGE);
+  });
+
+  test('recovery refuses a keystore whose identity it cannot read', async () => {
+    const { mod, identityMock } = load(keychain());
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(swarmKeyPath(), JSON.stringify({ version: 3, crypto: {} }));
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start: jest.fn(), needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledTimes(1);
+  });
+
+  // The K-3 review's reordering: recovery A held at its sealing call after
+  // writing its keystore, a second unlock meanwhile, then A released. One
+  // recovery runs, and the keystore on disk opens with the sealed password.
+  test('overlapping unlocks run one recovery, ending with a matching pair', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    let needed = true;
+    const start = jest.fn(async () => {
+      needed = false;
+    });
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(storage.encryptStringAsync).toHaveBeenCalledTimes(1);
+    const second = mod.reencryptBeeKeystore();
+    await mod.unlockVault('password123');
+    await settle();
+    releaseSeal();
+    await second;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+  });
+
+  test('an injection during a recovery waits, and the last pair written matches', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    mod.setBeeLifecycle({ start: jest.fn(async () => {}), needsKeyReinjection: () => true });
+
+    await mod.unlockVault('password123');
+    await settle();
+    const injection = mod.injectBeeIdentity();
+    // Long enough for an unserialized injection to reach its own write.
+    for (let i = 0; i < 20 && identityMock.injectBeeKey.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The injection has not written its keystore while the recovery holds the lock.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    releaseSeal();
+    await injection;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(2);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(keystoreOnDisk().password).toBe(identityMock.injectBeeKey.mock.calls[1][2]);
   });
 });
 
