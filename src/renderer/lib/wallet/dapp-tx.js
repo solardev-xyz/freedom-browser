@@ -185,9 +185,10 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
   }
 
+  // Never the grant's saved chain: the page sees the wallet's (see
+  // dapp-provider.js, eth_sendTransaction).
   const chainId = requestChainId
     || pinnedOnchainAppChainId(webview)
-    || permission.chainId
     || walletState.selectedChainId;
   const selector = extractSelector(txParams.data);
 

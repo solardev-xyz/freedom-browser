@@ -825,6 +825,71 @@ describe('dapp-provider signing authorization', () => {
 // committed page — never to the site in the address bar, which shows the
 // visible tab. A background tab must not borrow the visible site's
 // connection, its auto-approve rules, or its name on the prompt.
+// A grant saves the chain it was made on, and only the page's own
+// wallet_switchEthereumChain updates it; the wallet's chain selector moves the
+// chain the page sees (eth_chainId) without it. A transaction or signature
+// follows the page's chain, never the grant's.
+describe('dapp-provider uses the chain the page sees', () => {
+  const TX_DATA = '0x095ea7b3' + '00'.repeat(64);
+
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test('eth_sendTransaction is prompted on the page chain, not the grant chain', async () => {
+    const { webview, sendRequest, walletUi, dappPermissions } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 1, autoApprove: {} },
+    });
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+
+    sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    sendRequest({ id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+
+    expect(responsesSentTo(webview)[0][1]).toEqual({ id: 1, result: '0x64', error: null });
+    expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
+      'https://app.example', '0xc0ffee', '0x095ea7b3', 100);
+    expect(walletUi.showDappTxApproval).toHaveBeenCalledWith(webview, 'https://app.example', tx, 100);
+  });
+
+  test('an auto-approved eth_sendTransaction is sent on the page chain', async () => {
+    const { sendRequest, walletMocks } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 1, autoApprove: {} },
+      txAutoApproved: true,
+    });
+
+    sendRequest({ id: 1, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data: TX_DATA }] });
+    await flushMicrotasks();
+
+    expect(walletMocks.dappSendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '0xc0ffee', chainId: 100 }),
+      0,
+      undefined,
+      expect.objectContaining({ autoApprove: 'https://app.example' })
+    );
+  });
+
+  test("a Safe signs only when the page's chain is Gnosis, whatever the grant saved", async () => {
+    const onGnosisGrant = await loadProvider({ permission: safePermission() });
+    onGnosisGrant.walletUi.getSelectedChainId.mockReturnValue(1);
+    onGnosisGrant.sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+    expect(responsesSentTo(onGnosisGrant.webview)[0][1].error.message).toMatch(/only sign on Gnosis/);
+    expect(onGnosisGrant.walletMocks.safeMessageStart).not.toHaveBeenCalled();
+
+    const onEthereumGrant = await loadProvider({ permission: { ...safePermission(), chainId: 1 } });
+    onEthereumGrant.sendRequest({ id: 2, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+    expect(onEthereumGrant.walletMocks.safeMessageStart).toHaveBeenCalled();
+  });
+});
+
 describe('dapp-provider attributes requests to the requesting webview', () => {
   const VISIBLE = 'https://trusted-dapp.example';
   const BACKGROUND = 'https://attacker.example';
