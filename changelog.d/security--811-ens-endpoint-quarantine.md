@@ -1,0 +1,1 @@
+- A crafted name or contract can no longer make the browser drop honest ENS endpoints and fall back to unverified answers ([#811](https://github.com/solardev-xyz/freedom-browser/issues/811))
