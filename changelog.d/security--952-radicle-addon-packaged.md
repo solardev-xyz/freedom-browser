@@ -1,0 +1,1 @@
+- Packaged builds load only the Radicle add-on they ship, ignoring development overrides ([#952](https://github.com/solardev-xyz/freedom-browser/issues/952))
