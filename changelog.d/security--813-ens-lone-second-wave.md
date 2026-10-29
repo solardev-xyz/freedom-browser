@@ -1,1 +1,1 @@
-- An ENS answer from a single network source is no longer marked verified when the other sources failed ([#813](https://github.com/solardev-xyz/freedom-browser/issues/813))
+- An ENS answer is marked verified only when the configured number of network sources agree on it, including after some sources fail ([#813](https://github.com/solardev-xyz/freedom-browser/issues/813))

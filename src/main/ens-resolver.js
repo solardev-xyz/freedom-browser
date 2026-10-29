@@ -1653,12 +1653,15 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
     m: wave.mUsed,
     block,
   });
-  // `verified` takes the quorum's M agreeing endpoints. After an all-errored
-  // first wave, the second runs against whatever is left, which can be
-  // fewer than M (one endpoint, agreeing with itself): that agreement is
-  // single-source evidence, labelled `unverified` as on the single-source
-  // path.
-  const agreedLevel = wave.mUsed >= effectiveM ? 'verified' : 'unverified';
+  // `verified` takes the configured M of distinct agreeing endpoints, and
+  // at least 2, in either wave. A wave's own threshold drops to the
+  // endpoints it has: a second wave of one endpoint after the first all
+  // errored (m 1), two under K = M = 3, or a first wave of three under
+  // K = M = 4. Such an agreement is still the answer, labelled (and cached)
+  // `unverified`, as a single source's is. freedom-core design 0004,
+  // deviation reduced-quorum-wave.
+  const agreedLevel = (agreedUrls) =>
+    (new Set(agreedUrls).size >= Math.max(desiredM, 2) ? 'verified' : 'unverified');
 
   if (wave.outcome.kind === 'agreed_data') {
     const agreedUrls = wave.outcome.urls;
@@ -1667,7 +1670,7 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
       outcome: 'data',
       resolvedData: winningLeg.resolvedData,
       resolverAddress: winningLeg.resolverAddress,
-      trust: trustFor(agreedLevel, agreedUrls.map(hostOf)),
+      trust: trustFor(agreedLevel(agreedUrls), agreedUrls.map(hostOf)),
       block,
     };
   }
@@ -1679,7 +1682,7 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
       outcome: 'not_found',
       reason: wave.outcome.reason,
       error: firstAgreer?.error?.message,
-      trust: trustFor(agreedLevel, agreedUrls.map(hostOf)),
+      trust: trustFor(agreedLevel(agreedUrls), agreedUrls.map(hostOf)),
       block,
     };
   }
