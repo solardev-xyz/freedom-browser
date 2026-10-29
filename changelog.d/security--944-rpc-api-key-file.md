@@ -1,0 +1,1 @@
+- RPC provider API keys are saved readable only by your own account on macOS and Linux ([#944](https://github.com/solardev-xyz/freedom-browser/issues/944))

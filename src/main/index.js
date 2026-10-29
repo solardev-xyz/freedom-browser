@@ -441,6 +441,7 @@ const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
 const { registerRpcManagerIpc } = require('./wallet/rpc-manager');
+const { repairRpcApiKeys } = require('./wallet/rpc-api-key-store');
 const { registerNetworkConfigIpc } = require('./networks/network-ipc');
 const { registerDappPermissionsIpc } = require('./wallet/dapp-permissions');
 const {
@@ -584,6 +585,10 @@ async function bootstrap() {
   // ipfs-data/freedom-ipfs/), before IPFS starts below. Like the Bee-only
   // state, it is only renamed aside here and deleted after first paint (#101).
   setAsideLegacyKuboRepo();
+  // Before the network registry or rpc-manager first reads it: an older
+  // 0644 RPC API key file becomes owner-only (K-5). Both readers repair it
+  // too, through the same key store.
+  repairRpcApiKeys();
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();

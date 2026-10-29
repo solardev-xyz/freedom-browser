@@ -21,6 +21,12 @@ jest.mock('node:fs', () => ({
   },
 }));
 
+// The API keys come through the shared key store (K-5), over the same files.
+jest.mock('../wallet/rpc-api-key-store', () => ({
+  readRpcApiKeys: () =>
+    'rpc-api-keys.json' in mockFiles ? JSON.parse(mockFiles['rpc-api-keys.json']) : {},
+}));
+
 const registry = require('./network-registry');
 
 // --- fixtures ---------------------------------------------------------

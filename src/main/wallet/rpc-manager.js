@@ -4,12 +4,15 @@
  * Manages user-configured RPC provider API keys. The provider catalog and
  * resolved RPC URLs come from the network registry; user API keys are
  * stored in <userData>/rpc-api-keys.json.
+ *
+ * The file holds the user's provider API keys in plain JSON; it is read and
+ * written only through rpc-api-key-store.js (owner-only, atomic, never
+ * through a link; K-5).
  */
 
-const { app, ipcMain } = require('electron');
-const path = require('path');
-const fs = require('fs');
+const { ipcMain } = require('electron');
 const registry = require('../networks/network-registry');
+const { readRpcApiKeys, writeRpcApiKeys } = require('./rpc-api-key-store');
 
 // Lazy-loaded to avoid circular dependencies
 let providerManager = null;
@@ -20,13 +23,7 @@ function getProviderManager() {
   return providerManager;
 }
 
-const API_KEYS_FILE = 'rpc-api-keys.json';
-
 let apiKeysCache = null;
-
-function getApiKeysPath() {
-  return path.join(app.getPath('userData'), API_KEYS_FILE);
-}
 
 // The keyed-provider catalog (Alchemy/Infura/DRPC) from the network
 // registry, keyed by id. Each entry: { id, role, keyed, name, website,
@@ -45,13 +42,7 @@ function loadApiKeys() {
   }
 
   try {
-    const filePath = getApiKeysPath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      apiKeysCache = JSON.parse(data);
-    } else {
-      apiKeysCache = {};
-    }
+    apiKeysCache = readRpcApiKeys();
   } catch (err) {
     console.error('[RpcManager] Failed to load API keys:', err);
     apiKeysCache = {};
@@ -60,9 +51,11 @@ function loadApiKeys() {
   return apiKeysCache;
 }
 
+// Owner-only temp file, fsync, rename (rpc-api-key-store.js): a crash or a
+// full disk never leaves a truncated key file.
 function saveApiKeys() {
   try {
-    fs.writeFileSync(getApiKeysPath(), JSON.stringify(apiKeysCache, null, 2), 'utf-8');
+    writeRpcApiKeys(apiKeysCache);
     return true;
   } catch (err) {
     console.error('[RpcManager] Failed to save API keys:', err);

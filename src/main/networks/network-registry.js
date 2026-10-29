@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const log = require('../logger');
 const { migrateLegacyConfig } = require('./migration');
+const { readRpcApiKeys } = require('../wallet/rpc-api-key-store');
 
 // The unified source of chain + endpoint configuration. Three layers:
 //   - builtin    — ships in src/shared/ (chains.json, endpoint-sources.json)
@@ -328,7 +329,14 @@ function load() {
   const builtinSources = readJson(builtinPath('endpoint-sources.json'), {});
   const customChains = readJson(userDataPath('custom-chains.json'), {});
   const userConfig = resolveUserConfig(builtinSources);
-  const apiKeys = readJson(userDataPath('rpc-api-keys.json'), {});
+  // Through the shared key store: it repairs an older 0644 file and never
+  // reads through a link (K-5).
+  let apiKeys = {};
+  try {
+    apiKeys = readRpcApiKeys();
+  } catch (err) {
+    log.error(`[network-registry] failed to read the RPC API keys: ${err.message}`);
+  }
 
   // Networks: builtin chains, then custom chains, then per-network user
   // overrides. verification/quorum are merged one level deep so a partial
