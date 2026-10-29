@@ -139,6 +139,20 @@ describe('profile paths', () => {
     }
   );
 
+  (process.platform === 'win32' ? test.skip : test)(
+    'a node data dir that is a link is refused, its target untouched (K-3)',
+    () => {
+      const userDataDir = track(createTempUserDataDir());
+      const elsewhere = track(createTempUserDataDir());
+      fs.chmodSync(elsewhere, 0o755);
+      fs.symlinkSync(elsewhere, path.join(userDataDir, 'ant-data'));
+
+      const paths = loadPaths(userDataDir);
+      expect(() => paths.getAntDataDir()).toThrow('symbolic link');
+      expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o755);
+    }
+  );
+
   test('uses an app-owned short Radicle home for catalog profiles', async () => {
     const tempRoot = track(path.join('/tmp', `freedom-profile-paths-${Date.now()}`));
     fs.mkdirSync(tempRoot, { recursive: true });

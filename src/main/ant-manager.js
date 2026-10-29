@@ -11,10 +11,10 @@ const registry = require('./networks/network-registry');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
 const {
-  restrictMode,
+  readPrivateFile,
+  repairPrivateDir,
+  repairPrivateFile,
   writePrivateFileSync,
-  PRIVATE_DIR_MODE,
-  PRIVATE_FILE_MODE,
 } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const {
@@ -357,7 +357,8 @@ async function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   let configPassword;
   if (fs.existsSync(configPath)) {
     try {
-      const existingConfig = fs.readFileSync(configPath, 'utf-8');
+      // Never through a link planted at the name (K-3).
+      const existingConfig = readPrivateFile(configPath)?.toString('utf-8') || '';
       const passwordMatch = existingConfig.match(/^password:\s*(.+)$/m);
       if (passwordMatch) {
         configPassword = passwordMatch[1].trim();
@@ -397,8 +398,8 @@ async function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   const keysDir = path.join(dataDir, 'keys');
   const swarmKeyPath = path.join(keysDir, 'swarm.key');
   // Keys an older build wrote with the umask's modes (K-3).
-  restrictMode(keysDir, PRIVATE_DIR_MODE);
-  restrictMode(swarmKeyPath, PRIVATE_FILE_MODE);
+  repairPrivateDir(keysDir);
+  repairPrivateFile(swarmKeyPath);
 
   if (fs.existsSync(swarmKeyPath)) {
     log.info('[Ant] Using existing/injected keys from', keysDir);
