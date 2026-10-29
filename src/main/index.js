@@ -434,7 +434,12 @@ const {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
-const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-manager');
+const {
+  registerIdentityIpc,
+  hasVault,
+  setBeeLifecycle,
+  closeVaultAuthority,
+} = require('./identity-manager');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
@@ -1017,6 +1022,10 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // the before-quit handler so the handler can bound it and still be the only
 // place that decides when quitting is allowed.
 async function windDown() {
+  // First, before any await: the vault locks and main signs and injects
+  // nothing more for the rest of the process (K-1). Running nodes keep the
+  // identities they already have while they stop.
+  closeVaultAuthority();
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
   // Before any window closes: a window's 'closed' event arms a History-menu
   // refresh that would otherwise fire after closeHistoryDb() and reopen it.
@@ -1145,6 +1154,8 @@ app.on('before-quit', async (event) => {
 
   event.preventDefault();
   isQuitting = true;
+  // windDown() does this first too; here it cannot wait on anything.
+  closeVaultAuthority();
 
   const watchdog = setTimeout(() => {
     log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');

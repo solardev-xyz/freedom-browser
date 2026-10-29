@@ -231,10 +231,13 @@ class SwarmPublicationController {
     this.readFeedState = options.readFeedState || ((...args) => require('../swarm/feed-service').readFeedState(...args));
     // The user's Swarm identity: the Ant node's wallet key from the unlocked
     // vault. Its private key is read only to sign a feed update, never stored.
+    // The signer carries the vault epoch it was read in; a feed update made
+    // with it stops if the vault was locked since (K-1).
     this.feedSigner = options.feedSigner || (async () => {
+      const epoch = require('../identity/vault-epoch').currentVaultEpoch();
       const keys = require('../identity-manager').getDerivedKeys();
       if (!keys?.beeWallet?.privateKey) throw new Error('Freedom’s vault is locked');
-      return { address: keys.beeWallet.address, privateKey: keys.beeWallet.privateKey };
+      return { address: keys.beeWallet.address, privateKey: keys.beeWallet.privateKey, epoch };
     });
     this.verifyPublication =
       options.verifyPublication ||
@@ -783,9 +786,13 @@ class SwarmPublicationController {
       let minIndex = known.length ? Math.max(...known) + 1 : 0;
       let update;
       for (let attempt = 0; ; attempt += 1) {
+        const options = {
+          ...(minIndex > 0 && { minIndex }),
+          ...(Number.isSafeInteger(signer.epoch) && { epoch: signer.epoch }),
+        };
         const written = await observe(Promise.resolve().then(() =>
           this.updateFeed(signer.privateKey, stableAddress.topic, operation.reference, operation.batchId,
-            ...(minIndex > 0 ? [{ minIndex }] : []))), FEED_TIMEOUT_MS);
+            ...(Object.keys(options).length ? [options] : []))), FEED_TIMEOUT_MS);
         if (written.kind !== 'result') throw written.error || new Error('The feed update did not finish in time');
         update = written;
         const index = written.value?.index;

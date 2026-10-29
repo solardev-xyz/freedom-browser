@@ -387,6 +387,20 @@ describe('chunk-service', () => {
     });
   });
 
+  test('writeSingleOwnerChunk refuses a key from an earlier vault epoch (K-1)', async () => {
+    const vaultEpoch = require('../identity/vault-epoch');
+    const cac = makeCac();
+    mockMakeContentAddressedChunk.mockReturnValue(cac);
+    const taken = vaultEpoch.currentVaultEpoch();
+    vaultEpoch.advanceVaultEpoch();
+
+    await expect(
+      writeSingleOwnerChunk(PRIVATE_KEY, IDENTIFIER, Buffer.from('hello'), { epoch: taken })
+    ).rejects.toThrow(/locked/i);
+    expect(cac.toSingleOwnerChunk).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('writeSingleOwnerChunk rejects mismatched Bee SOC upload references', async () => {
     const cac = makeCac();
     mockMakeContentAddressedChunk.mockReturnValue(cac);

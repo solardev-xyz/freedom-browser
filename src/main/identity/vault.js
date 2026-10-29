@@ -21,6 +21,11 @@ let autoLockTimer = null;
 // holds keys derived from the mnemonic drops them at the same moment.
 const lockListeners = new Set();
 
+// Moves on with every lock. An unlock whose decryption was still running
+// when the vault was locked (or deleted, which locks it) must not publish
+// its mnemonic afterwards (K-1).
+let lockGeneration = 0;
+
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 
@@ -118,6 +123,7 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
+  const generation = lockGeneration;
 
   const vaultPath = getVaultPath(dataDir);
   const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
@@ -128,6 +134,9 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 
   try {
     const decrypted = await decrypt(password, vaultData.encrypted);
+    if (generation !== lockGeneration) {
+      throw new Error('The vault was locked while it was being unlocked');
+    }
     unlockedMnemonic = decrypted.mnemonic;
 
     // Validate decrypted mnemonic
@@ -152,6 +161,7 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
  * Lock the vault (clear mnemonic from memory) and tell every lock listener.
  */
 function lockVault() {
+  lockGeneration += 1;
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);

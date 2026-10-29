@@ -139,7 +139,8 @@ describe('identity-manager profile paths', () => {
     expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
       antDir,
       '0xbee-private',
-      expect.any(String)
+      expect.any(String),
+      { beforeWrite: expect.any(Function) }
     );
     expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
       antDir,

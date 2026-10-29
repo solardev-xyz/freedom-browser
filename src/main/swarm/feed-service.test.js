@@ -932,5 +932,62 @@ describe('feed-service', () => {
       const elapsed = Date.now() - start;
       expect(elapsed).toBeLessThan(20);
     });
+
+    // K-1: a write queued behind another holds its signer's key until its
+    // turn; a vault lock meanwhile (a new epoch) must stop it.
+    test('a queued write whose vault epoch has ended never runs', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let release;
+      const first = withWriteLock('topic-epoch', () => new Promise((resolve) => {
+        release = resolve;
+      }));
+      const signed = jest.fn(async () => 'signed');
+      const queued = withWriteLock('topic-epoch', signed);
+      queued.catch(() => {});
+      // The first write is running (it took its turn in the old epoch).
+      for (let i = 0; i < 10 && !release; i += 1) await Promise.resolve();
+      expect(release).toEqual(expect.any(Function));
+
+      vaultEpoch.advanceVaultEpoch();
+      release('first');
+      await expect(first).resolves.toBe('first');
+      await expect(queued).rejects.toThrow(/locked/i);
+      expect(signed).not.toHaveBeenCalled();
+    });
+
+    test('an update whose index lookup outlasts the vault epoch uploads nothing', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let answerLookup;
+      const writer = createMockWriter();
+      writer.downloadPayload = jest.fn(() => new Promise((resolve) => {
+        answerLookup = resolve;
+      }));
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      const updating = updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'cc'.repeat(32), undefined, {
+        epoch: vaultEpoch.currentVaultEpoch(),
+      });
+      updating.catch(() => {});
+      for (let i = 0; i < 10 && !answerLookup; i += 1) await Promise.resolve();
+      vaultEpoch.advanceVaultEpoch();
+      answerLookup({ payload: Buffer.from('x'), feedIndex: new MockFeedIndex(1), feedIndexNext: new MockFeedIndex(2) });
+
+      await expect(updating).rejects.toThrow(/locked/i);
+      expect(writer.uploadReference).not.toHaveBeenCalled();
+    });
+
+    test('a key read in an earlier epoch is refused at once', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      const taken = vaultEpoch.currentVaultEpoch();
+      vaultEpoch.advanceVaultEpoch();
+      const writer = createMockWriter();
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      await expect(
+        writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'x', { epoch: taken })
+      ).rejects.toThrow(/locked/i);
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
+    });
   });
 });
