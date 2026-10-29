@@ -217,11 +217,16 @@ function keystoreExists(keys) {
  * failed or interrupted seal leaves whatever was there before, and never a
  * file that won't open. keys/ stays bound across the keychain awaits.
  * @param {import('../private-files').PrivateDir|string} data the data directory
+ * @param {string} password
+ * @param {{verifyKeystore?: boolean}} [options] migration: first check the
+ *   password opens keys/swarm.key (keystoreOpensWith)
  * @returns {Promise<boolean>} true once the verified seal is in place;
  *   false when there is no OS keyring to seal with, or sealing failed. The
  *   caller then keeps the password in the owner-only config.yaml.
+ * @throws {KeystorePasswordUnavailableError} `verifyKeystore`, and the
+ *   password does not open keys/swarm.key
  */
-async function sealPassword(data, password) {
+async function sealPassword(data, password, { verifyKeystore = false } = {}) {
   const storage = await availableStorage();
   if (!storage) return false;
   let ciphertext;
@@ -232,10 +237,23 @@ async function sealPassword(data, password) {
     return false;
   }
   if (!keyedByKeyring(ciphertext)) return false;
+  // Only once the seal will really happen, so a keyring-less host never
+  // pays for the check: a password that does not open keys/swarm.key is not
+  // sealed, and the caller leaves everything as it was.
+  let expectedDigest;
+  if (verifyKeystore) {
+    const check = await keystoreOpensWith(data, password);
+    if (!check.opens) {
+      throw new KeystorePasswordUnavailableError(
+        new Error('the password does not open keys/swarm.key')
+      );
+    }
+    expectedDigest = check.digest;
+  }
   let opened = null;
   try {
     opened = openKeys(data, { create: true });
-    return await sealInto(opened.keys, storage, ciphertext, password);
+    return await sealInto(opened.keys, storage, ciphertext, password, expectedDigest);
   } catch (err) {
     console.warn('[AntKeystore] Could not seal the keystore password:', err.message);
     return false;
@@ -244,11 +262,14 @@ async function sealPassword(data, password) {
   }
 }
 
-async function sealInto(keys, storage, ciphertext, password) {
+async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
   let staged = false;
   try {
     // Bound to the keystore on disk now: the one this password opens.
     const digest = keystoreDigest(keys);
+    if (expectedDigest !== undefined && digest !== expectedDigest) {
+      throw new Error('the keystore changed after its password was checked');
+    }
     keys.write(STAGED_FILE, encodeSeal(ciphertext, digest));
     staged = true;
     // What is on disk, not what was meant to be: it must open to exactly
@@ -526,6 +547,34 @@ function withKeystoreLock(dataDir, fn) {
 }
 
 /**
+ * Whether `password` decrypts keys/swarm.key as it is on disk, to the
+ * account its unencrypted `address` names (one scrypt run). No keystore is
+ * nothing to check.
+ * @param {import('../private-files').PrivateDir|string} data the data directory
+ * @returns {Promise<{opens: boolean, digest: string|null}>} `digest`: the
+ *   SHA-256 of the bytes checked
+ */
+async function keystoreOpensWith(data, password) {
+  let raw;
+  try {
+    raw = withKeysDir(data, (keys) => (keys ? keys.read('swarm.key') : null));
+  } catch {
+    return { opens: false, digest: null };
+  }
+  if (raw === null) return { opens: true, digest: null };
+  const digest = crypto.createHash('sha256').update(raw).digest('hex');
+  try {
+    const text = raw.toString('utf-8');
+    const declared = String(JSON.parse(text)?.address || '').toLowerCase().replace(/^0x/, '');
+    const { Wallet } = require('ethers');
+    const wallet = await Wallet.fromEncryptedJson(text, password);
+    return { opens: wallet.address.toLowerCase().slice(2) === declared, digest };
+  } catch {
+    return { opens: false, digest };
+  }
+}
+
+/**
  * The account a Web3 v3 keystore says it holds (its unencrypted `address`),
  * as 40 lowercase hex digits, or null when the file has none to read.
  * @param {import('../private-files').PrivateDir|string} data the data directory
@@ -561,6 +610,7 @@ module.exports = {
   handoffRoot,
   withKeystoreLock,
   keystoreAddress,
+  keystoreOpensWith,
   sealedPasswordPath,
   _setSafeStorageForTests: (storage) => {
     safeStorageOverride = storage;

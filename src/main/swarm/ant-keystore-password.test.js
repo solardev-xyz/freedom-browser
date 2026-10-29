@@ -376,6 +376,20 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   }
 
   const configText = () => fs.readFileSync(configPath, 'utf8');
+  // A real Web3 v3 keystore for a fixed synthetic account (cheap scrypt).
+  const { Wallet, encryptKeystoreJson } = require('ethers');
+  const account = new Wallet('0x' + '11'.repeat(32));
+  const writeRealKeystore = async (password) => {
+    const json = await encryptKeystoreJson(
+      { address: account.address, privateKey: account.privateKey },
+      password,
+      { scrypt: { N: 1 << 10 } }
+    );
+    fs.writeFileSync(swarmKeyPath, json, { mode: 0o600 });
+  };
+  const opensKeystore = async (password) =>
+    (await Wallet.fromEncryptedJson(fs.readFileSync(swarmKeyPath, 'utf8'), password)).address ===
+    account.address;
 
   test('a fresh node keeps its password sealed, out of config.yaml', async () => {
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
@@ -395,7 +409,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   });
 
   test("an older build's password moves out of config.yaml on first start", async () => {
-    fs.writeFileSync(swarmKeyPath, '{}');
+    await writeRealKeystore('legacy-password');
     fs.writeFileSync(configPath, 'api-addr: 127.0.0.1:1633\npassword: legacy-password\n');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
 
@@ -419,7 +433,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     ["a doubled single quote", "password: 'it''s'", "it's"],
     ['a # inside the value', 'password: hash#inside', 'hash#inside'],
   ])("an older build's password with %s migrates as Ant decodes it", async (_label, line, decoded) => {
-    fs.writeFileSync(swarmKeyPath, '{}');
+    await writeRealKeystore(decoded);
     fs.writeFileSync(configPath, `api-addr: 127.0.0.1:1633\n${line}\n`);
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
 
@@ -453,7 +467,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   });
 
   test('the password line goes only once its seal is verified and published', async () => {
-    fs.writeFileSync(swarmKeyPath, '{}');
+    await writeRealKeystore('still-valid');
     fs.writeFileSync(configPath, 'api-addr: 127.0.0.1:1633\npassword: still-valid\n');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
     const sealed = keystore.sealedPasswordPath(dataDir);
@@ -507,6 +521,63 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     lifecycle.refuseKeyReinjection(keystore.IDENTITY_MISMATCH_MESSAGE);
     expect(ant.getStatus()).toEqual({ status: 'error', error: keystore.IDENTITY_MISMATCH_MESSAGE });
     expect(lifecycle.needsKeyReinjection()).toBe(false);
+  });
+
+  // The K-3 review's crash window, with real Web3 keystores: injection
+  // wrote a new swarm.key (new password) and died before persisting that
+  // password, so config.yaml still holds the old one. Sealing it would drop
+  // the line and clear the re-injection; it is checked against the keystore
+  // first, and the start asks for re-injection with everything kept.
+  test('an old config.yaml password beside a new keystore is not sealed', async () => {
+    await writeRealKeystore('old-config-password');
+    fs.writeFileSync(configPath, 'api-addr: 127.0.0.1:1633\npassword: old-config-password\n');
+    // The crash: a new keystore, its password never persisted.
+    await writeRealKeystore('new-keystore-password');
+    const keystoreBefore = fs.readFileSync(swarmKeyPath, 'utf8');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(configText()).toBe('api-addr: 127.0.0.1:1633\npassword: old-config-password\n');
+    expect(keystore.hasSealedPassword(dataDir)).toBe(false);
+    expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(keystoreBefore);
+    expect(await opensKeystore('new-keystore-password')).toBe(true);
+  });
+
+  test('the matching config.yaml password is sealed, and the seal opens the keystore', async () => {
+    await writeRealKeystore('matching-password');
+    fs.writeFileSync(configPath, 'password: matching-password\n');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+
+    expect((await ant.ensureConfig(dataDir, 1633, 1634)).sealedPassword).toBe('matching-password');
+    expect(configText()).not.toMatch(/^password:/m);
+    expect(await opensKeystore(await keystore.unsealPassword(dataDir))).toBe(true);
+  });
+
+  test('a keystore that is not one keeps its config.yaml password, unsealed', async () => {
+    fs.writeFileSync(swarmKeyPath, '{"address":"' + '11'.repeat(20) + '"}');
+    fs.writeFileSync(configPath, 'password: some-password\n');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(configText()).toBe('password: some-password\n');
+    expect(keystore.hasSealedPassword(dataDir)).toBe(false);
+  });
+
+  // Where nothing would be sealed (no keyring, or Linux's fallback key) the
+  // check never runs, so a keyring-less host pays no scrypt per start: the
+  // stale password is not migrated, and the start goes on as before (had
+  // the check run, it would have refused this password).
+  test('without a keyring the check never runs: nothing is migrated anyway', async () => {
+    await writeRealKeystore('new-keystore-password');
+    fs.writeFileSync(configPath, 'password: old-config-password\n');
+    const storage =
+      process.platform === 'linux'
+        ? fakeSafeStorage({ prefix: 'v10' })
+        : fakeSafeStorage({ available: false });
+    const { ant } = loadAntManager(storage);
+
+    expect((await ant.ensureConfig(dataDir, 1633, 1634)).sealedPassword).toBeNull();
+    expect(configText()).toMatch(/^password: old-config-password$/m);
   });
 
   // A crash between writing keys/swarm.key and republishing its seal: the

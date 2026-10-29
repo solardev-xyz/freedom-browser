@@ -365,11 +365,17 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
     }
     // A password an older build (or a keyring-less one) kept in config.yaml
     // moves into the keychain when there is one; its line goes only once the
-    // seal is verified (sealPassword).
+    // seal is verified (sealPassword). It must open keys/swarm.key first: a
+    // crash between injection writing a new keystore and persisting its
+    // password leaves the old one here, and sealing that would drop the
+    // line and clear the re-injection. That throws the re-inject error and
+    // leaves everything as it was.
     return {
       password: configPassword.value,
       rawPasswordLine: null,
-      sealed: await keystorePassword.sealPassword(data, configPassword.value),
+      sealed: await keystorePassword.sealPassword(data, configPassword.value, {
+        verifyKeystore: hasKeystore,
+      }),
     };
   }
   if (unsealError) {

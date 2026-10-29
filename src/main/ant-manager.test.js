@@ -680,7 +680,9 @@ describe('ant-manager', () => {
     // Through the data directory's held handle.
     expect(keystorePassword.sealPassword).toHaveBeenCalledWith(
       expect.objectContaining({ path: dataDir }),
-      'legacy-keystore-password'
+      'legacy-keystore-password',
+      // A keystore is there: the password must open it before it is sealed.
+      { verifyKeystore: true }
     );
     const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
     expect(config).not.toMatch(/^password:/m);
