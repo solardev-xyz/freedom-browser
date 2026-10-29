@@ -294,6 +294,8 @@ async function executeRadicleMethod(
   }
   const privateRefusal = privateWindowRefusal(privateSender, method);
   if (privateRefusal) throw privateRefusal;
+  // Snapshot-only for a private window, whatever the caller passed.
+  if (privateSender) onSeedStatus = undefined;
   if (!origin || typeof origin !== 'string') {
     throw providerError(ERRORS.UNAUTHORIZED, 'Missing origin');
   }
@@ -455,9 +457,12 @@ function registerRadicleProviderIpc() {
     const refusal = agentCustodyRefusal(event?.sender, method, meta);
     if (refusal) return { error: refusal };
     const hadBroadcaster = seedStatusBroadcasters.has(origin);
-    const onSeedStatus = PUSH_METHODS.has(method)
-      ? getSeedStatusBroadcaster(origin)
-      : undefined;
+    // A private window's seed-status read is a snapshot: no broadcaster
+    // for its origin and no subscription to the fetch, since nothing a
+    // private window does may outlive it, and the disconnect that would
+    // remove them is refused to it (R-9).
+    const onSeedStatus =
+      PUSH_METHODS.has(method) && !privateSender ? getSeedStatusBroadcaster(origin) : undefined;
     try {
       const result = await executeRadicleMethod(method, params, origin, {
         onSeedStatus,

@@ -60,26 +60,23 @@ jest.mock('./cob-service', () => ({
 }));
 
 const ORIGIN = 'https://forge.example';
+// A second connected origin, for the seed-status subscription test.
+const WATCHED = 'https://watched.example';
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 const AN_HOUR_AGO = Date.now() - 60 * 60 * 1000;
 const storePath = path.join(mockUserDataDir, 'radicle-permissions.json');
-// An existing grant, last used an hour ago: a read that recorded its use
-// would rewrite it.
+// Existing grants, last used an hour ago: a read that recorded its use
+// would rewrite them.
+const grant = (origin) => ({
+  origin,
+  connectedAt: AN_HOUR_AGO,
+  lastUsed: AN_HOUR_AGO,
+  signing: true,
+  autoApprove: { node: false, signing: false },
+});
 fs.writeFileSync(
   storePath,
-  JSON.stringify(
-    {
-      [ORIGIN]: {
-        origin: ORIGIN,
-        connectedAt: AN_HOUR_AGO,
-        lastUsed: AN_HOUR_AGO,
-        signing: true,
-        autoApprove: { node: false, signing: false },
-      },
-    },
-    null,
-    2
-  )
+  JSON.stringify({ [ORIGIN]: grant(ORIGIN), [WATCHED]: grant(WATCHED) }, null, 2)
 );
 
 const IPC = require('../../shared/ipc-channels');
@@ -213,6 +210,59 @@ test('grants and use records from a private window are refused', async () => {
   // Unclassifiable senders too.
   expect(mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)({}, other)).toBeNull();
   expect(storeBytes()).toBe(before);
+});
+
+// R-9 review 3: a private seed-status read during an active fetch is a
+// snapshot. The manager would keep a callback it was given for as long as
+// the fetch runs, and the handler a broadcaster for the origin, and the
+// private window, refused radicle_disconnect, could remove neither.
+test('a private seed-status read subscribes nothing and leaves no broadcaster', async () => {
+  // The manager during an active fetch: a callback passed in is kept.
+  const listeners = new Set();
+  manager.getSeedFetchStatus.mockImplementation((_rid, onStatus) => {
+    if (onStatus) listeners.add(onStatus);
+    return { success: true, status: mockStatus };
+  });
+  manager.unsubscribeSeedStatus.mockImplementation((onStatus) => listeners.delete(onStatus));
+  const privateChrome = mockFixture.privateSender(privateWindows);
+
+  await expect(
+    execute(privateChrome, {
+      method: 'radicle_getSeedStatus',
+      params: { rid: RID },
+      origin: WATCHED,
+    })
+  ).resolves.toEqual({ result: mockStatus });
+  // Called with the RID alone: no callback.
+  expect(manager.getSeedFetchStatus).toHaveBeenCalledTimes(1);
+  expect(manager.getSeedFetchStatus.mock.calls[0]).toEqual([RID]);
+  expect(listeners.size).toBe(0);
+
+  // Once the private window is gone, nothing of it is left: a public
+  // window's disconnect of the origin finds no broadcaster to unsubscribe.
+  await execute(mockFixture.publicSender(), {
+    method: 'radicle_disconnect',
+    params: {},
+    origin: WATCHED,
+  });
+  expect(manager.unsubscribeSeedStatus).not.toHaveBeenCalled();
+
+  // The same read from a public window subscribes, as before.
+  manager.getSeedFetchStatus.mockClear();
+  const granted = mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)(
+    { sender: mockFixture.publicSender() },
+    WATCHED
+  );
+  expect(granted).toMatchObject({ origin: WATCHED });
+  await execute(mockFixture.publicSender(), {
+    method: 'radicle_getSeedStatus',
+    params: { rid: RID },
+    origin: WATCHED,
+  });
+  expect(manager.getSeedFetchStatus.mock.calls[0]).toEqual([RID, expect.any(Function)]);
+  expect(listeners.size).toBe(1);
+  manager.getSeedFetchStatus.mockImplementation(() => ({ success: true, status: mockStatus }));
+  manager.unsubscribeSeedStatus.mockImplementation(() => {});
 });
 
 // Last: these write the store.
