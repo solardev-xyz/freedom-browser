@@ -61,9 +61,13 @@ function loadManager(options = {}) {
   }));
   jest.doMock('./radicle-embedded', () => embedded);
   jest.doMock('./service-registry', () => registry);
+  const privateSenders = new Set();
+  jest.doMock('./private/private-windows', () => ({
+    isPrivateWebContents: jest.fn((contents) => privateSenders.has(contents)),
+  }));
 
   const mod = require('./radicle-manager');
-  return { mod, embedded, registry, ipcMain, handlers, dataDir, statusSend };
+  return { mod, embedded, registry, ipcMain, handlers, dataDir, statusSend, privateSenders };
 }
 
 afterEach(() => {
@@ -315,9 +319,43 @@ test('IPC keeps profile gating and RID validation', async () => {
   ctx.mod.registerRadicleIpc();
   const IPC = require('../shared/ipc-channels');
   await expect(ctx.handlers.get(IPC.RADICLE_START)()).resolves.toMatchObject({ status: 'stopped' });
-  await expect(ctx.handlers.get(IPC.RADICLE_SEED)(null, '')).resolves.toMatchObject({
+  const sender = { isDestroyed: () => false };
+  await expect(ctx.handlers.get(IPC.RADICLE_SEED)({ sender }, '')).resolves.toMatchObject({
     success: false, error: { code: 'RADICLE_DISABLED' },
   });
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+test('IPC refuses seeding and sync from private windows, failing closed (R-9)', async () => {
+  const ctx = loadManager();
+  const IPC = require('../shared/ipc-channels');
+  await ctx.mod.startRadicle();
+  ctx.mod.registerRadicleIpc();
+  const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  const privateGuest = { isDestroyed: () => false, send: jest.fn() };
+  ctx.privateSenders.add(privateGuest);
+  const refused = {
+    success: false,
+    error: { code: 'RADICLE_PRIVATE_WINDOW', message: 'Seeding is not available in private windows' },
+  };
+
+  for (const event of [
+    { sender: privateGuest },
+    // A sender whose window can no longer be read counts as private.
+    { sender: { isDestroyed: () => true } },
+    { sender: { isDestroyed: () => false, hostWebContents: { isDestroyed: () => true } } },
+    {},
+    null,
+  ]) {
+    expect(await ctx.handlers.get(IPC.RADICLE_SEED)(event, rid)).toEqual(refused);
+    expect(await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)(event, rid)).toEqual(refused);
+  }
+  expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+  expect(privateGuest.send).not.toHaveBeenCalled();
+
+  // Reading a repository's seed status stays available.
+  await expect(ctx.handlers.get(IPC.RADICLE_GET_SEED_STATUS)({ sender: privateGuest }, rid))
+    .resolves.toMatchObject({ success: true });
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
