@@ -1453,6 +1453,63 @@ describe('ipc-handlers', () => {
     );
   });
 
+  // R-8 review 4: a disable whose stop rejected resolves to an error status
+  // rather than throwing. It is saved, but not applied, and Settings must
+  // say so.
+  test('reports a disable whose stop was not proved as saved but not applied', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { radicle: { mode: 'managed' } } },
+    };
+    const radicleManager = {
+      syncProfileMode: jest.fn(async () => ({ status: 'error', error: 'shutdown failed' })),
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile, radicleManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'radicle',
+      config: { mode: 'disabled' },
+    });
+
+    expect(radicleManager.syncProfileMode).toHaveBeenCalled();
+    expect(result).toEqual(
+      failure(
+        'PROFILE_NODE_APPLY_FAILED',
+        'shutdown failed',
+        { saved: true },
+        {
+          profile: expect.objectContaining({
+            nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
+          }),
+        }
+      )
+    );
+  });
+
+  test('re-enabling over an earlier node error still applies the saved mode', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { radicle: { mode: 'disabled' } } },
+    };
+    // An error from before (say, a failed start): enabling stops nothing.
+    const radicleManager = {
+      syncProfileMode: jest.fn(async () => ({ status: 'error', error: 'start failed' })),
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile, radicleManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'radicle',
+      config: { mode: 'managed' },
+    });
+    expect(result).toMatchObject({ success: true });
+  });
+
   test('a saved Tor mode is published to the registry right away (#377)', async () => {
     // The Nodes menu reads a stopped Tor's mode and "Tor disabled for this
     // profile" notice from the service registry; without this sync both stayed
