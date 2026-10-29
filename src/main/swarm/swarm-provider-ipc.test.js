@@ -1310,7 +1310,7 @@ describe('swarm-provider-ipc', () => {
         owner: VALID_OWNER,
         identifier: VALID_IDENTIFIER,
       });
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined, epoch: expect.any(Number) });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'soc',
         name: 'SOC chunk',
@@ -1336,7 +1336,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.owner).toBe(VALID_OWNER);
       expect(mockGetUserWalletKey).toHaveBeenCalledWith(2);
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xwalletkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xwalletkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined, epoch: expect.any(Number) });
     });
 
     test('rejects SOC writes without feed grant', async () => {
@@ -1728,7 +1728,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.reference).toBe(VALID_REF);
       expect(result.result.bzzUrl).toBe('bzz://mref');
       expect(result.result.index).toBe(7);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey', 'myapp.eth/blog', VALID_REF, undefined, { epoch: expect.any(Number) });
       expect(mockUpdateFeedReference).toHaveBeenCalledWith('myapp.eth', 'blog', VALID_REF);
     });
 
@@ -1748,7 +1748,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.index).toBe(8);
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey1', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey1', 'myapp.eth/blog', VALID_REF, undefined, { epoch: expect.any(Number) });
     });
 
     test('records publish history as feed-update', async () => {
@@ -1864,7 +1864,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 0 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: undefined, epoch: expect.any(Number) });
     });
 
     test('writes feed entry with the identity that created the feed', async () => {
@@ -1883,7 +1883,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey1', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey1', 'myapp.eth/feed', 'hello', { index: undefined, epoch: expect.any(Number) });
     });
 
     test('passes explicit index to writeFeedPayload', async () => {
@@ -1896,7 +1896,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 5 }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 5 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: 5 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: 5, epoch: expect.any(Number) });
     });
 
     test('records publish history on success', async () => {
