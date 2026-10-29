@@ -1,0 +1,3 @@
+- Sites sharing a Swarm publisher identity can no longer write each other's feed entries ([#949](https://github.com/solardev-xyz/freedom-browser/issues/949))
+  - Raw Single Owner Chunks need an identity only that site uses
+  - The signing prompt says when an identity is shared with other sites

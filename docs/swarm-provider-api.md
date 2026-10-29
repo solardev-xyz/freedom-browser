@@ -131,6 +131,7 @@ validation and node failures, `data`:
 | `feed_not_granted`       | A feeds/signing method without the feed grant                                                |
 | `messaging_not_granted`  | A messaging method without the messaging grant                                               |
 | `tag_ownership_mismatch` | `swarm_getUploadStatus` for a tag this origin did not create, or one already reported `done` |
+| `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites |
 
 A `4100` raised by the chrome before the request reaches the main process
 carries the message `Origin not authorized. Call swarm_requestAccess first.`
@@ -316,6 +317,14 @@ change in Settings. Three kinds exist (`identityMode`):
   active identity changes later. `swarm_getSigningIdentity` and
   `swarm_writeSingleOwnerChunk` use the _active_ identity.
 - Signing needs the identity vault to be unlocked.
+- `swarm_writeSingleOwnerChunk` needs an identity **only this origin uses**:
+  an `app-scoped` one whose key index no other origin holds. Under
+  `bee-wallet`, `ethereum-wallet` or a shared index it fails with `4100`
+  `shared_identity`, and the signing prompt says so. A raw SOC's identifier
+  is the page's to choose, so under an owner other sites also sign with, a
+  page could write another site's feed entries (`keccak256(topic || index)`).
+  Feeds and `swarm_getSigningIdentity` work under every identity, since feed
+  topics are namespaced by origin.
 
 Messaging is different: PSS decrypts with the **node's** key, so
 `swarm_getMessagingIdentity` always reports `identityMode: 'bee-wallet'`, and
@@ -517,7 +526,9 @@ page shim allows it 300 s (see [Timeouts](#timeouts)).
 
 Signs a single-owner chunk with the origin's active publisher identity and
 uploads it. `identifier` is 32 bytes of hex. `data` is 1–4096 bytes. `owner`
-is the checksummed `0x` signer address; `reference` is the SOC address.
+is the checksummed `0x` signer address; `reference` is the SOC address. The
+active identity must be one no other origin uses (an `app-scoped` identity
+of its own); otherwise `4100` with `data.reason: 'shared_identity'`.
 
 #### `swarm_readSingleOwnerChunk { address } | { owner, identifier }, options?` → SOC (public)
 

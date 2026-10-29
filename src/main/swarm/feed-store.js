@@ -575,6 +575,36 @@ async function enrichIdentityOwner(identity, options = {}) {
   return { ...identity, owner: null, stored };
 }
 
+/**
+ * Whether `identity` signs for other sites too (SW-1). The Ant wallet key
+ * and the browser's Ethereum wallet accounts can be chosen by any site, so
+ * they are shared by nature. An app-scoped identity is shared when another
+ * origin holds the same publisher key index.
+ *
+ * Feeds are safe under a shared identity: their topics are namespaced by
+ * origin. A raw Single Owner Chunk is not: its identifier is the page's to
+ * choose, so a site could write another site's feed entries
+ * (keccak256(topic || index)) under the shared owner.
+ * @param {string} origin
+ * @param {Object|null} identity
+ * @returns {boolean}
+ */
+function isIdentitySharedWithOtherOrigins(origin, identity) {
+  const mode = identity?.mode || identity?.identityMode || null;
+  if (mode !== 'app-scoped') return true;
+  if (typeof identity.publisherKeyIndex !== 'number') return true;
+  const key = normalizeOrigin(origin);
+  for (const [otherOrigin, entry] of Object.entries(loadFeeds().origins)) {
+    if (otherOrigin === key || !isPlainObject(entry?.identities)) continue;
+    for (const other of Object.values(entry.identities)) {
+      if (other?.mode === 'app-scoped' && other.publisherKeyIndex === identity.publisherKeyIndex) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function getOriginIdentityStateWithOwners(origin) {
   const state = getOriginIdentityState(origin) || {
     origin: normalizeOrigin(origin),
@@ -622,7 +652,10 @@ async function getOriginIdentityStateWithOwners(origin) {
 
   return {
     ...state,
-    identities,
+    identities: identities.map((identity) => ({
+      ...identity,
+      shared: isIdentitySharedWithOtherOrigins(origin, identity),
+    })),
   };
 }
 
@@ -634,6 +667,8 @@ async function previewAppScopedIdentity(origin, options = {}) {
   return {
     ...enriched,
     preview: true,
+    // The next unallocated publisher key index: no site holds it yet.
+    shared: false,
     origin: normalizeOrigin(origin),
   };
 }
@@ -1093,6 +1128,7 @@ module.exports = {
   updateFeedReference,
   getAllFeeds,
   getAllOriginEntries,
+  isIdentitySharedWithOtherOrigins,
   getEthereumWalletIdentityReferences,
   hasIdentityMode,
   hasFeedGrant,
