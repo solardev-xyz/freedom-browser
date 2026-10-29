@@ -27,6 +27,9 @@ let siteEl;
 let wantsEl;
 let allowsEl;
 let warningEl;
+let alwaysRow;
+let alwaysInput;
+let alwaysLabel;
 let approveBtn;
 let rejectBtn;
 let backBtn;
@@ -44,6 +47,9 @@ export function initRadicleConsent() {
   wantsEl = document.getElementById('radicle-consent-wants');
   allowsEl = document.getElementById('radicle-consent-allows');
   warningEl = document.getElementById('radicle-consent-warning');
+  alwaysRow = document.getElementById('radicle-consent-always-row');
+  alwaysInput = document.getElementById('radicle-consent-always');
+  alwaysLabel = document.getElementById('radicle-consent-always-label');
   approveBtn = document.getElementById('radicle-consent-approve');
   rejectBtn = document.getElementById('radicle-consent-reject');
   backBtn = document.getElementById('radicle-consent-back');
@@ -68,8 +74,10 @@ export function initRadicleConsent() {
 
 function finish(approved, { keepSidebar = false } = {}) {
   if (!pending) return;
-  const { resolve, reject, sidebarWasOpen } = pending;
+  const { resolve, reject, sidebarWasOpen, offersAlways } = pending;
   pending = null;
+  const alwaysAllow = offersAlways ? alwaysInput?.checked === true : undefined;
+  alwaysRow?.classList.add('hidden');
 
   screen.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
@@ -77,7 +85,7 @@ function finish(approved, { keepSidebar = false } = {}) {
   // than leaving the wallet view behind (which may not even be enabled).
   if (!keepSidebar && !sidebarWasOpen) closeSidebar();
 
-  if (approved) resolve();
+  if (approved) resolve(offersAlways ? { alwaysAllow } : undefined);
   else reject({ code: 4001, message: 'User rejected the request' });
 }
 
@@ -86,8 +94,11 @@ function finish(approved, { keepSidebar = false } = {}) {
  * cancel/back/panel-close. Only one prompt can be active; a second request
  * while one is showing is rejected immediately (prevents prompt-queue
  * confusion from spammy pages).
+ *
+ * With `always: { label, checked }` the prompt also shows that checkbox,
+ * and resolves to `{ alwaysAllow }`, its state when approved.
  */
-function prompt({ title, origin, wants, allows, warning, approveLabel, owner }) {
+function prompt({ title, origin, wants, allows, warning, approveLabel, owner, always = null }) {
   return new Promise((resolve, reject) => {
     if (!screen) {
       reject({ code: -32603, message: 'Consent UI unavailable' });
@@ -110,8 +121,16 @@ function prompt({ title, origin, wants, allows, warning, approveLabel, owner }) 
     );
     warningEl.textContent = warning;
     approveBtn.textContent = approveLabel;
+    const offersAlways = Boolean(always && alwaysRow && alwaysInput);
+    if (offersAlways) {
+      if (alwaysLabel) alwaysLabel.textContent = always.label;
+      alwaysInput.checked = always.checked === true;
+      alwaysRow.classList.remove('hidden');
+    } else {
+      alwaysRow?.classList.add('hidden');
+    }
 
-    pending = { resolve, reject, sidebarWasOpen: isSidebarVisible(), owner };
+    pending = { resolve, reject, sidebarWasOpen: isSidebarVisible(), owner, offersAlways };
 
     hideAllSubscreens();
     walletState.identityView?.classList.add('hidden');
@@ -185,10 +204,10 @@ export function showRadicleSigningApproval(permissionKey, owner) {
     wants: 'wants to author content as your Radicle identity',
     allows: [
       'Know your Radicle DID and alias',
-      'Open issues, comment, and change issue states as you',
+      'Ask to open issues, comment, and change issue states as you. You approve each one.',
     ],
     warning:
-      'Everything it writes is signed with your key, published to the Radicle network, and cannot be unpublished.',
+      'Everything it writes is signed with your Radicle identity, published to the Radicle network, and cannot be unpublished.',
     approveLabel: 'Allow',
   });
 }
@@ -265,17 +284,35 @@ function describeSignedWrite(method, params = {}) {
   }
 }
 
+const SIGNED_WRITE_WARNING =
+  'This is signed with your Radicle identity and published to the Radicle network. It is public and permanent: it cannot be edited away or unpublished.';
+
 /**
- * Per-write prompt for a tab in Freedom Agent custody, where the site's
- * standing signing grant does not answer on its own: the user sees and
- * approves the exact content before it is signed.
+ * Per-write prompt: the user sees and approves the exact content before it
+ * is signed (R-6). Outside Agent custody it also offers the site's "always
+ * allow writes" rule, checked when the rule is already on (the prompt then
+ * shows because main's rate limit stopped an automatic write), and resolves
+ * to `{ alwaysAllow }`.
  */
-export function showRadicleSignedWriteApproval(permissionKey, method, params, owner) {
+export function showRadicleSignedWriteApproval(
+  permissionKey,
+  method,
+  params,
+  owner,
+  { agentHeld = false, alwaysAllow = false } = {}
+) {
   return prompt({
     owner,
     origin: permissionKey,
     ...describeSignedWrite(method, params),
-    warning:
-      'Freedom Agent is using this tab. Approving signs this with your Radicle key and publishes it to the network, where it cannot be unpublished.',
+    warning: agentHeld
+      ? `Freedom Agent is using this tab. ${SIGNED_WRITE_WARNING}`
+      : SIGNED_WRITE_WARNING,
+    always: agentHeld
+      ? null
+      : {
+          label: 'Always allow this site to write as you without asking (at most 50 writes a day)',
+          checked: alwaysAllow,
+        },
   });
 }
