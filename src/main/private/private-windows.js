@@ -121,6 +121,38 @@ function isPrivateWebContents(webContents) {
   }
 }
 
+/**
+ * Strict classification, for guards that must fail closed:
+ *  - 'private': a webview on a private session, or the chrome renderer (or
+ *    a guest) of a window that was ever private;
+ *  - 'public': the live, non-private window main finds for it;
+ *  - 'unknown': anything else (no webContents, a destroyed one or a
+ *    destroyed host, no window main can find, or a lookup that throws).
+ * isPrivateWebContents answers false for 'unknown'. A guard that must leave
+ * nothing behind from a private window refuses it.
+ * @returns {'private'|'public'|'unknown'}
+ */
+function classifyWebContents(webContents) {
+  if (!webContents) return 'unknown';
+  try {
+    if (typeof webContents.isDestroyed === 'function' && webContents.isDestroyed()) {
+      return 'unknown';
+    }
+    if (webContents.session && privateSessions.has(webContents.session)) return 'private';
+    const host = webContents.hostWebContents || webContents;
+    if (host !== webContents && typeof host.isDestroyed === 'function' && host.isDestroyed()) {
+      return 'unknown';
+    }
+    const win = BrowserWindow.fromWebContents(host);
+    if (!win) return 'unknown';
+    if (everPrivateWindowIds.has(win.id)) return 'private';
+    if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return 'unknown';
+    return 'public';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /** Partition name for a private window's webContents, or null. */
 function getPartitionForWebContents(webContents) {
   if (!webContents) return null;
@@ -241,6 +273,7 @@ module.exports = {
   registerPrivateCleanup,
   isPrivatePartition,
   isPrivateWebContents,
+  classifyWebContents,
   getPartitionForWebContents,
   getPrivateWindowCount,
   _resetState,

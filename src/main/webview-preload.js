@@ -1424,12 +1424,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
