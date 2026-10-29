@@ -4,6 +4,10 @@
  * Manages user-configured RPC provider API keys. The provider catalog and
  * resolved RPC URLs come from the network registry; user API keys are
  * stored in <userData>/rpc-api-keys.json.
+ *
+ * The file holds the user's provider API keys in plain JSON, so it is
+ * owner-only (0600) on POSIX and replaced atomically (K-5). Encrypting it
+ * belongs to the Rust core's profile secrets store (#644).
  */
 
 const { app, ipcMain } = require('electron');
@@ -21,6 +25,7 @@ function getProviderManager() {
 }
 
 const API_KEYS_FILE = 'rpc-api-keys.json';
+const API_KEYS_MODE = 0o600;
 
 let apiKeysCache = null;
 
@@ -47,6 +52,7 @@ function loadApiKeys() {
   try {
     const filePath = getApiKeysPath();
     if (fs.existsSync(filePath)) {
+      restrictApiKeysMode(filePath);
       const data = fs.readFileSync(filePath, 'utf-8');
       apiKeysCache = JSON.parse(data);
     } else {
@@ -60,11 +66,33 @@ function loadApiKeys() {
   return apiKeysCache;
 }
 
-function saveApiKeys() {
+// A file an older build wrote with the umask's mode (usually 0644).
+function restrictApiKeysMode(filePath) {
+  if (process.platform === 'win32') return;
   try {
-    fs.writeFileSync(getApiKeysPath(), JSON.stringify(apiKeysCache, null, 2), 'utf-8');
+    if ((fs.statSync(filePath).mode & 0o077) !== 0) fs.chmodSync(filePath, API_KEYS_MODE);
+  } catch (err) {
+    console.warn('[RpcManager] Could not restrict the API key file:', err.message);
+  }
+}
+
+// Temp file (owner-only, created exclusively) → fsync → rename, so a crash
+// or a full disk never leaves a truncated key file.
+function saveApiKeys() {
+  const filePath = getApiKeysPath();
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    const fd = fs.openSync(tempPath, 'wx', API_KEYS_MODE);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(apiKeysCache, null, 2), 'utf-8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tempPath, filePath);
     return true;
   } catch (err) {
+    fs.rmSync(tempPath, { force: true });
     console.error('[RpcManager] Failed to save API keys:', err);
     return false;
   }
