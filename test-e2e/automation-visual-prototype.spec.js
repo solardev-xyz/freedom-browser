@@ -107,7 +107,36 @@ for (const scenario of [
         try {
           owner.setZoomFactor(scenario === 'scale-1.5' ? 1.5 : 1);
           owner.focus();
-          const binding = await capture();
+          // setZoomFactor() applies asynchronously. While the page is still
+          // relaying out at the new zoom, a capture either sees the viewport
+          // move under it (capture_changed) or differs from the next one, and
+          // the very first validate() then rejects its own fresh binding as
+          // stale (#815, intermittent on Linux CI at 1.5x). Bind only once two
+          // consecutive captures succeed and agree, i.e. the page has settled
+          // at the zoom this scenario asked for.
+          let binding = null;
+          for (let attempt = 0; ; attempt += 1) {
+            if (attempt >= 40) throw new Error('capture_never_settled');
+            if (attempt) await new Promise((resolve) => setTimeout(resolve, 50));
+            let next;
+            try {
+              next = await capture();
+            } catch (error) {
+              if (error.message !== 'capture_changed') throw error;
+              binding = null;
+              continue;
+            }
+            if (
+              binding &&
+              next.digest === binding.digest &&
+              next.zoom === binding.zoom &&
+              JSON.stringify(next.viewport) === JSON.stringify(binding.viewport)
+            ) {
+              binding = next;
+              break;
+            }
+            binding = next;
+          }
           // Known red canvas centre calibrates screenshot pixels against CSS
           // coordinates. The production model has not selected a point here.
           const point = {

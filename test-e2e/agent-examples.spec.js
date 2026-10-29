@@ -97,7 +97,9 @@ test('each example starts immediately once, while a typed draft stays protected'
     await expect(prompt).toHaveValue('');
     expect(inferenceRequests.length).toBe(count + 1);
     expect(JSON.stringify(inferenceRequests[count].messages)).toContain(text);
-    await window.locator('#agent-new-chat').click();
+    // Agent-first shows only one New chat: the sessions column's + while that
+    // column is open (wide windows), the transcript's button otherwise (#875).
+    await window.locator('#agent-new-chat:visible, #agent-session-new-chat:visible').click();
     await expect(examples).toBeVisible();
     if (agentFirst) await window.keyboard.press('Escape');
   }
@@ -183,8 +185,24 @@ test('examples and composer remain reachable in both themes, small windows and A
           const composer = await window.locator('#agent-composer-wrap').boundingBox();
           expect(cards.y).toBeGreaterThanOrEqual(composer.y + composer.height);
           if (mode === 'floating') {
+            // Inside the launcher card, sharing its glass (#864).
             const glass = await window.locator('.agent-sidebar-inner').boundingBox();
-            expect(cards.y).toBeGreaterThan(glass.y + glass.height + 8);
+            expect(cards.x).toBeGreaterThanOrEqual(glass.x);
+            expect(cards.x + cards.width).toBeLessThanOrEqual(glass.x + glass.width);
+            expect(cards.y + cards.height).toBeLessThanOrEqual(glass.y + glass.height);
+            // With no draft the ideas never become a scroller of their own.
+            expect(await window.locator('#agent-examples').evaluate(e => e.scrollHeight - e.clientHeight)).toBe(0);
+            // A long draft grows the composer to its cap; the ideas must still
+            // end inside the card instead of spilling over the page (#864).
+            await window.locator('#agent-prompt').fill(Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n'));
+            await expect.poll(() => window.evaluate(() => {
+              const glass = document.querySelector('.agent-sidebar-inner').getBoundingClientRect();
+              const examples = document.getElementById('agent-examples').getBoundingClientRect();
+              const composer = document.getElementById('agent-composer-wrap').getBoundingClientRect();
+              return examples.bottom <= glass.bottom + 0.5 && composer.bottom <= glass.bottom + 0.5;
+            }), `${theme} ${width}x${height} long draft`).toBe(true);
+            await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}x${height}-draft.png`) });
+            await window.locator('#agent-prompt').fill('');
           }
         }
         await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`examples-${theme}-${width}-${mode}.png`) });

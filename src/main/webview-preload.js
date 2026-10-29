@@ -1131,6 +1131,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 
   // Model connections are managed only by the trusted Settings page.
   getAgentProviderStatus: guardSettingsPage('getAgentProviderStatus', () => ipcRenderer.invoke('agent:provider:get-status')),
+  getWebMcpLaunchState: guardSettingsPage('getWebMcpLaunchState', () => ipcRenderer.invoke('agent:webmcp:launch-state')),
   getAgentDictationState: guardSettingsPage('getAgentDictationState', () => ipcRenderer.invoke('agent:dictation:state')),
   chooseAgentDictation: guardSettingsPage('chooseAgentDictation', choice => ipcRenderer.invoke('agent:dictation:choose', choice)),
   installAgentDictation: guardSettingsPage('installAgentDictation', () => ipcRenderer.invoke('agent:dictation:install')),
@@ -1159,10 +1160,13 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId })),
   removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
   clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
-  openAgent: guardAgentLauncherPage('openAgent', () => ipcRenderer.invoke('agent:open')),
+  openAgent: guardAgentLauncherPage('openAgent', (options) =>
+    options?.freshPage === true ? ipcRenderer.invoke('agent:open', { freshPage: true }) : ipcRenderer.invoke('agent:open')),
+  getAgentSetupState: guardAgentLauncherPage('getAgentSetupState', () => ipcRenderer.invoke('agent:setup-state')),
   onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
     guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),
-  onAgentProviderChanged: guardSettingsPage('onAgentProviderChanged',
+  // Carries no payload; the start page re-reads its setup state on it.
+  onAgentProviderChanged: guardAgentLauncherPage('onAgentProviderChanged',
     guardInternalSubscription('onAgentProviderChanged', 'agent:provider:changed')),
 
   // Ad blocking (settings page)

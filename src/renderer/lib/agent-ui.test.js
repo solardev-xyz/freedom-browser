@@ -19,12 +19,12 @@ function createAgentElements() {
     'agent-sidebar-close',
     'agent-first-toggle',
     'agent-first-titlebar',
+    'agent-first-reduce',
     'agent-first-title',
     'agent-session-sidebar-toggle',
     'agent-workspace-sidebar-toggle',
     'agent-session-sidebar',
     'agent-mode-toggle',
-    'agent-browser-mode-toggle',
     'agent-mode-menu',
     'agent-mode-agent',
     'agent-mode-browser',
@@ -90,6 +90,7 @@ function createAgentElements() {
     'agent-provider-models-heading',
     'agent-provider-models-list',
     'agent-provider-models-empty',
+    'agent-provider-models-privacy-hint',
     'agent-provider-key-settings',
     'agent-model-list',
     'agent-subscription-note',
@@ -117,6 +118,8 @@ function createAgentElements() {
     'agent-subscription-method-title',
     'agent-subscription-method-help',
     'agent-provider-message',
+    'agent-provider-connect-message',
+    'agent-ollama-install',
     'agent-page-contexts',
     'agent-page-context',
     'agent-page-context-label',
@@ -151,6 +154,11 @@ function createAgentElements() {
     'agent-node-request-summary',
     'agent-publication-details',
     'agent-publication-summary',
+    'agent-publication-permanent',
+    'agent-publication-draft-notice',
+    'agent-publication-stable-notice',
+    'agent-publication-postage-warning',
+    'agent-publication-findings',
     'agent-wallet-account-field',
     'agent-wallet-account',
     'agent-wallet-unlock',
@@ -268,6 +276,8 @@ function createAgentElements() {
   elements['agent-node-request-summary'] = createElement('dl');
   elements['agent-publication-details'].hidden = true;
   elements['agent-publication-summary'] = createElement('dl');
+  elements['agent-publication-findings'] = createElement('div');
+  elements['agent-publication-findings'].hidden = true;
   elements['agent-wallet-account-field'].hidden = true;
   elements['agent-wallet-account'] = createElement('select');
   elements['agent-wallet-unlock'].hidden = true;
@@ -460,6 +470,8 @@ async function loadAgentUi(options = {}) {
   const setAgentTabCustody = jest.fn();
   const setAgentTabClaimHandler = jest.fn();
   const switchTab = jest.fn();
+  const openLinkInNewTab = jest.fn();
+  const openStartPage = jest.fn();
   const setTabStripProjection = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
@@ -496,9 +508,13 @@ async function loadAgentUi(options = {}) {
       return jest.fn();
     },
     switchTab,
+    openLinkInNewTab,
+    openStartPage,
   });
   await flush();
   return {
+    openLinkInNewTab,
+    openStartPage,
     mod,
     openSettings,
     elements,
@@ -609,6 +625,105 @@ describe('Agent UI', () => {
     expect(messages(ctx)).toEqual(hasOffsets
       ? ['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Final answer.']
       : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
+  });
+
+  function timeline(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-thinking')) {
+        return [`${row.open ? 'open' : 'closed'} ${row.children[0].textContent}: ${row.children[1].textContent}`];
+      }
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('shows the model thinking as a closed disclosure above the answer it led to', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Plan the ' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Plan the ']);
+    emit({ type: 'assistant_thinking_delta', text: 'search.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_400 });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'read', operation: 'browser_snapshot' });
+    emit({ type: 'tool_finished', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    // An empty (redacted) block shows nothing.
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_end', durationMs: 100 });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Verify the dates.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 61_000 });
+    emit({ type: 'assistant_text_delta', text: 'Final answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(timeline(ctx)).toEqual([
+      'Research',
+      'closed Thinking · 2s: Plan the search.',
+      'Checking.',
+      'closed Thinking · 1m 1s: Verify the dates.',
+      'Final answer.',
+    ]);
+  });
+
+  test('a thinking block the run ends inside is closed without a duration', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_delta', text: 'Half a thought' });
+    emit({ type: 'run_finished', status: 'cancelled' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking: Half a thought']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-thinking').dataset.state).toBe('done');
+  });
+
+  test('restores thinking at its place in the turn', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          thinking: [
+            { text: 'Plan.', textOffset: 0, timelineOrder: 0, durationMs: 3_000 },
+            { text: '', textOffset: 9, timelineOrder: 1 },
+            { text: 'Check.', textOffset: 9, timelineOrder: 1, durationMs: 1_000 },
+          ],
+          activity: [{ toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded', textOffset: 9, timelineOrder: 0 }],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual([
+      'Research', 'closed Thinking · 3s: Plan.', 'Starting.', 'closed Thinking · 1s: Check.', 'Final answer.',
+    ]);
+  });
+
+  test('a panel restored mid-thought keeps extending the same thinking block', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'running', runId: 'run_live', conversationId: 'conversation_live', transcript: [{
+          runId: 'run_live', userText: 'Research', assistantText: '', status: 'running',
+          thinking: [{ text: 'Half a ', textOffset: 0, timelineOrder: 0, open: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Half a ']);
+    const emit = event => ctx.emit({ runId: 'run_live', ...event });
+    emit({ type: 'assistant_thinking_delta', text: 'thought.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 4_000 });
+    emit({ type: 'assistant_text_delta', text: 'Answer.' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking · 4s: Half a thought.', 'Answer.']);
+  });
+
+  test('restored thinking main cut short is marked as cut', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Answer.', status: 'completed',
+          thinking: [{ text: 'Long start', textOffset: 0, timelineOrder: 0, durationMs: 2_000, truncated: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)[1]).toMatch(/^closed Thinking · 2s: Long start\s*…$/);
   });
 
   test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
@@ -748,7 +863,7 @@ describe('Agent UI', () => {
     const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
     expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
     expect(body.classList.contains('rendered-markdown')).toBe(true);
-    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual([]);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual(['href']);
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
     expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
   });
@@ -802,6 +917,65 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
     expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Set up Agent');
     expect(ctx.elements['agent-run'].disabled).toBe(true);
+  });
+
+  describe('Settings opening Agent on a start page (#864)', () => {
+    const settingsTab = { id: 3, url: 'freedom://settings/ai/providers/ollama', title: 'Settings', isActive: true };
+    async function load(tabs, options = {}) {
+      let showAgent;
+      const ctx = await loadAgentUi({
+        getOpenTabs: () => tabs,
+        ...options,
+        electronAPI: {
+          onShowAgent: jest.fn((callback) => {
+            showAgent = callback;
+            return jest.fn();
+          }),
+        },
+      });
+      return { ctx, showAgent, panel: ctx.elements['agent-sidebar'] };
+    }
+
+    test('opens a new start page before showing the panel, not over the page that asked', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      ctx.openStartPage.mockImplementation(() => {
+        expect(panel.classList.contains('collapsed')).toBe(true);
+      });
+      showAgent({ freshPage: true });
+      expect(ctx.openStartPage).toHaveBeenCalledTimes(1);
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+      expect(panel.dataset.presentation).toBe('launcher');
+    });
+
+    test('reuses an open start page Agent is not driving, and stays on an active one', async () => {
+      const home = 'file:///app/pages/home.html';
+      const tabs = [
+        settingsTab,
+        { id: 4, url: home, title: 'Agent', isActive: false },
+        { id: 5, url: home, title: 'Viewer', isActive: false, kind: 'workspace-viewer' },
+        { id: 6, url: home, title: 'New Tab', isActive: false },
+      ];
+      const { ctx, showAgent } = await load(tabs, { isTabAgentOwned: (id) => id === 4 });
+      showAgent({ freshPage: true });
+      expect(ctx.switchTab).toHaveBeenCalledWith(6);
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+
+      const onHome = await load([{ id: 6, url: home, title: 'New Tab', isActive: true }]);
+      onHome.showAgent({ freshPage: true });
+      expect(onHome.ctx.switchTab).not.toHaveBeenCalled();
+      expect(onHome.ctx.openStartPage).not.toHaveBeenCalled();
+      expect(onHome.panel.classList.contains('collapsed')).toBe(false);
+    });
+
+    test('a plain open (start page, the Open Agent button) stays on the current page', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      showAgent({ freshPage: false });
+      showAgent();
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+    });
   });
 
   test('floats over the page: centred before a task, a right column once one runs, inert while closed', async () => {
@@ -1013,6 +1187,8 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.elements['agent-prompt'].value).toBe('Build a small browser game');
     expect(ctx.elements['agent-examples'].children[0].disabled).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
@@ -1375,6 +1551,87 @@ describe('Agent UI', () => {
     );
   });
 
+  test('a new task workspace leaves out the previous chat\'s page and viewers (#851)', async () => {
+    let agentOwned = false;
+    let tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: false },
+      { id: 8, url: 'https://news.example.test/', title: 'Example News', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      isTabAgentOwned: (tabId) => agentOwned && tabId === 8,
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+
+    // A user's own page is where a new task starts, so it is shown.
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(false);
+
+    // The same page opened by Agent belongs to an earlier chat.
+    agentOwned = true;
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+    expect(ctx.elements['agent-task-pages-empty'].hidden).toBe(false);
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(true);
+    expect(ctx.elements['agent-workspace-sidebar-toggle'].disabled).toBe(true);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [],
+    });
+
+    // So does another chat's read-only workspace viewer.
+    agentOwned = false;
+    tabs = [{ id: 9, kind: 'workspace-viewer', conversationId: 'conversation_old', title: 'notes.md', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+  });
+
+  test('a new task workspace only says Agent starts from the page it will share', async () => {
+    const tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({ getOpenTabs: () => tabs });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const note = () => ctx.elements['agent-task-pages-note'].textContent;
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start from the page you are currently viewing.');
+
+    // Removing the "Attached page" chip keeps the page on screen, but the run
+    // no longer starts from it, so the workspace must stop saying it does.
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start without a page.');
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace does not claim Agent starts from the homepage', async () => {
+    const homeTab = {
+      id: 7, url: 'file:///app/pages/home.html', title: 'New Tab', favicon: '', isLoading: false, isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    // The homepage stays as the surface to browse from, but is never shared.
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-pages-note'].textContent).toBe('Agent will start without a page.');
+  });
+
   test('keeps the pristine homepage outside a new Agent workspace', async () => {
     const homeTab = {
       id: 7,
@@ -1553,6 +1810,13 @@ describe('Agent UI', () => {
     );
     expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
     expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-mode-every'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask every time');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('true');
+
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
 
     ctx.elements['agent-prompt'].value = 'Compare these sources';
     ctx.elements['agent-run'].dispatch('click');
@@ -1754,11 +2018,17 @@ describe('Agent UI', () => {
     choice.dispatch('click');
     expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
     expect(ctx.elements['agent-provider-chatgpt-state'].textContent).toBe('Connected');
-    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('Connect');
+    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('›');
+    expect(ctx.elements['agent-provider-api-state'].getAttribute('aria-hidden')).toBe('true');
+    expect(ctx.elements['agent-provider-api-state'].classList.contains('active')).toBe(false);
+    expect(ctx.elements['agent-provider-chatgpt-state'].getAttribute('aria-hidden')).toBeFalsy();
+    expect(ctx.elements['agent-provider-chatgpt-state'].classList.contains('active')).toBe(true);
     ctx.elements['agent-provider-api'].dispatch('click');
     expect(ctx.elements['agent-provider-status'].textContent).toBe('Not connected');
     expect(ctx.elements['agent-hosted-fields'].classList.contains('hidden')).toBe(true);
     expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
+    // The storage note is help text under the field (#857), not a placeholder.
+    expect(ctx.elements['agent-api-key'].placeholder).toBe('');
   });
 
   test('a late catalogue response cannot overwrite a newer Settings connection change', async () => {
@@ -1797,6 +2067,31 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-active-model-label'].textContent).toBe('local-model');
   });
 
+  test('an idle conversation keeps its model picker locked but not dimmed; a run dims it (#872)', async () => {
+    const ctx = await loadAgentUi();
+    const button = ctx.elements['agent-model-menu-button'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', providerId: 'openai', modelId: 'gpt-4.1-mini' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBeUndefined();
+
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBe('conversation');
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini. This conversation keeps its model; start a new chat to use another.');
+
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+  });
+
   test('shows model privacy capabilities in the picker and setup before any inference', async () => {
     const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
     const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
@@ -1818,6 +2113,58 @@ describe('Agent UI', () => {
     expect(preview.children[1].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
     expect(preview.title).toContain('Hardware health is checked when used');
     expect(ctx.elements['agent-model-details'].children[0].children[0].title).toContain('does not mean the hardware has passed');
+  });
+
+  test('provider pages hide the privacy hint and disable refresh until something is connected (#856)', async () => {
+    const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
+    const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
+    const catalog = [
+      { providerId: 'openai', name: 'OpenAI', authType: 'api_key', models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }] },
+      { providerId: 'near-ai', name: 'NEAR AI', canRefresh: true, models: [] },
+      { providerId: 'venice', name: 'Venice', canRefresh: true, models: [] },
+    ];
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Refresh unavailable' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const hint = ctx.elements['agent-provider-models-privacy-hint'];
+    const refresh = ctx.elements['agent-model-refresh'];
+    const open = (providerId) => {
+      ctx.elements['agent-provider-select'].value = providerId;
+      ctx.elements['agent-provider-select'].dispatch('change');
+    };
+    // Not connected, nothing listed: no hint, refresh shown but disabled.
+    for (const providerId of ['near-ai', 'venice']) {
+      open(providerId);
+      expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(false);
+      expect(ctx.elements['agent-provider-models-empty'].textContent).toBe('Connect to discover available models');
+      expect(hint.hidden).toBe(true);
+      expect(refresh.hidden).toBe(false);
+      expect(refresh.disabled).toBe(true);
+    }
+    // A failed refresh must not leave the button enabled on an unconnected provider.
+    refresh.dispatch('click');
+    await flush();
+    expect(refresh.disabled).toBe(true);
+    // Connected lab provider: models listed, but no privacy symbols, so no hint.
+    open('openai');
+    expect(ctx.elements['agent-provider-models-list'].hidden).toBe(false);
+    expect(hint.hidden).toBe(true);
+
+    // Connected NEAR AI with a symbolled model: hint shown, refresh enabled.
+    ctx.electronAPI.refreshAgentProviderModels.mockResolvedValue({
+      ok: true, catalog: catalog.map((entry) => entry.providerId === 'near-ai' ? { ...entry, models: [model] } : entry),
+      status: { configured: true, ...connection, connections: [connection] },
+    });
+    open('near-ai');
+    refresh.dispatch('click');
+    await flush();
+    await flush();
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['Qwen']);
+    expect(hint.hidden).toBe(false);
+    expect(refresh.disabled).toBe(false);
   });
 
   test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {
@@ -1865,10 +2212,10 @@ describe('Agent UI', () => {
     ctx.elements['agent-toggle-btn'].dispatch('click');
     await flush();
     expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(1);
-    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].children[0].textContent).toBe('One');
+    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].querySelector('.agent-model-name').textContent).toBe('One');
     ctx.elements['agent-model-menu-search'].value = 'two';
     ctx.elements['agent-model-menu-search'].dispatch('input');
-    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].children[0].textContent).toBe('Two');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].querySelector('.agent-model-name').textContent).toBe('Two');
     ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[1].dispatch('click');
     await flush();
     expect(ctx.electronAPI.setAgentProviderPreferences).toHaveBeenCalledWith('openai', { favoriteModelIds: ['one', 'two'] });
@@ -1893,11 +2240,16 @@ describe('Agent UI', () => {
     await flush();
     const children = () => ctx.elements['agent-model-menu-list'].children;
     const headers = () => children().filter((item) => item.className === 'agent-model-group-label');
-    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].children[0].textContent);
+    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].querySelector('.agent-model-name').textContent);
     expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
     expect(names()).toEqual(['One']);
     headers()[0].dispatch('click', { stopPropagation() {} });
     expect(names()).toEqual(['One', 'Two']);
+    // A single leading check marks the selected model; the star stays last.
+    const rows = children().filter((item) => item.className === 'agent-model-row');
+    expect(rows.map((row) => row.children[0].children[0].className)).toEqual(['agent-model-check', 'agent-model-check']);
+    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['✓', '']);
+    expect(rows.map((row) => row.children.at(-1).className)).toEqual(['agent-model-star', 'agent-model-star']);
     expect(headers()[1].getAttribute('aria-expanded')).toBe('false');
     headers()[0].dispatch('click', { stopPropagation() {} });
     headers()[1].dispatch('click', { stopPropagation() {} });
@@ -2164,11 +2516,16 @@ describe('Agent UI', () => {
       runId: 'run_test',
       status: 'completed',
     });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(false);
 
     ctx.elements['agent-new-chat'].dispatch('click');
     await flush();
 
     expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    // A fresh task names no run state (#876): no "Idle" badge.
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
     expect(ctx.elements['agent-transcript'].children).toHaveLength(0);
     expect(ctx.elements['agent-transcript'].hidden).toBe(true);
     expect(ctx.elements['agent-empty-state'].hidden).toBe(false);
@@ -3164,12 +3521,17 @@ describe('Agent UI', () => {
     });
 
     let row = ctx.elements['agent-session-list'].children[0];
-    expect(row.children).toHaveLength(2);
+    expect(row.children.map(child => child.className)).toEqual([
+      'agent-session-select', 'agent-session-more', 'agent-session-actions',
+    ]);
     expect(row.children[0].children).toHaveLength(1);
     row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    expect(row.children[1].hidden).toBe(false);
-    row.children[1].children[0].dispatch('click');
-    const renameInput = row.children.at(-1);
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[0].dispatch('click');
+    // The inline field takes the title's place; the ⋯ trigger steps aside.
+    const renameInput = row.children[1];
+    expect(renameInput.getAttribute('aria-label')).toBe('Session title');
+    expect(row.querySelector('.agent-session-more').hidden).toBe(true);
     renameInput.value = 'Renamed title';
     renameInput.dispatch('keydown', { key: 'Enter', preventDefault: jest.fn(), stopPropagation: jest.fn() });
     await flush();
@@ -3179,8 +3541,11 @@ describe('Agent UI', () => {
     );
 
     row = ctx.elements['agent-session-list'].children[0];
-    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
-    row.children[1].children[1].dispatch('click');
+    expect(row.querySelector('.agent-session-more').hidden).toBeFalsy();
+    // The visible ⋯ trigger opens the same menu right-click does.
+    row.children[1].dispatch('click', { preventDefault: jest.fn() });
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[1].dispatch('click');
     await flush();
     expect(global.window.confirm).toHaveBeenCalledWith(
       'Delete “Original title”? This cannot be undone.'
@@ -3199,29 +3564,72 @@ describe('Agent UI', () => {
     });
     const [first, second] = ctx.elements['agent-session-list'].children;
     const select = first.children[0];
-    const menu = first.children[1];
+    const more = first.children[1];
+    const menu = first.children[2];
     jest.spyOn(select, 'focus');
+    jest.spyOn(more, 'focus');
     jest.spyOn(menu.children[0], 'focus');
     jest.spyOn(menu.children[1], 'focus');
     const keyboard = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
     select.dispatch('keydown', keyboard);
     expect(keyboard.preventDefault).toHaveBeenCalled();
     expect(menu.hidden).toBe(false);
-    expect(select.getAttribute('aria-expanded')).toBe('true');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
     expect(menu.children[0].focus).toHaveBeenCalled();
     menu.dispatch('keydown', { key: 'End', preventDefault: jest.fn() });
     expect(menu.children[1].focus).toHaveBeenCalled();
     ctx.document.handlers.keydown( { key: 'Escape', preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
     expect(select.focus).toHaveBeenCalled();
-    expect(select.getAttribute('aria-expanded')).toBe('false');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    // Opened from ⋯: its own click (bubbling to document) must not close it,
+    // a second click toggles it shut, and focus returns to ⋯, not the title.
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalled();
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(2);
+
+    // Shift+F10 / the ContextMenu key with ⋯ focused: off macOS it reaches
+    // the row as a coordinate-less contextmenu targeting ⋯; on macOS Chromium
+    // fires no contextmenu, so ⋯'s own keydown has to open it. Either way ⋯ is
+    // the opener: the menu anchors under it and Escape hands focus back to it.
+    select.setRect({ left: 10, bottom: 40 });
+    more.setRect({ left: 200, bottom: 44 });
+    global.window.innerHeight = 800;
+    select.focus.mockClear();
+    const moreKey = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    more.dispatch('keydown', moreKey);
+    expect(moreKey.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    more.focus.mockClear();
+    first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(1);
+    expect(select.focus).not.toHaveBeenCalled();
 
     select.dispatch('keydown', keyboard);
     second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
     expect(menu.hidden).toBe(true);
-    expect(second.children[1].hidden).toBe(false);
+    expect(second.children[2].hidden).toBe(false);
     ctx.document.handlers.click( { target: ctx.document.body });
-    expect(second.children[1].hidden).toBe(true);
+    expect(second.children[2].hidden).toBe(true);
     select.dispatch('keydown', keyboard);
     ctx.document.handlers.scroll();
     expect(menu.hidden).toBe(true);
@@ -3418,21 +3826,61 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
     expect(browser.getAttribute('aria-checked')).toBe('true');
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
-    const browserToggle = ctx.elements['agent-browser-mode-toggle'];
-    expect(browserToggle.hidden).toBe(false);
-    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(true);
+    // The floating panel is titled "Agent", not a "Freedom Browser" mode
+    // switch (#867); its expand button is the way back to Agent-first.
+    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Agent');
     expect(ctx.elements['agent-sidebar-subtitle'].hidden).toBe(true);
-    browserToggle.dispatch('click');
-    expect(menu.hidden).toBe(false);
-    expect(browserToggle.getAttribute('aria-expanded')).toBe('true');
-    browser.dispatch('click');
-    expect(menu.hidden).toBe(true);
-    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
-    browserToggle.dispatch('click');
-    agent.dispatch('click');
-    expect(menu.hidden).toBe(true);
+    const expand = ctx.elements['agent-first-toggle'];
+    expect(expand.hidden).toBe(false);
+    expect(expand.title).toBe('Make Agent the main view');
+    expect(expand.getAttribute('aria-label')).toBe('Make Agent the main view');
+    expand.dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(expand.title).toBe('Return to browser view');
     expect(agent.getAttribute('aria-checked')).toBe('true');
+  });
+
+  test('the full view reduce button returns to the panel on the same chat (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-prompt'].value = 'draft kept across the switch';
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const reduce = ctx.elements['agent-first-reduce'];
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
+    jest.spyOn(expand, 'focus');
+    reduce.dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(ctx.elements['agent-mode-browser'].getAttribute('aria-checked')).toBe('true');
+    expect(ctx.elements['agent-prompt'].value).toBe('draft kept across the switch');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    // Focus lands on the button that leads back into full view.
+    expect(expand.focus).toHaveBeenCalled();
+    expect(expand.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  test('the reduce button says what the expand toggle says in full view, and promises no shortcut (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+    const tag = html.match(/<button\s[^>]*id="agent-first-reduce"[^>]*>/)[0];
+    const attr = (name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))[1];
+    // One wording for both the mouse and the screen reader, matching the
+    // toggle's own full-view label. Esc is not named: a focused workspace
+    // page owns the keyboard and the shell's Escape handler never sees it.
+    expect(attr('aria-label')).toBe(expand.getAttribute('aria-label'));
+    expect(attr('title')).toBe(expand.title);
+    expect(attr('title')).not.toMatch(/esc/i);
   });
 
   test('delegates workspace address editing policy to shared browser navigation', async () => {
@@ -3534,17 +3982,88 @@ describe('Agent UI', () => {
 
     expect(sanitize).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ ALLOWED_ATTR: [] })
+      expect.objectContaining({ ALLOWED_ATTR: ['href'] })
     );
     const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
     expect(allowedTags).not.toContain('img');
-    expect(allowedTags).not.toContain('a');
+    expect(allowedTags).toContain('a');
+    // Links keep their URL (#848), but only for schemes a tab can open.
+    const uriPattern = sanitize.mock.calls[0][1].ALLOWED_URI_REGEXP;
+    for (const url of ['https://docs.ethswarm.org/x', 'http://a.test', 'bzz://site.eth/', 'ipfs://bafy', 'ipns://k51']) {
+      expect(uriPattern.test(url)).toBe(true);
+    }
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'freedom://settings', 'docs.ethswarm.org']) {
+      expect(uriPattern.test(url)).toBe(false);
+    }
     expect(allowedTags).toEqual(
       expect.arrayContaining(['table', 'thead', 'tbody', 'tr', 'th', 'td'])
     );
     expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
       '<p>Safe response</p>'
     );
+  });
+
+  test('links in a rendered answer open in a tab instead of navigating the chrome (#848)', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p><a href="https://docs.ethswarm.org/">the docs</a></p>') },
+        DOMPurify: { sanitize: jest.fn((html) => html) },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Summarize' });
+    ctx.emit({ type: 'assistant_text_delta', conversationId: 'conversation_test', runId: 'run_test', text: '[the docs](https://docs.ethswarm.org/)' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    expect(output.classList.contains('rendered-markdown')).toBe(true);
+    // The fake DOM does not parse innerHTML; stand in the parsed link.
+    const link = ctx.document.createElement('a');
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    output.appendChild(link);
+    const click = (type, extra = {}) => {
+      const event = { type, target: link, currentTarget: output, button: type === 'auxclick' ? 1 : 0, preventDefault: jest.fn(), ...extra };
+      output.dispatch(type, event);
+      return event;
+    };
+
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    expect(click('auxclick').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    click('click', { ctrlKey: true, shiftKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    ctx.electronAPI.openUrlInNewWindow = jest.fn();
+    click('click', { shiftKey: true });
+    expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith('https://docs.ethswarm.org/');
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // A right-click auxclick is not an activation; a scheme the sanitizer
+    // should have dropped is never opened even if it reaches the DOM.
+    click('auxclick', { button: 2 });
+    link.setAttribute('href', 'javascript:alert(1)');
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // Agent-first mode's tab strip lists only the conversation's pages, so a
+    // background tab would be invisible there: Ctrl+click and middle-click
+    // open in the foreground instead (and leave agent-first, like a click).
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { metaKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('auxclick');
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(7);
   });
 
   test('falls back to text when completed assistant Markdown cannot be rendered', async () => {
@@ -3607,10 +4126,160 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
     expect(ctx.elements['agent-run-message'].textContent).toBe('Stopping Agent…');
 
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Working on it, comparing' });
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: { kind: 'interrupted', tone: 'neutral', headline: 'Run stopped', counts: { changed: 0 } },
+    });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
+    // The stop notice belongs to the turn it ended, after its partial answer,
+    // not in the status line above the transcript.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const output = turn.querySelector('.agent-output');
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(output.textContent).toBe('Working on it, comparing');
+    expect(output.classList.contains('incomplete')).toBe(true);
+    expect(outcome.hidden).toBe(false);
+    expect(turn.children.indexOf(outcome)).toBeGreaterThan(turn.children.indexOf(output.parentNode));
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('a stop with an uncertain browser action keeps the caution inside the stop notice', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        counts: { changed: 0 },
+        notice: {
+          tone: 'caution',
+          headline: 'Browser action outcome uncertain',
+          detail: 'Check the page before repeating it.',
+        },
+      },
+    });
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.className).toBe('agent-turn-outcome caution');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Browser action outcome uncertain. Check the page before repeating it.'
+    );
+  });
+
+  test('a stop between tool calls notes the stop without marking finished text as cut off', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Opening the page.' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_1',
+      operation: 'browser_navigate',
+      label: 'Open page',
+    });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        detail: '1 earlier browser change remains in place.',
+        counts: { changed: 1 },
+      },
+    });
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(false);
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(false);
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Changes made before stopping remain in place. Review the activity before continuing.'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+  });
+
+  test('guidance sent mid-answer does not hide that a later stop cut the answer off', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Comparing the first' });
+    ctx.emit({ type: 'guidance_queued', runId: 'run_test', guidance: { guidanceId: 'guide', text: 'Be brief.', status: 'queued' } });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(true);
+    expect(turn.querySelector('.agent-output').classList.contains('agent-cutoff-end')).toBe(true);
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');
+  });
+
+  test('a run the service stopped on its own reads as stopped in the pill and the turn alike', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Halfway' });
+    // No Stop click: e.g. the user claimed the agent's tab, or provider access was revoked.
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
     expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
-    expect(ctx.elements['agent-run-message'].textContent).toBe('Agent stopped.');
-    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+  });
+
+  test('a stop with a caution and earlier changes names both', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        counts: { changed: 2 },
+        notice: { tone: 'caution', headline: 'Browser action outcome uncertain', detail: 'Check the page before repeating it.' },
+      },
+    });
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.className).toBe('agent-turn-outcome caution');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Browser action outcome uncertain. Check the page before repeating it. ' +
+      'Changes made before stopping remain in place. Review the activity before continuing.'
+    );
   });
 
   test('intercepts the controlled page before takeover and resumes from the composer', async () => {
@@ -3682,6 +4351,57 @@ describe('Agent UI', () => {
     ctx.elements['agent-run'].dispatch('click');
     await flush();
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+  });
+
+  test.each([
+    ['completed', 'Complete'],
+    ['cancelled', 'Stopped'],
+  ])('keeps a take-over pill on an Agent-held tab after the run ends (%s)', async (status, label) => {
+    let owned = true;
+    const ctx = await loadAgentUi({
+      isTabAgentOwned: (tabId) => owned && tabId === 7,
+      electronAPI: {
+        claimAgentTab: jest.fn().mockImplementation(async () => {
+          owned = false;
+          return { ok: true, claimed: true, state: { status: 'ready', taskTabs: [], agentTabs: [] } };
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Open the page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex') ?? null).toBeNull();
+    if (status === 'cancelled') {
+      ctx.elements['agent-run'].dispatch('click');
+      await flush();
+      expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    }
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe(label);
+    // The tab is still in Agent custody, so the hint stays, but only as a pill.
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(true);
+    expect(ctx.elements['agent-page-lock-hint'].textContent).toBe(
+      'Agent still holds this tab · Click to take over'
+    );
+    // The page-sized trigger leaves the Tab order, and the wheel over the pill
+    // still scrolls the page.
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex')).toBe('-1');
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).not.toHaveBeenCalled();
+
+    // No run to pause: the click hands the tab back without the run dialog.
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(7);
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
   });
 
   test('morphs the composer into a decision surface until approval resolves', async () => {
@@ -4479,7 +5199,9 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
     expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
     expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('/Users/');
-    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    // swarm_publish is approved one publication at a time: no conversation-wide grant.
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
 
     ctx.elements['agent-approval-approve'].dispatch('click');
     await flush();
@@ -4522,6 +5244,176 @@ describe('Agent UI', () => {
     card.children[1].children[0].dispatch('click');
     await flush();
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
+  });
+
+  test('a private draft link is its own action with its own fixed notice, postage and receipt (#741 E, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_draft',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: { kind: 'folder', name: 'dist', workspacePath: 'dist', target: 'draft', public: false, encrypted: true,
+        postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 3 * 86_400 + 5, expiry: 'soon',
+          estimatedCostPlur: '123456789012', estimatedChunks: 6 },
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 4, excerpt: 'https://unpkg.com', blocking: false }] },
+    });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Create a private draft link for “dist”?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Create private draft link');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('publishing it publicly later needs its own approval');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    const summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('Private draft link (encrypted)');
+    expect(summary).toContain('cccccccc…cccccccc');
+    expect(summary).toContain('≈ 0.0000123 xBZZ of this batch’s prepaid storage (about 6 chunks). Nothing new is bought.');
+    expect(summary).toContain('3 days');
+    const warning = ctx.elements['agent-publication-postage-warning'];
+    expect(warning.hidden).toBe(false);
+    expect(warning.dataset.level).toBe('warn');
+    expect(warning.textContent).toBe('This postage batch expires in 3 days. After that the content can no longer be retrieved unless the batch is extended in Storage.');
+    const finding = ctx.elements['agent-publication-findings'].querySelectorAll('.agent-publication-finding-badge')[0];
+    expect(finding.textContent).toBe('Third party · warning');
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_draft', true);
+
+    const encrypted = 'e'.repeat(128);
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', intent: 'Publishing dist' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', status: 'succeeded',
+      label: 'Published dist', publication: { publicationId: `swarm_pub_${'d'.repeat(24)}`, state: 'completed', applicationState: 'applied',
+        kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, progress: 100, reference: encrypted,
+        bzzUrl: `bzz://${encrypted}`, verified: true, message: 'Private draft link ready · retrieval verified' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
+    expect(card.children[0].children.at(-1).textContent).toBe('Private draft link ready · retrieval verified · encrypted, anyone with the link can read it');
+    expect(card.children[1].children.map(button => button.textContent)).toEqual(['Open', 'Copy draft link']);
+    card.children[1].children[1].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.copyText).toHaveBeenCalledWith(`bzz://${encrypted}`);
+  });
+
+  test('a stable-address publication says older versions stay retrievable, and an expired or missing batch is explained (#741 F, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const ask = (approvalId, publication) => ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId,
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist', publication: { kind: 'folder', name: 'dist', target: 'public', public: true, ...publication } });
+    ask('approval_stable', { stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` },
+      postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 0, expiry: 'expired' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(false);
+    let summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('my-site · owned by your Swarm identity');
+    expect(summary).toContain(`Updates bzz://${'f'.repeat(64)}`);
+    expect(summary).toContain('Expired');
+    expect(ctx.elements['agent-publication-postage-warning'].dataset.level).toBe('critical');
+    expect(ctx.elements['agent-publication-postage-warning'].textContent).toContain('has expired');
+
+    ctx.elements['agent-approval-decline'].dispatch('click');
+    await flush();
+    ask('approval_none', { postage: { status: 'none' } });
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-postage-warning'].hidden).toBe(true);
+    summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('No usable batch yet. Freedom checks again before uploading and never buys postage on its own.');
+  });
+
+  test('a stable address with no local record says whether it already exists, never assuming it is new (#741 F)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const owner = `0x${'1'.repeat(40)}`;
+    const summaryFor = async (approvalId, stableAddress) => {
+      ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId, action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+        publication: { kind: 'folder', name: 'dist', target: 'public', public: true, stableAddress: { name: 'site', owner, ...stableAddress } } });
+      const text = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+      ctx.elements['agent-approval-decline'].dispatch('click');
+      await flush();
+      return text;
+    };
+    const live = await summaryFor('a1', { existing: 'yes', latestIndex: 2 });
+    expect(live).toContain('This address already exists (3 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+    expect(live).not.toContain('A new address');
+    expect(await summaryFor('a2', { existing: 'no' })).toContain('No earlier version of this address was found on the network, so publishing creates it');
+    for (const [id, state] of [['a3', { existing: 'unknown' }], ['a4', {}]]) {
+      const text = await summaryFor(id, state);
+      expect(text).toContain('Freedom could not check whether this address already exists');
+      expect(text).not.toContain('A new address');
+    }
+  });
+
+  test('publication findings block Publish publicly until each secret is resolved', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_findings',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: {
+        kind: 'folder', name: 'dist', workspacePath: 'dist', public: true,
+        files: [{ path: 'index.html', bytes: 20 }, { path: 'app.js', bytes: 40 }, { path: 'keys.js', bytes: 10 }],
+        excluded: [{ path: '.env', reason: 'Credential file' }],
+        stripped: [{ path: 'photo.jpg', reason: 'Image metadata (EXIF, GPS, XMP) removed' }],
+        findings: [
+          { id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 3, excerpt: 'sk_liv•••••••• (31 characters)', blocking: true },
+          { id: 'finding_2', path: 'index.html', kind: 'personal', rule: 'email-address', label: 'Email address', line: 1, excerpt: 'a•••@proton.me', blocking: false },
+          { id: 'finding_3', path: 'keys.js', kind: 'secret', rule: 'ethereum-private-key', label: 'Ethereum private key', line: 1, excerpt: '4c0883••••', blocking: true },
+        ],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    const summaryText = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summaryText).toContain('.env · Credential file');
+    expect(summaryText).toContain('photo.jpg · Image metadata (EXIF, GPS, XMP) removed');
+    const findings = ctx.elements['agent-publication-findings'];
+    expect(findings.hidden).toBe(false);
+    const groups = findings.querySelectorAll('.agent-publication-finding-group');
+    expect(groups.map(group => group.dataset.path)).toEqual(['app.js', 'keys.js', 'index.html']);
+    expect(groups[2].querySelector('.agent-publication-anyway')).toBeNull(); // warnings never block
+    expect(groups[0].querySelector('.agent-publication-finding-excerpt').textContent).toBe('sk_liv•••••••• (31 characters)');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    const anyway = groups[0].querySelector('.agent-publication-anyway');
+    anyway.checked = true;
+    anyway.dispatch('change');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    groups[1].querySelector('.agent-publication-exclude').dispatch('click');
+    expect(groups[1].querySelector('.agent-publication-exclude').textContent).toBe('Include file');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_findings', true, {
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+  });
+
+  test('Ask Agent to fix declines with only the file path', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_fix',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'Text',
+      publication: {
+        kind: 'text', name: 'Text', public: true, text: 'key',
+        findings: [{ id: 'finding_1', path: 'Text', kind: 'secret', rule: 'jwt', label: 'JSON Web Token', line: 1, excerpt: 'eyJhbG••••', blocking: true }],
+      },
+    });
+    const group = ctx.elements['agent-publication-findings'].querySelector('.agent-publication-finding-group');
+    expect(group.querySelector('.agent-publication-exclude')).toBeNull(); // a single text cannot drop a file
+    group.querySelector('.agent-publication-fix').dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_fix', false, {
+      publicationFix: { paths: ['Text'] },
+    });
   });
 
   test('identifies a managed project source in the Swarm approval without a host path', async () => {
@@ -4953,6 +5845,8 @@ describe('Agent UI', () => {
     ctx.elements['agent-provider-select'].value = 'ollama';
     ctx.elements['agent-provider-select'].dispatch('change');
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Connect to Ollama');
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(false);
     ctx.elements['agent-provider-save'].dispatch('click');
     await flush();
     expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11434/v1');
@@ -4960,8 +5854,10 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
     expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
     const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
-    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
+    expect(rows.map((row) => row.children[0].querySelector('.agent-model-name').textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(false);
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
     expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
@@ -4972,6 +5868,374 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('a failed connect reports under the button, hides the placeholder and points at Ollama (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const failure = 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.';
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: { code: 'AGENT_OLLAMA_DISCOVERY_FAILED', message: failure } })
+        .mockResolvedValueOnce({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const install = ctx.elements['agent-ollama-install'];
+    const placeholder = ctx.elements['agent-provider-models-empty'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(false);
+    expect(install.hidden).toBe(true);
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(failure);
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('');
+    expect(install.hidden).toBe(false);
+    expect(placeholder.hidden).toBe(true);
+    // Re-rendering the provider form keeps the placeholder hidden behind the error.
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(true);
+
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    expect(slot.classList.contains('error')).toBe(false);
+    expect(install.hidden).toBe(true);
+  });
+
+  test.each([
+    ['AGENT_OLLAMA_NO_MODELS', 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.'],
+    ['AGENT_OLLAMA_MODEL_LIMIT', 'This Ollama server has more than the supported 128 models.'],
+    ['AGENT_PROVIDER_INVALID', 'Ollama URL must be absolute'],
+    [undefined, undefined],
+  ])('a %s connect error does not suggest downloading Ollama (#858)', async (code, message) => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue(
+        code ? { ok: false, error: { code, message } } : { ok: false }
+      ),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(message || 'Could not save model');
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+  });
+
+  test('a later bottom-line report clears the Connect result under the button (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+      removeAgentProvider: jest.fn().mockResolvedValue({ ok: false }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    ctx.elements['agent-provider-disconnect'].dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Could not disconnect Ollama');
+    expect(slot.textContent).toBe('');
+  });
+
+  test('changing the privacy setting clears a Connect error and brings the placeholder back (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'open', name: 'Open', privacy: 'anonymized', tools: true },
+      ] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    const slot = ctx.elements['agent-provider-connect-message'];
+    expect(slot.textContent).toBe('No supported models meet this privacy setting');
+    ctx.elements['agent-privacy-policy'].value = 'standard';
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(slot.textContent).toBe('');
+    expect(slot.classList.contains('error')).toBe(false);
+  });
+
+  test('a connect-time catalog failure does not promise a previous catalog (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All']], models: [] };
+    const refresh = jest.fn()
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_UNAVAILABLE',
+        message: 'Could not refresh models. The previous catalog is still available.',
+      } })
+      .mockRejectedValueOnce(new Error('ipc'))
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_AUTH_FAILED', message: 'The provider did not accept this API key.',
+      } })
+      .mockResolvedValueOnce({ ok: false });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: refresh,
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const connect = async () => {
+      ctx.elements['agent-api-key'].value = 'test-key';
+      ctx.elements['agent-provider-save'].dispatch('click');
+      await flush();
+      await flush();
+    };
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    expect(slot.classList.contains('error')).toBe(true);
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    await connect();
+    expect(slot.textContent).toBe('The provider did not accept this API key.');
+    // A manual refresh still reports in the bottom line with the old wording.
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'Could not refresh models. Your previous catalog is still available.'
+    );
+  });
+
+  test('a failed hosted connect reports under the button without the Ollama pointer (#858)', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Invalid API key' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = ctx.elements['agent-model-select'].children[0]?.value || 'gpt-5';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-connect-message'].textContent).toBeTruthy();
+    expect(ctx.elements['agent-provider-connect-message'].classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+  });
+
+  test('Ollama details describe the connected model right after connecting (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama] },
+      }),
+    } });
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    // Right after connecting: the connected model, not "No matching models".
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+    expect(ctx.elements['agent-model-details'].hidden).toBe(false);
+  });
+
+  test('Ollama details do not keep another provider\'s model on a later visit (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4', contextWindow: 8192 }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    // Another provider's page fills the same line with its own model...
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('gpt-4 · 8,192 context · Tool support not reported');
+
+    // ...which must not survive into Ollama's page on a later visit.
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+  });
+
+  test('a connected provider page offers Save only for unsaved changes, names the default model and bills nothing locally (#859)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4', hasApiKey: true };
+    const local = {
+      kind: 'compatible', providerId: 'custom-local', name: 'Local server', modelId: 'm1',
+      baseUrl: 'http://localhost:8080/v1', models: [{ id: 'm1' }],
+    };
+    const remote = { ...local, providerId: 'custom-remote', baseUrl: 'https://models.example/v1' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted, local, remote] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4' }] },
+        { providerId: 'custom-local', name: 'Local server', models: [{ id: 'm1', name: 'm1' }] },
+        { providerId: 'custom-remote', name: 'Remote server', models: [{ id: 'm1', name: 'm1' }] },
+      ] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const save = ctx.elements['agent-provider-save'];
+    const note = () => ctx.elements['agent-provider-test-note'].textContent;
+    // Opened the way Settings opens a connected provider, with its saved values loaded.
+    const ids = ['ollama', 'near-ai', 'custom-local', 'custom-remote'];
+    const open = (providerId) => {
+      const rows = ctx.elements['agent-connected-provider-list'].children;
+      if (ids.includes(providerId)) {
+        expect(rows).toHaveLength(ids.length);
+        rows[ids.indexOf(providerId)].dispatch('click');
+        expect(ctx.elements['agent-provider-select'].value).toBe(providerId);
+      } else {
+        ctx.elements['agent-provider-select'].value = providerId;
+        ctx.elements['agent-provider-select'].dispatch('change');
+      }
+    };
+
+    open('ollama');
+    expect(ctx.elements['agent-provider-disconnect'].hidden).toBe(false);
+    expect(save.hidden).toBe(true);
+    const url = ctx.elements['agent-ollama-url'];
+    url.value = 'http://127.0.0.1:11500/v1';
+    url.dispatch('input');
+    expect(save.hidden).toBe(false);
+    url.value = ' http://127.0.0.1:11434/v1 ';
+    url.dispatch('input');
+    expect(save.hidden).toBe(true);
+    expect(note()).toBe('Sends only “Reply with OK.” to this model.');
+    const [first, second] = ctx.elements['agent-provider-models-list'].children;
+    const tag = first.children[0].children[1];
+    expect(tag.className).toBe('agent-model-default-tag');
+    expect(tag.textContent).toBe('Default');
+    expect(second.children[0].children).toHaveLength(1);
+
+    open('near-ai');
+    expect(save.hidden).toBe(true);
+    expect(note()).toBe('Sends only “Reply with OK.” to this model. Token charges may apply.');
+    ctx.elements['agent-api-key'].value = 'replacement-key';
+    ctx.elements['agent-api-key'].dispatch('input');
+    expect(save.hidden).toBe(false);
+
+    open('custom-local');
+    expect(save.hidden).toBe(true);
+    expect(note()).not.toContain('Token charges');
+    ctx.elements['agent-custom-context'].value = '64000';
+    ctx.elements['agent-custom-context'].dispatch('input');
+    expect(save.hidden).toBe(false);
+
+    open('custom-remote');
+    expect(note()).toContain('Token charges may apply.');
+
+    // Not connected: Save is how a provider gets connected.
+    open('venice');
+    expect(save.hidden).toBe(false);
+    expect(ctx.elements['agent-provider-disconnect'].hidden).toBe(true);
+  });
+
+  test('Save visibility follows the stored form after a normalized save, a failed save and a field reset (#859)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4', hasApiKey: true };
+    const local = {
+      kind: 'compatible', providerId: 'custom-local', name: 'Local server', modelId: 'm1',
+      baseUrl: 'http://localhost:8080/v1', models: [{ id: 'm1' }],
+    };
+    const moved = { ...ollama, baseUrl: 'http://127.0.0.1:11500/v1' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted, local] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4' }] },
+        { providerId: 'custom-local', name: 'Local server', models: [{ id: 'm1', name: 'm1' }] },
+      ] }),
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Bad key' } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...moved, connections: [moved, hosted, local] },
+      }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const save = ctx.elements['agent-provider-save'];
+    const open = (index) => ctx.elements['agent-connected-provider-list'].children[index].dispatch('click');
+
+    // R1-M2: a failed save clears the key, so nothing is left to save.
+    open(1);
+    ctx.elements['agent-api-key'].value = 'bad-key';
+    ctx.elements['agent-api-key'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalled();
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(save.hidden).toBe(true);
+
+    // R1-M2: re-rendering the model options resets the custom fields to what is stored.
+    open(2);
+    ctx.elements['agent-custom-context'].value = '64000';
+    ctx.elements['agent-custom-context'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(ctx.elements['agent-custom-context'].value).toBe(32768);
+    expect(save.hidden).toBe(true);
+
+    // R1-M1: a URL main would store unchanged is not a change ...
+    open(0);
+    const url = ctx.elements['agent-ollama-url'];
+    url.value = 'http://127.0.0.1:11434/';
+    url.dispatch('input');
+    expect(save.hidden).toBe(true);
+    // ... and after saving one main normalizes, the field matches what is stored.
+    url.value = 'http://127.0.0.1:11500';
+    url.dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11500');
+    expect(url.value).toBe('http://127.0.0.1:11500/v1');
+    expect(save.hidden).toBe(true);
   });
 
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
@@ -5115,6 +6379,90 @@ describe('selective result notices', () => {
       outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Check this result', detail: 'Receipt details' } });
     const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
     expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
+  test('a declined approval renders as a neutral, not-run step and summary (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'declined', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', repeatsDecline: true, label: 'Click “Place order”' });
+    ctx.emit({ type: 'run_finished', runId: 'declined', status: 'completed', actionCount: 2, durationMs: 8000, outcome: {
+      kind: 'completed', verification: 'result_observed', tone: 'success', headline: 'Result checked in the browser',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const transcript = ctx.elements['agent-transcript'];
+    const rows = transcript.querySelectorAll('.agent-tool-item');
+    expect(rows[1].dataset.state).toBe('cancelled');
+    expect(rows[1].classList.contains('failed')).toBe(false);
+    expect(rows[1].children[0].textContent).toBe('•');
+    expect(rows[1].children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    expect(rows[1].children[2].textContent).toBe('Declined');
+    // The tooltip explains the row rather than repeating it.
+    expect(rows[1].title).toBe('This action never reached the page, so nothing it would have changed took effect.');
+    // A retry refused because of the earlier decline (no new prompt) reads the same.
+    const retry = rows[2];
+    expect(retry.dataset.state).toBe('cancelled');
+    expect(retry.classList.contains('failed')).toBe(false);
+    expect(retry.children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    // A page-bound step keeps its declined wording in the page row too.
+    ctx.emit({ type: 'run_started', runId: 'page', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Clicked https://shop.test', origin: 'https://shop.test' });
+    expect(ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-page-error').at(-1).textContent)
+      .toBe('Not run; you declined it');
+    expect(transcript.querySelector('.agent-turn-activity').dataset.state).toBe('done');
+    const card = transcript.querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.className).toBe('agent-turn-outcome neutral');
+    expect(card.children[1].children[0].textContent).toBe('Browser action declined');
+  });
+  test('a browser helper\'s declined action is listed as not run, not as failed (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'helper', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task', status: 'succeeded',
+      subagent: { title: 'Order', state: 'completed', mode: 'browser', report: 'Done', browserActions: [
+        { operation: 'browser_click', status: 'succeeded', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'declined', pageTitle: 'Page' },
+        { operation: 'browser_type', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'withdrawn', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'INTERNAL_ERROR', pageTitle: 'Page' },
+      ] } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    const items = report.children.find(child => child.tagName === 'UL').children.map(item => item.textContent);
+    expect(items).toEqual(['✓ click — Page', '• click — Page — Not run; you declined it',
+      '• type — Page — Not run; approval withdrawn', '× click — Page']);
+  });
+  test('a stopped action whose approval was granted still reads as a failure', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'approved', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'approved' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', label: 'Click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'withdrawn', label: 'Click' });
+    const [approvedRow, withdrawnRow] = ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-item');
+    expect(withdrawnRow.dataset.state).toBe('cancelled');
+    expect(withdrawnRow.children[1].textContent).toBe('Click — Not run; approval withdrawn');
+    expect(withdrawnRow.children[2].textContent).toBe('Withdrawn');
+    expect(approvedRow.dataset.state).toBe('failed');
+    expect(approvedRow.children[1].textContent).toContain('effects may remain');
+  });
+  test('a neutral declined notice never hides an unresolved outcome', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'mixed', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'mixed', status: 'completed', outcome: {
+      kind: 'completed', verification: 'wallet_broadcast', tone: 'caution', headline: 'Check this result', detail: 'Receipt details',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
     expect(card.children[1].children[1].textContent).toBe('Receipt details');
   });
   test('shows a concise uncertainty notice instead of routine verification counts', async () => {

@@ -31,6 +31,24 @@ links there rather than restating it.
   Linux x64/arm64, Windows x64). Unlike the others it is **compiled from
   crates.io**, host-only, not downloaded. Fetch script `scripts/fetch-arti.js`;
   pin `PINNED_ARTI_VERSION` (and `MIN_RUST_VERSION`) in that script.
+  **The Windows build is patched.** Arti 2.7.0's `saturating-time` 0.5.0 loops
+  forever on Windows (its `find_limit` never sees `None`, because Windows
+  `SystemTime` ticks in 100 ns and a smaller step returns the same value), so
+  Tor never bootstraps there
+  ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925)). Until
+  a released Arti carries upstream's fix
+  ([MR 4520](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/4520)),
+  the Windows build downloads the `arti` and `saturating-time` crates from
+  crates.io, checks both against sha256s pinned in the script
+  (`ARTI_CRATE_SHA256`, `WINDOWS_CRATE_PATCHES`), applies
+  `scripts/patches/saturating-time-0.5.0-windows.patch` (upstream's diff,
+  verbatim) and builds with `cargo install --path … --locked` plus a
+  `[patch.crates-io]` override. macOS and Linux build the pristine crate. The
+  patch file is a recipe input of the prebuilt Arti, and a guard test in
+  `scripts/fetch-arti.test.js` fails the moment `PINNED_ARTI_VERSION` moves,
+  so the bump has to decide whether the patch can go
+  ([#926](https://github.com/solardev-xyz/freedom-browser/issues/926), which
+  stays open until it is removed).
 
 Adjacent but out of scope here: **Myotis** (the experimental Ethereum light
 client addon, `scripts/fetch-myotis.js`, `npm run myotis:download`) follows the
@@ -307,15 +325,15 @@ Same shape, different pin location:
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then
-  `npm run radicle:download`. CI's `radicle-addon-load` matrix then loads the
+  `npm run radicle:download`. CI's `native-addons` matrix then loads the
   addon on every runner-available target and checks it against
   `RADICLE_ADDON_REQUIRED_EXPORTS` (`scripts/check-radicle-addon.js`); win-arm64
   has no hosted runner, so its asset is only verified against the pinned sums.
 - **Arti** — bump `PINNED_ARTI_VERSION`, and `MIN_RUST_VERSION` in the same
   commit when the release raises its MSRV. Arti is compiled, so its bump has
   extra steps (CLI/`arti.toml` key changes read against
-  `src/main/tor-manager.js`, and `cargoFeatures()`'s Windows `static-sqlite`
-  feature) — those are written up in
+  `src/main/tor-manager.js`, `cargoFeatures()`'s Windows `static-sqlite`
+  feature, and the Windows `saturating-time` patch) — those are written up in
   [`release-process.md` § Bundled binaries](release-process.md), not repeated
   here.
 
@@ -324,10 +342,55 @@ each pin the sha256 of the release's own `SHA256SUMS` asset in-repo
 (`PINNED_SHA256SUMS_DIGEST` / `PINNED_SHA256SUMS`), because that file ships
 from the same mutable GitHub release as the binaries and proves nothing on its
 own. freedom-ipfs skips the sums file and pins each asset's sha256 directly.
-Arti pins a crates.io version only — cargo does the fetching and verification.
+Arti pins a crates.io version, and cargo does the fetching and verification;
+the patched Windows build additionally pins the sha256 of the `arti` and
+`saturating-time` crates it downloads itself, because `cargo install --path`
+no longer checks the top-level crate.
 All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
+
+## Prebuilt natives (Arti, whisper.cpp, Windows sandbox)
+
+Arti, the whisper.cpp dictation runtime and the Windows sandbox helpers are
+compiled from pinned sources, which used to cost every release build 5 to 20
+minutes per platform. `.github/workflows/natives.yml` compiles them once, on
+the same runners `release.yml` packages on, and publishes one
+`<component>-<target>.tar.gz` per target to a `natives-<date>-<run id>`
+pre-release (never "Latest"). `scripts/prebuilt-natives.json` pins the release
+tag and, per component, the recipe key it was built from and each archive's
+sha256. `scripts/prebuilt-natives.js` owns the component list.
+
+- **Recipe key**: the sha256 of every file that decides a component's bytes
+  (`scripts/fetch-arti.js` and its Windows patch under `scripts/patches/`;
+  `scripts/build-dictation-runtime.js` with
+  `src/shared/dictation-runtime.js` and the notices; `scripts/build-windows-workspace.js`,
+  its notices writer, the repository `LICENSE` those notices embed and the adapter under `src/main/agent/workspace-execution/native/windows/`),
+  line endings normalised.
+- **Release builds** run `node scripts/prebuilt-natives.js fetch` before their
+  Arti step. A component whose pinned key matches the checkout is downloaded,
+  checked against its sha256 and installed, and the build steps then skip it.
+  A stale one (any PR that changes a recipe file) is compiled from source exactly
+  as before, with a `::warning::` on the run, so a recipe change can never ship
+  old binaries; it only costs time until it is re-pinned. A checksum mismatch
+  fails the build.
+- **After merging a recipe change** (an Arti, whisper.cpp or Codex sandbox bump,
+  or an edit to those scripts): dispatch `natives.yml` on `main` (Actions →
+  Prebuilt natives → Run workflow), then `npm run natives:pin -- --run <run id>`
+  and open a PR with the updated `scripts/prebuilt-natives.json`. `pin` takes
+  the pin file from the run's own workflow artifact rather than the release,
+  whose assets can be replaced later, and refuses anything but a successful
+  dispatch on `main`. A dispatch on another branch builds and uploads artifacts
+  but publishes nothing, which is how to try a recipe change before merging it.
+- **Locally**, `npm run natives:download` installs the current prebuilts for
+  the host (a Windows developer skips the 12-minute sandbox build), and the
+  build scripts reuse them through their manifests. Those manifests hash the
+  recipe files with line endings normalised too, so an archive built on the
+  Windows runner's core.autocrlf checkout stays current on an LF checkout. The
+  one exception is the Windows sandbox's `adapterSha256`: the app checks it
+  byte for byte against the adapter source it ships with
+  (`windows-sandbox-runtime.js`), so a Windows checkout with
+  `core.autocrlf=false` still rebuilds the sandbox locally.
 
 ## See also
 

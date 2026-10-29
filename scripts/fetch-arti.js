@@ -29,6 +29,12 @@
  *     all, so the build asks Arti for its `static-sqlite` feature there — see
  *     cargoFeatures() below.
  *
+ * Windows builds a patched Arti (#925): see WINDOWS_CRATE_PATCHES below. The
+ * pinned `arti` crate is downloaded from crates.io and checked against its
+ * pinned sha256, the patched dependency likewise, and cargo builds the crate
+ * source with `cargo install --path --locked` and a `[patch.crates-io]`
+ * override. macOS and Linux keep the plain `cargo install arti`.
+ *
  * Env:
  *   ARTI_VERSION   crates.io version to install (default: pinned below; an
  *                  override also downgrades the MSRV pre-flight to a warning)
@@ -39,11 +45,30 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync, spawn } = require('child_process');
-const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
+const crypto = require('crypto');
+const { withRetry, MAX_ATTEMPTS, downloadToFile, TIMEOUTS } = require('./lib/fetch-with-retry');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
+//
+// THE WINDOWS BUILD OF THIS VERSION IS PATCHED. Arti 2.7.0 depends on
+// saturating-time 0.5.0, whose find_limit() never terminates on Windows
+// (100 ns SystemTime ticks: checked_sub() below 100 ns returns the same value,
+// not None), so Tor never bootstraps on any Windows machine:
+// https://github.com/solardev-xyz/freedom-browser/issues/925. Until a released
+// Arti carries upstream's fix (MR 4520,
+// https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/4520), the
+// Windows build applies scripts/patches/saturating-time-0.5.0-windows.patch;
+// see WINDOWS_CRATE_PATCHES below. When bumping: if the new release's
+// saturating-time has the fix, drop the patch, ARTI_CRATE_SHA256's
+// Windows-only use and the pin guard in fetch-arti.test.js
+// (https://github.com/solardev-xyz/freedom-browser/issues/926); if not, move
+// the patch to the new saturating-time version and re-check it applies.
 const PINNED_ARTI_VERSION = '2.7.0';
+// sha256 of arti-<PINNED_ARTI_VERSION>.crate on crates.io (its `checksum`).
+// The patched Windows build installs from that crate's source with
+// `cargo install --path`, where cargo no longer checks the top-level crate.
+const ARTI_CRATE_SHA256 = 'a567e05cf614b579609d958e41b54602eea6983bccfec46d1e933a45605dd813';
 const ARTI_VERSION = process.env.ARTI_VERSION || PINNED_ARTI_VERSION;
 // MSRV of PINNED_ARTI_VERSION only (Arti 2.7.0 raised it to 1.92) — bump it in
 // the same commit as the pin. Checked up front because `cargo install` only
@@ -55,6 +80,241 @@ const MIN_RUST_VERSION = '1.92.0';
 const CARGO_BIN = process.env.CARGO_BIN || 'cargo';
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'arti-bin');
+const REPO_ROOT = path.join(__dirname, '..');
+
+/**
+ * Dependencies of the pinned Arti that the Windows build patches (#925, #926).
+ * Each is fetched from crates.io and checked against `sha256` (the checksum
+ * Arti's own Cargo.lock records for it), `patch` is applied strictly, the
+ * result must hash to `patchedSha256`, and cargo is pointed at it through a
+ * `[patch.crates-io]` override. `patch` is a recipe input of the prebuilt
+ * natives key (scripts/prebuilt-natives.js), so editing it rebuilds Arti.
+ */
+const WINDOWS_CRATE_PATCHES = [
+  {
+    name: 'saturating-time',
+    version: '0.5.0',
+    sha256: 'a586db154f85f3faf78398c37b6792d71f99d2253d3277571e14f8a8c6e49a65',
+    patch: 'scripts/patches/saturating-time-0.5.0-windows.patch',
+    file: 'src/internal.rs',
+    patchedSha256: 'f2267171b97e42355dd51731f1f908bba8c48adf8a5ea3d3e936b8b519369a21',
+  },
+];
+
+/**
+ * The crate patches a build of `version` on `platform` applies. Only the
+ * pinned version is patched: the patch and its checksums describe exactly
+ * that release's dependency tree, so an ARTI_VERSION override builds unpatched
+ * (and warns, on Windows; see main()).
+ * @param {NodeJS.Platform} [platform]
+ * @param {string} [version]
+ */
+function cratePatches(platform = process.platform, version = ARTI_VERSION) {
+  return platform === 'win32' && version === PINNED_ARTI_VERSION ? WINDOWS_CRATE_PATCHES : [];
+}
+
+const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+/** crates.io's download URL for a crate version (a .tar.gz). */
+function crateUrl(name, version) {
+  return `https://static.crates.io/crates/${name}/${name}-${version}.crate`;
+}
+
+/**
+ * Apply a single-file unified diff to `text`, strictly: every hunk must match
+ * its context exactly at the line it names (no fuzz, no offset), so a patch
+ * that no longer fits its source fails the build instead of landing somewhere
+ * else. Anything before the `---` header is commentary. CRLF in the patch is
+ * read as LF (a core.autocrlf checkout); the source itself must be LF.
+ * @param {string} text
+ * @param {string} patchText
+ * @returns {string}
+ */
+function applyUnifiedPatch(text, patchText) {
+  const patchLines = String(patchText).replace(/\r\n/g, '\n').split('\n');
+  const start = patchLines.findIndex((line) => line.startsWith('--- '));
+  if (start < 0 || !patchLines[start + 1]?.startsWith('+++ ')) {
+    throw new Error('patch has no ---/+++ file header');
+  }
+  if (patchLines.slice(start + 2).some((line) => line.startsWith('--- '))) {
+    throw new Error('patch touches more than one file');
+  }
+  const source = text.split('\n');
+  const out = [];
+  let cursor = 0; // next unconsumed line of `source`, 0-based
+  let hunks = 0;
+  let i = start + 2;
+  while (i < patchLines.length) {
+    const header = patchLines[i];
+    if (header === '') {
+      i++;
+      continue;
+    }
+    const m = header.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!m) throw new Error(`unexpected patch line: ${header}`);
+    const oldStart = Number(m[1]);
+    const oldCount = m[2] === undefined ? 1 : Number(m[2]);
+    const newCount = m[4] === undefined ? 1 : Number(m[4]);
+    const oldLines = [];
+    const newLines = [];
+    i++;
+    while (oldLines.length < oldCount || newLines.length < newCount) {
+      const line = patchLines[i++];
+      if (line === undefined) throw new Error(`hunk ${hunks + 1} is truncated`);
+      const body = line.slice(1);
+      if (line[0] === ' ') {
+        oldLines.push(body);
+        newLines.push(body);
+      } else if (line[0] === '-') {
+        oldLines.push(body);
+      } else if (line[0] === '+') {
+        newLines.push(body);
+      } else if (line.startsWith('\\')) {
+        // "\ No newline at end of file": not produced by our patches.
+        throw new Error('patch relies on a missing trailing newline');
+      } else {
+        throw new Error(`hunk ${hunks + 1} has a malformed line: ${line}`);
+      }
+    }
+    if (oldLines.length !== oldCount || newLines.length !== newCount) {
+      throw new Error(`hunk ${hunks + 1} does not match its line counts`);
+    }
+    const at = oldCount === 0 ? oldStart : oldStart - 1;
+    if (at < cursor) throw new Error(`hunk ${hunks + 1} overlaps the previous one`);
+    const actual = source.slice(at, at + oldCount);
+    if (actual.length !== oldCount || actual.some((line, k) => line !== oldLines[k])) {
+      throw new Error(`hunk ${hunks + 1} does not apply at line ${oldStart}`);
+    }
+    out.push(...source.slice(cursor, at), ...newLines);
+    cursor = at + oldCount;
+    hunks++;
+  }
+  if (hunks === 0) throw new Error('patch has no hunks');
+  out.push(...source.slice(cursor));
+  return out.join('\n');
+}
+
+/**
+ * Arti's Cargo.lock, rewritten for a `[patch.crates-io]` path override of
+ * `name` `version`: that package entry loses its registry `source` and
+ * `checksum`, exactly what cargo itself writes for the override, so
+ * `--locked` still holds every other package to the published lock file. The
+ * registry checksum being dropped must be `expectedChecksum` — the crate the
+ * patch was written against.
+ * @param {string} lockText
+ * @param {string} name
+ * @param {string} version
+ * @param {string} expectedChecksum
+ * @returns {string}
+ */
+function lockWithPathOverride(lockText, name, version, expectedChecksum) {
+  const text = String(lockText);
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const blocks = text.split(`${eol}${eol}`);
+  const matches = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => {
+      const lines = block.split(eol);
+      return (
+        lines[0] === '[[package]]' &&
+        lines.includes(`name = "${name}"`) &&
+        lines.includes(`version = "${version}"`)
+      );
+    });
+  if (matches.length !== 1) {
+    throw new Error(`Cargo.lock has ${matches.length} entries for ${name} ${version}, expected 1`);
+  }
+  const { block, index } = matches[0];
+  const lines = block.split(eol);
+  const source = lines.filter((line) => line.startsWith('source = '));
+  const checksum = lines.filter((line) => line.startsWith('checksum = '));
+  if (
+    source.length !== 1 ||
+    source[0] !== 'source = "registry+https://github.com/rust-lang/crates.io-index"' ||
+    checksum.length !== 1
+  ) {
+    throw new Error(`Cargo.lock's ${name} ${version} is not a single crates.io package`);
+  }
+  if (checksum[0] !== `checksum = "${expectedChecksum}"`) {
+    throw new Error(
+      `Cargo.lock pins ${name} ${version} as ${checksum[0]}, but the patch was written ` +
+        `against ${expectedChecksum}`
+    );
+  }
+  blocks[index] = lines
+    .filter((line) => !line.startsWith('source = ') && !line.startsWith('checksum = '))
+    .join(eol);
+  return blocks.join(`${eol}${eol}`);
+}
+
+/**
+ * Download a crate from crates.io, check its sha256 and unpack it under
+ * `parent`. Returns the crate root (`<parent>/<name>-<version>`).
+ * @param {string} name
+ * @param {string} version
+ * @param {string} expectedSha256
+ * @param {string} parent
+ * @param {{download?: Function, extract?: Function}} [options]
+ */
+async function fetchCrate(name, version, expectedSha256, parent, options = {}) {
+  const download =
+    options.download ||
+    ((url, file) =>
+      downloadToFile(url, file, { maxBytes: 64 * 1024 * 1024, timeoutMs: TIMEOUTS.binary }));
+  // Same tar handling and archive-listing checks as the prebuilt archives.
+  const extract = options.extract || require('./prebuilt-natives').extractArchive;
+  const url = crateUrl(name, version);
+  const archive = path.join(parent, `${name}-${version}.crate`);
+  await download(url, archive);
+  const actual = sha256(fs.readFileSync(archive));
+  if (actual !== expectedSha256) {
+    throw new Error(`${url} has sha256 ${actual}, expected ${expectedSha256}`);
+  }
+  const unpacked = path.join(parent, name);
+  extract(archive, unpacked);
+  const root = path.join(unpacked, `${name}-${version}`);
+  if (!fs.existsSync(path.join(root, 'Cargo.toml'))) {
+    throw new Error(`${url} did not unpack to ${name}-${version}/Cargo.toml`);
+  }
+  return root;
+}
+
+/**
+ * Prepare the patched Windows build in `workDir`: the pinned Arti crate
+ * source with its lock file adjusted, and every patched dependency. Returns
+ * `{ artiDir, overrides }`, where `overrides` maps crate name to its patched
+ * source directory for installArgs().
+ * @param {string} workDir
+ * @param {Array<typeof WINDOWS_CRATE_PATCHES[number]>} patches
+ * @param {object} [options] fetchCrate() overrides; `root` (for the patch
+ *   files) and `artiCrateSha256` for the tests
+ */
+async function preparePatchedSources(workDir, patches, options = {}) {
+  const root = options.root || REPO_ROOT;
+  const artiSha256 = options.artiCrateSha256 || ARTI_CRATE_SHA256;
+  const artiDir = await fetchCrate('arti', PINNED_ARTI_VERSION, artiSha256, workDir, options);
+  const lockFile = path.join(artiDir, 'Cargo.lock');
+  let lock = fs.readFileSync(lockFile, 'utf8');
+  const overrides = {};
+  for (const spec of patches) {
+    const crateDir = await fetchCrate(spec.name, spec.version, spec.sha256, workDir, options);
+    const target = path.join(crateDir, spec.file);
+    const patchText = fs.readFileSync(path.join(root, spec.patch), 'utf8');
+    const patched = applyUnifiedPatch(fs.readFileSync(target, 'utf8'), patchText);
+    if (sha256(patched) !== spec.patchedSha256) {
+      throw new Error(
+        `${spec.patch} produced ${spec.file} with sha256 ${sha256(patched)}, ` +
+          `expected ${spec.patchedSha256}`
+      );
+    }
+    fs.writeFileSync(target, patched);
+    lock = lockWithPathOverride(lock, spec.name, spec.version, spec.sha256);
+    overrides[spec.name] = crateDir;
+    console.log(`Patched ${spec.name} ${spec.version} with ${spec.patch}`);
+  }
+  fs.writeFileSync(lockFile, lock);
+  return { artiDir, overrides };
+}
 
 /**
  * Resource directory name for a host, e.g. `win-x64`. Kept identical to
@@ -137,16 +397,28 @@ function nonSystemDylibs(otoolOutput) {
 }
 
 /**
- * The exact `cargo install` argv used to build the pinned Arti.
+ * The exact `cargo install` argv used to build the pinned Arti. With
+ * `patched` (from preparePatchedSources), it installs from that crate source
+ * instead of the registry and adds one `[patch.crates-io]` override per
+ * patched dependency; `--locked` holds either way.
  * @param {string} version
  * @param {string} installRoot
  * @param {NodeJS.Platform} [platform]
+ * @param {{artiDir: string, overrides: Record<string, string>}} [patched]
  */
-function installArgs(version, installRoot, platform = process.platform) {
-  const args = ['install', 'arti', '--version', version, '--locked', '--root', installRoot];
+function installArgs(version, installRoot, platform = process.platform, patched = null) {
+  const args = patched
+    ? ['install', '--path', patched.artiDir, '--locked', '--root', installRoot]
+    : ['install', 'arti', '--version', version, '--locked', '--root', installRoot];
   const features = cargoFeatures(platform);
   if (features.length > 0) {
     args.push('--features', features.join(','));
+  }
+  if (patched) {
+    for (const [name, dir] of Object.entries(patched.overrides)) {
+      // A TOML basic string: JSON escaping is valid TOML for a path.
+      args.push('--config', `patch.crates-io.${name}.path=${JSON.stringify(dir)}`);
+    }
   }
   return args;
 }
@@ -327,12 +599,22 @@ async function main() {
 
   fs.mkdirSync(targetDir, { recursive: true });
 
+  if (process.platform === 'win32' && cratePatches().length === 0) {
+    console.warn(
+      `\nWarning: building Arti ${ARTI_VERSION} on Windows without the saturating-time ` +
+        `patch, which is pinned to Arti ${PINNED_ARTI_VERSION} only. Without the fix Tor ` +
+        'never bootstraps on Windows (#925); check that this release carries upstream ' +
+        'MR 4520 (#926).\n'
+    );
+  }
+
   // Install into a temp root, then copy just the binary into place. Using a
   // dedicated root keeps cargo's bookkeeping out of the repo tree.
   const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'arti-install-'));
+  // Patched crate sources (Windows), kept short for MAX_PATH.
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'arti-src-'));
   let ok = false;
 
-  const args = installArgs(ARTI_VERSION, installRoot);
   const features = cargoFeatures();
   console.log(
     `Building arti ${ARTI_VERSION} for ${target}` +
@@ -340,7 +622,9 @@ async function main() {
       ' (this can take several minutes)...'
   );
   try {
-    await buildArti(args);
+    const patches = cratePatches();
+    const patched = patches.length > 0 ? await preparePatchedSources(sourceRoot, patches) : null;
+    await buildArti(installArgs(ARTI_VERSION, installRoot, process.platform, patched));
 
     const builtBin = path.join(installRoot, 'bin', binName);
     if (!fs.existsSync(builtBin)) {
@@ -367,13 +651,15 @@ async function main() {
       }
     }
   } catch (err) {
-    console.error(`\nError: cargo install arti failed: ${err.message}`);
+    console.error(`\nError: building arti failed: ${err.message}`);
   } finally {
-    // Always clean up the temp install root, even on failure.
-    try {
-      fs.rmSync(installRoot, { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup
+    // Always clean up the temp install and source roots, even on failure.
+    for (const dir of [installRoot, sourceRoot]) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
     }
   }
 
@@ -394,7 +680,15 @@ if (require.main === module) {
 module.exports = {
   ARTI_VERSION,
   PINNED_ARTI_VERSION,
+  ARTI_CRATE_SHA256,
+  WINDOWS_CRATE_PATCHES,
   MIN_RUST_VERSION,
+  cratePatches,
+  crateUrl,
+  applyUnifiedPatch,
+  lockWithPathOverride,
+  fetchCrate,
+  preparePatchedSources,
   compareVersions,
   checkRustVersion,
   platformKey,

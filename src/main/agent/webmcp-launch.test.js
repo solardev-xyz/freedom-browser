@@ -2,7 +2,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { webMcpBlinkFeatures } = require('./webmcp-launch');
+const IPC = require('../../shared/ipc-channels');
+const { WEBVIEW_CHANNEL_TIERS, TIER } = require('../ipc-sender-policy');
+const { registerUnavailableAgentIpc } = require('./ipc');
+const {
+  webMcpBlinkFeatures,
+  recordWebMcpLaunch,
+  webMcpEnabledAtLaunch,
+  registerWebMcpLaunchIpc,
+} = require('./webmcp-launch');
 
 describe('webMcpBlinkFeatures', () => {
   test('enables WebMCP only for a launch with AI explicitly on, without the testing API', () => {
@@ -17,8 +25,51 @@ describe('webMcpBlinkFeatures', () => {
     const switches = [...source.matchAll(/appendSwitch\(\s*'enable-blink-features'\s*,\s*([^)]*)\)/g)];
     expect(switches.map((m) => m[1].trim())).toEqual(['webMcpFeatures']);
     expect(source).toMatch(/const webMcpFeatures = webMcpBlinkFeatures\(loadSettings\(\)\);\nif \(webMcpFeatures\) app\.commandLine\.appendSwitch/);
+    // The same decision is recorded for page-tool discovery's restart hint.
+    expect(source).toMatch(/appendSwitch\('enable-blink-features', webMcpFeatures\);\nrecordWebMcpLaunch\(webMcpFeatures\);/);
     expect(source).not.toMatch(/WebMCPTesting/);
     // Set before the app is ready, i.e. before any renderer exists.
     expect(source.indexOf('webMcpBlinkFeatures(loadSettings())')).toBeLessThan(source.indexOf('app.whenReady().then(bootstrap)'));
+  });
+
+  test('records whether this launch enabled WebMCP', () => {
+    expect(webMcpEnabledAtLaunch()).toBeNull();
+    recordWebMcpLaunch(webMcpBlinkFeatures({ enableAi: false }));
+    expect(webMcpEnabledAtLaunch()).toBe(false);
+    recordWebMcpLaunch(webMcpBlinkFeatures({ enableAi: true }));
+    expect(webMcpEnabledAtLaunch()).toBe(true);
+  });
+
+  test('Settings reads this launch\'s decision, not the stored setting', async () => {
+    const handlers = new Map();
+    registerWebMcpLaunchIpc({ handle: (channel, fn) => handlers.set(channel, fn) });
+    const read = handlers.get(IPC.WEBMCP_LAUNCH_STATE);
+    recordWebMcpLaunch(null);
+    expect(await read()).toEqual({ enabledAtLaunch: false });
+    recordWebMcpLaunch('WebMCP');
+    expect(await read()).toEqual({ enabledAtLaunch: true });
+    const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+    expect(source).toMatch(/registerWebMcpLaunchIpc\(ipcMain\);/);
+  });
+
+  test('still answers when Agent storage is unavailable, without a second handler', async () => {
+    // Electron's ipcMain.handle throws on a second handler for one channel; a
+    // throw here aborted bootstrap and the browser never opened (#803).
+    const handlers = new Map();
+    const ipcMain = {
+      handle(channel, fn) {
+        if (handlers.has(channel)) throw new Error(`Attempted to register a second handler for '${channel}'`);
+        handlers.set(channel, fn);
+      },
+      removeHandler: (channel) => handlers.delete(channel),
+    };
+    registerUnavailableAgentIpc({ ipcMain, isTrustedSender: () => true });
+    expect(() => registerWebMcpLaunchIpc(ipcMain)).not.toThrow();
+    recordWebMcpLaunch('WebMCP');
+    expect(await handlers.get(IPC.WEBMCP_LAUNCH_STATE)()).toEqual({ enabledAtLaunch: true });
+  });
+
+  test('only the Settings page may ask', () => {
+    expect(WEBVIEW_CHANNEL_TIERS.get(IPC.WEBMCP_LAUNCH_STATE)).toBe(TIER.SETTINGS);
   });
 });

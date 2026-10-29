@@ -277,9 +277,15 @@ describe('Freedom agent IPC', () => {
       opened: true,
     });
     expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', bzzUrl);
-    await expect(
-      openPublication({ sender: ctx.sender }, { bzzUrl: 'file:///Users/private' })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    // A private draft link's encrypted reference is 128 hex.
+    const draftUrl = `bzz://${'e'.repeat(128)}`;
+    await expect(openPublication({ sender: ctx.sender }, { bzzUrl: draftUrl })).resolves.toEqual({ ok: true, opened: true });
+    expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', draftUrl);
+    for (const bad of ['file:///Users/private', `bzz://${'e'.repeat(96)}`, `bzz://${'e'.repeat(130)}`]) {
+      await expect(
+        openPublication({ sender: ctx.sender }, { bzzUrl: bad })
+      ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    }
     await expect(openPublication({ sender: ctx.otherSender }, { bzzUrl })).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
@@ -1120,6 +1126,35 @@ describe('Freedom agent IPC', () => {
     });
   });
 
+  test('passes publication card choices as bounded string lists', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Publish' });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'], publicationFix: { paths: ['x'] } });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: false,
+      publicationFix: { paths: ['app.js'] }, publicationAcknowledged: ['finding_1'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: false, publicationFix: { paths: ['app.js'] },
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [{ path: 'x' }] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+    const wide = Array.from({ length: 200 }, (_, index) => `k${index}.js`);
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: wide });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', {
+      approved: true, publicationExclusions: wide,
+    });
+    await decide({ sender: ctx.sender }, { runId: 'run_test', approvalId: 'approval_publish', approved: true,
+      publicationExclusions: [...wide, 'one-too-many.js'] });
+    expect(ctx.service.decideApproval).toHaveBeenLastCalledWith('run_test', 'approval_publish', true);
+  });
+
   test('passes only the supported conversation workspace-permission grant', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
@@ -1628,6 +1663,13 @@ describe('profile AI opt-in', () => {
       isEnabled: () => enabled, getOwnerWindow: () => ({ webContents: { send } }) });
     expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toEqual({ ok: true });
     expect(send).toHaveBeenCalledWith('agent:show');
+    // Settings' first connect asks for a start page (#864); only a literal
+    // true is relayed.
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home }, { freshPage: true })).toEqual({ ok: true });
+    expect(send).toHaveBeenLastCalledWith('agent:show', { freshPage: true });
+    expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home }, { freshPage: 'yes' })).toEqual({ ok: true });
+    expect(send).toHaveBeenLastCalledWith('agent:show');
+    send.mockClear();
     for (const channel of [IPC.AGENT_START, IPC.AGENT_PROVIDER_GET_CATALOG]) {
       expect(await ctx.ipcMain.handlers.get(channel)({ sender: home }, {})).toMatchObject({
         ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
@@ -1637,8 +1679,56 @@ describe('profile AI opt-in', () => {
     expect(await ctx.ipcMain.handlers.get(IPC.AGENT_OPEN)({ sender: home })).toMatchObject({
       ok: false, error: { code: 'AGENT_DISABLED' },
     });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
     expect(ctx.service.start).not.toHaveBeenCalled();
+    await ctx.dispose();
+  });
+  test('home reads only whether a model is connected, also while AI is off', async () => {
+    const home = createSender();
+    const stranger = createSender();
+    let enabled = false;
+    const ctx = register({ isAgentLauncherSender: event => event.sender === home, isEnabled: () => enabled });
+    ctx.providerResolver.getStatus.mockReturnValue({
+      configured: true, providerId: 'ollama', modelId: 'llama3.2', baseUrl: 'http://127.0.0.1:11434/v1',
+    });
+    const read = sender => ctx.ipcMain.handlers.get(IPC.AGENT_SETUP_STATE)({ sender });
+    expect(await read(home)).toEqual({ ok: true, configured: true, kept: false });
+    enabled = true;
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false });
+    expect(await read(home)).toEqual({ ok: true, configured: false, kept: false });
+    expect(await read(stranger)).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await ctx.dispose();
+    expect(ctx.ipcMain.handlers.has(IPC.AGENT_SETUP_STATE)).toBe(false);
+  });
+  test('setup state says whether anything is kept while AI is off, without naming it (#854)', async () => {
+    const settingsPage = createSender();
+    let sessions = [];
+    let services = [];
+    const mcpConnections = { list: jest.fn(() => services) };
+    const ctx = register({
+      isEnabled: () => false,
+      isProviderSettingsSender: event => event.sender === settingsPage,
+      listConversations: jest.fn(() => sessions),
+      mcpConnections,
+    });
+    ctx.service.listConversations = jest.fn(() => sessions);
+    const read = () => ctx.ipcMain.handlers.get(IPC.AGENT_SETUP_STATE)({ sender: settingsPage });
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [] });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: false });
+    // A saved chat (a project is a saved chat too).
+    sessions = [{ conversationId: 'c1', title: 'Notes' }];
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    sessions = [];
+    // A model connection, even one that is not the selected model.
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [{ providerId: 'ollama' }] });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    ctx.providerResolver.getStatus.mockReturnValue({ configured: false, connections: [] });
+    // A connected service.
+    services = [{ id: 'a', name: 'Notes', url: 'https://example.com/mcp' }];
+    expect(await read()).toEqual({ ok: true, configured: false, kept: true });
+    // A store that cannot be read counts as nothing kept, not as an error.
+    mcpConnections.list.mockImplementation(() => { throw new Error('keyring'); });
+    expect(await read()).toEqual({ ok: true, configured: false, kept: false });
     await ctx.dispose();
   });
   test('off blocks model/auth/discovery/work without erasing stored connection status', async () => {

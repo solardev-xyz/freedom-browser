@@ -1,0 +1,23 @@
+user: freedom-e2e-win\freedomstd
+runtime: C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace
+{"name":"capabilities","passed":true,"capabilities":{"backend":"windows-elevated","available":true,"setupRequired":false,"enforcement":{"filesystem":true,"filesystemReadScope":"windows_user_readable","networkNone":false,"networkFull":true,"loopbackNetworking":true,"descendantInheritance":true,"privateTemporaryStorage":true,"closedFileDescriptors":true,"executableRootsScoped":false,"wallTimeout":true,"outputLimits":true,"cancellation":true,"cancellationGuarantee":"best_effort","survivorsPossible":true,"completeDescendantTermination":false,"aggregateResourceLimits":false}},"directory":"C:\\Users\\freedomstd\\AppData\\Local\\freedom-agent-tests\\freedom-6cvvKT"}
+{"name":"node-write","passed":true,"state":"completed","exitCode":0,"stdout":"written\n","stderr":""}
+{"name":"broad-read","passed":true,"state":"completed","exitCode":0,"stdout":"untouched\n","stderr":""}
+{"name":"outside-write","passed":true,"state":"completed","exitCode":0,"stdout":"EPERM\n","stderr":""}
+{"name":"git-write","passed":true,"state":"completed","exitCode":0,"stdout":"EPERM\n","stderr":""}
+{"name":"offline-write-not-launched","passed":true,"backend":"windows-elevated","state":"sandbox_denied","startedAt":1792774195895,"finishedAt":1792774195895,"durationMs":0,"exitCode":null,"signal":null,"stdout":"","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"terminationGuarantee":"not_applicable","terminationScope":"not_applicable","survivorsPossible":false,"completeDescendantTermination":false,"sideEffects":"none","error":{"code":"WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED","message":"Windows commands require explicit full-network permission"}}
+{"name":"npm-build","passed":true,"backend":"windows-elevated","state":"completed","startedAt":1792774195904,"finishedAt":1792774196702,"durationMs":798,"exitCode":0,"signal":null,"stdout":"\n> build\n> node build.cjs\n\nbuilt\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"terminationGuarantee":"best_effort","terminationScope":"unknown","survivorsPossible":true,"completeDescendantTermination":false,"sideEffects":"unknown"}
+{"name":"network-full","passed":true,"state":"completed","exitCode":0,"stdout":"connected\n","stderr":""}
+{"name":"network-none-refused","passed":true,"state":"sandbox_denied","exitCode":null,"stdout":"","stderr":"","error":{"code":"WINDOWS_FULL_NETWORK_PERMISSION_REQUIRED","message":"Windows commands require explicit full-network permission"}}
+{"name":"host-preview","passed":true,"port":59457}
+{"name":"cancel-server","passed":true,"backend":"windows-elevated","state":"cancelled","startedAt":1792774196953,"finishedAt":1792774197308,"durationMs":355,"exitCode":1,"signal":null,"stdout":"PORT=59457\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"terminationGuarantee":"best_effort","terminationScope":"unknown","survivorsPossible":true,"completeDescendantTermination":false,"sideEffects":"unknown"}
+{"name":"abrupt-parent-exit","passed":true}
+{"name":"junction-write","passed":true,"backend":"windows-elevated","state":"completed","startedAt":1792774200178,"finishedAt":1792774200401,"durationMs":223,"exitCode":0,"signal":null,"stdout":"EPERM\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"terminationGuarantee":"best_effort","terminationScope":"unknown","survivorsPossible":true,"completeDescendantTermination":false,"sideEffects":"unknown"}
+{"name":"opened-handle-read","passed":true}
+{"name":"opened-handle-junction-read","passed":true}
+{"name":"handle-relative-cleanup","passed":true}
+{"name":"handle-relative-root-cleanup","passed":true}
+{"name":"handle-relative-cleanup-race","passed":false,"overlapped":false,"preserved":true,"removed":true,"missing":[],"before":{"directories":1,"links":1,"errors":0},"during":{"directories":2,"links":1,"errors":0},"final":{"directories":2,"links":2,"errors":0,"reason":"stopped"},"firstError":"Project cleanup failed; files were preserved","lastError":null}
+{"name":"sentinels","passed":true}
+qualify exit: 1
+== exit: 1

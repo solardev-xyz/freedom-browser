@@ -137,6 +137,33 @@
               <path d="M15 4v16" />
             </svg>
           </button>
+          <button
+            id="agent-first-reduce"
+            class="agent-titlebar-button"
+            type="button"
+            aria-label="Return to browser view"
+            title="Return to browser view"
+            data-test="agent-first-reduce"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 9h5V4" />
+              <path d="m3 3 6 6" />
+              <path d="M20 9h-5V4" />
+              <path d="m21 3-6 6" />
+              <path d="M4 15h5v5" />
+              <path d="m3 21 6-6" />
+              <path d="M20 15h-5v5" />
+              <path d="m21 21-6-6" />
+            </svg>
+          </button>
         </div>
       </div>
       <!-- Window controls for Linux (hidden by default, shown via JS) -->
@@ -1402,9 +1429,11 @@
               stroke="currentColor"
               stroke-width="1.8"
               stroke-linecap="round"
+              stroke-linejoin="round"
               aria-hidden="true"
             >
-              <path d="M12 5v14M5 12h14" />
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
             </svg>
           </button>
         </div>
@@ -1630,20 +1659,6 @@
                   <path d="m15 18-6-6 6-6" />
                 </svg>
               </button>
-              <button
-                id="agent-browser-mode-toggle"
-                class="agent-mode-toggle"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded="false"
-                aria-controls="agent-mode-menu"
-                hidden
-              >
-                <span>Freedom Browser</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </button>
               <div>
                 <h2 id="agent-sidebar-title">Agent</h2>
                 <p id="agent-sidebar-subtitle">Give Agent a task</p>
@@ -1688,7 +1703,7 @@
                 id="agent-first-toggle"
                 aria-label="Make Agent the main view"
                 aria-pressed="false"
-                title="Agent-first view"
+                title="Make Agent the main view"
                 data-test="agent-first-toggle"
                 hidden
               >
@@ -1738,8 +1753,8 @@
           </div>
 
           <div id="agent-setup-view" class="agent-view agent-setup-view" hidden>
-            <div class="agent-setup-intro"><h3>Connect your AI</h3><p>Choose a provider in Settings to start using Agent.</p></div>
-            <button id="agent-open-ai-settings" class="agent-button primary" type="button">Open AI settings</button>
+            <div class="agent-setup-intro"><p>Agent works with the AI model you choose: a subscription you already have, an API key, or a model running on this computer.</p></div>
+            <button id="agent-open-ai-settings" class="agent-button primary" type="button">Connect a model</button>
             <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
           </div>
 
@@ -1765,10 +1780,28 @@
             <div id="agent-workspace-body" class="agent-workspace-body">
               <div class="agent-workspace-scroll">
                 <div class="agent-run-header">
-                  <span id="agent-run-status" class="agent-badge">Idle</span>
+                  <span id="agent-run-status" class="agent-badge" hidden></span>
                   <div class="agent-lifecycle-actions">
-                    <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
-                      New chat
+                    <button
+                      id="agent-new-chat"
+                      class="agent-icon-btn"
+                      type="button"
+                      aria-label="New chat"
+                      title="New chat"
+                      hidden
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                        <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+                      </svg>
                     </button>
                   </div>
                 </div>
@@ -1852,8 +1885,10 @@
                   <span><strong>Add folder…</strong><small>Read-only for this conversation</small></span>
                 </button>
                 <button id="agent-open-project" type="button" role="menuitem">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                    <path d="m10 11-2 2.5 2 2.5" />
+                    <path d="m14 11 2 2.5-2 2.5" />
                   </svg>
                   <span><strong>Open project…</strong><small>Start a chat with an existing project</small></span>
                 </button>
@@ -2098,6 +2133,18 @@
                         <dl id="agent-node-request-summary"></dl>
                       </div>
                       <div id="agent-publication-details" class="agent-approval-details" hidden>
+                        <!-- Fixed copy: never filled from the request, so a model or page cannot reword it. -->
+                        <p id="agent-publication-permanent" class="agent-publication-permanent">
+                          This will be public. Anyone with the link can read it, and it can’t be deleted or taken back.
+                        </p>
+                        <p id="agent-publication-draft-notice" class="agent-publication-permanent" hidden>
+                          Private draft link. The content is encrypted, but anyone who gets the link can read it, so share it deliberately. The encrypted data is still stored on the public network and can’t be deleted or taken back.
+                        </p>
+                        <p id="agent-publication-stable-notice" class="agent-publication-permanent agent-publication-stable-notice" hidden>
+                          Stable address. Later fixes can update this address, but they don’t remove this version: anyone holding its own reference can still retrieve it while its postage is valid.
+                        </p>
+                        <p id="agent-publication-postage-warning" class="agent-publication-postage-warning" role="note" hidden></p>
+                        <div id="agent-publication-findings" class="agent-publication-findings" hidden></div>
                         <dl id="agent-publication-summary"></dl>
                       </div>
                     </div>
@@ -2141,7 +2188,6 @@
               <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
                 <input id="agent-model-menu-search" class="agent-model-menu-search" type="search" placeholder="Search all connected models…" aria-label="Search connected models" autocomplete="off" />
                 <div id="agent-model-menu-list"></div>
-                <p class="agent-catalog-status">Hover over privacy symbols for details</p>
                 <div class="agent-popover-divider"></div>
                 <button id="agent-manage-providers" class="agent-popover-action" type="button">
                   Manage models…
@@ -2167,7 +2213,7 @@
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Ask frequently</strong>
+                      <strong>Ask every time</strong>
                       <small>Review each page interaction. Project work continues within permissions you have granted.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>

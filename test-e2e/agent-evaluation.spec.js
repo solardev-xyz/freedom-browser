@@ -929,7 +929,13 @@ test('declining a form commit blocks repeated model attempts for the run', async
     'Submission remained pending after the user declined.'
   );
   await expect(window.locator('#agent-approval')).toBeHidden();
-  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×', '×']);
+  // A declined approval did not run, so its row is muted (•), not failed (×).
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '•', '•']);
+  await expect(window.locator('.agent-tool-item.cancelled')).toHaveCount(2);
+  await expect(window.locator('.agent-tool-item.failed')).toHaveCount(0);
+  await expect(window.locator('.agent-tool-item.cancelled').first()).toContainText(
+    'Not run; you declined it'
+  );
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_type',
@@ -1111,7 +1117,10 @@ test('Stop cancels a run while form approval is pending', async ({ window, harne
   await window.locator('#agent-approval-stop').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
-  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
+  await expect(window.locator('#agent-run-message')).toHaveText('');
+  await expect(window.locator('.agent-turn').last().locator('.agent-turn-outcome strong')).toHaveText(
+    'Agent stopped'
+  );
   await expect(window.locator('#agent-approval')).toBeHidden();
   const pageConfirmation = await window.evaluate(() =>
     document
@@ -1341,7 +1350,13 @@ test('live inspection gates a target mutated into a submit control after snapsho
       ?.executeJavaScript('document.querySelector("#click-count").textContent')
   );
   expect(clickCount).toBe('Clicks: 0');
-  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×']);
+  // A declined approval did not run, so its row is muted (•), not failed (×).
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '•']);
+  await expect(window.locator('.agent-tool-item.cancelled')).toHaveCount(1);
+  await expect(window.locator('.agent-tool-item.failed')).toHaveCount(0);
+  await expect(window.locator('.agent-tool-item.cancelled').first()).toContainText(
+    'Not run; you declined it'
+  );
 });
 
 test('Pi follows a same-origin link and extracts a fact after navigation', async ({
@@ -1510,7 +1525,13 @@ test('every-interaction mode blocks an unapproved cross-origin link before trust
   await expect(window.locator('#agent-output')).toHaveText(
     'The unapproved link interaction was blocked before trusted input.'
   );
-  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×']);
+  // A declined approval did not run, so its row is muted (•), not failed (×).
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '•']);
+  await expect(window.locator('.agent-tool-item.cancelled')).toHaveCount(1);
+  await expect(window.locator('.agent-tool-item.failed')).toHaveCount(0);
+  await expect(window.locator('.agent-tool-item.cancelled').first()).toContainText(
+    'Not run; you declined it'
+  );
   expect(observedPolicyDenial).toBe(true);
   await expect
     .poll(() =>
@@ -1570,7 +1591,13 @@ test('every-interaction mode blocks a prompt-injected page action without approv
   await expect(window.locator('#agent-output')).toHaveText(
     'The untrusted page interaction was blocked by the approval policy.'
   );
-  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×']);
+  // A declined approval did not run, so its row is muted (•), not failed (×).
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '•']);
+  await expect(window.locator('.agent-tool-item.cancelled')).toHaveCount(1);
+  await expect(window.locator('.agent-tool-item.failed')).toHaveCount(0);
+  await expect(window.locator('.agent-tool-item.cancelled').first()).toContainText(
+    'Not run; you declined it'
+  );
   expect(operations).toEqual(['browser_snapshot', 'browser_click']);
   expect(observedPolicyDenial).toBe(true);
   expect(requestCount).toBe(3);

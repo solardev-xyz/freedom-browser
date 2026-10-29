@@ -62,6 +62,11 @@ async function runLinuxOwner(binary, args, options = {}) {
   if (binary !== '/usr/bin/bwrap') throw new Error('LINUX_OWNER_REQUIRES_SYSTEM_BWRAP');
   const runtime = options.runtime || await (options.resolveRuntime || resolveLinuxSupervisor)();
   const timeoutMs = options.timeoutMs || 5000;
+  const seccompFilter = options.seccompFilter;
+  if (seccompFilter !== undefined && (!Buffer.isBuffer(seccompFilter) || !seccompFilter.length ||
+      seccompFilter.length % 8 || seccompFilter.length > 4096 * 8)) {
+    await runtime.close(); throw new Error('LINUX_OWNER_INVALID_SECCOMP');
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) {
     await runtime.close(); throw new Error('LINUX_OWNER_INVALID_TIMEOUT');
   }
@@ -85,7 +90,7 @@ async function runLinuxOwner(binary, args, options = {}) {
       options.signal?.removeEventListener('abort', abort);
       // Closing control requests native-owned cleanup. Never kill a ChildProcess.
       child?.stdio?.[3]?.destroy();
-      for (const stream of [child?.stdout, child?.stderr, child?.stdio?.[4], child?.stdin]) stream?.destroy();
+      for (const stream of [child?.stdout, child?.stderr, child?.stdio?.[4], child?.stdio?.[7], child?.stdin]) stream?.destroy();
       const text = (key) => Buffer.concat(outputs[key].chunks).toString('utf8');
       resolve({ code: final?.monitorObserved ? final.monitorCode : null,
         signal: final?.monitorSignal || null, stdout: text('stdout'), stderr: text('stderr'),
@@ -105,11 +110,23 @@ async function runLinuxOwner(binary, args, options = {}) {
     try {
       child = (options.spawnProcess || spawn)('/proc/self/fd/5',
         [options.probe ? '--probe' : '--run', String(timeoutMs), String(process.pid), '--', binary, ...args],
-        { env: { PATH: '/usr/bin:/bin' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', runtime.fd] });
+        { env: { PATH: '/usr/bin:/bin' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', runtime.fd,
+          // fd7 carries the seccomp program to Bubblewrap's --seccomp 7 (run mode only).
+          ...(seccompFilter ? ['ignore', 'pipe'] : [])] });
     } catch {
       error = 'LINUX_OWNER_SPAWN_FAILED'; runtime.close().then(finish); return;
     }
     runtime.close().catch(() => { error = 'LINUX_OWNER_FD_CLOSE_FAILED'; abort(); });
+    if (seccompFilter) {
+      const program = child.stdio?.[7];
+      if (!program) { error = 'LINUX_OWNER_SECCOMP_FAILED'; abort(); }
+      else {
+        // A missing or short program makes Bubblewrap refuse to start, so a
+        // write failure here can only fail closed; record it all the same.
+        program.on('error', () => { error ||= 'LINUX_OWNER_SECCOMP_FAILED'; });
+        program.end(seccompFilter);
+      }
+    }
     const wire = parser(runtime.sourceSha256, () => {
       if (requested || options.signal?.aborted) return;
       const control = child.stdio[3];

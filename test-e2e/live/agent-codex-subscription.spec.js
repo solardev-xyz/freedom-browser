@@ -102,11 +102,11 @@ async function runTask(window, prompt) {
       .poll(async () => {
         const status = (await window.locator('#agent-run-status').textContent())?.trim() || '';
         const message = (await window.locator('#agent-run-message').textContent())?.trim() || '';
-        return status !== 'Idle' || Boolean(message);
+        return Boolean(status) || Boolean(message);
       })
       .toBe(true);
     const status = (await window.locator('#agent-run-status').textContent())?.trim() || '';
-    if (status !== 'Idle') return;
+    if (status) return;
     const message =
       (await window.locator('#agent-run-message').textContent())?.trim() || 'unknown start error';
     if (!message.includes('not ready for the agent')) {

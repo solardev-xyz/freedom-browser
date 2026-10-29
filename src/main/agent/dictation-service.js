@@ -6,6 +6,7 @@ const { createHash, randomUUID } = require('crypto');
 const { grantDictationCapture, revokeDictationCapture } = require('./dictation-capture');
 const { DictationSegments, pcmToWav } = require('./dictation-segments');
 const { DictationRealtime } = require('./dictation-realtime');
+const { MODEL_NAME: LOCAL_MODEL_NAME } = require('../../shared/dictation-runtime');
 
 const LANGUAGES = Object.freeze(['auto', 'en', 'de', 'es', 'fr', 'it', 'pt', 'nl', 'pl', 'ja', 'zh', 'ko', 'uk']);
 const CLOUD = Object.freeze({
@@ -81,7 +82,7 @@ class DictationService {
   state(preferences = this.preferences) {
     this.assertEnabled();
     const status = this.providerStore.getPublicStatus();
-    const options = [{ providerId: 'local', name: 'On this device', model: 'Whisper Base',
+    const options = [{ providerId: 'local', name: 'On this device', model: LOCAL_MODEL_NAME,
       available: this.local.supported, ready: this.local.ready(),
       detail: 'Audio stays on this device. One-time model download of about 150 MB. Powered by whisper.cpp.', price: 'No usage charges' }];
     for (const connection of status.connections) {

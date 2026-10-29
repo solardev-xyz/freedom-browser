@@ -34,6 +34,10 @@ const OPTIONAL_SYSTEM_READ_PATHS = Object.freeze([
 // Keep this list explicit. In particular, do not admit kern.proc.*, net.routetable.*,
 // vm.loadavg or a hw.optional.arm.* prefix: those disclose host process/network state or
 // grant substantially more authority than the qualified Node/Electron workloads require.
+// hw.memsize is required since Electron 45 (Chromium 156): base::SysInfo CHECKs
+// sysctlbyname("hw.memsize") during startup, so Electron-as-Node dies with SIGTRAP
+// ("sys_info_apple.mm:58 Check failed ... Operation not permitted") before any helper
+// script runs. Observed on macos-latest CI, 2026-10-25 (PR #830).
 const SEATBELT_SYSCTL_READ_NAMES = Object.freeze([
   'hw.activecpu',
   'hw.byteorder',
@@ -48,6 +52,7 @@ const SEATBELT_SYSCTL_READ_NAMES = Object.freeze([
   'hw.logicalcpu',
   'hw.logicalcpu_max',
   'hw.machine',
+  'hw.memsize',
   'hw.ncpu',
   'hw.nperflevels',
   'hw.optional.arm.FEAT_BF16',

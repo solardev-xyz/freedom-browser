@@ -1050,8 +1050,60 @@ describe('Agent progress projection', () => {
   test('marks a retry safe only when Freedom verified no browser changes', () => {
     const outcome = buildAgentOutcome([], 'failed', { code: 'PROVIDER_ERROR' });
     expect(outcome).toMatchObject({ retrySafety: 'safe' });
-    expect(outcome.detail).toContain('did not verify any browser changes');
     expect(outcome.nextStep).toContain('Try continuing once');
+    expect(outcome).not.toHaveProperty('providerAction');
+  });
+
+  test('omits browser state from a failed plain chat that never touched a page', () => {
+    const outcome = buildAgentOutcome([], 'failed', { code: 'PROVIDER_ERROR' });
+    expect(outcome.detail).toBe('The model provider could not complete the request.');
+    expect(outcome.detail).not.toMatch(/browser/i);
+  });
+
+  test('a stopped plain chat has no detail, not a stray space or browser sentence', () => {
+    const outcome = buildAgentOutcome([], 'cancelled');
+    expect(outcome).toMatchObject({ kind: 'interrupted', headline: 'Run stopped', detail: '' });
+  });
+
+  test('an interrupted plain chat explains only that the stop point is unknown', () => {
+    const outcome = buildAgentOutcome([], 'interrupted');
+    expect(outcome.detail).toBe('Freedom cannot confirm where the task stopped.');
+  });
+
+  test('a stopped run that touched a page keeps the browser sentence', () => {
+    const outcome = buildAgentOutcome(
+      [{ operation: OPERATIONS.SNAPSHOT, status: 'failed', pageId: 'tab_1',
+        errorCode: ERROR_CODES.STALE_ELEMENT_REFERENCE }],
+      'cancelled'
+    );
+    expect(outcome.detail).toBe('Freedom did not verify any browser changes.');
+  });
+
+  test('keeps the browser sentence when a browser action ran without changing anything', () => {
+    const outcome = buildAgentOutcome(
+      [{ operation: OPERATIONS.SNAPSHOT, status: 'failed', pageId: 'tab_1',
+        errorCode: ERROR_CODES.STALE_ELEMENT_REFERENCE }],
+      'failed',
+      { code: 'PROVIDER_ERROR' }
+    );
+    expect(outcome.detail).toContain('Freedom did not verify any browser changes.');
+  });
+
+  test('offers a model choice, not a retry, when the provider has no such model', () => {
+    const outcome = buildAgentOutcome([], 'failed', {
+      code: 'PROVIDER_ERROR',
+      message: '500: {"message":"model \\"qwen3:8b\\" not found, try pulling it first"}',
+      provider: { label: 'Ollama', modelId: 'qwen3:8b' },
+    });
+    expect(outcome).toMatchObject({
+      kind: 'recovery',
+      headline: 'Model connection failed',
+      detail: 'Ollama using qwen3:8b cannot use the selected model.',
+      providerAction: 'choose_model',
+      canRetry: false,
+      retrySafety: 'safe',
+    });
+    expect(outcome.nextStep).toContain('Choose another model for a new chat');
   });
 
   test('reconstructs provider recovery evidence from persisted safe error copy', () => {
@@ -1328,6 +1380,32 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('keeps the publication kind: a private draft link with its encrypted reference, and a stable address (#741 E, F)', () => {
+    const base = { publicationId: `swarm_pub_${'a'.repeat(24)}`, state: 'completed', applicationState: 'applied', kind: 'folder', name: 'site', verified: true };
+    const draft = normalizePublicationReceipt({ ...base, target: 'draft', public: false, encrypted: true,
+      reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` });
+    expect(draft).toMatchObject({ target: 'draft', public: false, encrypted: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` });
+    const outcome = buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: draft }], 'completed');
+    expect(outcome).toMatchObject({ headline: 'Private draft link ready and verified' });
+    expect(outcome.detail).toContain('encrypted private draft link');
+    expect(outcome.detail).not.toMatch(/Freedom published/);
+    // A receipt cannot claim to be a draft and public, or a public one unencrypted-length-mismatched.
+    expect(normalizePublicationReceipt({ ...base, target: 'draft', public: true, encrypted: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+    expect(normalizePublicationReceipt({ ...base, target: 'draft', public: false, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+    expect(normalizePublicationReceipt({ ...base, public: true, reference: 'e'.repeat(128), bzzUrl: `bzz://${'e'.repeat(128)}` })).toBeNull();
+
+    const feed = 'f'.repeat(64);
+    const stable = normalizePublicationReceipt({ ...base, target: 'public', public: true, reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}`,
+      stableAddress: { name: 'site', owner: `0x${'1'.repeat(40)}`, reference: feed, bzzUrl: `bzz://${feed}`, index: 2, updated: true, privateKey: '0xsecret' } });
+    expect(stable.stableAddress).toEqual({ name: 'site', owner: `0x${'1'.repeat(40)}`, reference: feed, bzzUrl: `bzz://${feed}`, index: 2, updated: true });
+    expect(buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: stable }], 'completed').detail)
+      .toContain(`stable address bzz://${feed} now points to this version`);
+    const stale = normalizePublicationReceipt({ ...base, public: true, reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}`,
+      stableAddress: { name: 'site', owner: `0x${'1'.repeat(40)}`, updated: false, error: 'locked' } });
+    expect(buildAgentOutcome([{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', effect: 'changed', publication: stale }], 'completed').detail)
+      .toContain('The stable address was not updated.');
+  });
+
   test('projects verified Swarm publications without local paths and recovers in-flight work', () => {
     const publication = normalizePublicationReceipt({
       publicationId: `swarm_pub_${'a'.repeat(24)}`,
@@ -1348,6 +1426,7 @@ describe('Agent progress projection', () => {
       applicationState: 'applied',
       kind: 'folder',
       name: 'My site',
+      target: 'public',
       public: true,
       progress: 100,
       reference: 'b'.repeat(64),
@@ -1510,6 +1589,46 @@ test('does not claim recovery when opening a page succeeds but its final read fa
 });
 
 
+test('a declined approval is reported as declined, not as an uncertain browser outcome (#845)', () => {
+  const typed = { operation: OPERATIONS.TYPE, status: 'succeeded', effect: 'changed', pageId: 'page' };
+  const read = { operation: OPERATIONS.SNAPSHOT, status: 'succeeded', effect: 'observed', pageId: 'page' };
+  const submit = { operation: OPERATIONS.CLICK, status: 'failed', effect: 'changed', pageId: 'page',
+    errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' };
+  const result = buildAgentOutcome([typed, read, submit], 'completed');
+  expect(result.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+    detail: 'You declined an action, so it did not run.' });
+  // The notice carries the decline; the detail does not repeat it.
+  expect(result.detail).not.toContain('declined');
+  // Without the notice (an uncertain action outranks it) the detail still says so.
+  const uncertain = { operation: OPERATIONS.CLICK, status: 'failed', effect: 'changed', pageId: 'other',
+    errorCode: ERROR_CODES.INTERNAL_ERROR };
+  expect(buildAgentOutcome([typed, read, submit, uncertain], 'completed').detail)
+    .toContain('1 browser action was declined by the user');
+  // The model retrying the declined click is refused without a new prompt
+  // (origin-scoped-controller's declinedActions); it is the same declined action.
+  const retry = { ...submit, repeatsDecline: true };
+  expect(buildAgentOutcome([typed, read, submit, retry], 'completed').notice).toEqual({ tone: 'neutral',
+    headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' });
+  // No prompt was shown for the retry, so it is not a second approval either,
+  // even when a caution notice outranks the declined one and the detail says so.
+  const withRetry = buildAgentOutcome([typed, read, submit, retry, uncertain], 'completed');
+  expect(withRetry.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(withRetry.detail).toContain('1 browser action was declined by the user');
+  // A retry whose decline was in an earlier turn still counts, once.
+  expect(buildAgentOutcome([retry, retry, uncertain], 'completed').counts.approvals)
+    .toMatchObject({ requested: 1, declined: 1 });
+  expect(buildAgentOutcome([typed, read, submit, { ...submit, operation: OPERATIONS.TYPE }], 'completed').notice)
+    .toMatchObject({ headline: 'Browser actions declined', detail: 'You declined 2 actions, so they did not run.' });
+  // Withdrawn approvals did not run either, but the user did not decline them.
+  expect(buildAgentOutcome([typed, read, { ...submit, approval: 'withdrawn' }], 'completed').notice).toBeUndefined();
+  // Cancelling an action the user had approved can still leave effects behind.
+  expect(buildAgentOutcome([typed, read, { ...submit, approval: 'approved' }], 'completed').notice.headline)
+    .toBe('Browser action outcome uncertain');
+  // A declined non-browser approval is not a browser action.
+  expect(buildAgentOutcome([{ operation: 'request_permissions', status: 'failed', approval: 'declined',
+    errorCode: ERROR_CODES.USER_CANCELLED }], 'completed').notice).toBeUndefined();
+});
+
 test('only unresolved browser effects receive an attention notice; verification remains intact', () => {
   const opened = { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', pageId: 'page' };
   expect(buildAgentOutcome([opened], 'completed')).toMatchObject({ verification: 'actions_recorded', counts: { successful: 1 } });
@@ -1524,4 +1643,58 @@ test('only unresolved browser effects receive an attention notice; verification 
     taskId: `delegate_${'b'.repeat(24)}`, title: 'Browse', state: 'completed', mode: 'browser', browserActions: [failed],
   } };
   expect(buildAgentOutcome([helper, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
+});
+
+test('a browser helper\'s declined action reads as declined, not as an uncertain outcome (#845)', () => {
+  const { normalizeSubagentReceipt } = require('./subagent-receipt');
+  const submit = { operation: OPERATIONS.CLICK, status: 'failed', pageId: 'tab_child', origin: 'https://shop.example',
+    errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' };
+  const helper = (browserActions) => ({ operation: 'delegate_task', status: 'succeeded', subagent: {
+    taskId: `delegate_${'c'.repeat(24)}`, title: 'Order', state: 'completed', mode: 'browser', browserActions } });
+  expect(normalizeSubagentReceipt(helper([submit, { ...submit, repeatsDecline: true }]).subagent).browserActions)
+    .toEqual([expect.objectContaining({ approval: 'declined' }),
+      expect.objectContaining({ approval: 'declined', repeatsDecline: true })]);
+  const declined = buildAgentOutcome([helper([submit, { ...submit, repeatsDecline: true }])], 'completed');
+  expect(declined.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+    detail: 'You declined an action, so it did not run.' });
+  expect(buildAgentOutcome([helper([{ ...submit, approval: 'withdrawn' }])], 'completed').notice).toBeUndefined();
+  // Without a recorded decline the stopped action is still uncertain.
+  const { approval: _approval, ...stopped } = submit;
+  expect(buildAgentOutcome([helper([stopped])], 'completed').notice.headline).toBe('Browser action outcome uncertain');
+  // A helper's receipt never records an approval, so its declines stay out of
+  // the approval counters too; the helper sentence reports them instead.
+  const clicked = { operation: OPERATIONS.CLICK, status: 'succeeded', pageId: 'tab_child', origin: 'https://shop.example' };
+  const uncertain = { ...stopped, errorCode: ERROR_CODES.INTERNAL_ERROR };
+  const mixed = buildAgentOutcome([helper([clicked, submit, { ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(mixed.notice.headline).toBe('Browser action outcome uncertain');
+  expect(mixed.counts.approvals).toMatchObject({ requested: 0, approved: 0, declined: 0, withdrawn: 0 });
+  expect(mixed.detail).not.toContain('declined by the user');
+  expect(mixed.detail).toContain('You declined 1 of their actions, so it did not run.');
+  // With the neutral notice showing, the decline is not repeated in the detail.
+  expect(declined.detail).not.toContain('declined');
+  // A parent-prompted decline is still counted alongside the helper's.
+  const parentDecline = { ...submit, pageId: 'page' };
+  expect(buildAgentOutcome([parentDecline, helper([submit, uncertain])], 'completed').counts.approvals)
+    .toMatchObject({ requested: 1, declined: 1 });
+  // A decline that crosses the boundary is one user decision: the parent's
+  // refused retry of a helper's decline, or the helper's refused retry of the
+  // parent's, is not told twice in the detail.
+  const parentRetry = { ...submit, repeatsDecline: true };
+  const parentRetried = buildAgentOutcome([helper([submit, uncertain]), parentRetry], 'completed');
+  expect(parentRetried.counts.approvals).toMatchObject({ requested: 0, declined: 0 });
+  expect(parentRetried.detail).not.toContain('declined by the user');
+  expect(parentRetried.detail).toContain('You declined 1 of their actions, so it did not run.');
+  const helperRetried = buildAgentOutcome([parentDecline, helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(helperRetried.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(helperRetried.detail).not.toContain('of their actions');
+  // Refused repeats on both sides of a decline from an earlier turn count once.
+  const bothRetried = buildAgentOutcome([parentRetry, helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed');
+  expect(bothRetried.counts.approvals).toMatchObject({ requested: 1, declined: 1 });
+  expect(bothRetried.detail).not.toContain('of their actions');
+  // A helper-only refused repeat from an earlier turn still reads once.
+  expect(buildAgentOutcome([helper([{ ...submit, repeatsDecline: true }, uncertain])], 'completed').detail)
+    .toContain('You declined 1 of their actions, so it did not run.');
+  // Only a decline or withdrawal survives normalization, and only on a failed action.
+  const [kept] = normalizeSubagentReceipt(helper([{ ...submit, status: 'succeeded', approval: 'approved' }]).subagent).browserActions;
+  expect(kept.approval).toBeUndefined();
 });

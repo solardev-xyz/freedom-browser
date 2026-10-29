@@ -41,8 +41,10 @@ provider failure, or approval. They never log model explanations or project byte
   consumes the existing non-serializable permit only for the exact command and
   canonical project-relative directory. A different command cannot use it.
 - The sandbox and its filesystem protections stay in force. Direct network access
-  remains the existing indivisible public/localhost/private-LAN bundle, with
-  Linux abstract Unix sockets explicitly included in the review.
+  remains the existing indivisible public/localhost/private-LAN bundle. It no
+  longer reaches Linux host abstract Unix sockets: Linux commands cannot open
+  Unix sockets at all ([#817](https://github.com/solardev-xyz/freedom-browser/issues/817)),
+  and the review still names whichever posture the backend reports.
 - Request mutation, Stop, pause, completion, or new user steering invalidate an
   in-flight decision. Steering also clears unused one-shot permits. It does not
   retroactively stop a command already running; Stop remains available.
@@ -82,7 +84,7 @@ The reviewer must also refer commands that involve payments, messages, publishin
 private-data disclosure, account/legal consent, destructive changes, or global
 installation to the human. This semantic policy is not a claim that the runtime
 can prove all hidden effects of arbitrary scripts. Existing browser-intent
-classification remains separate. **Ask frequently** and **Fewer interruptions**
+classification remains separate. **Ask every time** and **Fewer interruptions**
 retain their existing command-access approval behavior.
 
 Full access is deferred. Broader automatic project grants, per-file editing
@@ -115,7 +117,7 @@ sheet when needed. Ask Agent to request the
 installed `npm` executable for the exact command `npm --version` in `.` and run
 it without networking. If executable access is not already available, a confident
 review should show **Approved by reviewer** in activity; uncertain review should
-show the usual human sheet. Repeat in **Ask frequently** to check the human path.
+show the usual human sheet. Repeat in **Ask every time** to check the human path.
 Stop during **Reviewing command access…** to verify that no late approval appears.
 Initial project editing and publishing should still show their existing sheets.
 
