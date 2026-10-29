@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 
 const { createBeeConfig, injectBeeKey, injectRadicleKey } = require('./injection');
+const { _setFdBindingForTests } = require('../private-files');
 
 const posixTest = process.platform === 'win32' ? test.skip : test;
 const modeOf = (target) => fs.statSync(target).mode & 0o777;
@@ -95,9 +96,35 @@ describe('key files are owner-only (K-3)', () => {
     }
   });
 
+  // The probe from review: keys/ replaced with a link while the keystore is
+  // being encrypted (real scrypt). injectBeeKey opened keys/ before that
+  // await, so the swap lands mid-encryption. Linux binds the write to the
+  // opened directory; macOS checks the path; both refuse.
+  const bindings = [['checked by path alone', false]];
+  if (process.platform === 'linux') bindings.unshift(['bound to the descriptor', true]);
+  for (const [label, bound] of bindings) {
+    posixTest(`keys/ swapped for a link during encryption: nothing lands outside (${label})`, async () => {
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
+      _setFdBindingForTests(bound);
+      try {
+        const pending = injectBeeKey(dir, `0x${'11'.repeat(32)}`, 'password');
+        fs.renameSync(path.join(dir, 'keys'), path.join(dir, 'keys.held'));
+        fs.symlinkSync(elsewhere, path.join(dir, 'keys'));
+
+        await expect(pending).rejects.toThrow('replaced while in use');
+        expect(fs.readdirSync(elsewhere)).toEqual([]);
+        expect(fs.readdirSync(path.join(dir, 'keys.held'))).toEqual([]);
+      } finally {
+        _setFdBindingForTests(true);
+        fs.rmSync(elsewhere, { recursive: true, force: true });
+      }
+    }, 30000);
+  }
+
   posixTest('the Radicle key directory and secret key', () => {
     injectRadicleKey(dir, new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), 'Alias');
     expect(modeOf(path.join(dir, 'keys'))).toBe(0o700);
     expect(modeOf(path.join(dir, 'keys', 'radicle'))).toBe(0o600);
+    expect(modeOf(path.join(dir, 'keys', 'radicle.pub'))).toBe(0o644);
   });
 });

@@ -1,1 +1,1 @@
-- Node keys, the identity vault and the Swarm node's config are readable only by your own account on macOS and Linux ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))
+- Node keys, the identity vault, the Touch ID unlock credential and the Swarm node's config are readable only by your own account on macOS and Linux, and are never read or written through a link planted in their place ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))
