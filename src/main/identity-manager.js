@@ -45,8 +45,18 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
-// Cached derived keys (only available when unlocked)
+// Cached derived keys. Valid only while the vault is unlocked: every lock
+// path clears them (an explicit lock, the vault's inactivity auto-lock, a
+// vault delete), and every reader goes through getDerivedKeys(), which also
+// checks the vault's own lock state. Before this, the auto-lock cleared only
+// the vault's mnemonic, and signers that read this cache (bee-wallet feed and
+// SOC signing, identity injection) kept working while the status said
+// "locked" (K-1).
 let derivedKeys = null;
+
+function clearDerivedKeys() {
+  derivedKeys = null;
+}
 
 // Track which nodes have been injected
 let injectedNodes = {
@@ -106,6 +116,11 @@ function loadIdentityModule() {
 
   try {
     identityModule = require('./identity');
+    // The inactivity auto-lock runs inside the vault module; this hook is how
+    // it reaches the cache above.
+    if (typeof identityModule.onLock === 'function') {
+      identityModule.onLock(clearDerivedKeys);
+    }
     return identityModule;
   } catch (err) {
     console.error('[IdentityManager] Failed to load identity module:', err);
@@ -241,16 +256,35 @@ async function unlockVault(password) {
 async function lockVault() {
   const identity = await loadIdentityModule();
   identity.lockVault();
-  derivedKeys = null;
+  clearDerivedKeys();
   console.log('[IdentityManager] Vault locked');
 }
 
 /**
- * Get derived keys (only if unlocked)
+ * Get derived keys, or null while the vault is locked. Checks the vault's
+ * lock state on every call, so a lock path that missed the cache still
+ * cannot hand out a key.
  * @returns {Object|null}
  */
 function getDerivedKeys() {
+  if (!derivedKeys) return null;
+  if (loadIdentityModule().isUnlocked() !== true) {
+    clearDerivedKeys();
+    return null;
+  }
   return derivedKeys;
+}
+
+/**
+ * The derived keys, or throw the vault-locked error.
+ * @returns {Object}
+ */
+function requireDerivedKeys() {
+  const keys = getDerivedKeys();
+  if (!keys) {
+    throw new Error(VAULT_LOCKED_MESSAGE);
+  }
+  return keys;
 }
 
 /**
@@ -552,9 +586,7 @@ async function wipeStaleBeeState(dataDir) {
  * @returns {Promise<{address: string}>}
  */
 async function injectBeeIdentity() {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+  const keys = requireDerivedKeys();
 
   const identity = await loadIdentityModule();
   const dataDir = getAntDataDir();
@@ -572,7 +604,7 @@ async function injectBeeIdentity() {
   const beePassword = generateBeeKeystorePassword();
 
   // Inject the key with the random password
-  await identity.injectBeeKey(dataDir, derivedKeys.beeWallet.privateKey, beePassword);
+  await identity.injectBeeKey(dataDir, keys.beeWallet.privateKey, beePassword);
 
   // Store the password in config so Bee can decrypt the keystore on startup
   identity.createBeeConfig(
@@ -594,8 +626,8 @@ async function injectBeeIdentity() {
     }
   }
 
-  console.log(`[IdentityManager] Bee identity injected: ${derivedKeys.beeWallet.address}`);
-  return { address: derivedKeys.beeWallet.address };
+  console.log(`[IdentityManager] Bee identity injected: ${keys.beeWallet.address}`);
+  return { address: keys.beeWallet.address };
 }
 
 /**
@@ -607,9 +639,7 @@ async function injectBeeIdentity() {
  * @returns {Promise<{mode: string, active: boolean, peerId: null, stableIdentitySupported: boolean}>}
  */
 async function injectIpfsIdentity() {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+  requireDerivedKeys();
 
   injectedNodes.ipfs = false;
 
@@ -628,9 +658,7 @@ async function injectIpfsIdentity() {
  * @returns {Promise<{did: string}>}
  */
 async function injectRadicleIdentity(alias = 'FreedomBrowser') {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+  const keys = requireDerivedKeys();
 
   const identity = await loadIdentityModule();
   const dataDir = await prepareRadicleDataDir();
@@ -651,8 +679,8 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
 
   const did = identity.injectRadicleKey(
     dataDir,
-    derivedKeys.radicleKey.privateKey,
-    derivedKeys.radicleKey.publicKey,
+    keys.radicleKey.privateKey,
+    keys.radicleKey.publicKey,
     alias
   );
 
@@ -669,13 +697,11 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
  * @returns {Promise<Object>}
  */
 async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = false) {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+  const keys = requireDerivedKeys();
 
   const results = {
     // Include user wallet (Account 0) - not injected anywhere, just derived
-    userWallet: { address: derivedKeys.userWallet.address },
+    userWallet: { address: keys.userWallet.address },
     // Track if any node was re-injected (needs restart)
     needsRestart: [],
   };
@@ -693,7 +719,7 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
       results.bee.reinjected = true;
     }
   } else {
-    results.bee = { address: derivedKeys.beeWallet.address, alreadyInjected: true };
+    results.bee = { address: keys.beeWallet.address, alreadyInjected: true };
   }
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
@@ -717,8 +743,8 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     // Get DID
     const identity = await loadIdentityModule();
     const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
+      keys.radicleKey.privateKey,
+      keys.radicleKey.publicKey,
       radicleAlias
     );
     results.radicle = { did: radicleIdentity.did, alreadyInjected: true };
@@ -743,20 +769,21 @@ async function getIdentityStatus() {
 
   // Try to get addresses - works even when vault is locked
   let addresses = null;
+  const keys = getDerivedKeys();
 
-  if (derivedKeys) {
+  if (keys) {
     // Vault is unlocked - compute from derived keys (most accurate)
     const identity = await loadIdentityModule();
 
     const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
+      keys.radicleKey.privateKey,
+      keys.radicleKey.publicKey,
       'FreedomBrowser'
     );
 
     addresses = {
-      userWallet: derivedKeys.userWallet.address,
-      beeWallet: derivedKeys.beeWallet.address,
+      userWallet: keys.userWallet.address,
+      beeWallet: keys.beeWallet.address,
       ipfsPeerId: null,
       radicleDid: radicleIdentity.did,
     };
@@ -1435,7 +1462,7 @@ async function deleteVaultData(password) {
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
   await identity.deleteVault(dataDir, password);
-  derivedKeys = null;
+  clearDerivedKeys();
   injectedNodes = { bee: false, ipfs: false, radicle: false };
   console.log('[IdentityManager] Vault deleted');
 }

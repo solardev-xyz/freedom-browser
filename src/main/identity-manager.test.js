@@ -33,6 +33,7 @@ function makeProfileIdentityMock() {
   return {
     createVault: jest.fn().mockResolvedValue('test mnemonic'),
     unlockVault: jest.fn().mockResolvedValue(undefined),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0xuser-private' },
       beeWallet: { address: '0xbee', privateKey: '0xbee-private' },
@@ -54,7 +55,7 @@ function makeRestartIdentityMock() {
     createVault: jest.fn(async () => 'test test test test test test test test test test test about'),
     unlockVault: jest.fn(async () => {}),
     vaultExists: jest.fn(async () => true),
-    isUnlocked: jest.fn(async () => true),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0x01' },
       beeWallet: { address: '0xbee', privateKey: '0x02' },

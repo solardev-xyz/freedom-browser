@@ -17,6 +17,10 @@ const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 let unlockedMnemonic = null;
 let autoLockTimer = null;
 
+// Called on every lock (explicit or the inactivity auto-lock), so whatever
+// holds keys derived from the mnemonic drops them at the same moment.
+const lockListeners = new Set();
+
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 
@@ -145,7 +149,7 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 }
 
 /**
- * Lock the vault (clear mnemonic from memory)
+ * Lock the vault (clear mnemonic from memory) and tell every lock listener.
  */
 function lockVault() {
   unlockedMnemonic = null;
@@ -153,6 +157,23 @@ function lockVault() {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
+  for (const listener of lockListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[Vault] Lock listener failed:', err.message);
+    }
+  }
+}
+
+/**
+ * Run `listener` whenever the vault locks, including the auto-lock.
+ * @param {() => void} listener
+ * @returns {() => void} removes the listener
+ */
+function onLock(listener) {
+  lockListeners.add(listener);
+  return () => lockListeners.delete(listener);
 }
 
 /**
@@ -284,6 +305,7 @@ module.exports = {
   importVault,
   unlockVault,
   lockVault,
+  onLock,
   isUnlocked,
   getMnemonic,
   resetAutoLockTimer,
