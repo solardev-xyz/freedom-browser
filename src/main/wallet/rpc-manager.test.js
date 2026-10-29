@@ -70,3 +70,71 @@ describe('rpc-manager API key file (K-5)', () => {
     expect(tempFiles()).toEqual([]);
   });
 });
+
+describe('the shared RPC key store (K-5 review)', () => {
+  let userDataDir;
+  let keysPath;
+  beforeEach(() => {
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-store-'));
+    keysPath = path.join(userDataDir, 'rpc-api-keys.json');
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  function loadRegistry() {
+    // Other tests here doMock the registry; this one wants the real one.
+    jest.dontMock(require.resolve('../networks/network-registry'));
+    const { mod } = loadMainModule(require.resolve('../networks/network-registry'), {
+      userDataDir,
+    });
+    return mod;
+  }
+
+  posixTest('the network registry, read first, repairs an older 0644 file', () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: 'k', enabled: true } }));
+    fs.chmodSync(keysPath, 0o644);
+
+    loadRegistry().getEndpoints(1, 'rpc');
+    expect(modeOf(keysPath)).toBe(0o600);
+  });
+
+  posixTest('the startup repair narrows it before any reader runs', () => {
+    fs.writeFileSync(keysPath, '{}');
+    fs.chmodSync(keysPath, 0o644);
+    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
+    expect(store.repairRpcApiKeys()).toBe(true);
+    expect(modeOf(keysPath)).toBe(0o600);
+  });
+
+  posixTest('neither reader follows a link planted at the key file', () => {
+    const outside = path.join(userDataDir, 'outside.json');
+    fs.writeFileSync(outside, JSON.stringify({ alchemy: { apiKey: 'planted', enabled: true } }));
+    fs.chmodSync(outside, 0o644);
+    fs.symlinkSync(outside, keysPath);
+
+    const { mod: rpc } = loadMainModule(require.resolve('./rpc-manager'), {
+      userDataDir,
+      extraMocks: {
+        [require.resolve('../networks/network-registry')]: () => ({
+          getKeyedSources: jest.fn(() => ({ alchemy: { id: 'alchemy', coverage: {} } })),
+        }),
+        [require.resolve('./provider-manager')]: () => ({ onApiKeysChanged: jest.fn() }),
+      },
+    });
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    loadRegistry().getEndpoints(1, 'rpc');
+    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
+    expect(store.repairRpcApiKeys()).toBe(false);
+    expect(modeOf(outside)).toBe(0o644);
+
+    // Saving replaces the link with a real, owner-only file.
+    expect(rpc.setApiKey('alchemy', 'mine')).toEqual({ success: true });
+    expect(fs.lstatSync(keysPath).isSymbolicLink()).toBe(false);
+    expect(modeOf(keysPath)).toBe(0o600);
+    expect(JSON.parse(fs.readFileSync(outside, 'utf8')).alchemy.apiKey).toBe('planted');
+  });
+});
