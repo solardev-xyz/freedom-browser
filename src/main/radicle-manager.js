@@ -82,7 +82,11 @@ function isDisabledForProfile() {
 
 async function syncProfileMode() {
   if (isDisabledForProfile()) {
-    await stopRadicle();
+    const stopped = await stopRadicle();
+    // A stop that wasn't proved (R-8): the node may still run, so it is
+    // not published as disabled and stopped. The failed stop's error stays,
+    // and a later stop can still recover.
+    if (embedded.isStarted()) return stopped;
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Disabled for this profile');
     updateState(STATUS.STOPPED);
@@ -195,7 +199,8 @@ function startRadicle() {
 // Stop the node. Resolves once the add-on proved it stopped (its shutdown
 // joined the node's thread); otherwise records the error and throws.
 async function stopNode() {
-  if (currentState === STATUS.STOPPED) return;
+  // Stopped, and proved stopped: the add-on no longer counts it as started.
+  if (currentState === STATUS.STOPPED && !embedded.isStarted()) return;
   updateState(STATUS.STOPPING);
   try {
     await embedded.shutdown();

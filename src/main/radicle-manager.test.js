@@ -548,6 +548,50 @@ describe('re-key critical section (R-8)', () => {
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 
+  // Round-3 review: disabling the profile after an unproved stop must not
+  // publish it stopped, and a later stop must still try to shut it down.
+  test('disabling the profile after an unproved stop keeps it recoverable', async () => {
+    const profile = { metadata: { nodes: { radicle: { mode: 'managed' } } } };
+    const ctx = loadManager({ profile });
+    const node = modelNode(ctx, { shutdownFails: true });
+    await ctx.mod.startRadicle();
+    await expect(
+      ctx.mod.createRadicleLifecycle().withStopped(async () => 'did')
+    ).rejects.toThrow('shutdown failed');
+    expect(node.nativeAlive).toBe(true);
+
+    profile.metadata.nodes.radicle.mode = 'disabled';
+    await expect(ctx.mod.syncProfileMode()).resolves.toEqual({
+      status: 'error',
+      error: 'shutdown failed',
+    });
+    expect(ctx.registry.updateService).not.toHaveBeenCalledWith('radicle', {
+      api: null,
+      gateway: null,
+      mode: 'disabled',
+    });
+
+    // The recovery: a stop whose shutdown now succeeds shuts the node down.
+    ctx.embedded.shutdown.mockImplementation(async () => {
+      node.nativeAlive = false;
+      node.wrapperStarted = false;
+      return { ok: true };
+    });
+    const shutdowns = ctx.embedded.shutdown.mock.calls.length;
+    await expect(ctx.mod.stopRadicle()).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.embedded.shutdown.mock.calls.length).toBe(shutdowns + 1);
+    expect(node.nativeAlive).toBe(false);
+
+    // Now proved stopped, disabling publishes it as disabled.
+    await expect(ctx.mod.syncProfileMode()).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.registry.updateService).toHaveBeenLastCalledWith('radicle', {
+      api: null,
+      gateway: null,
+      mode: 'disabled',
+    });
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
   // Review repro 3: a start queued just before the re-key was stopped and
   // then forgotten.
   test('a start queued just before the re-key is stopped for it, then restarted', async () => {
