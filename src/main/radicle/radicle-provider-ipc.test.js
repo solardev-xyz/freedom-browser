@@ -87,16 +87,23 @@ jest.mock('./cob-service', () => {
 jest.mock('./radicle-permissions', () => ({
   getPermission: jest.fn(() => ({ origin: 'test', signing: false })),
   hasSigningGrant: jest.fn(() => false),
+  getAutoApprove: jest.fn(() => false),
   updateLastUsed: jest.fn(),
   revokePermission: jest.fn(() => true),
 }));
 
-const { executeRadicleMethod, registerRadicleProviderIpc } = require('./radicle-provider-ipc');
+const {
+  executeRadicleMethod,
+  registerRadicleProviderIpc,
+  _resetAutoWriteLimiter,
+} = require('./radicle-provider-ipc');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
 
 const ORIGIN = 'bzz://canopyref';
+// The renderer showed the per-write prompt and the user approved.
+const USER_APPROVED = { approval: 'user' };
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
 beforeEach(() => {
@@ -105,6 +112,8 @@ beforeEach(() => {
   manager.getCurrentStatus.mockReturnValue({ status: 'running', error: null });
   permissions.getPermission.mockReturnValue({ origin: ORIGIN, signing: false });
   permissions.hasSigningGrant.mockReturnValue(false);
+  permissions.getAutoApprove.mockReturnValue(false);
+  _resetAutoWriteLimiter();
 });
 
 test('provider IPC broadcasts pushed seed progress with origin routing metadata', async () => {
@@ -222,7 +231,14 @@ test('provider IPC holds signed writes from a tab in Agent custody to a per-writ
     setAgentPageCustody(guest, false);
   }
 
-  // A tab the user holds keeps signing on the grant without a prompt.
+  // A tab the user holds: the grant alone does not answer a write (R-6)...
+  for (const method of Object.keys(writes)) {
+    const refused = await call(method, { webContentsId: 9, approval: 'auto' });
+    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'approval_required' } });
+  }
+  expect(cobCalls()).toBe(4);
+  // ...the site's "always allow writes" rule does.
+  permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
   for (const method of Object.keys(writes)) {
     expect((await call(method, { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
   }
@@ -461,7 +477,8 @@ describe('signing tier', () => {
     const result = await executeRadicleMethod(
       'radicle_createIssue',
       { rid: RID, title: 'Bug', description: 'Details', labels: ['bug'] },
-      ORIGIN
+      ORIGIN,
+      USER_APPROVED
     );
     expect(result.id).toMatch(/^a+$/);
     expect(cob.createIssue).toHaveBeenCalledWith({
@@ -475,7 +492,7 @@ describe('signing tier', () => {
   test('cob validation errors map to -32602 with reason', async () => {
     cob.createIssue.mockRejectedValue(new cob.CobValidationError('invalid_title', 'bad title'));
     await expectProviderError(
-      executeRadicleMethod('radicle_createIssue', { rid: RID }, ORIGIN),
+      executeRadicleMethod('radicle_createIssue', { rid: RID }, ORIGIN, USER_APPROVED),
       -32602,
       'invalid_title'
     );
@@ -489,7 +506,8 @@ describe('signing tier', () => {
       executeRadicleMethod(
         'radicle_commentIssue',
         { rid: RID, issueId: 'ab12cd', body: 'hi' },
-        ORIGIN
+        ORIGIN,
+        USER_APPROVED
       ),
       -32603,
       'repo_not_found'
@@ -500,13 +518,15 @@ describe('signing tier', () => {
     await executeRadicleMethod(
       'radicle_editIssueState',
       { rid: RID, issueId: 'ab12cd', state: 'closed' },
-      ORIGIN
+      ORIGIN,
+      USER_APPROVED
     );
     expect(cob.editIssueState).toHaveBeenCalled();
     await executeRadicleMethod(
       'radicle_commentPatch',
       { rid: RID, patchId: 'ab12cd', body: 'lgtm' },
-      ORIGIN
+      ORIGIN,
+      USER_APPROVED
     );
     expect(cob.commentPatch).toHaveBeenCalled();
   });
@@ -521,5 +541,93 @@ describe('signing tier', () => {
     const withoutGrant = await executeRadicleMethod('radicle_getNodeStatus', {}, ORIGIN);
     expect(withoutGrant.nid).toBeUndefined();
     expect(withoutGrant.alias).toBe('me');
+  });
+});
+
+describe('signed write approval (R-6)', () => {
+  const write = (approval) =>
+    executeRadicleMethod(
+      'radicle_commentIssue',
+      { rid: RID, issueId: 'ab12cd', body: 'hi' },
+      ORIGIN,
+      approval ? { approval } : {}
+    );
+  let now;
+
+  beforeEach(() => {
+    permissions.hasSigningGrant.mockReturnValue(true);
+    cob.commentIssue.mockImplementation(async () => ({ id: 'b'.repeat(40) }));
+    now = 1_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('without the "always allow writes" rule an automatic write is refused', async () => {
+    for (const approval of ['auto', undefined, 'something']) {
+      await expectProviderError(write(approval), 4100, 'approval_required');
+    }
+    expect(cob.commentIssue).not.toHaveBeenCalled();
+    await write('user');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test('rule-answered writes: a burst of 5, then 1 per 30 s', async () => {
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    for (let i = 0; i < 5; i += 1) await write('auto');
+    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(5);
+
+    // A write the user approves in its prompt is not counted.
+    await write('user');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(6);
+
+    now += 29_000;
+    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+    now += 1_000;
+    await write('auto');
+    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(7);
+  });
+
+  test('rule-answered writes: at most 50 in 24 hours', async () => {
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    for (let i = 0; i < 50; i += 1) {
+      await write('auto');
+      now += 30_000;
+    }
+    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(50);
+
+    // A day after the first of them, room for one again.
+    now = 1_000_000 + 24 * 60 * 60 * 1000;
+    await write('auto');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(51);
+  });
+
+  test('the limit is per origin, and disconnecting resets it', async () => {
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    for (let i = 0; i < 5; i += 1) await write('auto');
+    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+
+    await executeRadicleMethod(
+      'radicle_commentIssue',
+      { rid: RID, issueId: 'ab12cd', body: 'hi' },
+      'https://other.example',
+      { approval: 'auto' }
+    );
+    expect(cob.commentIssue).toHaveBeenCalledTimes(6);
+
+    await executeRadicleMethod('radicle_disconnect', {}, ORIGIN);
+    await write('auto');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(7);
+  });
+
+  test('identity disclosure is not a write and needs no approval', async () => {
+    await expect(executeRadicleMethod('radicle_getIdentity', {}, ORIGIN)).resolves.toMatchObject({
+      did: 'did:key:z6MkTest',
+    });
   });
 });

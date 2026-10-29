@@ -20,6 +20,11 @@
  *                radicle_commentIssue, radicle_editIssueState,
  *                radicle_commentPatch
  *
+ * Signed writes (the COB methods) each need the user's approval: the
+ * renderer's per-write prompt, or the site's "always allow writes" rule
+ * (autoApprove.signing), which this module rate-limits per origin. See
+ * SIGNED_WRITE_METHODS below.
+ *
  * Seeding is honest about replication: radicle_seed writes the policy and
  * kicks off a background fetch, returning immediately with an initial
  * status. Progress is pushed through the provider's `seedStatus` event;
@@ -48,6 +53,8 @@ const {
 } = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
+const { createAutoWriteLimiter } = require('./auto-write-limiter');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 
 const SPEC_VERSION = '0.2';
@@ -89,6 +96,19 @@ const METHOD_TIERS = {
 };
 
 const KNOWN_METHODS = new Set(Object.keys(METHOD_TIERS));
+
+// COB writes sign with the user's node identity and publish irrevocably.
+// Each needs the user's approval for that write ('user': the renderer
+// showed the per-write prompt), or the site's "always allow writes" rule,
+// whose writes autoWriteLimiter counts. Anything else is automatic, and
+// is refused unless the rule exists and the limit admits it (R-6).
+const SIGNED_WRITE_METHODS = new Set([
+  'radicle_createIssue',
+  'radicle_commentIssue',
+  'radicle_editIssueState',
+  'radicle_commentPatch',
+]);
+const autoWriteLimiter = createAutoWriteLimiter();
 const PUSH_METHODS = new Set(['radicle_seed', 'radicle_sync', 'radicle_getSeedStatus']);
 const seedStatusBroadcasters = new Map();
 
@@ -279,7 +299,12 @@ async function handleCobWrite(fn, params) {
  * @param {object} params
  * @param {string} origin - display-URL-derived origin from the renderer
  */
-async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus } = {}) {
+async function executeRadicleMethod(
+  method,
+  params = {},
+  origin,
+  { onSeedStatus, approval } = {}
+) {
   if (!KNOWN_METHODS.has(method)) {
     throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
@@ -308,6 +333,20 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
       throw providerError(ERRORS.UNAVAILABLE, 'Radicle node is not running', {
         reason: 'node-stopped',
       });
+    }
+    if (SIGNED_WRITE_METHODS.has(method) && approval !== 'user') {
+      if (!permissions.getAutoApprove(origin, 'signing')) {
+        throw providerError(ERRORS.UNAUTHORIZED, 'This write needs the user\'s approval', {
+          reason: 'approval_required',
+        });
+      }
+      if (!autoWriteLimiter.admit(normalizeOrigin(origin))) {
+        throw providerError(
+          ERRORS.UNAUTHORIZED,
+          'This site has used up its automatic writes for now; this one needs the user\'s approval',
+          { reason: 'auto_write_limit' }
+        );
+      }
     }
     permissions.updateLastUsed(origin);
   }
@@ -340,6 +379,7 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
       // the inverse of requestAccess, no consent needed.
       permissions.revokePermission(origin);
       removeSeedStatusBroadcaster(origin);
+      autoWriteLimiter.forget(normalizeOrigin(origin));
       return { connected: false };
     case 'radicle_getIdentity':
       return handleCobWrite(() => cob.getIdentity(), params);
@@ -366,18 +406,10 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
 // applies to dApp auto-approve rules.
 const AUTO_APPROVABLE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
-// COB writes sign with the user's node identity and publish irrevocably.
-// The site's standing signing grant answers them without a prompt, so it is
-// the same kind of automatic approval: only 'user' (the renderer showed the
+// A signed write the site's "always allow writes" rule answers is the same
+// kind of automatic approval: only 'user' (the renderer showed the
 // per-write prompt) skips the check, and a request that names no path is
-// read as the grant answering.
-const SIGNED_WRITE_METHODS = new Set([
-  'radicle_createIssue',
-  'radicle_commentIssue',
-  'radicle_editIssueState',
-  'radicle_commentPatch',
-]);
-
+// read as automatic.
 function agentCustodyRefusal(sender, method, meta) {
   const signedWrite = SIGNED_WRITE_METHODS.has(method);
   if (!signedWrite && !AUTO_APPROVABLE_METHODS.has(method)) return null;
@@ -417,7 +449,10 @@ function registerRadicleProviderIpc() {
       ? getSeedStatusBroadcaster(origin)
       : undefined;
     try {
-      const result = await executeRadicleMethod(method, params, origin, { onSeedStatus });
+      const result = await executeRadicleMethod(method, params, origin, {
+        onSeedStatus,
+        approval: meta?.approval,
+      });
       return { result };
     } catch (err) {
       if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
@@ -434,4 +469,5 @@ function registerRadicleProviderIpc() {
 module.exports = {
   executeRadicleMethod,
   registerRadicleProviderIpc,
+  _resetAutoWriteLimiter: () => autoWriteLimiter.reset(),
 };
