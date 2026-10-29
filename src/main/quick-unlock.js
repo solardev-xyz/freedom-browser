@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { getIdentityDataDir, getQuickUnlockCredentialPath } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const vault = require('./identity/vault');
+const { withPasswordAttempt } = require('./identity/password-attempts');
 
 const CREDENTIAL_VERSION = 2;
 
@@ -107,8 +108,9 @@ function writeCredential(password) {
   }
 }
 
+// Under the shared wrong-password back-off, like every vault password check (K-4).
 async function verifyCredentialPassword(password) {
-  await vault.verifyPassword(getIdentityDataDir(), password);
+  await withPasswordAttempt(() => vault.verifyPassword(getIdentityDataDir(), password));
 }
 
 /**

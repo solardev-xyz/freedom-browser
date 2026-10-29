@@ -23,6 +23,7 @@ const {
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
+const { withPasswordAttempt } = require('./identity/password-attempts');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -1505,9 +1506,11 @@ function registerIdentityIpc() {
   });
 
   // Unlock vault
+  // Every handler that checks the vault password goes through the shared
+  // wrong-password back-off (K-4).
   ipcMain.handle(IPC.IDENTITY_UNLOCK, async (_event, password) => {
     try {
-      await unlockVault(password);
+      await withPasswordAttempt(() => unlockVault(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1551,7 +1554,7 @@ function registerIdentityIpc() {
       }
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const mnemonic = await exportMnemonic();
       return { success: true, mnemonic };
     } catch (err) {
@@ -1568,7 +1571,7 @@ function registerIdentityIpc() {
       assertPrivateKeyExportable(accountIndex);
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const privateKey = await exportPrivateKeyForAccount(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
@@ -1579,7 +1582,7 @@ function registerIdentityIpc() {
   // Change password
   ipcMain.handle(IPC.IDENTITY_CHANGE_PASSWORD, async (_event, currentPassword, newPassword) => {
     try {
-      await changeVaultPassword(currentPassword, newPassword);
+      await withPasswordAttempt(() => changeVaultPassword(currentPassword, newPassword));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1589,7 +1592,7 @@ function registerIdentityIpc() {
   // Delete vault
   ipcMain.handle(IPC.IDENTITY_DELETE_VAULT, async (_event, password) => {
     try {
-      await deleteVaultData(password);
+      await withPasswordAttempt(() => deleteVaultData(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
