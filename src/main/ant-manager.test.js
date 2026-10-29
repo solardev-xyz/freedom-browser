@@ -267,6 +267,20 @@ function loadAntManagerModule(options = {}) {
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
   };
+  // private-files.js over the same fake fs: reads and writes land on
+  // fsMock, repairs are recorded.
+  const privateFiles = {
+    readPrivateFile: jest.fn((target) =>
+      fsMock.existsSync(target) ? Buffer.from(String(fsMock.readFileSync(target, 'utf-8'))) : null
+    ),
+    writePrivateFileSync: jest.fn((target, data) => fsMock.writeFileSync(target, data, { mode: 0o600 })),
+    repairPrivateFile: jest.fn(() => true),
+    repairPrivateDir: jest.fn(() => true),
+    ensurePrivateDir: jest.fn((dir) => {
+      if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    }),
+  };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
   const saveSettings = jest.fn(() => true);
@@ -301,6 +315,7 @@ function loadAntManagerModule(options = {}) {
         randomBytes,
       }),
       fs: () => fsMock,
+      [require.resolve('./private-files')]: () => privateFiles,
       http: () => ({
         get: httpGet,
       }),
@@ -361,6 +376,7 @@ function loadAntManagerModule(options = {}) {
     dataDir,
     execSync,
     fsMock,
+    privateFiles,
     registry,
     httpGet,
     ipcMain,
@@ -527,6 +543,43 @@ describe('ant-manager', () => {
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
     expect(ctx.mod.getSpawnedAt()).toBeNull();
+  });
+
+  test('narrows keys an older build left readable to other users (K-3)', async () => {
+    jest.useFakeTimers();
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const keysDir = path.join(dataDir, 'keys');
+    const swarmKeyPath = path.join(keysDir, 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // The keys an older build left are repaired, the config is read
+    // without following a link and written through the private writer.
+    expect(ctx.privateFiles.repairPrivateDir).toHaveBeenCalledWith(keysDir);
+    expect(ctx.privateFiles.repairPrivateFile).toHaveBeenCalledWith(swarmKeyPath);
+    expect(ctx.privateFiles.readPrivateFile).toHaveBeenCalledWith(configPath);
+    expect(ctx.privateFiles.writePrivateFileSync).toHaveBeenCalledWith(configPath, expect.any(String));
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -1104,7 +1157,11 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
+    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true, mode: 0o700 });
+    // config.yaml holds the keystore password: written owner-only (K-3).
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(ctx.configPath, expect.any(String), {
+      mode: 0o600,
+    });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     // antd self-initializes its identity; Freedom no longer runs an init step.
     expect(ctx.execSync).not.toHaveBeenCalled();

@@ -1,0 +1,1 @@
+- Node keys, the identity vault and the Swarm node's config are readable only by your own account on macOS and Linux ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))

@@ -22,6 +22,7 @@ const {
   prepareRadicleDataDir,
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
+const { repairPrivateFile } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
 
 // Identity module - loaded lazily
@@ -1443,7 +1444,26 @@ async function deleteVaultData(password) {
 /**
  * Register IPC handlers for identity operations
  */
+/**
+ * Startup repair (K-3): the vault and the quick-unlock credential an older
+ * build wrote with the umask's mode (usually 0644) become owner-only,
+ * through a no-follow descriptor, so a link planted at either name is left
+ * alone. Writes of the vault go through its own atomic writer (vault.js).
+ */
+function repairIdentityFiles() {
+  try {
+    const dataDir = getIdentityDataDir();
+    repairPrivateFile(path.join(dataDir, 'identity-vault.json'));
+    repairPrivateFile(path.join(dataDir, 'quick-unlock.dat'));
+  } catch (err) {
+    // A data directory that is a link is refused (profile-paths); say so
+    // without taking startup down.
+    console.warn('[IdentityManager] Identity files not repaired:', err.message);
+  }
+}
+
 function registerIdentityIpc() {
+  repairIdentityFiles();
   // Check if vault exists
   ipcMain.handle(IPC.IDENTITY_HAS_VAULT, async () => {
     try {
@@ -1745,6 +1765,7 @@ module.exports = {
 
   // Identity injection
   setBeeLifecycle,
+  repairIdentityFiles,
   removeStaleBeeDirs,
   wipeStaleBeeState,
   injectBeeIdentity,
