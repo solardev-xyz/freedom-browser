@@ -518,9 +518,11 @@ const NODE_FAILURE_MESSAGE =
 // Execution outcomes by code, whatever the message: Geth's revert (3) and
 // the OpenEthereum/Nethermind "VM execution error" (-32015).
 const EXECUTION_CODES = new Set([3, -32015]);
-// An HTTP status or transport failure that a gateway in front of the node
-// relayed in the node's own error message.
-const HTTP_FAILURE_MESSAGE = /(?<!\d)(?:502|503|504|429)(?!\d)|timeout|no response|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
+// A node that couldn't answer in time, in its own error message. No HTTP
+// status is read from that text: the node's message can echo calldata, an
+// address or a gas figure, and a status comes from the answer's own status
+// (SERVER_ERROR). freedom-core design 0004, classification rule 7.
+const NODE_UNANSWERED_MESSAGE = /no response|timeout/i;
 
 // Socket-level failures below ethers carry Node's own error code.
 const SOCKET_ERROR_CODES = new Set([
@@ -550,10 +552,6 @@ function hasRevertEvidence(err, rpcError) {
 // message. Only asked once hasRevertEvidence has said no.
 function isNodeFailure(rpcError) {
   return NODE_FAILURE_CODES.has(rpcError.code) || NODE_FAILURE_MESSAGE.test(String(rpcError.message || ''));
-}
-
-function stripHexRuns(text) {
-  return String(text).replace(/0x[0-9a-f]*/gi, '0x');
 }
 
 // Codes decide, not text: ethers' messages, short ones included, can embed
@@ -592,9 +590,7 @@ function isProviderError(err) {
     // NO_CONTENTHASH let two such failures agree into a verified not-found
     // for a name that has content.
     if (isNodeFailure(rpcError)) return true;
-    // A gateway's relayed HTTP status or "no response", with any hex runs
-    // removed.
-    return HTTP_FAILURE_MESSAGE.test(stripHexRuns(rpcError.message || ''));
+    return NODE_UNANSWERED_MESSAGE.test(String(rpcError.message || ''));
   }
 
   return false;

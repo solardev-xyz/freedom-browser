@@ -801,7 +801,8 @@ describe('ens-resolver', () => {
     test.each([
       ['a JSON-RPC internal error', { code: -32603, message: 'internal error' }],
       ['a node that did not respond', { code: -32000, message: 'no response' }],
-      ['a relayed HTTP 429', { code: -32000, message: '429 Too Many Requests' }],
+      ['a node rate limit', { code: -32000, message: '429 Too Many Requests' }],
+      ['a node that timed out', { code: -32000, message: 'request timeout' }],
     ])('%s still quarantines the endpoint', async (label, rpcError) => {
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
       routeByProvider(new Map([
@@ -817,6 +818,25 @@ describe('ens-resolver', () => {
       const next = await resolveEnsContent(`after-${slug}.box`);
       expect(next.trust.level).toBe('unverified');
       expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
+    });
+
+    // A status comes from the answer's own status (SERVER_ERROR), never
+    // from the node's text, which can echo calldata or a gas figure
+    // (freedom-core design 0004, classification rule 7).
+    test.each([
+      ['a bare status in the text', { code: -32000, message: 'upstream answered 503' }],
+      ['echoed call data holding 429', { code: -32000, message: 'invalid argument 0: 0x9061b923000429000502' }],
+      ['a gas figure holding 504', { code: -32000, message: 'intrinsic gas too low: have 15040, want 21000' }],
+    ])("%s in a node's message quarantines no endpoint", async (label, rpcError) => {
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: rpcCallError(rpcError) }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
     });
 
     test.each([
