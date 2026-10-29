@@ -40,6 +40,17 @@
  *   one only makes the check stricter. So an override (`FREEDOM_IPFS_DATA`),
  *   a symlink alias or a case alias can't widen a grant over a root. A
  *   name that begins with two dots, such as `..vault`, is an ordinary name.
+ * - **On a case-insensitive volume,** a path whose names that don't exist
+ *   yet aren't all ASCII is refused: such a volume folds case by Unicode
+ *   rules, which no string comparison here reproduces (these are
+ *   developer overrides, `FREEDOM_*_DATA`).
+ * - **No hard link in the grant:** a file in it with more than one name is
+ *   refused (`hardLinkRefusal`), since a link has the grant's path and
+ *   another file's data. The check runs at each spawn; the confined
+ *   service can't make a link to a file outside its grant, and a link made
+ *   later by another process of the same user is outside the boundary,
+ *   since that process could read the data directly. Bind mounts are out
+ *   of scope.
  * - **A directory that can't be listed** while it is split throws: the
  *   caller refuses the grant (fails closed).
  *
@@ -58,6 +69,13 @@ const FOLD_CASE = process.platform === 'darwin' || process.platform === 'win32';
 /** `target` absolute, its longest existing prefix resolved through its
  * symlinks (`realpath`), and the rest appended. */
 function realPath(target) {
+  const { real, rest } = resolveParts(target);
+  return path.join(real, ...rest);
+}
+
+/** `target`'s longest existing prefix, resolved (`real`), and the names
+ * after it that don't exist yet (`rest`). */
+function resolveParts(target) {
   let rest = [];
   let prefix = path.resolve(target);
   let real;
@@ -75,7 +93,20 @@ function realPath(target) {
       prefix = parent;
     }
   }
-  return path.join(real, ...rest);
+  return { real, rest };
+}
+
+/**
+ * Whether `target` can't be compared on a case-insensitive volume: a name
+ * that doesn't exist yet and isn't ASCII. Such a volume folds case by
+ * Unicode rules (Σ and ς name one directory there), which `toLowerCase`
+ * doesn't reproduce, and no `realpath` can resolve a name that doesn't
+ * exist. Names that exist are resolved, so only the missing ones count.
+ */
+function uncomparable(target, foldCase) {
+  if (!foldCase) return false;
+  // eslint-disable-next-line no-control-regex
+  return resolveParts(target).rest.some((name) => /[^\x00-\x7f]/.test(name));
 }
 
 function fold(target, foldCase) {
@@ -113,9 +144,17 @@ const RELATION_TEXT = { equal: 'is', inside: 'lies inside', contains: 'contains'
  * root's `name` and the relation, never by a path.
  */
 function grantRefusal(grants, roots, options = {}) {
-  const protectedRoots = roots
-    .filter((root) => root.dir)
-    .map((root) => ({ name: root.name, dir: canonical(root.dir, options) }));
+  const foldCase = options.foldCase ?? FOLD_CASE;
+  const present = roots.filter((root) => root.dir);
+  // On a case-insensitive volume, a missing name that isn't ASCII can't be
+  // compared: refused, failing closed (these are developer overrides).
+  if ([...grants, ...present.map((root) => root.dir)].some((p) => uncomparable(p, foldCase))) {
+    return "a path holds a name that doesn't exist yet and isn't ASCII, which this volume's case folding can't be compared by";
+  }
+  const protectedRoots = present.map((root) => ({
+    name: root.name,
+    dir: canonical(root.dir, options),
+  }));
   for (const grant of grants) {
     const dir = canonical(grant, options);
     for (const root of protectedRoots) {
@@ -336,6 +375,60 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
   return roots;
 }
 
+// How far the hard-link walk goes: past either bound, the grant is refused.
+const MAX_GRANT_ENTRIES = 100_000;
+const MAX_GRANT_DEPTH = 32;
+
+/**
+ * Why `grant` may not be given for what it already holds, or null: a file
+ * in it with more than one name (`nlink` > 1). A hard link has the grant's
+ * path but another file's data, possibly a protected one's, and Landlock
+ * and Seatbelt authorize by the path an open uses. The walk uses `lstat`,
+ * following no link, and is bounded: more than `maxEntries` entries, or
+ * deeper than `maxDepth`, refuses; so does an entry that can't be read.
+ * A grant that doesn't exist yet holds nothing.
+ */
+function hardLinkRefusal(
+  grant,
+  { maxEntries = MAX_GRANT_ENTRIES, maxDepth = MAX_GRANT_DEPTH } = {}
+) {
+  let root;
+  try {
+    root = fs.realpathSync.native(grant);
+  } catch (err) {
+    return err?.code === 'ENOENT' ? null : "the grant can't be read";
+  }
+  let seen = 0;
+  const pending = [{ dir: root, depth: 0 }];
+  while (pending.length > 0) {
+    const { dir, depth } = pending.pop();
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return "the grant holds a directory that can't be read";
+    }
+    for (const name of names) {
+      seen += 1;
+      if (seen > maxEntries) return `the grant holds more than ${maxEntries} entries to check`;
+      const entry = path.join(dir, name);
+      let stat;
+      try {
+        stat = fs.lstatSync(entry);
+      } catch {
+        return "the grant holds an entry that can't be read";
+      }
+      if (stat.isDirectory()) {
+        if (depth + 1 > maxDepth) return `the grant is deeper than ${maxDepth} levels to check`;
+        pending.push({ dir: entry, depth: depth + 1 });
+      } else if (!stat.isSymbolicLink() && stat.nlink > 1) {
+        return 'the grant holds a hard link: a file with another name, possibly outside it';
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Why a service whose own components are `own` may not be given `grants`,
  * or null: a grant that is, contains, or lies inside a protected root; or
@@ -343,10 +436,14 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
  * it another owner's data through the layout (refused even when the grant
  * is elsewhere).
  */
-function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE } = {}) {
+function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE, hardLinks = {} } = {}) {
   const roots = protectedRoots({ own, foldCase });
   const refused = grantRefusal(grants, roots, { foldCase });
   if (refused) return refused;
+  for (const grant of grants) {
+    const linked = hardLinkRefusal(grant, hardLinks);
+    if (linked) return linked;
+  }
   for (const dir of thisProfile(own).ownDirs) {
     const collision = grantRefusal([dir], roots, { foldCase });
     if (collision) {
@@ -375,5 +472,6 @@ module.exports = {
   grantRefusal,
   protectedRoots,
   serviceGrantRefusal,
+  hardLinkRefusal,
   ipfsGrantRefusal,
 };

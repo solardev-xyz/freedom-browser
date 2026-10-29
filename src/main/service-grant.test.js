@@ -391,3 +391,110 @@ describe('names that begin with two dots are ordinary names', () => {
     );
   });
 });
+
+describe('hard links in the grant (a file with another name)', () => {
+  function profileDir() {
+    const userDataDir = path.join(tempRoot, 'Elsewhere');
+    const identity = path.join(userDataDir, 'identity');
+    fs.mkdirSync(identity, { recursive: true });
+    fs.writeFileSync(path.join(identity, 'vault.json'), '{"vault":true}');
+    const grant = path.join(userDataDir, 'ipfs-data', 'freedom-ipfs');
+    fs.mkdirSync(grant, { recursive: true });
+    return { userDataDir, identity, grant };
+  }
+
+  test("a hard link to this profile's vault inside the grant is refused", () => {
+    const { userDataDir, identity, grant } = profileDir();
+    fs.linkSync(path.join(identity, 'vault.json'), path.join(grant, 'vault.json'));
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    expect(check.ipfsGrantRefusal(grant)).toBe(
+      'the grant holds a hard link: a file with another name, possibly outside it'
+    );
+  });
+
+  test('a grant as the service leaves it passes: files, a directory, a symlink out', () => {
+    const { userDataDir, grant } = profileDir();
+    fs.writeFileSync(path.join(grant, 'freedom-ipfs.sqlite3'), 'db');
+    fs.writeFileSync(path.join(grant, 'freedom-ipfs.sqlite3-wal'), 'wal');
+    fs.mkdirSync(path.join(grant, 'sub', 'deeper'), { recursive: true });
+    fs.writeFileSync(path.join(grant, 'sub', 'deeper', 'file'), 'x');
+    // A symlink isn't followed: the kernel resolves it at each open.
+    fs.symlinkSync(path.join(userDataDir, 'identity'), path.join(grant, 'out'));
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    expect(check.ipfsGrantRefusal(grant)).toBeNull();
+    // Nothing to walk yet: a grant that doesn't exist.
+    fs.rmSync(grant, { recursive: true });
+    expect(check.ipfsGrantRefusal(grant)).toBeNull();
+  });
+
+  test('an entry that cannot be read refuses, failing closed', () => {
+    const { userDataDir, grant } = profileDir();
+    fs.writeFileSync(path.join(grant, 'secret'), 'x');
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    const lstat = fs.lstatSync;
+    jest.spyOn(fs, 'lstatSync').mockImplementation((entry, ...rest) => {
+      if (String(entry).endsWith('secret')) {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      }
+      return lstat(entry, ...rest);
+    });
+    expect(check.ipfsGrantRefusal(grant)).toBe("the grant holds an entry that can't be read");
+  });
+
+  test('the walk is bounded: more entries or deeper than its bounds refuses', () => {
+    const { hardLinkRefusal } = jest.requireActual('./service-grant');
+    const dir = path.join(tempRoot, 'walk');
+    fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+    for (const name of ['1', '2', '3']) fs.writeFileSync(path.join(dir, name), name);
+    expect(hardLinkRefusal(dir)).toBeNull();
+    expect(hardLinkRefusal(dir, { maxEntries: 3 })).toBe(
+      'the grant holds more than 3 entries to check'
+    );
+    expect(hardLinkRefusal(dir, { maxDepth: 1 })).toBe(
+      'the grant is deeper than 1 levels to check'
+    );
+  });
+});
+
+describe('Unicode names on a case-insensitive volume', () => {
+  const UNCOMPARABLE =
+    "a path holds a name that doesn't exist yet and isn't ASCII, which this volume's case folding can't be compared by";
+
+  function overrides(identity, ipfs) {
+    const outside = path.join(tempRoot, 'outside');
+    process.env.FREEDOM_IDENTITY_DATA = path.join(outside, identity, 'freedom-ipfs');
+    process.env.FREEDOM_IPFS_DATA = path.join(outside, ipfs);
+    const userDataDir = path.join(tempRoot, 'legacy');
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    return { outside, check };
+  }
+
+  test('Σ and ς, which such a volume folds to one name, are refused before either exists', () => {
+    const { outside, check } = overrides('Σ', 'ς');
+    expect(
+      check.ipfsGrantRefusal(path.join(outside, 'ς', 'freedom-ipfs'), { foldCase: true })
+    ).toBe(UNCOMPARABLE);
+    // A case-sensitive volume compares them as the names they are.
+    expect(
+      check.ipfsGrantRefusal(path.join(outside, 'ς', 'freedom-ipfs'), { foldCase: false })
+    ).toBeNull();
+  });
+
+  test('an ASCII case alias is compared, and refused as the root it aliases', () => {
+    const { outside, check } = overrides('S', 's');
+    expect(
+      check.ipfsGrantRefusal(path.join(outside, 's', 'freedom-ipfs'), { foldCase: true })
+    ).toBe("the grant is this profile's identity directory");
+  });
+
+  test('a non-ASCII name that exists is resolved, so only missing ones count', () => {
+    const outside = path.join(tempRoot, 'outside');
+    fs.mkdirSync(path.join(outside, 'Café'), { recursive: true });
+    process.env.FREEDOM_IPFS_DATA = path.join(outside, 'Café');
+    const userDataDir = path.join(tempRoot, 'legacy');
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    expect(
+      check.ipfsGrantRefusal(path.join(outside, 'Café', 'freedom-ipfs'), { foldCase: true })
+    ).toBeNull();
+  });
+});
