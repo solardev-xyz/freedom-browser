@@ -44,10 +44,11 @@
  *   yet aren't all ASCII is refused: such a volume folds case by Unicode
  *   rules, which no string comparison here reproduces (these are
  *   developer overrides, `FREEDOM_*_DATA`).
- * - **Only regular files, directories and symlinks in the grant**
- *   (`grantContentRefusal`): a hard link has the grant's path and another
- *   file's data, and a FIFO, socket or device is a channel to whatever
- *   holds its other end. The check runs before each spawn (the caller's
+ * - **Only regular files, directories and symlinks in the grants**
+ *   (`grantContentRefusal`): a hard link with a name outside the grants
+ *   has the grants' path and another file's data (two names both inside
+ *   pass), and a FIFO, socket or device is a channel to whatever holds its
+ *   other end. The check runs before each spawn (the caller's
  *   `beforeSpawn`); the confined service can make neither a link to a
  *   file outside its grant nor a special file, and a link made later by
  *   another process of the same user is outside the boundary, since that
@@ -405,36 +406,56 @@ const MAX_GRANT_ENTRIES = 100_000;
 const MAX_GRANT_DEPTH = 32;
 
 /**
- * Why `grant` may not be given for what it already holds, or null. Only
- * regular files, directories and symlinks are admitted (symlinks aren't
- * followed: the kernel resolves each at its open, against the grants):
- * - **a hard link** (a file with more than one name, `nlink` > 1) has the
- *   grant's path but another file's data, possibly a protected one's, and
- *   Landlock and Seatbelt authorize by the path an open uses;
+ * Why `grants`, a service's whole set, may not be given for what they
+ * already hold, or null. Only regular files, directories and symlinks are
+ * admitted (symlinks aren't followed: the kernel resolves each at its
+ * open, against the grants):
+ * - **a hard link out of the grants:** a file with more names (`nlink`)
+ *   than the walk finds inside the grants has a name outside them, and its
+ *   data may be a protected file's, while Landlock and Seatbelt authorize
+ *   by the path an open uses. Names are counted per file (device and
+ *   inode) across every grant, so two names both inside pass: what
+ *   libgit2 leaves when it is stopped between installing an object with
+ *   `link` and removing its temporary name with `unlink`;
  * - **a special file** (a FIFO, a socket, a device) would be a channel to
  *   whatever outside process holds its other end: confinement refuses
  *   making one, not opening one that is there.
  *
- * The walk uses `lstat`, following no link, and enumerates each directory
- * one entry at a time (`opendirSync`), so it holds at most one name and
- * closes each directory however it ends. Past `maxEntries` entries, or
- * deeper than `maxDepth`, it refuses; so does an entry it can't read. A
- * grant that doesn't exist yet holds nothing.
+ * The walk uses `lstat`, following no link, visits each directory once
+ * however the grants overlap, and enumerates it one entry at a time
+ * (`opendirSync`), so it holds at most one name per directory and closes
+ * each however it ends. Past `maxEntries` entries in all, or deeper than
+ * `maxDepth`, it refuses; so does an entry it can't read. A grant that
+ * doesn't exist yet holds nothing.
  */
 function grantContentRefusal(
-  grant,
+  grants,
   { maxEntries = MAX_GRANT_ENTRIES, maxDepth = MAX_GRANT_DEPTH } = {}
 ) {
-  let root;
-  try {
-    root = fs.realpathSync.native(grant);
-  } catch (err) {
-    return err?.code === 'ENOENT' ? null : "the grant can't be read";
+  const pending = [];
+  for (const grant of grants) {
+    try {
+      pending.push({ dir: fs.realpathSync.native(grant), depth: 0 });
+    } catch (err) {
+      if (err?.code !== 'ENOENT') return "the grant can't be read";
+    }
   }
+  // Each file's names inside the grants, and its link count, by
+  // `dev:ino`; each directory once.
+  const files = new Map();
+  const visited = new Set();
   let seen = 0;
-  const pending = [{ dir: root, depth: 0 }];
   while (pending.length > 0) {
     const { dir, depth } = pending.pop();
+    let dirStat;
+    try {
+      dirStat = fs.lstatSync(dir, { bigint: true });
+    } catch {
+      return "the grant holds a directory that can't be read";
+    }
+    const dirKey = `${dirStat.dev}:${dirStat.ino}`;
+    if (visited.has(dirKey)) continue;
+    visited.add(dirKey);
     let handle;
     try {
       handle = fs.opendirSync(dir);
@@ -455,7 +476,7 @@ function grantContentRefusal(
         const entry = path.join(dir, dirent.name);
         let stat;
         try {
-          stat = fs.lstatSync(entry);
+          stat = fs.lstatSync(entry, { bigint: true });
         } catch {
           return "the grant holds an entry that can't be read";
         }
@@ -466,8 +487,12 @@ function grantContentRefusal(
           // Not followed.
         } else if (!stat.isFile()) {
           return 'the grant holds a special file (a FIFO, a socket or a device), a channel outside it';
-        } else if (stat.nlink > 1) {
-          return 'the grant holds a hard link: a file with another name, possibly outside it';
+        } else if (stat.nlink > 1n) {
+          const key = `${stat.dev}:${stat.ino}`;
+          const file = files.get(key) ?? { names: 0n, nlink: stat.nlink };
+          file.names += 1n;
+          file.nlink = stat.nlink;
+          files.set(key, file);
         }
       }
     } finally {
@@ -476,6 +501,11 @@ function grantContentRefusal(
       } catch {
         // Closed already; nothing more to release.
       }
+    }
+  }
+  for (const { names, nlink } of files.values()) {
+    if (nlink > names) {
+      return 'the grant holds a hard link to a file with a name outside it';
     }
   }
   return null;
@@ -492,10 +522,8 @@ function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE, walk = {}
   const roots = protectedRoots({ own, foldCase });
   const refused = grantRefusal(grants, roots, { foldCase });
   if (refused) return refused;
-  for (const grant of grants) {
-    const held = grantContentRefusal(grant, walk);
-    if (held) return held;
-  }
+  const held = grantContentRefusal(grants, walk);
+  if (held) return held;
   for (const dir of thisProfile(own).ownDirs) {
     const collision = grantRefusal([dir], roots, { foldCase });
     if (collision) {

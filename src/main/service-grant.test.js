@@ -408,7 +408,7 @@ describe('what the grant holds: regular files, directories and symlinks only', (
     fs.linkSync(path.join(identity, 'vault.json'), path.join(grant, 'vault.json'));
     const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
     expect(check.ipfsGrantRefusal(grant)).toBe(
-      'the grant holds a hard link: a file with another name, possibly outside it'
+      'the grant holds a hard link to a file with a name outside it'
     );
   });
 
@@ -446,11 +446,11 @@ describe('what the grant holds: regular files, directories and symlinks only', (
     const dir = path.join(tempRoot, 'walk');
     fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
     for (const name of ['1', '2', '3']) fs.writeFileSync(path.join(dir, name), name);
-    expect(grantContentRefusal(dir)).toBeNull();
-    expect(grantContentRefusal(dir, { maxEntries: 3 })).toBe(
+    expect(grantContentRefusal([dir])).toBeNull();
+    expect(grantContentRefusal([dir], { maxEntries: 3 })).toBe(
       'the grant holds more than 3 entries to check'
     );
-    expect(grantContentRefusal(dir, { maxDepth: 1 })).toBe(
+    expect(grantContentRefusal([dir], { maxDepth: 1 })).toBe(
       'the grant is deeper than 1 levels to check'
     );
   });
@@ -569,12 +569,66 @@ describe('special files and dangling symlinks', () => {
       return handle;
     });
     const lstat = jest.spyOn(fs, 'lstatSync');
-    expect(grantContentRefusal(dir, { maxEntries: 1 })).toBe(
+    expect(grantContentRefusal([dir], { maxEntries: 1 })).toBe(
       'the grant holds more than 1 entries to check'
     );
-    // The first name is checked; the second only counted, then refused.
-    expect(lstat).toHaveBeenCalledTimes(1);
+    // The directory and its first name are checked; the second name only
+    // counted, then refused.
+    expect(lstat).toHaveBeenCalledTimes(2);
     expect(reads).toBe(2);
     expect(closed).toBe(1);
+  });
+});
+
+describe('hard links whose names are all inside the grants', () => {
+  const { grantContentRefusal } = jest.requireActual('./service-grant');
+  const OUTSIDE = 'the grant holds a hard link to a file with a name outside it';
+
+  test('two names wholly inside the grant pass', () => {
+    const grant = path.join(tempRoot, 'grant');
+    fs.mkdirSync(path.join(grant, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(grant, 'a'), 'a');
+    fs.linkSync(path.join(grant, 'a'), path.join(grant, 'sub', 'b'));
+    expect(grantContentRefusal([grant])).toBeNull();
+  });
+
+  test('what libgit2 leaves when it is killed between link and unlink passes, so the service restarts', () => {
+    // p_rename: link(tmp, final), then unlink(tmp). Killed between them,
+    // the object has both names, inside the home.
+    const home = path.join(tempRoot, 'radicle-home');
+    const objects = path.join(home, 'storage', 'rad', 'objects');
+    fs.mkdirSync(path.join(objects, 'ab'), { recursive: true });
+    const tmp = path.join(objects, 'tmp_object_git2_a1B2c3');
+    fs.writeFileSync(tmp, 'blob');
+    fs.linkSync(tmp, path.join(objects, 'ab', 'cdef0123456789'));
+    expect(fs.statSync(tmp).nlink).toBe(2);
+    expect(grantContentRefusal([home])).toBeNull();
+  });
+
+  test('a file with a name outside the grants is refused, however many names are inside', () => {
+    const grant = path.join(tempRoot, 'grant');
+    fs.mkdirSync(grant, { recursive: true });
+    const outside = path.join(tempRoot, 'vault.json');
+    fs.writeFileSync(outside, 'secret');
+    fs.linkSync(outside, path.join(grant, 'one'));
+    fs.linkSync(outside, path.join(grant, 'two'));
+    expect(grantContentRefusal([grant])).toBe(OUTSIDE);
+  });
+
+  test("names are counted across all of a service's grants, and each directory once", () => {
+    const home = path.join(tempRoot, 'home');
+    const other = path.join(tempRoot, 'HOME');
+    fs.mkdirSync(path.join(home, 'sub'), { recursive: true });
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(path.join(home, 'sub', 'object'), 'x');
+    fs.linkSync(path.join(home, 'sub', 'object'), path.join(other, 'object'));
+    // Both names granted: passes. Either grant alone: the other name is
+    // outside it.
+    expect(grantContentRefusal([home, other])).toBeNull();
+    expect(grantContentRefusal([home])).toBe(OUTSIDE);
+    expect(grantContentRefusal([other])).toBe(OUTSIDE);
+    // A grant inside another is walked once: its names aren't counted
+    // twice, so a name outside isn't hidden.
+    expect(grantContentRefusal([home, path.join(home, 'sub')])).toBe(OUTSIDE);
   });
 });
