@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { createPrivateWindowFixture } = require('../../test/helpers/private-window-fixture');
 
 function loadManager(options = {}) {
   jest.resetModules();
@@ -47,10 +48,17 @@ function loadManager(options = {}) {
   const statusSend = jest.fn();
   const windows = options.windows || [{ webContents: { send: statusSend } }];
 
+  // The real private-window registry decides who is private (R-9).
+  const windowFixture = createPrivateWindowFixture();
   jest.doMock('electron', () => ({
     ipcMain,
-    BrowserWindow: { getAllWindows: jest.fn(() => windows) },
+    BrowserWindow: {
+      getAllWindows: jest.fn(() => windows),
+      fromWebContents: windowFixture.fromWebContents,
+    },
+    session: { fromPartition: windowFixture.fromPartition },
   }));
+  jest.doMock('./windows/mainWindow', () => ({ createMainWindow: windowFixture.createMainWindow }));
   jest.doMock('./logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
   jest.doMock('./profile-paths', () => ({
     getRadicleDataDir: jest.fn(() => dataDir),
@@ -61,13 +69,21 @@ function loadManager(options = {}) {
   }));
   jest.doMock('./radicle-embedded', () => embedded);
   jest.doMock('./service-registry', () => registry);
-  const privateSenders = new Set();
-  jest.doMock('./private/private-windows', () => ({
-    isPrivateWebContents: jest.fn((contents) => privateSenders.has(contents)),
-  }));
 
   const mod = require('./radicle-manager');
-  return { mod, embedded, registry, ipcMain, handlers, dataDir, statusSend, privateSenders };
+  const privateWindows = require('./private/private-windows');
+  return {
+    mod,
+    embedded,
+    registry,
+    ipcMain,
+    handlers,
+    dataDir,
+    statusSend,
+    lookup: windowFixture.lookup,
+    publicSender: windowFixture.publicSender,
+    privateSender: () => windowFixture.privateSender(privateWindows),
+  };
 }
 
 afterEach(() => {
@@ -319,7 +335,7 @@ test('IPC keeps profile gating and RID validation', async () => {
   ctx.mod.registerRadicleIpc();
   const IPC = require('../shared/ipc-channels');
   await expect(ctx.handlers.get(IPC.RADICLE_START)()).resolves.toMatchObject({ status: 'stopped' });
-  const sender = { isDestroyed: () => false };
+  const sender = ctx.publicSender();
   await expect(ctx.handlers.get(IPC.RADICLE_SEED)({ sender }, '')).resolves.toMatchObject({
     success: false, error: { code: 'RADICLE_DISABLED' },
   });
@@ -332,8 +348,12 @@ test('IPC refuses seeding and sync from private windows, failing closed (R-9)', 
   await ctx.mod.startRadicle();
   ctx.mod.registerRadicleIpc();
   const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
-  const privateGuest = { isDestroyed: () => false, send: jest.fn() };
-  ctx.privateSenders.add(privateGuest);
+  const privateGuest = {
+    hostWebContents: ctx.privateSender(),
+    isDestroyed: () => false,
+    send: jest.fn(),
+  };
+  const publicSender = ctx.publicSender();
   const refused = {
     success: false,
     error: { code: 'RADICLE_PRIVATE_WINDOW', message: 'Seeding is not available in private windows' },
@@ -341,15 +361,25 @@ test('IPC refuses seeding and sync from private windows, failing closed (R-9)', 
 
   for (const event of [
     { sender: privateGuest },
-    // A sender whose window can no longer be read counts as private.
+    // A sender main cannot place in a known window counts as private.
     { sender: { isDestroyed: () => true } },
     { sender: { isDestroyed: () => false, hostWebContents: { isDestroyed: () => true } } },
+    { sender: { isDestroyed: () => false } },
     {},
     null,
   ]) {
     expect(await ctx.handlers.get(IPC.RADICLE_SEED)(event, rid)).toEqual(refused);
     expect(await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)(event, rid)).toEqual(refused);
   }
+  // A public window whose lookup finds nothing, or throws (R-9 review).
+  for (const mode of ['null', 'throw']) {
+    ctx.lookup.mode = mode;
+    expect(await ctx.handlers.get(IPC.RADICLE_SEED)({ sender: publicSender }, rid)).toEqual(refused);
+    expect(await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)({ sender: publicSender }, rid)).toEqual(
+      refused
+    );
+  }
+  ctx.lookup.mode = 'registry';
   expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
   expect(privateGuest.send).not.toHaveBeenCalled();
 
@@ -364,7 +394,7 @@ test('IPC pushes native seed progress back to the requesting internal page', asy
   const IPC = require('../shared/ipc-channels');
   await ctx.mod.startRadicle();
   ctx.mod.registerRadicleIpc();
-  const sender = { isDestroyed: jest.fn(() => false), send: jest.fn() };
+  const sender = ctx.publicSender();
   const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
   await expect(ctx.handlers.get(IPC.RADICLE_SEED)({ sender }, rid)).resolves.toMatchObject({

@@ -39,9 +39,13 @@ Installed in the page's main world of every web page's top frame before any
 of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
 A page's Content Security Policy does not affect it. It is not installed in
 private windows, in sub-frames, or on Freedom's internal pages. Main also
-refuses `radicle_seed` and `radicle_sync` sent from a private window
-(`4100`, reason `private_window`), so a page that reaches the provider
-channel anyway cannot leave a seeding policy or a fetched repository behind.
+refuses every method that changes lasting state when it comes from a private
+window, or from a sender main cannot place in a known window: `radicle_seed`,
+`radicle_unseed`, `radicle_sync`, `radicle_disconnect` and the COB writes
+(`4100`, reason `private_window`). The reads it still answers there don't
+record their use in the permission store, and no grant is recorded from a
+private window. A page that reaches the provider channel anyway leaves
+nothing behind.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>

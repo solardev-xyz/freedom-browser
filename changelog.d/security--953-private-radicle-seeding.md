@@ -1,1 +1,1 @@
-- Private windows can no longer seed or sync Radicle repositories, whether from the repository viewer or from a page's Radicle provider ([#953](https://github.com/solardev-xyz/freedom-browser/issues/953))
+- Private windows can no longer seed, sync, unseed, write issues or comments, or record Radicle site permissions, whether from the repository viewer or from a page's Radicle provider ([#953](https://github.com/solardev-xyz/freedom-browser/issues/953))
