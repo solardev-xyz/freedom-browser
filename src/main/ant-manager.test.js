@@ -266,6 +266,9 @@ function loadAntManagerModule(options = {}) {
     mkdirSync: jest.fn(),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
+    // Mode checks (private-files.js) see owner-only paths unless told otherwise.
+    statSync: jest.fn((target) => ({ mode: options.modes?.[target] ?? 0o600 })),
+    chmodSync: jest.fn(),
   };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
@@ -527,6 +530,58 @@ describe('ant-manager', () => {
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
     expect(ctx.mod.getSpawnedAt()).toBeNull();
+  });
+
+  test('narrows keys an older build left readable to other users (K-3)', async () => {
+    jest.useFakeTimers();
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const keysDir = path.join(dataDir, 'keys');
+    const swarmKeyPath = path.join(keysDir, 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
+      modes: { [keysDir]: 0o40755, [swarmKeyPath]: 0o100644, [configPath]: 0o100644 },
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    const chmods = ctx.fsMock.chmodSync.mock.calls;
+    if (process.platform === 'win32') {
+      expect(chmods).toEqual([]);
+    } else {
+      expect(chmods).toEqual(
+        expect.arrayContaining([
+          [configPath, 0o600],
+          [keysDir, 0o700],
+          [swarmKeyPath, 0o600],
+        ])
+      );
+      // The config is narrowed before the password is written into it.
+      const narrowed = ctx.fsMock.chmodSync.mock.invocationCallOrder[
+        chmods.findIndex(([file]) => file === configPath)
+      ];
+      const written = ctx.fsMock.writeFileSync.mock.invocationCallOrder[
+        ctx.fsMock.writeFileSync.mock.calls.findIndex(([file]) => file === configPath)
+      ];
+      expect(narrowed).toBeLessThan(written);
+    }
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -1104,7 +1159,11 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
+    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true, mode: 0o700 });
+    // config.yaml holds the keystore password: written owner-only (K-3).
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(ctx.configPath, expect.any(String), {
+      mode: 0o600,
+    });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     // antd self-initializes its identity; Freedom no longer runs an init step.
     expect(ctx.execSync).not.toHaveBeenCalled();

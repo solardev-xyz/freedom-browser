@@ -7,6 +7,7 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
+const { restrictMode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } = require('./private-files');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -153,6 +154,10 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // The home is owner-only now (profile-paths); keys an older build left
+    // with the umask's modes are narrowed too (K-3).
+    restrictMode(path.join(radHome, 'keys'), PRIVATE_DIR_MODE);
+    restrictMode(path.join(radHome, 'keys', 'radicle'), PRIVATE_FILE_MODE);
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',

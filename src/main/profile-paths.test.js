@@ -118,6 +118,27 @@ describe('profile paths', () => {
     expect(paths.getRadicleDataDir()).toBe(radicleDir);
   });
 
+  (process.platform === 'win32' ? test.skip : test)(
+    'node and identity data dirs are owner-only, older 0755 ones narrowed (K-3)',
+    async () => {
+      const userDataDir = track(createTempUserDataDir());
+      const radicleDir = track(createTempUserDataDir());
+      fs.chmodSync(radicleDir, 0o755);
+      process.env.FREEDOM_RADICLE_DATA = radicleDir;
+      fs.mkdirSync(path.join(userDataDir, 'ant-data'), { mode: 0o755 });
+      fs.chmodSync(path.join(userDataDir, 'ant-data'), 0o755);
+      const modeOf = (dir) => fs.statSync(dir).mode & 0o777;
+
+      const paths = loadPaths(userDataDir);
+
+      expect(modeOf(paths.getIdentityDataDir())).toBe(0o700);
+      expect(modeOf(paths.getAntDataDir())).toBe(0o700);
+      expect(modeOf(paths.getBeeDataDir())).toBe(0o700);
+      expect(modeOf(paths.getRadicleDataDir())).toBe(0o700);
+      expect(modeOf(await paths.prepareRadicleDataDir())).toBe(0o700);
+    }
+  );
+
   test('uses an app-owned short Radicle home for catalog profiles', async () => {
     const tempRoot = track(path.join('/tmp', `freedom-profile-paths-${Date.now()}`));
     fs.mkdirSync(tempRoot, { recursive: true });

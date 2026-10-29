@@ -11,6 +11,12 @@ const registry = require('./networks/network-registry');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
 const {
+  restrictMode,
+  writePrivateFileSync,
+  PRIVATE_DIR_MODE,
+  PRIVATE_FILE_MODE,
+} = require('./private-files');
+const {
   getActiveProfile,
   getReservedProfilePorts,
   updateActiveProfileNodeConfigWhenIdle,
@@ -353,7 +359,8 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     cacheCapacityBytes: resolveCacheCapacityBytes(dataDir),
   });
 
-  fs.writeFileSync(configPath, configContent);
+  // config.yaml holds the keystore password: owner-only (K-3).
+  writePrivateFileSync(configPath, configContent);
   log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
   // Identity handling. Unlike bee, antd has no `init` subcommand: when an
@@ -362,6 +369,9 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   // (`identity.json`) on start. So there is no separate init step to run.
   const keysDir = path.join(dataDir, 'keys');
   const swarmKeyPath = path.join(keysDir, 'swarm.key');
+  // Keys an older build wrote with the umask's modes (K-3).
+  restrictMode(keysDir, PRIVATE_DIR_MODE);
+  restrictMode(swarmKeyPath, PRIVATE_FILE_MODE);
 
   if (fs.existsSync(swarmKeyPath)) {
     log.info('[Ant] Using existing/injected keys from', keysDir);
