@@ -1066,3 +1066,108 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
   });
 });
+
+describe('Swarm keystore password (K-3)', () => {
+  let root;
+  let envSnapshot;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-keystore-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = path.join(root, 'identity');
+    process.env.FREEDOM_ANT_DATA = path.join(root, 'ant');
+    process.env.FREEDOM_IPFS_DATA = path.join(root, 'ipfs');
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function load(safeStorage) {
+    const identityMock = {
+      ...makeRestartIdentityMock(),
+      getMnemonic: jest.fn(() => 'test test test test test test test test test test test about'),
+    };
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: path.join(root, 'identity'),
+      electronOverrides: { safeStorage },
+      extraMocks: { [require.resolve('./identity')]: () => identityMock },
+    });
+    return { mod, identityMock, keystore: require('./swarm/ant-keystore-password') };
+  }
+
+  const keychain = () => ({
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async (text) => Buffer.from(`v11${text}`),
+    decryptStringAsync: async (buffer) => ({
+      result: buffer.toString().slice(3),
+      shouldReEncrypt: false,
+    }),
+  });
+
+  test('injection seals the keystore password and leaves it out of config.yaml', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      null,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+  });
+
+  test('without a keyring injection keeps the password in config.yaml, sealing nothing', async () => {
+    const { mod, identityMock, keystore } = load({
+      ...keychain(),
+      isAsyncEncryptionAvailable: async () => false,
+    });
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      password,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(keystore.hasSealedPassword(path.join(root, 'ant'))).toBe(false);
+  });
+
+  test('an unlock re-encrypts the keystore the node could not open, then starts it', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    const start = jest.fn(async () => {});
+    let needed = true;
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Same derived key, a new password, sealed; the node starts again.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      '0x02',
+      expect.stringMatching(/^[0-9a-f]{64}$/)
+    );
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+    expect(start).toHaveBeenCalledTimes(1);
+
+    // Nothing to do on an unlock when the node opened its keystore.
+    needed = false;
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+  });
+});

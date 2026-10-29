@@ -320,6 +320,10 @@ function loadAntManagerModule(options = {}) {
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
       [require.resolve('./networks/network-registry')]: () => registry,
+      // Always registered: a doMock outlives resetModules, so a test's own
+      // keystore mock would otherwise leak into the next test.
+      [require.resolve('./swarm/ant-keystore-password')]: () =>
+        options.keystorePassword || jest.requireActual('./swarm/ant-keystore-password'),
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
         getReservedProfilePorts: jest.fn(() => new Set(options.reservedPorts || [])),
@@ -582,6 +586,95 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
     await stopPromise;
+  });
+
+  test('hands a sealed keystore password to antd as a file it removes once up (K-3)', async () => {
+    jest.useFakeTimers();
+    const real = jest.requireActual('./swarm/ant-keystore-password');
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const remove = jest.fn();
+    const keystorePassword = {
+      REINJECT_MESSAGE: real.REINJECT_MESSAGE,
+      KeystorePasswordUnavailableError: real.KeystorePasswordUnavailableError,
+      unsealPassword: jest.fn(() => null),
+      // An older build's password in config.yaml moves into the keychain.
+      sealPassword: jest.fn(() => true),
+      forgetSealedPassword: jest.fn(),
+      writePasswordFile: jest.fn(() => ({ path: '/tmp/freedom-ant-test/password', remove })),
+    };
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: legacy-keystore-password\n',
+      keystorePassword,
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    expect(keystorePassword.sealPassword).toHaveBeenCalledWith(dataDir, 'legacy-keystore-password');
+    const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
+    expect(config).not.toMatch(/^password:/m);
+    expect(keystorePassword.writePasswordFile).toHaveBeenCalledWith('legacy-keystore-password');
+    expect(ctx.spawnedProcesses[0].args).toContain('--password-file=/tmp/freedom-ant-test/password');
+    expect(ctx.log.info.mock.calls.flat().join(' ')).not.toContain('legacy-keystore-password');
+    expect(remove).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(ctx.mod.getStatus()).toEqual({ status: 'running', error: null });
+    expect(remove).toHaveBeenCalled();
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
+  });
+
+  test('a sealed password that will not decrypt stops the start for re-injection (K-3)', async () => {
+    const real = jest.requireActual('./swarm/ant-keystore-password');
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const keystorePassword = {
+      REINJECT_MESSAGE: real.REINJECT_MESSAGE,
+      KeystorePasswordUnavailableError: real.KeystorePasswordUnavailableError,
+      unsealPassword: jest.fn(() => {
+        throw new real.KeystorePasswordUnavailableError(new Error('keychain reset'));
+      }),
+      sealPassword: jest.fn(() => true),
+      forgetSealedPassword: jest.fn(),
+      writePasswordFile: jest.fn(),
+    };
+    const ctx = loadAntManagerModule({
+      existsSync: (target) => target === antBinPath || target === swarmKeyPath,
+      keystorePassword,
+      portSequence: [false],
+      httpResponse: () => ({ statusCode: 500, body: '' }),
+    });
+
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
+    expect(ctx.randomBytes).not.toHaveBeenCalled();
+    expect(keystorePassword.forgetSealedPassword).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: real.REINJECT_MESSAGE });
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(true);
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -1423,11 +1516,17 @@ describe('ant-manager', () => {
     expect(ctx.spawn).not.toHaveBeenCalled();
     expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
-    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
-    expect(ctx.log.error).toHaveBeenCalledWith(
-      '[Ant] Failed to prepare config:',
-      expect.stringContaining('refusing to generate a new password')
+    // The node says what is needed, and the next vault unlock re-injects the
+    // key (K-3); a new password, and with it a new identity, is never minted.
+    expect(ctx.mod.getStatus()).toEqual({
+      status: 'error',
+      error: 'Swarm key needs re-injecting: unlock your vault',
+    });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith(
+      'ant',
+      'Swarm key needs re-injecting: unlock your vault'
     );
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(true);
   });
 
   // Browsing must not depend on a Gnosis RPC: without one the bridge still

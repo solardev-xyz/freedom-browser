@@ -141,7 +141,8 @@ function createMinimalIpfsConfig(ipfsPath, apiPort = 5001, gatewayPort = 8080) {
 /**
  * Create Bee config for testing
  * @param {string} dataDir - Bee data directory
- * @param {string} password - Password for the keystore
+ * @param {string|null} password - Password for the keystore, or null when
+ *   it is sealed in the OS keychain instead (swarm/ant-keystore-password.js)
  * @param {number} apiPort - API port
  * @param {number} p2pPort - P2P port
  */
@@ -165,8 +166,7 @@ skip-postage-snapshot: true
 resolver-options: https://ethereum.publicnode.com
 storage-incentives-enable: false
 data-dir: ${dataDir}
-password: ${password}
-`;
+${password ? `password: ${password}\n` : ''}`;
 
   // Holds the keystore password: owner-only (K-3).
   const configPath = path.join(dataDir, 'config.yaml');

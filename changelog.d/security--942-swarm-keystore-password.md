@@ -1,0 +1,3 @@
+- The Swarm node's keystore password is kept in the system keychain instead of in a file beside the key ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))
+  - Linux without a keyring keeps the owner-only file
+  - If the keychain loses it, unlocking the vault restores the key
