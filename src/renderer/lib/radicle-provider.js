@@ -201,6 +201,10 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
       if (error?.data?.reason !== 'auto_write_limit') throw error;
     }
   }
+  // Either await above (the rule lookup, a rule-answered write main sent
+  // back past its limit) can outlast the document: a prompt for one that
+  // has gone would sit in the single consent slot and block its successor's.
+  assertSameDocument();
   const answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
     agentHeld,
     alwaysAllow: ruleOn,

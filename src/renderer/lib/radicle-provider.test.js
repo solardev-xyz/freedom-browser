@@ -563,6 +563,54 @@ describe('radicle-provider', () => {
     });
   });
 
+  describe('a signed write whose document navigates before its prompt (R-6 review)', () => {
+    test('a held auto_write_limit answer opens no prompt for the departed document', async () => {
+      const pendingAuto = deferred();
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockReturnValueOnce(pendingAuto.promise);
+
+      sendRequest({ id: 30, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      webview.dispatch('did-navigate', { url: 'https://other.example' });
+      pendingAuto.resolve({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+
+    test('a delayed rule lookup answering "no rule" opens no prompt after navigation', async () => {
+      const lookup = deferred();
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+      permissions.getAutoApprove.mockImplementation((_origin, type) =>
+        type === 'signing' ? lookup.promise : Promise.resolve(false)
+      );
+
+      sendRequest({ id: 31, method: 'radicle_createIssue', params: { title: 'Bug' } });
+      await flushMicrotasks();
+
+      webview.dispatch('did-navigate', { url: 'https://other.example' });
+      lookup.resolve(false);
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+  });
+
   describe('navigation while a request executes (no prompt involved)', () => {
     test('a result that arrives after navigation is never delivered', async () => {
       const pendingExecution = deferred();
