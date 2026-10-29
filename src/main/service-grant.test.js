@@ -392,7 +392,7 @@ describe('names that begin with two dots are ordinary names', () => {
   });
 });
 
-describe('hard links in the grant (a file with another name)', () => {
+describe('what the grant holds: regular files, directories and symlinks only', () => {
   function profileDir() {
     const userDataDir = path.join(tempRoot, 'Elsewhere');
     const identity = path.join(userDataDir, 'identity');
@@ -442,15 +442,15 @@ describe('hard links in the grant (a file with another name)', () => {
   });
 
   test('the walk is bounded: more entries or deeper than its bounds refuses', () => {
-    const { hardLinkRefusal } = jest.requireActual('./service-grant');
+    const { grantContentRefusal } = jest.requireActual('./service-grant');
     const dir = path.join(tempRoot, 'walk');
     fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
     for (const name of ['1', '2', '3']) fs.writeFileSync(path.join(dir, name), name);
-    expect(hardLinkRefusal(dir)).toBeNull();
-    expect(hardLinkRefusal(dir, { maxEntries: 3 })).toBe(
+    expect(grantContentRefusal(dir)).toBeNull();
+    expect(grantContentRefusal(dir, { maxEntries: 3 })).toBe(
       'the grant holds more than 3 entries to check'
     );
-    expect(hardLinkRefusal(dir, { maxDepth: 1 })).toBe(
+    expect(grantContentRefusal(dir, { maxDepth: 1 })).toBe(
       'the grant is deeper than 1 levels to check'
     );
   });
@@ -496,5 +496,85 @@ describe('Unicode names on a case-insensitive volume', () => {
     expect(
       check.ipfsGrantRefusal(path.join(outside, 'Café', 'freedom-ipfs'), { foldCase: true })
     ).toBeNull();
+  });
+});
+
+describe('special files and dangling symlinks', () => {
+  function profileDir() {
+    const userDataDir = path.join(tempRoot, 'Elsewhere');
+    const grant = path.join(userDataDir, 'ipfs-data', 'freedom-ipfs');
+    fs.mkdirSync(grant, { recursive: true });
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    return { userDataDir, grant, check };
+  }
+  const SPECIAL =
+    'the grant holds a special file (a FIFO, a socket or a device), a channel outside it';
+
+  test('a FIFO already in the grant is refused', () => {
+    const { grant, check } = profileDir();
+    require('child_process').execFileSync('mkfifo', [path.join(grant, 'channel')]);
+    expect(check.ipfsGrantRefusal(grant)).toBe(SPECIAL);
+  });
+
+  test('a socket already in the grant is refused', async () => {
+    const { grant, check } = profileDir();
+    const server = require('net').createServer();
+    await new Promise((resolve) => server.listen(path.join(grant, 'control.sock'), resolve));
+    try {
+      expect(check.ipfsGrantRefusal(grant)).toBe(SPECIAL);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test("a protected root that is a symlink to a name that doesn't exist yet is refused", () => {
+    // identity -> the grant's future-identity, absent: once the service
+    // made it, the vault would be written into the grant.
+    const { userDataDir, grant, check } = profileDir();
+    fs.symlinkSync(path.join(grant, 'future-identity'), path.join(userDataDir, 'identity'));
+    expect(check.ipfsGrantRefusal(grant)).toBe(
+      "a path holds a symlink that doesn't resolve, which could later name another directory"
+    );
+  });
+
+  test('a grant reached through a symlink that loops is refused too', () => {
+    const { userDataDir, check } = profileDir();
+    const loop = path.join(userDataDir, 'loop');
+    fs.symlinkSync(loop, loop);
+    expect(check.ipfsGrantRefusal(path.join(loop, 'freedom-ipfs'))).toBe(
+      "a path holds a symlink that doesn't resolve, which could later name another directory"
+    );
+  });
+
+  test('the walk reads one entry at a time: with a bound of 1, it visits one name', () => {
+    const { grantContentRefusal } = jest.requireActual('./service-grant');
+    const dir = path.join(tempRoot, 'many');
+    fs.mkdirSync(dir);
+    for (let i = 0; i < 64; i++) fs.writeFileSync(path.join(dir, `f${i}`), 'x');
+    const opendir = fs.opendirSync;
+    let reads = 0;
+    let closed = 0;
+    jest.spyOn(fs, 'opendirSync').mockImplementation((...args) => {
+      const handle = opendir(...args);
+      const readSync = handle.readSync.bind(handle);
+      const closeSync = handle.closeSync.bind(handle);
+      handle.readSync = () => {
+        reads += 1;
+        return readSync();
+      };
+      handle.closeSync = () => {
+        closed += 1;
+        return closeSync();
+      };
+      return handle;
+    });
+    const lstat = jest.spyOn(fs, 'lstatSync');
+    expect(grantContentRefusal(dir, { maxEntries: 1 })).toBe(
+      'the grant holds more than 1 entries to check'
+    );
+    // The first name is checked; the second only counted, then refused.
+    expect(lstat).toHaveBeenCalledTimes(1);
+    expect(reads).toBe(2);
+    expect(closed).toBe(1);
   });
 });

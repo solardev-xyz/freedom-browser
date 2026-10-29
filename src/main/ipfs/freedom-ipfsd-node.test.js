@@ -481,6 +481,62 @@ describe('confinement (design 0010)', () => {
     });
   });
 
+  describe('the grant is checked before each spawn, not only the first', () => {
+    /** A check that passes `passes` times, then refuses; and its calls. */
+    function grantCheck(passes) {
+      const calls = { count: 0 };
+      const checkGrant = () => {
+        calls.count += 1;
+        return calls.count > passes ? 'the grant holds a hard link' : null;
+      };
+      return { calls, checkGrant };
+    }
+
+    test("a crash's restart is checked: refused, nothing more is spawned", async () => {
+      const { calls, checkGrant } = grantCheck(1);
+      newNode({}, { checkGrant });
+      expect(await node.start()).toBe(true);
+      expect(calls.count).toBe(1);
+      child().exit(1);
+      await settle();
+      await clock.advance(1_000);
+      expect(calls.count).toBe(2);
+      expect(service.children).toHaveLength(1);
+      expect(node.state).toBe('failed');
+      expect(failures).toEqual([GRANT_REFUSED]);
+    });
+
+    test("a new policy's process is checked: refused, nothing more is spawned", async () => {
+      const { calls, checkGrant } = grantCheck(1);
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      newNode({}, { checkGrant, network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+      expect(await node.start()).toBe(true);
+      tor.offer({ ip: '127.0.0.1', port: 9151 });
+      await settle();
+      await clock.advance(5_000);
+      expect(calls.count).toBe(2);
+      expect(service.children).toHaveLength(1);
+      expect(node.state).toBe('failed');
+      expect(node.failureReason).toBe(GRANT_REFUSED);
+    });
+
+    test('a start waiting for Tor is checked when it spawns, not before', async () => {
+      const { calls, checkGrant } = grantCheck(0);
+      const tor = fakeTorEndpoint();
+      newNode({}, { checkGrant, network: new IpfsNetwork({ routesThroughTor: () => true, tor }) });
+      const start = node.start();
+      await settle();
+      expect(calls.count).toBe(0);
+      tor.offer({ ip: '127.0.0.1', port: 9150 });
+      await settle();
+      expect(calls.count).toBe(1);
+      expect(service.children).toHaveLength(0);
+      expect(await start).toBe(false);
+      expect(node.failureReason).toBe(GRANT_REFUSED);
+    });
+  });
+
   test('a hello that reports another policy than main passed is a fault', async () => {
     newNode({
       hello: (message, c) =>

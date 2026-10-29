@@ -44,13 +44,16 @@
  *   yet aren't all ASCII is refused: such a volume folds case by Unicode
  *   rules, which no string comparison here reproduces (these are
  *   developer overrides, `FREEDOM_*_DATA`).
- * - **No hard link in the grant:** a file in it with more than one name is
- *   refused (`hardLinkRefusal`), since a link has the grant's path and
- *   another file's data. The check runs at each spawn; the confined
- *   service can't make a link to a file outside its grant, and a link made
- *   later by another process of the same user is outside the boundary,
- *   since that process could read the data directly. Bind mounts are out
- *   of scope.
+ * - **Only regular files, directories and symlinks in the grant**
+ *   (`grantContentRefusal`): a hard link has the grant's path and another
+ *   file's data, and a FIFO, socket or device is a channel to whatever
+ *   holds its other end. The check runs before each spawn (the caller's
+ *   `beforeSpawn`); the confined service can make neither a link to a
+ *   file outside its grant nor a special file, and a link made later by
+ *   another process of the same user is outside the boundary, since that
+ *   process could read the data directly. Bind mounts are out of scope.
+ * - **A symlink that doesn't resolve** on a grant's or a protected root's
+ *   path is refused: its target could be created later, inside a grant.
  * - **A directory that can't be listed** while it is split throws: the
  *   caller refuses the grant (fails closed).
  *
@@ -74,16 +77,22 @@ function realPath(target) {
 }
 
 /** `target`'s longest existing prefix, resolved (`real`), and the names
- * after it that don't exist yet (`rest`). */
+ * after it that don't exist yet (`rest`). `dangling` when one of those
+ * names exists but doesn't resolve: a symlink to a target that doesn't
+ * exist (yet), or one that loops. */
 function resolveParts(target) {
   let rest = [];
   let prefix = path.resolve(target);
   let real;
+  let dangling = false;
   for (;;) {
     try {
       real = fs.realpathSync.native(prefix);
       break;
     } catch {
+      // A name that exists but doesn't resolve: its target could be
+      // created later, inside a grant, and change what it names.
+      if (existsUnresolved(prefix)) dangling = true;
       const parent = path.dirname(prefix);
       if (parent === prefix) {
         real = prefix;
@@ -93,7 +102,17 @@ function resolveParts(target) {
       prefix = parent;
     }
   }
-  return { real, rest };
+  return { real, rest, dangling };
+}
+
+/** Whether `entry` exists itself (`lstat`) though it doesn't resolve. */
+function existsUnresolved(entry) {
+  try {
+    fs.lstatSync(entry);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -146,9 +165,15 @@ const RELATION_TEXT = { equal: 'is', inside: 'lies inside', contains: 'contains'
 function grantRefusal(grants, roots, options = {}) {
   const foldCase = options.foldCase ?? FOLD_CASE;
   const present = roots.filter((root) => root.dir);
+  const paths = [...grants, ...present.map((root) => root.dir)];
+  // A symlink on any of these paths that doesn't resolve could be made to
+  // resolve later, into a grant: refused, failing closed.
+  if (paths.some((p) => resolveParts(p).dangling)) {
+    return "a path holds a symlink that doesn't resolve, which could later name another directory";
+  }
   // On a case-insensitive volume, a missing name that isn't ASCII can't be
   // compared: refused, failing closed (these are developer overrides).
-  if ([...grants, ...present.map((root) => root.dir)].some((p) => uncomparable(p, foldCase))) {
+  if (paths.some((p) => uncomparable(p, foldCase))) {
     return "a path holds a name that doesn't exist yet and isn't ASCII, which this volume's case folding can't be compared by";
   }
   const protectedRoots = present.map((root) => ({
@@ -375,20 +400,28 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
   return roots;
 }
 
-// How far the hard-link walk goes: past either bound, the grant is refused.
+// How far the walk of a grant goes: past either bound, it is refused.
 const MAX_GRANT_ENTRIES = 100_000;
 const MAX_GRANT_DEPTH = 32;
 
 /**
- * Why `grant` may not be given for what it already holds, or null: a file
- * in it with more than one name (`nlink` > 1). A hard link has the grant's
- * path but another file's data, possibly a protected one's, and Landlock
- * and Seatbelt authorize by the path an open uses. The walk uses `lstat`,
- * following no link, and is bounded: more than `maxEntries` entries, or
- * deeper than `maxDepth`, refuses; so does an entry that can't be read.
- * A grant that doesn't exist yet holds nothing.
+ * Why `grant` may not be given for what it already holds, or null. Only
+ * regular files, directories and symlinks are admitted (symlinks aren't
+ * followed: the kernel resolves each at its open, against the grants):
+ * - **a hard link** (a file with more than one name, `nlink` > 1) has the
+ *   grant's path but another file's data, possibly a protected one's, and
+ *   Landlock and Seatbelt authorize by the path an open uses;
+ * - **a special file** (a FIFO, a socket, a device) would be a channel to
+ *   whatever outside process holds its other end: confinement refuses
+ *   making one, not opening one that is there.
+ *
+ * The walk uses `lstat`, following no link, and enumerates each directory
+ * one entry at a time (`opendirSync`), so it holds at most one name and
+ * closes each directory however it ends. Past `maxEntries` entries, or
+ * deeper than `maxDepth`, it refuses; so does an entry it can't read. A
+ * grant that doesn't exist yet holds nothing.
  */
-function hardLinkRefusal(
+function grantContentRefusal(
   grant,
   { maxEntries = MAX_GRANT_ENTRIES, maxDepth = MAX_GRANT_DEPTH } = {}
 ) {
@@ -402,27 +435,46 @@ function hardLinkRefusal(
   const pending = [{ dir: root, depth: 0 }];
   while (pending.length > 0) {
     const { dir, depth } = pending.pop();
-    let names;
+    let handle;
     try {
-      names = fs.readdirSync(dir);
+      handle = fs.opendirSync(dir);
     } catch {
       return "the grant holds a directory that can't be read";
     }
-    for (const name of names) {
-      seen += 1;
-      if (seen > maxEntries) return `the grant holds more than ${maxEntries} entries to check`;
-      const entry = path.join(dir, name);
-      let stat;
-      try {
-        stat = fs.lstatSync(entry);
-      } catch {
-        return "the grant holds an entry that can't be read";
+    try {
+      for (;;) {
+        let dirent;
+        try {
+          dirent = handle.readSync();
+        } catch {
+          return "the grant holds a directory that can't be read";
+        }
+        if (dirent === null) break;
+        seen += 1;
+        if (seen > maxEntries) return `the grant holds more than ${maxEntries} entries to check`;
+        const entry = path.join(dir, dirent.name);
+        let stat;
+        try {
+          stat = fs.lstatSync(entry);
+        } catch {
+          return "the grant holds an entry that can't be read";
+        }
+        if (stat.isDirectory()) {
+          if (depth + 1 > maxDepth) return `the grant is deeper than ${maxDepth} levels to check`;
+          pending.push({ dir: entry, depth: depth + 1 });
+        } else if (stat.isSymbolicLink()) {
+          // Not followed.
+        } else if (!stat.isFile()) {
+          return 'the grant holds a special file (a FIFO, a socket or a device), a channel outside it';
+        } else if (stat.nlink > 1) {
+          return 'the grant holds a hard link: a file with another name, possibly outside it';
+        }
       }
-      if (stat.isDirectory()) {
-        if (depth + 1 > maxDepth) return `the grant is deeper than ${maxDepth} levels to check`;
-        pending.push({ dir: entry, depth: depth + 1 });
-      } else if (!stat.isSymbolicLink() && stat.nlink > 1) {
-        return 'the grant holds a hard link: a file with another name, possibly outside it';
+    } finally {
+      try {
+        handle.closeSync();
+      } catch {
+        // Closed already; nothing more to release.
       }
     }
   }
@@ -436,13 +488,13 @@ function hardLinkRefusal(
  * it another owner's data through the layout (refused even when the grant
  * is elsewhere).
  */
-function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE, hardLinks = {} } = {}) {
+function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE, walk = {} } = {}) {
   const roots = protectedRoots({ own, foldCase });
   const refused = grantRefusal(grants, roots, { foldCase });
   if (refused) return refused;
   for (const grant of grants) {
-    const linked = hardLinkRefusal(grant, hardLinks);
-    if (linked) return linked;
+    const held = grantContentRefusal(grant, walk);
+    if (held) return held;
   }
   for (const dir of thisProfile(own).ownDirs) {
     const collision = grantRefusal([dir], roots, { foldCase });
@@ -472,6 +524,6 @@ module.exports = {
   grantRefusal,
   protectedRoots,
   serviceGrantRefusal,
-  hardLinkRefusal,
+  grantContentRefusal,
   ipfsGrantRefusal,
 };

@@ -415,6 +415,9 @@ class ServiceClient extends EventEmitter {
    * @param {Function} [options.setTimer]
    * @param {Function} [options.clearTimer]
    * @param {number} [options.poolBytes] - main's chain I/O pool (a test seam)
+   * @param {Function} [options.beforeSpawn] - () => null, or why the process
+   *   may not be spawned now: checked before every spawn, restarts
+   *   included. A refusal spawns nothing and fails the client.
    */
   constructor(options) {
     super();
@@ -424,6 +427,7 @@ class ServiceClient extends EventEmitter {
     // 512, retiring ones included (design 0007, Bounds).
     this.maxPending = options.service.maxPending ?? MAX_PENDING;
     this.spawnFn = options.spawn;
+    this.beforeSpawn = options.beforeSpawn ?? null;
     this.command = options.command;
     this.args = options.args;
     this.log = options.log || console;
@@ -633,6 +637,19 @@ class ServiceClient extends EventEmitter {
   // ---- generations ----
 
   spawnGeneration() {
+    // The caller's last word before each spawn, a restart's too (design
+    // 0010, step 7: main's check of a service's grant).
+    let refused;
+    try {
+      refused = this.beforeSpawn?.() ?? null;
+    } catch (err) {
+      refused = `the check before the spawn failed: ${err?.code || err?.name || 'error'}`;
+    }
+    if (refused) {
+      this.current = null;
+      this.fail('spawn refused');
+      return;
+    }
     this.generations += 1;
     const gen = new Generation(this.generations, this.service.initialKinds ?? CORE_KINDS);
     this.current = gen;

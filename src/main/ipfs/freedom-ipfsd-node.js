@@ -5,7 +5,8 @@
  * runs the one persistent instance; private windows' instances are step 7.
  *
  * - **Start** (0007, "Startup and shutdown"): the grant check
- *   (`checkGrant`, freedom-core design 0010, "Main's check"), then spawn
+ *   (`checkGrant`, freedom-core design 0010, "Main's check"), before
+ *   every spawn, restarts and each policy's new process included; then spawn
  *   under the network policy `network` says now (`ipfs-network.js`), as
  *   `--network`; `ipfs.hello`, which must report that policy and the
  *   confinement the process got; then `ipfs.start` with today's
@@ -305,8 +306,10 @@ class FreedomIpfsdNode {
     this.waitingForNetwork = false;
     this.unsubscribeNetwork = null;
     this.changing = null;
-    // Why the node failed, for the manager: one of the fixed texts.
+    // Why the node failed, for the manager: one of the fixed texts. A grant
+    // refused before a spawn, until the client's failure reports it.
     this.failureReason = null;
+    this.grantFailure = null;
     this.command = command ?? getIpfsdBinaryPath();
     this.argsFor = (policy) => persistentArgs({ dataDir, lockDir, network: policy });
     this.spawn = spawn;
@@ -383,24 +386,6 @@ class FreedomIpfsdNode {
     this.started = new Promise((resolve) => {
       this.resolveStart = resolve;
     });
-    // Nothing is spawned unless the check passes (design 0010, "Main's
-    // check"): a check that throws refuses too. The reason is fixed text,
-    // never a path.
-    let refused;
-    let reason = GRANT_REFUSED;
-    try {
-      refused = this.checkGrant?.() ?? null;
-    } catch (err) {
-      refused = `the check failed: ${err?.code || err?.name || 'error'}`;
-      reason = GRANT_UNCHECKED;
-    }
-    if (refused) {
-      this.log.error('[IPFS] freedom-ipfs data directory refused', { reason: refused });
-      this.state = 'failed';
-      this.failureReason = reason;
-      this.settleStart(false);
-      return this.started;
-    }
     this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
     this.pollTimer = this.setTimer(() => this.poll(), HEALTH_INTERVAL_MS);
     this.pollTimer?.unref?.();
@@ -430,6 +415,9 @@ class FreedomIpfsdNode {
       now: this.now,
       setTimer: this.setTimer,
       clearTimer: this.clearTimer,
+      // Main's check of the grant, before each spawn: the first, a crash's
+      // restart, and each policy's new process (design 0010, step 7).
+      beforeSpawn: () => this.grantRefused(),
     });
     this.client = client;
     client.on('ready', (hello) => this.onReady(client, hello));
@@ -751,9 +739,35 @@ class FreedomIpfsdNode {
 
   onClientFailed(client, reason) {
     if (client !== this.client || this.stopping) return;
-    // Exit 77: the service refused its own confinement (design 0010), which
-    // no restart changes.
+    // The grant refused before a spawn (`grantRefused`), or exit 77: the
+    // service refused its own confinement (design 0010). No restart
+    // changes either.
+    if (reason === 'spawn refused' && this.grantFailure) {
+      this.giveUp(this.grantFailure);
+      return;
+    }
     this.giveUp(reason === 'exit code 77' ? CONFINEMENT_REFUSED : EXITED);
+  }
+
+  /**
+   * Main's check before a spawn (design 0010, "Main's check"): null, or
+   * why the grant is refused, which spawns nothing and fails the node. A
+   * check that throws refuses too. The reason is fixed text, never a path.
+   */
+  grantRefused() {
+    if (!this.checkGrant) return null;
+    let refused;
+    let failure = GRANT_REFUSED;
+    try {
+      refused = this.checkGrant() ?? null;
+    } catch (err) {
+      refused = `the check failed: ${err?.code || err?.name || 'error'}`;
+      failure = GRANT_UNCHECKED;
+    }
+    if (!refused) return null;
+    this.log.error('[IPFS] freedom-ipfs data directory refused', { reason: refused });
+    this.grantFailure = failure;
+    return refused;
   }
 
   /** A running node goes down until a new instance is live. */
