@@ -7,8 +7,8 @@
  * directory could decrypt the key. It is now sealed with Electron's
  * safeStorage (the OS keychain: Keychain on macOS, DPAPI on Windows,
  * libsecret/KWallet on Linux) in `keys/keystore-password.sealed`, and only
- * reaches antd as a `--password-file` in a private directory under the
- * profile (`run/ant-handoff/`), removed once the node is up; one a killed
+ * reaches antd as a `--password-file` in the profile's private handoff
+ * directory (`run/ant-handoff/`), removed once the node is up; one a killed
  * launch left behind is removed at the next start.
  *
  * Where safeStorage has no OS keyring behind it, sealing would protect
@@ -219,12 +219,15 @@ function keystoreExists(keys) {
  * @param {import('../private-files').PrivateDir|string} data the data directory
  * @param {string} password
  * @param {{verifyKeystore?: boolean}} [options] migration: first check the
- *   password opens keys/swarm.key (keystoreOpensWith)
+ *   password opens keys/swarm.key as it is then (keystoreOpensWith; no
+ *   keystore is the null digest), and fail closed if the keystore appears
+ *   or changes afterwards
  * @returns {Promise<boolean>} true once the verified seal is in place;
  *   false when there is no OS keyring to seal with, or sealing failed. The
  *   caller then keeps the password in the owner-only config.yaml.
  * @throws {KeystorePasswordUnavailableError} `verifyKeystore`, and the
- *   password does not open keys/swarm.key
+ *   password does not open keys/swarm.key, or the keystore appeared or
+ *   changed after it was checked
  */
 async function sealPassword(data, password, { verifyKeystore = false } = {}) {
   const storage = await availableStorage();
@@ -255,11 +258,21 @@ async function sealPassword(data, password, { verifyKeystore = false } = {}) {
     opened = openKeys(data, { create: true });
     return await sealInto(opened.keys, storage, ciphertext, password, expectedDigest);
   } catch (err) {
+    // A keystore that changed after the check is not an ordinary failure to
+    // seal: nothing may go on as if the password were the keystore's.
+    if (err instanceof KeystorePasswordUnavailableError) throw err;
     console.warn('[AntKeystore] Could not seal the keystore password:', err.message);
     return false;
   } finally {
     opened?.close();
   }
+}
+
+// keys/swarm.key appeared or changed after its password was checked.
+function keystoreChanged() {
+  return new KeystorePasswordUnavailableError(
+    new Error('keys/swarm.key changed after its password was checked')
+  );
 }
 
 async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
@@ -268,7 +281,7 @@ async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
     // Bound to the keystore on disk now: the one this password opens.
     const digest = keystoreDigest(keys);
     if (expectedDigest !== undefined && digest !== expectedDigest) {
-      throw new Error('the keystore changed after its password was checked');
+      throw keystoreChanged();
     }
     keys.write(STAGED_FILE, encodeSeal(ciphertext, digest));
     staged = true;
@@ -281,6 +294,9 @@ async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
     const { result } = await storage.decryptStringAsync(stored.ciphertext);
     if (result !== password) throw new Error('the staged seal does not open to the password');
     if (stored.keystoreSha256 !== digest || keystoreDigest(keys) !== digest) {
+      // After a check (migration) that is a keystore this password was not
+      // checked against: fail closed. Otherwise just no seal.
+      if (expectedDigest !== undefined) throw keystoreChanged();
       throw new Error('the keystore changed while it was being sealed');
     }
     // Published as those verified bytes, atomically (temp file and rename).
@@ -404,46 +420,54 @@ function withHandoffRoot(userDataDir, use, { create }) {
   );
 }
 
-// Remove the handoff directory `name` in `root`, through the handles: its
-// files, then itself. Something other than a directory at the name (a
-// planted link, say) is removed as a name, never followed.
-function removeHandoff(root, name) {
-  let dir;
+// Remove the entry `name` from the handoff directory, through its handle.
+// A file (a handoff, or a temp file a killed write left) or a planted link
+// is unlinked, never followed. A directory (an older layout's, or planted)
+// has its files removed; the directory itself goes only where it can be
+// removed relative to the handle (Linux), and is otherwise left empty
+// rather than removed by path (#963).
+// @returns {boolean} whether the entry is gone
+function removeHandoffEntry(root, name) {
   try {
-    dir = root.openDir(name, { create: false });
+    return root.remove(name) || true;
   } catch (err) {
-    if (!(err instanceof UnsafePrivatePathError)) throw err;
-    root.remove(name);
-    return;
+    if (err.code !== 'EISDIR' && err.code !== 'EPERM' && err.code !== 'EACCES') throw err;
   }
-  if (!dir) return;
+  const dir = root.openDir(name, { create: false });
+  if (!dir) return true;
   try {
     for (const entry of dir.entries()) dir.remove(entry);
   } finally {
     dir.close();
   }
-  root.removeDir(name);
+  try {
+    root.removeDir(name);
+    return true;
+  } catch (err) {
+    if (err instanceof UnsafePrivatePathError) return false;
+    throw err;
+  }
 }
 
 /**
  * Write `password` where antd's `--password-file` can read it: a 0600 file
- * in a fresh 0700 directory under handoffRoot(userDataDir), all written
- * through held directory handles. Call `remove()` once antd has read it
- * (its API is up) or has exited; it is idempotent, and a removal that
- * failed is tried again on the next call.
+ * of its own in the profile's one handoff directory, handoffRoot(userDataDir)
+ * (0700, reused by every launch), written through held directory handles.
+ * Call `remove()` once antd has read it (its API is up) or has exited; it is
+ * idempotent, and a removal that failed is tried again on the next call.
  * @returns {{ path: string, remove: () => boolean }}
  */
 function writePasswordFile(password, userDataDir) {
-  const name = `h-${crypto.randomBytes(8).toString('hex')}`;
-  const dir = path.join(handoffRoot(userDataDir), name);
-  liveHandoffs.add(dir);
+  const name = `password-${crypto.randomBytes(8).toString('hex')}`;
+  const file = path.join(handoffRoot(userDataDir), name);
+  liveHandoffs.add(file);
   let removed = false;
   const remove = () => {
     // No longer needed: a later sweep may take it if this removal fails.
-    liveHandoffs.delete(dir);
+    liveHandoffs.delete(file);
     if (removed) return true;
     try {
-      withHandoffRoot(userDataDir, (root) => root && removeHandoff(root, name), { create: false });
+      withHandoffRoot(userDataDir, (root) => root && root.remove(name), { create: false });
       removed = true;
     } catch (err) {
       console.warn('[AntKeystore] Could not remove the password file:', err.message);
@@ -457,12 +481,7 @@ function writePasswordFile(password, userDataDir) {
         if (fs.lstatSync(root.entry(name), { throwIfNoEntry: false })) {
           throw new Error(`password handoff ${name} already exists`);
         }
-        const handoff = root.openDir(name, { create: true });
-        try {
-          handoff.write('password', password);
-        } finally {
-          handoff.close();
-        }
+        root.write(name, password);
       },
       { create: true }
     );
@@ -470,7 +489,7 @@ function writePasswordFile(password, userDataDir) {
     remove();
     throw err;
   }
-  return { path: path.join(dir, 'password'), remove };
+  return { path: file, remove };
 }
 
 /**
@@ -491,8 +510,7 @@ function sweepAbandonedHandoffs(userDataDir) {
         for (const entry of root.entries()) {
           if (liveHandoffs.has(path.join(handoffRoot(userDataDir), entry))) continue;
           try {
-            removeHandoff(root, entry);
-            removed += 1;
+            if (removeHandoffEntry(root, entry)) removed += 1;
           } catch (err) {
             console.warn('[AntKeystore] Could not remove an abandoned password file:', err.message);
           }

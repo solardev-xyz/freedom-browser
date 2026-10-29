@@ -49,12 +49,11 @@
  *    0600) in the directory, fsync it and rename it over the name. A rename
  *    replaces a link itself, never its target.
  *  - Listing a directory (`entries`) and removing an empty directory in it
- *    (`removeDir`) go through the handle too. On Linux both are
- *    descriptor-relative (`/proc/self/fd/<fd>`). Node has no fdopendir or
- *    unlinkat, so on macOS and Windows each is done by path, bracketed by
- *    the check before and after, and refused if either fails: the same
- *    residual as the Windows file opens (#963). A removal reaches only an
- *    empty directory, and never follows a link at the name.
+ *    (`removeDir`) go through the handle too, descriptor-relative on Linux
+ *    (`/proc/self/fd/<fd>`). Node has no fdopendir or unlinkat, so on macOS
+ *    and Windows a listing is done by path, bracketed by the check before
+ *    and after and refused if either fails, and a directory removal is
+ *    refused outright, never done by path (#963).
  *
  * Ancestors above a managed root (the profile's userData, macOS's /tmp) may
  * be links: they are not ours to manage. The path functions
@@ -96,8 +95,8 @@ const NO_LINKS = DARWIN ? NOFOLLOW_ANY : NOFOLLOW;
 // Linux's /proc/self/fd/<fd> binding. Off in tests that check a Linux
 // without it refuses.
 let fdBinding = LINUX;
-// Directory listing and removal by path, bracketed (macOS, Windows). Linux
-// tests turn it on to exercise the bracket there.
+// Directory listing by path, bracketed, and no directory removal (macOS,
+// Windows). Linux tests turn it on to exercise that there.
 let dirOpsByPath = !LINUX;
 
 class UnsafePrivatePathError extends Error {
@@ -356,18 +355,28 @@ class PrivateDir {
   }
 
   /**
-   * Remove the empty directory `name` in this one. A link at the name is
-   * refused (rmdir does not follow it), never its target removed. Through
-   * the descriptor on Linux; by path elsewhere, refused if this directory
-   * changed before or after (#963).
+   * Remove the empty directory `name` in this one, through the descriptor
+   * (Linux). A link at the name is refused (rmdir does not follow it),
+   * never its target removed. Without a descriptor-relative removal (macOS,
+   * Windows: Node has no unlinkat) it is refused, never done by path
+   * (#963).
    * @returns {boolean} false when there was none
    * @throws {UnsafePrivatePathError}
    */
   removeDir(name) {
     checkName(name);
+    // Never by path: a directory swapped in between the check and the
+    // rmdir could lose an empty directory of the same name before the
+    // check after it refused (#963).
+    if (dirOpsByPath || !(this.bound && fdBinding)) {
+      throw new UnsafePrivatePathError(
+        path.join(this.path, name),
+        'no descriptor-relative directory removal on this platform (#963)'
+      );
+    }
     this.verify();
     try {
-      fs.rmdirSync(dirOpsByPath ? path.join(this.ioPath, name) : this.entry(name));
+      fs.rmdirSync(this.entry(name));
     } catch (err) {
       if (err.code === 'ENOENT') return false;
       throw err;
@@ -629,7 +638,7 @@ function _setFdBindingForTests(enabled) {
   fdBinding = LINUX && enabled;
 }
 
-/** Tests: list and remove directories by path, bracketed, as on macOS and Windows. */
+/** Tests: list by path, bracketed, and refuse directory removal, as on macOS and Windows. */
 function _setDirOpsByPathForTests(enabled) {
   dirOpsByPath = enabled || !LINUX;
 }

@@ -373,8 +373,10 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
     return {
       password: configPassword.value,
       rawPasswordLine: null,
+      // Checked whether or not a keystore was there a moment ago: one that
+      // appears meanwhile is checked too (none is the null digest).
       sealed: await keystorePassword.sealPassword(data, configPassword.value, {
-        verifyKeystore: hasKeystore,
+        verifyKeystore: true,
       }),
     };
   }

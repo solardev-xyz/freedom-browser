@@ -525,7 +525,47 @@ posix('directory listing and removal through a handle (K-3)', () => {
     });
   });
 
-  test('a link at the name is refused, never its target removed', () => {
+  // The K-3 round-3 regression: by path, an empty directory of the same
+  // name in a swapped-in replacement would be removed before any check
+  // after could refuse. Without a descriptor-relative removal none is
+  // attempted at all.
+  test('by path, no directory is removed at all, so an empty outside one survives', () => {
+    _setDirOpsByPathForTests(true);
+    fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+    let rmdirCalls = 0;
+    const realRmdir = fs.rmdirSync;
+    // The swap lands between the check and the rmdir, if one ever runs.
+    jest.spyOn(fs, 'rmdirSync').mockImplementation((...args) => {
+      rmdirCalls += 1;
+      swapRunForLink();
+      return realRmdir(...args);
+    });
+    withPrivateDir(data, (dir) => {
+      const run = dir.openDir('run');
+      expect(() => run.removeDir('h-held')).toThrow(UnsafePrivatePathError);
+    });
+    expect(rmdirCalls).toBe(0);
+    expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+    expect(fs.existsSync(path.join(data, 'run', 'h-held'))).toBe(true);
+  });
+
+  (process.platform === 'linux' ? test : test.skip)(
+    'bound, the same swap removes only the held directory\'s empty child',
+    () => {
+      fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('rmdirSync', swapRunForLink);
+        expect(() => run.removeDir('h-held')).toThrow(UnsafePrivatePathError);
+      });
+      expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+      expect(fs.existsSync(path.join(data, 'run.held', 'h-held'))).toBe(false);
+    }
+  );
+
+  // Descriptor-relative removal exists on Linux only; elsewhere every
+  // removeDir is refused (above).
+  (process.platform === 'linux' ? test : test.skip)('a link at the name is refused, never its target removed', () => {
     fs.symlinkSync(path.join(outsideDir, 'h-held'), path.join(data, 'run', 'h-link'));
     fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
     withPrivateDir(data, (dir) => {

@@ -264,29 +264,35 @@ describe('ant keystore password (K-3)', () => {
     const keystore = loadWith(fakeSafeStorage());
     const file = keystore.writePasswordFile('pw-456', dataDir);
     expect(fs.readFileSync(file.path, 'utf8')).toBe('pw-456');
-    expect(path.dirname(path.dirname(file.path))).toBe(path.join(dataDir, 'run', 'ant-handoff'));
+    // Its own file in the profile's one handoff directory, reused by launches.
+    expect(path.dirname(file.path)).toBe(path.join(dataDir, 'run', 'ant-handoff'));
     expect(modeOf(file.path)).toBe(0o600);
-    expect(modeOf(path.dirname(file.path))).toBe(0o700);
     expect(modeOf(path.join(dataDir, 'run', 'ant-handoff'))).toBe(0o700);
     expect(modeOf(path.join(dataDir, 'run'))).toBe(0o700);
 
     expect(file.remove()).toBe(true);
-    expect(fs.existsSync(path.dirname(file.path))).toBe(false);
+    expect(fs.existsSync(file.path)).toBe(false);
+    expect(fs.readdirSync(path.join(dataDir, 'run', 'ant-handoff'))).toEqual([]);
     expect(() => file.remove()).not.toThrow();
+
+    // The next launch reuses the directory.
+    const next = keystore.writePasswordFile('pw-789', dataDir);
+    expect(path.dirname(next.path)).toBe(path.dirname(file.path));
+    next.remove();
   });
 
   test('a removal that failed is tried again', () => {
     const keystore = loadWith(fakeSafeStorage());
     const file = keystore.writePasswordFile('pw-retry', dataDir);
-    const rmdir = jest.spyOn(fs, 'rmdirSync').mockImplementationOnce(() => {
+    const unlink = jest.spyOn(fs, 'unlinkSync').mockImplementationOnce(() => {
       throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
     });
 
     expect(file.remove()).toBe(false);
-    expect(fs.existsSync(path.dirname(file.path))).toBe(true);
-    rmdir.mockRestore();
+    expect(fs.existsSync(file.path)).toBe(true);
+    unlink.mockRestore();
     expect(file.remove()).toBe(true);
-    expect(fs.existsSync(path.dirname(file.path))).toBe(false);
+    expect(fs.existsSync(file.path)).toBe(false);
   });
 
   // A launch killed before it removed its handoff (SIGKILL, a crash, power
@@ -325,7 +331,7 @@ describe('ant keystore password (K-3)', () => {
     const keystore = loadWith(fakeSafeStorage());
     const live = keystore.writePasswordFile('pw-live', dataDir);
     expect(keystore.sweepAbandonedHandoffs(dataDir)).toBe(1);
-    expect(fs.existsSync(path.dirname(orphan))).toBe(false);
+    expect(fs.existsSync(orphan)).toBe(false);
     expect(fs.readFileSync(live.path, 'utf8')).toBe('pw-live');
 
     // Once its own antd has read it, it is no longer live either.
@@ -504,14 +510,21 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   });
 
   posixTest("a start removes the handoff a killed launch left, whatever it starts", async () => {
-    const orphanDir = path.join(userDataDir, 'run', 'ant-handoff', 'h-killed');
-    fs.mkdirSync(orphanDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(orphanDir, 'password'), 'pw-orphaned', { mode: 0o600 });
+    const handoffDir = path.join(userDataDir, 'run', 'ant-handoff');
+    fs.mkdirSync(handoffDir, { recursive: true, mode: 0o700 });
+    const orphan = path.join(handoffDir, 'password-0123456789abcdef');
+    fs.writeFileSync(orphan, 'pw-orphaned', { mode: 0o600 });
+    // A per-launch directory of an older layout: its file goes; the directory
+    // itself only where it can be removed through the handle (Linux).
+    fs.mkdirSync(path.join(handoffDir, 'h-killed'), { mode: 0o700 });
+    fs.writeFileSync(path.join(handoffDir, 'h-killed', 'password'), 'pw-older', { mode: 0o600 });
     const { ant } = loadAntManager(fakeSafeStorage());
 
     // Before anything else: here it then stops at the missing antd binary.
     await ant.startAnt();
-    expect(fs.existsSync(orphanDir)).toBe(false);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(fs.existsSync(path.join(handoffDir, 'h-killed', 'password'))).toBe(false);
+    expect(fs.existsSync(path.join(handoffDir, 'h-killed'))).toBe(process.platform !== 'linux');
     await ant.stopAnt();
   });
 
@@ -541,6 +554,53 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     expect(keystore.hasSealedPassword(dataDir)).toBe(false);
     expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(keystoreBefore);
     expect(await opensKeystore('new-keystore-password')).toBe(true);
+  });
+
+  // The K-3 round-3 race vectors: the keystore is checked on every
+  // migration, and one that appears or changes after the check fails the
+  // start closed, with nothing written.
+  test('a keystore that appears while the password is encrypted is checked, and refused', async () => {
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: stale-config-password\n';
+    fs.writeFileSync(configPath, configBefore);
+    const storage = fakeSafeStorage();
+    const encrypt = storage.encryptStringAsync.getMockImplementation();
+    storage.encryptStringAsync.mockImplementationOnce(async (text) => {
+      // Injection lands a new keystore, with its own password, meanwhile.
+      await writeRealKeystore('the-new-keystore-password');
+      return encrypt(text);
+    });
+    const { ant, keystore } = loadAntManager(storage);
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readdirSync(path.join(dataDir, 'keys'))).toEqual(['swarm.key']);
+    expect(await opensKeystore('the-new-keystore-password')).toBe(true);
+  });
+
+  test('a keystore that changes while the checked seal is written fails closed', async () => {
+    await writeRealKeystore('checked-password');
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: checked-password\n';
+    fs.writeFileSync(configPath, configBefore);
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    let replacement;
+    const realWrite = fs.writeFileSync;
+    jest.spyOn(fs, 'writeFileSync').mockImplementation((target, data, ...rest) => {
+      // The staged seal's first descriptor write: swarm.key is replaced.
+      if (typeof target === 'number' && !replacement && String(data).includes('"keystoreSha256"')) {
+        replacement = realWrite.bind(fs);
+        realWrite(swarmKeyPath, '{"address":"' + '22'.repeat(20) + '","replaced":true}');
+      }
+      return realWrite(target, data, ...rest);
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    fs.writeFileSync.mockRestore();
+    expect(replacement).toBeDefined();
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readdirSync(path.join(dataDir, 'keys'))).toEqual(['swarm.key']);
+    expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(
+      '{"address":"' + '22'.repeat(20) + '","replaced":true}'
+    );
   });
 
   test('the matching config.yaml password is sealed, and the seal opens the keystore', async () => {
