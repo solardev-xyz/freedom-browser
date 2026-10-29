@@ -556,14 +556,29 @@ function listProfileDirs(appRoot) {
 }
 
 /**
- * Every profile's userData directory the app root holds: the catalog's
- * records, and the profile directories it doesn't list. The grant check's
- * other profiles (freedom-core design 0010, `service-grant.js`).
+ * Every profile the app root holds, as `{ dir, slot }`: the catalog's
+ * records, and the profile directories it doesn't list, whose slot comes
+ * from their metadata, or is null. The grant check's other profiles
+ * (freedom-core design 0010, `service-grant.js`).
  */
-function listProfileUserDataDirs(appRoot) {
-  const dirs = new Set(loadCatalog(appRoot).profiles.map((record) => path.resolve(record.dir)));
-  for (const { dir } of listProfileDirs(appRoot)) dirs.add(path.resolve(dir));
-  return [...dirs];
+function listProfileDataDirs(appRoot) {
+  const profiles = new Map();
+  for (const record of loadCatalog(appRoot).profiles) {
+    profiles.set(path.resolve(record.dir), Number.isInteger(record.slot) ? record.slot : null);
+  }
+  for (const { dir } of listProfileDirs(appRoot)) {
+    const resolved = path.resolve(dir);
+    if (profiles.has(resolved)) continue;
+    let slot = null;
+    try {
+      const metadata = readProfileMetadata(resolved);
+      if (Number.isInteger(metadata?.slot)) slot = metadata.slot;
+    } catch {
+      // Unreadable metadata: its directory is protected all the same.
+    }
+    profiles.set(resolved, slot);
+  }
+  return [...profiles].map(([dir, slot]) => ({ dir, slot }));
 }
 
 function isPathInside(parentDir, childPath) {
@@ -1438,7 +1453,7 @@ module.exports = {
   hashPath,
   importProfile,
   listProfileSummaries,
-  listProfileUserDataDirs,
+  listProfileDataDirs,
   loadCatalog,
   renameProfile,
   readProfileMetadata,

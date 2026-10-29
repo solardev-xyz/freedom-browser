@@ -132,7 +132,7 @@ describe('profile paths', () => {
       myotis: path.join(userDataDir, 'myotis'),
       tor: path.join(userDataDir, 'tor-data'),
       radicle: path.join(userDataDir, 'radicle-data'),
-      radicleHomes: null,
+      radicleHome: null,
     });
     expect(fs.existsSync(ipfsDir)).toBe(false);
     expect(fs.existsSync(path.join(userDataDir, 'identity'))).toBe(false);
@@ -141,16 +141,38 @@ describe('profile paths', () => {
     const other = path.join(userDataDir, 'other');
     expect(paths.getComponentDataDirs(other)).toMatchObject({
       ipfs: path.join(other, 'ipfs-data'),
-      radicleHomes: null,
+      radicleHome: null,
     });
   });
 
-  test("a catalog profile's short Radicle homes are listed by their slot's parent", () => {
+  test("a catalog profile's short Radicle home, and another's by its slot", () => {
     const appRoot = path.join(track(createTempUserDataDir()), 'Freedom');
     const userDataDir = path.join(appRoot, 'Profiles', 'work');
     const activeProfile = { source: 'catalog', appRoot, metadata: { slot: 2 } };
     const paths = loadPaths(userDataDir, { activeProfile });
-    expect(paths.getComponentDataDirs().radicleHomes).toBe(path.join(appRoot, 'R'));
+    expect(paths.getComponentDataDirs().radicleHome).toBe(path.join(appRoot, 'R', '2'));
+    const other = path.join(appRoot, 'Profiles', 'home');
+    expect(paths.getComponentDataDirs(other, { slot: 3 }).radicleHome).toBe(
+      path.join(appRoot, 'R', '3')
+    );
+    // Without its slot, none.
+    expect(paths.getComponentDataDirs(other).radicleHome).toBeNull();
+  });
+
+  test("a development build's short Radicle homes sit beside the app root, by checkout", () => {
+    const devRoot = path.join(track(createTempUserDataDir()), 'Freedom Dev');
+    const appRoot = path.join(devRoot, 'freedom-browser-abcd1234');
+    const activeProfile = {
+      source: 'catalog',
+      appRoot,
+      isDev: true,
+      checkoutHash: 'abcd1234',
+      metadata: { slot: 1 },
+    };
+    const paths = loadPaths(path.join(appRoot, 'Profiles', 'work'), { activeProfile });
+    expect(paths.getComponentDataDirs(path.join(appRoot, 'Profiles', 'home'), { slot: 4 })).toMatchObject({
+      radicleHome: path.join(devRoot, 'R', 'abcd1234', '4'),
+    });
   });
 
   test('uses an app-owned short Radicle home for catalog profiles', async () => {

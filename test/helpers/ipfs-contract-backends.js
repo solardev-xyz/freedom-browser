@@ -412,7 +412,7 @@ async function loadIpfsdBackend({ router, routers = [router], freshStats = true 
           identity: path.join(root, 'identity'),
           ipfs: dataDir,
           tor: path.join(root, 'tor-data'),
-          radicleHomes: null,
+          radicleHome: null,
         }),
       }),
       [path.join(SRC, 'core', 'naming.js')]: () => ({

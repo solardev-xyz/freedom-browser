@@ -285,20 +285,27 @@ const COMPONENT_DATA_DIRS = Object.freeze({
  *
  * - Without `userDataDir`: the active profile's, with this process's
  *   overrides (`FREEDOM_IPFS_DATA`, …).
- * - With it: another profile's, at their default names (an override is this
- *   process's alone).
+ * - With it: that profile's at their default names, the active one's too
+ *   (an override is this process's alone, and not where a profile keeps
+ *   its data by default).
  *
- * `radicleHomes` is where catalog profiles' short Radicle homes live (one
- * per slot: `<appRoot>/R`, or a dev checkout's `R/<hash>`), or null.
+ * `radicleHome` is the profile's short Radicle home outside its userData
+ * directory (`<appRoot>/R/<slot>`, or a dev checkout's
+ * `<parent of appRoot>/R/<hash>/<slot>`), for a catalog profile, or null.
+ * Another profile's needs its catalog `slot`.
  */
-function getComponentDataDirs(userDataDir = null) {
+function getComponentDataDirs(userDataDir = null, { slot = null } = {}) {
   const root = userDataDir ?? app.getPath('userData');
   const dirs = {};
   for (const [component, [name, override]] of Object.entries(COMPONENT_DATA_DIRS)) {
     dirs[component] = (!userDataDir && process.env[override]) || path.join(root, name);
   }
-  const catalogRadicle = userDataDir ? null : getCatalogRadicleDataDir(getActiveProfile());
-  dirs.radicleHomes = catalogRadicle ? path.dirname(catalogRadicle) : null;
+  const activeProfile = getActiveProfile();
+  dirs.radicleHome = getCatalogRadicleDataDir(
+    userDataDir
+      ? activeProfile && { ...activeProfile, metadata: { slot } }
+      : activeProfile
+  );
   return dirs;
 }
 

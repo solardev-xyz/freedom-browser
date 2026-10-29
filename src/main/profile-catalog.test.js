@@ -6,7 +6,7 @@ const {
   deleteProfile,
   ensureProfile,
   getCatalogLockPaths,
-  listProfileUserDataDirs,
+  listProfileDataDirs,
   loadCatalog,
   saveCatalog,
   updateProfileNodeConfig,
@@ -551,16 +551,23 @@ describe('profile catalog', () => {
     expect(catalog.profiles[0].slot).toBe(7);
   });
 
-  test("lists every profile's userData directory: the catalog's, and those it doesn't list", () => {
+  test("lists every profile with its slot: the catalog's, and those it doesn't list", () => {
     const appRoot = track(makeTempDir());
-    ensureProfile(appRoot, 'work');
+    const { record } = ensureProfile(appRoot, 'work');
     const stray = path.join(appRoot, 'Profiles', 'stray');
     fs.mkdirSync(stray, { recursive: true });
-    const dirs = listProfileUserDataDirs(appRoot);
-    expect(dirs).toEqual(
-      expect.arrayContaining([path.join(appRoot, 'Profiles', 'work'), stray])
+    fs.writeFileSync(path.join(stray, 'profile.json'), JSON.stringify({ id: 'stray', slot: 9 }));
+    const bare = path.join(appRoot, 'Profiles', 'bare');
+    fs.mkdirSync(bare);
+    const profiles = listProfileDataDirs(appRoot);
+    expect(profiles).toEqual(
+      expect.arrayContaining([
+        { dir: path.join(appRoot, 'Profiles', 'work'), slot: record.slot },
+        { dir: stray, slot: 9 },
+        { dir: bare, slot: null },
+      ])
     );
-    expect(new Set(dirs).size).toBe(dirs.length);
+    expect(profiles).toHaveLength(3);
   });
 
   test('refuses to launch an unregistered profile directory without metadata', () => {
