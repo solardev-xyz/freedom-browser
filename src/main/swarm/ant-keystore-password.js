@@ -159,11 +159,47 @@ function listEntries(dir) {
   return fs.readdirSync(dir.bound ? `/proc/self/fd/${dir.fd}` : dir.path);
 }
 
-// The base64 ciphertext stored as `name`, through one no-follow descriptor;
-// null when missing.
-function readCiphertext(keys, name) {
-  const stored = keys.read(name);
-  return stored === null ? null : Buffer.from(stored.toString('utf-8').trim(), 'base64');
+// The seal record: the ciphertext, and the SHA-256 of the swarm.key bytes
+// it was sealed for (null: no keystore then). A keystore written without
+// its seal being republished (a crash between the two writes) no longer
+// matches, and the pair is treated as broken instead of handing Ant a
+// password for another keystore.
+const SEAL_VERSION = 2;
+
+/** SHA-256 (hex) of keys/swarm.key's bytes, or null when there is none. */
+function keystoreDigest(keys) {
+  const raw = keys ? keys.read('swarm.key') : null;
+  return raw === null ? null : crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function encodeSeal(ciphertext, keystoreSha256) {
+  return JSON.stringify({
+    version: SEAL_VERSION,
+    ciphertext: ciphertext.toString('base64'),
+    keystoreSha256,
+  });
+}
+
+// The seal record stored as `name`, through one no-follow descriptor; null
+// when missing.
+function readSeal(keys, name) {
+  const raw = keys.read(name);
+  if (raw === null) return null;
+  let record;
+  try {
+    record = JSON.parse(raw.toString('utf-8'));
+  } catch {
+    throw new Error('not a seal record');
+  }
+  const digest = record?.keystoreSha256;
+  if (
+    record?.version !== SEAL_VERSION ||
+    typeof record.ciphertext !== 'string' ||
+    !(digest === null || (typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest)))
+  ) {
+    throw new Error('not a seal record');
+  }
+  return { ciphertext: Buffer.from(record.ciphertext, 'base64'), keystoreSha256: digest };
 }
 
 function sealedPasswordPath(dataDir) {
@@ -217,16 +253,23 @@ async function sealPassword(data, password) {
 async function sealInto(keys, storage, ciphertext, password) {
   let staged = false;
   try {
-    keys.write(STAGED_FILE, ciphertext.toString('base64'));
+    // Bound to the keystore on disk now: the one this password opens.
+    const digest = keystoreDigest(keys);
+    keys.write(STAGED_FILE, encodeSeal(ciphertext, digest));
     staged = true;
     // What is on disk, not what was meant to be: it must open to exactly
-    // this password before anything relies on it.
-    const stored = readCiphertext(keys, STAGED_FILE);
-    if (!keyedByKeyring(stored)) throw new Error('the staged seal is not keyed by the keyring');
-    const { result } = await storage.decryptStringAsync(stored);
+    // this password, for this keystore, before anything relies on it.
+    const stored = readSeal(keys, STAGED_FILE);
+    if (!keyedByKeyring(stored.ciphertext)) {
+      throw new Error('the staged seal is not keyed by the keyring');
+    }
+    const { result } = await storage.decryptStringAsync(stored.ciphertext);
     if (result !== password) throw new Error('the staged seal does not open to the password');
+    if (stored.keystoreSha256 !== digest || keystoreDigest(keys) !== digest) {
+      throw new Error('the keystore changed while it was being sealed');
+    }
     // Published as those verified bytes, atomically (temp file and rename).
-    keys.write(SEALED_FILE, stored.toString('base64'));
+    keys.write(SEALED_FILE, encodeSeal(stored.ciphertext, digest));
     return true;
   } finally {
     if (staged) {
@@ -266,7 +309,8 @@ function removeStaleSealStaging(keys) {
  * @param {import('../private-files').PrivateDir|string} data the data directory
  * @returns {Promise<string|null>}
  * @throws {KeystorePasswordUnavailableError} when it cannot be read or
- *   decrypted, or (Linux) it was not sealed with a keyring's key
+ *   decrypted, was sealed for another keystore than keys/swarm.key, or
+ *   (Linux) was not sealed with a keyring's key
  */
 async function unsealPassword(data) {
   const { keys, close } = openKeys(data, { create: false });
@@ -275,10 +319,15 @@ async function unsealPassword(data) {
     const storage = await availableStorage();
     if (!storage) throw new KeystorePasswordUnavailableError();
     try {
-      const ciphertext = readCiphertext(keys, SEALED_FILE);
-      if (ciphertext === null) return null;
-      if (!keyedByKeyring(ciphertext)) throw new Error('not sealed with a keyring key');
-      const { result, shouldReEncrypt } = await storage.decryptStringAsync(ciphertext);
+      const record = readSeal(keys, SEALED_FILE);
+      if (record === null) return null;
+      if (!keyedByKeyring(record.ciphertext)) throw new Error('not sealed with a keyring key');
+      // Checked before the seal is trusted (or the keychain asked): a seal
+      // for another keystore than the one on disk is a broken pair.
+      if (record.keystoreSha256 !== keystoreDigest(keys)) {
+        throw new Error('the seal belongs to another keystore');
+      }
+      const { result, shouldReEncrypt } = await storage.decryptStringAsync(record.ciphertext);
       if (typeof result !== 'string' || !result) throw new Error('empty password');
       // The keychain rotated its key: store it under the current one.
       if (shouldReEncrypt) await resealInto(keys, storage, result);

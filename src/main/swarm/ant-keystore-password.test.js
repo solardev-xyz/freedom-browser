@@ -31,6 +31,18 @@ function fakeSafeStorage({ backend = 'gnome_libsecret', available = true, prefix
   };
 }
 
+// A seal record as sealPassword writes it, for a ciphertext and the
+// keystore bytes it is bound to (null: no keystore).
+function sealRecord(ciphertext, keystoreBytes = null) {
+  const crypto = require('crypto');
+  return JSON.stringify({
+    version: 2,
+    ciphertext: Buffer.from(ciphertext).toString('base64'),
+    keystoreSha256:
+      keystoreBytes === null ? null : crypto.createHash('sha256').update(keystoreBytes).digest('hex'),
+  });
+}
+
 function loadWith(safeStorage, userDataDir = os.tmpdir()) {
   const { mod } = loadMainModule(require.resolve('./ant-keystore-password'), {
     userDataDir,
@@ -96,8 +108,8 @@ describe('ant keystore password (K-3)', () => {
     const storage = fakeSafeStorage();
     const keystore = loadWith(storage);
     fs.mkdirSync(path.join(dataDir, 'keys'));
-    const v10 = Buffer.from(`v10${Buffer.from('pw-weak').toString('hex')}`).toString('base64');
-    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), v10, { mode: 0o600 });
+    const v10 = `v10${Buffer.from('pw-weak').toString('hex')}`;
+    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), sealRecord(v10), { mode: 0o600 });
 
     await expect(keystore.unsealPassword(dataDir)).rejects.toThrow(keystore.REINJECT_MESSAGE);
     expect(storage.decryptStringAsync).not.toHaveBeenCalled();
@@ -226,8 +238,10 @@ describe('ant keystore password (K-3)', () => {
 
   test('staging files a crash left are removed, the seal is not', async () => {
     const keystore = loadWith(fakeSafeStorage());
-    expect(await keystore.sealPassword(dataDir, 'pw-kept')).toBe(true);
     const keysDir = path.join(dataDir, 'keys');
+    fs.mkdirSync(keysDir, { mode: 0o700 });
+    fs.writeFileSync(path.join(keysDir, 'swarm.key'), '{}');
+    expect(await keystore.sealPassword(dataDir, 'pw-kept')).toBe(true);
     for (const name of [
       '.keystore-password.staged',
       '..keystore-password.staged.4242.a1b2c3d4e5f6.tmp',
@@ -235,7 +249,6 @@ describe('ant keystore password (K-3)', () => {
     ]) {
       fs.writeFileSync(path.join(keysDir, name), 'partial');
     }
-    fs.writeFileSync(path.join(keysDir, 'swarm.key'), '{}');
 
     const keysHandle = require('../private-files').openPrivateDir(keysDir);
     try {
@@ -466,15 +479,14 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   test('a seal that will not open never shadows a password config.yaml still has', async () => {
     fs.writeFileSync(swarmKeyPath, '{}');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
-    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), Buffer.from('v11zz').toString('base64'));
+    const unopenable = sealRecord('v11zz', '{}');
+    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), unopenable);
     fs.writeFileSync(configPath, 'password: from-config\n');
 
     expect((await ant.ensureConfig(dataDir, 1633, 1634)).sealedPassword).toBeNull();
     expect(configText()).toMatch(/^password: from-config$/m);
     // The seal is left as it was, not replaced.
-    expect(fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8')).toBe(
-      Buffer.from('v11zz').toString('base64')
-    );
+    expect(fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8')).toBe(unopenable);
   });
 
   posixTest("a start removes the handoff a killed launch left, whatever it starts", async () => {
@@ -495,6 +507,49 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     lifecycle.refuseKeyReinjection(keystore.IDENTITY_MISMATCH_MESSAGE);
     expect(ant.getStatus()).toEqual({ status: 'error', error: keystore.IDENTITY_MISMATCH_MESSAGE });
     expect(lifecycle.needsKeyReinjection()).toBe(false);
+  });
+
+  // A crash between writing keys/swarm.key and republishing its seal: the
+  // seal records the SHA-256 of the keystore it was made for, so a new
+  // keystore beside an old seal is a broken pair. The sealed password never
+  // reaches Ant, and the start asks for re-injection (identity check first).
+  test('a new swarm.key without its seal republished is a broken pair', async () => {
+    fs.writeFileSync(swarmKeyPath, '{"address":"aa","old":true}');
+    const storage = fakeSafeStorage();
+    const { ant, keystore } = loadAntManager(storage);
+    expect(await keystore.sealPassword(dataDir, 'pw-for-old-keystore')).toBe(true);
+    fs.writeFileSync(configPath, 'api-addr: 127.0.0.1:1633\n');
+    // Injection wrote a new keystore, and the process died before the seal.
+    fs.writeFileSync(swarmKeyPath, '{"address":"aa","new":true}');
+    storage.decryptStringAsync.mockClear();
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(storage.decryptStringAsync).not.toHaveBeenCalled();
+    expect(configText()).toBe('api-addr: 127.0.0.1:1633\n');
+    expect(keystore.hasSealedPassword(dataDir)).toBe(true);
+  });
+
+  test('a seal made before any keystore does not open a keystore written later', async () => {
+    const { keystore } = loadAntManager(fakeSafeStorage());
+    expect(await keystore.sealPassword(dataDir, 'pw-before-keystore')).toBe(true);
+    expect(await keystore.unsealPassword(dataDir)).toBe('pw-before-keystore');
+
+    fs.writeFileSync(swarmKeyPath, '{}');
+    await expect(keystore.unsealPassword(dataDir)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    // Sealing again binds it to the keystore now on disk.
+    expect(await keystore.sealPassword(dataDir, 'pw-after-keystore')).toBe(true);
+    expect(await keystore.unsealPassword(dataDir)).toBe('pw-after-keystore');
+  });
+
+  test('a seal whose keystore is gone is replaced with a new password', async () => {
+    fs.writeFileSync(swarmKeyPath, '{}');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    expect(await keystore.sealPassword(dataDir, 'pw-orphaned')).toBe(true);
+    fs.rmSync(swarmKeyPath);
+
+    const { sealedPassword } = await ant.ensureConfig(dataDir, 1633, 1634);
+    expect(sealedPassword).toMatch(/^[0-9a-f]{64}$/);
+    expect(await keystore.unsealPassword(dataDir)).toBe(sealedPassword);
   });
 
   test('a keystore whose sealed password will not open is never given a new one', async () => {
