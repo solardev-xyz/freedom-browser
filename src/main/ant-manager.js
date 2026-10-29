@@ -341,12 +341,12 @@ function isManagedAntNode() {
  * @returns {Promise<{password: string|null, rawPasswordLine: string|null,
  *   sealed: boolean}>}
  */
-async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
-  const hadSeal = keystorePassword.hasSealedPassword(dataDir);
+async function resolveKeystorePassword(data, configPassword, hasKeystore) {
+  const hadSeal = keystorePassword.hasSealedPassword(data);
   let sealedPassword = null;
   let unsealError = null;
   try {
-    sealedPassword = await keystorePassword.unsealPassword(dataDir);
+    sealedPassword = await keystorePassword.unsealPassword(data);
   } catch (err) {
     unsealError = err;
   }
@@ -369,13 +369,13 @@ async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
     return {
       password: configPassword.value,
       rawPasswordLine: null,
-      sealed: await keystorePassword.sealPassword(dataDir, configPassword.value),
+      sealed: await keystorePassword.sealPassword(data, configPassword.value),
     };
   }
   if (unsealError) {
     if (hasKeystore) throw unsealError;
     // No keystore needs it any more: drop the copy that will not open.
-    keystorePassword.forgetSealedPassword(dataDir);
+    keystorePassword.forgetSealedPassword(data);
   }
   if (hasKeystore) throw new keystorePassword.KeystorePasswordUnavailableError();
 
@@ -383,7 +383,7 @@ async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
   return {
     password,
     rawPasswordLine: null,
-    sealed: await keystorePassword.sealPassword(dataDir, password),
+    sealed: await keystorePassword.sealPassword(data, password),
   };
 }
 
@@ -395,9 +395,9 @@ async function resolveKeystorePassword(dataDir, configPassword, hasKeystore) {
  */
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   // The data directory and its keys/ are opened once, never through a link,
-  // and every key and config read or write below goes through those
-  // handles. A keys/ that is a link, or not ours, stops the start before
-  // anything is written (K-3).
+  // and every key, seal and config read or write below goes through those
+  // handles, held across the keychain awaits. A keys/ that is a link, or
+  // not ours, stops the start before anything is written (K-3).
   return keystorePassword.withKeystoreLock(dataDir, () => {
     const data = openPrivateDir(dataDir);
     let keys;
@@ -422,7 +422,7 @@ async function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
 
 async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
-  keystorePassword.removeStaleSealStaging(dataDir);
+  if (keys) keystorePassword.removeStaleSealStaging(keys);
 
   // The password an existing config.yaml still gives Ant, if any
   let configPassword = { kind: 'none' };
@@ -434,9 +434,9 @@ async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
     log.warn('[Ant] Could not read the existing config');
   }
 
-  const hasKeystore = fs.existsSync(path.join(dataDir, 'keys', 'swarm.key'));
+  const hasKeystore = keystorePassword.keystoreExists(keys);
   const { password, rawPasswordLine, sealed } = await resolveKeystorePassword(
-    dataDir,
+    data,
     configPassword,
     hasKeystore
   );

@@ -174,7 +174,7 @@ describe('ant keystore password (K-3)', () => {
     const sealed = keystore.sealedPasswordPath(dataDir);
 
     const realRename = fs.renameSync;
-    // The rename goes through the directory's handle (/proc/self/fd/… on Linux).
+    // The rename goes through the held keys/ handle (/proc/self/fd/… on Linux).
     jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
       if (path.basename(to) === path.basename(sealed)) {
         throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
@@ -186,6 +186,30 @@ describe('ant keystore password (K-3)', () => {
 
     expect(await keystore.unsealPassword(dataDir)).toBe('pw-before');
     expect(stagingLeft()).toEqual([]);
+  });
+
+  // keys/ is held as a directory handle across the keychain awaits: one
+  // swapped for a link meanwhile never receives the seal through the link.
+  posixTest('a keys/ swapped for a link during the seal never gets it outside', async () => {
+    const storage = fakeSafeStorage();
+    const keystore = loadWith(storage);
+    const keysDir = path.join(dataDir, 'keys');
+    fs.mkdirSync(keysDir, { mode: 0o700 });
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-keystore-outside-'));
+    try {
+      const decrypt = storage.decryptStringAsync.getMockImplementation();
+      storage.decryptStringAsync.mockImplementationOnce(async (buffer) => {
+        fs.renameSync(keysDir, `${keysDir}.moved`);
+        fs.symlinkSync(outside, keysDir);
+        return decrypt(buffer);
+      });
+
+      expect(await keystore.sealPassword(dataDir, 'pw-swapped')).toBe(false);
+      expect(fs.readdirSync(outside)).toEqual([]);
+      expect(fs.existsSync(path.join(`${keysDir}.moved`, 'keystore-password.sealed'))).toBe(false);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test('a seal that does not read back as the password is never published', async () => {
@@ -213,7 +237,12 @@ describe('ant keystore password (K-3)', () => {
     }
     fs.writeFileSync(path.join(keysDir, 'swarm.key'), '{}');
 
-    keystore.removeStaleSealStaging(dataDir);
+    const keysHandle = require('../private-files').openPrivateDir(keysDir);
+    try {
+      keystore.removeStaleSealStaging(keysHandle);
+    } finally {
+      keysHandle.close();
+    }
     expect(fs.readdirSync(keysDir).sort()).toEqual(['keystore-password.sealed', 'swarm.key']);
     expect(await keystore.unsealPassword(dataDir)).toBe('pw-kept');
   });
@@ -236,14 +265,13 @@ describe('ant keystore password (K-3)', () => {
   test('a removal that failed is tried again', () => {
     const keystore = loadWith(fakeSafeStorage());
     const file = keystore.writePasswordFile('pw-retry', dataDir);
-    const realRm = fs.rmSync;
-    const rm = jest.spyOn(fs, 'rmSync').mockImplementationOnce(() => {
+    const rmdir = jest.spyOn(fs, 'rmdirSync').mockImplementationOnce(() => {
       throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
     });
 
     expect(file.remove()).toBe(false);
-    expect(fs.existsSync(file.path)).toBe(true);
-    rm.mockImplementation(realRm);
+    expect(fs.existsSync(path.dirname(file.path))).toBe(true);
+    rmdir.mockRestore();
     expect(file.remove()).toBe(true);
     expect(fs.existsSync(path.dirname(file.path))).toBe(false);
   });

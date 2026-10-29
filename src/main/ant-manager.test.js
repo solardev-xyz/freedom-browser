@@ -677,7 +677,11 @@ describe('ant-manager', () => {
     await ctx.mod.startAnt();
     await flushMicrotasks();
 
-    expect(keystorePassword.sealPassword).toHaveBeenCalledWith(dataDir, 'legacy-keystore-password');
+    // Through the data directory's held handle.
+    expect(keystorePassword.sealPassword).toHaveBeenCalledWith(
+      expect.objectContaining({ path: dataDir }),
+      'legacy-keystore-password'
+    );
     const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
     expect(config).not.toMatch(/^password:/m);
     // In the profile's own handoff directory, never the shared temp dir.

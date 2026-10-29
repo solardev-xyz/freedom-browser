@@ -27,16 +27,17 @@
  * synchronous calls would hold the main process while it asks.
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { ensurePrivateDir, readPrivateFile, writePrivateFileSync } = require('../private-files');
+const { UnsafePrivatePathError, openPrivateDir, withPrivateDir } = require('../private-files');
 
 const SEALED_FILE = 'keystore-password.sealed';
 // A seal being written: a private sibling, published as SEALED_FILE only
 // once what it holds has been read back and opened to the exact password.
 const STAGED_FILE = '.keystore-password.staged';
-// The staged seal, and the temp files writePrivateFileSync writes either
-// one through, as a crash can leave them.
+// The staged seal, and the temp files PrivateDir#write writes either one
+// through, as a crash can leave them.
 const STALE_STAGING =
   /^(?:\.keystore-password\.staged|\.\.keystore-password\.staged\.\d+\.[0-9a-f]+\.tmp|\.keystore-password\.sealed\.\d+\.[0-9a-f]+\.tmp)$/;
 const REINJECT_MESSAGE = 'Swarm key needs re-injecting: unlock your vault';
@@ -105,9 +106,63 @@ function keyedByKeyring(ciphertext) {
   return LINUX_KEYED_PREFIXES.has(ciphertext.subarray(0, 3).toString('latin1'));
 }
 
-// Through one no-follow descriptor (private-files.js); null when missing.
-function readCiphertext(file) {
-  const stored = readPrivateFile(file);
+// A PrivateDir (or a stand-in with its interface), not a path.
+function isDirHandle(value) {
+  return typeof value === 'object' && value !== null && typeof value.openDir === 'function';
+}
+
+/**
+ * The Ant data directory's keys/, opened (private-files.js: never through a
+ * link, bound across awaits) from the data directory's PrivateDir, as
+ * ensureConfig holds it, or from its path. With `create: false` a missing
+ * data directory or keys/ is a null `keys`. `close()` closes what this
+ * opened; callers call it in a `finally`, so an async body adds no extra
+ * promise hops.
+ * @returns {{ keys: PrivateDir|null, close: () => void }}
+ */
+function openKeys(data, { create = false } = {}) {
+  if (!data) return { keys: null, close() {} };
+  if (isDirHandle(data)) {
+    const keys = data.openDir('keys', { create });
+    return { keys, close: () => keys?.close() };
+  }
+  const handle = openPrivateDir(data, { create });
+  if (!handle) return { keys: null, close() {} };
+  try {
+    return { keys: handle.openDir('keys', { create }), close: () => handle.close() };
+  } catch (err) {
+    handle.close();
+    throw err;
+  }
+}
+
+// `use(keys)` for a synchronous use.
+function withKeysDir(data, use, options) {
+  const { keys, close } = openKeys(data, options);
+  try {
+    return use(keys);
+  } finally {
+    close();
+  }
+}
+
+// Whether `keys` has an entry `name` (a link counts: reading it refuses).
+function hasEntry(keys, name) {
+  if (!keys) return false;
+  keys.verify();
+  return fs.lstatSync(keys.entry(name), { throwIfNoEntry: false }) !== undefined;
+}
+
+// A directory's entry names, read through its handle.
+function listEntries(dir) {
+  dir.verify();
+  return fs.readdirSync(dir.bound ? `/proc/self/fd/${dir.fd}` : dir.path);
+}
+
+// The base64 ciphertext stored as `name`, through one no-follow descriptor;
+// null when missing.
+function readCiphertext(keys, name) {
+  const stored = keys.read(name);
   return stored === null ? null : Buffer.from(stored.toString('utf-8').trim(), 'base64');
 }
 
@@ -115,47 +170,68 @@ function sealedPasswordPath(dataDir) {
   return path.join(dataDir, 'keys', SEALED_FILE);
 }
 
-function hasSealedPassword(dataDir) {
-  // lstat: a link at the name counts, and unsealPassword refuses it.
-  return fs.lstatSync(sealedPasswordPath(dataDir), { throwIfNoEntry: false }) !== undefined;
+/** Whether keys/ holds a sealed password (`data`: a PrivateDir or path). */
+function hasSealedPassword(data) {
+  return withKeysDir(data, (keys) => hasEntry(keys, SEALED_FILE));
+}
+
+/** Whether keys/ holds a keystore (`keys`: the held keys/ handle, or null). */
+function keystoreExists(keys) {
+  return hasEntry(keys, 'swarm.key');
 }
 
 /**
- * Seal `password` for `dataDir`'s keystore. The ciphertext is staged in a
- * private sibling file, read back and opened to the exact password, and
- * only then renamed over the sealed file: a failed or interrupted seal
- * leaves whatever was there before, and never a file that won't open.
+ * Seal `password` for the keystore in `data`'s keys/. The ciphertext is
+ * staged in a private sibling file, read back and opened to the exact
+ * password, and only then published over the sealed file, atomically: a
+ * failed or interrupted seal leaves whatever was there before, and never a
+ * file that won't open. keys/ stays bound across the keychain awaits.
+ * @param {import('../private-files').PrivateDir|string} data the data directory
  * @returns {Promise<boolean>} true once the verified seal is in place;
  *   false when there is no OS keyring to seal with, or sealing failed. The
  *   caller then keeps the password in the owner-only config.yaml.
  */
-async function sealPassword(dataDir, password) {
+async function sealPassword(data, password) {
   const storage = await availableStorage();
   if (!storage) return false;
-  const keysDir = path.join(dataDir, 'keys');
-  let staging = null;
+  let ciphertext;
   try {
-    const ciphertext = await storage.encryptStringAsync(password);
-    if (!keyedByKeyring(ciphertext)) return false;
-    ensurePrivateDir(keysDir);
-    staging = path.join(keysDir, STAGED_FILE);
-    writePrivateFileSync(staging, ciphertext.toString('base64'));
-    // What is on disk, not what was meant to be: it must open to exactly
-    // this password before anything relies on it.
-    const stored = readCiphertext(staging);
-    if (!keyedByKeyring(stored)) throw new Error('the staged seal is not keyed by the keyring');
-    const { result } = await storage.decryptStringAsync(stored);
-    if (result !== password) throw new Error('the staged seal does not open to the password');
-    // Published as those verified bytes, atomically (temp file and rename).
-    writePrivateFileSync(sealedPasswordPath(dataDir), stored.toString('base64'));
-    return true;
+    ciphertext = await storage.encryptStringAsync(password);
+  } catch (err) {
+    console.warn('[AntKeystore] Could not seal the keystore password:', err.message);
+    return false;
+  }
+  if (!keyedByKeyring(ciphertext)) return false;
+  let opened = null;
+  try {
+    opened = openKeys(data, { create: true });
+    return await sealInto(opened.keys, storage, ciphertext, password);
   } catch (err) {
     console.warn('[AntKeystore] Could not seal the keystore password:', err.message);
     return false;
   } finally {
-    if (staging) {
+    opened?.close();
+  }
+}
+
+async function sealInto(keys, storage, ciphertext, password) {
+  let staged = false;
+  try {
+    keys.write(STAGED_FILE, ciphertext.toString('base64'));
+    staged = true;
+    // What is on disk, not what was meant to be: it must open to exactly
+    // this password before anything relies on it.
+    const stored = readCiphertext(keys, STAGED_FILE);
+    if (!keyedByKeyring(stored)) throw new Error('the staged seal is not keyed by the keyring');
+    const { result } = await storage.decryptStringAsync(stored);
+    if (result !== password) throw new Error('the staged seal does not open to the password');
+    // Published as those verified bytes, atomically (temp file and rename).
+    keys.write(SEALED_FILE, stored.toString('base64'));
+    return true;
+  } finally {
+    if (staged) {
       try {
-        fs.rmSync(staging, { force: true });
+        keys.remove(STAGED_FILE);
       } catch (err) {
         console.warn('[AntKeystore] Could not remove a staged seal:', err.message);
       }
@@ -163,19 +239,22 @@ async function sealPassword(dataDir, password) {
   }
 }
 
-/** Staged seals a crash left behind: ciphertext only, never published. */
-function removeStaleSealStaging(dataDir) {
-  const keysDir = path.join(dataDir, 'keys');
+/**
+ * Staged seals a crash left behind: ciphertext only, never published.
+ * @param {PrivateDir} keys the held keys/ handle
+ */
+function removeStaleSealStaging(keys) {
   let entries;
   try {
-    entries = fs.readdirSync(keysDir);
-  } catch {
+    entries = listEntries(keys);
+  } catch (err) {
+    console.warn('[AntKeystore] Could not list keys/:', err.message);
     return;
   }
   for (const entry of entries) {
     if (!STALE_STAGING.test(entry)) continue;
     try {
-      fs.rmSync(path.join(keysDir, entry), { force: true });
+      keys.remove(entry);
     } catch (err) {
       console.warn('[AntKeystore] Could not remove a staged seal:', err.message);
     }
@@ -184,31 +263,48 @@ function removeStaleSealStaging(dataDir) {
 
 /**
  * The sealed password, or null when there is none.
+ * @param {import('../private-files').PrivateDir|string} data the data directory
  * @returns {Promise<string|null>}
- * @throws {KeystorePasswordUnavailableError} when it cannot be decrypted,
- *   or (Linux) it was not sealed with a keyring's key
+ * @throws {KeystorePasswordUnavailableError} when it cannot be read or
+ *   decrypted, or (Linux) it was not sealed with a keyring's key
  */
-async function unsealPassword(dataDir) {
-  const file = sealedPasswordPath(dataDir);
-  if (!hasSealedPassword(dataDir)) return null;
-  const storage = await availableStorage();
-  if (!storage) throw new KeystorePasswordUnavailableError();
+async function unsealPassword(data) {
+  const { keys, close } = openKeys(data, { create: false });
   try {
-    const ciphertext = readCiphertext(file);
-    if (ciphertext === null) return null;
-    if (!keyedByKeyring(ciphertext)) throw new Error('not sealed with a keyring key');
-    const { result, shouldReEncrypt } = await storage.decryptStringAsync(ciphertext);
-    if (typeof result !== 'string' || !result) throw new Error('empty password');
-    // The keychain rotated its key: store it under the current one.
-    if (shouldReEncrypt) await sealPassword(dataDir, result);
-    return result;
-  } catch (err) {
-    throw new KeystorePasswordUnavailableError(err);
+    if (!hasEntry(keys, SEALED_FILE)) return null;
+    const storage = await availableStorage();
+    if (!storage) throw new KeystorePasswordUnavailableError();
+    try {
+      const ciphertext = readCiphertext(keys, SEALED_FILE);
+      if (ciphertext === null) return null;
+      if (!keyedByKeyring(ciphertext)) throw new Error('not sealed with a keyring key');
+      const { result, shouldReEncrypt } = await storage.decryptStringAsync(ciphertext);
+      if (typeof result !== 'string' || !result) throw new Error('empty password');
+      // The keychain rotated its key: store it under the current one.
+      if (shouldReEncrypt) await resealInto(keys, storage, result);
+      return result;
+    } catch (err) {
+      throw new KeystorePasswordUnavailableError(err);
+    }
+  } finally {
+    close();
   }
 }
 
-function forgetSealedPassword(dataDir) {
-  fs.rmSync(sealedPasswordPath(dataDir), { force: true });
+async function resealInto(keys, storage, password) {
+  try {
+    const ciphertext = await storage.encryptStringAsync(password);
+    if (keyedByKeyring(ciphertext)) await sealInto(keys, storage, ciphertext, password);
+  } catch (err) {
+    console.warn('[AntKeystore] Could not re-seal the keystore password:', err.message);
+  }
+}
+
+/** Drop the sealed password (`data`: a PrivateDir or path). */
+function forgetSealedPassword(data) {
+  withKeysDir(data, (keys) => {
+    keys?.remove(SEALED_FILE);
+  });
 }
 
 // Handoff directories of this process that antd may still have to read.
@@ -224,28 +320,67 @@ function handoffRoot(userDataDir) {
   return path.join(userDataDir, 'run', 'ant-handoff');
 }
 
+// `use(root)` with handoffRoot(userDataDir) held open: userData is the
+// profile's own directory (trusted, links followed), run/ and ant-handoff/
+// are managed, 0700. With `create: false` a missing one is `use(null)`.
+function withHandoffRoot(userDataDir, use, { create }) {
+  return withPrivateDir(
+    userDataDir,
+    (profile) => {
+      if (!profile) return use(null);
+      const run = profile.openDir('run', { create });
+      try {
+        const root = run && run.openDir('ant-handoff', { create });
+        return use(root);
+      } finally {
+        run?.close();
+      }
+    },
+    { create: false, trusted: true }
+  );
+}
+
+// Remove the handoff directory `name` in `root`, through the handles: its
+// files, then itself. Something other than a directory at the name (a
+// planted link, say) is removed as a name, never followed.
+function removeHandoff(root, name) {
+  let dir;
+  try {
+    dir = root.openDir(name, { create: false });
+  } catch (err) {
+    if (!(err instanceof UnsafePrivatePathError)) throw err;
+    root.remove(name);
+    return;
+  }
+  if (!dir) return;
+  try {
+    for (const entry of listEntries(dir)) dir.remove(entry);
+  } finally {
+    dir.close();
+  }
+  root.verify();
+  fs.rmdirSync(root.entry(name));
+}
+
 /**
  * Write `password` where antd's `--password-file` can read it: a 0600 file
- * in a fresh 0700 directory under handoffRoot(userDataDir). Call `remove()`
- * once antd has read it (its API is up) or has exited; it is idempotent,
- * and a removal that failed is tried again on the next call.
+ * in a fresh 0700 directory under handoffRoot(userDataDir), all written
+ * through held directory handles. Call `remove()` once antd has read it
+ * (its API is up) or has exited; it is idempotent, and a removal that
+ * failed is tried again on the next call.
  * @returns {{ path: string, remove: () => boolean }}
  */
 function writePasswordFile(password, userDataDir) {
-  const root = handoffRoot(userDataDir);
-  ensurePrivateDir(path.dirname(root));
-  ensurePrivateDir(root);
-  const dir = fs.mkdtempSync(path.join(root, 'h-'));
-  ensurePrivateDir(dir);
+  const name = `h-${crypto.randomBytes(8).toString('hex')}`;
+  const dir = path.join(handoffRoot(userDataDir), name);
   liveHandoffs.add(dir);
-  const file = path.join(dir, 'password');
   let removed = false;
   const remove = () => {
     // No longer needed: a later sweep may take it if this removal fails.
     liveHandoffs.delete(dir);
     if (removed) return true;
     try {
-      fs.rmSync(dir, { recursive: true, force: true });
+      withHandoffRoot(userDataDir, (root) => root && removeHandoff(root, name), { create: false });
       removed = true;
     } catch (err) {
       console.warn('[AntKeystore] Could not remove the password file:', err.message);
@@ -253,12 +388,26 @@ function writePasswordFile(password, userDataDir) {
     return removed;
   };
   try {
-    writePrivateFileSync(file, password);
+    withHandoffRoot(
+      userDataDir,
+      (root) => {
+        if (fs.lstatSync(root.entry(name), { throwIfNoEntry: false })) {
+          throw new Error(`password handoff ${name} already exists`);
+        }
+        const handoff = root.openDir(name, { create: true });
+        try {
+          handoff.write('password', password);
+        } finally {
+          handoff.close();
+        }
+      },
+      { create: true }
+    );
   } catch (err) {
     remove();
     throw err;
   }
-  return { path: file, remove };
+  return { path: path.join(dir, 'password'), remove };
 }
 
 /**
@@ -270,25 +419,29 @@ function writePasswordFile(password, userDataDir) {
  */
 function sweepAbandonedHandoffs(userDataDir) {
   if (!userDataDir) return 0;
-  const root = handoffRoot(userDataDir);
-  let entries;
   try {
-    entries = fs.readdirSync(root);
-  } catch {
+    return withHandoffRoot(
+      userDataDir,
+      (root) => {
+        if (!root) return 0;
+        let removed = 0;
+        for (const entry of listEntries(root)) {
+          if (liveHandoffs.has(path.join(handoffRoot(userDataDir), entry))) continue;
+          try {
+            removeHandoff(root, entry);
+            removed += 1;
+          } catch (err) {
+            console.warn('[AntKeystore] Could not remove an abandoned password file:', err.message);
+          }
+        }
+        return removed;
+      },
+      { create: false }
+    );
+  } catch (err) {
+    console.warn('[AntKeystore] Could not sweep password handoffs:', err.message);
     return 0;
   }
-  let removed = 0;
-  for (const entry of entries) {
-    const dir = path.join(root, entry);
-    if (liveHandoffs.has(dir)) continue;
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      removed += 1;
-    } catch (err) {
-      console.warn('[AntKeystore] Could not remove an abandoned password file:', err.message);
-    }
-  }
-  return removed;
 }
 
 // One keystore operation at a time per data directory: startup migration
@@ -333,15 +486,18 @@ function withKeystoreLock(dataDir, fn) {
 /**
  * The account a Web3 v3 keystore says it holds (its unencrypted `address`),
  * as 40 lowercase hex digits, or null when the file has none to read.
+ * @param {import('../private-files').PrivateDir|string} data the data directory
  */
-function keystoreAddress(dataDir) {
+function keystoreAddress(data) {
   try {
-    const raw = readPrivateFile(path.join(dataDir, 'keys', 'swarm.key'));
-    if (raw === null) return null;
-    const keystore = JSON.parse(raw.toString('utf-8'));
-    const hex = typeof keystore?.address === 'string' ? keystore.address.toLowerCase() : '';
-    const address = hex.startsWith('0x') ? hex.slice(2) : hex;
-    return /^[0-9a-f]{40}$/.test(address) ? address : null;
+    return withKeysDir(data, (keys) => {
+      const raw = keys?.read('swarm.key');
+      if (!raw) return null;
+      const keystore = JSON.parse(raw.toString('utf-8'));
+      const hex = typeof keystore?.address === 'string' ? keystore.address.toLowerCase() : '';
+      const address = hex.startsWith('0x') ? hex.slice(2) : hex;
+      return /^[0-9a-f]{40}$/.test(address) ? address : null;
+    });
   } catch {
     return null;
   }
@@ -353,6 +509,7 @@ module.exports = {
   KeystorePasswordUnavailableError,
   KeystoreIdentityMismatchError,
   hasSealedPassword,
+  keystoreExists,
   sealPassword,
   unsealPassword,
   forgetSealedPassword,
