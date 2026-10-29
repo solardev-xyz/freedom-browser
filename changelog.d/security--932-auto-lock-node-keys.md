@@ -1,0 +1,1 @@
+- The vault's automatic lock now also stops Swarm feed signing with the node wallet and node key setup, not only wallet signing ([#932](https://github.com/solardev-xyz/freedom-browser/issues/932))
