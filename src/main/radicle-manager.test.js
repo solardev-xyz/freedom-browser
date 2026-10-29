@@ -345,40 +345,174 @@ test('IPC pushes native seed progress back to the requesting internal page', asy
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
-describe('re-key lifecycle hooks (R-8)', () => {
-  test('stop waits for the node and reports it was running; start brings it back', async () => {
-    const ctx = loadManager();
-    await ctx.mod.startRadicle();
-    let started = true;
-    ctx.embedded.isStarted.mockImplementation(() => started);
+describe('re-key critical section (R-8)', () => {
+  const flush = async (rounds = 20) => {
+    for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // The wrapper's real ordering (radicle-embedded.js): `started` is set
+  // once the add-on's start resolves and cleared only once its shutdown
+  // resolves. `nativeAlive` is the add-on's own node. With
+  // `clearsBeforeProof`, the wrapper clears `started` before the add-on
+  // answers, as it did before this fix.
+  function modelNode(ctx, { shutdownFails = false, clearsBeforeProof = false } = {}) {
+    const node = { wrapperStarted: false, nativeAlive: false };
+    ctx.embedded.isStarted.mockImplementation(() => node.wrapperStarted);
+    ctx.embedded.start.mockImplementation(async () => {
+      node.nativeAlive = true;
+      node.wrapperStarted = true;
+      return { did: 'did:key:z6MkNative' };
+    });
     ctx.embedded.shutdown.mockImplementation(async () => {
-      started = false;
+      if (!node.wrapperStarted) return { ok: true };
+      if (clearsBeforeProof) node.wrapperStarted = false;
+      if (shutdownFails) throw new Error('shutdown failed');
+      node.nativeAlive = false;
+      node.wrapperStarted = false;
       return { ok: true };
     });
-    const lifecycle = ctx.mod.createRadicleLifecycle();
+    return node;
+  }
 
-    await expect(lifecycle.stop()).resolves.toBe(true);
-    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
-    expect(ctx.mod.getCurrentStatus().status).toBe('stopped');
-
-    await lifecycle.start();
-    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
-    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
-  });
-
-  test('a node that is still up after the stop is an error, so nothing is wiped', async () => {
+  test('stops the node with proof, runs the work, and restarts it', async () => {
     const ctx = loadManager();
+    const node = modelNode(ctx);
     await ctx.mod.startRadicle();
-    ctx.embedded.isStarted.mockReturnValue(true);
-    ctx.embedded.shutdown.mockRejectedValue(new Error('shutdown failed'));
 
-    await expect(ctx.mod.createRadicleLifecycle().stop()).rejects.toThrow('did not stop');
+    const work = jest.fn(async () => {
+      expect(ctx.mod.getCurrentStatus().status).toBe('stopped');
+      expect(node.nativeAlive).toBe(false);
+      return 'did:key:z6MkNew';
+    });
+    await expect(ctx.mod.createRadicleLifecycle().withStopped(work)).resolves.toBe(
+      'did:key:z6MkNew'
+    );
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
+    expect(ctx.mod.getCurrentStatus().status).toBe('running');
+    await ctx.mod.stopRadicle();
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 
-  test('a node that was not running reports false', async () => {
+  test('a node that was not running stays stopped', async () => {
     const ctx = loadManager();
-    await expect(ctx.mod.createRadicleLifecycle().stop()).resolves.toBe(false);
+    modelNode(ctx);
+    const work = jest.fn(async () => 'did');
+    await expect(ctx.mod.createRadicleLifecycle().withStopped(work)).resolves.toBe('did');
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+    expect(ctx.mod.getCurrentStatus().status).toBe('stopped');
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a work that fails still restarts the node, and its error reaches the caller', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    await ctx.mod.startRadicle();
+    await expect(
+      ctx.mod.createRadicleLifecycle().withStopped(async () => {
+        throw new Error('vault locked during the re-key');
+      })
+    ).rejects.toThrow('vault locked during the re-key');
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
+    expect(ctx.mod.getCurrentStatus().status).toBe('running');
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  // Review repro 1: the lifecycle queue was released before the wipe.
+  test('a start, and a second re-key, requested during the work wait for it', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx);
+    await ctx.mod.startRadicle();
+    const lifecycle = ctx.mod.createRadicleLifecycle();
+    const steps = [];
+    let release;
+    const first = lifecycle.withStopped(
+      () =>
+        new Promise((resolve) => {
+          steps.push('first work');
+          release = resolve;
+        })
+    );
+    await flush();
+    expect(release).toBeDefined();
+
+    // While the first re-key is wiping: a start, and another re-key.
+    const starting = ctx.mod.startRadicle();
+    const second = lifecycle.withStopped(async () => {
+      steps.push(`second work (node ${node.nativeAlive ? 'up' : 'down'})`);
+      return 'second';
+    });
+    await flush();
+    expect(ctx.mod.getCurrentStatus().status).toBe('stopped');
+    expect(node.nativeAlive).toBe(false);
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+    expect(steps).toEqual(['first work']);
+
+    release('first');
+    await expect(first).resolves.toBe('first');
+    await starting;
+    await expect(second).resolves.toBe('second');
+    expect(steps).toEqual(['first work', 'second work (node down)']);
+    expect(ctx.mod.getCurrentStatus().status).toBe('running');
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  // Review repro 2: a rejected native shutdown was taken as proof.
+  for (const clearsBeforeProof of [true, false]) {
+    test(`a rejected shutdown is no proof: the work never runs (wrapper clears started ${
+      clearsBeforeProof ? 'before' : 'after'
+    } the add-on answers)`, async () => {
+      const ctx = loadManager();
+      const node = modelNode(ctx, { shutdownFails: true, clearsBeforeProof });
+      await ctx.mod.startRadicle();
+      const work = jest.fn(async () => 'did');
+
+      await expect(ctx.mod.createRadicleLifecycle().withStopped(work)).rejects.toThrow(
+        'shutdown failed'
+      );
+      expect(work).not.toHaveBeenCalled();
+      expect(node.nativeAlive).toBe(true);
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'error', error: 'shutdown failed' });
+      // Not restarted on top of a node that may still be running.
+      expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    });
+  }
+
+  // Review repro 3: a start queued just before the re-key was stopped and
+  // then forgotten.
+  test('a start queued just before the re-key is stopped for it, then restarted', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx);
+    let finishStart;
+    ctx.embedded.start.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishStart = () => {
+            node.nativeAlive = true;
+            node.wrapperStarted = true;
+            resolve({ did: 'did:key:z6MkNative' });
+          };
+        })
+    );
+    const starting = ctx.mod.startRadicle();
+    const work = jest.fn(async () => {
+      expect(node.nativeAlive).toBe(false);
+      return 'did';
+    });
+    const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+    await flush();
+    finishStart();
+
+    await starting;
+    await expect(rekey).resolves.toBe('did');
+    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
+    expect(ctx.mod.getCurrentStatus().status).toBe('running');
+    await ctx.mod.stopRadicle();
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 });

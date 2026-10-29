@@ -175,16 +175,27 @@ function startRadicle() {
   return enqueueLifecycle(startRadicleInternal);
 }
 
-async function stopRadicleInternal() {
-  if (currentState === STATUS.STOPPED) return getCurrentStatus();
+// Stop the node. Resolves once the add-on proved it stopped (its shutdown
+// joined the node's thread); otherwise records the error and throws.
+async function stopNode() {
+  if (currentState === STATUS.STOPPED) return;
   updateState(STATUS.STOPPING);
   try {
     await embedded.shutdown();
-    clearService('radicle');
-    updateState(STATUS.STOPPED);
   } catch (err) {
     clearService('radicle');
     updateState(STATUS.ERROR, err.message);
+    throw err;
+  }
+  clearService('radicle');
+  updateState(STATUS.STOPPED);
+}
+
+async function stopRadicleInternal() {
+  try {
+    await stopNode();
+  } catch {
+    // Reported through the status.
   }
   return getCurrentStatus();
 }
@@ -437,30 +448,45 @@ function setNodeAlias(alias) {
 }
 
 /**
- * Hooks for identity re-injection (identity-manager setRadicleLifecycle,
- * R-8): `stop` stops the embedded node through the lifecycle queue and
- * waits for its thread; it resolves to whether the node was running, and
- * throws if the node is still up afterwards, so its data is never wiped
- * under it. `start` starts it again.
+ * Run `work` with the node stopped (R-8): the wipe and key write of an
+ * identity re-injection, which must never run under a live node.
+ *
+ * One lifecycle-queue operation, so every start, stop, alias change and
+ * other re-key queues behind it. Inside it, once the earlier operations
+ * have run:
+ *  - it notes whether the node is running,
+ *  - stops it and requires the add-on's proof that it stopped (a stop
+ *    without that proof throws, and `work` never runs),
+ *  - awaits `work`,
+ *  - and in `finally` starts the node again if it was running: as the new
+ *    identity, or as the old one when `work` failed before its key write.
+ * @template T
+ * @param {() => Promise<T>} work
+ * @returns {Promise<T>} work's result
  */
-function createRadicleLifecycle(deps = {}) {
-  const stopFn = deps.stopRadicle || stopRadicle;
-  const startFn = deps.startRadicle || startRadicle;
-  const isStarted = deps.isStarted || (() => embedded.isStarted());
-  return {
-    stop: async () => {
-      const wasRunning =
-        isStarted() || currentState === STATUS.RUNNING || currentState === STATUS.STARTING;
-      await stopFn();
-      if (isStarted()) {
-        throw new Error('The Radicle node did not stop, so its data was not reset');
+function withRadicleStopped(work) {
+  return enqueueLifecycle(async () => {
+    const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
+    await stopNode();
+    if (embedded.isStarted()) {
+      throw new Error('The Radicle node did not stop, so its data was not reset');
+    }
+    try {
+      return await work();
+    } finally {
+      if (wasRunning) {
+        const restarted = await startRadicleInternal();
+        if (restarted.status !== STATUS.RUNNING) {
+          log.warn('[Radicle] Node did not restart after the re-key:', restarted.error);
+        }
       }
-      return wasRunning;
-    },
-    start: async () => {
-      await startFn();
-    },
-  };
+    }
+  });
+}
+
+/** The hook identity-manager's setRadicleLifecycle takes (R-8). */
+function createRadicleLifecycle() {
+  return { withStopped: withRadicleStopped };
 }
 
 function registerRadicleIpc() {

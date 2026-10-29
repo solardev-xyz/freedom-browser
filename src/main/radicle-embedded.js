@@ -144,10 +144,15 @@ async function start(home, alias) {
   return result;
 }
 
+// The node counts as stopped only on the add-on's proof: its shutdown
+// resolves after the node's thread has joined. A rejection proves nothing
+// (the thread may still hold the home's files), so the node still counts as
+// started, and a re-key refuses to wipe under it (R-8).
 async function shutdown() {
   if (!started) return { ok: true };
+  const result = await call('shutdown');
   started = false;
-  return call('shutdown');
+  return result;
 }
 
 function isStarted() {

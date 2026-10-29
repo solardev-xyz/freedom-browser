@@ -50,21 +50,23 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
-// Optional Radicle node lifecycle hooks, wired by the main process (see
+// Optional Radicle node lifecycle hook, wired by the main process (see
 // index.js). The embedded node writes node/, cobs/ and storage/ while it
-// runs, so a re-key must stop it, and wait for it, before wiping them (R-8).
-// `stop` resolves to whether the node was running and throws if it is still
-// running afterwards; `start` brings it back up as the new identity.
-let radicleLifecycle = { stop: null, start: null };
+// runs, so a re-key must stop it, with proof that it stopped, before wiping
+// them (R-8). `withStopped(work)` runs `work` as one operation of the node's
+// lifecycle queue (radicle-manager withRadicleStopped): it stops the node
+// (throwing, without running `work`, when the stop is not proven), awaits
+// `work`, and restarts a node that was running. Starts, alias changes and
+// other re-keys queue behind it.
+let radicleLifecycle = { withStopped: null };
 
 /**
- * Register Radicle node lifecycle hooks used around identity (re)injection.
- * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>}} hooks
+ * Register the Radicle node lifecycle hook used around identity (re)injection.
+ * @param {{withStopped?: <T>(work: () => Promise<T>) => Promise<T>}} hooks
  */
 function setRadicleLifecycle(hooks = {}) {
   radicleLifecycle = {
-    stop: typeof hooks.stop === 'function' ? hooks.stop : null,
-    start: typeof hooks.start === 'function' ? hooks.start : null,
+    withStopped: typeof hooks.withStopped === 'function' ? hooks.withStopped : null,
   };
 }
 
@@ -786,12 +788,13 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVa
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Stop the node, and wait for it, before touching its data (R-8). A stop
-  // that fails leaves the data alone: the error ends the injection here.
-  const radicleWasRunning = radicleLifecycle.stop ? await radicleLifecycle.stop() === true : false;
-
-  let did;
-  try {
+  // The wipe and the key write, with the node stopped (R-8). They run inside
+  // one operation of the node's lifecycle queue: the node is stopped, with
+  // the add-on's proof, before the first removal, and nothing starts it
+  // again until the key is written (or the injection fails); then it
+  // restarts if it was running. A stop without proof throws before any of
+  // this, and the data is left alone.
+  const rekey = async () => {
     keysForEpoch(epoch);
 
     // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
@@ -805,7 +808,7 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVa
 
     // Read from the cache only now, after every await.
     const { radicleKey } = keysForEpoch(epoch);
-    did = identity.injectRadicleKey(
+    const injected = identity.injectRadicleKey(
       dataDir,
       radicleKey.privateKey,
       radicleKey.publicKey,
@@ -813,17 +816,11 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVa
     );
 
     injectedNodes.radicle = true;
-  } finally {
-    // Bring a node it stopped back up: as the new identity, or as the old
-    // one if injection stopped before the key was written.
-    if (radicleWasRunning && radicleLifecycle.start) {
-      try {
-        await radicleLifecycle.start();
-      } catch (err) {
-        console.warn('[IdentityManager] Radicle start hook failed after injection:', err.message);
-      }
-    }
-  }
+    return injected;
+  };
+  const did = radicleLifecycle.withStopped
+    ? await radicleLifecycle.withStopped(rekey)
+    : await rekey();
 
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
@@ -877,7 +874,7 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     results.radicle = await injectRadicleIdentity(radicleAlias, epoch);
     if (wasInjected && force) {
       // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
-      // hook stops the node before the wipe and starts it after), so it is
+      // hook stops the node before the wipe and restarts it after), so it is
       // not in needsRestart: the renderer would restart it a second time.
       results.radicle.reinjected = true;
     }
