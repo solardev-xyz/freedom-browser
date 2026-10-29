@@ -233,6 +233,84 @@ describe('vault', () => {
     });
   });
 
+  describe('vault file writes (K-2)', () => {
+    const unix = process.platform === 'win32' ? test.skip : test;
+    const tempFiles = () => fs.readdirSync(tempDir).filter((name) => name.endsWith('.tmp'));
+
+    unix('the vault file is owner read/write only', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      expect(fs.statSync(getVaultPath(tempDir)).mode & 0o777).toBe(0o600);
+
+      await changePassword(tempDir, 'password123', 'password456');
+      expect(fs.statSync(getVaultPath(tempDir)).mode & 0o777).toBe(0o600);
+    });
+
+    unix('an existing world-readable vault is narrowed when read', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      fs.chmodSync(getVaultPath(tempDir), 0o644);
+
+      await unlockVault(tempDir, 'password123', 0);
+      expect(fs.statSync(getVaultPath(tempDir)).mode & 0o777).toBe(0o600);
+    });
+
+    test('a save leaves no temp file behind', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      await changePassword(tempDir, 'password123', 'password456');
+      expect(tempFiles()).toEqual([]);
+    });
+
+    test('a failed replace keeps the old vault and its password', async () => {
+      await importVault(tempDir, 'oldpassword', TEST_MNEMONIC);
+      const before = fs.readFileSync(getVaultPath(tempDir), 'utf-8');
+      const rename = jest.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+      });
+      try {
+        await expect(changePassword(tempDir, 'oldpassword', 'newpassword')).rejects.toThrow(
+          'no space left'
+        );
+      } finally {
+        rename.mockRestore();
+      }
+
+      expect(fs.readFileSync(getVaultPath(tempDir), 'utf-8')).toBe(before);
+      expect(tempFiles()).toEqual([]);
+      await unlockVault(tempDir, 'oldpassword', 0);
+      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+    });
+
+    test('a new copy that does not decrypt never replaces the vault', async () => {
+      await importVault(tempDir, 'oldpassword', TEST_MNEMONIC);
+      const before = fs.readFileSync(getVaultPath(tempDir), 'utf-8');
+      const realRead = fs.readFileSync;
+      // The read-back of the freshly written copy sees the old ciphertext,
+      // which the new password cannot open.
+      const read = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) =>
+        String(file).endsWith('.tmp') ? before : realRead(file, ...rest)
+      );
+      try {
+        await expect(changePassword(tempDir, 'oldpassword', 'newpassword')).rejects.toThrow(
+          'Incorrect password'
+        );
+      } finally {
+        read.mockRestore();
+      }
+
+      expect(fs.readFileSync(getVaultPath(tempDir), 'utf-8')).toBe(before);
+      expect(tempFiles()).toEqual([]);
+      await expect(unlockVault(tempDir, 'newpassword', 0)).rejects.toThrow('Incorrect password');
+    });
+
+    test('changing the password leaves a locked vault locked', async () => {
+      await importVault(tempDir, 'oldpassword', TEST_MNEMONIC);
+      expect(isUnlocked()).toBe(false);
+
+      await changePassword(tempDir, 'oldpassword', 'newpassword');
+      expect(isUnlocked()).toBe(false);
+      expect(getMnemonic()).toBeNull();
+    });
+  });
+
   describe('auto-lock', () => {
     test('auto-locks after timeout', async () => {
       await importVault(tempDir, 'password123', TEST_MNEMONIC);
