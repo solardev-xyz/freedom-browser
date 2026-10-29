@@ -1,0 +1,1 @@
+- A dApp's transaction is now prompted and sent on the network the page sees, not the one it was first connected on ([#935](https://github.com/solardev-xyz/freedom-browser/issues/935))
