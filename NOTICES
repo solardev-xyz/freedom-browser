@@ -207,11 +207,11 @@ Ad-blocking filter lists (bundled data, not code)
     Shipped unmodified as `assets/adblock/resources.json` (sha256
     5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690),
     the build of those scriptlets that @ghostery/adblocker publishes:
-      https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/ublock-origin/resources.json
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/ublock-origin/resources.json
     It entered that repository in commit
       https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec
     written by Ghostery's asset build script at the same tag:
-      https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/update.js
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/update.js
     Its script bodies are minified. The corresponding source is uBlock
     Origin development build 1.73.1b1 (commit
     6788ed72af9bf2670bcdc1c3da3925d8b4f36443):
