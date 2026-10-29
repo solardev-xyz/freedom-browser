@@ -1,0 +1,3 @@
+- A page can no longer tie up the Radicle node with unlimited `rad:` reads ([#947](https://github.com/solardev-xyz/freedom-browser/issues/947))
+  - Reads from a page that navigates away or closes stop waiting
+  - Oversized responses are refused

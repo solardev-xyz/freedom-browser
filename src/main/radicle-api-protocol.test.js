@@ -409,6 +409,29 @@ describe('radapi protocol', () => {
     }
   });
 
+  test('refuses a response over the caller\'s cap, raw text or parsed (R-3)', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    embedded.blobAtRaw.mockResolvedValue(`{"content":"${'x'.repeat(200)}"}`);
+    embedded.issues.mockResolvedValue([{ title: 'y'.repeat(200) }]);
+
+    for (const apiPath of [`/blob/${REVISION}/big.bin`, '/issues']) {
+      const capped = await serveRepoApi(RID, apiPath, { maxResponseChars: 100 });
+      expect(capped.status).toBe(502);
+      expect(capped.headers.get('access-control-allow-origin')).toBe('*');
+      await expect(capped.json()).resolves.toEqual({
+        error: 'repository data too large to serve here',
+      });
+
+      // Without a cap (the internal viewer's radapi:) the same read is served.
+      const uncapped = await serveRepoApi(RID, apiPath, { allowPrivate: true });
+      expect(uncapped.status).toBe(200);
+    }
+    const small = await serveRepoApi(RID, `/blob/${REVISION}/big.bin`, {
+      maxResponseChars: 10_000,
+    });
+    expect(small.status).toBe(200);
+  });
+
   test('forwards a commit history page untouched', async () => {
     const text = '[ {"id": "x"} ]';
     embedded.commitsRaw.mockResolvedValue(text);

@@ -211,7 +211,7 @@ function pageParams(searchParams) {
 async function serveRepoApi(
   rid,
   apiPath,
-  { method = 'GET', search = '', allowPrivate = false } = {}
+  { method = 'GET', search = '', allowPrivate = false, maxResponseChars = null } = {}
 ) {
   // `rad:` (public repos only, served to any dweb page) keeps the wildcard
   // ACAO; `radapi:` (allowPrivate: node-level and private-repo data, internal
@@ -219,10 +219,19 @@ async function serveRepoApi(
   // Chromium does not enforce CORS on custom schemes — but a private
   // response should not advertise itself as readable by any origin either
   // (docs/security-audit-electron.md, O-12).
-  const reply = (payload, status = 200) => json(payload, status, { cors: !allowPrivate });
+  // `rad:` caps what it hands a page (R-3): the add-on has already built
+  // the whole string by now, but it is not copied on into the page.
+  const tooLarge = (text) => maxResponseChars !== null && text.length > maxResponseChars;
+  const tooLargeReply = () =>
+    json({ error: 'repository data too large to serve here' }, 502, { cors: !allowPrivate });
+  const reply = (payload, status = 200) => {
+    const text = JSON.stringify(payload);
+    return tooLarge(text) ? tooLargeReply() : jsonText(text, status, { cors: !allowPrivate });
+  };
   // Blob, readme, tree and commit reads are forwarded as the addon's JSON
   // text: a big file or diff is not parsed and re-stringified on main.
-  const replyText = (text) => jsonText(text, 200, { cors: !allowPrivate });
+  const replyText = (text) =>
+    tooLarge(text) ? tooLargeReply() : jsonText(text, 200, { cors: !allowPrivate });
   if (!RID_RE.test(rid)) {
     return reply({ error: 'invalid RID' }, 400);
   }

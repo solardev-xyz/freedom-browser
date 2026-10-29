@@ -29,6 +29,9 @@
  *    data is public P2P content; the sensitive surface is excluded above.
  *  - Gated on the active profile's Radicle node mode (403 when disabled),
  *    checked per-request like every other Radicle consumer in main.
+ *  - Bounded (R-3): reads go through rad-read-admission.js (concurrency,
+ *    per-requester queue, wait and run timeouts, abort when the page goes
+ *    away), and a response over MAX_RESPONSE_CHARS is refused.
  */
 
 const log = require('../logger');
@@ -40,6 +43,76 @@ const {
 } = require('../private/private-log-context');
 const { isDisabledForProfile } = require('../radicle-manager');
 const { decodeRepoApiPath, serveRepoApi } = require('../radicle-api-protocol');
+const { createRadReadAdmission, RadReadRefused } = require('./rad-read-admission');
+const { registerWebRequestHandler } = require('../webrequest-dispatcher');
+
+// The most JSON text one `rad:` response carries (a blob, a diff, a tree).
+const MAX_RESPONSE_CHARS = 16 * 1024 * 1024;
+
+const admission = createRadReadAdmission();
+
+// Cancellation. Chromium cancels a `rad:` request when its page navigates
+// away or its tab or window closes, but Electron does not abort the
+// Request's AbortSignal for a `protocol.handle` handler (Electron 45, seen
+// in a probe). webRequest does report it: onBeforeRequest, then the handler,
+// then onErrorOccurred with net::ERR_ABORTED, all with the same request id.
+// The handler gets no id, so each request's id is claimed in arrival order
+// per URL, and an ERR_ABORTED for it aborts the read's own signal. The same
+// details name the requesting tab (webContentsId), which the request itself
+// does not either: Chromium sends no referrer to a non-standard scheme.
+const unclaimedIds = new Map(); // url -> [{ id, webContentsId }], oldest first
+const readControllers = new Map(); // webRequest id -> AbortController
+
+function noteRadRequest(details) {
+  if (!details?.url?.startsWith('rad:')) return null;
+  const ids = unclaimedIds.get(details.url) || [];
+  ids.push({ id: details.id, webContentsId: details.webContentsId });
+  unclaimedIds.set(details.url, ids);
+  return null;
+}
+
+function endRadRequest(details) {
+  if (!details?.url?.startsWith('rad:')) return;
+  const ids = unclaimedIds.get(details.url);
+  if (ids) {
+    const index = ids.findIndex((entry) => entry.id === details.id);
+    if (index !== -1) ids.splice(index, 1);
+    if (!ids.length) unclaimedIds.delete(details.url);
+  }
+  const controller = readControllers.get(details.id);
+  readControllers.delete(details.id);
+  if (controller && details.error === 'net::ERR_ABORTED') controller.abort();
+}
+
+// This read's signal, aborted when its page goes away, and its tab.
+function claimRead(request) {
+  const ids = unclaimedIds.get(request.url);
+  const entry = ids?.shift();
+  if (ids && !ids.length) unclaimedIds.delete(request.url);
+  if (!entry) return { signal: request.signal, webContentsId: null, release: () => {} };
+  const controller = new AbortController();
+  readControllers.set(entry.id, controller);
+  return {
+    signal: controller.signal,
+    webContentsId: entry.webContentsId ?? null,
+    release: () => readControllers.delete(entry.id),
+  };
+}
+
+// Who a read is counted against: its tab, within its session (each private
+// window has its own session). Without a tab (a request webRequest did not
+// attribute), the referrer's origin, else one bucket for the session.
+function requesterKey(request, session, webContentsId) {
+  if (webContentsId !== null && webContentsId !== undefined) return `${session}|tab:${webContentsId}`;
+  let origin = '';
+  try {
+    const referrer = new URL(request.referrer);
+    origin = referrer.host ? `${referrer.protocol}//${referrer.host}` : referrer.protocol;
+  } catch {
+    // No referrer
+  }
+  return `${session}|${origin}`;
+}
 
 // Same RID shape the request-rewriter enforces: z + base58btc.
 const RID_RE = /^z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
@@ -110,7 +183,7 @@ function jsonErrorResponse(status, message) {
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub.
  */
-async function handleRadRequest(request) {
+async function handleRadRequest(request, { session = 'default' } = {}) {
   const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
@@ -130,8 +203,26 @@ async function handleRadRequest(request) {
     return jsonErrorResponse(built.status, built.message);
   }
 
-  return serveRepoApi(built.rid, built.path, { method, search: built.search });
+  const { signal, webContentsId, release } = claimRead(request);
+  try {
+    return await admission.run(requesterKey(request, session, webContentsId), signal, () =>
+      serveRepoApi(built.rid, built.path, {
+        method,
+        search: built.search,
+        maxResponseChars: MAX_RESPONSE_CHARS,
+      })
+    );
+  } catch (err) {
+    if (err instanceof RadReadRefused) return jsonErrorResponse(err.status, err.message);
+    // The page is gone; nobody reads this.
+    if (err?.name === 'AbortError') return jsonErrorResponse(503, 'request cancelled');
+    throw err;
+  } finally {
+    release();
+  }
 }
+
+let trackerRegistered = false;
 
 /**
  * Register the `rad:` protocol handler on the given session.
@@ -149,9 +240,18 @@ function registerRadProtocol(targetSession, { privatePartition = null } = {}) {
   // registration per session, so the private session's handler marks every
   // request it serves as private for the duration.
   const isPrivate = !!privatePartition;
+  // Process-wide, like radapi's guard: every session that attaches the
+  // dispatcher afterwards sees it (src/main/index.js orders it so).
+  if (!trackerRegistered) {
+    registerWebRequestHandler('onBeforeRequest', 'rad-read-tracker', noteRadRequest);
+    registerWebRequestHandler('onCompleted', 'rad-read-tracker', endRadRequest);
+    registerWebRequestHandler('onErrorOccurred', 'rad-read-tracker', endRadRequest);
+    trackerRegistered = true;
+  }
   try {
+    const session = privatePartition || 'default';
     targetSession.protocol.handle('rad', (request) =>
-      runWithPrivateLogContext(isPrivate, () => handleRadRequest(request))
+      runWithPrivateLogContext(isPrivate, () => handleRadRequest(request, { session }))
     );
     log.info('[rad-protocol] handler registered');
   } catch (err) {
@@ -163,4 +263,7 @@ module.exports = {
   registerRadProtocol,
   handleRadRequest,
   buildRadReference,
+  noteRadRequest,
+  endRadRequest,
+  MAX_RESPONSE_CHARS,
 };
