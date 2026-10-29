@@ -146,12 +146,10 @@ describe('webcontents-setup', () => {
     ctx.app.emit('web-contents-created', {}, contents);
 
     contents.emit('dom-ready');
-    expect(contents.insertCSS).toHaveBeenCalledWith(
-      'html, body { background-color: #fff; color: #000; color-scheme: light; }',
-      {
-        cssOrigin: 'user',
-      }
-    );
+    expect(contents.insertCSS).toHaveBeenCalledTimes(1);
+    expect(contents.insertCSS).toHaveBeenCalledWith('html { color-scheme: light; }', {
+      cssOrigin: 'user',
+    });
 
     contents.emit('destroyed');
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
@@ -177,8 +175,45 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      transparent: false,
       additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
+  });
+
+  // #923: the page-defaults CSS must not paint a background. A user-origin
+  // `background-color` on <html> keeps a <body>-only dark background (x.com)
+  // off the canvas, so the window shows white around the page's columns; one
+  // on <body> paints over the page's own <html> background the same way. The
+  // CSS may only pin the colour scheme, and the guest must be opaque so an
+  // unstyled page gets a white canvas rather than the chrome behind it.
+  test('page defaults pin a light colour scheme without painting a background (#923)', () => {
+    const ctx = loadWebContentsSetupModule();
+    const contents = createContentsMock({ id: 15, type: 'webview', url: 'https://x.com/home' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+    contents.emit('dom-ready');
+
+    const [[css, options]] = contents.insertCSS.mock.calls;
+    expect(options).toEqual({ cssOrigin: 'user' });
+    expect(css).toMatch(/^html\s*\{[^}]*color-scheme:\s*light;?[^}]*\}$/);
+    expect(css).not.toMatch(/body/);
+    expect(css).not.toMatch(/background/);
+    expect(css).not.toMatch(/(^|[\s;{])color\s*:/);
+  });
+
+  test('tab webviews are opaque even when the embedder asks for transparency (#923)', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 4, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const asked = { transparent: true };
+    host.emit('will-attach-webview', {}, asked, {});
+    expect(asked.transparent).toBe(false);
+
+    const unset = {};
+    host.emit('will-attach-webview', {}, unset, {});
+    expect(unset.transparent).toBe(false);
   });
 
   // Security audit (docs/security-audit-electron.md, E-3): the guest's
@@ -213,6 +248,7 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      transparent: false,
       additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
     expect(ctx.mod.WEBVIEW_PRELOAD_PATH).toMatch(/[\\/]src[\\/]main[\\/]webview-preload\.js$/);

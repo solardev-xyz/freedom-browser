@@ -89,3 +89,75 @@ describe('DLL search hardening', () => {
     expect(() => dependentLoadFlags(notPe)).toThrow('Not a PE image');
   });
 });
+
+describe('reusing a staged helper build', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const crypto = require('node:crypto');
+  const { currentBuild, recipeSha256, BINARIES, REVISION, ARCHIVE_SHA256 } = require('./build-windows-workspace');
+  const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+  const adapter = path.join(__dirname, '../src/main/agent/workspace-execution/native/windows/src/main.rs');
+
+  const stage = () => {
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-windows-workspace-'));
+    const binaries = {};
+    for (const filename of BINARIES) {
+      fs.writeFileSync(path.join(output, filename), `binary ${filename}`);
+      binaries[filename] = sha256(`binary ${filename}`);
+    }
+    for (const filename of ['CODEX-LICENSE.txt', 'CODEX-DEPENDENCIES.json', 'CODEX-DEPENDENCIES.txt']) fs.writeFileSync(path.join(output, filename), 'notice');
+    const manifest = { version: 1, backend: 'elevated', arch: 'x64', revision: REVISION, archiveSha256: ARCHIVE_SHA256,
+      adapterSha256: sha256(fs.readFileSync(adapter)), recipeSha256: recipeSha256(), binaries };
+    fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(manifest));
+    return { output, manifest };
+  };
+
+  test('a build matching the recipe and every file it names is reused', () => {
+    const { output } = stage();
+    try {
+      expect(currentBuild(output, 'x64')).toBe(true);
+      expect(currentBuild(output, 'arm64')).toBe(false);
+    } finally { fs.rmSync(output, { recursive: true, force: true }); }
+  });
+
+  test('a changed binary, a stale recipe or a missing notice forces a rebuild', () => {
+    for (const tamper of [
+      ({ output }) => fs.appendFileSync(path.join(output, BINARIES[1]), 'x'),
+      ({ output, manifest }) => fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ ...manifest, recipeSha256: '0'.repeat(64) })),
+      ({ output, manifest }) => fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ ...manifest, recipeSha256: undefined })),
+      ({ output }) => fs.rmSync(path.join(output, 'CODEX-DEPENDENCIES.txt')),
+      ({ output }) => fs.writeFileSync(path.join(output, 'manifest.json'), '{'),
+    ]) {
+      const staged = stage();
+      try {
+        tamper(staged);
+        expect(currentBuild(staged.output, 'x64')).toBe(false);
+      } finally { fs.rmSync(staged.output, { recursive: true, force: true }); }
+    }
+    expect(currentBuild(path.join(os.tmpdir(), 'freedom-no-such-build'), 'x64')).toBe(false);
+  });
+
+  // The published helpers are built on a core.autocrlf Windows checkout and
+  // reused on LF ones; the repository LICENSE lands in CODEX-DEPENDENCIES.*.
+  test('the recipe ignores line endings but tracks the repository LICENSE', () => {
+    const real = fs.readFileSync;
+    const license = path.join(__dirname, '../LICENSE');
+    const recipe = recipeSha256();
+    const read = jest.spyOn(fs, 'readFileSync');
+    try {
+      read.mockImplementation((file, ...rest) => {
+        const out = real(file, ...rest);
+        if (String(file).endsWith('manifest.json')) return out;
+        const crlf = String(out).replace(/\n/g, '\r\n');
+        return typeof out === 'string' ? crlf : Buffer.from(crlf);
+      });
+      expect(recipeSha256()).toBe(recipe);
+      read.mockImplementation((file, ...rest) => {
+        const out = real(file, ...rest);
+        return path.resolve(String(file)) === license ? `${out}changed\n` : out;
+      });
+      expect(recipeSha256()).not.toBe(recipe);
+    } finally { read.mockRestore(); }
+  });
+});

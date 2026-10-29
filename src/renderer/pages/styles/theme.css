@@ -155,18 +155,10 @@ html {
   --shell-info-border: rgba(124, 172, 248, 0.3);
   --shell-name-border: none;
 
-  /* Start page "What's new" (freedom://home): glass rows over the artwork,
-     with teal and vermilion accents taken from that artwork. */
-  --home-card: rgba(24, 25, 25, 0.74);
-  --home-card-hover: rgba(38, 40, 40, 0.8);
-  --home-card-border: rgba(255, 255, 255, 0.1);
-  --home-card-border-hover: rgba(255, 255, 255, 0.22);
-  --home-card-sheen: rgba(255, 255, 255, 0.07);
-  --home-card-shadow: rgba(0, 0, 0, 0.55);
-  --home-inset: rgba(255, 255, 255, 0.04);
+  /* Start page setup banner (freedom://home): a solid card over the artwork,
+     shaded like the chrome's update toast. */
+  --home-card-shadow: rgba(0, 0, 0, 0.4);
   --home-control-hover: rgba(255, 255, 255, 0.08);
-  --home-teal: #6fd0cf;
-  --home-teal-soft: rgba(111, 208, 207, 0.13);
 
   /* Profiles' modal overlay.
      The modal follows the window chrome rather than the page it sits on. */
@@ -324,17 +316,9 @@ html[data-theme='light'] {
   --shell-info-border: rgba(9, 105, 218, 0.3);
   --shell-name-border: 1px solid #d0d7de;
 
-  /* Start page "What's new" (freedom://home). */
-  --home-card: rgba(255, 255, 255, 0.76);
-  --home-card-hover: rgba(255, 255, 255, 0.9);
-  --home-card-border: rgba(31, 35, 40, 0.1);
-  --home-card-border-hover: rgba(31, 35, 40, 0.22);
-  --home-card-sheen: rgba(255, 255, 255, 0.9);
-  --home-card-shadow: rgba(31, 35, 40, 0.18);
-  --home-inset: rgba(246, 248, 250, 0.8);
+  /* Start page setup banner (freedom://home). */
+  --home-card-shadow: rgba(0, 0, 0, 0.15);
   --home-control-hover: rgba(31, 35, 40, 0.06);
-  --home-teal: #0b6e72;
-  --home-teal-soft: rgba(11, 110, 114, 0.1);
 
   /* Profiles' modal overlay. */
   --m-bg: #ffffff;

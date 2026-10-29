@@ -81,7 +81,7 @@ function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSetti
   for (const channel of channels) {
     ipcMain.handle(channel, (event) => {
       const settingsRequest = channel.startsWith('agent:provider:') && isProviderSettingsSender?.(event);
-      const launcherRequest = channel === IPC.AGENT_OPEN && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
+      const launcherRequest = [IPC.AGENT_OPEN, IPC.AGENT_SETUP_STATE].includes(channel) && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
       if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
       if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
@@ -624,7 +624,15 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     let decision = payload.approved;
+    const stringArray = (value, max) => Array.isArray(value) && value.length <= max &&
+      value.every(item => typeof item === 'string' && item.length <= 1_024) ? [...value] : null;
+    const publicationFixPaths = stringArray(payload.publicationFix?.paths, 200);
+    if (!payload.approved && publicationFixPaths?.length) {
+      decision = { approved: false, publicationFix: { paths: publicationFixPaths } };
+    }
     if (payload.approved) {
+      const publicationExclusions = stringArray(payload.publicationExclusions, 200);
+      const publicationAcknowledged = stringArray(payload.publicationAcknowledged, 200);
       const walletIndex =
         Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
           ? payload.walletIndex
@@ -632,12 +640,15 @@ function registerFreedomAgentIpc(options = {}) {
       const diagnosticScope = payload.diagnosticScope === 'conversation' ? 'conversation' : null;
       const workspacePermissionScope =
         payload.workspacePermissionScope === 'conversation' ? 'conversation' : null;
-      if (walletIndex !== null || diagnosticScope || workspacePermissionScope) {
+      if (walletIndex !== null || diagnosticScope || workspacePermissionScope ||
+          publicationExclusions?.length || publicationAcknowledged?.length) {
         decision = {
           approved: true,
           ...(walletIndex !== null && { walletIndex }),
           ...(diagnosticScope && { diagnosticScope }),
           ...(workspacePermissionScope && { workspacePermissionScope }),
+          ...(publicationExclusions?.length && { publicationExclusions }),
+          ...(publicationAcknowledged?.length && { publicationAcknowledged }),
         };
       }
     }
@@ -1044,7 +1055,8 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     const bzzUrl = typeof payload?.bzzUrl === 'string' ? payload.bzzUrl.trim() : '';
-    if (!/^bzz:\/\/[a-f0-9]{64}$/.test(bzzUrl)) {
+    // 128 hex: an encrypted private draft link (reference plus key).
+    if (!/^bzz:\/\/[a-f0-9]{64}(?:[a-f0-9]{64})?$/.test(bzzUrl)) {
       return errorEnvelope(
         AGENT_ERROR_CODES.INVALID_ARGUMENT,
         'Opening a publication requires a valid Swarm URL'
@@ -1406,6 +1418,7 @@ function registerFreedomAgentIpc(options = {}) {
     IPC.AGENT_PROCESS_STOP, IPC.AGENT_PROCESS_PREVIEW_OPEN, IPC.AGENT_PUBLICATION_OPEN,
     IPC.AGENT_PROVIDER_GET_STATUS, IPC.AGENT_PROVIDER_REMOVE, IPC.AGENT_PROVIDER_CLEAR,
     IPC.AGENT_PROVIDER_CANCEL_LOGIN, IPC.AGENT_ATTACHMENTS_REMOVE, IPC.AGENT_ATTACHMENTS_REVOKE,
+    IPC.AGENT_SETUP_STATE,
   ]);
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
     if (!isEnabled() && !availableWhileOff.has(channel)) {
@@ -1435,13 +1448,40 @@ function registerFreedomAgentIpc(options = {}) {
     }
   });
 
-  handle(IPC.AGENT_OPEN, (event) => {
+  // `freshPage` asks the chrome to move to a start page before it shows the
+  // panel, so Agent does not open over the page that asked for it (Settings
+  // after the first model is connected, #864).
+  handle(IPC.AGENT_OPEN, (event, request) => {
     if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open Agent from the start page or Settings');
     const window = getOwnerWindow?.(event.sender);
     if (!window || window.isDestroyed?.()) return { ok: false };
-    window.webContents.send('agent:show');
+    if (request?.freshPage === true) window.webContents.send('agent:show', { freshPage: true });
+    else window.webContents.send('agent:show');
     return { ok: true };
+  });
+  // The start page's setup banner needs one bit: is a model connected. Not the
+  // provider status itself, which stays with Settings and the chrome. Settings'
+  // "AI is off" note needs one more: is anything kept while AI is off (a saved
+  // chat or project, a model connection, a connected service), so a fresh
+  // profile is not told its saved data is kept (#854). Counts only, no names.
+  const somethingKept = (status) => {
+    const has = (read) => {
+      try { return read() > 0; } catch { return false; }
+    };
+    return has(() => service.listConversations()?.length) ||
+      has(() => status?.connections?.length) ||
+      has(() => options.mcpConnections?.list()?.length);
+  };
+  handle(IPC.AGENT_SETUP_STATE, (event) => {
+    if (!isTrustedSender(event?.sender) && !options.isProviderSettingsSender?.(event) && !options.isAgentLauncherSender?.(event))
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Read Agent setup from the start page or Settings');
+    try {
+      const status = providerResolver.getStatus();
+      return { ok: true, configured: status?.configured === true, kept: somethingKept(status) };
+    } catch (error) {
+      return safeProviderError(error);
+    }
   });
   handle(IPC.AGENT_START, handleStart);
   handle(IPC.AGENT_STEER, handleSteer);
@@ -1490,6 +1530,7 @@ function registerFreedomAgentIpc(options = {}) {
   return async () => {
     unsubscribeSettings?.();
     ipcMain.removeHandler?.(IPC.AGENT_OPEN);
+    ipcMain.removeHandler?.(IPC.AGENT_SETUP_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_MCP_CONNECTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STEER);

@@ -91,6 +91,9 @@ describe('macOS Seatbelt backend contract', () => {
     for (const name of SEATBELT_SYSCTL_READ_NAMES) {
       expect(profile).toContain(`(sysctl-name "${name}")`);
     }
+    // Electron 45's Chromium CHECKs this at startup; without it every sandboxed
+    // Electron-as-Node helper (workspace read/list/find/write) exits with SIGTRAP.
+    expect(profile).toContain('(sysctl-name "hw.memsize")');
     expect(profile).toContain(`(allow file-write* (subpath "${workspace.sourcePath}"))`);
     expect(profile).toContain(`(deny file-write* (subpath "${gitMetadata.sourcePath}"))`);
     expect(profile).toContain(`(allow file-write* (subpath "${privateDirectory}"))`);

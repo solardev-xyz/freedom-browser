@@ -11,7 +11,10 @@ const MODEL_REVISION = '5359861c739e955e79d9a303bcbc70fb988958b1';
 const MODEL_SHA256 = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe';
 const MODEL_BYTES = 147951465;
 const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REVISION}/ggml-base.bin`;
+// The one user-facing name for this model: Settings, the composer chooser and
+// the download progress all say it (#803).
+const MODEL_NAME = 'Whisper Base';
 const SUPPORTED_TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
 
 module.exports = { WHISPER_VERSION, WHISPER_REVISION, WHISPER_SOURCE_TREE_SHA256,
-  MODEL_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, SUPPORTED_TARGETS };
+  MODEL_REVISION, MODEL_SHA256, MODEL_BYTES, MODEL_URL, MODEL_NAME, SUPPORTED_TARGETS };

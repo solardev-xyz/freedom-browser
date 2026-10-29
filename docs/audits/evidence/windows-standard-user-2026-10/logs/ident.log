@@ -1,0 +1,14 @@
+{"host":"freedomstd","state":"completed","exitCode":0}
+"freedom-e2e-win\freedomsbxonline","S-1-5-21-3723574891-791309079-66294281-1005"
+"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"
+"FREEDOM-E2E-WIN\FreedomSbxUsers","Alias","S-1-5-21-3723574891-791309079-66294281-1003","Mandatory group, Enabled by default, Enabled group"
+"BUILTIN\Users","Alias","S-1-5-32-545","Mandatory group, Enabled by default, Enabled group"
+"NT AUTHORITY\INTERACTIVE","Well-known group","S-1-5-4","Mandatory group, Enabled by default, Enabled group"
+"CONSOLE LOGON","Well-known group","S-1-2-1","Mandatory group, Enabled by default, Enabled group"
+"NT AUTHORITY\Authenticated Users","Well-known group","S-1-5-11","Mandatory group, Enabled by default, Enabled group"
+"NT AUTHORITY\This Organization","Well-known group","S-1-5-15","Mandatory group, Enabled by default, Enabled group"
+"NT AUTHORITY\Local account","Well-known group","S-1-5-113","Mandatory group, Enabled by default, Enabled group"
+"LOCAL","Well-known group","S-1-2-0","Mandatory group, Enabled by default, Enabled group"
+"NT AUTHORITY\NTLM Authentication","Well-known group","S-1-5-64-10","Mandatory group, Enabled by default, Enabled group"
+"Mandatory Label\Medium Mandatory Level","Label","S-1-16-8192",""
+== exit: 0

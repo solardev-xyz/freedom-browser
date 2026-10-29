@@ -19,7 +19,7 @@ const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
     name: 'swarm-publishing',
     description:
       'Publish managed project output, attached files, live folders, static sites, and bounded text to Swarm through Freedom.',
-    files: Object.freeze(['SKILL.md']),
+    files: Object.freeze(['SKILL.md', 'site-template.html']),
   }),
   Object.freeze({
     name: 'dweb-domains',

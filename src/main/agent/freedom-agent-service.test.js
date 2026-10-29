@@ -1289,6 +1289,15 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'without replacing unrelated settings'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On Linux, sandboxed commands cannot create Unix sockets: socket(AF_UNIX) fails with EACCES'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      "multiprocessing.set_start_method('fork')"
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      '32-bit executables (i386 or x32 on x64, AArch32 on arm64) are killed with SIGSYS'
+    );
 
     fake.prompt.resolve();
     await service.waitForIdle();
@@ -2588,6 +2597,99 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('projects draft, stable-address and postage details, and refuses an inconsistent publication request (#741 E, F, G, H)', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const postage = { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true,
+      estimatedCostPlur: '12000', estimatedChunks: 3, extra: 'dropped' };
+    const draft = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, postage,
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 3, excerpt: 'https://unpkg.com', blocking: false }] } });
+    let approval = events.at(-1);
+    expect(approval.publication).toEqual({ kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true,
+      postage: { status: 'ready', batchId: 'c'.repeat(64), ttlSeconds: 3_600, expiry: 'critical', usable: true, estimatedCostPlur: '12000', estimatedChunks: 3 },
+      findings: [expect.objectContaining({ kind: 'third-party', rule: 'third-party-script', excerpt: 'https://unpkg.com', blocking: false })] });
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(draft).resolves.toBe('approved');
+
+    const stable = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist',
+      publication: { kind: 'folder', name: 'dist', target: 'public', public: true, postage: { status: 'none' },
+        stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` } } });
+    approval = events.at(-1);
+    // A card with no existence answer says it may be live, never "new".
+    expect(approval.publication).toMatchObject({ target: 'public', public: true, postage: { status: 'none' },
+      stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, existing: 'unknown', currentBzzUrl: `bzz://${'f'.repeat(64)}` } });
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await expect(stable).resolves.toBe('declined');
+
+    // Inconsistent kinds never reach the card: a draft that claims to be
+    // public or unencrypted, a draft with a stable address, a non-public
+    // publication that is not a draft.
+    for (const publication of [
+      { kind: 'folder', name: 'dist', target: 'draft', public: true, encrypted: true },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false },
+      { kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, stableAddress: { name: 'x', owner: `0x${'1'.repeat(40)}` } },
+      { kind: 'folder', name: 'dist', public: false },
+    ]) {
+      await expect(requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication }))
+        .rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    }
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('publication findings reach the card, and card choices may only name listed files and findings', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const publication = {
+      kind: 'folder', name: 'dist', public: true,
+      files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 9 }],
+      excluded: [{ path: '.env', reason: 'Credential file' }],
+      findings: [{ id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 2, excerpt: 'sk_liv••••', blocking: true }],
+    };
+    const ask = () => {
+      const decision = requestApproval({ action: 'swarm_publish', operation: OPERATIONS.SWARM_PUBLISH, label: 'dist', publication });
+      return { decision, approval: events.at(-1) };
+    };
+
+    let { decision, approval } = ask();
+    expect(approval.publication.findings).toEqual(publication.findings);
+    expect(approval.publication.excluded).toEqual(publication.excluded);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['other.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationAcknowledged: ['finding_9'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: ['app.js'], publicationAcknowledged: ['finding_1'] });
+
+    ({ decision, approval } = ask());
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['index.html'] } })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: false, publicationFix: { paths: ['app.js'] } })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'declined', publicationFix: { paths: ['app.js'] } });
+
+    // A folder can list up to 1,000 files; a finding in any of them, and
+    // well over 100 of them, must still be excludable from the card.
+    publication.files = Array.from({ length: 1_000 }, (_, index) => ({ path: `f${index}.js`, bytes: 1 }));
+    publication.findings = Array.from({ length: 150 }, (_, index) => ({ id: `finding_${index + 1}`, path: `f${index + 850}.js`,
+      kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 1, excerpt: 'sk_liv••••', blocking: true }));
+    ({ decision, approval } = ask());
+    expect(approval.publication.files).toHaveLength(1_000);
+    const late = publication.findings.map(finding => finding.path);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: [...late, 'missing.js'] })).resolves.toBe(false);
+    await expect(service.decideApproval('run_test', approval.approvalId, { approved: true, publicationExclusions: late })).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({ status: 'approved', publicationExclusions: late });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('classifies an exact node request in the isolated model context and exposes a bounded approval', async () => {
     const fake = createFakeSession();
     const effectClassifier = {
@@ -3432,6 +3534,39 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
+  test('a retry the controller refused because of an earlier decline reads as declined (#845)', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const { onToolOutcome } = dependencies.createTools.mock.calls[0][0];
+    const step = (toolCallId, operation, outcome, isError) => {
+      fake.emit({ type: 'tool_execution_start', toolCallId, toolName: operation, args: {} });
+      onToolOutcome({ toolCallId, operation, pageId: 'tab_assigned', ...outcome });
+      fake.emit({ type: 'tool_execution_end', toolCallId, toolName: operation,
+        result: { content: [{ type: 'text', text: 'result' }] }, isError });
+    };
+    step('call_type', OPERATIONS.TYPE, { status: 'succeeded' }, false);
+    step('call_read', OPERATIONS.SNAPSHOT, { status: 'succeeded' }, false);
+    // No approval prompt ran for this call: the controller refused it from its
+    // declined-actions set and the tool layer reported approval 'declined'.
+    // A fresh decline's outcome also names its approval, but the parent takes
+    // that from the prompt; on its own it does not mark the step as a repeat.
+    step('call_fresh', OPERATIONS.SNAPSHOT,
+      { status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined' }, true);
+    expect(events.filter(event => event.type === 'tool_finished').at(-1)).not.toHaveProperty('repeatsDecline');
+    step('call_retry', OPERATIONS.CLICK,
+      { status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined', repeatsDecline: true }, true);
+    expect(events.filter(event => event.type === 'tool_finished').at(-1)).toMatchObject({
+      toolCallId: 'call_retry', status: 'failed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'declined',
+      repeatsDecline: true });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(events.at(-1).outcome.notice).toEqual({ tone: 'neutral', headline: 'Browser action declined',
+      detail: 'You declined an action, so it did not run.' });
+  });
+
   test('retains only the safe node summary for progress and completion evidence', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
@@ -3975,6 +4110,90 @@ describe('FreedomAgentService', () => {
     expect(normalizePiEvent({ ...event, isError: false }).errorCode).toBeUndefined();
     expect(normalizePiEvent({ ...event, toolName: 'browser_snapshot' }).errorCode).toBeUndefined();
     expect(normalizePiEvent({ ...event, result: { content: [{ type: 'text', text: 'Other failure' }] } }).errorCode).toBeUndefined();
+  });
+
+  test('forwards the model thinking to the panel and its state, never to saved history', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let clock = 1_000;
+    const { service } = createService(fake, { historyStore, now: jest.fn(() => clock) });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Research this page' }));
+    const update = (assistantMessageEvent) => fake.emit({ type: 'message_update', assistantMessageEvent });
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Visible but never saved. ' });
+    clock = 3_500;
+    update({ type: 'thinking_delta', delta: 'Still thinking.' });
+    update({ type: 'thinking_end', content: 'Visible but never saved. Still thinking.' });
+    update({ type: 'text_delta', delta: 'Done.' });
+    // A provider that never sends thinking_end is closed by its answer.
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'Unclosed.' });
+    // Mid-thought, the state marks the block open so a panel restored now
+    // keeps extending it rather than closing it and starting a second one.
+    expect(service.getState().transcript[0].thinking[1]).toEqual(
+      { text: 'Unclosed.', textOffset: 5, timelineOrder: 0, open: true }
+    );
+    clock = 4_500;
+    update({ type: 'text_delta', delta: ' More.' });
+
+    expect(events.filter((event) => event.type.startsWith('assistant_')).map(
+      ({ type, text, durationMs, textOffset }) => ({ type, text, durationMs, textOffset })
+    )).toEqual([
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 0 },
+      { type: 'assistant_thinking_delta', text: 'Visible but never saved. ', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_delta', text: 'Still thinking.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 2_500, textOffset: undefined },
+      { type: 'assistant_text_delta', text: 'Done.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_start', text: undefined, durationMs: undefined, textOffset: 5 },
+      { type: 'assistant_thinking_delta', text: 'Unclosed.', durationMs: undefined, textOffset: undefined },
+      { type: 'assistant_thinking_end', text: undefined, durationMs: 1_000, textOffset: undefined },
+      { type: 'assistant_text_delta', text: ' More.', durationMs: undefined, textOffset: undefined },
+    ]);
+    expect(service.getState().transcript[0].thinking).toEqual([
+      { text: 'Visible but never saved. Still thinking.', textOffset: 0, timelineOrder: 0, durationMs: 2_500 },
+      { text: 'Unclosed.', textOffset: 5, timelineOrder: 0, durationMs: 1_000 },
+    ]);
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    const saved = JSON.stringify(Object.values(historyStore).map((method) => method.mock?.calls));
+    expect(saved).toContain('Done. More.');
+    expect(saved).not.toContain('never saved');
+    expect(saved).not.toContain('Unclosed');
+  });
+
+  test('streams long thinking in full but keeps only a bounded start of it in state', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Think hard' }));
+    const update = (assistantMessageEvent) => fake.emit({ type: 'message_update', assistantMessageEvent });
+    const chunk = 'x'.repeat(10_000);
+    update({ type: 'thinking_start' });
+    for (let i = 0; i < 3; i += 1) update({ type: 'thinking_delta', delta: chunk });
+    update({ type: 'thinking_end' });
+    update({ type: 'text_delta', delta: 'Answer.' });
+    update({ type: 'thinking_start' });
+    for (let i = 0; i < 100; i += 1) update({ type: 'thinking_delta', delta: chunk });
+    update({ type: 'thinking_end' });
+
+    const streamed = events.filter((event) => event.type === 'assistant_thinking_delta');
+    expect(streamed.reduce((sum, event) => sum + event.text.length, 0)).toBe(1_030_000);
+    const thinking = service.getState().transcript[0].thinking;
+    expect(thinking.map(({ text, truncated }) => ({ length: text.length, truncated }))).toEqual([
+      { length: 30_000, truncated: undefined },
+      { length: 2_768, truncated: true },
+    ]);
+    // Once the budget is spent, a further block keeps nothing and is dropped.
+    update({ type: 'thinking_start' });
+    update({ type: 'thinking_delta', delta: 'More.' });
+    update({ type: 'thinking_end' });
+    expect(service.getState().transcript[0].thinking).toHaveLength(2);
   });
 
   test('normalizes only the safe event subset and known tool errors', () => {

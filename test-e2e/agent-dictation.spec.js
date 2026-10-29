@@ -118,6 +118,22 @@ test('chevron opens a compact provider menu in both themes; selection does not r
       await expect(menu).toBeVisible();
       await expect(menu.getByRole('menuitemradio', { name: /OpenRouter/ })).toHaveAttribute('aria-checked', 'true');
       await expect(menu.getByRole('menuitem', { name: 'Voice dictation settings…' })).toBeInViewport();
+      // #870: the check trails the active option (as in the approval menu);
+      // the plain Settings action reserves no empty check gutter, so its label
+      // lines up with the provider labels.
+      const layout = await menu.evaluate(host => {
+        const radios = [...host.querySelectorAll('[role="menuitemradio"]')];
+        const settings = host.querySelector('[role="menuitem"]');
+        const left = item => item.querySelector('strong').getBoundingClientRect().left;
+        return {
+          checkLast: radios.every(item => item.lastElementChild.classList.contains('agent-dictation-menu-check')),
+          checks: radios.map(item => item.querySelector('.agent-dictation-menu-check').textContent),
+          settingsCheck: settings.querySelectorAll('.agent-dictation-menu-check').length,
+          aligned: radios.every(item => Math.abs(left(item) - left(settings)) < 1),
+        };
+      });
+      expect(layout).toMatchObject({ checkLast: true, settingsCheck: 0, aligned: true });
+      expect(layout.checks.filter(mark => mark === '✓').length).toBe(1);
       await expect(window.locator('#agent-dictation-panel')).toBeHidden();
       await expect(window.locator('#agent-dictation')).toBeInViewport();
       await window.screenshot({ path: testInfo.outputPath(`dictation-menu-${theme}-${width}.png`) });
@@ -222,6 +238,40 @@ test('Voice settings use service cards and detail pages in both themes, preservi
   const voice = settings.locator('#ai-dictation-settings');
   await expect(voice.getByRole('link', { name: /OpenRouter/ })).toContainText('In use');
   await expect(voice.getByLabel('Dictation service')).toHaveCount(0);
+  // #861: group labels read in sentence case, styled like the provider
+  // picker's "Model labs" label, not as uppercase category headings.
+  const labelStyle = (element) => {
+    const style = getComputedStyle(element);
+    return {
+      text: element.innerText,
+      fontSize: style.fontSize,
+      fontWeight: style.fontWeight,
+      letterSpacing: style.letterSpacing,
+      textTransform: style.textTransform,
+      color: style.color,
+    };
+  };
+  const voiceLabels = await voice.locator('.subsection-title').evaluateAll(
+    (elements, fn) => elements.map(new Function(`return ${fn}`)()),
+    labelStyle.toString()
+  );
+  expect(voiceLabels.map(label => label.text)).toEqual(['On your device', 'Connected services', 'Preferences']);
+  const providerLabel = await settings.evaluate((fn) => {
+    const label = document.createElement('div');
+    label.className = 'agent-provider-group-label';
+    label.textContent = 'Model labs';
+    document.querySelector('#providers').appendChild(label);
+    const providers = document.querySelector('#providers');
+    const hidden = providers.hidden;
+    providers.hidden = false;
+    const style = new Function(`return ${fn}`)()(label);
+    providers.hidden = hidden;
+    label.remove();
+    return style;
+  }, labelStyle.toString());
+  for (const label of voiceLabels) {
+    expect({ ...label, text: undefined }).toEqual({ ...providerLabel, text: undefined });
+  }
   await voice.getByLabel('Dictation language').selectOption('de');
   await expect.poll(() => window.evaluate(async () => (await window.electronAPI.getAgentDictationState()).preferences.language)).toBe('de');
   await voice.getByRole('link', { name: /OpenAI/ }).click();

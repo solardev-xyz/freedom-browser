@@ -202,14 +202,22 @@ describe('webview-preload', () => {
       protocol: 'file:', pathname: `/app/pages/${file}`, href: `file:///app/pages/${file}`,
     } });
     await exposures.freedomAPI.openAgent();
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:open');
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.openAgent({ freshPage: true });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open', { freshPage: true });
+    await exposures.freedomAPI.openAgent({ freshPage: 1, other: 'x' });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.getAgentSetupState();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:setup-state');
     if (file === 'home.html') {
       await expect(exposures.freedomAPI.getAgentProviderCatalog()).rejects.toThrow('only available on settings');
+      await expect(exposures.freedomAPI.getAgentProviderStatus()).rejects.toThrow('only available on settings');
     }
   });
   test('does not expose the Agent launcher to other internal pages or websites', async () => {
     const { exposures, ipcRenderer, location } = loadWebviewPreloadModule();
     await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    await expect(exposures.freedomAPI.getAgentSetupState()).rejects.toThrow('Open Agent from');
     location.protocol = 'https:'; location.pathname = '/pages/home.html';
     await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
     expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('agent:open');
@@ -416,10 +424,11 @@ describe('webview-preload', () => {
   });
 
   test.each([
-    ['onAgentProviderAuthEvent', 'agent:provider:auth-event'],
-    ['onAgentProviderChanged', 'agent:provider:changed'],
-  ])('%s stays Settings-only and unsubscribes on navigation', (name, channel) => {
-    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: { href: 'file:///app/pages/settings.html', protocol: 'file:', pathname: '/app/pages/settings.html' } });
+    ['onAgentProviderAuthEvent', 'agent:provider:auth-event', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'home.html'],
+  ])('%s reaches %s and unsubscribes on navigation', (name, channel, file) => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: { href: `file:///app/pages/${file}`, protocol: 'file:', pathname: `/app/pages/${file}` } });
     const callback = jest.fn();
     exposures.freedomAPI[name](callback);
     ipcRenderer.emit(channel, { type: 'fixture' });
@@ -428,6 +437,13 @@ describe('webview-preload', () => {
     callback.mockClear();
     ipcRenderer.emit(channel, {});
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  test('provider sign-in events stay with Settings, and other pages get no provider events', async () => {
+    const home = loadWebviewPreloadModule({ location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' } });
+    await expect(home.exposures.freedomAPI.onAgentProviderAuthEvent(jest.fn())).rejects.toThrow('only available on settings');
+    const history = loadWebviewPreloadModule();
+    await expect(history.exposures.freedomAPI.onAgentProviderChanged(jest.fn())).rejects.toThrow('Open Agent from');
   });
 
   test('onSettingsUpdated forwards the broadcast and unsubscribes on pagehide', () => {

@@ -1,1 +1,0 @@
-- Start-page What's new section with a Freedom Agent highlight and On/Off status ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))

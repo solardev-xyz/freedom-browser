@@ -7,11 +7,53 @@ const {
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
+  isPermanentModelFailure,
   providerFailurePresentation,
   providerRetryCount,
 } = require('./provider-failure');
 
 describe('provider failure classification', () => {
+  test.each([
+    'Model temporarily unavailable, please retry',
+    '503: {"error":{"message":"The model is unavailable due to high load"}}',
+    'model "gpt-x" is overloaded, try again later',
+  ])('treats capacity wording about a model as a transient outage: %s', (message) => {
+    const failure = classifyProviderFailure(message);
+    expect(failure.category).toBe(PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE);
+    expect(failure.recovery).toBe(PROVIDER_FAILURE_RECOVERY.TRANSIENT);
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+  });
+
+  test.each([
+    ['500: {"message":"model \\"qwen3:8b\\" not found, try pulling it first"}', true],
+    ['The model `gpt-9` does not exist or you do not have access to it.', true],
+    ['unknown model: foo', true],
+    // Ambiguous: also how capacity outages are worded, so Pi keeps retrying it.
+    ['model unavailable', false],
+    ['503 service unavailable', false],
+    ['500 internal server error', false],
+    // Generation errors that merely mention the model are not a missing model.
+    ['500 model generated invalid JSON', false],
+    ['500 model returned invalid tool call', false],
+    ['model gpt-4o is invalid', true],
+    ["model 'freedom-test' is unsupported", true],
+    ['model `gpt-x` is invalid', true],
+    ['model does not exist', true],
+    ["Model 'qwen3:8b' does not exist", true],
+    // "does not exist" about something the model did, not the model itself.
+    ['500 model called tool "browser_open" which does not exist', false],
+    ['500 model runner process does not exist', false],
+    ['tool does not exist for this model', false],
+    // A bare word before "not found" is a runner/file, not a model id.
+    ['500 model runner not found', false],
+    ['500 model file not found', false],
+    ['model not found', true],
+    ['model llama3 not found', true],
+    ['500: {"message":"model \\"mistral\\" not found"}', true],
+  ])('only vetoes retries for wording that names a missing model: %s', (message, permanent) => {
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(permanent);
+  });
+
   test.each([
     ['401 invalid API key sk-secret', PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION],
     ['insufficient_quota: billing limit', PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT],
@@ -26,6 +68,42 @@ describe('provider failure classification', () => {
   ])('classifies %s', (message, category) => {
     expect(classifyProviderFailure(message).category).toBe(category);
   });
+
+  test.each([
+    '404 The model mistral does not exist',
+    '400 model phi is unsupported',
+    '400 model mistral is invalid',
+    '404 model mistral not found',
+  ])('a bare-word model name still cards as a missing model on a 4xx: %s', (message) => {
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+    expect(classifyProviderFailure(message).category).toBe(
+      PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE
+    );
+  });
+
+  test.each([
+    '503 model unavailable',
+    '502: {"error":{"message":"model unavailable"}}',
+    '500 model returned invalid tool call',
+    '500 model called tool "browser_open" which does not exist',
+    '500 model runner process does not exist',
+    '500 model runner not found',
+    '500 model file not found',
+  ])('a retried server error mentioning the model stays a transient outage: %s', (message) => {
+    const failure = classifyProviderFailure(message);
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(false);
+    expect(failure.category).toBe(PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE);
+    expect(failure.recovery).toBe(PROVIDER_FAILURE_RECOVERY.TRANSIENT);
+  });
+
+  test.each(['404 model unavailable', 'model unavailable'])(
+    'ambiguous model wording without a server error still points at the model: %s',
+    (message) => {
+      expect(classifyProviderFailure(message).category).toBe(
+        PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE
+      );
+    }
+  );
 
   test('distinguishes transient failures from provider setup and request problems', () => {
     expect(classifyProviderFailure('503 service unavailable').recovery).toBe(

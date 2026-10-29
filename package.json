@@ -101,6 +101,8 @@
     "ipfs:native:smoke": "node scripts/smoke-freedom-ipfs-native.js",
     "ipfs:reset": "rm -rf ipfs-data && echo 'Legacy repo-root IPFS data reset.'",
     "tor:download": "node scripts/fetch-arti.js",
+    "natives:download": "node scripts/prebuilt-natives.js fetch",
+    "natives:pin": "node scripts/prebuilt-natives.js pin",
     "tor:reset": "rm -rf tor-data && echo 'Tor data reset.'",
     "radicle:download": "node scripts/fetch-radicle-addon.js",
     "radicle:reset": "rm -rf radicle-data && echo 'Legacy repo-root Radicle data removed; managed profile data was not changed.'",
@@ -407,15 +409,15 @@
     "node": ">=24.11.0 <25"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.7",
+    "@babel/core": "^8.0.9",
     "@babel/preset-env": "^8.0.7",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.7.0",
-    "electron-builder": "^26.8.1",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",
     "globals": "^17.13.0",
@@ -450,6 +452,9 @@
     "qrcode": "^1.5.4"
   },
   "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "^8.12.3"
+    },
     "@ledgerhq/domain-service": {
       "axios": "^1.20.0"
     },

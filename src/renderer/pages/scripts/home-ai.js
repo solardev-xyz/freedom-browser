@@ -1,61 +1,89 @@
-// Only the built-in ordinary start page loads this script. What's new is a
-// highlights section. Freedom Agent is currently the only highlight.
-const section = document.getElementById('whats-new');
+// Only the built-in ordinary start page loads this script. The banner walks a
+// new user into Freedom Agent: "Set up" while AI is off, "Connect a model"
+// while AI is on without one, and nothing once a model is connected. A user
+// who connected a model and then turned AI off is told it is off rather than
+// introduced to it again. Turning AI on stays in Settings, which is where the
+// user consents to it. Dismissing the banner hides the step it was showing;
+// Settings → AI can show it again.
+const banner = document.getElementById('ai-invitation');
 const intro = document.getElementById('home-intro');
-const invitation = document.getElementById('ai-invitation');
+const heading = document.getElementById('ai-invitation-heading');
+const byline = document.getElementById('ai-invitation-byline');
+const open = document.getElementById('ai-invitation-open');
 const dismiss = document.getElementById('ai-invitation-dismiss');
 const message = document.getElementById('ai-invitation-status');
-const state = document.getElementById('ai-invitation-state');
-const open = document.getElementById('ai-invitation-open');
-let aiEnabled = false;
-let opening = false;
-function renderAiInvitation(settings) {
-  aiEnabled = settings?.enableAi === true;
-  invitation.hidden = settings?.aiInvitationDismissed === true;
-  state.textContent = aiEnabled ? 'On' : 'Off';
-  state.dataset.enabled = String(aiEnabled);
-  open.title = aiEnabled ? 'Open Freedom Agent' : 'Enable AI in Settings';
-  section.hidden = invitation.hidden;
+
+const STEPS = {
+  enable: {
+    heading: 'Meet Freedom Agent',
+    byline: 'Research, build and publish to the decentralized web.',
+    action: 'Set up',
+    href: 'freedom://settings/ai',
+  },
+  resume: {
+    heading: 'Freedom Agent is off',
+    byline: 'Your model is still connected. Turn AI on to use Agent again.',
+    action: 'Turn on',
+    href: 'freedom://settings/ai',
+  },
+  connect: {
+    heading: 'Finish setting up Freedom Agent',
+    byline: 'Connect a model to start researching, building and publishing.',
+    action: 'Connect a model',
+    href: 'freedom://settings/ai/providers/add',
+  },
+};
+
+const { aiInvitationStep, dismissedAiInvitationStep } = window.freedomAiInvitation;
+
+let settings = null;
+let revision = 0;
+// The step the banner is showing, which the dismiss button hides.
+let shown = null;
+
+// A dismissal hides only the step it was made on (#881): reaching a different
+// step (turning AI on, or off again after connecting a model) shows the banner
+// again.
+async function render() {
+  if (!settings) return;
+  const current = ++revision;
+  const step = await aiInvitationStep(settings, () => freedomAPI.getAgentSetupState());
+  if (current !== revision) return;
+  shown = step && step !== dismissedAiInvitationStep(settings) ? step : null;
+  banner.hidden = !shown;
+  if (!shown) return;
+  heading.textContent = STEPS[shown].heading;
+  byline.textContent = STEPS[shown].byline;
+  open.textContent = STEPS[shown].action;
+  open.href = STEPS[shown].href;
 }
-open.addEventListener('click', async event => {
-  if (!aiEnabled || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  if (opening) return;
-  opening = true;
-  message.textContent = '';
-  try {
-    const result = await freedomAPI.openAgent();
-    if (!result?.ok) {
-      if (result?.error?.code === 'AGENT_DISABLED') {
-        location.href = 'freedom://settings/ai';
-        return;
-      }
-      throw new Error();
-    }
-  } catch {
-    message.textContent = 'Could not open Agent. Please try again.';
-  } finally {
-    opening = false;
-  }
-});
+
+function apply(next) {
+  settings = next;
+  void render();
+}
+
 dismiss.addEventListener('click', async () => {
+  const step = shown;
+  if (!step) return;
   dismiss.disabled = true;
   try {
-    if (!(await freedomAPI.saveSettings({ aiInvitationDismissed: true }))) throw new Error();
-    invitation.hidden = true;
-    section.hidden = true;
-    // The only highlight disappeared; return keyboard focus to the introduction.
+    if (!(await freedomAPI.saveSettings({ aiInvitationDismissed: step }))) throw new Error();
+    banner.hidden = true;
+    // The banner disappeared; return keyboard focus to the introduction.
     intro.focus();
   } catch {
-    message.textContent = 'Could not hide this highlight. Please try again.';
+    message.textContent = 'Could not hide this banner. Please try again.';
   } finally {
     dismiss.disabled = false;
   }
 });
-freedomAPI.onSettingsUpdated?.(renderAiInvitation);
+freedomAPI.onSettingsUpdated?.(apply);
+// A model connected or removed in Settings changes the step.
+freedomAPI.onAgentProviderChanged?.(() => void render());
 freedomAPI
   .getSettings()
-  .then(renderAiInvitation)
+  .then(apply)
   .catch(() => {
-    // Keep the highlight hidden when its saved state cannot be loaded.
+    // Keep the banner hidden when its saved state cannot be loaded.
   });

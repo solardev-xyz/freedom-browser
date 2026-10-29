@@ -1,9 +1,11 @@
 import { createAgentPrivacy } from './agent-privacy.js';
 import { createAgentProviderUi } from './agent-provider-ui.js';
 import { createAgentDictation } from './agent-dictation.js';
+import { carryOverPrompt } from './agent-carry-over.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
+import { setCutOffMark } from './agent-cutoff-mark.js';
 import {
   DOMAIN_APPROVAL_SOURCE,
   domainApprovalHeading,
@@ -37,7 +39,7 @@ const APPROVAL_MODES = Object.freeze({
   ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
 });
 const APPROVAL_MODE_LABELS = Object.freeze({
-  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask frequently',
+  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every time',
   [APPROVAL_MODES.SENSITIVE_ACTIONS]: 'Ask when needed',
   [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Fewer interruptions',
 });
@@ -95,6 +97,8 @@ let getActiveTab = () => null;
 let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
 let switchToTab = () => {};
+let openLinkInNewTab = () => {};
+let openStartPage = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
@@ -118,7 +122,6 @@ let attachmentSelectionGeneration = 0;
 let composerDragDepth = 0;
 let conversationResources = [];
 let lastFinishedRunId = null;
-let stopRequestedRunId = null;
 let pendingApproval = null;
 let lastApprovalDecisionAt = -Infinity;
 let lastDisplayedApprovalId = null;
@@ -209,15 +212,17 @@ function setMessage(element, message = '', isError = false) {
   element.classList.toggle('error', isError);
 }
 
-function isShareablePage(tab) {
-  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
-  if (
+function isStartPage(tab) {
+  return typeof tab?.url === 'string' && (
     tab.url === homeUrl ||
     tab.url === 'freedom://home' ||
     (tab.url.startsWith('file:') && tab.url.endsWith('/pages/home.html'))
-  ) {
-    return false;
-  }
+  );
+}
+
+function isShareablePage(tab) {
+  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
+  if (isStartPage(tab)) return false;
   try {
     return ['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(new URL(tab.url).protocol);
   } catch {
@@ -240,10 +245,13 @@ function pageContextTab() {
     return openTabs.find((tab) => tab.id === conversationRendererTabId) || null;
   }
   const tab = getActiveTab();
-  if (!isShareablePage(tab) || isTabAgentOwned(tab.id) || dismissedPageContextTabId === tab.id) {
-    return null;
-  }
-  return tab;
+  return newTaskStartsFrom(tab) ? tab : null;
+}
+
+// The one rule for "a new task starts from this page": the page-context chip,
+// startRun() and the new-task workspace note all use it, so they agree.
+function newTaskStartsFrom(tab) {
+  return isShareablePage(tab) && !isTabAgentOwned(tab.id) && dismissedPageContextTabId !== tab.id;
 }
 
 function pageContextLabel(tab) {
@@ -615,6 +623,61 @@ function closeComposerPopovers() {
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
 }
 
+// The model menu opens above its button, right edges aligned, and never grows
+// past the panel header: otherwise a long model list covers the header's
+// expand and close buttons (#869). Offsets, unlike client rects, ignore the
+// transforms the launcher animates with, so the anchor holds mid-animation.
+function offsetWithin(node, ancestor) {
+  let x = 0;
+  let y = 0;
+  while (node && node !== ancestor) {
+    const parent = node.offsetParent;
+    x += node.offsetLeft + (parent && parent !== ancestor ? parent.clientLeft : 0);
+    y += node.offsetTop + (parent && parent !== ancestor ? parent.clientTop : 0);
+    node = parent;
+  }
+  return node === ancestor ? { x, y } : null;
+}
+
+function closeModelMenu() {
+  elements.modelMenu.hidden = true;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'false');
+}
+
+function openModelMenu() {
+  elements.modelMenu.hidden = false;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'true');
+  positionModelMenu();
+}
+
+// Runs on open and again on every window resize while the menu is open: a
+// shorter window moves the button up but not the header, so a room measured
+// at open time would let the menu climb over the header.
+function positionModelMenu() {
+  const { modelMenu: menu, modelMenuButton: button } = elements;
+  if (menu.hidden) return;
+  const container = menu.offsetParent;
+  const anchor = container && offsetWithin(button, container);
+  if (!anchor) return;
+  const gap = 6;
+  const right = Math.min(
+    Math.max(0, container.clientWidth - anchor.x - button.offsetWidth),
+    Math.max(0, container.clientWidth - menu.offsetWidth)
+  );
+  menu.style.right = `${right}px`;
+  menu.style.bottom = `${container.clientHeight - anchor.y + gap}px`;
+  const buttonTop = button.getBoundingClientRect().top;
+  let ceiling = 0;
+  for (const header of [panelHeader, elements.agentFirstTitlebar]) {
+    const rect = header?.getBoundingClientRect?.();
+    if (rect && rect.height > 0) ceiling = Math.max(ceiling, rect.bottom);
+  }
+  // No minimum height: in a very short window a cramped menu (its list scrolls)
+  // is better than one that covers the header's expand and close buttons.
+  const room = Math.max(0, buttonTop - gap - ceiling - 4);
+  menu.style.setProperty('--agent-model-menu-room', `${room}px`);
+}
+
 function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
@@ -696,17 +759,19 @@ function setAgentView(nextView) {
   elements.mcpPanel.hidden = nextView !== 'services';
   elements.workspaceView.hidden = nextView !== 'workspace';
   const setup = nextView === 'setup';
-  elements.browserModeToggle.hidden = nextView !== 'workspace';
-  elements.title.hidden = nextView === 'workspace';
-  elements.subtitle.hidden = nextView === 'workspace';
+  // The floating launcher is titled "Agent"; the column shows the
+  // conversation title instead (agent-floating.css hides this heading there).
+  // The browser/Agent-first switch is the header's expand button.
+  elements.title.hidden = false;
+  // First-run setup says it once: the title names the task, the view's button
+  // the next step.
+  elements.subtitle.hidden = nextView === 'workspace' || (setup && providerStatus?.configured !== true);
   const services = nextView === 'services';
   const canReturn = services || (setup && providerStatus?.configured === true);
   elements.back.hidden = !canReturn;
   elements.title.textContent = services ? 'Services' : setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
   elements.subtitle.textContent = services ? 'Connected tools and integrations' : setup
-    ? canReturn
-      ? 'Add or manage providers'
-      : 'Connect a model to continue'
+    ? canReturn ? 'Add or manage providers' : ''
     : 'Give Agent a task';
   elements.agentFirstToggle.hidden = nextView !== 'workspace';
   closeComposerPopovers();
@@ -757,13 +822,11 @@ function setScopeHelpOpen(open) {
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
-  const { modeMenu, modeAgent, modeBrowser } = elements;
-  const modeToggle = agentFirstMode ? elements.modeToggle : elements.browserModeToggle;
+  const { modeMenu, modeAgent, modeBrowser, modeToggle } = elements;
   if (!open) {
     modeMenu.hidePopover?.();
     modeMenu.hidden = true;
-    elements.modeToggle.setAttribute('aria-expanded', 'false');
-    elements.browserModeToggle.setAttribute('aria-expanded', 'false');
+    modeToggle.setAttribute('aria-expanded', 'false');
     if (restoreFocus) modeToggle.focus();
     return;
   }
@@ -781,12 +844,12 @@ function setModeMenuOpen(open, restoreFocus = false) {
 
 function closeSessionContextMenu(restoreFocus = false) {
   if (!sessionContextMenu) return;
-  const { actions, select } = sessionContextMenu;
+  const { actions, more, returnFocus } = sessionContextMenu;
   actions.hidePopover?.();
   actions.hidden = true;
-  select.setAttribute('aria-expanded', 'false');
+  more.setAttribute('aria-expanded', 'false');
   sessionContextMenu = null;
-  if (restoreFocus) select.focus();
+  if (restoreFocus) returnFocus.focus();
 }
 
 function renderSessionSidebar() {
@@ -806,10 +869,21 @@ function renderSessionSidebar() {
     const title = document.createElement('span');
     title.textContent = session.title || 'Untitled session';
     select.title = session.title || 'Untitled session';
-    select.setAttribute('aria-haspopup', 'menu');
-    select.setAttribute('aria-expanded', 'false');
     select.appendChild(title);
     select.addEventListener('click', () => openSavedSession(session.conversationId));
+
+    // Visible trigger for the same menu right-click opens: shown on row
+    // hover/focus (agent.css), so Rename/Delete are discoverable without
+    // knowing about the context menu.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'agent-session-more';
+    more.disabled = currentRunStatus !== 'idle';
+    more.textContent = '⋯';
+    more.title = 'Session options';
+    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
 
     const actions = document.createElement('div');
     actions.className = 'agent-session-actions';
@@ -836,16 +910,16 @@ function renderSessionSidebar() {
     });
     actions.appendChild(rename);
     actions.appendChild(remove);
-    const openMenu = (event, keyboard = false) => {
+    const openMenu = (event, keyboard = false, trigger = select) => {
       event.preventDefault();
       closeSessionContextMenu();
       setModeMenuOpen(false);
       if (currentRunStatus !== 'idle') return;
       actions.hidden = false;
       actions.showPopover?.();
-      select.setAttribute('aria-expanded', 'true');
-      sessionContextMenu = { actions, select, row };
-      const anchor = select.getBoundingClientRect();
+      more.setAttribute('aria-expanded', 'true');
+      sessionContextMenu = { actions, more, row, returnFocus: trigger };
+      const anchor = trigger.getBoundingClientRect();
       const bounds = actions.getBoundingClientRect();
       const x = keyboard ? anchor.left : event.clientX;
       const y = keyboard ? anchor.bottom : event.clientY;
@@ -853,12 +927,31 @@ function renderSessionSidebar() {
       actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
       rename.focus();
     };
-    row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
-    select.addEventListener('keydown', (event) => {
-      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-        openMenu(event, true);
+    // A right-click (or, off macOS, a context-menu key event) can land on ⋯
+    // itself: then it is the opener, so the menu anchors under it and focus
+    // returns to it.
+    row.addEventListener('contextmenu', (event) =>
+      openMenu(event, !event.clientX && !event.clientY, more.contains(event.target) ? more : select)
+    );
+    more.addEventListener('click', (event) => {
+      if (sessionContextMenu?.actions === actions) {
+        event.preventDefault();
+        closeSessionContextMenu(true);
+        return;
       }
+      openMenu(event, true, more);
     });
+    // Shift+F10 / the ContextMenu key: handled as a key, not only through the
+    // row's contextmenu listener, because Chromium on macOS never turns them
+    // into a contextmenu event. preventDefault() here stops the platforms
+    // that do from opening the menu a second time.
+    for (const trigger of [select, more]) {
+      trigger.addEventListener('keydown', (event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          openMenu(event, true, trigger);
+        }
+      });
+    }
     actions.addEventListener('keydown', (event) => {
       if (event.key === 'Tab') {
         closeSessionContextMenu(true);
@@ -871,6 +964,7 @@ function renderSessionSidebar() {
     });
 
     row.appendChild(select);
+    row.appendChild(more);
     row.appendChild(actions);
     return row;
   });
@@ -908,9 +1002,19 @@ function workspacePages() {
   const activeTab = openTabs.find((tab) => tab.isActive);
   if (currentConversationId) return [...projected, ...openTabs.filter((tab) => tab.kind === 'workspace-viewer' && tab.conversationId === currentConversationId)
     .map((tab) => ({ rendererTabId: tab.id, agentActive: false, tab }))];
-  return activeTab
-    ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
-    : [];
+  // A new task's workspace shows the user's own page. A page Agent opened, or a
+  // viewer, belongs to an earlier chat: showing it would present another
+  // chat's page as this task's (#851).
+  if (!activeTab || isTabAgentOwned(activeTab.id) || activeTab.kind === 'workspace-viewer') return [];
+  // Whether the task actually starts from it is pageContextTab()'s rule, not
+  // just "it is showing": the homepage, an internal page, or a page whose chip
+  // the user removed stays visible here but is not shared with the run.
+  return [{
+    rendererTabId: activeTab.id,
+    agentActive: false,
+    tab: activeTab,
+    startsHere: newTaskStartsFrom(activeTab),
+  }];
 }
 
 function ensureWorkspacePageVisible() {
@@ -936,7 +1040,9 @@ function renderTaskPages() {
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Pages and read-only viewers belonging to this conversation are shown.'
-    : 'Agent will start from the page you are currently viewing.';
+    : pages.some((entry) => entry.startsHere)
+      ? 'Agent will start from the page you are currently viewing.'
+      : 'Agent will start without a page.';
 }
 
 function activePageIsControlled() {
@@ -952,6 +1058,16 @@ function activePageIsControlled() {
   );
 }
 
+// A tab Agent opened stays in its custody after the run ends (Complete,
+// Stopped): navigation and the address bar stay locked until the user claims
+// it. The page itself stays usable, so instead of the full interlock only the
+// hint pill shows, and clicking it hands the tab back.
+function activeHeldTabId() {
+  if (currentRunStatus !== 'idle' || activePageIsControlled()) return null;
+  const activeTab = openTabs.find((tab) => tab.isActive) || getActiveTab();
+  return Number.isSafeInteger(activeTab?.id) && isTabAgentOwned(activeTab.id) ? activeTab.id : null;
+}
+
 function setTakeoverDialogOpen(open) {
   const shouldOpen = open === true && activePageIsControlled() && currentRunStatus === 'running';
   elements.takeoverDialog.hidden = !shouldOpen;
@@ -964,14 +1080,28 @@ function setTakeoverDialogOpen(open) {
 
 function renderPageInterlock() {
   const locked = activePageIsControlled();
-  elements.pageInterlock.hidden = !locked;
-  elements.pageInterlock.setAttribute('aria-hidden', String(!locked));
-  elements.pageLockHint.textContent =
-    currentRunStatus === 'pausing'
+  const held = !locked && activeHeldTabId() !== null;
+  elements.pageInterlock.hidden = !locked && !held;
+  elements.pageInterlock.setAttribute('aria-hidden', String(!locked && !held));
+  elements.pageInterlock.classList.toggle('held', held);
+  elements.pageLockHint.textContent = held
+    ? 'Agent still holds this tab · Click to take over'
+    : currentRunStatus === 'pausing'
       ? 'Taking over…'
       : currentRunStatus === 'stopping'
         ? 'Stopping Agent…'
         : 'Agent is controlling this page · Click to take over';
+  // In held mode the trigger is an invisible page-sized button: keep it out of
+  // the Tab order so a stray Space/Enter can't release the tab. The pill stays
+  // clickable, and the tab badge and tab context menu remain the keyboard path.
+  if (held) elements.pageLockTrigger.setAttribute('tabindex', '-1');
+  else elements.pageLockTrigger.removeAttribute('tabindex');
+  elements.pageLockTrigger.setAttribute(
+    'aria-label',
+    held
+      ? 'Agent still holds this tab. Click to take over.'
+      : 'Agent is controlling this page. Click to take over.'
+  );
   if (!locked || currentRunStatus !== 'running') setTakeoverDialogOpen(false);
 }
 
@@ -1244,6 +1374,11 @@ async function refreshWorkspaceProjection() {
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
+  // The model menu's right/bottom/room are measured for the layout it opened
+  // in, and the switch animates the columns (so re-measuring now would read a
+  // mid-transition layout). Close it, like the mode menu; reopening measures
+  // the new layout.
+  closeModelMenu();
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -1266,7 +1401,7 @@ function setAgentFirstMode(nextMode) {
     'aria-label',
     agentFirstMode ? 'Return to browser view' : 'Make Agent the main view'
   );
-  elements.agentFirstToggle.title = agentFirstMode ? 'Browser view' : 'Agent-first view';
+  elements.agentFirstToggle.title = agentFirstMode ? 'Return to browser view' : 'Make Agent the main view';
   if (agentFirstMode) {
     openTabs = getOpenTabs();
     renderTaskPages();
@@ -1342,8 +1477,18 @@ function observeComposerHeight() {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
-    const examplesHeight = elements.examples?.offsetHeight || 0;
-    setBodyStyleProperty('--agent-examples-height', `${examplesHeight ? examplesHeight + 12 : 0}px`);
+    // A narrow window shows the conversation as a bottom sheet: page hints
+    // sit above the whole sheet, not just its composer (#874).
+    const panelHeight = panelInner?.getBoundingClientRect?.().height || 0;
+    if (panelHeight > 0) setBodyStyleProperty('--agent-floating-panel-height', `${panelHeight}px`);
+    // A short window with Find and downloads open can leave the sheet less
+    // room than its header and composer need: the composer then scrolls
+    // under the header instead of the sheet spilling over the page chrome.
+    // scrollHeight stays the composer's natural height while it scrolls.
+    const header = panelInner?.querySelector?.('.agent-sidebar-header');
+    const room = panelInner?.clientHeight || 0;
+    const needed = (header?.offsetHeight || 0) + (elements.composerWrap.scrollHeight || 0);
+    document.body?.classList?.toggle('agent-floating-sheet-cramped', room > 0 && needed > room + 1);
     captureLauncherSnapshot();
   };
   update();
@@ -1351,6 +1496,7 @@ function observeComposerHeight() {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
     if (elements.examples) composerResizeObserver.observe(elements.examples);
+    if (panelInner) composerResizeObserver.observe(panelInner);
   }
 }
 
@@ -1460,7 +1606,8 @@ function showProviderSetup() {
   setScopeHelpOpen(false);
   closeComposerPopovers();
   closePanel();
-  openAiSettings('ai/providers');
+  // Nothing to manage yet: go straight to the provider picker.
+  openAiSettings(providerStatus?.configured === true ? 'ai/providers' : 'ai/providers/add');
 }
 
 function setPanelOpen(nextOpen) {
@@ -1567,16 +1714,12 @@ function captureLauncherSnapshot() {
 
 const FLOAT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
-// Glass cards cannot fade with opacity without losing their blur (see
-// agent-floating.css), so they arrive by materialising: blur, tint, border
-// and shadow interpolate from nothing to their resting values.
+// The floating cards arrive by materialising: fill, border and shadow
+// interpolate from nothing to their resting values (see agent-floating.css),
+// while the content inside them fades in on its own.
 function glassHiddenKeyframe(extra = {}) {
-  const hiddenFilter =
-    window.getComputedStyle?.(elements.panel)?.getPropertyValue?.('--agent-glass-filter-hidden')?.trim() ||
-    'blur(0px)';
   return {
     backgroundColor: 'transparent',
-    backdropFilter: hiddenFilter,
     borderColor: 'transparent',
     boxShadow: 'none',
     ...extra,
@@ -1591,7 +1734,7 @@ function materialise(element, transform, delay = 0, fadeContents = true) {
   for (const child of element.children || []) fadeIn(child, delay + 80);
 }
 
-// Only for content that is not itself glass (opacity would disable a blur).
+// For the content inside a card, not the card itself.
 function fadeIn(element, delay = 0) {
   element?.animate?.([{ offset: 0, opacity: 0 }], {
     duration: 260,
@@ -1738,6 +1881,18 @@ function openPanel() {
   document.dispatchEvent(new CustomEvent('agent-sidebar-opened'));
 }
 
+// Settings opens Agent once the first model is connected; the floating panel
+// would otherwise cover the form the user was just filling in (#864). Move to
+// a start page first: the active one, another open one Agent isn't driving,
+// or a new one. Agent-first mode replaces the page view anyway.
+function showStartPage() {
+  if (!aiEnabled || isPrivateWindow() || isSignatureInFlight() || agentFirstMode) return;
+  if (isStartPage(getActiveTab())) return;
+  const open = getOpenTabs().find(tab => !tab.kind && isStartPage(tab) && !isTabAgentOwned(tab.id));
+  if (open) switchToTab(open.id);
+  else openStartPage();
+}
+
 function togglePanel() {
   if (panelOpen) closePanel();
   else openPanel();
@@ -1756,12 +1911,22 @@ function setRunState(status, label) {
       : status === 'paused'
         ? 'Add guidance and resume…'
         : 'Message Agent…';
-  elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
+  // A conversation keeps the model it started with, so the picker stays
+  // disabled for it. Only a run dims it, though: an idle conversation's model
+  // is a fact the user reads, not a control that is unavailable right now
+  // (#872). `agent.css` keys the undimmed look off this marker.
+  const modelLocked = Boolean(currentConversationId);
+  elements.modelMenuButton.disabled = active || modelLocked;
+  if (!active && modelLocked) elements.modelMenuButton.dataset.modelLock = 'conversation';
+  else delete elements.modelMenuButton.dataset.modelLock;
   elements.approvalModeButton.disabled = active || approvalModeMutationPending;
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
+  // A fresh task has nothing to report: an "Idle" pill told the user nothing
+  // (#876), so the badge only appears once there is a real state to name.
   elements.runStatus.textContent = label;
+  elements.runStatus.hidden = !label;
   elements.runStatus.classList.toggle('active', active);
   updateSendAvailability();
   renderPageInterlock();
@@ -1826,6 +1991,8 @@ function createTurnView(turn) {
     previous.toolList.removeAttribute('id');
     previous.outcomeActions.hidden = true;
     previous.outcomeRetry.hidden = true;
+    previous.outcomeChooseModel.hidden = true;
+    previous.outcomeOpenModels.hidden = true;
   }
 
   const section = document.createElement('section');
@@ -1888,6 +2055,18 @@ function createTurnView(turn) {
   outcomeRetry.textContent = 'Retry';
   outcomeRetry.addEventListener('click', () => void retryProviderTurn(view));
   outcomeActions.appendChild(outcomeRetry);
+  const outcomeChooseModel = document.createElement('button');
+  outcomeChooseModel.type = 'button';
+  outcomeChooseModel.textContent = 'Choose another model';
+  outcomeChooseModel.hidden = true;
+  outcomeChooseModel.addEventListener('click', () => void chooseAnotherModel(view));
+  outcomeActions.appendChild(outcomeChooseModel);
+  const outcomeOpenModels = document.createElement('button');
+  outcomeOpenModels.type = 'button';
+  outcomeOpenModels.textContent = 'Open Models';
+  outcomeOpenModels.hidden = true;
+  outcomeOpenModels.addEventListener('click', () => showProviderSetup());
+  outcomeActions.appendChild(outcomeOpenModels);
   outcomeCopy.appendChild(outcomeHeadline);
   outcomeCopy.appendChild(outcomeDetail);
   outcomeCopy.appendChild(outcomeNextStep);
@@ -1944,6 +2123,9 @@ function createTurnView(turn) {
     assistantRow,
     outputSegments: [{ output, text: turn.assistantText || '' }],
     assistantSegmentClosed: false,
+    // Whether the agent moved on (a tool call) after its last text, so that
+    // text was finished rather than cut off by a stop.
+    assistantSegmentEndedByTool: false,
     outcome,
     outcomeIcon,
     outcomeHeadline,
@@ -1953,6 +2135,8 @@ function createTurnView(turn) {
     outcomeTechnicalDetail,
     outcomeActions,
     outcomeRetry,
+    outcomeChooseModel,
+    outcomeOpenModels,
     artifactList,
     helperCards: new Map(),
     activity,
@@ -1962,6 +2146,7 @@ function createTurnView(turn) {
     liveStatusLabel,
     userText: turn.userText || '',
     assistantText: turn.assistantText || '',
+    thinkingBlocks: [],
     actionCount: 0,
   };
   turnViews.set(turn.runId, view);
@@ -1973,7 +2158,8 @@ function createTurnView(turn) {
 
 // A message stays where it was spoken. Tool starts and user guidance close
 // the current segment; the next assistant text gets a new bubble after them.
-function closeAssistantSegment(view) {
+function closeAssistantSegment(view, { byTool = false } = {}) {
+  if (byTool) view.assistantSegmentEndedByTool = true;
   if (view.assistantSegmentClosed) return;
   view.assistantSegmentClosed = true;
   const segment = view.outputSegments.at(-1);
@@ -1996,12 +2182,61 @@ function appendAssistantText(view, text) {
     view.section.insertBefore(view.assistantRow, view.outcome);
     view.assistantSegmentClosed = false;
   }
+  view.assistantSegmentEndedByTool = false;
   view.assistantText += text;
   const segment = view.outputSegments.at(-1);
   segment.text += text;
   // Keep the streaming text node rather than replacing an ever-growing answer.
   if (view.output.lastChild?.nodeType === 3) view.output.lastChild.appendData(text);
   else view.output.insertAdjacentText('beforeend', text);
+}
+
+// The model's thinking sits collapsed above the answer it led to, so long
+// reasoning never pushes the answer down. Text is rendered like the answer:
+// plain while it streams, sanitized Markdown once the block ends.
+function startThinkingBlock(view) {
+  if (view.outputSegments.at(-1).text) closeAssistantSegment(view);
+  endThinkingBlock(view);
+  const details = document.createElement('details');
+  details.className = 'agent-thinking';
+  details.open = false;
+  details.dataset.state = 'thinking';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Thinking…';
+  const body = document.createElement('div');
+  body.className = 'agent-thinking-text';
+  details.appendChild(summary);
+  details.appendChild(body);
+  view.section.insertBefore(details, view.assistantSegmentClosed ? view.outcome : view.assistantRow);
+  const block = { details, summary, body, text: '', open: true };
+  view.thinkingBlocks.push(block);
+  return block;
+}
+
+function appendThinkingText(view, text) {
+  if (!text) return;
+  const current = view.thinkingBlocks.at(-1);
+  const block = current?.open ? current : startThinkingBlock(view);
+  block.text += text;
+  if (block.body.lastChild?.nodeType === 3) block.body.lastChild.appendData(text);
+  else block.body.insertAdjacentText('beforeend', text);
+}
+
+function endThinkingBlock(view, durationMs) {
+  const block = view.thinkingBlocks.at(-1);
+  if (!block?.open) return;
+  block.open = false;
+  if (!block.text.trim()) {
+    // Some providers send an empty or redacted thinking block: nothing to show.
+    block.details.remove();
+    view.thinkingBlocks.pop();
+    return;
+  }
+  block.details.dataset.state = 'done';
+  block.summary.textContent = Number.isFinite(durationMs)
+    ? `Thinking · ${formatDuration(durationMs)}`
+    : 'Thinking';
+  renderAgentMarkdown(block.body, block.text);
 }
 
 function setLiveStatus(runId, label, { active = true } = {}) {
@@ -2090,6 +2325,77 @@ function formatDuration(durationMs) {
   return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
+const AGENT_MARKDOWN_LINK_SCHEMES = /^(?:https?|bzz|ipfs|ipns):/i;
+
+// A link in a chat answer opens in a tab, never in the chrome document itself.
+// Plain click opens a foreground tab (the page the user or Agent is on stays
+// put); Ctrl/Cmd+click and middle-click open a background tab (foreground in
+// agent-first mode, see below); Shift+click a new window — the same
+// dispositions page links and bookmarks follow.
+function handleAgentMarkdownLink(event) {
+  const link = event.target?.closest?.('a[href]');
+  if (!link || !event.currentTarget?.contains?.(link)) return;
+  if (event.type === 'auxclick' && event.button !== 1) return;
+  event.preventDefault();
+  const url = link.getAttribute('href');
+  if (!url || !AGENT_MARKDOWN_LINK_SCHEMES.test(url)) return;
+  const middle = event.type === 'auxclick';
+  if (!middle && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    window.electronAPI?.openUrlInNewWindow?.(url);
+    return;
+  }
+  // Agent-first mode's tab strip shows only this conversation's pages, so a
+  // background tab would be invisible and the click would look like a no-op.
+  // Open it in the foreground there instead, which leaves agent-first mode for
+  // the new tab exactly as a plain click does.
+  const background =
+    !agentFirstMode && Boolean((middle || event.ctrlKey || event.metaKey) && !event.shiftKey);
+  openLinkInNewTab(url, { background });
+}
+
+function decorateAgentMarkdown(output) {
+  if (!output.agentMarkdownLinksBound) {
+    output.agentMarkdownLinksBound = true;
+    output.addEventListener('click', handleAgentMarkdownLink);
+    output.addEventListener('auxclick', handleAgentMarkdownLink);
+  }
+  for (const link of output.querySelectorAll?.('a[href]') || []) {
+    // The chrome has no status bar, so the tooltip is where the destination
+    // shows before the click.
+    link.title = link.getAttribute('href');
+    link.className = 'agent-markdown-link';
+  }
+  for (const pre of output.querySelectorAll?.('pre') || []) {
+    const block = document.createElement('div');
+    block.className = 'agent-code-block';
+    pre.parentNode.insertBefore(block, pre);
+    block.appendChild(pre);
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'agent-code-copy';
+    // The label is drawn by CSS from data-state, so the button adds nothing to
+    // the answer's textContent (helper-report previews read it) or to a text
+    // selection copied out of the answer.
+    const setState = (state, label) => {
+      copy.dataset.state = state;
+      copy.setAttribute('aria-label', label);
+    };
+    setState('idle', 'Copy code');
+    copy.addEventListener('click', async () => {
+      try {
+        const result = await window.electronAPI.copyText(pre.textContent);
+        if (result?.success === false) throw new Error(result.error || 'Copy failed');
+        setState('copied', 'Code copied');
+      } catch {
+        setState('failed', 'Copy failed');
+      }
+      clearTimeout(copy.resetTimer);
+      copy.resetTimer = setTimeout(() => setState('idle', 'Copy code'), 1500);
+    });
+    block.appendChild(copy);
+  }
+}
+
 function renderAgentMarkdown(output, text) {
   if (!text || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
   try {
@@ -2121,9 +2427,14 @@ function renderAgentMarkdown(output, text) {
         'tr',
         'th',
         'td',
+        'a',
       ],
-      ALLOWED_ATTR: [],
+      // Links keep their URL (#848), but only for schemes a tab can open;
+      // DOMPurify drops any other href and leaves the link text.
+      ALLOWED_ATTR: ['href'],
+      ALLOWED_URI_REGEXP: AGENT_MARKDOWN_LINK_SCHEMES,
     });
+    decorateAgentMarkdown(output);
     output.classList.add('rendered-markdown');
   } catch {
     output.textContent = text;
@@ -2138,18 +2449,30 @@ function restoreTranscript(transcript = []) {
     const view = createTurnView({ ...turn, assistantText: '', guidance: [] });
     const text = turn.assistantText || '';
     const entries = [
+      ...(Array.isArray(turn.thinking) ? turn.thinking : [])
+        .filter(item => typeof item?.text === 'string' && item.text)
+        .map(item => ({ kind: 'thinking', item })),
       ...(Array.isArray(turn.activity) ? turn.activity : []).map(item => ({ kind: 'tool', item })),
       ...(Array.isArray(turn.guidance) ? turn.guidance : []).map(item => ({ kind: 'guidance', item })),
     ].map(entry => ({ ...entry, offset: Number.isSafeInteger(entry.item.textOffset)
       ? Math.max(0, Math.min(text.length, entry.item.textOffset)) : 0 }));
     // Older history has no offsets: retain its work before the final answer.
+    // Thinking precedes the tool call or guidance it shares a position with.
     entries.sort((a, b) => a.offset - b.offset ||
-      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0));
+      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0) ||
+      (a.kind === 'thinking' ? 0 : 1) - (b.kind === 'thinking' ? 0 : 1));
     let cursor = 0;
     for (const { kind, item, offset } of entries) {
       appendAssistantText(view, text.slice(cursor, offset));
       cursor = offset;
-      if (kind === 'guidance') createGuidanceView(turn.runId, item);
+      if (kind === 'thinking') {
+        startThinkingBlock(view);
+        // Main keeps only the start of very long thinking; mark the cut.
+        appendThinkingText(view, item.truncated ? `${item.text}\n\n…` : item.text);
+        // A block still streaming stays open, so the live deltas that follow
+        // extend it instead of starting a second disclosure.
+        if (item.open !== true) endThinkingBlock(view, item.durationMs);
+      } else if (kind === 'guidance') createGuidanceView(turn.runId, item);
       else {
         addToolRow({ ...item, runId: turn.runId });
         if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
@@ -2183,6 +2506,10 @@ function clearApproval() {
   elements.nodeRequestSummary.replaceChildren();
   elements.publicationDetails.hidden = true;
   elements.publicationSummary.replaceChildren();
+  elements.publicationFindings.hidden = true;
+  elements.publicationFindings.replaceChildren();
+  resetPublicationNotices();
+  publicationChoices = null;
   elements.workspacePermissionDetails.hidden = true;
   elements.workspacePermissionDetails.open = false;
   elements.workspacePermissionSummary.textContent = '';
@@ -2232,14 +2559,234 @@ function appendPublicationSummary(label, value) {
   elements.publicationSummary.appendChild(description);
 }
 
+function resetPublicationNotices() {
+  elements.publicationPermanent.hidden = false;
+  elements.publicationDraftNotice.hidden = true;
+  elements.publicationStableNotice.hidden = true;
+  elements.publicationPostageWarning.hidden = true;
+  elements.publicationPostageWarning.textContent = '';
+  delete elements.publicationPostageWarning.dataset.level;
+}
+
+const PLUR_PER_XBZZ = 10n ** 16n;
+
+// An estimate, so three significant digits: "0.0000123 xBZZ".
+function approximateXbzz(plurValue) {
+  let plur;
+  try { plur = BigInt(plurValue); } catch { return null; }
+  if (plur < 0n) return null;
+  if (plur === 0n) return '0 xBZZ';
+  const whole = plur / PLUR_PER_XBZZ;
+  const fraction = (plur % PLUR_PER_XBZZ).toString().padStart(16, '0');
+  if (whole > 0n) return `${whole}${fraction.slice(0, 3).replace(/0+$/, '') ? `.${fraction.slice(0, 3).replace(/0+$/, '')}` : ''} xBZZ`;
+  const first = fraction.search(/[1-9]/);
+  return `0.${fraction.slice(0, first + 3).replace(/0+$/, '')} xBZZ`;
+}
+
+function publicationDuration(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return 'expired';
+  const days = Math.floor(seconds / 86_400);
+  if (days > 0) return `${days} day${days === 1 ? '' : 's'}`;
+  const hours = Math.floor(seconds / 3_600);
+  if (hours > 0) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  const minutes = Math.max(1, Math.floor(seconds / 60));
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+// G: the batch this upload will use. Everything is in the cell text; the
+// warning is its own line, not a tooltip.
+function renderPublicationPostage(postage) {
+  if (!postage) return;
+  if (postage.status === 'none') {
+    appendPublicationSummary('Postage', 'No usable batch yet. Freedom checks again before uploading and never buys postage on its own.');
+    return;
+  }
+  if (postage.status !== 'ready') {
+    appendPublicationSummary('Postage', 'Batch details could not be read just now. Freedom checks postage before uploading.');
+    return;
+  }
+  appendPublicationSummary('Postage batch', `${postage.batchId.slice(0, 8)}…${postage.batchId.slice(-8)}${postage.usable ? '' : ' (not usable yet)'}`);
+  const cost = postage.estimatedCostPlur ? approximateXbzz(postage.estimatedCostPlur) : null;
+  if (cost) {
+    appendPublicationSummary('Estimated cost', `≈ ${cost} of this batch’s prepaid storage${postage.estimatedChunks ? ` (about ${postage.estimatedChunks} chunk${postage.estimatedChunks === 1 ? '' : 's'})` : ''}. Nothing new is bought.`);
+  }
+  appendPublicationSummary('Time remaining', postage.expiry === 'expired' ? 'Expired' : publicationDuration(postage.ttlSeconds));
+  if (postage.expiry === 'ok') return;
+  const warning = elements.publicationPostageWarning;
+  warning.dataset.level = postage.expiry === 'soon' ? 'warn' : 'critical';
+  warning.textContent = postage.expiry === 'expired'
+    ? 'This postage batch has expired. Freedom will not upload with it.'
+    : `This postage batch expires in ${publicationDuration(postage.ttlSeconds)}. After that the content can no longer be retrieved unless the batch is extended in Storage.`;
+  warning.hidden = false;
+}
+
 function publicationSubject(publication) {
   return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
 }
 
+// Per-file and per-finding choices on the publication card. Main re-checks
+// them; this only keeps "Publish publicly" disabled until secrets are resolved.
+let publicationChoices = null;
+
+const PUBLICATION_FINDING_KIND = Object.freeze({
+  secret: 'Secret',
+  personal: 'Personal data',
+  metadata: 'Metadata',
+  scope: 'Scope',
+  'third-party': 'Third party',
+});
+
+function appendChildren(parent, ...children) {
+  for (const child of children) parent.appendChild(child);
+}
+
+function unresolvedPublicationFindings(request = pendingApproval) {
+  const findings = request?.publication?.findings;
+  if (!Array.isArray(findings) || !publicationChoices || publicationChoices.request !== request) return [];
+  return findings.filter(finding => finding.blocking && !publicationChoices.excluded.has(finding.path) &&
+    !publicationChoices.acknowledged.has(finding.id));
+}
+
+function publicationApprovalBlocked() {
+  return unresolvedPublicationFindings().length > 0;
+}
+
+function updatePublicationFindingsState() {
+  const request = pendingApproval;
+  if (!publicationChoices || publicationChoices.request !== request) return;
+  const unresolved = unresolvedPublicationFindings(request);
+  for (const group of elements.publicationFindings.querySelectorAll('.agent-publication-finding-group')) {
+    const excluded = publicationChoices.excluded.has(group.dataset.path);
+    group.classList.toggle('excluded', excluded);
+    const exclude = group.querySelector('.agent-publication-exclude');
+    if (exclude) {
+      exclude.textContent = excluded ? 'Include file' : 'Exclude file';
+      exclude.setAttribute('aria-pressed', String(excluded));
+    }
+    const state = group.querySelector('.agent-publication-finding-state');
+    if (state) state.textContent = excluded ? 'Excluded · will not be published' : '';
+    for (const checkbox of group.querySelectorAll('.agent-publication-anyway')) checkbox.disabled = excluded;
+  }
+  const status = elements.publicationFindings.querySelector('.agent-publication-findings-status');
+  if (status) {
+    status.textContent = unresolved.length
+      ? `${unresolved.length} secret${unresolved.length === 1 ? '' : 's'} must be resolved before publishing: exclude the file, ask Agent to fix it, or tick Publish anyway.`
+      : 'All blocking findings are resolved.';
+    status.classList.toggle('blocked', unresolved.length > 0);
+  }
+  if (!elements.approvalDecline.disabled && Date.now() >= approvalReadyAt) {
+    elements.approvalApprove.disabled = unresolved.length > 0;
+  }
+}
+
+function renderPublicationFindings(request) {
+  const publication = request.publication;
+  const findings = Array.isArray(publication.findings) ? publication.findings : [];
+  publicationChoices = { request, excluded: new Set(), acknowledged: new Set() };
+  elements.publicationFindings.replaceChildren();
+  elements.publicationFindings.hidden = findings.length === 0;
+  if (!findings.length) return;
+  const heading = document.createElement('p');
+  heading.className = 'agent-publication-findings-heading';
+  const files = new Set(findings.map(finding => finding.path));
+  heading.textContent = `Pre-publish check: ${findings.length} finding${findings.length === 1 ? '' : 's'} in ${files.size} ${publication.kind === 'text' ? 'text' : `file${files.size === 1 ? '' : 's'}`}`;
+  const status = document.createElement('p');
+  status.className = 'agent-publication-findings-status';
+  status.setAttribute('aria-live', 'polite');
+  appendChildren(elements.publicationFindings, heading, status);
+  // Files with something blocking come first; scan order is kept otherwise.
+  const ordered = [...files].sort((left, right) =>
+    Number(findings.some(item => item.path === right && item.blocking)) - Number(findings.some(item => item.path === left && item.blocking)));
+  for (const filePath of ordered) {
+    const group = document.createElement('section');
+    group.className = 'agent-publication-finding-group';
+    group.dataset.path = filePath;
+    const header = document.createElement('div');
+    header.className = 'agent-publication-finding-header';
+    const name = document.createElement('span');
+    name.className = 'agent-publication-finding-path';
+    name.textContent = approvalDisplayText(publication.kind === 'text' ? 'Text to publish' : filePath);
+    const actions = document.createElement('span');
+    actions.className = 'agent-publication-finding-actions';
+    if (publication.kind === 'folder') {
+      const exclude = document.createElement('button');
+      exclude.type = 'button';
+      exclude.className = 'agent-publication-exclude';
+      exclude.textContent = 'Exclude file';
+      exclude.addEventListener('click', () => {
+        if (pendingApproval !== request) return;
+        if (publicationChoices.excluded.has(filePath)) publicationChoices.excluded.delete(filePath);
+        else publicationChoices.excluded.add(filePath);
+        updatePublicationFindingsState();
+      });
+      actions.appendChild(exclude);
+    }
+    const fix = document.createElement('button');
+    fix.type = 'button';
+    fix.className = 'agent-publication-fix';
+    fix.textContent = 'Ask Agent to fix';
+    fix.title = 'Sends the rule names and this path to Agent, never the values. Nothing is published; Agent can fix the file and ask again.';
+    fix.addEventListener('click', () => {
+      if (pendingApproval !== request) return;
+      void decideApproval(false, { publicationFix: { paths: [filePath] } }, request);
+    });
+    actions.appendChild(fix);
+    appendChildren(header, name, actions);
+    const state = document.createElement('p');
+    state.className = 'agent-publication-finding-state';
+    const list = document.createElement('ul');
+    list.className = 'agent-publication-finding-list';
+    for (const finding of findings.filter(item => item.path === filePath)) {
+      const row = document.createElement('li');
+      row.className = 'agent-publication-finding';
+      row.dataset.kind = finding.kind;
+      row.dataset.findingId = finding.id;
+      const badge = document.createElement('span');
+      badge.className = 'agent-publication-finding-badge';
+      badge.textContent = `${PUBLICATION_FINDING_KIND[finding.kind] || 'Finding'} · ${finding.blocking ? 'blocked' : 'warning'}`;
+      const label = document.createElement('span');
+      label.className = 'agent-publication-finding-label';
+      label.textContent = approvalDisplayText(`${finding.label}${Number.isSafeInteger(finding.line) ? ` · line ${finding.line}` : ''}`);
+      const excerpt = document.createElement('code');
+      excerpt.className = 'agent-publication-finding-excerpt';
+      excerpt.textContent = approvalDisplayText(finding.excerpt || '');
+      appendChildren(row, badge, label, excerpt);
+      if (finding.blocking) {
+        const anyway = document.createElement('label');
+        anyway.className = 'agent-publication-anyway-label';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'agent-publication-anyway';
+        checkbox.checked = false;
+        checkbox.addEventListener('change', () => {
+          if (pendingApproval !== request) return;
+          if (checkbox.checked) publicationChoices.acknowledged.add(finding.id);
+          else publicationChoices.acknowledged.delete(finding.id);
+          updatePublicationFindingsState();
+        });
+        const text = document.createElement('span');
+        text.textContent = 'Publish anyway';
+        appendChildren(anyway, checkbox, text);
+        row.appendChild(anyway);
+      }
+      list.appendChild(row);
+    }
+    appendChildren(group, header, state, list);
+    elements.publicationFindings.appendChild(group);
+  }
+  updatePublicationFindingsState();
+}
+
 function renderPublicationApproval(request) {
   const publication = request.publication;
+  const draft = publication.target === 'draft';
   elements.publicationDetails.hidden = false;
   elements.publicationSummary.replaceChildren();
+  resetPublicationNotices();
+  // Fixed copy from index.html; only which lines show depends on the request.
+  elements.publicationPermanent.hidden = draft;
+  elements.publicationDraftNotice.hidden = !draft;
+  elements.publicationStableNotice.hidden = !publication.stableAddress;
   appendPublicationSummary(
     'Content',
     publication.workspacePath
@@ -2260,9 +2807,27 @@ function renderPublicationApproval(request) {
   appendPublicationSummary('Media type', publication.contentType);
   appendPublicationSummary('Text to publish', publication.text);
   if (publication.files?.length) appendPublicationSummary('Files to publish', publication.files.map(file => `${file.path} (${formatArtifactBytes(file.bytes)})`).join('\n'));
-  if (publication.excludedCount) appendPublicationSummary('Excluded', `${publication.excludedCount} private or credential entries`);
+  if (publication.excluded?.length) appendPublicationSummary('Not published', publication.excluded.map(entry => `${entry.path} · ${entry.reason}`).join('\n'));
+  if (publication.stripped?.length) appendPublicationSummary('Metadata removed', publication.stripped.map(entry => `${entry.path} · ${entry.reason}`).join('\n'));
   appendPublicationSummary('Default document', publication.indexDocument);
-  appendPublicationSummary('Network', 'Public Swarm network');
+  appendPublicationSummary('Publish as', draft ? 'Private draft link (encrypted)' : 'Public (unencrypted)');
+  if (publication.stableAddress) {
+    const stable = publication.stableAddress;
+    // The address comes from the owner and name alone, so it may already be
+    // live, and linked to a name, with no record of it in this browser.
+    const versions = Number.isSafeInteger(stable.latestIndex) ? ` (${stable.latestIndex + 1} earlier ${stable.latestIndex ? 'versions' : 'version'})` : '';
+    const effect = stable.currentBzzUrl
+      ? `Updates ${stable.currentBzzUrl}. Anything linked to it, such as an ENS name, will show this publication`
+      : stable.existing === 'yes'
+        ? `This address already exists${versions}. Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication`
+        : stable.existing === 'no'
+          ? 'No earlier version of this address was found on the network, so publishing creates it'
+          : 'Freedom could not check whether this address already exists. If it does, publishing points it at this content, and anything linked to it will show this publication';
+    appendPublicationSummary('Stable address', `${stable.name} · owned by your Swarm identity ${shortAddress(stable.owner)}\n${effect}`);
+  }
+  appendPublicationSummary('Network', draft ? 'Public Swarm network (encrypted chunks)' : 'Public Swarm network');
+  renderPublicationPostage(publication.postage);
+  renderPublicationFindings(request);
 }
 
 function effectLabel(value) {
@@ -2359,7 +2924,7 @@ function renderWalletApproval(request, domain = null) {
 }
 
 function setApprovalControlsDisabled(disabled) {
-  elements.approvalApprove.disabled = disabled;
+  elements.approvalApprove.disabled = disabled || publicationApprovalBlocked();
   elements.approvalAllowConversation.disabled = disabled;
   elements.approvalDecline.disabled = disabled;
   elements.approvalStop.disabled = disabled;
@@ -2509,9 +3074,13 @@ function renderApproval(request) {
     : workspace
       ? workspace.setupRequired ? 'Set up Windows project protection?' : 'Enable a managed project workspace for this conversation?'
       : publication
-        ? publication.kind === 'text'
-          ? 'Publish this text to Swarm?'
-          : `Publish “${publication.name}” to Swarm?`
+        ? publication.target === 'draft'
+          ? publication.kind === 'text'
+            ? 'Create a private draft link for this text?'
+            : `Create a private draft link for “${publication.name}”?`
+          : publication.kind === 'text'
+            ? 'Publish this text to Swarm?'
+            : `Publish “${publication.name}” to Swarm?`
         : nodeRequest
           ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
           : nodeLifecycle
@@ -2553,12 +3122,14 @@ function renderApproval(request) {
       ? workspace.backend === 'windows-elevated'
         ? `${workspace.setupRequired ? 'An administrator must approve this one-time Windows setup. ' : ''}Agent can write inside this project and read other files accessible to the sandbox accounts.`
         : 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
+      : publication?.target === 'draft'
+        ? 'This uploads an encrypted copy of the snapshot listed below using an existing postage batch, and gives you a link that opens it. This is not a public publication; publishing it publicly later needs its own approval.'
       : publication
         ? publication.workspacePath
-          ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+          ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and permanent.'
           : publication.kind === 'folder'
-            ? 'This publishes the attached folder snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-            : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+            ? 'This publishes the attached folder snapshot listed below using an existing postage batch. The content is public, unencrypted, and permanent.'
+            : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and permanent.'
         : nodeRequest
           ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
           : nodeLifecycle
@@ -2594,7 +3165,7 @@ function renderApproval(request) {
     : workspace
       ? workspace.setupRequired ? 'Set up protection' : 'Enable workspace'
       : publication
-        ? 'Publish'
+        ? publication.target === 'draft' ? 'Create private draft link' : 'Publish publicly'
         : diagnostic
           ? 'Share once'
           : request.action === 'file_upload'
@@ -2645,7 +3216,7 @@ function renderApproval(request) {
     elements.approvalAllowConversation.disabled = true;
     setTimeout(() => {
       if (pendingApproval !== request) return;
-      elements.approvalApprove.disabled = false;
+      elements.approvalApprove.disabled = publicationApprovalBlocked();
       elements.approvalAllowConversation.disabled = false;
     }, approvalReadyAt - Date.now());
   }
@@ -2679,6 +3250,7 @@ async function ensureWalletUnlocked(request) {
 async function decideApproval(approved, options = {}, request = pendingApproval) {
   const runId = currentRunId;
   if (!request || !runId || request !== pendingApproval || (approved && Date.now() < approvalReadyAt)) return;
+  if (approved && request.publication && publicationApprovalBlocked()) return;
   setApprovalControlsDisabled(true);
   if (approved && request.wallet) {
     try {
@@ -2696,7 +3268,7 @@ async function decideApproval(approved, options = {}, request = pendingApproval)
   }
   if (pendingApproval !== request || currentRunId !== runId) return;
   lastApprovalDecisionAt = Date.now();
-  setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
+  setMessage(elements.approvalMessage, approved ? 'Allowing…' : options.publicationFix ? 'Asking Agent to fix…' : 'Not allowing…');
   try {
     const walletIndex = Number(elements.walletAccount.value);
     const decisionOptions = approved
@@ -2710,8 +3282,17 @@ async function decideApproval(approved, options = {}, request = pendingApproval)
           ...(request.workspacePermission && options.workspacePermissionScope === 'conversation'
             ? { workspacePermissionScope: 'conversation' }
             : {}),
+          ...(request.publication && publicationChoices?.request === request && publicationChoices.excluded.size
+            ? { publicationExclusions: [...publicationChoices.excluded] }
+            : {}),
+          ...(request.publication && publicationChoices?.request === request && publicationChoices.acknowledged.size
+            ? { publicationAcknowledged: [...publicationChoices.acknowledged].filter(id =>
+                !publicationChoices.excluded.has(request.publication.findings.find(finding => finding.id === id)?.path)) }
+            : {}),
         }
-      : null;
+      : request.publication && options.publicationFix
+        ? { publicationFix: options.publicationFix }
+        : null;
     const hasDecisionOptions = decisionOptions && Object.keys(decisionOptions).length > 0;
     const response = hasDecisionOptions
       ? await window.electronAPI.decideAgentApproval(
@@ -2854,9 +3435,11 @@ function visibleOutcome(outcome) {
   if (!outcome || typeof outcome !== 'object') return null;
   if (outcome.publication?.publicationId) return null;
   if (outcome.kind === 'recovery') return outcome;
-  if (outcome.notice) return outcome.notice;
+  // A neutral notice (a declined action) never outranks an unresolved outcome.
+  const notice = outcome.notice && typeof outcome.notice === 'object' ? outcome.notice : null;
+  if (notice && notice.tone !== 'neutral') return notice;
   if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
-    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : null;
+    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : notice;
   if ([
     'wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_in_flight',
     'swarm_publication_failed', 'swarm_publication_outcome_unknown',
@@ -2867,12 +3450,31 @@ function visibleOutcome(outcome) {
     return { ...outcome, headline: 'Project operation did not complete',
       detail: `${outcome.workspace.command || 'The last project operation'} did not complete. Check the activity for details.` };
   }
-  return null;
+  return notice;
 }
 
-function renderTurnOutcome(view, outcome, error) {
+// A stopped turn ends with its own notice, after whatever it managed to say.
+// A caution about the stopped work (an uncertain browser action) keeps its tone,
+// and the changes made before stopping are still named next to it.
+function stoppedOutcome(outcome, notice, answerCutOff) {
+  const caution = notice && notice.kind !== 'interrupted' ? notice : null;
+  const changes = outcome?.kind === 'interrupted' ? visibleOutcome({ ...outcome, notice: undefined })?.detail || '' : '';
+  return {
+    ...caution,
+    tone: caution?.tone || 'neutral',
+    headline: 'Agent stopped',
+    detail: [
+      answerCutOff ? 'The answer above is incomplete.' : '',
+      caution ? `${caution.headline}. ${caution.detail || ''}`.trim() : '',
+      changes,
+    ].filter(Boolean).join(' '),
+  };
+}
+
+function renderTurnOutcome(view, outcome, error, { stopped = false, answerCutOff = false } = {}) {
   if (!view) return;
-  outcome = visibleOutcome(outcome);
+  const notice = visibleOutcome(outcome);
+  outcome = stopped || notice?.kind === 'interrupted' ? stoppedOutcome(outcome, notice, answerCutOff) : notice;
   view.outcome.hidden = !outcome;
   if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
@@ -2881,6 +3483,8 @@ function renderTurnOutcome(view, outcome, error) {
   view.outcomeIcon.textContent = icons[tone];
   view.outcomeHeadline.textContent = outcome.headline || 'Run finished';
   view.outcomeDetail.textContent = outcome.detail || '';
+  // A stopped plain chat has nothing to add to its headline.
+  view.outcomeDetail.hidden = !outcome.detail;
   view.outcomeNextStep.textContent = outcome.nextStep ? `Next: ${outcome.nextStep}` : '';
   view.outcomeNextStep.hidden = !outcome.nextStep;
   view.outcomeTechnicalDetail.textContent = outcome.technicalDetails || '';
@@ -2891,9 +3495,15 @@ function renderTurnOutcome(view, outcome, error) {
     error?.code === 'PROVIDER_ERROR' &&
     typeof view.userText === 'string' &&
     Boolean(view.userText.trim());
-  view.outcomeActions.hidden = !canRetry;
+  // A missing model will not appear by retrying: offer a new chat with
+  // another model, or the provider setup where the model can be made available.
+  const canChooseModel = outcome.providerAction === 'choose_model' && error?.code === 'PROVIDER_ERROR';
+  view.outcomeActions.hidden = !canRetry && !canChooseModel;
   view.outcomeRetry.hidden = !canRetry;
   view.outcomeRetry.disabled = false;
+  view.outcomeChooseModel.hidden = !canChooseModel;
+  view.outcomeChooseModel.disabled = false;
+  view.outcomeOpenModels.hidden = !canChooseModel;
   view.outcome.hidden = false;
 }
 
@@ -2907,7 +3517,7 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'diagnostics_inspected') return 'Diagnostics inspected';
   if (outcome?.verification === 'attachments_inspected') return 'Sources inspected';
   if (outcome?.verification === 'swarm_publication_verified') return 'Publication verified';
-  if (outcome?.verification === 'swarm_publication_completed') return 'Published to Swarm';
+  if (outcome?.verification === 'swarm_publication_completed') return outcome.publication?.target === 'draft' ? 'Private draft link ready' : 'Published to Swarm';
   if (outcome?.verification === 'swarm_publication_in_flight') return 'Publication still running';
   if (outcome?.verification === 'model_only') return 'Agent reported';
   if (outcome?.kind === 'recovery') return 'Needs recovery';
@@ -3011,9 +3621,14 @@ function renderPublication(runId, publication) {
   copy.appendChild(meta);
   const actions = document.createElement('div');
   actions.className = 'agent-artifact-actions';
-  for (const [label, action] of (publication.state === 'completed' && /^bzz:\/\/[a-f0-9]{64}$/.test(publication.bzzUrl) ? [
-    ['Open', () => window.electronAPI.openAgentPublication(publication.bzzUrl)],
-    ['Copy URL', () => window.electronAPI.copyText(publication.bzzUrl)],
+  const stableUrl = publication.stableAddress?.updated === true && /^bzz:\/\/[a-f0-9]{64}$/.test(publication.stableAddress.bzzUrl)
+    ? publication.stableAddress.bzzUrl : null;
+  if (publication.state === 'completed' && publication.target === 'draft') meta.textContent += ' · encrypted, anyone with the link can read it';
+  if (publication.state === 'completed' && stableUrl) meta.textContent += ` · stable address ${publication.stableAddress.name}`;
+  for (const [label, action] of (publication.state === 'completed' && /^bzz:\/\/[a-f0-9]{64}(?:[a-f0-9]{64})?$/.test(publication.bzzUrl) ? [
+    ['Open', () => window.electronAPI.openAgentPublication(stableUrl || publication.bzzUrl)],
+    [publication.target === 'draft' ? 'Copy draft link' : 'Copy URL', () => window.electronAPI.copyText(publication.bzzUrl)],
+    ...(stableUrl ? [['Copy stable URL', () => window.electronAPI.copyText(stableUrl)]] : []),
   ] : [])) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -3035,6 +3650,15 @@ function renderPublication(runId, publication) {
   card.appendChild(actions);
   view.artifactList.appendChild(card);
   view.artifactList.hidden = false;
+}
+
+// Declining (or withdrawing) an approval stops the action before it runs, so
+// it neither failed nor can have left effects behind. Returns the row text.
+function declinedBeforeRunning(event, record) {
+  if (event?.errorCode !== 'USER_CANCELLED') return '';
+  const approval = event.approval || record?.row?.dataset.approval;
+  return approval === 'declined' ? 'Not run; you declined it'
+    : approval === 'withdrawn' ? 'Not run; approval withdrawn' : '';
 }
 
 function renderToolPage(record, event, finished = false) {
@@ -3068,7 +3692,7 @@ function renderToolPage(record, event, finished = false) {
   if (finished && event.status === 'failed') {
     const error = document.createElement('span');
     error.className = 'agent-tool-page-error';
-    error.textContent = formatToolError(event.errorCode, event.operation);
+    error.textContent = declinedBeforeRunning(event, record) || formatToolError(event.errorCode, event.operation);
     copy.appendChild(error);
   }
   record.label.classList.add('agent-tool-page');
@@ -3110,7 +3734,7 @@ function addToolRow(event) {
   view.activity.hidden = false;
   view.activity.dataset.state = 'working';
   view.actionCount += 1;
-  closeAssistantSegment(view);
+  closeAssistantSegment(view, { byTool: true });
   let helperList = null;
   if (event.operation === 'delegate_task') {
     helperList = document.createElement('div');
@@ -3178,14 +3802,20 @@ function finishToolRow(event) {
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
-  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || event.status === 'cancelled';
+  const approvalDeclined = declinedBeforeRunning(event, record);
+  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled || Boolean(approvalDeclined) ||
+    event.status === 'cancelled';
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
-  if (event.status === 'failed' && event.operation !== 'delegate_task') {
+  if (approvalDeclined) {
+    // The row says what happened; the tooltip says why it matters.
+    record.row.title = 'This action never reached the page, so nothing it would have changed took effect.';
+    record.label.textContent = `${record.label.textContent} — ${approvalDeclined}`;
+  } else if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
@@ -3277,7 +3907,9 @@ function finishToolRow(event) {
         const actions = document.createElement('ul');
         for (const action of (receipt.browserActions || []).slice(0, 48)) {
           const item = document.createElement('li');
-          item.textContent = `${action.status === 'succeeded' ? '✓' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}`;
+          // A declined or withdrawn action did not run; it did not fail either.
+          const notRun = action.status === 'failed' ? declinedBeforeRunning(action) : '';
+          item.textContent = `${action.status === 'succeeded' ? '✓' : notRun ? '•' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}${notRun ? ` — ${notRun}` : ''}`;
           actions.appendChild(item);
         }
         details.appendChild(actions);
@@ -3309,7 +3941,8 @@ function finishToolRow(event) {
     }
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
-  if (userCancelled) {
+  // A declined approval keeps its own Declined/Withdrawn badge.
+  if (userCancelled && !approvalDeclined) {
     record.approval.textContent = 'Cancelled by you';
     record.approval.hidden = false;
   }
@@ -3401,6 +4034,7 @@ function finishTurnView(runId, event = {}) {
   const view = turnView(runId);
   if (!view) return;
   clearLiveStatus(runId);
+  endThinkingBlock(view);
   view.activity.dataset.state = [...view.toolList.children].some(row => row.classList.contains('failed')) ? 'failed' : 'done';
   const actionCount = Number.isSafeInteger(event.actionCount)
     ? event.actionCount
@@ -3413,7 +4047,13 @@ function finishTurnView(runId, event = {}) {
   } else {
     view.activity.hidden = true;
   }
-  renderTurnOutcome(view, event.outcome, event.error);
+  const stopped = event.status === 'cancelled';
+  // Text still streaming when the run stopped was cut off mid-answer. Guidance
+  // sent mid-stream closes the bubble too, but the answer wasn't finished.
+  const lastSegment = view.outputSegments.at(-1);
+  const answerCutOff = stopped && !view.assistantSegmentEndedByTool && Boolean(lastSegment?.text);
+  setCutOffMark(lastSegment?.output, answerCutOff);
+  renderTurnOutcome(view, event.outcome, event.error, { stopped, answerCutOff });
   if (event.status === 'completed') {
     for (const segment of view.outputSegments) {
       if (!segment.output.classList.contains('rendered-markdown')) renderAgentMarkdown(segment.output, segment.text);
@@ -3432,7 +4072,6 @@ function applyReadyConversationState(state) {
   }
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
     ? state.rendererTabId
     : null;
@@ -3536,13 +4175,17 @@ async function renameSavedSession(session, row, select) {
   input.setAttribute('aria-label', 'Session title');
   input.maxLength = 120;
   input.value = session.title || '';
+  const more = row.querySelector('.agent-session-more');
   select.hidden = true;
-  row.appendChild(input);
+  if (more) more.hidden = true;
+  select.after(input);
   const title = await new Promise(resolve => {
     let settled = false;
     const finish = value => {
       if (settled) return;
-      settled = true; input.remove(); select.hidden = false; resolve(value);
+      settled = true; input.remove(); select.hidden = false;
+      if (more) more.hidden = false;
+      resolve(value);
     };
     input.addEventListener('keydown', event => {
       if (!['Enter', 'Escape'].includes(event.key)) return;
@@ -3602,14 +4245,13 @@ function applyConversationCleared() {
   conversationResources = [];
   currentRunId = null;
   lastFinishedRunId = null;
-  stopRequestedRunId = null;
   setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
   renderWorkspaceProcesses([]);
   renderTaskPages();
   resetConversationUi();
-  setRunState('idle', 'Idle');
+  setRunState('idle', '');
   renderSessionSidebar();
   void refreshSessionHistory();
   void refreshWorkspaceProjection();
@@ -3759,6 +4401,15 @@ function applyAgentEvent(event) {
       setMessage(elements.runMessage, 'Applying your guidance…');
       setLiveStatus(event.runId, 'Applying your guidance…');
     }
+  } else if (event.type === 'assistant_thinking_start') {
+    const view = turnView(event.runId);
+    if (view) startThinkingBlock(view);
+  } else if (event.type === 'assistant_thinking_delta' && typeof event.text === 'string') {
+    const view = turnView(event.runId);
+    if (view) appendThinkingText(view, event.text);
+  } else if (event.type === 'assistant_thinking_end') {
+    const view = turnView(event.runId);
+    if (view) endThinkingBlock(view, event.durationMs);
   } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;
@@ -3881,7 +4532,9 @@ function applyAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     for (const card of turnView(event.runId)?.helperCards.values() || []) { card.stop.hidden = true; card.stop.disabled = true; }
     const status = event.status || 'finished';
-    const wasStopped = status === 'cancelled' && (stopRequestedRunId === event.runId || !aiEnabled);
+    // The service only reports 'cancelled' for a stop (the user's, AI turned
+    // off, a claimed tab, revoked access), so the pill and the turn agree.
+    const wasStopped = status === 'cancelled';
     clearApproval();
     setRunState(
       'idle',
@@ -3894,7 +4547,9 @@ function applyAgentEvent(event) {
             : status
     );
     if (wasStopped) {
-      setMessage(elements.runMessage, 'Agent stopped.');
+      // The turn itself carries the stop notice after its partial answer; the
+      // status line above the transcript is only a fallback when there's no turn.
+      setMessage(elements.runMessage, turnView(event.runId) ? '' : 'Agent stopped.');
     } else if (event.error?.message && event.error.code !== 'PROVIDER_ERROR') {
       setMessage(elements.runMessage, event.error.message, true);
     } else {
@@ -3903,7 +4558,6 @@ function applyAgentEvent(event) {
     finishTurnView(event.runId, event);
     lastFinishedRunId = event.runId;
     currentRunId = null;
-    stopRequestedRunId = null;
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
     void refreshSessionHistory();
@@ -3955,7 +4609,7 @@ async function startRun(options = {}) {
       }
       if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
       pendingPromptText = '';
-      setRunState('idle', 'Idle');
+      setRunState('idle', '');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       focusComposer({ preserveExplicitFocus: true });
       return false;
@@ -3985,7 +4639,7 @@ async function startRun(options = {}) {
     }
     if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
     pendingPromptText = '';
-    setRunState('idle', 'Idle');
+    setRunState('idle', '');
     setMessage(elements.runMessage, 'Could not start the agent', true);
     focusComposer({ preserveExplicitFocus: true });
     return false;
@@ -4060,7 +4714,7 @@ function submitComposer({ allowStop = false, sharePage = true } = {}) {
 
 async function clearConversation() {
   dictation?.cancel();
-  if (!currentConversationId || currentRunStatus !== 'idle') return;
+  if (!currentConversationId || currentRunStatus !== 'idle') return false;
   elements.newChat.disabled = true;
   setMessage(elements.runMessage, 'Starting a new chat…');
   try {
@@ -4072,14 +4726,43 @@ async function clearConversation() {
         true
       );
       elements.newChat.disabled = false;
-      return;
+      return false;
     }
     applyConversationCleared();
     elements.prompt.focus();
+    return true;
   } catch {
     setMessage(elements.runMessage, 'Could not start a new chat', true);
     elements.newChat.disabled = false;
+    return false;
   }
+}
+
+// The model is fixed for a conversation, so choosing another one means a new
+// chat. Carry the earlier exchange and the failed request into the composer,
+// where the user can see and edit them, and open the model menu.
+async function chooseAnotherModel(view) {
+  const turns = [...turnViews.values()];
+  if (currentRunStatus !== 'idle' || !view || view !== turns.at(-1)) return;
+  const prompt = carryOverPrompt(turns.map((turn) => ({
+    userText: turn.userText,
+    assistantText: turn.assistantText,
+  })));
+  view.outcomeChooseModel.disabled = true;
+  if (currentConversationId && !(await clearConversation())) {
+    view.outcomeChooseModel.disabled = false;
+    return;
+  }
+  if (prompt.trim() && !elements.prompt.value.trim()) {
+    elements.prompt.value = prompt;
+    updateSendAvailability();
+  }
+  closeComposerPopovers();
+  // Show every model: an earlier search could hide the alternatives.
+  elements.modelMenuSearch.value = '';
+  renderModelMenu();
+  openModelMenu();
+  elements.modelMenuSearch.focus();
 }
 
 async function startNewSessionFromSidebar() {
@@ -4152,7 +4835,6 @@ async function stopRun() {
     setApprovalControlsDisabled(true);
     setMessage(elements.approvalMessage, 'Stopping…');
   }
-  stopRequestedRunId = currentRunId;
   setTakeoverDialogOpen(false);
   setRunState('stopping', 'Stopping');
   setMessage(elements.runMessage, 'Stopping Agent…');
@@ -4160,7 +4842,6 @@ async function stopRun() {
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
-      stopRequestedRunId = null;
       setRunState(previousStatus, 'Running');
       if (pendingApproval === approvalAtStop) {
         setApprovalControlsDisabled(false);
@@ -4170,7 +4851,6 @@ async function stopRun() {
       setLiveStatus(currentRunId, 'Continuing…');
     }
   } catch {
-    stopRequestedRunId = null;
     setRunState(previousStatus, 'Running');
     if (pendingApproval === approvalAtStop) {
       setApprovalControlsDisabled(false);
@@ -4236,7 +4916,8 @@ async function restoreRunState() {
       setRunState('idle', 'Ready');
     }
   } catch {
-    // Idle is the safe renderer default when lifecycle state cannot be restored.
+    // The untouched idle state (status badge hidden, no label) is the safe
+    // renderer default when lifecycle state cannot be restored.
   }
 }
 
@@ -4267,12 +4948,12 @@ export function initAgentUi(options = {}) {
     close: byId('agent-sidebar-close'),
     agentFirstToggle: byId('agent-first-toggle'),
     agentFirstTitlebar: byId('agent-first-titlebar'),
+    agentFirstReduce: byId('agent-first-reduce'),
     agentFirstTitle: byId('agent-first-title'),
     sessionSidebarToggle: byId('agent-session-sidebar-toggle'),
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
     sessionSidebar: byId('agent-session-sidebar'),
     modeToggle: byId('agent-mode-toggle'),
-    browserModeToggle: byId('agent-browser-mode-toggle'),
     modeMenu: byId('agent-mode-menu'),
     modeAgent: byId('agent-mode-agent'),
     modeBrowser: byId('agent-mode-browser'),
@@ -4350,7 +5031,12 @@ export function initAgentUi(options = {}) {
     nodeRequestDetails: byId('agent-node-request-details'),
     nodeRequestSummary: byId('agent-node-request-summary'),
     publicationDetails: byId('agent-publication-details'),
+    publicationPermanent: byId('agent-publication-permanent'),
+    publicationDraftNotice: byId('agent-publication-draft-notice'),
+    publicationStableNotice: byId('agent-publication-stable-notice'),
+    publicationPostageWarning: byId('agent-publication-postage-warning'),
     publicationSummary: byId('agent-publication-summary'),
+    publicationFindings: byId('agent-publication-findings'),
     walletAccountField: byId('agent-wallet-account-field'),
     walletAccount: byId('agent-wallet-account'),
     walletUnlock: byId('agent-wallet-unlock'),
@@ -4435,6 +5121,9 @@ export function initAgentUi(options = {}) {
   isTabAgentOwned =
     typeof options.isTabAgentOwned === 'function' ? options.isTabAgentOwned : () => false;
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
+  openLinkInNewTab =
+    typeof options.openLinkInNewTab === 'function' ? options.openLinkInNewTab : () => {};
+  openStartPage = typeof options.openStartPage === 'function' ? options.openStartPage : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   setAgentTabCustody =
@@ -4505,16 +5194,20 @@ export function initAgentUi(options = {}) {
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
-  for (const toggle of [elements.modeToggle, elements.browserModeToggle]) {
-    toggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
-    toggle.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        setModeMenuOpen(true);
-        (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
-      }
-    });
-  }
+  // Full view's own way back (#921): the panel header, and the expand button
+  // with it, is hidden while Agent is the main view.
+  elements.agentFirstReduce.addEventListener('click', () => {
+    setAgentFirstMode(false);
+    elements.agentFirstToggle.focus();
+  });
+  elements.modeToggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
+  elements.modeToggle.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setModeMenuOpen(true);
+      (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
+    }
+  });
   elements.modeAgent.addEventListener('click', () => {
     if (agentFirstMode) setModeMenuOpen(false, true);
     else setAgentFirstMode(true);
@@ -4523,7 +5216,7 @@ export function initAgentUi(options = {}) {
     if (!agentFirstMode) setModeMenuOpen(false, true);
     else {
       setAgentFirstMode(false);
-      elements.browserModeToggle.focus();
+      elements.agentFirstToggle.focus();
     }
   });
   elements.modeMenu.addEventListener('keydown', (event) => {
@@ -4595,6 +5288,7 @@ export function initAgentUi(options = {}) {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
     renderPageContext();
+    renderTaskPages();
     elements.prompt.focus();
   });
   elements.newChat.addEventListener('click', clearConversation);
@@ -4617,8 +5311,15 @@ export function initAgentUi(options = {}) {
     if (dictationBusy) { void dictation.finish({ send: true }); return; }
     if (!elements.run.disabled) submitComposer();
   });
-  elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
-  elements.pageInterlock.addEventListener('wheel', (event) => event.preventDefault(), {
+  elements.pageLockTrigger.addEventListener('click', () => {
+    const heldTabId = activeHeldTabId();
+    if (heldTabId !== null) void claimAgentOwnedTab(heldTabId);
+    else requestTakeoverConfirmation();
+  });
+  // Over the held pill the page stays usable, so let the wheel scroll it.
+  elements.pageInterlock.addEventListener('wheel', (event) => {
+    if (!elements.pageInterlock.classList.contains('held')) event.preventDefault();
+  }, {
     passive: false,
   });
   elements.pageInterlock.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -4648,8 +5349,7 @@ export function initAgentUi(options = {}) {
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();
-    elements.modelMenu.hidden = !opening;
-    elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
+    if (opening) openModelMenu();
   });
   elements.approvalModeButton.addEventListener('click', () => {
     const opening = elements.approvalModePopover.hidden;
@@ -4671,8 +5371,8 @@ export function initAgentUi(options = {}) {
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
-    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
-    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
+    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target)) setModeMenuOpen(false);
+    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target) && !sessionContextMenu.more.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
       if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;
@@ -4708,6 +5408,7 @@ export function initAgentUi(options = {}) {
     syncCompactAgentLayout();
     closeSessionContextMenu();
     setModeMenuOpen(false);
+    positionModelMenu();
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
@@ -4774,7 +5475,10 @@ export function initAgentUi(options = {}) {
     summonPanel();
   });
   window.electronAPI?.onToggleAgent?.(() => summonPanel());
-  window.electronAPI?.onShowAgent?.(() => openPanel());
+  window.electronAPI?.onShowAgent?.((request) => {
+    if (request?.freshPage === true) showStartPage();
+    openPanel();
+  });
   window.electronAPI?.onAiSettingsChanged?.(applyAiSettings);
   window.electronAPI?.onAgentProviderChanged?.(() => {
     if (!aiEnabled) return;

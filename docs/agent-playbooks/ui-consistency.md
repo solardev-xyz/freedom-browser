@@ -113,7 +113,14 @@ sub-screen header.
 **Settings sections.** `h2.section-title` for the section, `h3.row-label` (or
 the 12 px uppercase category style) for sub-headings, never a second large
 heading. Cards with `.row` / `.row.sub` for nested toggles. Links inside copy
-use the `row-help` link style, not the default anchor.
+use the `row-help` link style, not the default anchor. One deliberate
+exception: the AI section's Voice dictation page (`#voice`) labels its groups
+in 12 px muted sentence case (`#voice .subsection-title` in
+`pages/styles/ai.css`), matching the AI provider picker's
+`.agent-provider-group-label` ("Model labs") rather than the uppercase
+category style (#861). Do not "fix" those labels back to uppercase, and do not
+spread the sentence-case override to other Settings pages without the same
+kind of decision.
 
 **Menus and counters.** The Nodes menu shows `0` for an empty counter, never
 `--`. Shortcut hints render as `Ctrl+T` on Linux/Windows and `⌘T` on macOS in

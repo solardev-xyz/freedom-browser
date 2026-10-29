@@ -123,6 +123,10 @@ function ownerWindowOf(contents) {
   }
 }
 
+// Injected into every non-internal page at user origin; see the dom-ready
+// handler below (#923).
+const PAGE_DEFAULTS_CSS = 'html { color-scheme: light; }';
+
 // The only preload a tab <webview> may run. tabs.js asks for it through
 // `internal:get-webview-preload-path`, which answers this same path.
 const WEBVIEW_PRELOAD_PATH = path.join(__dirname, 'webview-preload.js');
@@ -248,6 +252,15 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
       if (params?.src?.startsWith('freedom-preview://') && !isPrivateWebContents(contents) &&
           !isPrivatePartition(webPreferences.partition ?? params?.partition)) webPreferences.partition = 'freedom-workspace-preview';
       webPreferences.nodeIntegrationInSubFrames = true;
+      // Paint the guest's own canvas instead of letting the chrome show
+      // through it, the way a Chrome tab does. Electron makes a <webview>
+      // guest transparent by default, so a page that sets no background of
+      // its own showed the toolbar colour behind it (dark grey with Freedom
+      // in dark theme, under the page's unchanged black text). Opaque, an
+      // unstyled page gets Chromium's white canvas, and a page whose dark
+      // background sits on <body> only (x.com) still fills the window, since
+      // nothing paints <html> over it (#923).
+      webPreferences.transparent = false;
       if (webPreferences.preload) attachWebviewBoot(contents, webPreferences, params);
     });
 
@@ -268,17 +281,23 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
       // bit, so the guest's input stream stands in for it (#406).
       trackUserGestures(contents);
 
-      // Electron applies dark system colors (Canvas, CanvasText) to ALL pages when
-      // nativeTheme is dark, even pages that don't opt in via color-scheme. This
-      // makes pages without dark mode support unreadable (dark bg + unchanged text).
-      // Inject light defaults at user-origin so pages with their own author-origin
-      // CSS (including @media prefers-color-scheme: dark) override this naturally.
+      // Keep pages without dark-mode support on light system colours
+      // (Canvas, CanvasText, form controls, scrollbars) whatever the app or
+      // OS theme. `color-scheme` only, at user origin: a page's own
+      // `color-scheme` property and colours (author origin, including
+      // @media (prefers-color-scheme: dark)) still win — a bare
+      // <meta name="color-scheme"> does not, as before — and no background is
+      // set on <html> or <body> — a user-origin `background-color` on <html>
+      // stopped a <body>-only dark background (x.com) from covering the
+      // window and left it white around the page's columns (#923). The
+      // white canvas for unstyled pages comes from the guest being opaque
+      // (`transparent = false` in will-attach-webview above).
       contents.on('dom-ready', () => {
         const url = contents.getURL();
         const isInternal = url.startsWith('file:') && url.includes('/pages/');
         if (!isInternal) {
           contents
-            .insertCSS('html, body { background-color: #fff; color: #000; color-scheme: light; }', {
+            .insertCSS(PAGE_DEFAULTS_CSS, {
               cssOrigin: 'user',
             })
             .catch(() => {});

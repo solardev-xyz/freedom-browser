@@ -623,6 +623,8 @@ const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').
 // marker covers the whole subtree under it, so one on a wrapper takes
 // a view out of the index entirely.
 const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
+// A wrapper around a section's intro copy (see buildSettingsSearchIndex).
+const SETTINGS_SEARCH_INTRO = 'settings-search-intro';
 
 // Every element under `el` carrying one of `names` (a class, or a list
 // of them), not descending into a match. Stopping at a match is what
@@ -753,8 +755,14 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
     const group = groups[section.id];
     const sectionLabel = group && group !== title ? `${group} › ${title}` : title;
     // A section's own intro paragraph is a direct child, outside every
-    // card, so it describes the section rather than any one row.
+    // card, so it describes the section rather than any one row. An intro
+    // that needs a wrapper of its own (AI's "AI is off" note sits in an
+    // `aria-live` region so revealing it is announced) marks that wrapper
+    // `.settings-search-intro`, and its `.row-help` children count too.
     const intro = Array.from(section.children)
+      .flatMap((child) =>
+        child.classList?.contains(SETTINGS_SEARCH_INTRO) ? Array.from(child.children) : [child]
+      )
       .filter((child) => child.classList?.contains('row-help'))
       .map(settingsSearchText)
       .join(' ');

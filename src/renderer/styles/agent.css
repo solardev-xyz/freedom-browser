@@ -12,14 +12,11 @@
   border-radius: 50%;
   color: var(--text);
   cursor: default;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+  transition: background-color 0.2s ease;
 }
 
 .agent-toggle-btn:hover:not(:disabled),
 .agent-toggle-btn[aria-expanded='true'] {
-  color: var(--accent);
   background: var(--agent-hover-1);
 }
 
@@ -126,9 +123,14 @@
   display: none;
 }
 
-.agent-icon-btn:hover {
+.agent-icon-btn:hover:not(:disabled) {
   color: var(--text);
   background: var(--agent-hover-1);
+}
+
+/* New chat stays visible but unavailable while a run is active. */
+.agent-icon-btn:disabled {
+  opacity: 0.45;
 }
 
 .agent-icon-btn svg {
@@ -211,14 +213,10 @@ html[data-platform='darwin'] body.agent-first-mode .agent-first-title {
   left: 0;
   width: var(--agent-session-sidebar-width, 242px);
   content: '';
-  background: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+  background: var(--agent-sessions-surface);
   box-shadow: inset -1px 0 0 var(--agent-divider, var(--border));
   transform: translateX(0);
   transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-[data-theme='light'] .agent-first-titlebar-left::before {
-  background: color-mix(in srgb, var(--bg) 94%, var(--text));
 }
 
 .agent-first-titlebar-left .agent-titlebar-button {
@@ -242,12 +240,14 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   gap: 10px;
   min-width: 0;
   padding: 0 12px;
+  background: var(--agent-conversation-surface);
 }
 
 .agent-first-titlebar-right {
   position: relative;
   display: flex;
   align-items: center;
+  padding-right: 6px;
   overflow: hidden;
   background: var(--bg);
 }
@@ -326,8 +326,7 @@ html[data-platform='darwin'] .agent-first-titlebar-left {
   height: 16px;
 }
 
-.agent-session-sidebar-header .agent-mode-toggle,
-.agent-sidebar-header .agent-mode-toggle {
+.agent-session-sidebar-header .agent-mode-toggle {
   display: flex;
   align-items: center;
   background: transparent;
@@ -473,6 +472,61 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Row options: shown on hover/focus (and while its menu is open) so
+   Rename/Delete are discoverable without knowing about right-click. Its slot
+   is always laid out and only its opacity toggles, so revealing it never
+   narrows the title and re-ellipsises it under the pointer. Opacity, not
+   visibility: a visibility:hidden button drops out of the focus order, so
+   Shift+Tab from the next row's title would skip it (it is only revealed by
+   :focus-within once focus is already inside the row). */
+.agent-session-more {
+  display: inline-flex;
+  opacity: 0;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-session-row:hover .agent-session-more,
+.agent-session-row:focus-within .agent-session-more,
+.agent-session-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.agent-session-more:hover,
+.agent-session-more:focus-visible,
+.agent-session-more[aria-expanded='true'] {
+  color: var(--text);
+  background: var(--agent-hover-08);
+}
+
+@media (hover: none) {
+  .agent-session-more {
+    opacity: 1;
+  }
+}
+
+/* Nothing to offer mid-run (the menu refuses to open); the slot stays so
+   titles don't shift when a run starts or ends. While the row is renamed
+   inline the button is dropped and the field takes its space. */
+.agent-session-row .agent-session-more:disabled {
+  visibility: hidden;
+}
+
+.agent-session-row .agent-session-more[hidden] {
+  display: none;
 }
 
 .agent-session-history-empty {
@@ -823,7 +877,17 @@ body.agent-first-mode .title-bar {
   border-bottom: 0;
 }
 
+/* The two Agent-first columns, as the Settings page lays out its own: the
+   conversation sits on the page background and the sessions list on a
+   sidebar tint, with the selected session in the accent like the selected
+   Settings section (#879). In the light theme --bg is the chrome's grey,
+   so the conversation takes --toolbar (white) instead. The title bar above
+   each column paints the same token, so the columns run to the top. */
 body.agent-first-mode {
+  --agent-conversation-surface: var(--bg);
+  --agent-sessions-surface: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+  --agent-session-active-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --agent-session-active-text: var(--accent);
   --agent-browser-address: var(--bg);
   --agent-browser-chrome: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
   --agent-divider: color-mix(in srgb, var(--border) 42%, var(--bg));
@@ -840,23 +904,39 @@ body.agent-first-mode .app-body {
   overflow: clip;
 }
 
+[data-theme='light'] body.agent-first-mode {
+  --agent-conversation-surface: var(--toolbar);
+  --agent-sessions-surface: color-mix(in srgb, var(--bg) 40%, var(--toolbar));
+  --agent-session-active-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+  /* --accent alone is 3.6:1 on the tinted row; a quarter of --text brings
+     it to 5:1. */
+  --agent-session-active-text: color-mix(in srgb, var(--accent) 75%, var(--text));
+}
+
 body.agent-first-mode,
 body.agent-first-mode .app-body,
-body.agent-first-mode .agent-sidebar,
-body.agent-first-mode .agent-sidebar-inner,
-body.agent-first-mode .agent-workspace-view,
-body.agent-first-mode .agent-workspace-scroll,
 body.agent-first-mode .agent-page-surface,
 body.agent-first-mode .agent-task-pages {
   background: var(--bg);
 }
 
-body.agent-first-mode .agent-session-sidebar {
-  background: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+body.agent-first-mode .agent-sidebar,
+body.agent-first-mode .agent-sidebar-inner,
+body.agent-first-mode .agent-workspace-view,
+body.agent-first-mode .agent-workspace-scroll {
+  background: var(--agent-conversation-surface);
 }
 
-[data-theme='light'] body.agent-first-mode .agent-session-sidebar {
-  background: color-mix(in srgb, var(--bg) 94%, var(--text));
+body.agent-first-mode .agent-session-sidebar {
+  background: var(--agent-sessions-surface);
+}
+
+body.agent-first-mode .agent-session-row.active {
+  background: var(--agent-session-active-bg);
+}
+
+body.agent-first-mode .agent-session-row.active .agent-session-select {
+  color: var(--agent-session-active-text);
 }
 
 body.agent-first-mode .agent-first-titlebar {
@@ -882,7 +962,7 @@ body.agent-first-mode.agent-session-sidebar-closed {
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left {
-  background: var(--bg);
+  background: var(--agent-conversation-surface);
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left::before {
@@ -931,8 +1011,14 @@ body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
   visibility: hidden;
 }
 
+/* Room for the workspace toggle and the reduce button (#921). */
 body.agent-first-mode.agent-workspace-sidebar-closed {
-  --agent-workspace-titlebar-width: 42px;
+  --agent-workspace-titlebar-width: 72px;
+}
+
+/* Closed, the Workspace's title-bar slot sits over the conversation. */
+body.agent-first-mode.agent-workspace-sidebar-closed .agent-first-titlebar-right {
+  background: var(--agent-conversation-surface);
 }
 
 body.agent-first-mode.agent-workspace-sidebar-closed .agent-task-pages {
@@ -948,6 +1034,12 @@ body.agent-first-mode .agent-task-pages {
 
 body.agent-first-mode .agent-workspace-nav {
   display: flex;
+}
+
+/* The open sessions column's + already starts a new chat (#875); offer the
+   transcript's own New chat only while that column is collapsed. */
+body.agent-first-mode:not(.agent-session-sidebar-closed) #agent-new-chat {
+  display: none;
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-session-resizer,
@@ -1017,7 +1109,7 @@ body.agent-first-mode .agent-composer-wrap {
   padding: 0 var(--agent-composer-gutter) 20px;
   margin: 0 auto;
   border-top: 0;
-  background: var(--bg);
+  background: var(--agent-conversation-surface);
   pointer-events: none;
 }
 
@@ -1042,6 +1134,8 @@ body.agent-first-mode .agent-user-message {
 
 body.agent-first-mode .agent-output.rendered-markdown p,
 body.agent-first-mode .agent-output.rendered-markdown pre,
+body.agent-first-mode .agent-output.rendered-markdown blockquote,
+body.agent-first-mode .agent-output.rendered-markdown .agent-code-block,
 body.agent-first-mode .agent-output.rendered-markdown ul,
 body.agent-first-mode .agent-output.rendered-markdown ol {
   margin-bottom: 14px;
@@ -1056,6 +1150,7 @@ body.agent-first-mode .agent-transcript {
 }
 
 body.agent-first-mode .agent-turn-activity,
+body.agent-first-mode .agent-thinking,
 body.agent-first-mode .agent-live-status,
 body.agent-first-mode .agent-output.rendered-markdown th {
   font-size: 12px;
@@ -1111,6 +1206,10 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.agent-setup-intro p:first-child {
+  margin-top: 0;
 }
 
 .agent-connected-providers {
@@ -1198,7 +1297,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 #agent-privacy-controls { margin: 18px 0; padding-top: 14px; border-top: 1px solid var(--border); }
 #agent-privacy-controls[hidden] { display: none; }
 .agent-connected-provider-copy { flex: 1; }
-.agent-model-menu-search { margin-bottom: 6px; font-size: 12px; }
+.agent-model-menu-search { margin-bottom: 6px; padding: 7px 10px; font-size: 13px; }
 
 .agent-workspace-view {
   container-name: agent-workspace-view;
@@ -1441,6 +1540,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   display: flex;
   align-items: center;
   gap: 3px;
+  /* Stays right-aligned when the run status badge is hidden (#876). */
+  margin-left: auto;
 }
 
 .agent-lifecycle-actions .agent-text-button {
@@ -1453,8 +1554,16 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--agent-danger-soft);
 }
 
+/* The one empty state: a centred sparkle, heading and line, with the
+   composer and suggestion cards under it. The floating launcher
+   (agent-floating.css) only places it and tints it for the glass;
+   Agent-first sizes it up. */
 .agent-empty-state {
-  max-width: 250px;
+  --agent-empty-icon-size: 18px;
+  --agent-empty-heading-size: 16px;
+  --agent-empty-line-size: 13px;
+
+  max-width: 46ch;
   margin: 72px auto 0;
   color: var(--muted);
   text-align: center;
@@ -1465,21 +1574,30 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-empty-state-icon {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--accent);
-  font-size: 25px;
+  font-size: var(--agent-empty-icon-size);
+  line-height: 1;
 }
 
 .agent-empty-state h3 {
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--agent-empty-heading-size);
   font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
 .agent-empty-state p {
-  margin-top: 7px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: var(--agent-empty-line-size);
   line-height: 1.5;
+}
+
+body.agent-first-mode .agent-empty-state {
+  --agent-empty-icon-size: 22px;
+  --agent-empty-heading-size: 19px;
+  --agent-empty-line-size: 14px;
 }
 
 .agent-examples {
@@ -1593,6 +1711,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 .agent-badge.active {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* Light --border is the same colour as light --bg (#dfe1e5), so the badge's
+   outline vanished against its own fill: draw it from the text colour
+   instead, about as far from the fill as dark's --border is from dark --bg. */
+[data-theme='light'] .agent-badge:not(.active) {
+  border-color: color-mix(in srgb, var(--text) 25%, var(--bg));
 }
 
 .agent-field {
@@ -1796,11 +1921,19 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   flex: 0 0 auto;
 }
 
-.agent-attachment-menu span {
+/* Label with its description underneath, never beside it, matching the
+   approval and Freedom-mode menus (which have their own rules and are not
+   matched here). This rule reaches every `.agent-attachment-menu`: the Add
+   menu and the dictation menu, which shares the class. In the dictation
+   menu the `.agent-dictation-menu-copy` and `.agent-dictation-menu-check`
+   spans are also direct `button > span` children; agent-dictation.css
+   overrides their `display` (grid / block), so keep those overrides if this
+   rule changes. */
+.agent-attachment-menu button > span {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .agent-attachment-menu strong {
@@ -1809,11 +1942,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-attachment-menu small {
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-composer {
@@ -2254,6 +2384,18 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   opacity: 0.5;
 }
 
+/* The model picker of an idle conversation is disabled because the
+   conversation keeps its model, not because anything is busy: show the name
+   at the normal secondary colour, and don't light it up on hover (#872). */
+.agent-composer-chip[data-model-lock='conversation']:disabled {
+  opacity: 1;
+}
+
+.agent-composer-chip[data-model-lock='conversation']:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
 .agent-send-button {
   display: flex;
   flex: 0 0 auto;
@@ -2322,6 +2464,17 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 
 .agent-page-interlock[hidden] {
   display: none;
+}
+
+/* An idle Agent-held tab: the page stays usable, only the pill takes clicks. */
+.agent-page-interlock.held,
+.agent-page-interlock.held .agent-page-lock-trigger {
+  pointer-events: none;
+}
+
+.agent-page-interlock.held .agent-page-lock-hint {
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .agent-page-interlock.dialog-open {
@@ -2434,8 +2587,31 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 .agent-model-menu {
   right: 54px;
   width: min(270px, calc(100% - 72px));
-  max-height: min(360px, calc(100vh - 120px));
+  /* agent-ui.js anchors the menu above the model button and sets the room
+     left between that button and the panel header, so it never covers the
+     header's expand/close buttons. */
+  max-height: min(360px, var(--agent-model-menu-room, calc(100vh - 120px)));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Only the model list scrolls: search and Manage models stay in reach however
+   little room the panel leaves above the composer. */
+#agent-model-menu-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+}
+
+#agent-model-menu-list::-webkit-scrollbar { width: 6px; }
+#agent-model-menu-list::-webkit-scrollbar-button { display: none; }
+#agent-model-menu-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+.agent-model-menu-search,
+.agent-model-menu > .agent-popover-divider,
+.agent-model-menu > .agent-popover-action {
+  flex-shrink: 0;
 }
 
 .agent-approval-mode-popover {
@@ -2454,15 +2630,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   width: 100%;
   min-height: 32px;
   padding: 6px 8px;
-  color: var(--muted);
+  color: var(--text);
   background: transparent;
   border: 0;
   border-radius: 7px;
   text-align: left;
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .agent-model-group-label:not(:disabled):hover {
@@ -2498,7 +2672,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   min-height: 32px;
   padding: 7px 8px;
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
   text-align: left;
   background: transparent;
   border: 0;
@@ -2510,9 +2684,6 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--agent-hover-08);
 }
 
-.agent-model-option.active {
-  color: var(--accent);
-}
 
 .agent-popover-divider {
   height: 1px;
@@ -2701,6 +2872,176 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   overflow: auto;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* Swarm publication: the permanent-content notice and pre-publish findings. */
+.agent-approval .agent-publication-permanent {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--agent-danger) 10%, transparent);
+  border-radius: 8px;
+}
+
+/* F: older versions stay retrievable. Information, not a hazard. */
+.agent-approval .agent-publication-stable-notice {
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+}
+
+/* G: the selected postage batch is close to expiry. */
+.agent-approval .agent-publication-postage-warning {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 3px solid var(--warning-fg);
+  background: color-mix(in srgb, var(--warning-fg) 12%, transparent);
+  border-radius: 8px;
+}
+
+.agent-approval .agent-publication-postage-warning[data-level='critical'] {
+  font-weight: 560;
+  border-left-color: var(--agent-danger);
+  background: color-mix(in srgb, var(--agent-danger) 10%, transparent);
+}
+
+.agent-publication-findings {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  margin-bottom: 12px;
+  overflow: auto;
+}
+
+.agent-publication-findings[hidden] {
+  display: none;
+}
+
+.agent-approval .agent-publication-findings-heading {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-approval .agent-publication-findings-status {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-approval .agent-publication-findings-status.blocked {
+  color: var(--agent-danger);
+}
+
+.agent-publication-finding-group {
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 9px;
+}
+
+.agent-publication-finding-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.agent-publication-finding-path {
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.agent-publication-finding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-publication-finding-actions button {
+  padding: 3px 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-publication-finding-actions button:hover {
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.agent-approval .agent-publication-finding-state {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-approval .agent-publication-finding-state:empty {
+  display: none;
+}
+
+.agent-publication-finding-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-publication-finding {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-publication-finding-badge {
+  color: color-mix(in srgb, var(--warning-fg) 80%, var(--text));
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-publication-finding[data-kind='secret'] .agent-publication-finding-badge {
+  color: var(--agent-danger);
+}
+
+.agent-publication-finding-label {
+  color: var(--text);
+}
+
+.agent-publication-finding-excerpt {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.agent-publication-anyway-label {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.agent-publication-finding-group.excluded .agent-publication-finding {
+  opacity: 0.5;
 }
 
 .agent-workspace-permission-details summary {
@@ -3034,6 +3375,18 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   white-space: normal;
 }
 
+/* A stopped run's last answer was cut off mid-stream. The mark belongs at the
+   end of the cut-off sentence, so it is drawn by the block that sentence ends
+   in — the output itself for plain text, the deepest last paragraph, heading
+   or list item for markdown at any nesting. agent-cutoff-mark.js picks that
+   block; an answer ending in a code block, table or rule marks the output, so
+   the mark sits on its own line below. */
+.agent-output.incomplete.agent-cutoff-end::after,
+.agent-output.incomplete .agent-cutoff-end::after {
+  content: ' …';
+  color: var(--muted);
+}
+
 .agent-output.rendered-markdown > :first-child {
   margin-top: 0;
 }
@@ -3055,11 +3408,98 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 7px;
+  /* scrollbar-color inherits; the conversation scroller's pale thumb is
+     invisible on a light code block, which then looked cut off (#848). */
+  scrollbar-color: color-mix(in srgb, var(--text) 32%, transparent) transparent;
+}
+
+.agent-output.rendered-markdown table {
+  scrollbar-color: color-mix(in srgb, var(--text) 32%, transparent) transparent;
 }
 
 .agent-output.rendered-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.92em;
+}
+
+.agent-output.rendered-markdown :not(pre) > code {
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 4px;
+}
+
+/* Only a link that kept its URL looks like one: the sanitizer leaves an
+   <a> with no href for a scheme a tab cannot open. */
+.agent-output.rendered-markdown a[href] {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.agent-output.rendered-markdown blockquote {
+  margin: 0 0 9px;
+  padding: 4px 0 4px 11px;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 0 6px 6px 0;
+}
+
+.agent-output.rendered-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* A code block is wrapped so its Copy button stays put while the code
+   scrolls sideways. */
+.agent-code-block {
+  position: relative;
+  margin: 0 0 9px;
+}
+
+/* Beats the agent-first margin rule above: the wrapper carries the gap. */
+body .agent-output.rendered-markdown .agent-code-block > pre {
+  margin-bottom: 0;
+}
+
+.agent-code-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 2px 7px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, var(--bg));
+  border-radius: 5px;
+  box-shadow: -8px 0 8px var(--bg);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+/* Drawn from data-state so the label never joins the answer's text. */
+.agent-code-copy::before {
+  content: 'Copy';
+}
+
+.agent-code-copy[data-state='copied']::before {
+  content: 'Copied';
+}
+
+.agent-code-copy[data-state='failed']::before {
+  content: 'Copy failed';
+}
+
+.agent-code-block:hover .agent-code-copy,
+.agent-code-copy:focus-visible,
+.agent-code-copy:not([data-state='idle']) {
+  opacity: 1;
+}
+
+.agent-code-copy:hover {
+  color: var(--text);
 }
 
 .agent-output.rendered-markdown table {
@@ -3075,7 +3515,9 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   padding: 6px 9px;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid var(--agent-divider);
+  /* --agent-divider is only defined in agent-first mode; without the
+     fallback the declaration was invalid and the rows had no lines (#848). */
+  border-bottom: 1px solid var(--agent-divider, var(--border));
 }
 
 .agent-output.rendered-markdown th {
@@ -3168,6 +3610,71 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 .agent-turn-activity {
   color: var(--muted);
   font-size: 11px;
+}
+
+/* The model's thinking: a quiet, closed-by-default disclosure above the
+   answer it led to. */
+.agent-thinking {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-thinking > summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agent-thinking > summary:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-thinking-text {
+  max-height: 280px;
+  margin-top: 5px;
+  padding: 2px 0 2px 10px;
+  overflow-y: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-left: 2px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.agent-thinking-text.rendered-markdown {
+  white-space: normal;
+}
+
+.agent-thinking-text.rendered-markdown > :first-child {
+  margin-top: 0;
+}
+
+.agent-thinking-text.rendered-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-thinking-text.rendered-markdown p,
+.agent-thinking-text.rendered-markdown pre,
+.agent-thinking-text.rendered-markdown ul,
+.agent-thinking-text.rendered-markdown ol {
+  margin: 0 0 6px;
+}
+
+.agent-thinking-text.rendered-markdown h1,
+.agent-thinking-text.rendered-markdown h2,
+.agent-thinking-text.rendered-markdown h3,
+.agent-thinking-text.rendered-markdown h4,
+.agent-thinking-text.rendered-markdown h5,
+.agent-thinking-text.rendered-markdown h6 {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+
+.agent-thinking-text.rendered-markdown pre {
+  overflow-x: auto;
 }
 
 .agent-turn-outcome {
@@ -3448,7 +3955,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   color: var(--agent-danger);
 }
 
-.agent-tool-item.cancelled .agent-tool-state {
+.agent-tool-item.cancelled .agent-tool-state,
+.agent-tool-item.cancelled .agent-tool-page-error {
   color: var(--muted);
 }
 
@@ -3774,28 +4282,25 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-provider-logo-dark { display: none; }
 [data-theme="dark"] .agent-provider-logo-light { display: none; }
 [data-theme="dark"] .agent-provider-logo-dark { display: block; }
-.agent-provider-indicator { flex-shrink: 0; color: var(--muted); font-size: 18px; }
-.agent-provider-indicator.active { color: var(--accent); font-size: 14px; }
 .agent-provider-method {
   margin-top: 10px;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-.agent-provider-method-state { font-size: 11px; color: var(--muted); }
-.agent-provider-method-state.active { color: var(--accent); }
 .agent-model-row { display: flex; align-items: center; gap: 3px; min-width: 0; border-radius: 7px; }
 .agent-model-row .agent-model-option { flex: 1; min-width: 0; text-align: left; }
-.agent-model-row .agent-model-option { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 8px; }
+.agent-model-row .agent-model-option { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; }
 .agent-model-privacy { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--muted); }
 .agent-model-privacy:empty { display: none; }
-.agent-model-option:has(> .agent-model-privacy:empty) > span:first-child { grid-column: 1 / 3; }
+.agent-model-option:has(> .agent-model-privacy:empty) > .agent-model-name { grid-column: 2 / 4; }
 .agent-model-privacy-symbol { display: inline-flex; width: 18px; height: 18px; cursor: help; }
 .agent-model-privacy-symbol svg { width: 100%; height: 100%; }
-.agent-model-option > .agent-model-privacy { grid-column: 2; grid-row: 1; }
-.agent-model-check { grid-column: 3; grid-row: 1; }
+.agent-model-option > .agent-model-privacy { grid-column: 3; grid-row: 1; }
+.agent-model-check { grid-column: 1; grid-row: 1; color: var(--accent); font-size: 12px; text-align: center; }
+.agent-model-name { grid-column: 2; grid-row: 1; }
 .agent-model-privacy-detail { display: flex; margin-top: 8px; line-height: 1.5; }
-.agent-model-row .agent-model-option > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.agent-model-row .agent-model-option > .agent-model-name { overflow: hidden; text-overflow: ellipsis; }
 .agent-model-star { flex: 0 0 30px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
 .agent-model-star[aria-pressed="true"] { color: var(--accent); }
 .agent-model-star:hover { background: var(--bg); }
@@ -3829,8 +4334,9 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-connected-provider { width: 100%; text-align: left; cursor: pointer; }
 .agent-connected-provider:hover { border-color: var(--muted); }
 .agent-connected-provider > span { font-size: 20px; color: var(--muted); }
-#agent-provider-disconnect { margin-bottom: 8px; }
-#agent-provider-connection-fields > .agent-config-actions:has(> button[hidden]:only-child) { display: none; }
+/* Save shows only with unsaved changes and Disconnect only when connected (#859);
+   with neither, the row takes no space. */
+#agent-provider-actions:not(:has(> button:not([hidden]))) { display: none; }
 
 /* Page-provided actions are discovery shortcuts, not execution controls. */
 .agent-page-actions {
@@ -4017,17 +4523,50 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-task-page-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
 .agent-task-page-list .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-subagent-report .agent-helper-stop { color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 50%; }
-.agent-model-menu > .agent-catalog-status { padding: 6px 10px; }
 
 /* At this width three side-by-side panes leave no usable conversation.
    The existing session/workspace toggles instead open one overlay at a time. */
 @media (max-width: 1100px) {
-  body.agent-first-mode .agent-first-titlebar {
-    grid-template-columns: 54px minmax(0, 1fr) 42px;
+  body.agent-first-mode {
+    --agent-compact-session-slot: 54px;
+    --agent-compact-workspace-slot: 72px;
   }
 
-  html[data-platform='darwin'] body.agent-first-mode .agent-first-titlebar {
-    grid-template-columns: 118px minmax(0, 1fr) 42px;
+  html[data-platform='darwin'] body.agent-first-mode {
+    --agent-compact-session-slot: 118px;
+  }
+
+  body.agent-first-mode .agent-first-titlebar {
+    grid-template-columns:
+      var(--agent-compact-session-slot) minmax(0, 1fr) var(--agent-compact-workspace-slot);
+  }
+
+  /* Here the side slots are only a toggle wide, so an open overlay runs on
+     under the title bar's centre. Paint the overlay's colour and edge across
+     the centre too, so the title bar above each column still takes that
+     column's colour, as in the wide layout (#879). */
+  body.agent-first-mode:not(.agent-session-sidebar-closed) .agent-first-titlebar-center {
+    --agent-overlay-edge: calc(
+      min(var(--agent-session-sidebar-width, 242px), 100vw - 48px) - var(--agent-compact-session-slot)
+    );
+    background-image: linear-gradient(
+      to right,
+      var(--agent-sessions-surface) calc(var(--agent-overlay-edge) - 1px),
+      var(--agent-divider) 0 var(--agent-overlay-edge),
+      transparent 0
+    );
+  }
+
+  body.agent-first-mode:not(.agent-workspace-sidebar-closed) .agent-first-titlebar-center {
+    --agent-overlay-edge: calc(
+      min(var(--agent-workspace-sidebar-width), 100vw - 48px) - var(--agent-compact-workspace-slot)
+    );
+    background-image: linear-gradient(
+      to left,
+      var(--bg) calc(var(--agent-overlay-edge) - 1px),
+      var(--agent-divider) 0 var(--agent-overlay-edge),
+      transparent 0
+    );
   }
 
   body.agent-first-mode .agent-sidebar { min-width: 0; }

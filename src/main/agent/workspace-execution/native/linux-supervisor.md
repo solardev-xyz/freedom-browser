@@ -118,6 +118,7 @@ remains responsible for excluding internal paths and diagnostics.
 | Init start (high fd) | S / I | I reads one G, then closes. S loss gives EOF. |
 | Entry release (M/gate fd5) | S / gate | I closes its copy after M clone; gate closes after G. |
 | Entry status (M/gate fd6) | gate / S | I closes after clone; CLOEXEC at gate. R/E/F only. |
+| Seccomp program (M fd7) | browser / Bubblewrap | Run mode only. S closes its copy after I clone and I after M clone; M keeps it for `--seccomp 7`, which reads and closes it (#817). The gate's close_range removes 7+ regardless. |
 | Owner ELF (fd8) | read-only inode | Bubblewrap copies bytes via `--perms 0555 --file 8`; closes input. The named copy stays on the private root, sealed by `--remount-ro /` before gate exec (no writable mount covers `/run`). |
 | stdin/stdout/stderr | browser / command | S closes after I clone; I closes after M clone. Gate preserves 0–2. |
 

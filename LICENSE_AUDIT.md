@@ -9,6 +9,8 @@
 
 > **What changed in this revision.** Re-derived for the 0.8.7-rc.1 cut against the installed tree. Every version recorded in `licenses-audit.json` was compared with the installed tree and the repo's pins, not only the two the test enforces, and matches. Shipped components that moved since 0.8.6, each license re-read at the version being shipped: npm `@corpus-core/colibri-stateless` 3.0.0 → 3.0.2 (MIT, identical `LICENSE`), `@ledgerhq/hw-app-eth` 7.8.19 → 7.10.0 (Apache-2.0), `@x402/core` and `@x402/evm` 2.27.0 → 2.28.0 (Apache-2.0), `electron` 44.4.5 → 44.7.0 (MIT); bundled Ant v0.5.45 → v0.5.61 (`MIT OR Apache-2.0`), freedom-ipfs v0.4.3 → v0.4.5 (`MIT OR Apache-2.0`), libradicle 0.7.1 → 0.8.0 (`MIT OR Apache-2.0` in `Cargo.toml`, still no committed license text), Myotis v0.1.11 → v0.1.14 (Apache-2.0; upstream's `NOTICE` byte-identical at every step, sha256 `ee84afd3…`, and `NOTICES` still reproduces it per section 4(d)) and Arti 2.6.0 → 2.7.0 (`MIT OR Apache-2.0`, license files byte-identical, no upstream `NOTICE`; its `Cargo.lock` adds ten crates, all under licenses already in the tree). Three components were added since 0.8.6: the uBlock Origin filters and scriptlets in `assets/adblock/` (GPL-3.0 data, shipped alongside; decided in #412, see _The GPL question_), the Microsoft Visual C++ runtime DLLs on Windows (#563), and — found by this re-derivation, not by the test — the static **AppImage runtime** every Linux `.AppImage` now starts with (#566), which links a patched libfuse 3.15.0 under LGPL-2.1. It is recorded below under _AppImage runtime_ and attributed in `NOTICES`; the maintainer decided that pointing to upstream's published source meets LGPL-2.1 for it.
 >
+> **2026-10-25 update (v0.1.18):** Myotis is now pinned to v0.1.18. `LICENSE` and `NOTICE` are byte-identical to v0.1.16 (`git diff v0.1.16 v0.1.18 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.16 to 0.1.18) and gives `myotis-engine` a direct dependency on `libc`, already in the lock; no crate is added or removed.
+>
 > **2026-10-16 update (v0.1.16):** Myotis is now pinned to v0.1.16. `LICENSE` and `NOTICE` are byte-identical to v0.1.15 (`git diff v0.1.15 v0.1.16 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.15 to 0.1.16); no crate is added or removed.
 >
 > **2026-10-15 update (v0.1.15):** Myotis is now pinned to v0.1.15. `LICENSE` and `NOTICE` are byte-identical to v0.1.14 (`git diff v0.1.14 v0.1.15 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile adds two crates, upstream's own `myotis-wire` (`MIT OR Apache-2.0` in its `Cargo.toml`, as the addon's other crates) and `libp2p-mplex` 0.43.1 (MIT, like the libp2p crates already linked).
@@ -97,7 +99,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.71` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.77` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -125,11 +127,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.16` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.18` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.16 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12, v0.1.13, v0.1.14 and v0.1.15): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.18 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12, v0.1.13, v0.1.14, v0.1.15 and v0.1.16): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
@@ -181,7 +183,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.7.0 (lockfile-resolved)
+- **Version:** 45.0.0 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.
@@ -196,7 +198,11 @@ Electron generates every Chromium third-party notice into a single `LICENSES.chr
 | Windows  | beside `Freedom.exe` in the installation directory      | same                                                       |
 | macOS    | `Freedom.app/Contents/Resources/LICENSES.chromium.html` | `package.json` `build.mac.extraResources`                  |
 
-The macOS row is an explicit copy because electron-builder **deletes** the file on the macOS path — `unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in `app-builder-lib/out/electron/electronMac.js` — and, even unremoved, it would sit beside `Freedom.app` rather than inside it, so neither the `.dmg` nor the `-mac.zip` (both of which carry only the `.app`) would have contained it. Until this revision `NOTICES` pointed macOS users at a file no macOS artifact shipped.
+The macOS row is an explicit copy because electron-builder before 26.18 **deleted** the file on the macOS path — `unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in `app-builder-lib/out/electron/electronMac.js` — and, even unremoved, it would sit beside `Freedom.app` rather than inside it, so neither the `.dmg` nor the `-mac.zip` (both of which carry only the `.app`) would have contained it. Until this revision `NOTICES` pointed macOS users at a file no macOS artifact shipped. electron-builder 26.18 moves the file into `Contents/Resources` itself ([electron-builder#9407](https://github.com/electron-userland/electron-builder/issues/9407)); the explicit copy stays so the shipped file does not hinge on electron-builder internals, and `licenses-audit.test.js` notices if the installed electron-builder stops moving it.
+
+### Electron's own licence text
+
+Electron's dist also carries its MIT `LICENSE` beside the executable. electron-builder 26.18 renames it to `LICENSE.electron.txt` (so it cannot be mistaken for Freedom's own `LICENSE`) and keeps it where the Chromium notices go: beside `freedom` / `Freedom.exe` on Linux and Windows, and in `Freedom.app/Contents/Resources/` on macOS (the same `retainElectronLicenseFiles` step in `app-builder-lib/out/electron/ElectronFramework.js`). Freedom has no explicit copy of this file, so `licenses-audit.test.js` fails if the installed electron-builder stops renaming it, and the packaged notices smoke (`test-e2e/packaged/notices.spec.js`) checks that every artifact carries it. The `electron-builder` range in `package.json` starts at 26.18 for the same reason.
 
 `scripts/build.js` fails the build if `node_modules/electron/dist/LICENSES.chromium.html` is absent (an install that skipped Electron's binary download), and `licenses-audit.test.js` fails if the macOS `extraResources` entry is dropped.
 
@@ -268,7 +274,7 @@ The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances
 Blocking YouTube's video ads needs scriptlets, and the rules that use them live in uBlock Origin's own lists. Two files in `assets/adblock/` are therefore **GPL-only**, with no CC BY-SA arm:
 
 - `ublock-filters.txt` — _uBlock filters_ plus _uBlock filters – Quick fixes_ from [uBlockOrigin/uAssets](https://github.com/uBlockOrigin/uAssets) (GPL-3.0). Freedom's build modifies it (evaluates `!#if` blocks, splices `!#include` files, concatenates the two lists) and says so in the file's header, as GPL-3.0 §5(a) requires. It is plain text and is its own source.
-- `resources.json` — uBlock Origin's scriptlets and redirect resources (GPL-3.0-or-later, [gorhill/uBlock](https://github.com/gorhill/uBlock) `src/js/resources/`), shipped unmodified in the form @ghostery/adblocker publishes, pinned by tag (`v2.18.2`) and sha256 in `scripts/fetch-adblock-lists.js`. Its script bodies are **minified**, so under GPL-3.0 §6 it is object code: `NOTICES` and the manifest name the exact corresponding source (see _Decided_ below).
+- `resources.json` — uBlock Origin's scriptlets and redirect resources (GPL-3.0-or-later, [gorhill/uBlock](https://github.com/gorhill/uBlock) `src/js/resources/`), shipped unmodified in the form @ghostery/adblocker publishes, pinned by tag (`v2.20.1`) and sha256 in `scripts/fetch-adblock-lists.js`. Its script bodies are **minified**, so under GPL-3.0 §6 it is object code: `NOTICES` and the manifest name the exact corresponding source (see _Decided_ below).
 
 **Position.** These are separate works shipped next to Freedom, not combined with it: they sit outside `app.asar` as standalone files in `extraResources`, Freedom's MPL-2.0 code never links or includes them, and the MPL-2.0 engine (@ghostery/adblocker) only reads the list text as data and hands the scriptlet text to the web page it's injected into. That is an "aggregate" under GPL-3.0 §5's last paragraph, so the GPL applies to those files and not to Freedom. Brave (MPL-2.0) and Ghostery's own extension ship uBlock's lists and scriptlets the same way. Obligations met in this tree: licence text shipped (`COPYING.GPL-3.0.txt`, written by the same fetch script), copyright and source named in `NOTICES` and in the settings page's footer, and the modification notice in the list header.
 
@@ -276,7 +282,7 @@ Blocking YouTube's video ads needs scriptlets, and the rules that use them live 
 
 1. **The aggregation position stands.** Brave (MPL-2.0) ships uBlock Origin's lists as data straight from `uBlockOrigin/uAssets` ([`brave/adblock-resources`](https://github.com/brave/adblock-resources) `filter_lists/list_catalog.json`), and builds uBlock's scriptlets and redirect resources from a pinned uBlock source ([`brave/brave-core-crx-packager`](https://github.com/brave/brave-core-crx-packager): `submodules/uBlock` → `adblock-rs` `uBlockResources(...)`, `lib/adBlockRustUtils.js`), shipped as separate data files next to its MPL code. Freedom's arrangement is the same.
 2. **Corresponding source: point to the exact public source, don't mirror it.** Brave pins uBlock as a git submodule at an exact commit; Ghostery builds `resources.json` from a uBlock release. Freedom records the same kind of exact, verifiable pin, as permanent GitHub URLs at a tag or commit, in `NOTICES` and in `assets/adblock/manifest.json`:
-   - `resources.json` (sha256 `e14b498f…`): uBlock Origin [1.72.3rc4, commit `de31aee0`](https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources) (`src/js/resources/`, `src/js/redirect-resources.js`, `src/web_accessible_resources/`; [1.73.0 stable](https://github.com/gorhill/uBlock/tree/1.73.0) has byte-identical copies), brought into @ghostery/adblocker by [commit `e08ecf7f`](https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6) via Ghostery's [asset build script at `v2.18.2`](https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js). Ghostery doesn't label its build with a uBlock revision, so the revision was identified by content (scriptlet set and two dated source changes); the derivation is written next to the pin in `scripts/fetch-adblock-lists.js` and has to be redone on every @ghostery/adblocker bump.
+   - `resources.json` (sha256 `5ce0ce48…`): uBlock Origin [1.73.1b1 (a development build), commit `6788ed72`](https://github.com/gorhill/uBlock/tree/6788ed72af9bf2670bcdc1c3da3925d8b4f36443/src/js/resources) (`src/js/resources/`, `src/js/redirect-resources.js`, `src/web_accessible_resources/`; no stable release has a byte-identical `src/js/resources/`, the other two paths are identical in [1.73.0](https://github.com/gorhill/uBlock/tree/1.73.0)), brought into @ghostery/adblocker by [commit `7f5784d0`](https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec) via Ghostery's [asset build script at `v2.20.1`](https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/update.js). Ghostery doesn't label its build with a uBlock revision, so the revision was identified by content (scriptlet set and dated source changes); the derivation is written next to the pin in `scripts/fetch-adblock-lists.js` and has to be redone on every @ghostery/adblocker bump.
    - `ublock-filters.txt`: each build resolves uAssets' published branch (`gh-pages`) to one commit and downloads every file at that commit, recording it as `https://github.com/uBlockOrigin/uAssets/tree/<commit>` in the file's header and in the manifest (`categories.ublock.source`). If GitHub can't resolve the commit at build time, the build falls back to the Pages URL and records that plus the fetch date.
 3. **Sub-frame injection** (`nodeIntegrationInSubFrames`, needed for scriptlets in child frames) is accepted as established practice; see the comment at the site in `src/main/webcontents-setup.js`.
 

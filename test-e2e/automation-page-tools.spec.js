@@ -292,10 +292,12 @@ test('Stop cancels invocation without claiming to undo website work; errors and 
   expect(await electronApp.evaluate(() => globalThis.__PAGE_TOOLS_TEST__.pending)).toMatchObject({
     result: { status: 'cancelled', mayHaveChanged: true },
   });
-  expect(await script(electronApp, 'window.executeOptions')).toBeNull();
-  expect(await script(electronApp, "document.querySelector('#receipt').textContent")).toBe(
-    'Untouched'
-  );
+  // Electron 45 (Chromium 156) hands the page's tool the abort signal, so Stop
+  // reaches the website too; Electron 44 passed no options at all.
+  expect(await script(electronApp, 'window.executeOptions')).toEqual(['signal']);
+  await expect
+    .poll(() => script(electronApp, "document.querySelector('#receipt').textContent"))
+    .toBe('Aborted');
   const cancelled = await execute(electronApp, 'browser_list_page_tools');
   expect(cancelled.result.execution).toMatchObject({
     status: 'cancelled',
