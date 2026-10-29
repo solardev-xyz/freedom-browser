@@ -23,11 +23,23 @@
  *   that holds the profile in use has every other profile in it protected.
  *   This profile's own userData directory gives up only the service's own
  *   default directory (`ipfs-data` for freedom-ipfsd).
+ * - **Whatever the profile's source:** this profile's userData directory and
+ *   its browser storage are protected for a catalog profile, a
+ *   `--profile-dir` one and a test's (`FREEDOM_TEST_USER_DATA`) alike. Only
+ *   the other profiles and the short Radicle homes come from the catalog.
+ * - **Ownership is by layout, comparison by canonical path:** which
+ *   directory holds this profile, or is the service's own default one, is
+ *   decided on the paths main lays out, before any symlink is followed. So
+ *   a default directory that is a symlink into another owner's data
+ *   exempts nothing there. The service's own default directory must not
+ *   resolve into a protected root either: that is refused, as a grant there
+ *   would be, even when the grant is elsewhere.
  * - **Compared as canonical paths:** absolute, symlinks resolved through the
  *   longest prefix that exists, and on macOS and Windows case folded. Their
  *   volumes are case-insensitive by default, and folding a case-sensitive
  *   one only makes the check stricter. So an override (`FREEDOM_IPFS_DATA`),
- *   a symlink alias or a case alias can't widen a grant over a root.
+ *   a symlink alias or a case alias can't widen a grant over a root. A
+ *   name that begins with two dots, such as `..vault`, is an ordinary name.
  * - **A directory that can't be listed** while it is split throws: the
  *   caller refuses the grant (fails closed).
  *
@@ -37,7 +49,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
-const { getComponentDataDirs } = require('./profile-paths');
+const { getComponentDataDirs, getProfileUserDataDir } = require('./profile-paths');
 const { listProfileDataDirs } = require('./profile-catalog');
 const { getLockDir } = require('./service-locks');
 
@@ -76,14 +88,20 @@ function canonical(target, { foldCase = FOLD_CASE } = {}) {
   return fold(realPath(target), foldCase);
 }
 
+/** Whether `child` lies strictly inside `parent`, both absolute: a
+ * relative path from one to the other that climbs out is exactly `..` or
+ * begins with `..` and a separator, never a name such as `..vault`. */
+function within(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
 /** How `grant` relates to `root`, both canonical: `equal`, `inside`,
  * `contains`, or null when neither holds the other. */
 function relation(grant, root) {
   if (grant === root) return 'equal';
-  const inside = path.relative(root, grant);
-  if (inside && !inside.startsWith('..') && !path.isAbsolute(inside)) return 'inside';
-  const contains = path.relative(grant, root);
-  if (contains && !contains.startsWith('..') && !path.isAbsolute(contains)) return 'contains';
+  if (within(grant, root)) return 'inside';
+  if (within(root, grant)) return 'contains';
   return null;
 }
 
@@ -171,21 +189,29 @@ function entries(dir) {
   }
 }
 
+/** `target` as main lays it out: absolute, its symlinks not followed,
+ * folded when `foldCase`. Ownership is decided on these. */
+function layout(target, foldCase) {
+  return fold(path.resolve(target), foldCase);
+}
+
 /**
  * `dir` as protected roots: the whole directory, named `whole`; or, when it
- * holds one of `keep` (canonical paths), its entries instead, recursively,
- * each named `nameOf(entry)`, with `known` names added at this level. A
- * directory that is one of `keep` gives none.
+ * holds one of `keep` by layout (`layout` paths), its entries instead,
+ * recursively, each named `nameOf(entry)`, with `known` names added at
+ * this level. A directory that is one of `keep` gives none. Each root is
+ * compared later as a canonical path, so an entry that is a symlink
+ * protects what it resolves to.
  */
 function splitRoots(dir, { whole, nameOf, keep, known = [], foldCase = FOLD_CASE }) {
   if (!dir) return [];
-  const real = realPath(dir);
-  const key = fold(real, foldCase);
+  const resolved = path.resolve(dir);
+  const key = fold(resolved, foldCase);
   if (keep.includes(key)) return [];
-  if (!keep.some((kept) => relation(kept, key) === 'inside')) return [{ name: whole, dir: real }];
-  const names = new Set([...known, ...entries(real)]);
+  if (!keep.some((kept) => within(kept, key))) return [{ name: whole, dir: resolved }];
+  const names = new Set([...known, ...entries(resolved)]);
   return [...names].flatMap((entry) =>
-    splitRoots(path.join(real, entry), { whole: nameOf(entry), nameOf, keep, foldCase })
+    splitRoots(path.join(resolved, entry), { whole: nameOf(entry), nameOf, keep, foldCase })
   );
 }
 
@@ -220,30 +246,39 @@ function ownDefaults(defaults, own) {
   return dirs.filter(Boolean);
 }
 
+/** This profile, as `protectedRoots` lays it out: its userData directory,
+ * whether it is a catalog profile, its components where it keeps them by
+ * default, and the service's own default directories among them. */
+function thisProfile(own) {
+  const active = getActiveProfile();
+  const mine = path.resolve(active?.userDataDir || getProfileUserDataDir());
+  const catalog = Boolean(active?.source === 'catalog' && active.appRoot);
+  const defaults = getComponentDataDirs(mine, {
+    slot: catalog ? (active.metadata?.slot ?? null) : null,
+  });
+  return { active, mine, catalog, defaults, ownDirs: ownDefaults(defaults, own) };
+}
+
 /**
  * The roots a service's grant may not touch (see the module's doc), for the
  * service whose own components are `own` (excluded from this profile's).
  */
 function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
-  const active = getActiveProfile();
-  const catalog = active?.source === 'catalog' && active.appRoot && active.userDataDir;
-  const mine = catalog ? active.userDataDir : null;
-  const defaults = mine
-    ? getComponentDataDirs(mine, { slot: active.metadata?.slot ?? null })
-    : getComponentDataDirs();
-  const ownDirs = ownDefaults(defaults, own).map((dir) => canonical(dir, { foldCase }));
-  const mineKey = mine ? canonical(mine, { foldCase }) : null;
-  const keep = mineKey ? [mineKey, ...ownDirs] : ownDirs;
+  const { active, mine, catalog, defaults, ownDirs } = thisProfile(own);
+  const ownKeys = ownDirs.map((dir) => layout(dir, foldCase));
+  const mineKey = layout(mine, foldCase);
+  // What a split leaves out, by layout: this profile, and the service's own
+  // default directories.
+  const keep = [mineKey, ...ownKeys];
 
   const roots = [{ name: 'the lock directory', dir: getLockDir() }];
   // This profile's components as resolved, overrides and its Radicle home
   // included.
   roots.push(...componentRoots(getComponentDataDirs(), "this profile's", own));
-  if (!catalog) return roots;
 
-  const others = listProfileDataDirs(active.appRoot).filter(
-    ({ dir }) => canonical(dir, { foldCase }) !== mineKey
-  );
+  const others = catalog
+    ? listProfileDataDirs(active.appRoot).filter(({ dir }) => layout(dir, foldCase) !== mineKey)
+    : [];
   // Each other profile's Radicle home, outside its userData directory.
   for (const { dir, slot } of others) {
     roots.push({
@@ -267,7 +302,7 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
   }
   roots.push(...split);
   // The short Radicle homes' directory: every profile's home in it.
-  const homes = defaults.radicleHome ? path.dirname(defaults.radicleHome) : null;
+  const homes = catalog && defaults.radicleHome ? path.dirname(defaults.radicleHome) : null;
   roots.push(
     ...splitRoots(homes, {
       whole: 'the Radicle homes directory',
@@ -277,26 +312,51 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
     })
   );
   // This profile's own userData directory, all but the service's own
-  // default directory.
+  // default directory, whatever the profile's source.
   roots.push(
     ...splitRoots(mine, {
       whole: "this profile's directory",
       nameOf: entriesOf("this profile's"),
-      keep: ownDirs,
+      keep: ownKeys,
       known: PROFILE_ENTRIES,
       foldCase,
     })
   );
   // The app data root: the catalog, and whatever else it holds.
-  roots.push(
-    ...splitRoots(active.appRoot, {
-      whole: 'the app data directory',
-      nameOf: entriesOf("the app data directory's"),
-      keep,
-      foldCase,
-    })
-  );
+  if (catalog) {
+    roots.push(
+      ...splitRoots(active.appRoot, {
+        whole: 'the app data directory',
+        nameOf: entriesOf("the app data directory's"),
+        keep,
+        foldCase,
+      })
+    );
+  }
   return roots;
+}
+
+/**
+ * Why a service whose own components are `own` may not be given `grants`,
+ * or null: a grant that is, contains, or lies inside a protected root; or
+ * the service's own default directory resolving into one, which would hand
+ * it another owner's data through the layout (refused even when the grant
+ * is elsewhere).
+ */
+function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE } = {}) {
+  const roots = protectedRoots({ own, foldCase });
+  const refused = grantRefusal(grants, roots, { foldCase });
+  if (refused) return refused;
+  for (const dir of thisProfile(own).ownDirs) {
+    const collision = grantRefusal([dir], roots, { foldCase });
+    if (collision) {
+      return `the service's own default directory resolves into a protected root (${collision.replace(
+        /^the grant /,
+        ''
+      )})`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -305,7 +365,7 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
  * data directory is its own, so it isn't protected from it.
  */
 function ipfsGrantRefusal(dataDir, options = {}) {
-  return grantRefusal([dataDir], protectedRoots({ ...options, own: ['ipfs'] }), options);
+  return serviceGrantRefusal([dataDir], { ...options, own: ['ipfs'] });
 }
 
 module.exports = {
@@ -314,5 +374,6 @@ module.exports = {
   relation,
   grantRefusal,
   protectedRoots,
+  serviceGrantRefusal,
   ipfsGrantRefusal,
 };

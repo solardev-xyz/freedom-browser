@@ -220,6 +220,47 @@ describe('a packaged build: the default profile in the app data root, a named pr
     expect(grant.ipfsGrantRefusal(home)).toBe("the grant is this profile's Radicle home");
   });
 
+  test("this profile's default IPFS directory as a symlink exempts nothing of another profile", () => {
+    // work/ipfs-data is a symlink to another profile's directory, whose
+    // freedom-ipfs entry is in turn a symlink to that profile's identity.
+    fs.mkdirSync(path.join(records.home.dir, 'identity'), { recursive: true });
+    fs.symlinkSync(records.home.dir, path.join(records.work.dir, 'ipfs-data'));
+    fs.symlinkSync(
+      path.join(records.home.dir, 'identity'),
+      path.join(records.home.dir, 'freedom-ipfs')
+    );
+    expect(grant.ipfsGrantRefusal(path.join(records.work.dir, 'ipfs-data', 'freedom-ipfs'))).toBe(
+      "the grant lies inside another profile's directory"
+    );
+    // Refused outright, even with the grant elsewhere.
+    expect(grant.ipfsGrantRefusal(path.join(tempRoot, 'elsewhere', 'freedom-ipfs'))).toBe(
+      "the service's own default directory resolves into a protected root (is another profile's directory)"
+    );
+  });
+
+  test("this profile's default IPFS directory as a symlink into the default profile reaches none of its storage", () => {
+    fs.symlinkSync(appRoot, path.join(records.work.dir, 'ipfs-data'));
+    fs.symlinkSync(
+      path.join(appRoot, 'Local Storage', 'leveldb'),
+      path.join(appRoot, 'freedom-ipfs')
+    );
+    expect(grant.ipfsGrantRefusal(path.join(records.work.dir, 'ipfs-data', 'freedom-ipfs'))).toBe(
+      "the grant lies inside another profile's browser storage"
+    );
+    expect(grant.ipfsGrantRefusal(path.join(tempRoot, 'elsewhere', 'freedom-ipfs'))).toMatch(
+      /^the service's own default directory resolves into a protected root/
+    );
+  });
+
+  test('a default IPFS directory that is a symlink out of every profile still passes', () => {
+    const elsewhere = path.join(tempRoot, 'bigger-disk', 'ipfs-data');
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(records.work.dir, 'ipfs-data'));
+    expect(
+      grant.ipfsGrantRefusal(path.join(records.work.dir, 'ipfs-data', 'freedom-ipfs'))
+    ).toBeNull();
+  });
+
   test('a directory it must list and cannot fails the check closed', () => {
     const readdir = fs.readdirSync;
     jest.spyOn(fs, 'readdirSync').mockImplementation((dir, ...rest) => {
@@ -287,21 +328,65 @@ describe('a development build: Radicle homes beside the app root', () => {
   });
 });
 
-describe('a profile outside the catalog', () => {
-  test('has its own components and the lock directory protected', () => {
-    const userDataDir = path.join(tempRoot, 'legacy');
-    const grant = loadGrant({ source: 'legacy', userDataDir });
-    expect(grant.ipfsGrantRefusal(path.join(userDataDir, 'ipfs-data', 'freedom-ipfs'))).toBeNull();
-    expect(grant.ipfsGrantRefusal(path.join(userDataDir, 'identity'))).toBe(
-      "the grant is this profile's identity directory"
-    );
-  });
+describe('a profile outside the catalog: --profile-dir, a test user-data directory', () => {
+  test.each(['profile-dir', 'test-user-data'])(
+    'a %s profile has its userData directory and its browser storage protected too',
+    (source) => {
+      const userDataDir = path.join(tempRoot, 'Elsewhere');
+      fs.mkdirSync(path.join(userDataDir, 'Local Storage'), { recursive: true });
+      const grant = loadGrant({ source, appRoot: userDataDir, userDataDir });
+      // Its ordinary IPFS directory passes.
+      expect(
+        grant.ipfsGrantRefusal(path.join(userDataDir, 'ipfs-data', 'freedom-ipfs'))
+      ).toBeNull();
+      expect(grant.ipfsGrantRefusal(path.join(userDataDir, 'Local Storage', 'x'))).toBe(
+        "the grant lies inside this profile's browser storage"
+      );
+      expect(grant.ipfsGrantRefusal(path.join(userDataDir, 'IndexedDB'))).toBe(
+        "the grant is this profile's browser storage"
+      );
+      expect(grant.ipfsGrantRefusal(path.join(userDataDir, 'identity'))).toBe(
+        "the grant is this profile's identity directory"
+      );
+      expect(grant.ipfsGrantRefusal(userDataDir)).toMatch(/^the grant contains this profile's/);
+    }
+  );
 
   test("an override puts this profile's directories where it says", () => {
     const identity = path.join(tempRoot, 'elsewhere', 'identity');
     process.env.FREEDOM_IDENTITY_DATA = identity;
-    const grant = loadGrant({ source: 'legacy', userDataDir: path.join(tempRoot, 'legacy') });
+    const userDataDir = path.join(tempRoot, 'legacy');
+    const grant = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
     expect(grant.ipfsGrantRefusal(path.join(identity, 'x'))).toBe(
+      "the grant lies inside this profile's identity directory"
+    );
+  });
+});
+
+describe('names that begin with two dots are ordinary names', () => {
+  test('the rule sees through `..vault` both ways', () => {
+    const { relation } = jest.requireActual('./service-grant');
+    const root = path.join(tempRoot, 'a');
+    expect(relation(path.join(root, '..vault'), root)).toBe('inside');
+    expect(relation(root, path.join(root, '..vault'))).toBe('contains');
+    expect(relation(path.join(root, '..vault', 'x'), path.join(root, '..vault'))).toBe('inside');
+    // A real parent is outside.
+    expect(relation(tempRoot, root)).toBe('contains');
+    expect(relation(path.join(tempRoot, 'b'), root)).toBeNull();
+    expect(relation(path.join(tempRoot, '..b'), root)).toBeNull();
+  });
+
+  test('a grant holding an identity directory named `..vault`, or inside one, is refused', () => {
+    const outside = path.join(tempRoot, 'outside');
+    const userDataDir = path.join(tempRoot, 'legacy');
+    process.env.FREEDOM_IDENTITY_DATA = path.join(outside, 'freedom-ipfs', '..vault');
+    let grant = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    expect(grant.ipfsGrantRefusal(path.join(outside, 'freedom-ipfs'))).toBe(
+      "the grant contains this profile's identity directory"
+    );
+    process.env.FREEDOM_IDENTITY_DATA = path.join(outside, '..vault');
+    grant = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    expect(grant.ipfsGrantRefusal(path.join(outside, '..vault', 'freedom-ipfs'))).toBe(
       "the grant lies inside this profile's identity directory"
     );
   });
