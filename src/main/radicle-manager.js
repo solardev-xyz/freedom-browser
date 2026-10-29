@@ -82,7 +82,11 @@ function isDisabledForProfile() {
 
 async function syncProfileMode() {
   if (isDisabledForProfile()) {
-    await stopRadicle();
+    const stopped = await stopRadicle();
+    // A stop that wasn't proved (R-8): the node may still run, so it is
+    // not published as disabled and stopped. The failed stop's error stays,
+    // and a later stop can still recover.
+    if (embedded.isStarted()) return stopped;
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Disabled for this profile');
     updateState(STATUS.STOPPED);
@@ -135,8 +139,25 @@ async function connectAndSeedDefault() {
   }
 }
 
+// A node whose stop was never proved (its shutdown rejected) may still be
+// running on the home: the add-on still counts it as started. Until a later
+// shutdown proves it stopped, only a stop (the recovery) may run; a start
+// or an alias change is refused, and the shutdown's error stays (R-8).
+function stopUnproved() {
+  return currentState !== STATUS.RUNNING && embedded.isStarted();
+}
+
+const UNPROVED_STOP_MESSAGE = 'The Radicle node did not stop; stop it again before starting it';
+
 async function startRadicleInternal() {
   if (currentState === STATUS.RUNNING) return getCurrentStatus();
+  if (stopUnproved()) {
+    // Before prepareRadicleDataDir() or embedded.start(): nothing touches
+    // the home a node may still hold.
+    if (currentState !== STATUS.ERROR) updateState(STATUS.ERROR, UNPROVED_STOP_MESSAGE);
+    log.warn('[Radicle] Not starting: the last stop was never proved');
+    return getCurrentStatus();
+  }
   if (isDisabledForProfile()) {
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Node disabled for this profile');
@@ -175,16 +196,28 @@ function startRadicle() {
   return enqueueLifecycle(startRadicleInternal);
 }
 
-async function stopRadicleInternal() {
-  if (currentState === STATUS.STOPPED) return getCurrentStatus();
+// Stop the node. Resolves once the add-on proved it stopped (its shutdown
+// joined the node's thread); otherwise records the error and throws.
+async function stopNode() {
+  // Stopped, and proved stopped: the add-on no longer counts it as started.
+  if (currentState === STATUS.STOPPED && !embedded.isStarted()) return;
   updateState(STATUS.STOPPING);
   try {
     await embedded.shutdown();
-    clearService('radicle');
-    updateState(STATUS.STOPPED);
   } catch (err) {
     clearService('radicle');
     updateState(STATUS.ERROR, err.message);
+    throw err;
+  }
+  clearService('radicle');
+  updateState(STATUS.STOPPED);
+}
+
+async function stopRadicleInternal() {
+  try {
+    await stopNode();
+  } catch {
+    // Reported through the status.
   }
   return getCurrentStatus();
 }
@@ -419,8 +452,15 @@ function setNodeAlias(alias) {
     ));
   }
   return enqueueLifecycle(async () => {
+    if (stopUnproved()) {
+      return failure('RADICLE_NOT_STOPPED', UNPROVED_STOP_MESSAGE);
+    }
     const restart = currentState === STATUS.RUNNING;
-    if (restart) await stopRadicleInternal();
+    if (restart) {
+      await stopRadicleInternal();
+      // A stop that wasn't proved: nothing is written or restarted.
+      if (stopUnproved()) return failure('RADICLE_NOT_STOPPED', lastError || UNPROVED_STOP_MESSAGE);
+    }
     const configPath = path.join(await prepareRadicleDataDir(), 'config.json');
     try {
       let config = {};
@@ -434,6 +474,48 @@ function setNodeAlias(alias) {
     if (restart) await startRadicleInternal();
     return success({ alias, restarted: restart });
   });
+}
+
+/**
+ * Run `work` with the node stopped (R-8): the wipe and key write of an
+ * identity re-injection, which must never run under a live node.
+ *
+ * One lifecycle-queue operation, so every start, stop, alias change and
+ * other re-key queues behind it. Inside it, once the earlier operations
+ * have run:
+ *  - it notes whether the node is running,
+ *  - stops it and requires the add-on's proof that it stopped (a stop
+ *    without that proof throws, and `work` never runs),
+ *  - awaits `work`,
+ *  - and in `finally` starts the node again if it was running: as the new
+ *    identity, or as the old one when `work` failed before its key write.
+ * @template T
+ * @param {() => Promise<T>} work
+ * @returns {Promise<T>} work's result
+ */
+function withRadicleStopped(work) {
+  return enqueueLifecycle(async () => {
+    const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
+    await stopNode();
+    if (embedded.isStarted()) {
+      throw new Error('The Radicle node did not stop, so its data was not reset');
+    }
+    try {
+      return await work();
+    } finally {
+      if (wasRunning) {
+        const restarted = await startRadicleInternal();
+        if (restarted.status !== STATUS.RUNNING) {
+          log.warn('[Radicle] Node did not restart after the re-key:', restarted.error);
+        }
+      }
+    }
+  });
+}
+
+/** The hook identity-manager's setRadicleLifecycle takes (R-8). */
+function createRadicleLifecycle() {
+  return { withStopped: withRadicleStopped };
 }
 
 function registerRadicleIpc() {
@@ -463,6 +545,7 @@ function registerRadicleIpc() {
 
 module.exports = {
   registerRadicleIpc,
+  createRadicleLifecycle,
   startRadicle,
   stopRadicle,
   getRadicleDataPath,

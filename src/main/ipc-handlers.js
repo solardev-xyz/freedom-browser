@@ -327,7 +327,12 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     }
     if (protocol === 'radicle') {
       const radicleManager = require('./radicle-manager');
-      await radicleManager.syncProfileMode();
+      const status = await radicleManager.syncProfileMode();
+      // A disable whose stop wasn't proved (R-8): the mode is saved, but the
+      // node may still be running, so it was not applied.
+      if (validation.sanitized.mode === 'disabled' && status?.status === 'error') {
+        throw new Error(status.error || 'The Radicle node did not stop');
+      }
     }
     if (protocol === 'ipfs') {
       // Publish the newly configured mode to the service registry. Nothing is
