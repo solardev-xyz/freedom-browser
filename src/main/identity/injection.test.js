@@ -98,16 +98,24 @@ describe('key files are owner-only (K-3)', () => {
 
   // The probe from review: keys/ replaced with a link while the keystore is
   // being encrypted (real scrypt). injectBeeKey opened keys/ before that
-  // await, so the swap lands mid-encryption. Linux binds the write to the
-  // opened directory; macOS checks the path; both refuse.
-  const bindings = [['checked by path alone', false]];
-  if (process.platform === 'linux') bindings.unshift(['bound to the descriptor', true]);
-  for (const [label, bound] of bindings) {
+  // await, so the swap lands mid-encryption. The check before the write
+  // refuses it (Linux also binds the write to the opened directory, macOS
+  // refuses a link anywhere in the path). A Linux without its /proc binding
+  // refuses the write as well.
+  const SWAPS =
+    process.platform === 'linux'
+      ? [
+          ['Linux, bound through /proc', true],
+          ['Linux without /proc', false],
+        ]
+      : [[process.platform, true]];
+  for (const [label, binding] of SWAPS) {
     posixTest(`keys/ swapped for a link during encryption: nothing lands outside (${label})`, async () => {
       const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
-      _setFdBindingForTests(bound);
       try {
         const pending = injectBeeKey(dir, `0x${'11'.repeat(32)}`, 'password');
+        // The handles are open; from here the binding is gone, if it goes.
+        _setFdBindingForTests(binding);
         fs.renameSync(path.join(dir, 'keys'), path.join(dir, 'keys.held'));
         fs.symlinkSync(elsewhere, path.join(dir, 'keys'));
 

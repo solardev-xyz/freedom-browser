@@ -16,22 +16,34 @@
  *    through that descriptor. A managed directory that is a link, or not
  *    ours, is refused, so a caller stops instead of using it.
  *  - Every read, repair, temp-file creation and rename of a file in it goes
- *    through the handle, which keeps its binding across awaits:
- *      - On Linux the handle names its entries `/proc/self/fd/<fd>/<name>`,
+ *    through the handle. Each use is bracketed by a check that every
+ *    managed component from the root down is still the directory the handle
+ *    opened (same device and inode, still not a link). A change refuses the
+ *    use. That bracket says what the path names at each check, not what an
+ *    open in between used, so each platform binds the open itself:
+ *      - Linux: the handle names its entries `/proc/self/fd/<fd>/<name>`,
  *        which the kernel resolves inside the directory the descriptor
  *        holds, whatever the pathname points at by then: openat(2) for a
- *        runtime that has none.
- *      - Everywhere, each use is bracketed by a check that every managed
- *        component from the root down is still the directory the handle
- *        opened (same device and inode, still not a link). A change refuses
- *        the use. On macOS and Windows, which have no such path, that
- *        bracket is the binding. Only an account that can rename entries in
- *        the 0700 directories could race it, which means this account or
- *        root, and both can read the keys anyway.
+ *        runtime that has none, and the binding holds across awaits.
+ *        Without /proc the handle refuses every entry rather than fall back
+ *        to the path.
+ *      - macOS: every open carries O_NOFOLLOW_ANY (macOS 11+), so a link
+ *        anywhere in the path is refused. The handle opens the resolved
+ *        path (trusted ancestors such as /var -> /private/var resolved once,
+ *        when it is opened), which has none. A managed directory swapped for
+ *        a link, even briefly, fails the open.
+ *      - Windows: the bracket alone. A directory junction needs no
+ *        privilege, so a local process that can write inside the profile
+ *        (this account, or an administrator) could swap a managed directory
+ *        and swap it back between the check and the open. It can read the
+ *        keys directly anyway. Handle-relative I/O there needs native code:
+ *        #963.
  *  - Files are opened with O_NOFOLLOW | O_NONBLOCK | O_NOCTTY, so a FIFO or
- *    device at the name cannot block or act on the open. The descriptor is
- *    checked to be a regular file this account owns before any I/O, then
- *    fchmod'ed and read through.
+ *    device at the name cannot block or act on the open. The name is
+ *    lstat'ed first and must not be a link (Windows has no O_NOFOLLOW: an
+ *    ordinary open there follows a link to its target). The opened
+ *    descriptor must be that same object, a regular file this account
+ *    owns, before any I/O. It is then fchmod'ed and read through.
  *  - Writes create an exclusive temp file (O_CREAT | O_EXCL | O_NOFOLLOW,
  *    0600) in the directory, fsync it and rename it over the name. A rename
  *    replaces a link itself, never its target.
@@ -44,8 +56,8 @@
  *
  * POSIX only for modes and ownership: on Windows the files inherit the user
  * profile directory's ACL, so there the helpers do the plain open, write and
- * rename, with the same directory checks, and still refuse anything that is
- * not a regular file.
+ * rename, with the same checks, and still refuse anything that is not a
+ * regular file.
  */
 
 const fs = require('fs');
@@ -54,7 +66,10 @@ const crypto = require('crypto');
 
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
-const POSIX = process.platform !== 'win32';
+const PLATFORM = process.platform;
+const POSIX = PLATFORM !== 'win32';
+const LINUX = PLATFORM === 'linux';
+const DARWIN = PLATFORM === 'darwin';
 const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL } = fs.constants;
 const NOFOLLOW = POSIX ? fs.constants.O_NOFOLLOW : 0;
 const DIRECTORY = POSIX ? fs.constants.O_DIRECTORY : 0;
@@ -62,10 +77,13 @@ const DIRECTORY = POSIX ? fs.constants.O_DIRECTORY : 0;
 // make it the controlling one. With these the open returns at once, so the
 // descriptor's type is checked before anything else.
 const NO_WAIT = POSIX ? fs.constants.O_NONBLOCK | (fs.constants.O_NOCTTY || 0) : 0;
+// macOS 11+, <sys/fcntl.h>: no symbolic link anywhere in the path. Node has
+// no constant for it and passes open flags to open(2) unchanged.
+const NOFOLLOW_ANY = DARWIN ? (fs.constants.O_NOFOLLOW_ANY ?? 0x20000000) : 0;
 
-// Linux's /proc/self/fd/<fd> binding. Off in tests that exercise the bracket
-// alone, as macOS and Windows have it.
-let fdBinding = process.platform === 'linux';
+// Linux's /proc/self/fd/<fd> binding. Off in tests that check a Linux
+// without it refuses.
+let fdBinding = LINUX;
 
 class UnsafePrivatePathError extends Error {
   constructor(target, why) {
@@ -129,8 +147,11 @@ function boundTo(fd, stat) {
  * parent's `openDir`. Closing it closes the directories opened through it.
  */
 class PrivateDir {
-  constructor({ dirPath, fd, stat, parent, trusted }) {
+  constructor({ dirPath, ioPath, fd, stat, parent, trusted }) {
     this.path = dirPath;
+    // The path every check and (unbound) open uses: on macOS the resolved
+    // one, with no link in it.
+    this.ioPath = ioPath;
     this.fd = fd;
     this.stat = stat;
     this.parent = parent || null;
@@ -143,7 +164,14 @@ class PrivateDir {
 
   entry(name) {
     checkName(name);
-    return this.bound ? `/proc/self/fd/${this.fd}/${name}` : path.join(this.path, name);
+    if (this.bound && fdBinding) return `/proc/self/fd/${this.fd}/${name}`;
+    if (LINUX) {
+      throw new UnsafePrivatePathError(
+        path.join(this.path, name),
+        'no /proc/self/fd binding to its directory is available'
+      );
+    }
+    return path.join(this.ioPath, name);
   }
 
   /**
@@ -157,8 +185,8 @@ class PrivateDir {
     let now;
     try {
       now = this.trusted
-        ? fs.statSync(this.path, { bigint: true })
-        : fs.lstatSync(this.path, { bigint: true });
+        ? fs.statSync(this.ioPath, { bigint: true })
+        : fs.lstatSync(this.ioPath, { bigint: true });
     } catch (err) {
       throw new UnsafePrivatePathError(this.path, `it went away while in use (${err.code})`);
     }
@@ -172,16 +200,28 @@ class PrivateDir {
   openFile(name) {
     this.verify();
     const target = path.join(this.path, name);
+    const entry = this.entry(name);
+    // What the name is before the open. Windows has no O_NOFOLLOW, so this
+    // is where a link at the name is refused there; the identity check
+    // below refuses one swapped in after it.
+    const seen = fs.lstatSync(entry, { bigint: true, throwIfNoEntry: false });
+    if (!seen) return null;
+    if (seen.isSymbolicLink()) throw new UnsafePrivatePathError(target, 'it is a symbolic link');
     let fd;
     try {
-      fd = fs.openSync(this.entry(name), O_RDONLY | NOFOLLOW | NO_WAIT);
+      fd = fs.openSync(entry, O_RDONLY | NOFOLLOW | NOFOLLOW_ANY | NO_WAIT);
     } catch (err) {
       if (err.code === 'ENOENT') return null;
-      if (err.code === 'ELOOP') throw new UnsafePrivatePathError(target, 'it is a symbolic link');
-      if (err.code === 'ENXIO') throw new UnsafePrivatePathError(target, 'not a regular file');
+      if (err.code === 'ELOOP') throw linkRefusal(target);
+      if (err.code === 'ENXIO' || err.code === 'EISDIR') {
+        throw new UnsafePrivatePathError(target, 'not a regular file');
+      }
       throw err;
     }
     try {
+      if (!sameObject(fs.fstatSync(fd, { bigint: true }), seen)) {
+        throw new UnsafePrivatePathError(target, 'it changed while being opened');
+      }
       const stat = checkOpened(fd, target);
       this.verify();
       return { fd, stat, target };
@@ -239,7 +279,13 @@ class PrivateDir {
     checkName(name);
     this.verify();
     const temp = this.entry(`.${name}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
-    const fd = fs.openSync(temp, O_WRONLY | O_CREAT | O_EXCL | NOFOLLOW, mode);
+    let fd;
+    try {
+      fd = fs.openSync(temp, O_WRONLY | O_CREAT | O_EXCL | NOFOLLOW | NOFOLLOW_ANY, mode);
+    } catch (err) {
+      if (err.code === 'ELOOP') throw linkRefusal(path.join(this.path, name));
+      throw err;
+    }
     try {
       try {
         fs.writeFileSync(fd, data);
@@ -293,6 +339,7 @@ class PrivateDir {
       }
     }
     const child = openDirectory(this.entry(name), path.join(this.path, name), {
+      ioPath: path.join(this.ioPath, name),
       parent: this,
       missingOk: !create,
     });
@@ -318,10 +365,20 @@ class PrivateDir {
   }
 }
 
+function linkRefusal(target) {
+  return new UnsafePrivatePathError(
+    target,
+    DARWIN ? 'a symbolic link is in its path' : 'it is a symbolic link'
+  );
+}
+
+// `entryPath` is what to open: the parent handle's entry for a child, the
+// directory's own (on macOS, resolved) path for a root. `ioPath` is the
+// path later checks use.
 function openDirectory(
   entryPath,
   dirPath,
-  { parent = null, trusted = false, missingOk = false } = {}
+  { ioPath = entryPath, parent = null, trusted = false, missingOk = false } = {}
 ) {
   if (!POSIX) {
     // No directory descriptors on Windows: the object lstat finds is the
@@ -337,16 +394,19 @@ function openDirectory(
     }
     if (stat.isSymbolicLink()) throw new UnsafePrivatePathError(dirPath, 'it is a symbolic link');
     if (!stat.isDirectory()) throw new UnsafePrivatePathError(dirPath, 'not a directory');
-    const dir = new PrivateDir({ dirPath, stat, parent, trusted });
+    const dir = new PrivateDir({ dirPath, ioPath, stat, parent, trusted });
     parent?.verify();
     return dir;
   }
   let fd;
   try {
-    fd = fs.openSync(entryPath, O_RDONLY | DIRECTORY | NO_WAIT | (trusted ? 0 : NOFOLLOW));
+    fd = fs.openSync(
+      entryPath,
+      O_RDONLY | DIRECTORY | NO_WAIT | NOFOLLOW_ANY | (trusted ? 0 : NOFOLLOW)
+    );
   } catch (err) {
     if (err.code === 'ENOENT' && missingOk) return null;
-    if (err.code === 'ELOOP') throw new UnsafePrivatePathError(dirPath, 'it is a symbolic link');
+    if (err.code === 'ELOOP') throw linkRefusal(dirPath);
     if (err.code === 'ENOTDIR') {
       // Linux reports a link opened with O_DIRECTORY | O_NOFOLLOW this way.
       const link = fs.lstatSync(entryPath, { throwIfNoEntry: false })?.isSymbolicLink();
@@ -359,6 +419,7 @@ function openDirectory(
     if (!trusted) narrow(fd, stat, PRIVATE_DIR_MODE, dirPath);
     const dir = new PrivateDir({
       dirPath,
+      ioPath,
       fd,
       stat: fs.fstatSync(fd, { bigint: true }),
       parent,
@@ -389,7 +450,21 @@ function openPrivateDir(dir, { create = true, trusted = false } = {}) {
   if (create && !trusted && !fs.lstatSync(dir, { throwIfNoEntry: false })) {
     fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   }
-  return openDirectory(dir, dir, { trusted, missingOk: !create });
+  let ioPath = dir;
+  if (DARWIN) {
+    // O_NOFOLLOW_ANY refuses a link anywhere in the path, so resolve the
+    // ancestors we do not manage now: all of a trusted directory, and the
+    // parent of a managed one, whose own last component must not be a link.
+    try {
+      ioPath = trusted
+        ? fs.realpathSync(dir)
+        : path.join(fs.realpathSync(path.dirname(dir)), path.basename(dir));
+    } catch (err) {
+      if (err.code === 'ENOENT' && !create) return null;
+      throw err;
+    }
+  }
+  return openDirectory(ioPath, dir, { ioPath, trusted, missingOk: !create });
 }
 
 /**
@@ -490,9 +565,9 @@ function repairPrivateDir(dir) {
   }
 }
 
-/** Tests: run without the /proc binding, as on macOS and Windows. */
+/** Tests: a Linux handle without its /proc binding, which refuses entries. */
 function _setFdBindingForTests(enabled) {
-  fdBinding = process.platform === 'linux' && enabled;
+  fdBinding = LINUX && enabled;
 }
 
 module.exports = {

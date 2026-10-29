@@ -115,16 +115,22 @@ posix('private files (K-3)', () => {
   });
 });
 
-// A managed directory handle binds through /proc/self/fd on Linux, and
-// through the before-and-after check alone on macOS and Windows: the swap
-// tests run both ways where both exist.
-const bindings =
-  process.platform === 'linux'
-    ? [
-        ['bound to the descriptor', true],
-        ['checked by path alone', false],
-      ]
-    : [['checked by path alone', false]];
+// How a handle binds its opens, per platform (private-files.js):
+//  - Linux: /proc/self/fd/<fd>/<name> resolves in the held directory;
+//  - Linux without /proc: every entry is refused rather than opened by path;
+//  - macOS: O_NOFOLLOW_ANY refuses a link anywhere in the path.
+// Windows has the before-and-after check alone (#963), so the directory-swap
+// tests do not run there.
+const SWAP_MODES = {
+  linux: [
+    ['Linux, bound through /proc', 'bound'],
+    ['Linux without /proc: refused', 'refused'],
+  ],
+  darwin: [['macOS, O_NOFOLLOW_ANY', 'nofollow-any']],
+}[process.platform];
+const eachSwapMode = SWAP_MODES
+  ? describe.each(SWAP_MODES)
+  : describe.skip.each([['no binding on this platform', 'none']]);
 
 posix('managed directory handles (K-3)', () => {
   let root;
@@ -239,13 +245,47 @@ posix('managed directory handles (K-3)', () => {
     ).rejects.toThrow('use failed');
   });
 
-  describe.each(bindings)('%s', (_label, bound) => {
-    beforeEach(() => _setFdBindingForTests(bound));
+  eachSwapMode('%s', (_label, mode) => {
+    // Refused: the handles were opened bound, and the binding is gone by
+    // the time they are used.
+    const afterOpen = () => {
+      if (mode === 'refused') _setFdBindingForTests(false);
+    };
+    // keys/ as it now stands: moved aside by a swap, or where it was.
+    const keysContents = () =>
+      fs.readdirSync(
+        path.join(data, fs.existsSync(path.join(data, 'keys.held')) ? 'keys.held' : 'keys')
+      );
+
+    // keys/ put back where it was: what a swap-and-restore around one open
+    // leaves for the checks after it.
+    const restoreKeys = () => {
+      fs.unlinkSync(path.join(data, 'keys'));
+      fs.renameSync(path.join(data, 'keys.held'), path.join(data, 'keys'));
+    };
+    const outsideNow = () => ({
+      names: fs.readdirSync(outsideDir),
+      content: fs.readFileSync(path.join(outsideDir, 'swarm.key'), 'utf8'),
+      mode: modeOf(path.join(outsideDir, 'swarm.key')),
+    });
+    const UNTOUCHED = { names: ['swarm.key'], content: 'not yours', mode: 0o644 };
+    // Spy on the open of `suffix` and run `around(open)` in its place.
+    const aroundOpen = (suffix, around) => {
+      const realOpen = fs.openSync;
+      jest
+        .spyOn(fs, 'openSync')
+        .mockImplementation((target, ...rest) =>
+          String(target).endsWith(suffix) && !keysIsLink()
+            ? around(() => realOpen(target, ...rest))
+            : realOpen(target, ...rest)
+        );
+    };
 
     test('keys/ swapped for a link across an await: no read, repair or write goes through it', async () => {
       await withPrivateDir(data, async (dir) => {
         const keys = dir.openDir('keys');
-        expect(keys.bound).toBe(bound);
+        expect(keys.bound).toBe(process.platform === 'linux');
+        afterOpen();
         await new Promise((resolve) => setImmediate(resolve));
         swapKeysForLink();
         expect(() => keys.write('swarm.key', 'secret')).toThrow('replaced while in use');
@@ -260,6 +300,7 @@ posix('managed directory handles (K-3)', () => {
     test('the data directory swapped under a held keys/ is refused too', () => {
       withPrivateDir(data, (dir) => {
         const keys = dir.openDir('keys');
+        afterOpen();
         fs.renameSync(data, path.join(root, 'ant-data.held'));
         fs.mkdirSync(data, { mode: 0o700 });
         fs.symlinkSync(outsideDir, path.join(data, 'keys'));
@@ -269,37 +310,180 @@ posix('managed directory handles (K-3)', () => {
       expect(fs.readdirSync(path.join(root, 'ant-data.held', 'keys'))).toEqual([]);
     });
 
-    test('a swap between the check and the temp file leaves nothing outside', () => {
-      const realOpen = fs.openSync;
+    test('a swap at the temp file open, left in place, leaves nothing outside', () => {
       withPrivateDir(data, (dir) => {
         const keys = dir.openDir('keys');
-        jest.spyOn(fs, 'openSync').mockImplementation((target, ...rest) => {
-          if (String(target).endsWith('.tmp') && !keysIsLink()) swapKeysForLink();
-          return realOpen(target, ...rest);
+        afterOpen();
+        aroundOpen('.tmp', (open) => {
+          swapKeysForLink();
+          return open();
         });
-        expect(() => keys.write('swarm.key', 'secret')).toThrow('replaced while in use');
+        expect(() => keys.write('swarm.key', 'secret')).toThrow(UnsafePrivatePathError);
       });
-      // Bound, the temp file was made in the held directory; path-checked,
-      // through the link. Either way it is gone and nothing was renamed.
       outsideUntouched();
-      expect(fs.readdirSync(path.join(data, 'keys.held'))).toEqual([]);
+      expect(keysContents()).toEqual([]);
     });
 
-    test('a swap between the check and a read opens nothing it then uses', () => {
+    test('a swap at a read open, left in place, opens nothing it then uses', () => {
       fs.writeFileSync(path.join(data, 'keys', 'swarm.key'), 'mine', { mode: 0o600 });
-      const realOpen = fs.openSync;
       withPrivateDir(data, (dir) => {
         const keys = dir.openDir('keys');
-        jest.spyOn(fs, 'openSync').mockImplementation((target, ...rest) => {
-          if (String(target).endsWith('swarm.key') && !keysIsLink()) swapKeysForLink();
-          return realOpen(target, ...rest);
+        afterOpen();
+        aroundOpen('swarm.key', (open) => {
+          swapKeysForLink();
+          return open();
         });
-        expect(() => keys.read('swarm.key')).toThrow('replaced while in use');
+        expect(() => keys.read('swarm.key')).toThrow(UnsafePrivatePathError);
       });
-      // Path-checked, the outside file was opened, but neither narrowed
-      // nor read before the check refused it.
       outsideUntouched();
     });
+
+    // Review R3-M1: keys/ is a link only while the open runs, and restored
+    // before any check after it, so the path checks alone pass. Guaranteed
+    // on Linux (bound, or refused without /proc) and on macOS.
+    test('a swap-and-restore around a read open never reads or narrows the outside file', () => {
+      fs.writeFileSync(path.join(data, 'keys', 'swarm.key'), 'mine', { mode: 0o600 });
+      let during = null;
+      let result;
+      withPrivateDir(data, (dir) => {
+        const keys = dir.openDir('keys');
+        afterOpen();
+        aroundOpen('swarm.key', (open) => {
+          swapKeysForLink();
+          try {
+            return open();
+          } finally {
+            during = outsideNow();
+            restoreKeys();
+          }
+        });
+        try {
+          result = keys.read('swarm.key').toString();
+        } catch (err) {
+          result = err;
+        }
+      });
+      if (mode === 'bound') {
+        // The open resolved in the held directory: our own file.
+        expect(result).toBe('mine');
+      } else {
+        expect(result).toBeInstanceOf(UnsafePrivatePathError);
+      }
+      if (mode !== 'refused') expect(during).toEqual(UNTOUCHED);
+      expect(outsideNow()).toEqual(UNTOUCHED);
+    });
+
+    test('a swap-and-restore around the temp file open never leaves the key outside', () => {
+      let during = null;
+      let outcome;
+      withPrivateDir(data, (dir) => {
+        const keys = dir.openDir('keys');
+        afterOpen();
+        aroundOpen('.tmp', (open) => {
+          swapKeysForLink();
+          try {
+            return open();
+          } finally {
+            during = outsideNow();
+            restoreKeys();
+          }
+        });
+        try {
+          keys.write('swarm.key', 'secret');
+          outcome = 'written';
+        } catch (err) {
+          outcome = err;
+        }
+      });
+      const inside = fs.readdirSync(path.join(data, 'keys'));
+      if (mode === 'bound') {
+        // The temp file was made in the held directory and renamed there.
+        expect(outcome).toBe('written');
+        expect(inside).toEqual(['swarm.key']);
+        expect(fs.readFileSync(path.join(data, 'keys', 'swarm.key'), 'utf8')).toBe('secret');
+      } else {
+        expect(outcome).toBeInstanceOf(UnsafePrivatePathError);
+        expect(inside).toEqual([]);
+      }
+      if (mode !== 'refused') expect(during).toEqual(UNTOUCHED);
+      expect(outsideNow()).toEqual(UNTOUCHED);
+    });
+  });
+
+  (process.platform === 'linux' ? test : test.skip)(
+    'Linux without /proc: a handle refuses every entry, and nothing is opened by path',
+    () => {
+      _setFdBindingForTests(false);
+      const realOpen = fs.openSync;
+      const opened = [];
+      jest.spyOn(fs, 'openSync').mockImplementation((target, ...rest) => {
+        opened.push(String(target));
+        return realOpen(target, ...rest);
+      });
+      withPrivateDir(data, (dir) => {
+        expect(dir.bound).toBe(false);
+        expect(() => dir.openDir('keys')).toThrow('no /proc/self/fd binding');
+        expect(() => dir.read('config.yaml')).toThrow('no /proc/self/fd binding');
+        expect(() => dir.write('config.yaml', 'secret')).toThrow('no /proc/self/fd binding');
+      });
+      expect(() => readPrivateFile(path.join(data, 'config.yaml'))).toThrow(
+        'no /proc/self/fd binding'
+      );
+      // Only the directory itself was opened.
+      expect(opened.every((target) => target === data)).toBe(true);
+      expect(fs.readdirSync(data)).toEqual(['keys']);
+    }
+  );
+});
+
+// Review R3-M2. Windows has no O_NOFOLLOW: an ordinary open there follows a
+// link to its target, so the name is lstat'ed first and the opened object
+// must be the one lstat saw. Runs on every platform, Windows included.
+describe('a link at the final file name (K-3)', () => {
+  let root;
+  let outside;
+  let file;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-final-'));
+    outside = path.join(root, 'outside.key');
+    fs.writeFileSync(outside, 'not yours');
+    file = path.join(root, 'swarm.key');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const outsideContent = () => fs.readFileSync(outside, 'utf8');
+
+  test('is refused by reads and repairs, and replaced, not followed, by a write', () => {
+    fs.symlinkSync(outside, file, 'file');
+    expect(() => readPrivateFile(file)).toThrow(UnsafePrivatePathError);
+    expect(repairPrivateFile(file)).toBe(false);
+    withPrivateDir(root, (dir) => {
+      expect(() => dir.read('swarm.key')).toThrow(UnsafePrivatePathError);
+      expect(dir.repair('swarm.key')).toBe(false);
+    });
+    expect(outsideContent()).toBe('not yours');
+
+    writePrivateFileSync(file, 'secret');
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe('secret');
+    expect(outsideContent()).toBe('not yours');
+  });
+
+  test('a link swapped in between the lstat and the open is refused before any I/O', () => {
+    fs.writeFileSync(file, 'mine');
+    const realOpen = fs.openSync;
+    jest.spyOn(fs, 'openSync').mockImplementation((target, ...rest) => {
+      if (String(target).endsWith('swarm.key') && !fs.lstatSync(target).isSymbolicLink()) {
+        fs.rmSync(target);
+        fs.symlinkSync(outside, target, 'file');
+      }
+      return realOpen(target, ...rest);
+    });
+    expect(() => readPrivateFile(file)).toThrow(UnsafePrivatePathError);
+    expect(outsideContent()).toBe('not yours');
   });
 });
 
