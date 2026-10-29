@@ -129,7 +129,13 @@ function publishDerivedKeys(identity, mnemonic, epoch) {
     identity.lockVault();
     throw new Error('The vault was locked while it was being opened');
   }
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  // Derive first, so a failed derivation leaves the current set in place;
+  // then zero the set being replaced (a re-unlock while unlocked, by
+  // password or Touch ID), so its byte arrays don't outlive it.
+  const next = identity.deriveAllKeys(mnemonic);
+  const previous = derivedKeys;
+  derivedKeys = next;
+  if (previous && previous !== next) wipeDerivedKeys(previous);
 }
 
 /**

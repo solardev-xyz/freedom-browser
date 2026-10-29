@@ -231,6 +231,64 @@ describe('vault authority epoch (K-1)', () => {
     expect(ctx.vault.isUnlocked()).toBe(false);
   });
 
+  describe('a re-unlock while unlocked zeroes the set it replaces (K-1 round 2)', () => {
+    const firstArrays = (manager) => {
+      const keys = manager.getDerivedKeys();
+      return [keys.radicleKey.privateKey, keys.ipfsKey.privateKey];
+    };
+
+    test('sequential: password unlock twice', async () => {
+      const ctx = load();
+      await ctx.manager.createNewVault(PASSWORD);
+      const first = firstArrays(ctx.manager);
+      expect(first.every((bytes) => bytes.some((byte) => byte !== 0))).toBe(true);
+
+      await ctx.manager.unlockVault(PASSWORD);
+
+      expect(first.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      const second = firstArrays(ctx.manager);
+      expect(second.every((bytes) => bytes.some((byte) => byte !== 0))).toBe(true);
+      expect(second[0]).not.toBe(first[0]);
+    });
+
+    test('overlapping: two unlocks in flight, the first set is zeroed', async () => {
+      const ctx = load();
+      await ctx.manager.createNewVault(PASSWORD);
+      const first = firstArrays(ctx.manager);
+
+      const held = deferred();
+      mockDecryptHolds.push(held.promise);
+      const slow = ctx.manager.unlockVault(PASSWORD);
+      await settle();
+      await ctx.manager.unlockVault(PASSWORD);
+      const second = firstArrays(ctx.manager);
+      expect(first.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+
+      held.resolve();
+      await slow;
+      expect(second.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      const third = firstArrays(ctx.manager);
+      expect(third.every((bytes) => bytes.some((byte) => byte !== 0))).toBe(true);
+
+      // And the set that stands is zeroed by the next lock, as before.
+      await ctx.manager.lockVault();
+      expect(third.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+    });
+
+    test('a failed derivation keeps the current set intact', async () => {
+      const ctx = load();
+      await ctx.manager.createNewVault(PASSWORD);
+      const first = firstArrays(ctx.manager);
+      jest.spyOn(ctx.vault, 'deriveAllKeys').mockImplementationOnce(() => {
+        throw new Error('derivation failed');
+      });
+
+      await expect(ctx.manager.unlockVault(PASSWORD)).rejects.toThrow('derivation failed');
+      expect(first.every((bytes) => bytes.some((byte) => byte !== 0))).toBe(true);
+      expect(ctx.manager.getDerivedKeys().radicleKey.privateKey).toBe(first[0]);
+    });
+  });
+
   describe('the mutable key bytes are zeroed', () => {
     const revokers = {
       'the auto-lock': () => jest.advanceTimersByTime(AUTO_LOCK_MS + 1),
