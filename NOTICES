@@ -258,7 +258,7 @@ MPL-2.0 in `LICENSE`.
 npm dependencies
   See package.json for the full list.
   Most use permissive licenses (MIT, ISC, BSD, Apache-2.0, 0BSD,
-  BlueOak-1.0.0, Python-2.0). The weak-copyleft ones are:
+  BlueOak-1.0.0, Python-2.0, Unlicense). The weak-copyleft ones are:
     MPL-2.0        @ghostery/adblocker and its @remusao/* helpers,
                    @ethereumjs/{rlp,tx,util}
     LGPL-3.0-only  @openlv/*, websocket-mqtt (both entries above)
@@ -266,3 +266,56 @@ npm dependencies
   MPL packages are consumed unmodified from npm, and the LGPL ones ship as
   the separate, replaceable `openlv.esm.js` bundle described above.
   better-sqlite3 (MIT) embeds SQLite, which is in the public domain.
+
+PDF.js (pdfjs-dist, the agent's PDF processor)
+  License: Apache-2.0
+  Copyright (c) Mozilla Foundation and PDF.js contributors
+  https://github.com/mozilla/pdf.js
+  The package ships these third-party parts, each with its licence text
+  beside it under `node_modules/pdfjs-dist/` in `app.asar`:
+  - JBIG2 decoder (wasm/jbig2.wasm), from PDFium: BSD-3-Clause,
+    Copyright 2014 The PDFium Authors (wasm/LICENSE_JBIG2)
+  - OpenJPEG (wasm/openjpeg.wasm): BSD-2-Clause, Copyright (c) 2002-2014,
+    Universite catholique de Louvain (UCL), Belgium, and the OpenJPEG
+    contributors
+    (wasm/LICENSE_OPENJPEG)
+  - qcms (wasm/qcms_bg.wasm): MIT, Copyright (C) 2009-2024 Mozilla
+    Corporation, Copyright (C) 1998-2007 Marti Maria (wasm/LICENSE_QCMS)
+  - Foxit standard fonts (standard_fonts/Foxit*.pfb), from PDFium:
+    BSD-3-Clause, Copyright 2014 PDFium Authors (standard_fonts/LICENSE_FOXIT)
+  - Liberation Sans (standard_fonts/LiberationSans-*.ttf): GPL-2.0 with
+    Red Hat's font exception, Copyright (c) 2007-2011 Red Hat, Inc.
+    (standard_fonts/LICENSE_LIBERATION, which includes the GPL-2.0 text).
+    Shipped unmodified; the TTF files are their own source.
+    https://github.com/liberationfonts/liberation-fonts
+    Open question, see
+    https://github.com/solardev-xyz/freedom-browser/issues/962
+  - Adobe CMaps (cmaps/): BSD-3-Clause, Copyright 1990-2009 Adobe Systems
+    Incorporated (cmaps/LICENSE)
+  - ICC colour profiles (iccs/): CC0-1.0 (iccs/LICENSE)
+  - QuickJS (wasm/quickjs-eval.wasm), the sandbox PDF.js evaluates
+    document scripts in: MIT, Copyright (c) 2017-2021 Fabrice Bellard and
+    Charlie Gordon, https://bellard.org/quickjs/
+
+@napi-rs/canvas (Skia, installed as an optional dependency of pdfjs-dist)
+  License: MIT
+  Copyright (c) 2020 lynweklm@gmail.com
+  https://github.com/Brooooooklyn/canvas
+  The per-platform addon `skia.<platform>.node` statically links Skia
+  (BSD-3-Clause, Copyright (c) 2011 Google Inc., https://skia.org) and the
+  libraries listed in the `sbom.cdx.json` shipped beside it, among them:
+  - FreeType: FTL. Portions of this software are copyright (c) The
+    FreeType Project (www.freetype.org). All rights reserved.
+  - libjpeg-turbo: BSD-3-Clause AND IJG AND Zlib. This software is based
+    in part on the work of the Independent JPEG Group.
+  - ICU: ICU license, Copyright (c) Unicode, Inc. and others
+  - libpng: libpng-2.0
+  - libwebp, libjxl, highway, brotli: BSD-3-Clause / Apache-2.0 / MIT
+  - libavif, libaom: BSD-2-Clause
+  - harfbuzz, expat, wuffs, zlib: MIT / Apache-2.0 / Zlib
+  - cssparser, cssparser-macros, dtoa-short, selectors: MPL-2.0, used
+    unmodified; source at https://github.com/servo/rust-cssparser and
+    https://github.com/servo/stylo
+  Freedom does not load this addon: PDF.js runs in a sandboxed renderer
+  and uses Chromium's canvas. See
+  https://github.com/solardev-xyz/freedom-browser/issues/962

@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-10-08T00:00:00.000Z",
-  "audit_baseline": "0.8.7",
+  "generated_at": "2026-10-29T00:00:00.000Z",
+  "audit_baseline": "0.8.8-rc.1",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -12,7 +12,8 @@
       "better-sqlite3",
       "freedom_ipfs_native.node",
       "libradicle.node",
-      "myotis-node.node"
+      "myotis-node.node",
+      "@napi-rs/canvas (skia.<platform>.node, installed as an optional dependency of pdfjs-dist and never loaded)"
     ],
     "external_binaries": ["antd", "arti", "myotis-supervisor", "whisper-cli"],
     "vendored_renderer_bundles": [
@@ -21,7 +22,7 @@
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries. Since 0.8.8 the agent's npm stack ships in app.asar too, including pdfjs-dist with its own fonts and WebAssembly decoders and, through pdfjs-dist's optional dependency, the @napi-rs/canvas Skia addon, which asarUnpack's **/*.node puts under app.asar.unpacked."
   },
   "dependencies": [
     {
@@ -817,28 +818,168 @@
       "linking_or_integration": "native-addon",
       "risk": "green",
       "issues": []
+    },
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "1.0.2",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/earendil-works/pi"
+      },
+      "license": {
+        "spdx": [
+          "MIT"
+        ],
+        "raw": "MIT",
+        "license_files": [],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Exact pin at the qualified version. The package ships no licence file of its own; its package.json declares MIT, as do its @earendil-works/* siblings (pi-agent-core, pi-ai, pi-codemode, pi-mcp, pi-telemetry, pi-tui, chord), all 1.0.2. It pulls in the model provider SDKs openai and @google/genai (Apache-2.0), @anthropic-ai/sdk (MIT) and @aws-sdk/client-bedrock-runtime with its @aws-sdk/* and @smithy/* helpers (Apache-2.0); none ships a NOTICE file. package.json overrides its exact undici pin to ^8.12.3.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "@phala/dcap-qvl",
+      "version": "0.6.5",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/Phala-Network/dcap-qvl"
+      },
+      "license": {
+        "spdx": [
+          "Apache-2.0"
+        ],
+        "raw": "Apache-2.0",
+        "license_files": [],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Exact pin. Ships no licence or NOTICE file; package.json declares Apache-2.0. Depends on elliptic (MIT), whose open GHSA-848j-6mx2-7j84 affects signing only; dcap-qvl verifies with public keys.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/mozilla/pdf.js"
+      },
+      "license": {
+        "spdx": [
+          "Apache-2.0",
+          "BSD-3-Clause",
+          "BSD-2-Clause",
+          "MIT",
+          "CC0-1.0",
+          "GPL-2.0-only WITH Font-exception-2.0"
+        ],
+        "raw": "Apache-2.0 (PDF.js); bundles PDFium's JBIG2 decoder and Foxit fonts (BSD-3-Clause), OpenJPEG (BSD-2-Clause), qcms and QuickJS (MIT), Adobe CMaps (BSD-3-Clause), ICC profiles (CC0-1.0) and Liberation Sans (GPL-2.0 with Red Hat's font exception)",
+        "license_files": [
+          "LICENSE",
+          "wasm/LICENSE_JBIG2",
+          "wasm/LICENSE_OPENJPEG",
+          "wasm/LICENSE_QCMS",
+          "standard_fonts/LICENSE_FOXIT",
+          "standard_fonts/LICENSE_LIBERATION",
+          "cmaps/LICENSE",
+          "iccs/LICENSE"
+        ],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "renderer-asset",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "standard_fonts/LiberationSans-{Regular,Bold,Italic,BoldItalic}.ttf are GPL-2.0 with a font exception that covers documents embedding the font, not redistribution of the font files. They ship unmodified in app.asar and src/renderer/lib/pdf-processor.js loads them through standardFontDataUrl. The package's own licence field says Apache-2.0, so the production-tree sweep in licenses-audit.test.js cannot see them.",
+          "recommended_fix": "Maintainer decision in https://github.com/solardev-xyz/freedom-browser/issues/962: treat them as aggregated data (the uBlock precedent, #412), exclude them from build.files, or replace them with OFL-licensed Liberation 2.x."
+        }
+      ]
+    },
+    {
+      "name": "@napi-rs/canvas",
+      "version": "1.0.13",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/Brooooooklyn/canvas"
+      },
+      "license": {
+        "spdx": [
+          "MIT",
+          "BSD-3-Clause",
+          "FTL",
+          "ICU",
+          "IJG",
+          "libpng-2.0",
+          "Zlib",
+          "BSD-2-Clause",
+          "Apache-2.0",
+          "MPL-2.0"
+        ],
+        "raw": "MIT (binding); the per-platform skia.<platform>.node statically links Skia (BSD-3-Clause) and the libraries its sbom.cdx.json lists: FreeType (FTL), ICU, libjpeg-turbo (BSD-3-Clause AND IJG AND Zlib), libpng (libpng-2.0), libwebp, libjxl, libavif/libaom, harfbuzz, expat, brotli, highway, wuffs, zlib and the MPL-2.0 Rust crates cssparser, cssparser-macros, dtoa-short and selectors",
+        "license_files": [
+          "LICENSE",
+          "sbom.cdx.json"
+        ],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Installed as pdfjs-dist's optional dependency and packaged, roughly 37 MB per platform, but never loaded: PDF.js runs in a sandboxed BrowserWindow and uses Chromium's canvas. FreeType's FTL and the IJG licence require an acknowledgement in the documentation, which NOTICES carries. Nine SBOM components declare no licence: the binding's own crates (canvas, skia-fontations) and Rust build tooling (anstyle, clap, clap_builder, clap_lex, cxxbridge-cmd, strsim).",
+          "recommended_fix": "Exclude node_modules/@napi-rs/** from the package (https://github.com/solardev-xyz/freedom-browser/issues/962); until then keep the NOTICES entry."
+        }
+      ]
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 273,
+    "unique_packages": 390,
     "counts": {
-      "MIT": 198,
-      "Apache-2.0": 21,
-      "ISC": 20,
+      "MIT": 256,
+      "Apache-2.0": 59,
+      "ISC": 24,
+      "BSD-3-Clause": 17,
       "MPL-2.0": 13,
       "LGPL-3.0-only": 4,
       "LGPL-3.0": 1,
       "Apache-2.0 OR MIT": 3,
-      "BSD-3-Clause": 4,
+      "BlueOak-1.0.0": 3,
       "0BSD": 3,
       "(MIT OR X11)": 1,
       "(MIT OR WTFPL)": 1,
       "(BSD-2-Clause OR MIT OR Apache-2.0)": 1,
       "(Zlib OR MIT OR Apache-2.0)": 1,
+      "BSD-2-Clause": 1,
       "Python-2.0": 1,
-      "BlueOak-1.0.0": 1
+      "Unlicense": 1
     },
-    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all"
+    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all. Counted on a Linux x64 install: platform-specific optional packages (one @napi-rs/canvas-<platform> per target) count once. Counts follow each package's declared licence field, so files a package bundles under another licence (pdfjs-dist's fonts) are recorded on its dependencies entry instead"
   },
   "dev_dependencies_summary": {
     "risk_assessment": "Dev dependencies are not shipped with the application and do not affect the license of the distributed product. Notable: caniuse-lite is CC-BY-4.0 but is never distributed.",
@@ -966,8 +1107,21 @@
       "issues": []
     }
   ],
-  "summary": { "green": 266, "yellow": 3, "orange": 5, "red": 0, "unknown": 0 },
-  "blockers": [],
+  "summary": {
+    "green": 381,
+    "yellow": 4,
+    "orange": 5,
+    "red": 1,
+    "unknown": 0
+  },
+  "blockers": [
+    {
+      "kind": "copyleft",
+      "component": "Liberation Sans (pdfjs-dist 6.3.289, standard_fonts/LiberationSans-*.ttf)",
+      "details": "GPL-2.0 font files with Red Hat's font exception ship unmodified in app.asar and are loaded by the agent's PDF processor. The exception does not cover redistributing the fonts, so this is GPL-2.0 distribution that no maintainer decision covers yet.",
+      "recommended_fix": "Decide in https://github.com/solardev-xyz/freedom-browser/issues/962: an aggregate position like #412, excluding the fonts from the package, or OFL-licensed Liberation 2.x."
+    }
+  ],
   "resolved_since_last_audit": [
     {
       "kind": "copyleft",
@@ -977,10 +1131,15 @@
     }
   ],
   "verdict": {
-    "status": "OK_TO_SHIP",
-    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code remains after removing the unreferenced qrious bundle. The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
+    "status": "BLOCKED",
+    "message": "Not OK to ship until https://github.com/solardev-xyz/freedom-browser/issues/962 is decided: pdfjs-dist ships GPL-2.0 Liberation Sans fonts in app.asar. Everything else is compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
+    {
+      "priority": "required",
+      "action": "Decide the pdfjs-dist Liberation fonts",
+      "details": "pdfjs-dist ships GPL-2.0 Liberation Sans fonts in app.asar (https://github.com/solardev-xyz/freedom-browser/issues/962). Record the decision here and in LICENSE_AUDIT.md, then clear the blocker."
+    },
     {
       "priority": "required",
       "action": "Keep third-party notices current",
@@ -1010,6 +1169,11 @@
       "priority": "recommended",
       "action": "Ask libradicle upstream for LICENSE files",
       "details": "solardev-xyz/libradicle declares MIT OR Apache-2.0 in Cargo.toml but commits no license text."
+    },
+    {
+      "priority": "recommended",
+      "action": "Stop packaging @napi-rs/canvas",
+      "details": "pdfjs-dist's optional @napi-rs/canvas ships a Skia addon per platform that Freedom never loads. Excluding node_modules/@napi-rs/** from build.files removes it and its NOTICES entry (https://github.com/solardev-xyz/freedom-browser/issues/962)."
     }
   ]
 }
