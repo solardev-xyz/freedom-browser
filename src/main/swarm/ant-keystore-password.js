@@ -153,12 +153,6 @@ function hasEntry(keys, name) {
   return fs.lstatSync(keys.entry(name), { throwIfNoEntry: false }) !== undefined;
 }
 
-// A directory's entry names, read through its handle.
-function listEntries(dir) {
-  dir.verify();
-  return fs.readdirSync(dir.bound ? `/proc/self/fd/${dir.fd}` : dir.path);
-}
-
 // The seal record: the ciphertext, and the SHA-256 of the swarm.key bytes
 // it was sealed for (null: no keystore then). A keystore written without
 // its seal being republished (a crash between the two writes) no longer
@@ -289,7 +283,7 @@ async function sealInto(keys, storage, ciphertext, password) {
 function removeStaleSealStaging(keys) {
   let entries;
   try {
-    entries = listEntries(keys);
+    entries = keys.entries();
   } catch (err) {
     console.warn('[AntKeystore] Could not list keys/:', err.message);
     return;
@@ -403,12 +397,11 @@ function removeHandoff(root, name) {
   }
   if (!dir) return;
   try {
-    for (const entry of listEntries(dir)) dir.remove(entry);
+    for (const entry of dir.entries()) dir.remove(entry);
   } finally {
     dir.close();
   }
-  root.verify();
-  fs.rmdirSync(root.entry(name));
+  root.removeDir(name);
 }
 
 /**
@@ -474,7 +467,7 @@ function sweepAbandonedHandoffs(userDataDir) {
       (root) => {
         if (!root) return 0;
         let removed = 0;
-        for (const entry of listEntries(root)) {
+        for (const entry of root.entries()) {
           if (liveHandoffs.has(path.join(handoffRoot(userDataDir), entry))) continue;
           try {
             removeHandoff(root, entry);

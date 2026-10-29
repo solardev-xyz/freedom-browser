@@ -12,6 +12,7 @@ const {
   writePrivateFileSync,
   UnsafePrivatePathError,
   _setFdBindingForTests,
+  _setDirOpsByPathForTests,
 } = require('./private-files');
 
 const posix = process.platform === 'win32' ? describe.skip : describe;
@@ -434,6 +435,108 @@ posix('managed directory handles (K-3)', () => {
       expect(fs.readdirSync(data)).toEqual(['keys']);
     }
   );
+});
+
+// #946 review R2-M2: listing a held directory and removing an empty
+// directory in it go through the handle. Bound (Linux), they stay on the
+// held directory; by path (macOS, Windows, and Linux here through the test
+// seam), a swap before or after is refused (#963).
+posix('directory listing and removal through a handle (K-3)', () => {
+  let root;
+  let data;
+  let outsideDir;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-dir-ops-'));
+    data = path.join(root, 'ant-data');
+    fs.mkdirSync(path.join(data, 'run', 'h-held'), { recursive: true, mode: 0o700 });
+    outsideDir = path.join(root, 'outside');
+    // What a swapped-in link could point at: a directory with the same
+    // child, not empty, so a removal by path cannot take it either.
+    fs.mkdirSync(path.join(outsideDir, 'h-held'), { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'h-held', 'keep'), 'not yours');
+    fs.writeFileSync(path.join(outsideDir, 'other'), 'not yours');
+  });
+  afterEach(() => {
+    _setDirOpsByPathForTests(false);
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  // run/ moved aside (the handle still holds it), a link to outside in its place.
+  const swapRunForLink = () => {
+    fs.renameSync(path.join(data, 'run'), path.join(data, 'run.held'));
+    fs.symlinkSync(outsideDir, path.join(data, 'run'));
+  };
+  const outsideUntouched = () => {
+    expect(fs.readdirSync(outsideDir).sort()).toEqual(['h-held', 'other']);
+    expect(fs.readdirSync(path.join(outsideDir, 'h-held'))).toEqual(['keep']);
+  };
+  // Run `swap` at the start of the next call to fs[fnName], then the call.
+  const swapAt = (fnName, swap) => {
+    const real = fs[fnName];
+    let done = false;
+    jest.spyOn(fs, fnName).mockImplementation((...args) => {
+      if (!done) {
+        done = true;
+        swap();
+      }
+      return real(...args);
+    });
+  };
+
+  const modes = [
+    ...(process.platform === 'linux' ? [['bound to the descriptor (Linux)', false]] : []),
+    ['by path, bracketed', true],
+  ];
+  describe.each(modes)('%s', (_label, byPath) => {
+    beforeEach(() => _setDirOpsByPathForTests(byPath));
+
+    test('a swap between the check and the listing never lists the replacement', () => {
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('readdirSync', swapRunForLink);
+        let names;
+        try {
+          names = run.entries();
+        } catch (err) {
+          expect(err).toBeInstanceOf(UnsafePrivatePathError);
+        }
+        // Refused, or the held directory's own names.
+        if (byPath) expect(names).toBeUndefined();
+        if (names !== undefined) expect(names).toEqual(['h-held']);
+      });
+      outsideUntouched();
+    });
+
+    test('a swap between the check and the removal never removes outside', () => {
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('rmdirSync', swapRunForLink);
+        let removed;
+        try {
+          removed = run.removeDir('h-held');
+        } catch (err) {
+          expect(err.code === 'ENOTEMPTY' || err instanceof UnsafePrivatePathError).toBe(true);
+        }
+        // Bound, the held directory's own child went; by path, refused.
+        if (!byPath) expect(fs.existsSync(path.join(data, 'run.held', 'h-held'))).toBe(false);
+        if (byPath) expect(removed).toBeUndefined();
+      });
+      outsideUntouched();
+    });
+  });
+
+  test('a link at the name is refused, never its target removed', () => {
+    fs.symlinkSync(path.join(outsideDir, 'h-held'), path.join(data, 'run', 'h-link'));
+    fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+    withPrivateDir(data, (dir) => {
+      const run = dir.openDir('run');
+      expect(() => run.removeDir('h-link')).toThrow(/ENOTDIR/);
+      expect(run.removeDir('h-held')).toBe(true);
+      expect(run.removeDir('h-held')).toBe(false);
+      expect(run.entries()).toEqual(['h-link']);
+    });
+    expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+  });
 });
 
 // Review R3-M2. Windows has no O_NOFOLLOW: an ordinary open there follows a

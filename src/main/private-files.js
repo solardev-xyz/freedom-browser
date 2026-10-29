@@ -48,6 +48,13 @@
  *  - Writes create an exclusive temp file (O_CREAT | O_EXCL | O_NOFOLLOW,
  *    0600) in the directory, fsync it and rename it over the name. A rename
  *    replaces a link itself, never its target.
+ *  - Listing a directory (`entries`) and removing an empty directory in it
+ *    (`removeDir`) go through the handle too. On Linux both are
+ *    descriptor-relative (`/proc/self/fd/<fd>`). Node has no fdopendir or
+ *    unlinkat, so on macOS and Windows each is done by path, bracketed by
+ *    the check before and after, and refused if either fails: the same
+ *    residual as the Windows file opens (#963). A removal reaches only an
+ *    empty directory, and never follows a link at the name.
  *
  * Ancestors above a managed root (the profile's userData, macOS's /tmp) may
  * be links: they are not ours to manage. The path functions
@@ -89,6 +96,9 @@ const NO_LINKS = DARWIN ? NOFOLLOW_ANY : NOFOLLOW;
 // Linux's /proc/self/fd/<fd> binding. Off in tests that check a Linux
 // without it refuses.
 let fdBinding = LINUX;
+// Directory listing and removal by path, bracketed (macOS, Windows). Linux
+// tests turn it on to exercise the bracket there.
+let dirOpsByPath = !LINUX;
 
 class UnsafePrivatePathError extends Error {
   constructor(target, why) {
@@ -322,6 +332,48 @@ class PrivateDir {
       if (err.code === 'ENOENT') return false;
       throw err;
     }
+  }
+
+  // This directory itself, as the kernel should resolve it: the descriptor
+  // on Linux, the opened path elsewhere.
+  self() {
+    if (dirOpsByPath) return this.ioPath;
+    if (this.bound && fdBinding) return `/proc/self/fd/${this.fd}`;
+    throw new UnsafePrivatePathError(this.path, 'no /proc/self/fd binding to it is available');
+  }
+
+  /**
+   * The names in this directory: through the descriptor on Linux; by path
+   * elsewhere, refused if the directory changed before or after (#963).
+   * @returns {string[]}
+   * @throws {UnsafePrivatePathError}
+   */
+  entries() {
+    this.verify();
+    const names = fs.readdirSync(this.self());
+    this.verify();
+    return names;
+  }
+
+  /**
+   * Remove the empty directory `name` in this one. A link at the name is
+   * refused (rmdir does not follow it), never its target removed. Through
+   * the descriptor on Linux; by path elsewhere, refused if this directory
+   * changed before or after (#963).
+   * @returns {boolean} false when there was none
+   * @throws {UnsafePrivatePathError}
+   */
+  removeDir(name) {
+    checkName(name);
+    this.verify();
+    try {
+      fs.rmdirSync(dirOpsByPath ? path.join(this.ioPath, name) : this.entry(name));
+    } catch (err) {
+      if (err.code === 'ENOENT') return false;
+      throw err;
+    }
+    this.verify();
+    return true;
   }
 
   /**
@@ -577,6 +629,11 @@ function _setFdBindingForTests(enabled) {
   fdBinding = LINUX && enabled;
 }
 
+/** Tests: list and remove directories by path, bracketed, as on macOS and Windows. */
+function _setDirOpsByPathForTests(enabled) {
+  dirOpsByPath = enabled || !LINUX;
+}
+
 module.exports = {
   PRIVATE_DIR_MODE,
   PRIVATE_FILE_MODE,
@@ -590,4 +647,5 @@ module.exports = {
   repairPrivateFile,
   writePrivateFileSync,
   _setFdBindingForTests,
+  _setDirOpsByPathForTests,
 };
