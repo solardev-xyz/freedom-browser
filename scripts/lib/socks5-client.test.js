@@ -153,6 +153,39 @@ describe('socks5-client', () => {
     );
   });
 
+  test('a granted CONNECT, kept, hands over its connection, with what came after the reply', async () => {
+    // The target's first bytes arrive with the reply.
+    const server = await scriptedProxy({
+      reply: Buffer.concat([reply(0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0), Buffer.from('hello')]),
+    });
+    const result = await socks5Request(
+      server.proxy,
+      { command: 'connect', name: 'echo.example', port: 80 },
+      { keep: true }
+    );
+    expect(result.code).toBe(0);
+    const received = await new Promise((resolve) => {
+      result.socket.once('data', resolve);
+      result.socket.resume();
+    });
+    expect(received.toString()).toBe('hello');
+    // It is the caller's: it still talks to the target.
+    result.socket.write('ping');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.seen[server.seen.length - 1].toString()).toBe('ping');
+    result.socket.destroy();
+  });
+
+  test('a refused CONNECT, kept or not, closes its connection', async () => {
+    const server = await scriptedProxy({ reply: reply(0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0) });
+    const result = await socks5Request(
+      server.proxy,
+      { command: 'connect', ip: '192.0.2.1', port: 443 },
+      { keep: true }
+    );
+    expect(result).toEqual({ code: 5, address: { ip: '0.0.0.0' } });
+  });
+
   test('a reply code is reported, not thrown', async () => {
     const server = await scriptedProxy({ reply: reply(0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0) });
     const result = await socks5Request(server.proxy, {

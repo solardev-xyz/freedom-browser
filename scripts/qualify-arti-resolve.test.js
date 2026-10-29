@@ -9,6 +9,7 @@ const {
   parseVersion,
   verdict,
   artiCommand,
+  isolation,
   qualify,
 } = require('./qualify-arti-resolve');
 const { PINNED_ARTI_VERSION } = require('./fetch-arti');
@@ -22,8 +23,14 @@ const { PINNED_ARTI_VERSION } = require('./fetch-arti');
  * bootstrapped. With `failFirstPassword`, a `RESOLVE` under the first
  * password it saw fails (reply 0x01), as a failing exit on that
  * credentials' isolated circuit would, every time.
+ *
+ * A `CONNECT` to `echo.test` is the echo service: it answers an HTTP `GET`
+ * with the connection's exit, as JSON. `exits` says which: one per
+ * password (`credentials`, isolation as Arti does it), the same for every
+ * connection (`one`, no isolation), or a new one for every connection
+ * (`every`, no circuit kept).
  */
-function fakeArti(dir, versionLine, { failFirstPassword = false } = {}) {
+function fakeArti(dir, versionLine, { failFirstPassword = false, exits = 'credentials' } = {}) {
   const script = `const fs = require('fs');
 const net = require('net');
 const args = process.argv.slice(2);
@@ -36,7 +43,17 @@ if (args[0] === '--version') {
 const config = fs.readFileSync(args[args.indexOf('-c') + 1], 'utf-8');
 const port = Number(/socks_listen = (\\d+)/.exec(config)[1]);
 const failFirstPassword = ${JSON.stringify(failFirstPassword)};
+const exits = ${JSON.stringify(exits)};
 let firstPassword = null;
+const passwords = [];
+let connections = 0;
+const exitOf = (password) => {
+  connections += 1;
+  if (exits === 'one') return '198.51.100.1';
+  if (exits === 'every') return '198.51.100.' + connections;
+  if (!passwords.includes(password)) passwords.push(password);
+  return '198.51.100.' + (passwords.indexOf(password) + 1);
+};
 net
   .createServer((socket) => {
     let phase = 'greeting';
@@ -53,6 +70,12 @@ net
         if (firstPassword === null) firstPassword = password;
         socket.write(Buffer.from([1, 0]));
         phase = 'request';
+      } else if (phase === 'echo') {
+        const body = JSON.stringify({ IsTor: true, IP: exitOf(password) });
+        socket.end('HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: ' + body.length + '\\r\\nConnection: close\\r\\n\\r\\n' + body);
+      } else if (chunk[1] === 0x01 && chunk[3] === 0x03 && chunk.subarray(5, 5 + chunk[4]).toString() === 'echo.test') {
+        socket.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+        phase = 'echo';
       } else if (chunk[1] === 0xf0 && failFirstPassword && password !== null && password === firstPassword) {
         socket.end(Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
       } else if (chunk[1] === 0xf0) {
@@ -76,6 +99,8 @@ describe('qualify-arti-resolve', () => {
       name: 'example.com',
       bootstrapTimeoutMs: 180000,
       requireCredentials: false,
+      isolation: false,
+      echoUrl: 'https://check.torproject.org/api/ip',
       allowRoot: false,
     });
     expect(
@@ -87,6 +112,9 @@ describe('qualify-arti-resolve', () => {
         '--bootstrap-timeout-ms',
         '5000',
         '--require-credentials',
+        '--isolation',
+        '--echo-url',
+        'https://echo.example/ip',
         '--allow-root',
       ])
     ).toEqual({
@@ -94,6 +122,8 @@ describe('qualify-arti-resolve', () => {
       name: 'torproject.org',
       bootstrapTimeoutMs: 5000,
       requireCredentials: true,
+      isolation: true,
+      echoUrl: 'https://echo.example/ip',
       allowRoot: true,
     });
     expect(() => parseArgs(['--unknown'])).toThrow('unknown argument');
@@ -173,6 +203,48 @@ describe('qualify-arti-resolve', () => {
     expect(qualifies(report(false, true, true), { requireCredentials: true })).toBe(false);
   });
 
+  test('isolation counts only under --isolation, and then must pass', () => {
+    const report = (isolated) => ({
+      resolve: { ok: true },
+      resolve_with_credentials: { ok: true },
+      connect: { ok: true },
+      ...(isolated === undefined ? {} : { isolation: { ok: isolated } }),
+    });
+    expect(qualifies(report(undefined), { requireCredentials: true })).toBe(true);
+    expect(qualifies(report(false), { requireCredentials: true })).toBe(true);
+    expect(qualifies(report(true), { requireCredentials: true, isolation: true })).toBe(true);
+    expect(qualifies(report(false), { requireCredentials: true, isolation: true })).toBe(false);
+    expect(qualifies(report(undefined), { requireCredentials: true, isolation: true })).toBe(false);
+  });
+
+  test('isolation needs the same exit for the same credentials, and two exits among four sets', async () => {
+    let n = 0;
+    const credentials = () => ({ username: 'u', password: `p${(n += 1)}` });
+    const byPassword =
+      (table) =>
+      async ({ password }) =>
+        table[password];
+    const isolated = await isolation(
+      byPassword({ p1: 'a', p2: 'b', p3: 'c', p4: 'a' }),
+      credentials
+    );
+    expect(isolated).toEqual({
+      ok: true,
+      same_credentials: ['a', 'a'],
+      distinct_credentials: ['a', 'b', 'c', 'a'],
+      exits: 3,
+    });
+    n = 0;
+    expect(
+      (await isolation(byPassword({ p1: 'a', p2: 'a', p3: 'a', p4: 'a' }), credentials)).ok
+    ).toBe(false);
+    // A new exit for each connection: no circuit kept for a set.
+    n = 0;
+    let calls = 0;
+    const every = await isolation(async () => `e${(calls += 1)}`, credentials);
+    expect(every).toMatchObject({ ok: false, same_credentials: ['e1', 'e2'] });
+  });
+
   test('the version is read from `arti --version`, or is null', () => {
     expect(parseVersion('Arti 2.7.0')).toBe('2.7.0');
     expect(parseVersion('arti 99.0.0')).toBe('99.0.0');
@@ -234,13 +306,15 @@ describe('qualify-arti-resolve', () => {
     afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
-    const run = (versionLine, fake = {}) =>
+    const run = (versionLine, fake = {}, { isolate = false } = {}) =>
       qualify(
         {
           arti: fakeArti(dir, versionLine, fake),
           name: 'example.com',
           bootstrapTimeoutMs: 10000,
           requireCredentials: true,
+          isolation: isolate,
+          echoUrl: 'http://echo.test/api/ip',
           allowRoot: false,
         },
         { launcher: [process.execPath] }
@@ -258,6 +332,45 @@ describe('qualify-arti-resolve', () => {
         qualified: true,
       });
       expect(report.reason).toBeUndefined();
+      // Isolation isn't checked unless asked for.
+      expect(report.isolation).toBeUndefined();
+    });
+
+    test('--isolation passes when each set of credentials keeps a circuit of its own', async () => {
+      const report = await run(`Arti ${PINNED_ARTI_VERSION}`, {}, { isolate: true });
+      expect(report).toMatchObject({
+        isolation: {
+          ok: true,
+          attempts: 1,
+          exits: 4,
+          same_credentials: ['198.51.100.1', '198.51.100.1'],
+        },
+        checks_passed: true,
+        qualified: true,
+      });
+    });
+
+    test('--isolation fails when every set of credentials shares one circuit', async () => {
+      const report = await run(`Arti ${PINNED_ARTI_VERSION}`, { exits: 'one' }, { isolate: true });
+      expect(report).toMatchObject({
+        isolation: { ok: false, attempts: 3, exits: 1 },
+        checks_passed: false,
+        qualified: false,
+        reason: 'a required check failed',
+      });
+    });
+
+    test('--isolation fails when the same credentials get a new circuit each time', async () => {
+      const report = await run(
+        `Arti ${PINNED_ARTI_VERSION}`,
+        { exits: 'every' },
+        { isolate: true }
+      );
+      expect(report).toMatchObject({
+        isolation: { ok: false, attempts: 3 },
+        qualified: false,
+      });
+      expect(report.isolation.same_credentials[0]).not.toBe(report.isolation.same_credentials[1]);
     });
 
     test('each attempt of the credentials check gets new credentials, so a new circuit', async () => {

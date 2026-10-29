@@ -160,8 +160,17 @@ function isUsableAnswer(address) {
  * rejects when the proxy can't be reached, refuses the method, fails the
  * authentication, answers outside the protocol, or doesn't answer within
  * `timeoutMs`.
+ *
+ * With `keep`, a `CONNECT` the proxy grants (code 0) also resolves to the
+ * connection, `socket`, paused, for the caller to talk through to the
+ * target: whatever arrived after the reply is put back for it to read.
+ * Every other outcome closes the connection, as without `keep`.
  */
-function socks5Request(proxy, target, { credentials = null, timeoutMs = 30000 } = {}) {
+function socks5Request(
+  proxy,
+  target,
+  { credentials = null, timeoutMs = 30000, keep = false } = {}
+) {
   const command = target.command === 'resolve' ? RESOLVE : CONNECT;
   const body = request(command, target);
   return new Promise((resolve, reject) => {
@@ -173,6 +182,16 @@ function socks5Request(proxy, target, { credentials = null, timeoutMs = 30000 } 
       socket.destroy();
       if (error) reject(error);
       else resolve(value);
+    };
+    // The connection, handed over: nothing here reads or closes it again.
+    const handOver = (value, rest) => {
+      clearTimeout(timer);
+      socket.removeAllListeners('data');
+      socket.removeAllListeners('close');
+      socket.removeAllListeners('error');
+      socket.pause();
+      if (rest.length > 0) socket.unshift(rest);
+      resolve({ ...value, socket });
     };
     const timer = setTimeout(() => finish(new Error(`no SOCKS5 answer in ${phase}`)), timeoutMs);
     socket.on('connect', () => socket.write(greeting(credentials)));
@@ -220,7 +239,12 @@ function socks5Request(proxy, target, { credentials = null, timeoutMs = 30000 } 
           } else {
             const reply = parseReply(buffer);
             if (!reply) return;
-            finish(null, { code: reply.code, address: reply.address });
+            const value = { code: reply.code, address: reply.address };
+            if (keep && command === CONNECT && reply.code === 0) {
+              handOver(value, buffer.subarray(reply.length));
+            } else {
+              finish(null, value);
+            }
             return;
           }
         }

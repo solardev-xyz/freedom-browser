@@ -22,6 +22,20 @@
  *   - **connect:** `CONNECT` to the address the first `RESOLVE` answered, on
  *     port 443, as freedom-ipfsd connects to a checked address. Reported:
  *     an exit's policy can refuse it, which says nothing about Arti.
+ *   - **isolation**, with `--isolation` only: that distinct credentials get
+ *     distinct circuits, and the same credentials the same one. Required
+ *     then. Both IPFS (each instance's credentials, 0007 "Stream
+ *     isolation", freedom-ipfsd v0.2.1) and Radicle (each remote node's,
+ *     0008) rely on it, and neither was qualified for it before. A circuit
+ *     can't be seen through SOCKS, but its exit can: each connection asks an
+ *     echo service (`--echo-url`, check.torproject.org's by default) for the
+ *     address it comes from.
+ *     - One set of credentials asks twice: both must come from the same
+ *       exit, since Arti keeps a set of credentials on its circuit.
+ *     - Three more sets ask once each. With those four sets, at least two
+ *       exits must answer: four circuits of Tor's thousands of exits, all on
+ *       one, is a chance too small to matter, while credentials that
+ *       weren't isolated would all share one circuit.
  *
  * Each check is tried up to three times before it counts as failed. Each
  * attempt of the credentials check sends new credentials, so Arti gives it
@@ -41,7 +55,8 @@
  *
  * Usage:
  *   node scripts/qualify-arti-resolve.js [--arti <path>] [--name <host>]
- *     [--bootstrap-timeout-ms <ms>] [--require-credentials] [--allow-root]
+ *     [--bootstrap-timeout-ms <ms>] [--require-credentials] [--isolation]
+ *     [--echo-url <url>] [--allow-root]
  *
  * Arti refuses to run as root; `--allow-root` sets its
  * `application.allow_running_as_root` for a container that only has root.
@@ -54,7 +69,10 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const net = require('net');
+const tls = require('tls');
 const os = require('os');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
@@ -63,12 +81,20 @@ const { platformKey, artiBinaryName, PINNED_ARTI_VERSION } = require('./fetch-ar
 
 const BOOTSTRAPPED = /Sufficiently bootstrapped/i;
 
+/** The echo service the isolation check asks for each connection's exit. */
+const DEFAULT_ECHO_URL = 'https://check.torproject.org/api/ip';
+
+/** How many sets of credentials the isolation check asks with, in all. */
+const ISOLATION_SETS = 4;
+
 function parseArgs(argv) {
   const options = {
     arti: null,
     name: 'example.com',
     bootstrapTimeoutMs: 180000,
     requireCredentials: false,
+    isolation: false,
+    echoUrl: DEFAULT_ECHO_URL,
     allowRoot: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -77,6 +103,8 @@ function parseArgs(argv) {
     else if (arg === '--name') options.name = argv[++i];
     else if (arg === '--bootstrap-timeout-ms') options.bootstrapTimeoutMs = Number(argv[++i]);
     else if (arg === '--require-credentials') options.requireCredentials = true;
+    else if (arg === '--isolation') options.isolation = true;
+    else if (arg === '--echo-url') options.echoUrl = argv[++i];
     else if (arg === '--allow-root') options.allowRoot = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -222,11 +250,102 @@ async function check(run, attempts = 3) {
 }
 
 /**
- * Whether the checks pass: `RESOLVE` without authentication must, and with
- * credentials too under `requireCredentials`. `CONNECT` is reported only.
+ * Whether the checks pass: `RESOLVE` without authentication must, with
+ * credentials too under `requireCredentials`, and isolation under
+ * `isolation`. `CONNECT` is reported only.
  */
-function qualifies(report, { requireCredentials }) {
-  return Boolean(report.resolve.ok && (!requireCredentials || report.resolve_with_credentials.ok));
+function qualifies(report, { requireCredentials, isolation = false }) {
+  return Boolean(
+    report.resolve.ok &&
+    (!requireCredentials || report.resolve_with_credentials.ok) &&
+    (!isolation || (report.isolation && report.isolation.ok))
+  );
+}
+
+/**
+ * The address a connection through `proxy` with `credentials` comes from,
+ * as the echo service at `echoUrl` sees it: a `GET` through a `CONNECT` to
+ * its host, over TLS for an `https` URL. Its answer is JSON with an `IP`, as
+ * check.torproject.org's is.
+ */
+async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
+  const url = new URL(echoUrl);
+  const secure = url.protocol === 'https:';
+  const port = Number(url.port) || (secure ? 443 : 80);
+  const { code, socket } = await socks5Request(
+    proxy,
+    { command: 'connect', name: url.hostname, port },
+    { credentials, timeoutMs, keep: true }
+  );
+  if (code !== 0) {
+    throw new Error(`the proxy refused the connection to ${url.hostname} (reply ${code})`);
+  }
+  const connection = secure ? tls.connect({ socket, servername: url.hostname }) : socket;
+  let body;
+  try {
+    body = await new Promise((resolve, reject) => {
+      const req = (secure ? https : http).request(
+        {
+          host: url.hostname,
+          port,
+          path: `${url.pathname}${url.search}`,
+          method: 'GET',
+          headers: { Connection: 'close' },
+          createConnection: () => connection,
+          timeout: timeoutMs,
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            if (res.statusCode !== 200) {
+              reject(new Error(`the echo service answered ${res.statusCode}`));
+            } else {
+              resolve(Buffer.concat(chunks).toString('utf-8'));
+            }
+          });
+          res.on('error', reject);
+        }
+      );
+      req.on('timeout', () => req.destroy(new Error('no answer from the echo service')));
+      req.on('error', reject);
+      req.end();
+      // The SOCKS client hands the connection over paused. Over TLS, the TLS
+      // socket reads it; in the clear, it flows once the request has taken it,
+      // which it does on the next tick.
+      if (!secure) process.nextTick(() => socket.resume());
+    });
+  } finally {
+    connection.destroy();
+  }
+  const ip = JSON.parse(body).IP;
+  if (typeof ip !== 'string' || net.isIP(ip) === 0) {
+    throw new Error('the echo service named no address');
+  }
+  return ip;
+}
+
+/**
+ * The isolation check, asking `exit(credentials)` for the exit of a new
+ * connection with those credentials: one set twice, then
+ * `ISOLATION_SETS - 1` more once each. It passes when the first set's two
+ * connections share their exit, and the sets' first connections come from
+ * at least two.
+ */
+async function isolation(exit, credentials = freshCredentials) {
+  const first = credentials();
+  const same = [await exit(first), await exit(first)];
+  const distinct = [same[0]];
+  for (let i = 1; i < ISOLATION_SETS; i += 1) {
+    distinct.push(await exit(credentials()));
+  }
+  const exits = new Set(distinct).size;
+  return {
+    ok: same[0] === same[1] && exits >= 2,
+    same_credentials: same,
+    distinct_credentials: distinct,
+    exits,
+  };
 }
 
 /**
@@ -300,6 +419,11 @@ async function qualify(options, { launcher = [] } = {}) {
       });
     report.resolve = await resolveWith(() => null);
     report.resolve_with_credentials = await resolveWith(freshCredentials);
+    if (options.isolation) {
+      report.isolation = await check(() =>
+        isolation((credentials) => exitAddress(proxy, credentials, options.echoUrl))
+      );
+    }
     report.connect = report.resolve.ok
       ? await check(async () => {
           const { code } = await socks5Request(proxy, {
@@ -339,5 +463,7 @@ module.exports = {
   parseVersion,
   verdict,
   artiCommand,
+  isolation,
+  exitAddress,
   qualify,
 };
