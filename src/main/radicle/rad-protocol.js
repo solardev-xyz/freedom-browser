@@ -60,6 +60,11 @@ const admission = createRadReadAdmission();
 // per URL, and an ERR_ABORTED for it aborts the read's own signal. The same
 // details name the requesting tab (webContentsId), which the request itself
 // does not either: Chromium sends no referrer to a non-standard scheme.
+//
+// Do not "simplify" this to `request.signal`: on the Electron we ship it is
+// never aborted for a protocol.handle request, on navigation or on window
+// close alike (probed on Electron 45 for #947). Revisit only once Electron
+// aborts it, with a test in a real Electron process.
 const unclaimedIds = new Map(); // url -> [{ id, webContentsId }], oldest first
 const readControllers = new Map(); // webRequest id -> AbortController
 
