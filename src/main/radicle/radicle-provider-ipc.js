@@ -49,6 +49,7 @@ const {
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
+const { isPrivateSender } = require('../private/private-sender');
 
 const SPEC_VERSION = '0.2';
 
@@ -397,6 +398,22 @@ function agentCustodyRefusal(sender, method, meta) {
   return null;
 }
 
+// PRIVATE MODE GUARD (R-9): seeding writes a lasting seeding policy and
+// fetches the repository into storage, and sync restarts that fetch. A
+// private window must leave neither behind. The provider is not installed
+// in private windows, but the chrome renderer forwards any guest's
+// provider message, so main refuses these on the sender it can see: the
+// window's chrome renderer. The check fails closed, as the direct
+// radicle:seed / radicle:syncRepo handlers' does (radicle-manager.js).
+const PRIVATE_REFUSED_METHODS = new Set(['radicle_seed', 'radicle_sync']);
+
+function privateWindowRefusal(event, method) {
+  if (!PRIVATE_REFUSED_METHODS.has(method) || !isPrivateSender(event)) return null;
+  return providerError(ERRORS.UNAUTHORIZED, 'Seeding is not available in private windows', {
+    reason: 'private_window',
+  });
+}
+
 function registerRadicleProviderIpc() {
   // Chrome-facing alias management (sidebar Nodes tab). Registered here —
   // not in radicle-manager — because the alias write must also invalidate
@@ -410,6 +427,9 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
+    // Before the seed-status broadcaster or the backend is touched.
+    const privateRefusal = privateWindowRefusal(event, method);
+    if (privateRefusal) return { error: privateRefusal };
     const refusal = agentCustodyRefusal(event?.sender, method, meta);
     if (refusal) return { error: refusal };
     const hadBroadcaster = seedStatusBroadcasters.has(origin);

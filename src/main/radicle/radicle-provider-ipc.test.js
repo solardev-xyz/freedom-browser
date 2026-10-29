@@ -13,6 +13,13 @@ jest.mock('electron', () => ({
   },
 }));
 
+// Which webContents the private-window registry reports as private.
+const mockPrivateContents = new Set();
+const mockIsPrivateWebContents = jest.fn((contents) => mockPrivateContents.has(contents));
+jest.mock('../private/private-windows', () => ({
+  isPrivateWebContents: (...args) => mockIsPrivateWebContents(...args),
+}));
+
 jest.mock('../logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
@@ -117,7 +124,7 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     return { success: true, status: mockSeedFetchStatus };
   });
 
-  await executeHandler({}, {
+  await executeHandler({ sender: { id: 1 } }, {
     method: 'radicle_seed',
     params: { rid: RID },
     origin: ORIGIN,
@@ -135,6 +142,77 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     origin: ORIGIN,
   });
   expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
+});
+
+test('provider IPC refuses seed and sync from a private window, failing closed (R-9)', async () => {
+  registerRadicleProviderIpc();
+  const executeHandler = mockIpcHandle.mock.calls.find(
+    ([channel]) => channel === 'radicle:provider-execute'
+  )[1];
+  const origin = 'bzz://private-window-page';
+  const privateChrome = { id: 3, isDestroyed: () => false };
+  const throwingChrome = { id: 6, isDestroyed: () => false };
+  mockPrivateContents.add(privateChrome);
+  mockIsPrivateWebContents.mockImplementation((contents) => {
+    if (contents === throwingChrome) throw new Error('webContents destroyed mid-check');
+    return mockPrivateContents.has(contents);
+  });
+  const refused = {
+    error: {
+      code: 4100,
+      message: 'Seeding is not available in private windows',
+      data: { reason: 'private_window' },
+    },
+  };
+
+  try {
+    for (const event of [
+      { sender: privateChrome },
+      // Senders main cannot classify count as private.
+      { sender: { id: 4, isDestroyed: () => true } },
+      { sender: { id: 5, isDestroyed: () => false, hostWebContents: { isDestroyed: () => true } } },
+      { sender: throwingChrome },
+      {},
+      null,
+    ]) {
+      for (const method of ['radicle_seed', 'radicle_sync']) {
+        // Whatever the renderer says about approval.
+        for (const meta of [undefined, { webContentsId: 9, approval: 'user' }]) {
+          await expect(
+            executeHandler(event, { method, params: { rid: RID }, origin, meta })
+          ).resolves.toEqual(refused);
+        }
+      }
+    }
+    expect(manager.seedRepository).not.toHaveBeenCalled();
+    expect(manager.refetchRepository).not.toHaveBeenCalled();
+    expect(mockProviderSend).not.toHaveBeenCalled();
+    // No seed-status broadcaster was made for the origin: disconnecting it
+    // has none to unsubscribe.
+    await executeHandler({ sender: privateChrome }, { method: 'radicle_disconnect', params: {}, origin });
+    expect(manager.unsubscribeSeedStatus).not.toHaveBeenCalled();
+
+    // Reading a repository's seed status stays available to a private window.
+    const status = await executeHandler(
+      { sender: privateChrome },
+      { method: 'radicle_getSeedStatus', params: { rid: RID }, origin }
+    );
+    expect(status.result).toBeDefined();
+    expect(manager.getSeedFetchStatus).toHaveBeenCalled();
+
+    // The same calls from a normal window run.
+    const normal = { id: 1, isDestroyed: () => false };
+    for (const method of ['radicle_seed', 'radicle_sync']) {
+      const ran = await executeHandler({ sender: normal }, { method, params: { rid: RID }, origin });
+      expect(ran.result).toBeDefined();
+    }
+    expect(manager.seedRepository).toHaveBeenCalledTimes(1);
+    expect(manager.refetchRepository).toHaveBeenCalledTimes(1);
+  } finally {
+    mockPrivateContents.clear();
+    mockIsPrivateWebContents.mockImplementation((contents) => mockPrivateContents.has(contents));
+    await executeHandler({ sender: { id: 1 } }, { method: 'radicle_disconnect', params: {}, origin });
+  }
 });
 
 test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent custody', async () => {

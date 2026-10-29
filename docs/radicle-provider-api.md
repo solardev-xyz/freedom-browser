@@ -38,7 +38,10 @@ The provider exists for everything that is **not** a public read:
 Installed in the page's main world of every web page's top frame before any
 of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
 A page's Content Security Policy does not affect it. It is not installed in
-private windows, in sub-frames, or on Freedom's internal pages.
+private windows, in sub-frames, or on Freedom's internal pages. Main also
+refuses `radicle_seed` and `radicle_sync` sent from a private window
+(`4100`, reason `private_window`), so a page that reaches the provider
+channel anyway cannot leave a seeding policy or a fetched repository behind.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>
