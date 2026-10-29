@@ -631,4 +631,27 @@ describe('hard links whose names are all inside the grants', () => {
     // twice, so a name outside isn't hidden.
     expect(grantContentRefusal([home, path.join(home, 'sub')])).toBe(OUTSIDE);
   });
+
+  test('one name in each of three grants passes only counted across them all', () => {
+    const grants = ['a', 'b', 'c'].map((name) => path.join(tempRoot, `grant-${name}`));
+    for (const grant of grants) fs.mkdirSync(grant, { recursive: true });
+    fs.writeFileSync(path.join(grants[0], 'object'), 'x');
+    fs.linkSync(path.join(grants[0], 'object'), path.join(grants[1], 'object'));
+    fs.linkSync(path.join(grants[0], 'object'), path.join(grants[2], 'object'));
+    expect(fs.statSync(path.join(grants[0], 'object')).nlink).toBe(3);
+    expect(grantContentRefusal(grants)).toBeNull();
+    expect(grantContentRefusal(grants.slice(0, 2))).toBe(OUTSIDE);
+  });
+
+  test('two names in one grant and a third in another pass only counted across both', () => {
+    const first = path.join(tempRoot, 'first');
+    const second = path.join(tempRoot, 'second');
+    fs.mkdirSync(first, { recursive: true });
+    fs.mkdirSync(second, { recursive: true });
+    fs.writeFileSync(path.join(second, 'one'), 'x');
+    fs.linkSync(path.join(second, 'one'), path.join(second, 'two'));
+    fs.linkSync(path.join(second, 'one'), path.join(first, 'three'));
+    expect(grantContentRefusal([first, second])).toBeNull();
+    expect(grantContentRefusal([second])).toBe(OUTSIDE);
+  });
 });
