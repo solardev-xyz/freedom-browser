@@ -141,7 +141,11 @@ function takeAck(paths, nonce) {
   }
   const shared = readJsonFile(paths.ackPath);
   if (shared?.nonce === nonce) {
-    // An older running build, which never clears the request it handled.
+    // An older running build, which never clears the request it handled. Or
+    // this build, whose watcher writes the per-request ack and then the shared
+    // one between our two reads above: collect the per-request copy too, or it
+    // lingers until the stale-ack sweep.
+    removeFileQuietly(ackFileFor(paths, nonce));
     removeFileQuietly(requestFileFor(paths, nonce));
     removeSharedRequest(paths, nonce);
     return shared;

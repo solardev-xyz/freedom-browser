@@ -6,15 +6,24 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 
+// Chat requests the discovery-only Ollama fixture refused, per test.
+const ollamaChatRequests = { count: 0 };
+
 const test = baseTest.extend({
   ollamaServer: async ({ electronApp: _electronApp }, use) => {
+    ollamaChatRequests.count = 0;
     const server = http.createServer((request, response) => {
       response.setHeader('Content-Type', 'application/json');
       if (request.method === 'GET' && request.url === '/api/tags') {
         response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
       } else {
-        response.writeHead(404);
-        response.end(JSON.stringify({ error: 'Model unavailable in discovery-only fixture' }));
+        // Ollama answers a chat request for a model it does not have with
+        // HTTP 500 (#849), which generic retry policies treat as transient.
+        ollamaChatRequests.count += 1;
+        response.writeHead(500);
+        response.end(JSON.stringify({
+          error: { message: 'model "freedom-e2e-no-server" not found, try pulling it first' },
+        }));
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -142,6 +151,33 @@ test('model picker collapses providers while keeping favorites and searchable mo
   const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
   const ollama = menu.getByRole('button', { name: /Ollama/ });
   const search = window.locator('#agent-model-menu-search');
+  // #869: legible type, a single leading check, no hint line, and the menu
+  // anchored above its button without reaching the panel header.
+  const layout = await window.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const menu = rect('#agent-model-menu');
+    const button = rect('#agent-model-menu-button');
+    const header = rect('.agent-sidebar-header');
+    const option = document.querySelector('#agent-model-menu .agent-model-option.active');
+    const group = getComputedStyle(document.querySelector('#agent-model-menu .agent-model-group-label'));
+    return {
+      menuRight: menu.right, buttonRight: button.right,
+      menuBottom: menu.bottom, buttonTop: button.top,
+      menuTop: menu.top, headerBottom: header.bottom,
+      optionFontSize: getComputedStyle(option).fontSize,
+      firstCellText: option.children[0].textContent,
+      groupFontSize: group.fontSize, groupTransform: group.textTransform,
+      menuText: document.querySelector('#agent-model-menu').textContent,
+    };
+  });
+  expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+  expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+  expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  expect(layout.optionFontSize).toBe('13px');
+  expect(layout.firstCellText).toBe('✓');
+  expect(layout.groupFontSize).toBe('12px');
+  expect(layout.groupTransform).toBe('none');
+  expect(layout.menuText).not.toContain('Hover over privacy symbols');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
     await expect(openai).toHaveAttribute('aria-expanded', 'false');
@@ -162,6 +198,118 @@ test('model picker collapses providers while keeping favorites and searchable mo
     await expect(openai).toHaveAttribute('aria-expanded', 'false');
     await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toHaveCount(0);
   }
+});
+
+// #869: the model menu sits above its button and below whatever header bounds
+// it, in the docked column and in Agent-first too, not just the launcher, and
+// a short window shrinks it rather than letting it climb over that header.
+test('model menu stays between its button and the header in every layout', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate((_electron, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    AgentProviderResolver.prototype.getStatus = () => ({
+      configured: true, providerId: 'openai', modelId: 'favorite',
+      connections: [{ kind: 'hosted', providerId: 'openai', modelId: 'favorite', favoriteModelIds: ['favorite'] }],
+    });
+    AgentProviderResolver.prototype.getCatalog = async () => [{
+      providerId: 'openai', name: 'OpenAI',
+      models: Array.from({ length: 30 }, (_, index) => ({ id: index ? `model-${index}` : 'favorite', name: `Model ${index}` })),
+    }];
+  }, repositoryRoot);
+  await window.reload();
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  const menu = window.locator('#agent-model-menu');
+  const button = window.locator('#agent-model-menu-button');
+  const measure = (headerSelector) => window.evaluate((selector) => {
+    const rect = (node) => node.getBoundingClientRect();
+    const menu = rect(document.querySelector('#agent-model-menu'));
+    const button = rect(document.querySelector('#agent-model-menu-button'));
+    const header = rect(document.querySelector(selector));
+    return { menuTop: menu.top, menuBottom: menu.bottom, menuRight: menu.right, menuHeight: menu.height,
+      buttonTop: button.top, buttonRight: button.right, headerBottom: header.bottom, headerHeight: header.height };
+  }, headerSelector);
+  const openExpanded = async () => {
+    if (await menu.isHidden()) await button.click();
+    await expect(menu).toBeVisible();
+    const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
+    if (await openai.getAttribute('aria-expanded') === 'false') await openai.click();
+    await expect(menu.getByRole('menuitemradio', { name: 'Model 29' })).toBeAttached();
+  };
+  const expectBetween = (layout) => {
+    expect(layout.headerHeight).toBeGreaterThan(0);
+    expect(Math.abs(layout.menuRight - layout.buttonRight)).toBeLessThan(1);
+    expect(layout.menuBottom).toBeLessThanOrEqual(layout.buttonTop);
+    expect(layout.menuTop).toBeGreaterThanOrEqual(layout.headerBottom);
+  };
+
+  // Docked column: a finished run with no saved conversation keeps the model
+  // button usable while the transcript turns the launcher into the column.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => target.webContents.send('agent:event', { runId: 'run_model_menu_column', ...event });
+    emit({ type: 'run_started', userText: 'Review this page' });
+    emit({ type: 'assistant_delta', text: 'A short answer.' });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  await expect(window.locator('body')).toHaveClass(/agent-floating-column/);
+  await expect(button).toBeEnabled();
+  await openExpanded();
+  expectBetween(await measure('.agent-sidebar-header'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-column.png') });
+  await window.keyboard.press('Escape');
+
+  // Agent-first: the title bar, not the hidden panel header, is the ceiling.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-first-titlebar')).toBeVisible();
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first.png') });
+
+  // A very short window leaves under the old 120px floor between the button
+  // and the title bar; the menu shrinks instead of covering it. Shrink it with
+  // the menu still open: the resize itself must re-measure the room, since the
+  // button moves up while the title bar stays put.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.setMinimumSize(1, 1);
+    target.setContentSize(target.getContentBounds().width, 220);
+  });
+  await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThan(240);
+  await expect(menu).toBeVisible();
+  await expect.poll(async () => {
+    const layout = await measure('#agent-first-titlebar');
+    return layout.menuTop - layout.headerBottom;
+  }).toBeGreaterThanOrEqual(0);
+  const short = await measure('#agent-first-titlebar');
+  expect(short.buttonTop - short.headerBottom).toBeLessThan(130);
+  expectBetween(short);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-resized-open.png') });
+
+  // Reopening in the short window measures the same way.
+  await window.keyboard.press('Escape');
+  await openExpanded();
+  expectBetween(await measure('#agent-first-titlebar'));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-agent-first-short.png') });
+
+  // Leaving Agent-first by a path that is not a click (a click elsewhere
+  // already closes the menu through the document handler) must not leave the
+  // menu open at Agent-first's geometry. A run that lands while the menu is
+  // open ties the workspace to its conversation; Cmd/Ctrl+T (the File menu
+  // accelerator when the page has focus) then opens a page outside it, which
+  // drops Agent-first with the panel still open.
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const target = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    target.webContents.send('agent:event', { runId: 'run_model_menu_agent_first', conversationId: 'model_menu', type: 'run_started', userText: 'Review this page' });
+  });
+  await expect(button).toBeDisabled();
+  await expect(menu).toBeVisible();
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('new-tab').click());
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('model-menu-left-agent-first.png') });
+  await expect(menu).toBeHidden();
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {
@@ -276,7 +424,7 @@ test('Meta subscription sign-in shows device codes, cancels and connects in both
   await providerPage.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
   await expect(providerPage.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
-  await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('Connect');
+  await expect(providerPage.locator('#agent-provider-api-state')).toHaveText('›');
   await providerPage.locator('#agent-provider-chatgpt').click();
   await providerPage.locator('#agent-provider-disconnect').click();
   await expect(providerPage.locator('#agent-provider-disconnect-question')).toContainText('sign in again');
@@ -400,7 +548,10 @@ test('reads a live external project without granting writes or socket access', a
   }, { root: repositoryRoot, userDataDir });
   expect(result).toEqual({ read: 'Live project fixture', listed: true, found: true, matched: true,
     denied: { 'live.sock': 'WORKSPACE_PATH_TYPE_MISMATCH', 'link.txt': 'WORKSPACE_FILE_UNSAFE', 'hardlink.txt': 'WORKSPACE_FILE_UNSAFE' },
-    writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true, socketDenied: true, unchanged: true, commandStillValidated: true });
+    writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true,
+    // Seatbelt denies the connection on macOS; on Linux the Bubblewrap seccomp
+    // filter refuses socket(AF_UNIX) (#817).
+    socketDenied: true, unchanged: true, commandStillValidated: true });
 });
 
 for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} files through Pi tools and the real sandbox`, async ({ electronApp, userDataDir }) => {
@@ -491,7 +642,9 @@ for (const kind of ['managed', 'external']) test(`parallel helper and parent edi
     try {
       let project;
       if (kind === 'external') {
-        project = path.join(userDataDir, 'parallel-project'); fs.mkdirSync(project);
+        // Git metadata, as in the scoped-helper sibling above: the Linux
+        // sandbox refuses a project without any (#815).
+        project = path.join(userDataDir, 'parallel-project'); fs.mkdirSync(project); fs.mkdirSync(path.join(project, '.git'));
         await store.attachProject(conversationId, project);
         await controller.setProjectAccess(conversationId, 'write');
       } else {
@@ -783,6 +936,21 @@ test('domain approval card names the action, lists the summary and labels the co
       expect(await window.evaluate(() => [document.documentElement, document.getElementById('agent-approval')]
         .every(element => element.scrollWidth <= element.clientWidth))).toBe(true);
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-${width}-${theme}.png`) });
+      if (width === 600) {
+        // A narrow window's bottom sheet is shorter than this card (#874): the
+        // card scrolls inside the sheet, under a header that stays in place.
+        await window.locator('#agent-approval-approve').scrollIntoViewIfNeeded();
+        const reach = await window.evaluate(() => {
+          const button = document.getElementById('agent-approval-approve').getBoundingClientRect();
+          const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+          const sheet = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
+          const hit = document.elementFromPoint(button.x + button.width / 2, button.y + button.height / 2);
+          return { hit: hit?.closest('#agent-approval-approve') !== null, headerTop: header.top - sheet.top, inside: button.bottom <= sheet.bottom };
+        });
+        expect(reach).toEqual({ hit: true, headerTop: expect.any(Number), inside: true });
+        expect(reach.headerTop).toBeLessThanOrEqual(2);
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`domain-commit-approve-${theme}.png`) });
+      }
     }
   }
   // Step 2 pays the quote plus the disclosed buffer: the Amount row is the
@@ -994,7 +1162,7 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await window.locator('#agent-approval-mode-button').click();
   await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
   await expect(window.locator('#agent-approval-mode-every')).toContainText(
-    'Ask frequently'
+    'Ask every time'
   );
   await expect(window.locator('#agent-approval-mode-sensitive')).toBeEnabled();
   await expect(window.locator('#agent-approval-mode-sensitive')).toContainText(
@@ -1033,13 +1201,31 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(providerPage.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
   await expect(providerPage.locator('#agent-ollama-model')).toHaveCount(0);
   await providerPage.locator('#agent-provider-advanced > summary').click();
+  // Nothing listens on port 1: the error lands right under the button with
+  // a pointer to Ollama's download page, not at the bottom of the page (#858).
+  const connectMessage = providerPage.locator('#agent-provider-connect-message');
+  await providerPage.locator('#agent-ollama-url').fill('http://127.0.0.1:1/v1');
+  await providerPage.locator('#agent-provider-save').click();
+  await expect(connectMessage).toHaveText(/Could not load models from Ollama/);
+  await expect(connectMessage).toHaveClass(/error/);
+  await expect(providerPage.locator('#agent-provider-message')).toHaveText('');
+  await expect(providerPage.locator('#agent-provider-models-empty')).toBeHidden();
+  const install = providerPage.locator('#agent-ollama-install');
+  await expect(install).toBeVisible();
+  await expect(install.getByRole('link', { name: 'Download it from ollama.com' })).toHaveAttribute(
+    'href', 'https://ollama.com/download'
+  );
+  const buttonBox = await providerPage.locator('#agent-provider-save').boundingBox();
+  const messageBox = await connectMessage.boundingBox();
+  expect(messageBox.y - (buttonBox.y + buttonBox.height)).toBeGreaterThanOrEqual(0);
+  expect(messageBox.y - (buttonBox.y + buttonBox.height)).toBeLessThan(24);
+
   await providerPage.locator('#agent-ollama-url').fill(ollamaServer);
   await providerPage.locator('#agent-provider-save').click();
 
   await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected');
-  await expect(providerPage.locator('#agent-provider-message')).toHaveText(
-    'Ollama models ready'
-  );
+  await expect(connectMessage).toHaveText('Ollama models ready');
+  await expect(install).toBeHidden();
   await expect(providerPage.locator('#ai-provider-settings')).toBeVisible();
   await expect(providerPage.locator('#agent-provider-models-list')).toContainText('freedom-e2e-no-server');
   await expect(window.locator('#agent-model-menu')).toBeHidden();
@@ -1090,12 +1276,15 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(panel).toHaveClass(/collapsed/);
   await toggle.click();
   await expect(window.locator('#agent-prompt')).toBeFocused();
+  await expect(window.locator('#agent-run-status')).toBeHidden();
 
   const agentFirstToggle = window.locator('[data-test="agent-first-toggle"]');
   await expect(agentFirstToggle).toBeVisible();
   await agentFirstToggle.click();
   await expect(window.locator('#agent-prompt')).toBeFocused();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  // A new task names no run state: no "Idle" badge above the empty state (#876).
+  await expect(window.locator('#agent-run-status')).toBeHidden();
   await expect(window.locator('.toolbar')).toBeHidden();
   await expect(window.locator('#agent-first-titlebar')).toBeVisible();
   await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();
@@ -1103,7 +1292,10 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(1);
-  await expect(window.locator('#agent-task-pages-note')).toContainText('currently viewing');
+  // The homepage is the surface to browse from but is never shared with a run
+  // (no "Attached page" chip), so the note must not say Agent starts there.
+  await expect(window.locator('#agent-page-context')).toBeHidden();
+  await expect(window.locator('#agent-task-pages-note')).toHaveText('Agent will start without a page.');
   await expect(window.locator('#agent-workspace-nav')).toBeVisible();
   await expect(
     window.locator('#agent-workspace-address-host > .address-bar-container')
@@ -1170,14 +1362,23 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
       getComputedStyle(document.querySelector(selector)).backgroundColor;
     return {
       titlebar: background('.title-bar'),
+      sessionsTitlebar: getComputedStyle(
+        document.querySelector('.agent-first-titlebar-left'), '::before'
+      ).backgroundColor,
+      conversationTitlebar: background('.agent-first-titlebar-center'),
+      workspaceTitlebar: background('.agent-first-titlebar-right'),
       sessions: background('#agent-session-sidebar'),
       conversation: background('#agent-sidebar'),
       workspace: background('#agent-task-pages'),
       composer: background('.agent-composer-wrap'),
     };
   });
-  expect(unifiedChrome.sessions).not.toBe(unifiedChrome.titlebar);
-  expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
+  // Each column runs up through the title-bar slot above it (#879): in the
+  // light theme the conversation is white while the chrome stays grey.
+  expect(unifiedChrome.sessions).not.toBe(unifiedChrome.conversation);
+  expect(unifiedChrome.sessionsTitlebar).toBe(unifiedChrome.sessions);
+  expect(unifiedChrome.conversationTitlebar).toBe(unifiedChrome.conversation);
+  expect(unifiedChrome.workspaceTitlebar).toBe(unifiedChrome.workspace);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
   // The composer strip hides messages scrolling underneath its bottom gutter.
   expect(unifiedChrome.composer).toBe(unifiedChrome.conversation);
@@ -1192,6 +1393,18 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     return { composerWidth: composer.width, menuWidth: menu.width };
   });
   expect(Math.abs(broadAttachmentMenu.menuWidth - broadAttachmentMenu.composerWidth)).toBeLessThan(2);
+  // #870: every item stacks its description under its label (as the approval
+  // and mode menus do), and Open project has its own icon, not Add folder's.
+  const attachmentItems = await window.evaluate(() =>
+    [...document.querySelectorAll('#agent-attachment-menu [role="menuitem"]')].map((item) => {
+      const label = item.querySelector('strong').getBoundingClientRect();
+      const note = item.querySelector('small').getBoundingClientRect();
+      return { id: item.id, stacked: note.top >= label.bottom - 1 && Math.abs(note.left - label.left) < 1, icon: item.querySelector('svg').innerHTML };
+    }));
+  expect(attachmentItems.length).toBe(4);
+  expect(attachmentItems.every((item) => item.stacked)).toBe(true);
+  const iconOf = (id) => attachmentItems.find((item) => item.id === id).icon;
+  expect(iconOf('agent-open-project')).not.toBe(iconOf('agent-attach-folder'));
   await window.locator('[data-test="agent-attachment"]').click();
   await expect(window.locator('#agent-attachment-menu')).toBeHidden();
   await window.locator('#agent-approval-mode-button').click();
@@ -1370,14 +1583,16 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     sidebarDisplay: getComputedStyle(document.querySelector('#agent-session-sidebar')).display,
     headerBackground: getComputedStyle(document.querySelector('.agent-first-titlebar-left'))
       .backgroundColor,
-    titlebarBackground: getComputedStyle(document.querySelector('.title-bar')).backgroundColor,
+    // With the sessions column closed, its slot sits over the conversation.
+    conversationBackground: getComputedStyle(document.querySelector('#agent-sidebar'))
+      .backgroundColor,
     slidingSurfaceTransform: getComputedStyle(
       document.querySelector('.agent-first-titlebar-left'),
       '::before'
     ).transform,
   }));
   expect(closedSessionChrome.sidebarDisplay).toBe('flex');
-  expect(closedSessionChrome.headerBackground).toBe(closedSessionChrome.titlebarBackground);
+  expect(closedSessionChrome.headerBackground).toBe(closedSessionChrome.conversationBackground);
   expect(closedSessionChrome.slidingSurfaceTransform).not.toBe('none');
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-workspace-sidebar-closed/);
@@ -1414,14 +1629,60 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
   await expect(window.locator('.agent-turn-outcome-technical')).toContainText(
     'Technical details'
   );
-  await expect(window.locator('.agent-turn-outcome-actions')).toBeHidden();
+  // A missing model is not retried, and a chat that never touched a page
+  // says nothing about browser changes (#849).
+  expect(ollamaChatRequests.count).toBe(1);
+  await expect(window.locator('.agent-turn-outcome')).not.toContainText('browser');
+  await expect(window.locator('.agent-turn-outcome')).toContainText(
+    'Next: Choose another model for a new chat'
+  );
+  await expect(window.locator('.agent-turn-outcome-actions')).toBeVisible();
+  await expect(window.locator('.agent-turn-outcome-actions button:visible')).toHaveText([
+    'Choose another model',
+    'Open Models',
+  ]);
   await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
+  // The conversation keeps its model, but the name must not look disabled:
+  // same opacity and colour as the enabled approval chip beside it (#872).
+  const chipStyle = selector =>
+    window.locator(selector).evaluate(element => {
+      const style = getComputedStyle(element);
+      return { opacity: style.opacity, color: style.color };
+    });
+  expect(await chipStyle('#agent-model-menu-button')).toEqual(
+    await chipStyle('#agent-approval-mode-button')
+  );
+  await window.locator('#agent-model-menu-button').hover({ force: true });
+  expect(await chipStyle('#agent-model-menu-button')).toEqual(
+    await chipStyle('#agent-approval-mode-button')
+  );
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
+
+  // Agent-first offers New chat once (#875): the open sessions column's +
+  // covers it, and the transcript's own button returns only once that column
+  // is collapsed.
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-session-new-chat')).toBeVisible();
+  await expect(window.locator('#agent-session-new-chat')).toBeEnabled();
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-new-chat')).toBeVisible();
+  await expect(window.locator('#agent-new-chat')).toBeEnabled();
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-new-chat')).toBeVisible();
 
   await window.locator('#agent-approval-mode-button').click();
   await window.locator('#agent-approval-mode-allow').click();
@@ -1432,11 +1693,20 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     'Approval setting updated for the next message.'
   );
 
-  await window.locator('#agent-new-chat').click();
+  await window.locator('.agent-turn-outcome-actions').getByRole('button', { name: 'Choose another model' }).click();
   await expect(window.locator('#agent-empty-state')).toBeVisible();
   await expect(window.locator('#agent-transcript')).toBeHidden();
+  await expect(window.locator('#agent-new-chat')).toBeHidden();
   await expect(window.locator('#agent-model-menu-button')).toBeEnabled();
+  await expect(window.locator('#agent-model-menu')).toBeVisible();
+  await expect(window.locator('#agent-model-menu-button')).toHaveAttribute('aria-expanded', 'true');
+  await expect(window.locator('#agent-model-menu-search')).toHaveValue('');
+  await expect(window.locator('#agent-model-menu-list')).toContainText('freedom-e2e-no-server');
+  await expect(window.locator('#agent-model-menu-list')).toContainText(hostedModelName);
+  await expect(window.locator('#agent-prompt')).toHaveValue('Summarize this page');
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
+  await window.keyboard.press('Escape');
+  await window.locator('#agent-prompt').fill('');
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(1);
@@ -1472,6 +1742,66 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     await reopenedWindow.locator('#agent-session-list .agent-session-select').click();
     await expect(reopenedWindow.locator('.agent-user-message')).toHaveText('Summarize this page');
     await expect(reopenedWindow.locator('#agent-task-page-count')).toHaveText('0');
+
+    // #880: Rename/Delete are reachable from a visible "⋯" button on hover
+    // and focus, not only from right-click.
+    const sessionRow = reopenedWindow.locator('#agent-session-list .agent-session-row');
+    const sessionMore = sessionRow.locator('.agent-session-more');
+    const sessionMenu = sessionRow.locator('.agent-session-actions');
+    await reopenedWindow.locator('#agent-prompt').focus();
+    await reopenedWindow.mouse.move(700, 500);
+    // Hidden by opacity (it stays in the focus order), so not `toBeHidden()`.
+    await expect(sessionMore).toHaveCSS('opacity', '0');
+    const sessionTitle = sessionRow.locator('.agent-session-select');
+    const restingTitleWidth = (await sessionTitle.boundingBox()).width;
+    await sessionRow.hover();
+    await expect(sessionMore).toHaveCSS('opacity', '1');
+    // Revealing ⋯ must not narrow the title (and re-ellipsise it under the pointer).
+    expect((await sessionTitle.boundingBox()).width).toBe(restingTitleWidth);
+    await expect(sessionMore).toHaveAccessibleName('Options for Summarize this page');
+    await sessionMore.click();
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'true');
+    await expect(sessionMenu.getByRole('menuitem')).toHaveText(['Rename', 'Delete']);
+    await sessionMore.click();
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await reopenedWindow.keyboard.press('Enter');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await expect(sessionMore).toHaveAttribute('aria-expanded', 'false');
+    // Backward focus navigation reaches ⋯ too: leaving the row and coming back
+    // with Shift+Tab lands on ⋯, not on the title before it.
+    await reopenedWindow.mouse.move(700, 500);
+    await reopenedWindow.keyboard.press('Tab');
+    await expect(sessionMore).not.toBeFocused();
+    await expect(sessionMore).toHaveCSS('opacity', '0');
+    await reopenedWindow.keyboard.press('Shift+Tab');
+    await expect(sessionMore).toBeFocused();
+    await expect(sessionMore).toHaveCSS('opacity', '1');
+    // Shift+F10 with ⋯ focused: ⋯ is the opener, so Escape returns focus to it.
+    await reopenedWindow.keyboard.press('Shift+F10');
+    await expect(sessionMenu).toBeVisible();
+    await expect(sessionMenu.getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await expect(sessionMore).toBeFocused();
+    await sessionRow.locator('.agent-session-select').click({ button: 'right' });
+    await expect(sessionMenu).toBeVisible();
+    await reopenedWindow.keyboard.press('Escape');
+    await expect(sessionMenu).toBeHidden();
+    await sessionRow.hover();
+    await sessionMore.click();
+    await sessionMenu.getByRole('menuitem', { name: 'Rename' }).click();
+    const renameInput = sessionRow.getByRole('textbox', { name: 'Session title' });
+    await expect(renameInput).toBeFocused();
+    await expect(sessionMore).toBeHidden();
+    await renameInput.fill('Renamed session');
+    await renameInput.press('Enter');
+    await expect(reopenedWindow.locator('#agent-session-list')).toContainText('Renamed session');
   } finally {
     await reopened.close();
   }
@@ -1718,6 +2048,217 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
   expect(result).toMatchObject({ version: 6, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
 });
 
+// The approval payload is the real pre-publish scan of a fixture snapshot
+// (publication-scan.js, as SwarmPublicationController sends it); the decision
+// IPC is replaced so the test sees exactly what the card would send to main.
+// Main's enforcement of these choices is covered by the controller/service
+// unit tests. Nothing is uploaded.
+test('publication approval shows scan findings, blocks secrets and says the upload is permanent', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const { preparePublication } = require('../src/main/agent/publication-scan');
+  const stripe = ['sk_live_', '51HqLyjWDarjtT1zdp7dc9a'].join('');
+  const key = '4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318';
+  const exif = Buffer.concat([Buffer.from('Exif\0\0MM\0*\0\0\0\x08\0\0\0\0\0\0GPS', 'latin1')]);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, exif.length + 2]), exif]);
+  const photo = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, Buffer.from([0xff, 0xda, 0, 2, 1, 2, 0xff, 0xd9])]);
+  const scan = preparePublication({ kind: 'folder', name: 'dist', excluded: [{ path: '.env', reason: 'Credential file' }], files: [
+    { path: 'index.html', bytes: Buffer.from('<p>Contact alice.smith@proton.me</p>') },
+    { path: 'app.js', bytes: Buffer.from(`const stripe = "${stripe}";\n//# sourceMappingURL=app.js.map\n`) },
+    { path: 'app.js.map', bytes: Buffer.from('{"sourcesContent":["// TODO remove key"]}') },
+    { path: 'deploy.js', bytes: Buffer.from(`const PRIVATE_KEY = '0x${key}';`) },
+    { path: 'photo.jpg', bytes: photo },
+  ] });
+  const publication = {
+    kind: 'folder', name: 'dist', workspacePath: 'dist', public: true, bytes: scan.source.bytes, indexDocument: 'index.html',
+    files: scan.source.files.map(file => ({ path: file.path, bytes: file.bytes.length })),
+    findings: scan.findings, excluded: scan.excluded, stripped: scan.stripped,
+  };
+  expect(JSON.stringify(publication)).not.toContain(stripe);
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }, publication) => {
+    globalThis.__publicationDecisions = [];
+    ipcMain.removeHandler('agent:approval:decide');
+    ipcMain.handle('agent:approval:decide', (_event, payload) => {
+      globalThis.__publicationDecisions.push(payload);
+      return { ok: true, decided: true };
+    });
+    const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    page.webContents.send('agent:event', { type: 'run_started', runId: 'run_publication_scan_ui', userText: 'Publish my site' });
+    page.webContents.send('agent:event', { type: 'approval_requested', runId: 'run_publication_scan_ui',
+      approvalId: 'approval_publication_scan', action: 'swarm_publish', operation: 'swarm_publish', label: 'dist', publication });
+  }, publication);
+  const approve = window.locator('#agent-approval-approve');
+  await expect(window.locator('#agent-approval-action')).toHaveText('Publish “dist” to Swarm?');
+  await expect(window.locator('#agent-publication-permanent')).toHaveText(
+    'This will be public. Anyone with the link can read it, and it can’t be deleted or taken back.');
+  await expect(approve).toHaveText('Publish publicly');
+  await expect(window.locator('#agent-approval-allow-conversation')).toBeHidden();
+  const summary = window.locator('#agent-publication-summary');
+  await expect(summary).toContainText('.env · Credential file');
+  await expect(summary).toContainText('app.js.map · Source map');
+  await expect(summary).toContainText('photo.jpg · Image metadata (EXIF, GPS, XMP) removed');
+  await expect(summary).toContainText('app.js · sourceMappingURL comment removed');
+  const groups = window.locator('.agent-publication-finding-group');
+  await expect(groups).toHaveCount(3);
+  await expect(groups.nth(0)).toContainText('app.js');
+  await expect(groups.nth(0)).toContainText('Stripe secret key · line 1');
+  await expect(groups.nth(1)).toContainText('Ethereum private key');
+  await expect(groups.nth(2)).toContainText('Email address');
+  await expect(groups.nth(2).locator('.agent-publication-anyway')).toHaveCount(0);
+  await expect(window.locator('#agent-approval')).not.toContainText(stripe);
+  await expect(window.locator('.agent-publication-findings-status')).toContainText('must be resolved before publishing');
+  await expect(approve).toBeDisabled();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-publication-permanent').scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-blocked-${theme}.png`) });
+    await approve.scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-blocked-footer-${theme}.png`) });
+  }
+
+  await groups.nth(0).getByLabel('Publish anyway').check();
+  await expect(approve).toBeDisabled();
+  await groups.nth(1).getByRole('button', { name: 'Exclude file' }).click();
+  await expect(groups.nth(1).getByRole('button', { name: 'Include file' })).toBeVisible();
+  await expect(approve).toBeEnabled();
+  await expect(window.locator('.agent-publication-findings-status')).toHaveText('All blocking findings are resolved.');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-publication-permanent').scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-resolved-${theme}.png`) });
+    await approve.scrollIntoViewIfNeeded();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-scan-resolved-footer-${theme}.png`) });
+  }
+  await approve.click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions)).toEqual([{
+    runId: 'run_publication_scan_ui', approvalId: 'approval_publication_scan', approved: true,
+    publicationExclusions: ['deploy.js'], publicationAcknowledged: [scan.findings.find(finding => finding.path === 'app.js').id],
+  }]);
+});
+
+// #741 E, F, G and H on the card. The payloads come from the real
+// SwarmPublicationController and SwarmPostageReadiness, driven by fake Ant
+// stamp reads and fake uploads: nothing reaches a network or spends postage.
+// The decision IPC is replaced so the test sees what the card sends to main.
+test('publication approval offers a private draft link and a stable address, with postage cost and expiry', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const { SwarmPublicationController } = require('../src/main/agent/swarm-publication-controller');
+  const { SwarmPostageReadiness } = require('../src/main/agent/swarm-postage-readiness');
+  const batchId = 'c3'.repeat(32);
+  const stampReads = [];
+  const fakeAnt = ttlSeconds => ({ stamp: { get: async (id) => {
+    stampReads.push(id);
+    return { usable: true, amount: '1210000000', duration: { toSeconds: () => ttlSeconds }, remainingSize: { toBytes: () => 400_000_000 } };
+  } } });
+  const site = {
+    sourceType: 'workspace', kind: 'folder', name: 'dist', workspacePath: 'dist',
+    files: [
+      { path: 'index.html', bytes: Buffer.from('<!doctype html><title>Draft</title>\n<link rel="stylesheet" href="style.css">\n<script src="https://unpkg.com/confetti@1/confetti.js"></script>\n<p>Hello</p>') },
+      { path: 'style.css', bytes: Buffer.from('p { color: teal }') },
+    ],
+  };
+  site.bytes = site.files.reduce((total, file) => total + file.bytes.length, 0);
+  const capture = async (input, ttlSeconds, extra = {}) => {
+    let request;
+    const controller = new SwarmPublicationController({
+      attachmentStore: { resolvePublicationSource: async () => { throw new Error('unused'); } },
+      workspaceSourceReader: { read: async () => site },
+      publishData: async () => { throw new Error('no upload in this test'); },
+      publishFile: async () => { throw new Error('no upload in this test'); },
+      publishDirectory: async () => { throw new Error('no upload in this test'); },
+      publishCollection: async () => { throw new Error('no upload in this test'); },
+      getUploadStatus: async () => ({}), addHistoryEntry: () => ({ id: 1 }), updateHistoryEntry: () => {},
+      postageReadiness: new SwarmPostageReadiness({ getBee: () => fakeAnt(ttlSeconds), selectBestBatch: async () => batchId }),
+      ...extra,
+    });
+    await controller.publish(input, { conversationId: 'e2e', requestApproval: async (value) => { request = value; return 'declined'; } }).catch(() => {});
+    return request;
+  };
+  const draft = await capture({ workspacePath: 'dist', target: 'draft' }, 3 * 86_400 + 600);
+  const stable = await capture({ workspacePath: 'dist', stableAddress: 'my-site' }, 45 * 86_400, {
+    feedSigner: async () => ({ address: `0x${'5a'.repeat(20)}`, privateKey: `0x${'1'.repeat(64)}` }),
+    // Live already, with no record of it in this browser (a deleted
+    // conversation, a restored vault): the card must not call it new.
+    readFeedState: async () => ({ exists: true, index: 1 }),
+  });
+  expect(stampReads).toEqual([batchId, batchId]);
+  expect(draft.publication).toMatchObject({ target: 'draft', public: false, encrypted: true, postage: { status: 'ready', batchId, expiry: 'soon' } });
+  expect(stable.publication).toMatchObject({ target: 'public', public: true, stableAddress: { name: 'my-site', existing: 'yes', latestIndex: 1 }, postage: { expiry: 'ok' } });
+  expect(JSON.stringify(stable)).not.toContain('1'.repeat(64));
+
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__publicationDecisions = [];
+    ipcMain.removeHandler('agent:approval:decide');
+    ipcMain.handle('agent:approval:decide', (_event, payload) => {
+      globalThis.__publicationDecisions.push(payload);
+      return { ok: true, decided: true };
+    });
+  });
+  const send = event => electronApp.evaluate(({ BrowserWindow }, event) => {
+    BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', { runId: 'run_publication_targets', ...event });
+  }, event);
+  await send({ type: 'run_started', userText: 'Publish my site' });
+  const show = (approvalId, request) => send({ type: 'approval_requested', approvalId, ...request });
+  const approve = window.locator('#agent-approval-approve');
+  const summary = window.locator('#agent-publication-summary');
+  const shoot = async (label) => {
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await window.locator('#agent-approval-action').scrollIntoViewIfNeeded();
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`${label}-${theme}.png`) });
+      await approve.scrollIntoViewIfNeeded();
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`${label}-footer-${theme}.png`) });
+    }
+  };
+
+  // E + G + H: a private draft link, a batch close to expiry, a third-party script.
+  await show('approval_draft', draft);
+  await expect(window.locator('#agent-approval-action')).toHaveText('Create a private draft link for “dist”?');
+  await expect(approve).toHaveText('Create private draft link');
+  await expect(window.locator('#agent-publication-permanent')).toBeHidden();
+  await expect(window.locator('#agent-publication-draft-notice')).toBeVisible();
+  await expect(window.locator('#agent-publication-draft-notice')).toHaveText(
+    'Private draft link. The content is encrypted, but anyone who gets the link can read it, so share it deliberately. The encrypted data is still stored on the public network and can’t be deleted or taken back.');
+  await expect(window.locator('#agent-publication-stable-notice')).toBeHidden();
+  await expect(window.locator('#agent-approval-allow-conversation')).toBeHidden();
+  await expect(summary).toContainText('Private draft link (encrypted)');
+  await expect(summary).toContainText(`${batchId.slice(0, 8)}…${batchId.slice(-8)}`);
+  await expect(summary).toContainText(/≈ 0\.0000\d+ xBZZ of this batch’s prepaid storage \(about \d+ chunks\)\. Nothing new is bought\./);
+  await expect(summary).toContainText('3 days');
+  await expect(window.locator('#agent-publication-postage-warning')).toHaveText(
+    'This postage batch expires in 3 days. After that the content can no longer be retrieved unless the batch is extended in Storage.');
+  await expect(window.locator('.agent-publication-finding')).toHaveCount(1);
+  await expect(window.locator('.agent-publication-finding')).toContainText('Third party · warning');
+  await expect(window.locator('.agent-publication-finding')).toContainText('https://unpkg.com');
+  await expect(approve).toBeEnabled();
+  await shoot('publication-draft');
+  await approve.click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions)).toEqual([
+    { runId: 'run_publication_targets', approvalId: 'approval_draft', approved: true },
+  ]);
+  await send({ type: 'approval_resolved', approvalId: 'approval_draft', decision: 'approved' });
+  await expect(window.locator('#agent-approval')).toBeHidden();
+
+  // F: a public publication to a stable address. Its own approval, its own
+  // button, and the note that older versions stay retrievable.
+  await show('approval_stable', stable);
+  await expect(window.locator('#agent-approval-action')).toHaveText('Publish “dist” to Swarm?');
+  await expect(approve).toHaveText('Publish publicly');
+  await expect(window.locator('#agent-publication-permanent')).toBeVisible();
+  await expect(window.locator('#agent-publication-draft-notice')).toBeHidden();
+  await expect(window.locator('#agent-publication-stable-notice')).toHaveText(
+    'Stable address. Later fixes can update this address, but they don’t remove this version: anyone holding its own reference can still retrieve it while its postage is valid.');
+  await expect(summary).toContainText('my-site · owned by your Swarm identity');
+  await expect(summary).toContainText('This address already exists (2 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+  await expect(summary).not.toContainText('A new address');
+  await expect(summary).toContainText('45 days');
+  await expect(window.locator('#agent-publication-postage-warning')).toBeHidden();
+  await expect(approve).toBeEnabled();
+  await shoot('publication-stable');
+  await window.locator('#agent-approval-decline').click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__publicationDecisions.length)).toBe(2);
+  expect((await electronApp.evaluate(() => globalThis.__publicationDecisions))[1]).toMatchObject({ approvalId: 'approval_stable', approved: false });
+});
+
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   await configureOllamaAgent(window, ollamaServer);
   await electronApp.evaluate(({ BrowserWindow }) => {
@@ -1751,5 +2292,149 @@ test('publication card follows one job through waiting, confirmation and complet
       await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
     }
+  }
+});
+
+test('answer links keep their URL and open in a tab; quotes, code and tables are styled (#848)', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await configureOllamaAgent(window, ollamaServer);
+  const markdown = [
+    'Here is a summary of **Swarm postage stamps**.',
+    '',
+    '> Stamps are not refundable.',
+    '',
+    '| Depth | Capacity |',
+    '| --- | --- |',
+    '| 17 | 512 MB |',
+    '| 20 | 4 GB |',
+    '',
+    'Inline `code` and a block:',
+    '',
+    '```',
+    'ant stamps buy --depth 20 --amount 1000000000 --label a-rather-long-label-that-overflows',
+    '```',
+    '',
+    'Read more at [the docs](https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch).',
+    'Not a link: [run this](javascript:alert(1)).',
+  ].join('\n');
+  await electronApp.evaluate(({ BrowserWindow }, text) => {
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'markdown', userText: 'Explain Swarm postage stamps' },
+      { type: 'assistant_text_delta', conversationId: 'markdown', text },
+      { type: 'run_finished', conversationId: 'markdown', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'run_markdown', ...event });
+  }, markdown);
+  const output = window.locator('.agent-output.rendered-markdown');
+  await expect(output).toBeVisible();
+
+  const link = output.getByRole('link', { name: 'the docs' });
+  await expect(link).toHaveAttribute('href', 'https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch');
+  await expect(link).toHaveAttribute('title', 'https://docs.ethswarm.org/docs/develop/access-the-swarm/buy-a-stamp-batch');
+  // A scheme a tab cannot open keeps its text and loses its URL.
+  await expect(output.getByRole('link', { name: 'run this' })).toHaveCount(0);
+  await expect(output).toContainText('Not a link: run this.');
+
+  const styles = await output.evaluate((element) => {
+    const css = (selector) => getComputedStyle(element.querySelector(selector));
+    const pre = element.querySelector('pre');
+    return {
+      quoteBar: css('blockquote').borderLeftWidth,
+      inlineCode: css('p > code').backgroundColor,
+      cellLine: css('td').borderBottomWidth,
+      preScrollbar: css('pre').scrollbarColor,
+      preOverflows: pre.scrollWidth > pre.clientWidth,
+      copyButton: element.querySelector('.agent-code-block > .agent-code-copy')?.getAttribute('aria-label'),
+      textHasNoButtonLabel: !element.textContent.includes('Copy'),
+    };
+  });
+  expect(styles.quoteBar).toBe('3px');
+  expect(styles.inlineCode).not.toBe('rgba(0, 0, 0, 0)');
+  expect(styles.cellLine).toBe('1px');
+  expect(styles.preScrollbar).not.toBe('auto');
+  expect(styles.preOverflows).toBe(true);
+  expect(styles.copyButton).toBe('Copy code');
+  expect(styles.textHasNoButtonLabel).toBe(true);
+
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => { if (value === 'light') document.documentElement.dataset.theme = value; else delete document.documentElement.dataset.theme; }, theme);
+    await output.locator('pre').hover();
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`markdown-${theme}.png`) });
+  }
+
+  await electronApp.evaluate(({ clipboard }) => clipboard.writeText(''));
+  await output.locator('.agent-code-copy').click();
+  await expect(output.locator('.agent-code-copy')).toHaveAttribute('data-state', 'copied');
+  expect(await electronApp.evaluate(({ clipboard }) => clipboard.readText())).toContain('ant stamps buy --depth 20');
+
+  const chromeUrl = window.url();
+  const tabsBefore = await window.locator('.tab').count();
+  await link.click();
+  await expect(window.locator('.tab')).toHaveCount(tabsBefore + 1);
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''))
+    .toContain('docs.ethswarm.org');
+  expect(window.url()).toBe(chromeUrl);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-opened.png') });
+
+  // Agent-first mode's strip lists only the conversation's pages, so a
+  // background tab would be invisible there. Ctrl/Cmd+click opens the link in
+  // the foreground instead, leaving agent-first for the new tab like a click.
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  const tabsInAgentFirst = await window.locator('.tab').count();
+  await link.click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
+  await expect(window.locator('.tab')).toHaveCount(tabsInAgentFirst + 1);
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect.poll(() => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''))
+    .toContain('docs.ethswarm.org');
+  expect(window.url()).toBe(chromeUrl);
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('markdown-link-agent-first-ctrl.png') });
+});
+
+test('a narrow window shows the floating conversation as a bottom sheet, not a side column (#874)', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await configureOllamaAgent(window, ollamaServer);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'narrow', userText: 'Summarise this page' },
+      { type: 'assistant_text_delta', conversationId: 'narrow', text: 'The page has three top stories:\n\n- Swarm mainnet hits 10k nodes\n- ENS v2 ships\n- Freedom 0.9 released' },
+      { type: 'run_finished', conversationId: 'narrow', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'run_narrow', ...event });
+  });
+  await expect(window.locator('.agent-output.rendered-markdown')).toBeVisible();
+  await expect(window.locator('#agent-sidebar')).toHaveAttribute('data-presentation', 'column');
+  const setWidth = width => electronApp.evaluate(({ BrowserWindow }, width) => {
+    const win = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    win.setMinimumSize(320, 300);
+    win.setContentSize(width, 800);
+  }, width);
+  const geometry = () => window.evaluate(() => {
+    const body = document.querySelector('.app-body').getBoundingClientRect();
+    const panel = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
+    const composer = document.querySelector('#agent-sidebar .agent-composer-wrap').getBoundingClientRect();
+    const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+    return { body, panel, composer, header, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+  });
+
+  // Wide: the side column, the page keeps its left side.
+  await setWidth(1000);
+  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(1000);
+  await expect.poll(async () => (await geometry()).panel.width).toBeLessThanOrEqual(410);
+
+  // Narrow: one full-width sheet over the bottom half, the page keeps the top.
+  await setWidth(600);
+  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(600);
+  await expect.poll(async () => (await geometry()).panel.width).toBeGreaterThan(560);
+  const { body, panel, composer, header, overflow } = await geometry();
+  expect(overflow).toBe(0);
+  expect(body.bottom - panel.bottom).toBeLessThanOrEqual(12);
+  expect(panel.top - body.top).toBeGreaterThan(body.height * 0.4);
+  expect(panel.height).toBeGreaterThan(300);
+  expect(header.top).toBeGreaterThanOrEqual(panel.top);
+  expect(composer.bottom).toBeLessThanOrEqual(panel.bottom + 1);
+  await expect(window.locator('.agent-output.rendered-markdown')).toBeVisible();
+  await expect(window.locator('#agent-composer')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`narrow-sheet-${theme}.png`) });
   }
 });

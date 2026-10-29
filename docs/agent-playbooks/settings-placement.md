@@ -65,7 +65,10 @@ The Ethereum and Gnosis nodes have no Advanced toggle at all: they are one
   don't all match word for word (Nodes says "Myotis" where Startup says
   "Start Ethereum node" / "Start Gnosis node"); don't rename an existing row
   just to match, and don't flag that pre-existing mismatch in an unrelated PR.
-- Exception approved for Freedom Agent: its enable switch and provider management live together in **AI**, with the Beta badge. Do not duplicate them in Advanced.
+- Exception approved for Freedom Agent: its enable switch and provider management live together in **AI**. Do not duplicate them in Advanced.
+  The AI heading carries no Beta badge (dropped in #838); Agent's Beta tag is on
+  the start-page Agent banner (`home.html`, `.setup-banner-tag`). Don't add a
+  badge back to the AI section.
 - Other Beta features' on/off switches live in Advanced, with the `.resolver-badge`
   Beta badge, never "(Beta)" in the label. A Beta _node's_ own configuration
   (mode, endpoint) stays in the Nodes panel beside the other nodes, as Tor's

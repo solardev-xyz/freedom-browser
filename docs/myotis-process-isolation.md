@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.16 / ABI 47 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.18 / ABI 50 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -293,11 +293,11 @@ wall-clock subtraction or renderer consent substitutes for exit evidence.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.16 Node addons for all
+`npm run myotis:download` downloads the official v0.1.18 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 47. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 50. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
@@ -306,14 +306,16 @@ resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallba
 to the embedded anchor. Freedom validates existing native markers against its
 own authenticated checkpoint record. `nativeCheckpointApi` is the persisted
 checkpoint contract, not the current engine ABI: records written by official
-ABI 26 and ABI 29 hosts remain compatible with ABI 47 (ABI 33-36 changed the
+ABI 26 and ABI 29 hosts remain compatible with ABI 50 (ABI 33-36 changed the
 call, estimate and send results, 37 the log-index config payload, 38 the
 status JSON, 39-45 added calls and result keys and the ABI 44 send refusal,
-46-47 added `getProofJson` and `resolveBlockHashJson`,
+46-47 added `getProofJson` and `resolveBlockHashJson`, 48 the log-index
+watch payload, 49 the ENS offchain envelope and 50 the status JSON and a
+metering call,
 none of them `createWithCheckpoint` or the anchor marker;
-v0.1.16 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
+v0.1.18 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
 New records retain the value 29 written by v0.1.11. Unknown values fail closed;
-the native loader still requires exactly ABI 47. Patched ABI 25 generations lacking the marker are
+the native loader still requires exactly ABI 50. Patched ABI 25 generations lacking the marker are
 preserved and replaced after checking retired ownership.
 
 Every new generation inherits only its chain's `peers[-gnosis].cache` and
@@ -342,6 +344,16 @@ broadcaster. ABI 46-47 (v0.1.16) add no status key either. They add
 canonical number a block hash names, ABI 47), neither of which Freedom calls:
 `eth_getProof` stays with the other sources, and the router hands Myotis only
 `latest` reads, so a block-hash selector (EIP-1898) never reaches the addon.
+ABI 48-50 (v0.1.17 and v0.1.18) change nothing Freedom reads. ABI 48 lets a
+log-index watch entry name a topic instead of an address; Freedom pushes no
+log-index config. ABI 49 adds `reverseClaim` to `ensRecordJson`'s offchain
+envelope; Freedom resolves ENS through the Universal Resolver over `call`, not
+`ensRecordJson`, and drives CCIP-Read itself. ABI 50 adds `dataUsage` and
+`networkMetering` to the status JSON, which the allowlist drops, and
+`setNetworkMetering`/`networkMetering`, which Freedom does not call; the
+engine now also writes `data-usage[-net].json` in the generation directory,
+which is not inherited. v0.1.17 also refuses a transaction signed for another
+chain with the same permanent `-32602` as ABI 44, so it is a definite refusal.
 
 The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
 activationTime, forkId, observedPeers }`) is allowlisted only after strict

@@ -87,7 +87,8 @@ const FAILURE_PRESENTATIONS = Object.freeze({
     retryMessage: 'The selected model is unavailable from this provider.',
     terminalMessage:
       'The selected model is unavailable from this provider. Choose another model or update the provider setup.',
-    nextStep: 'Choose another model or update the provider setup, then continue.',
+    nextStep:
+      'Choose another model for a new chat, or make this model available from the provider and send the request again.',
   }),
   [PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE]: Object.freeze({
     recovery: PROVIDER_FAILURE_RECOVERY.CHANGE_REQUEST,
@@ -125,7 +126,8 @@ const FAILURE_PRESENTATIONS = Object.freeze({
     retryMessage: 'The model provider request failed for an unknown reason.',
     terminalMessage:
       'The model provider request failed. Freedom could not determine whether the problem is transient.',
-    nextStep: 'Try continuing once. If it fails again, check the provider setup or choose another model.',
+    nextStep:
+      'Try continuing once. If it fails again, check the provider setup or choose another model.',
   }),
 });
 
@@ -291,6 +293,60 @@ function matches(value, pattern) {
   return pattern.test(value);
 }
 
+// Two strengths of "the model is missing" wording share one shape: "model",
+// optionally a name, optionally "is", then a verdict.
+//
+// MODEL_UNAVAILABLE_PATTERN picks the error card's category, so it takes any
+// one-word name ("The model mistral does not exist", "model phi is
+// unsupported"): for a 4xx Pi never retries anyway, and the card's "Choose
+// another model" is the right offer. A 5xx that only this broad pattern
+// matches is still shown as a transient outage (see classifyProviderFailure).
+//
+// PERMANENT_MODEL_FAILURE_PATTERN vetoes Pi's own retry, so its name token
+// must be quoted or look like a model id (a digit or one of `-_.:/`, as in
+// gpt-4o, qwen3:8b, org/model): "model generated invalid JSON", "model
+// runner not found" or "model file not found" are generation/runner errors,
+// not a missing model, and should keep Pi's retry. A JSON-escaped quote
+// (`model \"qwen3:8b\" not found` inside an error body) counts as quoted.
+const ANY_MODEL_NAME = String.raw`(?:'[^']+'|"[^"]+"|\x60[^\x60]+\x60|\S+)`;
+const MODEL_NAME = String.raw`(?:\\"[^"\\]+\\"|'[^']+'|"[^"]+"|\x60[^\x60]+\x60|[\w]*[\d\-.:/][\w\-.:/]*)`;
+// "does not exist" counts only when its subject is the model itself ("The
+// model `gpt-9` does not exist", "model does not exist"). An unanchored
+// `model.*does not exist` would also read "model called tool \"browser_open\"
+// which does not exist" or "model runner process does not exist"
+// (generation/runner errors) as a missing model.
+function modelVerdict(name, verdicts) {
+  return String.raw`model\s+(?:${name}\s+)?(?:is\s+)?(?:${verdicts})`;
+}
+const MODEL_UNAVAILABLE_PATTERN = new RegExp(
+  String.raw`(?:${modelVerdict(ANY_MODEL_NAME, 'not found|unavailable|unsupported|invalid|does not exist')}|unknown model|no access to model)`,
+  'i'
+);
+// Wording that says the model exists but cannot serve this request right now:
+// "Model temporarily unavailable, please retry", "model is unavailable due to
+// high load". That is a capacity problem, not a missing model.
+const TEMPORARY_CAPACITY_PATTERN =
+  /(?:temporar(?:y|ily)|high (?:load|demand)|overload|over capacity|at capacity|capacity (?:issue|limit|constraint)|busy|(?:try|retry) (?:again )?later|please (?:try again|retry)|retry (?:in|after))/i;
+// Only wording that names the model itself as absent. A bare "model
+// unavailable" is ambiguous (it is also how capacity outages are worded), so
+// it is not treated as permanent.
+const PERMANENT_MODEL_FAILURE_PATTERN = new RegExp(
+  String.raw`(?:${modelVerdict(MODEL_NAME, 'not found|unsupported|invalid|does not exist')}|unknown model|no access to model)`,
+  'i'
+);
+
+// True only when retrying cannot help because the provider says the selected
+// model does not exist (or this account cannot use it). Used to veto Pi's own
+// transport-text retry policy, so it is deliberately narrower than the
+// MODEL_UNAVAILABLE presentation category: when in doubt, let Pi retry.
+function isPermanentModelFailure(value) {
+  if (value?.category) return false;
+  const text = combinedFailureText(value);
+  return (
+    matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && !matches(text, TEMPORARY_CAPACITY_PATTERN)
+  );
+}
+
 function classifyProviderFailure(value) {
   if (Object.values(PROVIDER_FAILURE_CATEGORIES).includes(value?.category)) {
     const presentation = FAILURE_PRESENTATIONS[value.category];
@@ -332,13 +388,17 @@ function classifyProviderFailure(value) {
     )
   ) {
     category = PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT;
-  } else if (
-    matches(
-      text,
-      /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i
-    )
-  ) {
-    category = PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
+  } else if (matches(text, MODEL_UNAVAILABLE_PATTERN)) {
+    // Ambiguous wording ("503 model unavailable") that came with a server
+    // error is the shape Pi retries (isPermanentModelFailure is false), so
+    // once those retries are spent it is still a capacity outage: offer
+    // Retry, not "choose another model".
+    const ambiguousServerError =
+      !matches(text, PERMANENT_MODEL_FAILURE_PATTERN) && safeHttpStatus(value, text) >= 500;
+    category =
+      matches(text, TEMPORARY_CAPACITY_PATTERN) || ambiguousServerError
+        ? PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE
+        : PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
   } else if (
     matches(
       text,
@@ -444,8 +504,8 @@ function sanitizeProviderDetail(value) {
 function hasConcreteProviderEvidence(failure) {
   return Boolean(
     failure?.httpStatus ||
-      failure?.networkCode ||
-      (failure?.cause && !NON_SPECIFIC_CAUSES.has(failure.cause))
+    failure?.networkCode ||
+    (failure?.cause && !NON_SPECIFIC_CAUSES.has(failure.cause))
   );
 }
 
@@ -514,17 +574,11 @@ function normalizeAttemptSummary(value, retryCount) {
   const automaticRetries = normalizeRetryCount(value.automaticRetries ?? retryCount);
   const total = Math.max(
     1,
-    Math.min(
-      21,
-      Number.isSafeInteger(value.total) ? value.total : automaticRetries + 1
-    )
+    Math.min(21, Number.isSafeInteger(value.total) ? value.total : automaticRetries + 1)
   );
   const observedFailures = Math.max(
     0,
-    Math.min(
-      total,
-      Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0
-    )
+    Math.min(total, Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0)
   );
   const reasons = Array.isArray(value.reasons)
     ? value.reasons.slice(-total).map((failure) => classifyProviderFailure(failure))
@@ -694,6 +748,7 @@ module.exports = {
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
+  isPermanentModelFailure,
   mostInformativeProviderFailure,
   providerFailurePresentation,
   providerRetryCount,

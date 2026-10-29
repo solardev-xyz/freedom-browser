@@ -6,6 +6,28 @@ const { getAntApiUrl } = require('../service-registry');
 
 const SETTLEMENT_BLOCKS = 10;
 const READ_TIMEOUT_MS = 10_000;
+const CHUNK_BYTES = 4096;
+// Below this the approval card warns that the batch is close to expiry; the
+// same thresholds as the Storage screen (stamp-manager.js).
+const TTL_WARN_SECONDS = 7 * 86_400;
+const TTL_CRITICAL_SECONDS = 86_400;
+
+// Chunks an upload of `bytes` stamps: its data chunks, the intermediate
+// chunks of the Swarm hash tree (128 references per chunk, 64 when each
+// reference also carries a decryption key), and about one manifest chunk per
+// file. An estimate for the approval card, not an exact count.
+function estimateChunks(bytes, { encrypted = false, files = 1 } = {}) {
+  const data = Math.max(1, Math.ceil(Math.max(0, bytes) / CHUNK_BYTES));
+  const branching = encrypted ? 64 : 128;
+  let intermediate = 0;
+  for (let level = data; level > 1; level = Math.ceil(level / branching)) intermediate += Math.ceil(level / branching);
+  return data + intermediate + Math.max(1, files);
+}
+
+function durationSeconds(duration) {
+  if (duration && typeof duration.toSeconds === 'function') return duration.toSeconds();
+  return Number.isFinite(duration) ? duration : 0;
+}
 
 function backendKey() {
   return crypto.createHash('sha256').update(getAntApiUrl() || '').digest('hex');
@@ -35,6 +57,33 @@ class SwarmPostageReadiness {
     return this.selectBestBatch(bytes, { requireCapacity: true, requestOptions: { timeout: READ_TIMEOUT_MS } });
   }
 
+  // What the approval card shows about postage before anything is uploaded:
+  // the batch this publication will use, its remaining time, and the share of
+  // its prepaid storage the upload is expected to take. Read-only; never buys.
+  async preview(ownerId, bytes, options = {}) {
+    const batchId = await this.select(ownerId, bytes);
+    if (!batchId) return { status: 'none' };
+    const local = await this.getBee().stamp.get(batchId, { timeout: READ_TIMEOUT_MS });
+    const ttlSeconds = Math.max(0, Math.floor(durationSeconds(local.duration)));
+    const chunks = estimateChunks(bytes, options);
+    // `amount` is the batch's per-chunk balance in PLUR. Without it the card
+    // shows the time left without a cost.
+    const amount = String(local.amount ?? '');
+    const estimatedCostPlur = /^\d{1,40}$/.test(amount) ? (BigInt(amount) * BigInt(chunks)).toString() : null;
+    const remainingBytes = local.remainingSize?.toBytes?.();
+    return {
+      status: 'ready',
+      batchId: String(batchId).toLowerCase(),
+      usable: local.usable === true,
+      ttlSeconds,
+      estimatedChunks: chunks,
+      ...(estimatedCostPlur !== null && { estimatedCostPlur }),
+      ...(Number.isFinite(remainingBytes) && { remainingBytes }),
+      expiry: ttlSeconds <= 0 ? 'expired' : ttlSeconds < TTL_CRITICAL_SECONDS ? 'critical'
+        : ttlSeconds < TTL_WARN_SECONDS ? 'soon' : 'ok',
+    };
+  }
+
   async inspect(batchId, bytes, firstConfirmedBlock) {
     const bee = this.getBee();
     const options = { timeout: READ_TIMEOUT_MS };
@@ -59,4 +108,4 @@ class SwarmPostageReadiness {
   }
 }
 
-module.exports = { SwarmPostageReadiness, SETTLEMENT_BLOCKS, backendKey };
+module.exports = { SwarmPostageReadiness, SETTLEMENT_BLOCKS, TTL_CRITICAL_SECONDS, TTL_WARN_SECONDS, backendKey, estimateChunks };

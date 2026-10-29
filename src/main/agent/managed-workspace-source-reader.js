@@ -3,11 +3,17 @@
 const fs = require('fs');
 const path = require('path');
 const { openedFilePath, readWindowsWorkspaceFile, checkedWorkspaceRoot } = require('./workspace-execution/opened-file-path');
-const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
+const { historyPathReason } = require('./workspace-history-policy');
 
+// Returns why a path is left out of a publication, or null. Content is checked
+// afterwards by publication-scan.js, which reports findings instead of dropping
+// files silently.
 function excludedPublicationPath(value) {
-  if (value === '.') return false;
-  return historyPathReason(value, true) || value.split('/').some(part => part.startsWith('.') && !['.', '.well-known'].includes(part));
+  if (value === '.') return null;
+  const reason = historyPathReason(value, true);
+  if (reason) return reason === 'secret file' ? 'Credential file' : reason === 'credential directory' ? 'Credential folder'
+    : reason === 'unsupported path' ? 'Unsupported path' : reason[0].toUpperCase() + reason.slice(1);
+  return value.split('/').some(part => part.startsWith('.') && !['.', '.well-known'].includes(part)) ? 'Hidden file or folder' : null;
 }
 
 const MAX_WORKSPACE_PUBLICATION_BYTES = 50 * 1024 * 1024;
@@ -248,7 +254,6 @@ class ManagedWorkspaceSourceReader {
           descriptor.workspacePath,
           MAX_WORKSPACE_PUBLICATION_BYTES, identity
         );
-        if (historyContainsSecret(bytes)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This file appears to contain credentials. Remove them before publishing.');
         const contentType = contentTypeForPath(descriptor.workspacePath);
         return Object.freeze({
           ...descriptor,
@@ -268,7 +273,7 @@ class ManagedWorkspaceSourceReader {
     const files = [];
     let totalBytes = 0;
     let entriesSeen = 0;
-    let excludedCount = 0;
+    const excluded = [];
     const selectedRoot = descriptor.workspacePath;
 
     const walk = async (relativeDirectory) => {
@@ -290,7 +295,15 @@ class ManagedWorkspaceSourceReader {
       const names = await fs.promises.readdir(checked.candidate);
       names.sort((left, right) => left.localeCompare(right));
       for (const name of names) {
-        if (excludedPublicationPath(relativeDirectory === '.' ? name : `${relativeDirectory}/${name}`)) { excludedCount++; continue; }
+        const excludedPath = relativeDirectory === '.' ? name : `${relativeDirectory}/${name}`;
+        const exclusion = excludedPublicationPath(excludedPath);
+        if (exclusion) {
+          excluded.push(Object.freeze({
+            path: selectedRoot === '.' ? excludedPath : path.posix.relative(selectedRoot, excludedPath),
+            reason: exclusion,
+          }));
+          continue;
+        }
         entriesSeen += 1;
         if (entriesSeen > MAX_WORKSPACE_PUBLICATION_ENTRIES) {
           throw sourceError(
@@ -328,7 +341,6 @@ class ManagedWorkspaceSourceReader {
           child,
           MAX_WORKSPACE_PUBLICATION_BYTES - totalBytes, identity
         );
-        if (historyContainsSecret(bytes)) { excludedCount++; continue; }
         totalBytes += bytes.byteLength;
         const collectionPath =
           selectedRoot === '.' ? child : path.posix.relative(selectedRoot, child);
@@ -354,7 +366,7 @@ class ManagedWorkspaceSourceReader {
     return Object.freeze({
       ...descriptor,
       bytes: totalBytes,
-      excludedCount,
+      excluded: Object.freeze(excluded),
       files: Object.freeze(files),
     });
   }

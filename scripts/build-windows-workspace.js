@@ -104,6 +104,42 @@ function dependentLoadFlags(bytes) {
 }
 
 function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+// Recipe files are hashed with CRLF folded to LF, like prebuilt-natives.js's
+// component key, so a build made on a core.autocrlf checkout (the Windows
+// runner that publishes the prebuilt) stays current on an LF checkout.
+function textDigest(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).digest('hex');
+}
+// Everything besides the pinned source that decides the helpers' bytes: this
+// script, the notices writer, the repository LICENSE it embeds and every
+// adapter file, by path and content.
+function recipeSha256() {
+  const files = [__filename, path.join(__dirname, 'windows-workspace-notices.js'), path.join(ROOT, 'LICENSE')];
+  const walk = directory => {
+    for (const item of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const filename = path.join(directory, item.name);
+      if (item.isDirectory()) walk(filename);
+      else files.push(filename);
+    }
+  };
+  walk(ADAPTER);
+  const hash = crypto.createHash('sha256');
+  for (const file of files) hash.update(`${textDigest(file)}  ${path.relative(ROOT, file).split(path.sep).join('/')}\n`);
+  return hash.digest('hex');
+}
+// The release workflow builds the helpers in their own job and stages them
+// here before packaging. Reuse such a build only while its manifest still
+// matches this recipe and every file it names; anything else is rebuilt.
+function currentBuild(output, arch) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
+    return manifest.version === 1 && manifest.backend === 'elevated' && manifest.arch === arch &&
+      manifest.revision === REVISION && manifest.archiveSha256 === ARCHIVE_SHA256 &&
+      manifest.adapterSha256 === digest(path.join(ADAPTER, 'src/main.rs')) && manifest.recipeSha256 === recipeSha256() &&
+      BINARIES.every(filename => manifest.binaries?.[filename] === digest(path.join(output, filename))) &&
+      ['CODEX-LICENSE.txt', 'CODEX-DEPENDENCIES.json', 'CODEX-DEPENDENCIES.txt'].every(filename => fs.existsSync(path.join(output, filename)));
+  } catch { return false; }
+}
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', windowsHide: true });
   if (result.error) throw result.error;
@@ -126,6 +162,12 @@ async function buildWindowsWorkspace(arch = process.arch) {
   if (process.platform !== 'win32') throw new Error('Build the Windows workspace helper on Windows');
   if (!['x64', 'arm64'].includes(arch)) throw new Error(`Unsupported Windows architecture: ${arch}`);
   if (arch !== process.arch) throw new Error('Cross-compiling the Windows sandbox is not qualified');
+  const output = path.join(ROOT, 'out/windows-workspace', arch);
+  if (currentBuild(output, arch)) {
+    console.log(`Windows workspace helper is current: ${output}`);
+    return output;
+  }
+  if (process.env.FREEDOM_WINDOWS_WORKSPACE_PREBUILT === '1') throw new Error(`No current prebuilt Windows workspace helper in ${output}`);
   const cache = path.join(ROOT, 'out/windows-workspace-source');
   fs.mkdirSync(cache, { recursive: true });
   const archive = path.join(cache, `${REVISION}.tar.gz`);
@@ -172,7 +214,6 @@ async function buildWindowsWorkspace(arch = process.arch) {
     '--bin', 'freedom-windows-workspace', '--bin', 'freedom-windows-sandbox-setup', '--bin', 'freedom-workspace-runner'], workspace);
   run(cargo, [`+${RUST_TOOLCHAIN}`, 'test', '--locked', '--release', ...cargoConfigArgs(arch), '-p', 'freedom-windows-workspace',
     '--bin', 'freedom-windows-workspace'], workspace);
-  const output = path.join(ROOT, 'out/windows-workspace', arch);
   fs.mkdirSync(output, { recursive: true });
   const hashes = {};
   for (const filename of BINARIES) {
@@ -185,12 +226,14 @@ async function buildWindowsWorkspace(arch = process.arch) {
   fs.copyFileSync(path.join(source, 'LICENSE'), path.join(output, 'CODEX-LICENSE.txt'));
   if (fs.existsSync(path.join(source, 'NOTICE'))) fs.copyFileSync(path.join(source, 'NOTICE'), path.join(output, 'CODEX-NOTICE.txt'));
   await writeWindowsNotices({ cargo, workspace, source, output, freedomRoot: ROOT, arch });
+  // Raw bytes, not textDigest(): windows-sandbox-runtime.js checks this against
+  // the adapter source packaged beside it, byte for byte.
   const adapterSha256 = digest(path.join(ADAPTER, 'src/main.rs'));
-  fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, adapterSha256, binaries: hashes }, null, 2)}\n`);
+  fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, adapterSha256, recipeSha256: recipeSha256(), binaries: hashes }, null, 2)}\n`);
   console.log(`Windows workspace helper built: ${output}`);
   return output;
 }
 
 module.exports = { buildWindowsWorkspace, BINARIES, REVISION, ARCHIVE_SHA256, WFP_IDENTITIES, REPLACEMENTS, RUST_TOOLCHAIN, patchSandbox,
-  cargoConfigArgs, restrictDllSearch, dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32 };
+  cargoConfigArgs, restrictDllSearch, dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32, recipeSha256, textDigest, currentBuild };
 if (require.main === module) buildWindowsWorkspace().catch(error => { console.error(error.message); process.exitCode = 1; });

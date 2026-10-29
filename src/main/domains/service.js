@@ -182,10 +182,15 @@ class DomainService {
     }
     if (input.intent === 'set_website') {
       const publication = await this.getPublication?.(input.publicationId, context);
+      // A private draft link never gets a name: it would make it public.
+      if (publication && (publication.target === 'draft' || publication.public !== true)) refuse('A private draft link cannot be connected to a name. Publish it publicly first; that is its own approval.');
       if (publication?.state !== 'completed' || publication.verified !== true || !publication.indexDocument) refuse('Choose a completed, retrieval-verified Swarm website publication ID.');
-      operation.reference = publication.reference;
+      // A publication with a stable address maps the name to that feed, so
+      // later updates of the address need no new transaction.
+      const stable = publication.stableAddress;
+      operation.reference = stable?.updated === true && /^[a-f0-9]{64}$/.test(stable.reference || '') ? stable.reference : publication.reference;
       operation.publicationId = publication.publicationId;
-      operation.record = { kind: 'contenthash', value: swarmContenthash(publication.reference) };
+      operation.record = { kind: 'contenthash', value: swarmContenthash(operation.reference) };
     } else if (input.intent === 'clear_website') operation.record = { kind: 'contenthash', value: '0x' };
     else if (input.intent === 'set_address') {
       let address;

@@ -45,6 +45,22 @@ async function resize(electronApp, width, height = 800) {
   })).toBe(true);
 }
 
+// Painted colour of one window pixel (CSS px), read back from the compositor:
+// a gradient's stops aren't visible through getComputedStyle.
+async function pixel(electronApp, x, y) {
+  return electronApp.evaluate(async ({ BrowserWindow }, point) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const image = await win.webContents.capturePage();
+    const scale = image.getSize().width / win.getContentSize()[0];
+    const at = (Math.round(point.y * scale) * image.getSize().width + Math.round(point.x * scale)) * 4;
+    const [b, g, r] = image.toBitmap().subarray(at, at + 3);
+    return [r, g, b];
+  }, { x: Math.round(x), y: Math.round(y) });
+}
+
+// Gradient stops rasterise a unit or two off a flat fill of the same colour.
+const samePaint = (a, b) => a.every((channel, i) => Math.abs(channel - b[i]) <= 2);
+
 async function hit(window, selector) {
   return window.locator(selector).evaluate(element => {
     const r = element.getBoundingClientRect();
@@ -83,6 +99,49 @@ test('floating conversation leaves the page interactive and shares narrow corner
   }
 });
 
+test('a short narrow window keeps the bottom sheet inside the page area, below Find and above downloads (#874)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  const geometry = () => window.evaluate(() => {
+    const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+    return { body: rect('.app-body'), panel: rect('#agent-sidebar .agent-sidebar-inner'), find: rect('#find-bar'), status: rect('#link-status') };
+  });
+  // The link-status pill shares the page hints' offset above the sheet.
+  await window.evaluate(() => {
+    const status = document.getElementById('link-status');
+    document.getElementById('link-status-url').textContent = 'https://example.com/a-hovered-link';
+    status.hidden = false;
+    status.classList.add('visible', 'link-status--right');
+  });
+  let id = 8100;
+  for (const [width, height] of [[600, 500], [600, 450], [400, 450], [360, 450]]) {
+    await resize(electronApp, width, height);
+    for (const download of [false, true]) {
+      await window.evaluate(async ({ download, id }) => {
+        const { handleDownloadUpdate } = await import('./lib/downloads-ui.js');
+        if (download) handleDownloadUpdate({ id, state: 'progressing', filename: 'A long downloaded document.pdf', received_bytes: 50, total_bytes: 100 });
+        document.getElementById('find-bar').hidden = false;
+      }, { download, id: id++ });
+      if (download) await expect.poll(() => hit(window, '[data-test="download-cancel"]')).toBe(true);
+      await expect.poll(() => hit(window, '#find-bar-input')).toBe(true);
+      await expect.poll(() => hit(window, '#address-input')).toBe(true);
+      // Too short for header and composer: the composer scrolls in the sheet.
+      await window.locator('#agent-run').scrollIntoViewIfNeeded();
+      await expect.poll(() => hit(window, '#agent-run')).toBe(true);
+      await expect.poll(() => hit(window, '#agent-sidebar-close')).toBe(true);
+      const { body, panel, find, status } = await geometry();
+      expect(panel.top).toBeGreaterThanOrEqual(body.top);
+      expect(panel.top).toBeGreaterThanOrEqual(find.bottom);
+      // Same 14px gap above the sheet with or without the download shelf.
+      expect(panel.top - status.bottom).toBeGreaterThanOrEqual(12);
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`short-${width}x${height}${download ? '-download' : ''}.png`) });
+      // Without Find the sheet may grow back towards the top, never past it.
+      await window.evaluate(() => { document.getElementById('find-bar').hidden = true; });
+      await expect.poll(async () => (await geometry()).panel.top).toBeGreaterThanOrEqual(body.top);
+      if (download) await window.locator('[data-test="download-close"]').click();
+    }
+  }
+});
+
 test('Agent-first compact overlays, address menus and fullscreen restore work in both themes', async ({ electronApp, window }, testInfo) => {
   await openConversation(electronApp, window);
   await resize(electronApp, 600);
@@ -93,10 +152,31 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
     await window.locator('#agent-session-sidebar-toggle').click();
     await expect(window.locator('body')).not.toHaveClass(/agent-session-sidebar-closed/);
+    // The title bar above an open overlay takes the overlay's colour across
+    // its whole width, not just the toggle's slot, then the conversation's
+    // past its edge (#879). Sample a row near the bar's top edge, above the
+    // chat title: on macOS the traffic-light slot pushes the title right
+    // across the overlay's edge, so mid-height would read glyphs, not paint.
+    const bar = await window.locator('#agent-first-titlebar').evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return { y: r.top + 3, right: r.right };
+    });
+    const sessions = window.locator('[data-test="agent-session-sidebar"]');
+    await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+    await expect(sessions).toHaveCSS('opacity', '1');
+    const sessionsEdge = await sessions.evaluate(el => el.getBoundingClientRect().right);
+    const sessionsSlot = await pixel(electronApp, 4, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, sessionsEdge - 20, bar.y), sessionsSlot)).toBe(true);
+    expect(samePaint(await pixel(electronApp, sessionsEdge + 20, bar.y), sessionsSlot)).toBe(false);
     await window.locator('#agent-workspace-sidebar-toggle').click();
     await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
     await expect(window.locator('#agent-page-surface')).toHaveCSS('transform', 'none');
+    const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
+    const workspaceSlot = await pixel(electronApp, bar.right - 2, bar.y);
+    await expect.poll(async () => samePaint(await pixel(electronApp, workspaceEdge + 20, bar.y), workspaceSlot)).toBe(true);
+    // Dark paints the conversation and the Workspace with the same --bg.
+    if (theme === 'light') expect(samePaint(await pixel(electronApp, workspaceEdge - 20, bar.y), workspaceSlot)).toBe(false);
     await expect(window.locator('#agent-task-pages')).toBeVisible();
     await expect.poll(() => hit(window, '#address-input')).toBe(true);
     await expect.poll(() => window.evaluate(() => {
@@ -121,6 +201,70 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
   await window.locator('#agent-mode-toggle').click();
   await window.locator('#agent-mode-browser').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+});
+
+test('Agent-first columns paint like Settings: page background, sidebar tint, accent selection (#879)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1280);
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();
+  // The fixture run is never saved, so give the list a selected row and a
+  // neighbour the way renderSessionSidebar() builds them.
+  await window.evaluate(() => {
+    const list = document.querySelector('.agent-session-list');
+    for (const active of [true, false]) {
+      const row = document.createElement('div');
+      row.className = active ? 'agent-session-row active' : 'agent-session-row';
+      row.dataset.test = active ? 'fixture-active-session' : 'fixture-session';
+      const select = document.createElement('button');
+      select.className = 'agent-session-select';
+      select.append(Object.assign(document.createElement('span'), { textContent: 'Fixture session' }));
+      row.append(select);
+      list.append(row);
+    }
+  });
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    const paint = await window.evaluate(() => {
+      const bg = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+      const probe = document.createElement('div');
+      document.body.append(probe);
+      const resolve = value => { probe.style.color = value; return getComputedStyle(probe).color; };
+      const tokens = {
+        bg: resolve('var(--bg)'),
+        toolbar: resolve('var(--toolbar)'),
+        accent: resolve('var(--accent)'),
+      };
+      probe.remove();
+      return {
+        ...tokens,
+        conversation: bg('#agent-sidebar'),
+        scroll: bg('.agent-workspace-scroll'),
+        composer: bg('.agent-composer-wrap'),
+        title: bg('.agent-first-titlebar-center'),
+        sessions: bg('[data-test="agent-session-sidebar"]'),
+        sessionsTitle: getComputedStyle(document.querySelector('.agent-first-titlebar-left'), '::before').backgroundColor,
+        active: bg('[data-test="fixture-active-session"]'),
+        idle: bg('[data-test="fixture-session"]'),
+        activeText: getComputedStyle(document.querySelector('[data-test="fixture-active-session"] .agent-session-select')).color,
+        idleText: getComputedStyle(document.querySelector('[data-test="fixture-session"] .agent-session-select')).color,
+      };
+    });
+    // Light: the conversation is the page's white, not the chrome's grey.
+    expect(paint.conversation).toBe(theme === 'light' ? paint.toolbar : paint.bg);
+    if (theme === 'light') expect(paint.conversation).toBe('rgb(255, 255, 255)');
+    for (const part of [paint.scroll, paint.composer, paint.title]) expect(part).toBe(paint.conversation);
+    // The sessions column is its own tint, and runs up into the title bar.
+    expect(paint.sessions).not.toBe(paint.conversation);
+    expect(paint.sessionsTitle).toBe(paint.sessions);
+    // The selected session carries an accent tint and accent-coloured title.
+    expect(paint.idle).toBe('rgba(0, 0, 0, 0)');
+    expect(paint.active).toMatch(/^color\(srgb|^rgba\(/);
+    expect(paint.active).not.toBe(paint.idle);
+    expect(paint.activeText).not.toBe(paint.idleText);
+    if (theme === 'dark') expect(paint.activeText).toBe(paint.accent);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`agent-first-columns-${theme}.png`) });
+  }
 });
 
 test('narrow chrome keeps the address field and native controls within the window', async ({ electronApp, window }) => {
@@ -253,6 +397,54 @@ test('ordinary tab menus exclude Claim and long Agent-first content scrolls with
   }
 });
 
+test('the full view title bar has a reduce button back to the panel on the same chat (#921)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  const reduce = window.locator('#agent-first-reduce');
+  const workspaceToggle = window.locator('#agent-workspace-sidebar-toggle');
+  await expect(reduce).toHaveAttribute('aria-label', 'Return to browser view');
+  await expect(reduce).toHaveAttribute('title', 'Return to browser view');
+  // Wide and compact layouts, with the Workspace open and closed: the button
+  // sits right of the workspace toggle, both reachable, in both themes.
+  for (const width of [1440, 900]) {
+    await resize(electronApp, width);
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      await window.locator('#agent-first-toggle').click();
+      await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+      await expect(window.locator('.agent-sidebar-header')).toBeHidden();
+      for (const closed of [false, true]) {
+        if (closed !== await window.locator('body').evaluate(b => b.classList.contains('agent-workspace-sidebar-closed'))) {
+          await workspaceToggle.click();
+        }
+        await expect.poll(() => hit(window, '#agent-first-reduce')).toBe(true);
+        await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
+        const layout = await window.evaluate(() => {
+          const rect = selector => document.querySelector(selector).getBoundingClientRect();
+          const reduce = rect('#agent-first-reduce');
+          const toggle = rect('#agent-workspace-sidebar-toggle');
+          const slot = rect('.agent-first-titlebar-right');
+          return { reduceLeft: reduce.left, reduceRight: reduce.right, toggleRight: toggle.right, slotRight: slot.right, reduceTop: reduce.top, toggleTop: toggle.top };
+        });
+        expect(layout.reduceLeft).toBeGreaterThanOrEqual(layout.toggleRight - 0.5);
+        expect(layout.reduceRight).toBeLessThanOrEqual(layout.slotRight + 0.5);
+        expect(Math.abs(layout.reduceTop - layout.toggleTop)).toBeLessThan(1);
+        await reduce.hover();
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`reduce-${width}-${theme}-${closed ? 'workspace-closed' : 'workspace-open'}.png`) });
+      }
+      await reduce.click();
+      await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+      await expect(window.locator('#agent-first-titlebar')).toBeHidden();
+      // Back in the panel it came from, on the same chat, with the expand
+      // button (the way back into full view) focused.
+      await expect(window.locator('#agent-sidebar')).toBeVisible();
+      await expect(window.locator('#agent-sidebar')).not.toHaveClass(/collapsed/);
+      await expect(window.locator('#agent-transcript')).toContainText('A short answer.');
+      await expect(window.locator('#agent-first-toggle')).toBeFocused();
+      await expect(window.locator('#agent-first-toggle')).toHaveAttribute('aria-pressed', 'false');
+    }
+  }
+});
+
 test('before-paint platform styling leaves Linux window controls and Agent pane toggles reachable', async ({ electronApp, window }) => {
   await openConversation(electronApp, window);
   await window.locator('#agent-first-toggle').click();
@@ -265,6 +457,7 @@ test('before-paint platform styling leaves Linux window controls and Agent pane 
     await expect.poll(() => hit(window, '#close-btn')).toBe(true);
     await expect.poll(() => hit(window, '#agent-session-sidebar-toggle')).toBe(true);
     await expect.poll(() => hit(window, '#agent-workspace-sidebar-toggle')).toBe(true);
+    await expect.poll(() => hit(window, '#agent-first-reduce')).toBe(true);
     await expect(window.locator('.agent-first-titlebar-left')).toHaveCSS('padding-left', '12px');
   }
   await window.locator('#agent-workspace-sidebar-toggle').click();
@@ -336,7 +529,80 @@ test('software rendering profiles long-chat scrolling over a playing video', asy
     // Timing is evidence, not a hardware-independent pass threshold.
     expect(metrics.frames).toBeGreaterThan(0);
     expect(metrics.movingBubbleBlur).toBe('none');
-    expect(metrics.composerBlur).toContain('blur');
+    // The floating cards are opaque, with no backdrop blur (#865).
+    expect(metrics.composerBlur).toBe('none');
     expect(metrics.scrollTop).toBe(0);
   } finally { await closeApp(app); }
+});
+
+test('the model thinking is a closed disclosure above its answer and opens on click', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1000);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const emit = event => win.webContents.send('agent:event', { runId: 'thinking-fixture', ...event });
+    emit({ type: 'run_started', userText: 'Explain Swarm postage stamps' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: '**Recalling how batches work**\n\nA batch is bought with BZZ; ' });
+    emit({ type: 'assistant_thinking_delta', text: 'each upload is stamped against it, and it expires when its balance runs out.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_000 });
+    emit({ type: 'assistant_text_delta', text: 'Here is a summary of **Swarm postage stamps**.\n\n' + Array(6).fill('You buy a batch with BZZ, and every upload is stamped against it.').join('\n\n') });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 3_000, actionCount: 0 });
+  });
+  const turn = window.locator('.agent-turn[data-run-id="thinking-fixture"]');
+  const thinking = turn.locator('.agent-thinking');
+  await expect(thinking).toHaveCount(1);
+  await expect(thinking).not.toHaveAttribute('open', '');
+  await expect(thinking.locator('summary')).toHaveText('Thinking · 2s');
+  await expect(thinking.locator('.agent-thinking-text')).toBeHidden();
+  // Above the answer, below the question.
+  expect(await turn.evaluate(section => {
+    const order = [...section.children];
+    return order.indexOf(section.querySelector('.agent-thinking')) < order.indexOf(section.querySelector('.agent-message-row.assistant')) &&
+      order.indexOf(section.querySelector('.agent-message-row.user')) < order.indexOf(section.querySelector('.agent-thinking'));
+  })).toBe(true);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await thinking.evaluate(el => { el.open = false; el.scrollIntoView({ block: 'start' }); });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`thinking-closed-${theme}.png`) });
+    await thinking.locator('summary').click();
+    await expect(thinking).toHaveAttribute('open', '');
+    await expect(thinking.locator('.agent-thinking-text')).toBeVisible();
+    await expect(thinking.locator('.agent-thinking-text strong')).toHaveText('Recalling how batches work');
+    await expect(thinking.locator('.agent-thinking-text')).toContainText('expires when its balance runs out.');
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`thinking-open-${theme}.png`) });
+  }
+  // Agent-first mode shows the same disclosure in its full-width transcript.
+  await window.locator('#agent-first-toggle').click();
+  await expect(thinking.locator('summary')).toBeVisible();
+  await expect(thinking.locator('.agent-thinking-text')).toBeVisible();
+  await thinking.evaluate(el => el.scrollIntoView({ block: 'start' }));
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('thinking-agent-first-light.png') });
+});
+
+test('the docked transcript scrolls below the header, never beneath it (#866)', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await resize(electronApp, 1000);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    const emit = event => win.webContents.send('agent:event', { runId: 'header-fixture', ...event });
+    emit({ type: 'run_started', userText: 'Explain Swarm postage stamps' });
+    emit({ type: 'assistant_text_delta', text: Array(30).fill('You buy a batch with BZZ, and every upload is stamped against it.').join('\n\n') });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  const scroller = window.locator('.agent-workspace-scroll');
+  await expect.poll(() => scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await scroller.evaluate(el => { el.scrollTop = 300; });
+    // The scroll viewport, and so every bubble and its scrollbar, starts
+    // exactly at the header's lower edge: not running up beneath its glass
+    // (negative) and not leaving a gap the page shows through (positive).
+    await expect.poll(() => window.evaluate(() => {
+      const header = document.querySelector('#agent-sidebar .agent-sidebar-header').getBoundingClientRect();
+      const viewport = document.querySelector('.agent-workspace-scroll').getBoundingClientRect();
+      return Math.round(viewport.top - header.bottom);
+    })).toBe(0);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`docked-header-${theme}.png`) });
+  }
 });
