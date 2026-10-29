@@ -349,6 +349,11 @@ a release with build provenance: `cored-v0.6.0` and later, and every
 temporary directory. Locally the SHA-256 pins stay the check; the download
 scripts take no Sigstore dependency.
 
+A freedom-ipfsd bump also changes `PINNED_IPFSD_VERSION` in
+`src/main/ipfs/ipfsd-pin.js`, in the same commit: main refuses a service
+whose `ipfs.hello` reports another `service_version` (freedom-core design
+0010). `src/main/ipfs/ipfsd-pin.test.js` fails while the two differ.
+
 ## See also
 
 - [`release-process.md`](release-process.md) § "Bundled binaries" — the

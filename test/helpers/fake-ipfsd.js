@@ -34,6 +34,7 @@ const {
   serviceKinds,
 } = require('../../src/main/core/frame');
 const { StreamSender } = require('./stream-sender');
+const { PINNED_IPFSD_VERSION } = require('../../src/main/ipfs/ipfsd-pin');
 
 const json = (value) => Buffer.from(JSON.stringify(value));
 
@@ -74,7 +75,8 @@ const CONFINEMENT = Object.freeze({
 
 const HELLO = Object.freeze({
   protocol: 1,
-  service_version: '0.1.0',
+  // The release main expects (`ipfsd-pin.js`): another is refused.
+  service_version: PINNED_IPFSD_VERSION,
   freedom_ipfs: { version: '0.4.6', git_commit: '0bb3e995a9f3da7d2df30939115cfee9b21bd212' },
   kind: 'persistent',
   network: { mode: 'direct' },

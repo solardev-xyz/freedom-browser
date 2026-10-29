@@ -47,6 +47,7 @@ const { app } = require('electron');
 const { ServiceClient, isObject } = require('../core/service-client');
 const { JSON_KINDS } = require('../core/frame');
 const { networkArg, reportsPolicy } = require('./ipfs-network');
+const { PINNED_IPFSD_VERSION } = require('./ipfsd-pin');
 
 const PROTOCOL_VERSION = 1;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
@@ -77,6 +78,20 @@ const STATS_WATCHDOG_MS = 20_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 /** Requests outstanding per process, retiring ones included (0007, Bounds). */
 const MAX_OUTSTANDING = 512;
+
+/**
+ * The `service_version` hello must report, or null for any: the pinned
+ * release's in a packaged build (`ipfsd-pin.js`). An unpackaged build checks
+ * the release `FREEDOM_IPFSD_RELEASE_TAG` fetched instead, and nothing for a
+ * binary of the developer's own (`FREEDOM_IPFSD_PATH`) or `latest`.
+ */
+function expectedServiceVersion({ packaged = Boolean(app?.isPackaged), env = process.env } = {}) {
+  if (packaged) return PINNED_IPFSD_VERSION;
+  if (env.FREEDOM_IPFSD_PATH) return null;
+  const tag = env.FREEDOM_IPFSD_RELEASE_TAG;
+  if (!tag) return PINNED_IPFSD_VERSION;
+  return tag.startsWith('ipfsd-v') ? tag.slice('ipfsd-v'.length) : null;
+}
 
 /** Dev overrides or downloaded binaries; packaged builds always use resources.
  * Outside Electron (a script such as the native smoke), `app` is undefined,
@@ -167,13 +182,15 @@ function validConfinement(confinement) {
 
 /**
  * The public part of a valid hello result from a `kind` process spawned
- * under `network`, or null: one that names another process or another
- * policy, or reports no confinement, is a fault.
+ * under `network`, or null: one that names another process, another policy
+ * or, with `version`, another release than main expects
+ * (`expectedServiceVersion`), or reports no confinement, is a fault.
  */
-function validHello(result, kind, network) {
+function validHello(result, kind, network, version = null) {
   if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   const { service_version: serviceVersion, freedom_ipfs: build } = result;
   if (typeof serviceVersion !== 'string' || !VERSION.test(serviceVersion)) return null;
+  if (version !== null && serviceVersion !== version) return null;
   if (!isObject(build) || typeof build.version !== 'string' || !VERSION.test(build.version)) {
     return null;
   }
@@ -215,7 +232,7 @@ function ipfsdService(kind, policy) {
       shell_version: client.shellVersion,
       frames: ['stream'],
     }),
-    validHello: (result) => validHello(result, kind, policy.network),
+    validHello: (result) => validHello(result, kind, policy.network, policy.serviceVersion),
     shutdownMethod: 'ipfs.shutdown',
     shutdownGraceMs: SHUTDOWN_GRACE_MS,
     fragments: () => false,
@@ -235,9 +252,15 @@ class IpfsdClient extends ServiceClient {
    *   that policy (`persistentArgs`, `ephemeralArgs`)
    * @param {object} [options.network] - the policy the first process is
    *   spawned under; `setNetwork` sets the next
+   * @param {string|null} [options.serviceVersion] - the release hello must
+   *   report (`expectedServiceVersion()`), or null for any
    */
   constructor(options) {
-    const policy = { network: options.network ?? null };
+    const policy = {
+      network: options.network ?? null,
+      serviceVersion:
+        options.serviceVersion === undefined ? expectedServiceVersion() : options.serviceVersion,
+    };
     super({
       ...options,
       args: policy.network ? options.argsFor(policy.network) : null,
@@ -310,6 +333,7 @@ class IpfsdClient extends ServiceClient {
 module.exports = {
   IpfsdClient,
   getIpfsdBinaryPath,
+  expectedServiceVersion,
   persistentArgs,
   ephemeralArgs,
   validHello,

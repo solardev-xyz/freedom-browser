@@ -14,6 +14,7 @@ const { app } = require('electron');
 const {
   IpfsdClient,
   ephemeralArgs,
+  expectedServiceVersion,
   getIpfsdBinaryPath,
   ipfsdService,
   persistentArgs,
@@ -55,9 +56,11 @@ const CONFINEMENT = {
   reasons: {},
   resolution: 'system',
 };
+const { PINNED_IPFSD_VERSION } = require('./ipfsd-pin');
+
 const HELLO = {
   protocol: 1,
-  service_version: '0.1.0',
+  service_version: PINNED_IPFSD_VERSION,
   freedom_ipfs: { version: '0.4.6', git_commit: '0bb3e995a9f3da7d2df30939115cfee9b21bd212' },
   kind: 'persistent',
   network: DIRECT,
@@ -243,6 +246,45 @@ test("a valid hello: its public part; the wrong process's or policy's, or a malf
     kind: 'ephemeral',
   });
   expect(() => ipfsdService('other', { network: DIRECT })).toThrow('unknown freedom-ipfsd process');
+});
+
+test('hello must report the release main expects: the pinned one when packaged', () => {
+  const other = { ...HELLO, service_version: '9.9.9' };
+  expect(validHello(other, 'persistent', DIRECT, PINNED_IPFSD_VERSION)).toBeNull();
+  expect(validHello(HELLO, 'persistent', DIRECT, PINNED_IPFSD_VERSION)).toEqual(HELLO);
+  // With no version to expect, any well-formed one.
+  expect(validHello(other, 'persistent', DIRECT, null)).toMatchObject({ service_version: '9.9.9' });
+  expect(
+    ipfsdService('persistent', {
+      network: DIRECT,
+      serviceVersion: PINNED_IPFSD_VERSION,
+    }).validHello(other)
+  ).toBeNull();
+
+  const env = (vars) => ({ ...vars });
+  expect(expectedServiceVersion({ packaged: true, env: env({}) })).toBe(PINNED_IPFSD_VERSION);
+  // A packaged build honours no override.
+  expect(expectedServiceVersion({ packaged: true, env: env({ FREEDOM_IPFSD_PATH: '/x' }) })).toBe(
+    PINNED_IPFSD_VERSION
+  );
+  expect(expectedServiceVersion({ packaged: false, env: env({}) })).toBe(PINNED_IPFSD_VERSION);
+  // A development build checks the release it fetched, and nothing for a
+  // binary of its own or `latest`.
+  expect(
+    expectedServiceVersion({
+      packaged: false,
+      env: env({ FREEDOM_IPFSD_RELEASE_TAG: 'ipfsd-v0.3.0' }),
+    })
+  ).toBe('0.3.0');
+  expect(
+    expectedServiceVersion({ packaged: false, env: env({ FREEDOM_IPFSD_RELEASE_TAG: 'latest' }) })
+  ).toBeNull();
+  expect(
+    expectedServiceVersion({ packaged: false, env: env({ FREEDOM_IPFSD_PATH: '/x' }) })
+  ).toBeNull();
+  // The client checks what it was given, or the expected one.
+  const client = new IpfsdClient({ argsFor: () => [], network: DIRECT, serviceVersion: '0.1.0' });
+  expect(client.policy.serviceVersion).toBe('0.1.0');
 });
 
 test('the confinement report: its public part, and what a log line carries', () => {

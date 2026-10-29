@@ -1006,7 +1006,7 @@ describe('health and diagnostics', () => {
       git_commit: HELLO.freedom_ipfs.git_commit,
       service: {
         name: 'freedom-ipfsd',
-        version: '0.1.0',
+        version: HELLO.service_version,
         kind: 'persistent',
         network: { mode: 'direct' },
         confinement: HELLO.confinement,
