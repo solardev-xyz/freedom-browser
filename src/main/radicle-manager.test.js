@@ -482,6 +482,72 @@ describe('re-key critical section (R-8)', () => {
     });
   }
 
+  // Round-2 review: a start queued behind a re-key whose stop was never
+  // proved must not start the add-on over the node that may still run.
+  test('a start queued behind a re-key whose stop failed is refused', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx, { shutdownFails: true });
+    await ctx.mod.startRadicle();
+    const IPC = require('../shared/ipc-channels');
+    ctx.mod.registerRadicleIpc();
+    const work = jest.fn(async () => 'did');
+
+    const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+    const starting = ctx.mod.startRadicle();
+    await expect(rekey).rejects.toThrow('shutdown failed');
+    await expect(starting).resolves.toEqual({ status: 'error', error: 'shutdown failed' });
+    // RADICLE_START, onboarding and the lifecycle controller all queue this
+    // same start; an alias change neither writes nor restarts.
+    await expect(ctx.handlers.get(IPC.RADICLE_START)()).resolves.toMatchObject({ status: 'error' });
+    await expect(ctx.mod.setNodeAlias('renamed')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NOT_STOPPED' },
+    });
+    expect(fs.existsSync(path.join(ctx.dataDir, 'config.json'))).toBe(false);
+    expect(work).not.toHaveBeenCalled();
+    expect(node.nativeAlive).toBe(true);
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'error', error: 'shutdown failed' });
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('an alias change whose stop fails writes nothing and restarts nothing', async () => {
+    const ctx = loadManager();
+    modelNode(ctx, { shutdownFails: true });
+    await ctx.mod.startRadicle();
+
+    await expect(ctx.mod.setNodeAlias('renamed')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NOT_STOPPED', message: 'shutdown failed' },
+    });
+    expect(fs.existsSync(path.join(ctx.dataDir, 'config.json'))).toBe(false);
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a later stop that proves the node stopped allows a start again', async () => {
+    const ctx = loadManager();
+    const failing = { shutdownFails: true };
+    const node = modelNode(ctx, failing);
+    await ctx.mod.startRadicle();
+    await expect(
+      ctx.mod.createRadicleLifecycle().withStopped(async () => 'did')
+    ).rejects.toThrow('shutdown failed');
+    await expect(ctx.mod.startRadicle()).resolves.toMatchObject({ status: 'error' });
+
+    // The next shutdown succeeds: the node is proved stopped, and may start.
+    ctx.embedded.shutdown.mockImplementation(async () => {
+      node.nativeAlive = false;
+      node.wrapperStarted = false;
+      return { ok: true };
+    });
+    await expect(ctx.mod.stopRadicle()).resolves.toEqual({ status: 'stopped', error: null });
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
   // Review repro 3: a start queued just before the re-key was stopped and
   // then forgotten.
   test('a start queued just before the re-key is stopped for it, then restarted', async () => {

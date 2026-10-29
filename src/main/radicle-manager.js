@@ -135,8 +135,25 @@ async function connectAndSeedDefault() {
   }
 }
 
+// A node whose stop was never proved (its shutdown rejected) may still be
+// running on the home: the add-on still counts it as started. Until a later
+// shutdown proves it stopped, only a stop (the recovery) may run; a start
+// or an alias change is refused, and the shutdown's error stays (R-8).
+function stopUnproved() {
+  return currentState !== STATUS.RUNNING && embedded.isStarted();
+}
+
+const UNPROVED_STOP_MESSAGE = 'The Radicle node did not stop; stop it again before starting it';
+
 async function startRadicleInternal() {
   if (currentState === STATUS.RUNNING) return getCurrentStatus();
+  if (stopUnproved()) {
+    // Before prepareRadicleDataDir() or embedded.start(): nothing touches
+    // the home a node may still hold.
+    if (currentState !== STATUS.ERROR) updateState(STATUS.ERROR, UNPROVED_STOP_MESSAGE);
+    log.warn('[Radicle] Not starting: the last stop was never proved');
+    return getCurrentStatus();
+  }
   if (isDisabledForProfile()) {
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Node disabled for this profile');
@@ -430,8 +447,15 @@ function setNodeAlias(alias) {
     ));
   }
   return enqueueLifecycle(async () => {
+    if (stopUnproved()) {
+      return failure('RADICLE_NOT_STOPPED', UNPROVED_STOP_MESSAGE);
+    }
     const restart = currentState === STATUS.RUNNING;
-    if (restart) await stopRadicleInternal();
+    if (restart) {
+      await stopRadicleInternal();
+      // A stop that wasn't proved: nothing is written or restarted.
+      if (stopUnproved()) return failure('RADICLE_NOT_STOPPED', lastError || UNPROVED_STOP_MESSAGE);
+    }
     const configPath = path.join(await prepareRadicleDataDir(), 'config.json');
     try {
       let config = {};
