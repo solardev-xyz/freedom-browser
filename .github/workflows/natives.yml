@@ -30,6 +30,7 @@ on:
       - .github/workflows/natives.yml
       - scripts/prebuilt-natives.js
       - scripts/fetch-arti.js
+      - scripts/patches/**
       - scripts/build-dictation-runtime.js
       - src/shared/dictation-runtime.js
       - src/main/agent/dictation-local-notices.txt

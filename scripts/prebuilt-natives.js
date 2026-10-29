@@ -40,7 +40,10 @@ const WINDOWS_ADAPTER = 'src/main/agent/workspace-execution/native/windows';
 const COMPONENTS = {
   arti: {
     targets: TARGETS,
-    inputs: () => ['scripts/fetch-arti.js'],
+    // The patch is applied on Windows only, but the key is per component, so
+    // editing it rebuilds every target (fetch-arti.test.js checks this list
+    // against fetch-arti.js's WINDOWS_CRATE_PATCHES).
+    inputs: () => ['scripts/fetch-arti.js', 'scripts/patches/saturating-time-0.5.0-windows.patch'],
     dir: (target) => `arti-bin/${target}`,
   },
   dictation: {

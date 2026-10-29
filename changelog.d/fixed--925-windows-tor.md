@@ -1,0 +1,2 @@
+- Tor now works on Windows ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925))
+  - The bundled Tor client never finished connecting on any Windows machine: a bug in one of its time libraries made it hang on the first network directory it read. Windows builds now carry the upstream fix until a Tor client release includes it
