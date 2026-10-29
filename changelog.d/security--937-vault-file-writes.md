@@ -1,0 +1,2 @@
+- The identity vault file is replaced safely and readable only by your own account ([#937](https://github.com/solardev-xyz/freedom-browser/issues/937))
+  - A crash or full disk during a password change keeps the old vault and password
