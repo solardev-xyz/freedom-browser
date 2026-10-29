@@ -266,9 +266,20 @@ function loadAntManagerModule(options = {}) {
     mkdirSync: jest.fn(),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
-    // Mode checks (private-files.js) see owner-only paths unless told otherwise.
-    statSync: jest.fn((target) => ({ mode: options.modes?.[target] ?? 0o600 })),
-    chmodSync: jest.fn(),
+  };
+  // private-files.js over the same fake fs: reads and writes land on
+  // fsMock, repairs are recorded.
+  const privateFiles = {
+    readPrivateFile: jest.fn((target) =>
+      fsMock.existsSync(target) ? Buffer.from(String(fsMock.readFileSync(target, 'utf-8'))) : null
+    ),
+    writePrivateFileSync: jest.fn((target, data) => fsMock.writeFileSync(target, data, { mode: 0o600 })),
+    repairPrivateFile: jest.fn(() => true),
+    repairPrivateDir: jest.fn(() => true),
+    ensurePrivateDir: jest.fn((dir) => {
+      if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    }),
   };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
@@ -304,6 +315,7 @@ function loadAntManagerModule(options = {}) {
         randomBytes,
       }),
       fs: () => fsMock,
+      [require.resolve('./private-files')]: () => privateFiles,
       http: () => ({
         get: httpGet,
       }),
@@ -364,6 +376,7 @@ function loadAntManagerModule(options = {}) {
     dataDir,
     execSync,
     fsMock,
+    privateFiles,
     registry,
     httpGet,
     ipcMain,
@@ -545,7 +558,6 @@ describe('ant-manager', () => {
       existsSync: (target) =>
         target === antBinPath || target === swarmKeyPath || target === configPath,
       configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
-      modes: { [keysDir]: 0o40755, [swarmKeyPath]: 0o100644, [configPath]: 0o100644 },
       portSequence: [false],
       httpResponse: (url) =>
         url === 'http://127.0.0.1:1633/health'
@@ -557,26 +569,12 @@ describe('ant-manager', () => {
     await ctx.mod.startAnt();
     await flushMicrotasks();
 
-    const chmods = ctx.fsMock.chmodSync.mock.calls;
-    if (process.platform === 'win32') {
-      expect(chmods).toEqual([]);
-    } else {
-      expect(chmods).toEqual(
-        expect.arrayContaining([
-          [configPath, 0o600],
-          [keysDir, 0o700],
-          [swarmKeyPath, 0o600],
-        ])
-      );
-      // The config is narrowed before the password is written into it.
-      const narrowed = ctx.fsMock.chmodSync.mock.invocationCallOrder[
-        chmods.findIndex(([file]) => file === configPath)
-      ];
-      const written = ctx.fsMock.writeFileSync.mock.invocationCallOrder[
-        ctx.fsMock.writeFileSync.mock.calls.findIndex(([file]) => file === configPath)
-      ];
-      expect(narrowed).toBeLessThan(written);
-    }
+    // The keys an older build left are repaired, the config is read
+    // without following a link and written through the private writer.
+    expect(ctx.privateFiles.repairPrivateDir).toHaveBeenCalledWith(keysDir);
+    expect(ctx.privateFiles.repairPrivateFile).toHaveBeenCalledWith(swarmKeyPath);
+    expect(ctx.privateFiles.readPrivateFile).toHaveBeenCalledWith(configPath);
+    expect(ctx.privateFiles.writePrivateFileSync).toHaveBeenCalledWith(configPath, expect.any(String));
 
     const stopPromise = ctx.mod.stopAnt();
     await jest.advanceTimersByTimeAsync(0);

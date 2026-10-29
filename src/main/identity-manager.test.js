@@ -1066,3 +1066,41 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
   });
 });
+
+describe('identity file repair at startup (K-3)', () => {
+  const posixTest = process.platform === 'win32' ? test.skip : test;
+  let root;
+  let envSnapshot;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-repair-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = path.join(root, 'identity');
+    fs.mkdirSync(process.env.FREEDOM_IDENTITY_DATA);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  posixTest('narrows an older 0644 vault and credential, and leaves a planted link alone', () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    const vaultPath = path.join(dir, 'identity-vault.json');
+    fs.writeFileSync(vaultPath, '{"version":1}');
+    fs.chmodSync(vaultPath, 0o644);
+    const outside = path.join(root, 'outside.txt');
+    fs.writeFileSync(outside, 'x');
+    fs.chmodSync(outside, 0o644);
+    fs.symlinkSync(outside, path.join(dir, 'quick-unlock.dat'));
+
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.repairIdentityFiles();
+
+    expect(fs.statSync(vaultPath).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
+  });
+});
