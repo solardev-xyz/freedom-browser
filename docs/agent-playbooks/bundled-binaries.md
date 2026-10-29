@@ -31,6 +31,24 @@ links there rather than restating it.
   Linux x64/arm64, Windows x64). Unlike the others it is **compiled from
   crates.io**, host-only, not downloaded. Fetch script `scripts/fetch-arti.js`;
   pin `PINNED_ARTI_VERSION` (and `MIN_RUST_VERSION`) in that script.
+  **The Windows build is patched.** Arti 2.7.0's `saturating-time` 0.5.0 loops
+  forever on Windows (its `find_limit` never sees `None`, because Windows
+  `SystemTime` ticks in 100 ns and a smaller step returns the same value), so
+  Tor never bootstraps there
+  ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925)). Until
+  a released Arti carries upstream's fix
+  ([MR 4520](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/4520)),
+  the Windows build downloads the `arti` and `saturating-time` crates from
+  crates.io, checks both against sha256s pinned in the script
+  (`ARTI_CRATE_SHA256`, `WINDOWS_CRATE_PATCHES`), applies
+  `scripts/patches/saturating-time-0.5.0-windows.patch` (upstream's diff,
+  verbatim) and builds with `cargo install --path … --locked` plus a
+  `[patch.crates-io]` override. macOS and Linux build the pristine crate. The
+  patch file is a recipe input of the prebuilt Arti, and a guard test in
+  `scripts/fetch-arti.test.js` fails the moment `PINNED_ARTI_VERSION` moves,
+  so the bump has to decide whether the patch can go
+  ([#926](https://github.com/solardev-xyz/freedom-browser/issues/926), which
+  stays open until it is removed).
 
 Adjacent but out of scope here: **Myotis** (the experimental Ethereum light
 client addon, `scripts/fetch-myotis.js`, `npm run myotis:download`) follows the
@@ -314,8 +332,8 @@ Same shape, different pin location:
 - **Arti** — bump `PINNED_ARTI_VERSION`, and `MIN_RUST_VERSION` in the same
   commit when the release raises its MSRV. Arti is compiled, so its bump has
   extra steps (CLI/`arti.toml` key changes read against
-  `src/main/tor-manager.js`, and `cargoFeatures()`'s Windows `static-sqlite`
-  feature) — those are written up in
+  `src/main/tor-manager.js`, `cargoFeatures()`'s Windows `static-sqlite`
+  feature, and the Windows `saturating-time` patch) — those are written up in
   [`release-process.md` § Bundled binaries](release-process.md), not repeated
   here.
 
@@ -324,7 +342,10 @@ each pin the sha256 of the release's own `SHA256SUMS` asset in-repo
 (`PINNED_SHA256SUMS_DIGEST` / `PINNED_SHA256SUMS`), because that file ships
 from the same mutable GitHub release as the binaries and proves nothing on its
 own. freedom-ipfs skips the sums file and pins each asset's sha256 directly.
-Arti pins a crates.io version only — cargo does the fetching and verification.
+Arti pins a crates.io version, and cargo does the fetching and verification;
+the patched Windows build additionally pins the sha256 of the `arti` and
+`saturating-time` crates it downloads itself, because `cargo install --path`
+no longer checks the top-level crate.
 All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
@@ -341,7 +362,8 @@ tag and, per component, the recipe key it was built from and each archive's
 sha256. `scripts/prebuilt-natives.js` owns the component list.
 
 - **Recipe key**: the sha256 of every file that decides a component's bytes
-  (`scripts/fetch-arti.js`; `scripts/build-dictation-runtime.js` with
+  (`scripts/fetch-arti.js` and its Windows patch under `scripts/patches/`;
+  `scripts/build-dictation-runtime.js` with
   `src/shared/dictation-runtime.js` and the notices; `scripts/build-windows-workspace.js`,
   its notices writer, the repository `LICENSE` those notices embed and the adapter under `src/main/agent/workspace-execution/native/windows/`),
   line endings normalised.
