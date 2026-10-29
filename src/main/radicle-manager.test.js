@@ -344,3 +344,41 @@ test('IPC pushes native seed progress back to the requesting internal page', asy
   );
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
+
+describe('re-key lifecycle hooks (R-8)', () => {
+  test('stop waits for the node and reports it was running; start brings it back', async () => {
+    const ctx = loadManager();
+    await ctx.mod.startRadicle();
+    let started = true;
+    ctx.embedded.isStarted.mockImplementation(() => started);
+    ctx.embedded.shutdown.mockImplementation(async () => {
+      started = false;
+      return { ok: true };
+    });
+    const lifecycle = ctx.mod.createRadicleLifecycle();
+
+    await expect(lifecycle.stop()).resolves.toBe(true);
+    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.getCurrentStatus().status).toBe('stopped');
+
+    await lifecycle.start();
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(2);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a node that is still up after the stop is an error, so nothing is wiped', async () => {
+    const ctx = loadManager();
+    await ctx.mod.startRadicle();
+    ctx.embedded.isStarted.mockReturnValue(true);
+    ctx.embedded.shutdown.mockRejectedValue(new Error('shutdown failed'));
+
+    await expect(ctx.mod.createRadicleLifecycle().stop()).rejects.toThrow('did not stop');
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a node that was not running reports false', async () => {
+    const ctx = loadManager();
+    await expect(ctx.mod.createRadicleLifecycle().stop()).resolves.toBe(false);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+});

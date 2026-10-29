@@ -436,6 +436,33 @@ function setNodeAlias(alias) {
   });
 }
 
+/**
+ * Hooks for identity re-injection (identity-manager setRadicleLifecycle,
+ * R-8): `stop` stops the embedded node through the lifecycle queue and
+ * waits for its thread; it resolves to whether the node was running, and
+ * throws if the node is still up afterwards, so its data is never wiped
+ * under it. `start` starts it again.
+ */
+function createRadicleLifecycle(deps = {}) {
+  const stopFn = deps.stopRadicle || stopRadicle;
+  const startFn = deps.startRadicle || startRadicle;
+  const isStarted = deps.isStarted || (() => embedded.isStarted());
+  return {
+    stop: async () => {
+      const wasRunning =
+        isStarted() || currentState === STATUS.RUNNING || currentState === STATUS.STARTING;
+      await stopFn();
+      if (isStarted()) {
+        throw new Error('The Radicle node did not stop, so its data was not reset');
+      }
+      return wasRunning;
+    },
+    start: async () => {
+      await startFn();
+    },
+  };
+}
+
 function registerRadicleIpc() {
   ipcMain.handle(IPC.RADICLE_START, () => startRadicle());
   ipcMain.handle(IPC.RADICLE_STOP, () => stopRadicle());
@@ -463,6 +490,7 @@ function registerRadicleIpc() {
 
 module.exports = {
   registerRadicleIpc,
+  createRadicleLifecycle,
   startRadicle,
   stopRadicle,
   getRadicleDataPath,

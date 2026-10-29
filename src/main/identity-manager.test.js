@@ -886,7 +886,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle'), 'key');
   }
 
-  test('force reinjection reports Radicle but NOT Bee/IPFS for restart', async () => {
+  test('force reinjection reports no node for restart: both restart themselves (R-8)', async () => {
     // Bee/Radicle are injected. A stale IPFS identity metadata file from older
     // builds must be ignored because native freedom-ipfs now reports ephemeral
     // identity mode instead of a prepared durable PeerID.
@@ -899,16 +899,66 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 
     const results = await mgr.injectAllIdentities('FreedomBrowser', true);
 
-    expect(results.needsRestart).not.toContain('bee');
-    expect(results.needsRestart).not.toContain('ipfs');
-    expect(results.needsRestart).toEqual(expect.arrayContaining(['radicle']));
+    expect(results.needsRestart).toEqual([]);
     expect(results.bee.reinjected).toBe(true);
+    expect(results.radicle.reinjected).toBe(true);
     expect(results.ipfs).toMatchObject({
       mode: 'ephemeral',
       active: false,
       peerId: null,
       stableIdentitySupported: false,
     });
+  });
+
+  test('a Radicle re-key stops the node and waits before wiping, then starts it (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+
+    const steps = [];
+    let finishStop;
+    mgr.setRadicleLifecycle({
+      stop: () =>
+        new Promise((resolve) => {
+          steps.push('stop requested');
+          finishStop = () => {
+            steps.push('stopped');
+            resolve(true);
+          };
+        }),
+      start: async () => {
+        steps.push(`started (storage ${fs.existsSync(storage) ? 'kept' : 'wiped'})`);
+      },
+    });
+
+    const injecting = mgr.injectRadicleIdentity('Alias');
+    for (let i = 0; i < 50 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
+    // The node has not stopped yet: nothing is wiped.
+    expect(fs.existsSync(storage)).toBe(true);
+    finishStop();
+    await injecting;
+    expect(steps).toEqual(['stop requested', 'stopped', 'started (storage wiped)']);
+  });
+
+  test('a Radicle re-key whose node will not stop wipes nothing (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const start = jest.fn();
+    mgr.setRadicleLifecycle({
+      stop: async () => {
+        throw new Error('The Radicle node did not stop, so its data was not reset');
+      },
+      start,
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('did not stop');
+    expect(fs.existsSync(storage)).toBe(true);
+    expect(start).not.toHaveBeenCalled();
   });
 
   test('first-time injection reports nothing for restart', async () => {

@@ -50,6 +50,24 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
+// Optional Radicle node lifecycle hooks, wired by the main process (see
+// index.js). The embedded node writes node/, cobs/ and storage/ while it
+// runs, so a re-key must stop it, and wait for it, before wiping them (R-8).
+// `stop` resolves to whether the node was running and throws if it is still
+// running afterwards; `start` brings it back up as the new identity.
+let radicleLifecycle = { stop: null, start: null };
+
+/**
+ * Register Radicle node lifecycle hooks used around identity (re)injection.
+ * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>}} hooks
+ */
+function setRadicleLifecycle(hooks = {}) {
+  radicleLifecycle = {
+    stop: typeof hooks.stop === 'function' ? hooks.stop : null,
+    start: typeof hooks.start === 'function' ? hooks.start : null,
+  };
+}
+
 // Cached derived keys. Valid only while the vault is unlocked: every lock
 // path clears them (an explicit lock, the vault's inactivity auto-lock, a
 // vault delete), and every reader goes through getDerivedKeys(), which also
@@ -762,25 +780,44 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVa
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
-  // routing db, etc.) becomes invalid. Remove stale state directories.
-  const staleDirs = ['node', 'cobs', 'storage'];
-  for (const dir of staleDirs) {
-    if (await removePathWithRetry(path.join(dataDir, dir))) {
-      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+  // Stop the node, and wait for it, before touching its data (R-8). A stop
+  // that fails leaves the data alone: the error ends the injection here.
+  const radicleWasRunning = radicleLifecycle.stop ? await radicleLifecycle.stop() === true : false;
+
+  let did;
+  try {
+    keysForEpoch(epoch);
+
+    // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
+    // routing db, etc.) becomes invalid. Remove stale state directories.
+    const staleDirs = ['node', 'cobs', 'storage'];
+    for (const dir of staleDirs) {
+      if (await removePathWithRetry(path.join(dataDir, dir))) {
+        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      }
+    }
+
+    // Read from the cache only now, after every await.
+    const { radicleKey } = keysForEpoch(epoch);
+    did = identity.injectRadicleKey(
+      dataDir,
+      radicleKey.privateKey,
+      radicleKey.publicKey,
+      alias
+    );
+
+    injectedNodes.radicle = true;
+  } finally {
+    // Bring a node it stopped back up: as the new identity, or as the old
+    // one if injection stopped before the key was written.
+    if (radicleWasRunning && radicleLifecycle.start) {
+      try {
+        await radicleLifecycle.start();
+      } catch (err) {
+        console.warn('[IdentityManager] Radicle start hook failed after injection:', err.message);
+      }
     }
   }
-
-  // Read from the cache only now, after every await.
-  const { radicleKey } = keysForEpoch(epoch);
-  const did = identity.injectRadicleKey(
-    dataDir,
-    radicleKey.privateKey,
-    radicleKey.publicKey,
-    alias
-  );
-
-  injectedNodes.radicle = true;
 
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
@@ -833,8 +870,10 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     const wasInjected = isRadicleIdentityInjected();
     results.radicle = await injectRadicleIdentity(radicleAlias, epoch);
     if (wasInjected && force) {
+      // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
+      // hook stops the node before the wipe and starts it after), so it is
+      // not in needsRestart: the renderer would restart it a second time.
       results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
     }
   } else {
     // Get DID
@@ -1874,6 +1913,7 @@ module.exports = {
 
   // Identity injection
   setBeeLifecycle,
+  setRadicleLifecycle,
   closeVaultAuthority,
   removeStaleBeeDirs,
   wipeStaleBeeState,
