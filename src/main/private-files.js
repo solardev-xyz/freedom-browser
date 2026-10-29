@@ -38,7 +38,8 @@
  *        and swap it back between the check and the open. It can read the
  *        keys directly anyway. Handle-relative I/O there needs native code:
  *        #963.
- *  - Files are opened with O_NOFOLLOW | O_NONBLOCK | O_NOCTTY, so a FIFO or
+ *  - Files are opened with O_NOFOLLOW (O_NOFOLLOW_ANY on macOS) |
+ *    O_NONBLOCK | O_NOCTTY, so a FIFO or
  *    device at the name cannot block or act on the open. The name is
  *    lstat'ed first and must not be a link (Windows has no O_NOFOLLOW: an
  *    ordinary open there follows a link to its target). The opened
@@ -80,6 +81,10 @@ const NO_WAIT = POSIX ? fs.constants.O_NONBLOCK | (fs.constants.O_NOCTTY || 0) :
 // macOS 11+, <sys/fcntl.h>: no symbolic link anywhere in the path. Node has
 // no constant for it and passes open flags to open(2) unchanged.
 const NOFOLLOW_ANY = DARWIN ? (fs.constants.O_NOFOLLOW_ANY ?? 0x20000000) : 0;
+// The no-link flag for every open: O_NOFOLLOW_ANY on macOS, which refuses
+// the final component too (and is EINVAL together with O_NOFOLLOW,
+// xnu vn_open_auth), O_NOFOLLOW elsewhere.
+const NO_LINKS = DARWIN ? NOFOLLOW_ANY : NOFOLLOW;
 
 // Linux's /proc/self/fd/<fd> binding. Off in tests that check a Linux
 // without it refuses.
@@ -209,7 +214,7 @@ class PrivateDir {
     if (seen.isSymbolicLink()) throw new UnsafePrivatePathError(target, 'it is a symbolic link');
     let fd;
     try {
-      fd = fs.openSync(entry, O_RDONLY | NOFOLLOW | NOFOLLOW_ANY | NO_WAIT);
+      fd = fs.openSync(entry, O_RDONLY | NO_LINKS | NO_WAIT);
     } catch (err) {
       if (err.code === 'ENOENT') return null;
       if (err.code === 'ELOOP') throw linkRefusal(target);
@@ -281,7 +286,7 @@ class PrivateDir {
     const temp = this.entry(`.${name}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
     let fd;
     try {
-      fd = fs.openSync(temp, O_WRONLY | O_CREAT | O_EXCL | NOFOLLOW | NOFOLLOW_ANY, mode);
+      fd = fs.openSync(temp, O_WRONLY | O_CREAT | O_EXCL | NO_LINKS, mode);
     } catch (err) {
       if (err.code === 'ELOOP') throw linkRefusal(path.join(this.path, name));
       throw err;
@@ -402,7 +407,9 @@ function openDirectory(
   try {
     fd = fs.openSync(
       entryPath,
-      O_RDONLY | DIRECTORY | NO_WAIT | NOFOLLOW_ANY | (trusted ? 0 : NOFOLLOW)
+      // A trusted directory may be reached through links, except on macOS,
+      // where its path was resolved and carries none.
+      O_RDONLY | DIRECTORY | NO_WAIT | (trusted && !DARWIN ? 0 : NO_LINKS)
     );
   } catch (err) {
     if (err.code === 'ENOENT' && missingOk) return null;
