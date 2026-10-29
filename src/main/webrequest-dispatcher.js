@@ -28,6 +28,10 @@
  *   listener signature for these events has no callback). Useful for
  *   per-request lifecycle cleanup (e.g. x402's request-context map).
  *
+ * Every handler is called as `handler(details, { session })`, `session`
+ * being the Electron session the dispatcher was attached to: webRequest's
+ * details don't name it, and a request id is only unique within one.
+ *
  * Handlers may be async; the dispatcher awaits each before calling the
  * next, preserving the "first match wins" semantics across handler I/O.
  * Filtering is the handler's responsibility — the dispatcher attaches
@@ -83,12 +87,12 @@ function registerWebRequestHandler(event, name, handler, { failClosed = false } 
   handlers[event].push({ name, handler, failClosed });
 }
 
-function makeOnBeforeRequestListener(eventHandlers) {
+function makeOnBeforeRequestListener(eventHandlers, context) {
   return async (details, callback) => {
     for (const { name, handler, failClosed } of eventHandlers) {
       let result;
       try {
-        result = await handler(details);
+        result = await handler(details, context);
       } catch (err) {
         log.error(`[dispatcher:${name}] onBeforeRequest threw: ${err.message}`);
         if (failClosed) {
@@ -106,14 +110,14 @@ function makeOnBeforeRequestListener(eventHandlers) {
   };
 }
 
-function makeHeaderChainListener(eventHandlers, eventName, headersKey) {
+function makeHeaderChainListener(eventHandlers, eventName, headersKey, context) {
   return async (details, callback) => {
     let headers = details[headersKey];
     let statusLine = details.statusLine;
     for (const { name, handler } of eventHandlers) {
       let result;
       try {
-        result = await handler({ ...details, [headersKey]: headers, statusLine });
+        result = await handler({ ...details, [headersKey]: headers, statusLine }, context);
       } catch (err) {
         log.error(`[dispatcher:${name}] ${eventName} threw: ${err.message}`);
         continue;
@@ -143,11 +147,11 @@ function makeHeaderChainListener(eventHandlers, eventName, headersKey) {
 // a Promise per handler per request for no observable benefit. Sync
 // handlers stay on the synchronous stack; thenables get a fire-and-
 // forget `.catch` so async errors still surface.
-function makeNotificationListener(eventHandlers, eventName) {
+function makeNotificationListener(eventHandlers, eventName, context) {
   return (details) => {
     for (const { name, handler } of eventHandlers) {
       try {
-        const result = handler(details);
+        const result = handler(details, context);
         if (result && typeof result.then === 'function') {
           result.catch((err) => log.error(`[dispatcher:${name}] ${eventName} threw: ${err.message}`));
         }
@@ -174,33 +178,34 @@ function makeNotificationListener(eventHandlers, eventName) {
  */
 function attachWebRequestDispatcher(session, options = {}) {
   const exclude = typeof options.exclude === 'function' ? options.exclude : null;
+  const context = Object.freeze({ session });
   const select = (event) =>
     exclude ? handlers[event].filter((entry) => !exclude(entry.name)) : handlers[event];
 
   const onBeforeRequest = select('onBeforeRequest');
   if (onBeforeRequest.length > 0) {
-    session.webRequest.onBeforeRequest(makeOnBeforeRequestListener(onBeforeRequest));
+    session.webRequest.onBeforeRequest(makeOnBeforeRequestListener(onBeforeRequest, context));
   }
   const onBeforeSendHeaders = select('onBeforeSendHeaders');
   if (onBeforeSendHeaders.length > 0) {
     session.webRequest.onBeforeSendHeaders(
-      makeHeaderChainListener(onBeforeSendHeaders, 'onBeforeSendHeaders', 'requestHeaders')
+      makeHeaderChainListener(onBeforeSendHeaders, 'onBeforeSendHeaders', 'requestHeaders', context)
     );
   }
   const onHeadersReceived = select('onHeadersReceived');
   if (onHeadersReceived.length > 0) {
     session.webRequest.onHeadersReceived(
-      makeHeaderChainListener(onHeadersReceived, 'onHeadersReceived', 'responseHeaders')
+      makeHeaderChainListener(onHeadersReceived, 'onHeadersReceived', 'responseHeaders', context)
     );
   }
   const onCompleted = select('onCompleted');
   if (onCompleted.length > 0) {
-    session.webRequest.onCompleted(makeNotificationListener(onCompleted, 'onCompleted'));
+    session.webRequest.onCompleted(makeNotificationListener(onCompleted, 'onCompleted', context));
   }
   const onErrorOccurred = select('onErrorOccurred');
   if (onErrorOccurred.length > 0) {
     session.webRequest.onErrorOccurred(
-      makeNotificationListener(onErrorOccurred, 'onErrorOccurred')
+      makeNotificationListener(onErrorOccurred, 'onErrorOccurred', context)
     );
   }
 }

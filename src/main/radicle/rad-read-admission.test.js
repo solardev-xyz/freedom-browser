@@ -150,4 +150,28 @@ describe('rad: read admission (R-3)', () => {
     await flush();
     expect(admission.stats().running).toBe(0);
   });
+
+  test('a running read is told when it has ended: caller gone, or out of time', async () => {
+    const admission = createRadReadAdmission();
+    const caller = new AbortController();
+    const seen = [];
+    const goneRead = admission.run('a', caller.signal, (work) => {
+      seen.push(work);
+      return deferred().promise;
+    });
+    const slowRead = admission.run('b', undefined, (work) => {
+      seen.push(work);
+      return deferred().promise;
+    });
+    await flush();
+    expect(seen.map((work) => work.aborted)).toEqual([false, false]);
+
+    caller.abort();
+    await expect(goneRead).rejects.toMatchObject({ name: 'AbortError' });
+    expect(seen.map((work) => work.aborted)).toEqual([true, false]);
+
+    jest.advanceTimersByTime(LIMITS.RUN_MS);
+    await expect(slowRead).rejects.toMatchObject({ status: 504 });
+    expect(seen[1].aborted).toBe(true);
+  });
 });

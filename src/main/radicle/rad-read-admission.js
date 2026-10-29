@@ -18,7 +18,10 @@
  *    be cancelled, so its slot stays taken until the add-on returns: the
  *    concurrency bound holds even for reads the page has given up on;
  *  - a read whose page goes away (navigation, tab or window closed: the
- *    request's AbortSignal) leaves the queue without reaching the add-on.
+ *    request's AbortSignal) leaves the queue without reaching the add-on;
+ *  - a running read is handed a work signal, aborted once its caller has
+ *    gone or its run time is up. The read starts no native call after
+ *    that, and it keeps its slot only until the call it's in returns.
  *
  * Response size is capped by the caller (radicle-api-protocol.js).
  */
@@ -80,7 +83,8 @@ function createRadReadAdmission({ limits = LIMITS, setTimer = setTimeout, clearT
    * Run `read` once a slot is free.
    * @param {string} key - the requester (session and page origin)
    * @param {AbortSignal|undefined} signal - the request's signal
-   * @param {() => Promise<T>} read
+   * @param {(work: AbortSignal) => Promise<T>} read - given a signal that
+   *   aborts when the read has ended for its caller (abort or run timeout)
    * @returns {Promise<T>}
    * @throws {RadReadRefused} busy (503) or too slow (504)
    * @throws {RadReadAborted} the page went away first
@@ -99,14 +103,19 @@ function createRadReadAdmission({ limits = LIMITS, setTimer = setTimeout, clearT
       const start = () => {
         running += 1;
         let runTimer = null;
-        const onAbort = () => finish(reject, new RadReadAborted());
+        const ended = new AbortController();
+        const onAbort = () => {
+          ended.abort();
+          finish(reject, new RadReadAborted());
+        };
         signal?.addEventListener?.('abort', onAbort, { once: true });
         runTimer = setTimer(() => {
+          ended.abort();
           finish(reject, new RadReadRefused(504, 'Radicle read timed out'));
         }, limits.RUN_MS);
         let work;
         try {
-          work = Promise.resolve(read());
+          work = Promise.resolve(read(ended.signal));
         } catch (err) {
           work = Promise.reject(err);
         }

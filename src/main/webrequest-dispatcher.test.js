@@ -53,6 +53,40 @@ describe('attachWebRequestDispatcher', () => {
   });
 });
 
+describe('the session each handler is told', () => {
+  // webRequest's details don't name the session, and request ids are only
+  // unique within one (#948): every handler gets the session it serves.
+  test('every event passes { session } to its handlers', async () => {
+    const seen = [];
+    for (const event of [
+      'onBeforeRequest',
+      'onBeforeSendHeaders',
+      'onHeadersReceived',
+      'onCompleted',
+      'onErrorOccurred',
+    ]) {
+      registerWebRequestHandler(event, `seen-${event}`, (_details, context) => {
+        seen.push([event, context.session]);
+        return null;
+      });
+    }
+    const one = makeSessionMock();
+    const two = makeSessionMock();
+    attachWebRequestDispatcher(one);
+    attachWebRequestDispatcher(two);
+    for (const session of [one, two]) {
+      const { webRequest } = session;
+      await webRequest.onBeforeRequest.mock.calls[0][0]({ url: 'https://a/' }, () => {});
+      await webRequest.onBeforeSendHeaders.mock.calls[0][0]({ url: 'https://a/', requestHeaders: {} }, () => {});
+      await webRequest.onHeadersReceived.mock.calls[0][0]({ url: 'https://a/', responseHeaders: {} }, () => {});
+      webRequest.onCompleted.mock.calls[0][0]({ url: 'https://a/' });
+      webRequest.onErrorOccurred.mock.calls[0][0]({ url: 'https://a/' });
+    }
+    expect(seen.filter(([, session]) => session === one)).toHaveLength(5);
+    expect(seen.filter(([, session]) => session === two)).toHaveLength(5);
+  });
+});
+
 describe('registerWebRequestHandler', () => {
   test('rejects unknown events', () => {
     expect(() => registerWebRequestHandler('onWhatever', 'a', () => null))

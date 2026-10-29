@@ -262,3 +262,100 @@ describe('buildRepoMeta shape', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('read bounds (R-3)', () => {
+  // The fake addon's reads come from `global.__radicleFake`, so a test can
+  // hold one and see which run.
+  function withScriptedAddon(run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    const scripted = ['issue', 'treeAt', 'blobAt', 'repoInfo']
+      .map((name) => `${name}: (...args) => global.__radicleFake.${name}(...args),`)
+      .join('');
+    fs.writeFileSync(fake, `module.exports = {${REQUIRED_FAKE_EXPORTS}${scripted}};`);
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    return jest
+      .isolateModulesAsync(async () => run(require('./radicle-embedded')))
+      .finally(() => {
+        delete global.__radicleFake;
+        delete process.env.FREEDOM_RADICLE_ADDON;
+        jest.resetModules();
+        fs.rmSync(dir, { recursive: true, force: true });
+      });
+  }
+
+  test('a read that has ended starts no addon call, and parses nothing', () =>
+    withScriptedAddon(async (embedded) => {
+      const ended = new AbortController();
+      ended.abort();
+      global.__radicleFake = { issue: jest.fn(async () => '{"id":"x"}') };
+      await expect(
+        embedded.withReadBounds({ signal: ended.signal }, () => embedded.issue('rad:zAbc', 'x'))
+      ).rejects.toBeInstanceOf(embedded.ReadEnded);
+      expect(global.__radicleFake.issue).not.toHaveBeenCalled();
+
+      // Ended while the call ran: its reply is dropped unparsed.
+      const running = new AbortController();
+      global.__radicleFake.issue = jest.fn(async () => {
+        running.abort();
+        return '{"id":"x"}';
+      });
+      const parse = jest.spyOn(JSON, 'parse');
+      try {
+        await expect(
+          embedded.withReadBounds({ signal: running.signal }, () => embedded.issue('rad:zAbc', 'x'))
+        ).rejects.toBeInstanceOf(embedded.ReadEnded);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
+    }));
+
+  test('a composed read stops between its addon calls (readme: tree, then blob)', () =>
+    withScriptedAddon(async (embedded) => {
+      const ended = new AbortController();
+      global.__radicleFake = {
+        treeAt: jest.fn(async () => {
+          ended.abort();
+          return JSON.stringify({ entries: [{ name: 'README.md', kind: 'blob' }] });
+        }),
+        blobAt: jest.fn(async () => '{"content":"x"}'),
+      };
+      await expect(
+        embedded.withReadBounds({ signal: ended.signal }, () =>
+          embedded.readmeAtRaw('rad:zAbc', 'r')
+        )
+      ).rejects.toBeInstanceOf(embedded.ReadEnded);
+      expect(global.__radicleFake.treeAt).toHaveBeenCalledTimes(1);
+      expect(global.__radicleFake.blobAt).not.toHaveBeenCalled();
+    }));
+
+  test('a reply over the cap is refused before it is parsed, parsed or raw', () =>
+    withScriptedAddon(async (embedded) => {
+      const reply = JSON.stringify({ id: 'x', body: 'y'.repeat(100) });
+      global.__radicleFake = {
+        issue: async () => reply,
+        blobAt: async () => reply,
+      };
+      const parse = jest.spyOn(JSON, 'parse');
+      try {
+        const capped = { maxReplyChars: reply.length - 1 };
+        await expect(
+          embedded.withReadBounds(capped, () => embedded.issue('rad:zAbc', 'x'))
+        ).rejects.toBeInstanceOf(embedded.ReplyTooLarge);
+        await expect(
+          embedded.withReadBounds(capped, () => embedded.blobAtRaw('rad:zAbc', 'r', 'f'))
+        ).rejects.toBeInstanceOf(embedded.ReplyTooLarge);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
+      // At the cap, and outside any bounds, the reply is served.
+      await expect(
+        embedded.withReadBounds({ maxReplyChars: reply.length }, () =>
+          embedded.issue('rad:zAbc', 'x')
+        )
+      ).resolves.toMatchObject({ id: 'x' });
+      await expect(embedded.issue('rad:zAbc', 'x')).resolves.toMatchObject({ id: 'x' });
+    }));
+});
