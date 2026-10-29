@@ -84,9 +84,12 @@ preload guards already kept web pages away from these channels.
 - **Custom protocols:** no `bypassCSP` anywhere, and no `file:` interception.
   `web3:` is registered without service workers. Upstream URLs are built from
   a fixed base plus a validated host (hex ref / CID / RID / name regex), so
-  userinfo, ports and `..` in a page URL can't redirect the fetch. Redirects
-  are manual. `rad:` is GET/HEAD-only with a segment decoder that rejects `.`,
-  `..` and encoded separators. `radapi:` and `web3:` are gated by frame
+  userinfo, ports and `..` in a page URL can't redirect the fetch. `bzz:`,
+  `ipfs:` and `ipns:` also refuse a path that climbs out of its content root
+  once `%2E`/`%2F`/`%5C` are decoded, or that holds a `\` (#814,
+  `src/main/lib/gateway-path.js`). Redirects are manual. `rad:` is
+  GET/HEAD-only with a segment decoder that rejects `.`, `..` and encoded
+  separators. `radapi:` and `web3:` are gated by frame
   attribution in `onBeforeRequest`, not by `Origin`/CORS.
 - **`shell.openExternal`** has one call site (`external-protocol.js:273`),
   behind a scheme denylist, a user-gesture check and a per-site prompt.

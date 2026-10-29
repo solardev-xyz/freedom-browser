@@ -23,7 +23,7 @@ const {
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { stripPageStateHeaders } = require('./lib/gateway-response-headers');
-const { redactForLog } = require('./private/private-log-context');
+const { redactForLog, errorCodeForLog } = require('./private/private-log-context');
 const { rewriteGatewayLocation } = require('./lib/gateway-location');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
@@ -1007,8 +1007,11 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
   } catch (err) {
     releaseHandle();
     if (err?.name === 'AbortError') throw err;
+    // The code only: an error's text can name the URL or path asked for.
+    const code = errorCodeForLog(err);
     log.warn(
-      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
+      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}` +
+        (code ? ` (${code})` : '')
     );
     return new Response(
       JSON.stringify({ code: 502, message: 'external IPFS gateway request failed' }),
