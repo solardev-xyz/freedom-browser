@@ -1,0 +1,1 @@
+- Private windows can no longer seed or sync Radicle repositories from the repository viewer ([#953](https://github.com/solardev-xyz/freedom-browser/issues/953))
