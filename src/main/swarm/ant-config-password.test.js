@@ -1,8 +1,10 @@
 /**
  * K-3: config.yaml's `password:` decoded as Ant's serde_yaml 0.9 reads it,
  * so a password moved into the keychain is the one Ant would have used.
- * Expected values follow the YAML spec's scalar rules (and agree with the
- * `yaml` package's YAML 1.1 parse of the same lines).
+ * Expected values follow the YAML spec's scalar rules. The fixture records
+ * what Ant's own parser makes of a wider corpus (serde_yaml 0.9.34 into
+ * Ant v0.5.77's BeeConfig): wherever readConfigPassword decodes a password,
+ * or finds none, it must say the same.
  */
 const { readConfigPassword, yamlPasswordScalar } = require('./ant-config-password');
 
@@ -98,4 +100,27 @@ describe('yamlPasswordScalar', () => {
     expect(yamlPasswordScalar(value)).toBe(scalar);
     expect(readConfigPassword(`password: ${scalar}\n`)).toEqual({ kind: 'value', value });
   });
+});
+
+describe('readConfigPassword against Ant\'s serde_yaml (fixture)', () => {
+  const fixture = require('./__fixtures__/ant-config-password.serde-yaml.json');
+
+  test('the fixture is the pinned parser', () => {
+    expect(fixture.serdeYaml).toBe('0.9.34+deprecated');
+    expect(fixture.cases.length).toBeGreaterThan(80);
+  });
+
+  test.each(fixture.cases.map((c) => [JSON.stringify(c.text), c]))(
+    '%s: a decoded password, or none, is what Ant reads',
+    (_label, { text, written, serdeYaml }) => {
+      const mine = readConfigPassword(text);
+      if (mine.kind === 'value') expect(serdeYaml).toEqual({ kind: 'value', value: mine.value });
+      if (mine.kind === 'none') expect(serdeYaml).toEqual({ kind: 'none' });
+      // What Freedom writes back is read as exactly the password it wrote.
+      if (written !== undefined) {
+        expect(serdeYaml).toEqual({ kind: 'value', value: written });
+        expect(mine).toEqual({ kind: 'value', value: written });
+      }
+    }
+  );
 });
