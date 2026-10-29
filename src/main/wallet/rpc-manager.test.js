@@ -138,3 +138,44 @@ describe('the shared RPC key store (K-5 review)', () => {
     expect(JSON.parse(fs.readFileSync(outside, 'utf8')).alchemy.apiKey).toBe('planted');
   });
 });
+
+describe('a FIFO at the key file name (K-5)', () => {
+  let userDataDir;
+  beforeEach(() => {
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-fifo-'));
+  });
+  afterEach(() => {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  posixTest('the startup repair and a read refuse it at once, never waiting for a writer', () => {
+    const fifo = path.join(userDataDir, 'rpc-api-keys.json');
+    require('child_process').execFileSync('mkfifo', [fifo]);
+    // In a child, with electron's app stubbed: an open that waited for a
+    // writer would hang this worker.
+    const script = `
+      const Module = require('module');
+      const load = Module._load;
+      Module._load = function (request, ...rest) {
+        if (request === 'electron') return { app: { getPath: () => process.argv[1] } };
+        return load.call(this, request, ...rest);
+      };
+      const store = require(${JSON.stringify(require.resolve('./rpc-api-key-store'))});
+      const out = { repair: store.repairRpcApiKeys() };
+      try { store.readRpcApiKeys(); out.read = 'read'; } catch (err) { out.read = err.message; }
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const result = require('child_process').spawnSync(
+      process.execPath,
+      ['-e', script, userDataDir],
+      { encoding: 'utf8', timeout: 15000 }
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      repair: false,
+      read: expect.stringContaining('not a regular file'),
+    });
+  });
+});
