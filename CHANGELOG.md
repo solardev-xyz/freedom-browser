@@ -78,6 +78,7 @@ All notable changes to Freedom will be documented in this file.
 - Websites see a plain Chrome User-Agent, not one naming Freedom and its version ([#471](https://github.com/solardev-xyz/freedom-browser/issues/471))
 - A dApp in a background tab can't act under the site in the visible tab ([#764](https://github.com/solardev-xyz/freedom-browser/issues/764)):
   - Approval prompts name the site that is asking
+- A background tab can no longer load a dweb page into the tab you are viewing ([#969](https://github.com/solardev-xyz/freedom-browser/issues/969))
 - A dApp can't swap the request on an open wallet prompt ([#807](https://github.com/solardev-xyz/freedom-browser/issues/807))
 - A page opened during a connect prompt doesn't get the previous page's account ([#808](https://github.com/solardev-xyz/freedom-browser/issues/808))
 - A look-alike ENS primary name gets the untrusted-name warning on a send ([#756](https://github.com/solardev-xyz/freedom-browser/pull/756))
