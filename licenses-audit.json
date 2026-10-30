@@ -452,7 +452,7 @@
     },
     {
       "name": "@corpus-core/colibri-stateless",
-      "version": "3.0.2",
+      "version": "3.0.3",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
@@ -465,7 +465,13 @@
       "bundled_with_app": true,
       "linking_or_integration": "js-import",
       "risk": "green",
-      "issues": []
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Up to 3.0.2 the shipped c4w.wasm compiled in src/chains/op/verifier/op_zstd.{c,h}, which carried a PolyForm-Noncommercial-1.0.0 header despite the package's MIT licence (corpus-core/colibri-stateless#401). 3.0.3 relicenses that wrapper to MIT (#403), so everything in the package is MIT. Its LICENSE now names corpus.core GmbH instead of the .NET Foundation template line.",
+          "recommended_fix": null
+        }
+      ]
     },
     {
       "name": "@ensdomains/content-hash",
