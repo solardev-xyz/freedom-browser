@@ -2041,6 +2041,39 @@ describe('tabs ui behavior', () => {
       expect(mod.getTabs()).toHaveLength(3);
     });
 
+    // A background page navigating itself to `freedom://settings` reaches
+    // here with its own tab's webview (#969). The open must not pull the user
+    // away from the tab they are reading: a new Settings tab opens hidden, and
+    // an existing one is routed without being switched to.
+    test("a background tab's open lands in the background", async () => {
+      const mod = await setup();
+      const bgTab = mod.createTab('https://background.example/', { background: true });
+      const activeTab = mod.getActiveTab();
+      expect(activeTab.id).not.toBe(bgTab.id);
+
+      expect(mod.routeInternalPageNavigation('settings', null, bgTab.webview)).toBe(true);
+      const settingsTab = mod.getTabs().at(-1);
+      expect(settingsTab.url).toBe('freedom://settings');
+      expect(mod.getActiveTab().id).toBe(activeTab.id);
+    });
+
+    test("a background tab's open routes an existing Settings tab without focusing it", async () => {
+      jest.useFakeTimers();
+      const mod = await setup();
+      const onLoadTarget = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      const settingsTab = mod.createTab('freedom://settings');
+      settingsTab.url = SETTINGS_URL;
+      const bgTab = mod.createTab('https://background.example/', { background: true });
+      const readingTab = mod.createTab('https://reading.example/');
+      expect(mod.getActiveTab().id).toBe(readingTab.id);
+
+      expect(mod.routeInternalPageNavigation('settings', 'rpc', bgTab.webview)).toBe(true);
+      expect(mod.getActiveTab().id).toBe(readingTab.id);
+      jest.runOnlyPendingTimers();
+      expect(onLoadTarget).toHaveBeenCalledWith('freedom://settings/rpc', null, settingsTab.webview);
+    });
+
     // A new-tab page is not a singleton: `freedom://home` typed in the address
     // bar (or clicked in links.html) navigates the tab you are on, as it did
     // before the singleton rule reached `loadTarget` — it must not strand that
