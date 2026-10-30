@@ -2,6 +2,101 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Freedom Agent: browse and work on projects with your own AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Off by default, turned on under Settings > AI
+  - ChatGPT, Meta Muse and Claude subscriptions, API keys or Ollama
+  - Publishing to Swarm checks the files for secrets and keys first
+  - Dictation, also on-device with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5
+- `.eth`, `.wei` and `.gwei` registration and renewal through Agent ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
+- Open without gateway for eth.limo, eth.link and bzz.link pages ([#70](https://github.com/solardev-xyz/freedom-browser/issues/70)):
+  - Offered from a pill in the address bar
+  - Set as the default under Settings > Networks > Name Resolution
+- History menu with Recently Closed and Recently Visited ([#584](https://github.com/solardev-xyz/freedom-browser/issues/584))
+- `Cmd+1` to `Cmd+9` tab shortcuts, `Ctrl` on Windows and Linux ([#717](https://github.com/solardev-xyz/freedom-browser/issues/717))
+- `Cmd+Enter` to publish text in `freedom://publish` ([#720](https://github.com/solardev-xyz/freedom-browser/issues/720))
+- `swarm_readData` in `window.swarm`, to read a whole upload by its reference ([#722](https://github.com/solardev-xyz/freedom-browser/issues/722))
+
+### Changed
+
+- Full screen hides the tabs, toolbars and sidebar ([#78](https://github.com/solardev-xyz/freedom-browser/issues/78))
+- Default bookmarks feature Swarm apps such as freemap.eth and swarm.eth ([#120](https://github.com/solardev-xyz/freedom-browser/issues/120)):
+  - A bookmarks bar you have changed keeps its own list
+- Publishing to Swarm and paid uploads finish sooner ([#830](https://github.com/solardev-xyz/freedom-browser/pull/830))
+- Node versions in the Nodes menu drop the "v" prefix ([#612](https://github.com/solardev-xyz/freedom-browser/issues/612))
+
+### Fixed
+
+- Tor connects on Windows ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925))
+- Ethereum transactions no longer stall at the base fee and get dropped ([#749](https://github.com/solardev-xyz/freedom-browser/issues/749))
+- A pending Ethereum transaction no longer fails wallet and page reads beside it ([#750](https://github.com/solardev-xyz/freedom-browser/issues/750))
+- A valid ENS name no longer shows as not found when public RPCs fail ([#656](https://github.com/solardev-xyz/freedom-browser/pull/656))
+- Buying storage no longer reports "failed" after a successful swap ([#614](https://github.com/solardev-xyz/freedom-browser/issues/614))
+- The Swarm card in the wallet's Nodes tab shows the node wallet's real balance ([#928](https://github.com/solardev-xyz/freedom-browser/issues/928))
+- The first scan of a used Swarm node wallet takes seconds again, not an hour ([#600](https://github.com/solardev-xyz/freedom-browser/pull/600))
+- The Swarm node no longer grows by several GB of memory past a 512 MB cache ([#615](https://github.com/solardev-xyz/freedom-browser/issues/615))
+- The Swarm error page says why content didn't load ([#618](https://github.com/solardev-xyz/freedom-browser/issues/618)):
+  - "Page not found" within seconds for a missing page in a site
+  - Content not on the network yet is retried, with a countdown
+- Pages inside some Swarm sites load on a fresh node ([#623](https://github.com/solardev-xyz/freedom-browser/pull/623))
+- Live streams on Swarm keep playing ([#727](https://github.com/solardev-xyz/freedom-browser/pull/727))
+- Swarm feed reads and writes at an empty index no longer fail now and then ([#619](https://github.com/solardev-xyz/freedom-browser/pull/619))
+- Apps see `window.swarm` and `window.radicle` from their first script ([#683](https://github.com/solardev-xyz/freedom-browser/issues/683))
+- IPFS sites no longer fail when one routing service is unreachable ([#700](https://github.com/solardev-xyz/freedom-browser/issues/700))
+- A `bzz://` or `ipfs://` address Freedom can't open is no longer sent to the search engine ([#621](https://github.com/solardev-xyz/freedom-browser/issues/621))
+- Sites can save to a file you picked in their save dialog ([#671](https://github.com/solardev-xyz/freedom-browser/issues/671)):
+  - Listed under the site's permissions until you quit
+- Dark sites such as x.com fill the window with their own background ([#923](https://github.com/solardev-xyz/freedom-browser/issues/923))
+- The page context menu opens at the cursor on a zoomed page ([#731](https://github.com/solardev-xyz/freedom-browser/issues/731))
+- Links opened from another app or the command line open in a new tab ([#597](https://github.com/solardev-xyz/freedom-browser/issues/597))
+- Switching to an open profile on GNOME (Wayland) brings its window forward ([#142](https://github.com/solardev-xyz/freedom-browser/issues/142))
+- A `--profile-dir` profile asks before using a Swarm node on port 1633 ([#218](https://github.com/solardev-xyz/freedom-browser/issues/218))
+- The Nodes menu says when Tor is turned off for the profile ([#377](https://github.com/solardev-xyz/freedom-browser/issues/377))
+- Myotis no longer times out during a busy startup ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
+- Ad blocking uses a Freedom update's newer bundled filter lists ([#643](https://github.com/solardev-xyz/freedom-browser/pull/643))
+- Set Up Publishing works on a profile with no identity yet ([#719](https://github.com/solardev-xyz/freedom-browser/issues/719))
+- The Storage screen shows a spinner, not a blank page, while batches load ([#595](https://github.com/solardev-xyz/freedom-browser/issues/595))
+- Settings > About Freedom no longer shows "Last checked" during an update ([#594](https://github.com/solardev-xyz/freedom-browser/issues/594))
+- Internal pages look and behave more like each other ([#606](https://github.com/solardev-xyz/freedom-browser/issues/606))
+- A private window's menus and prompts stay readable in the light theme ([#609](https://github.com/solardev-xyz/freedom-browser/issues/609))
+- Addresses and hashes use a fixed-width font on macOS instead of Times ([#616](https://github.com/solardev-xyz/freedom-browser/issues/616))
+- Download cards stay readable beside an open wallet ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
+- Upgrades from before 0.8.0 delete the old Kubo IPFS data, up to several GB ([#101](https://github.com/solardev-xyz/freedom-browser/issues/101))
+- Smaller downloads and installs ([#576](https://github.com/solardev-xyz/freedom-browser/issues/576))
+
+### Security
+
+- Websites see a plain Chrome User-Agent, not one naming Freedom and its version ([#471](https://github.com/solardev-xyz/freedom-browser/issues/471))
+- A dApp in a background tab can't act under the site in the visible tab ([#764](https://github.com/solardev-xyz/freedom-browser/issues/764))
+- A dApp can't swap the request on an open wallet prompt ([#807](https://github.com/solardev-xyz/freedom-browser/issues/807))
+- A page opened during a connect prompt doesn't get the previous page's account ([#808](https://github.com/solardev-xyz/freedom-browser/issues/808))
+- A look-alike ENS primary name gets the untrusted-name warning on a send ([#756](https://github.com/solardev-xyz/freedom-browser/pull/756))
+- `.onion` addresses no longer fall back to your normal DNS after Tor restarts ([#809](https://github.com/solardev-xyz/freedom-browser/issues/809))
+- Pages can't make Freedom look up hostnames with DNS prefetch hints ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
+- The Publish page uploads only files you chose in the file picker ([#660](https://github.com/solardev-xyz/freedom-browser/issues/660))
+- Radicle seeds can't inject markup into the repository browser ([#661](https://github.com/solardev-xyz/freedom-browser/issues/661))
+- Local Radicle data is served only to Freedom's own repository viewer ([#662](https://github.com/solardev-xyz/freedom-browser/issues/662))
+- A malicious Ethereum peer can't forge Myotis's verified balances or contract state ([#725](https://github.com/solardev-xyz/freedom-browser/pull/725))
+- Malicious Swarm peers or uploads can't freeze the Swarm node or fill its memory ([#729](https://github.com/solardev-xyz/freedom-browser/pull/729))
+- A malicious IPFS provider can't exhaust Freedom's memory ([#659](https://github.com/solardev-xyz/freedom-browser/issues/659))
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.61 to 0.5.77
+  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.5 to 0.4.6
+  - [Myotis](https://github.com/biafra23/myotis) 0.1.14 to 0.1.18
+- Updated runtime dependencies:
+  - Electron 44.7.0 to 45.1.0 (Chromium 152.0.7977.130 to 156.0.8078.49, Node 24.21.0 to 24.22.1)
+  - `@corpus-core/colibri-stateless` 3.0.2 to 3.0.3
+  - `@ethersphere/bee-js` 13.1.0 to 13.2.0
+  - `@ghostery/adblocker` 2.18.2 to 2.20.3
+  - `@ledgerhq/hw-app-eth` 7.10.0 to 7.11.1
+  - `@safe-global/protocol-kit` 8.0.7 to 8.0.11
+  - `@x402/core` 2.28.0 to 2.29.0
+  - `@x402/evm` 2.28.0 to 2.29.0
+  - `electron-updater` 6.8.9 to 6.8.11
+
 ## [0.8.7] - 2026-10-08
 
 ### Added
