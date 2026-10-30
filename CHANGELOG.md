@@ -6,14 +6,14 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Freedom Agent: your own AI model, at work in your tabs, nodes and wallet ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
-  - Off by default, turned on under Settings > AI
-  - ChatGPT, Meta Muse and Claude subscriptions, API keys or Ollama
-  - Reads, clicks, types and scrolls in pages, and uses their WebMCP tools
-  - Opens, switches and closes tabs, and uploads and downloads files
-  - Checks, starts and stops the Swarm, IPFS, Radicle, Tor and Myotis nodes
-  - Sends wallet funds and publishes to Swarm only once you approve
-  - Edits, runs and previews local projects
+- Freedom Agent: an AI assistant that operates the browser ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Off by default, under Settings > AI
+  - ChatGPT, Meta Muse, Claude, API keys or Ollama
+  - Reads and operates pages, including their WebMCP tools
+  - Opens and closes tabs, uploads and downloads files
+  - Starts and stops the Swarm, IPFS, Radicle, Tor and Myotis nodes
+  - Sends funds and publishes to Swarm after your approval
+  - Edits and runs local projects
   - Dictation, also on-device with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5
 - `.eth`, `.wei` and `.gwei` registration and renewal through Agent ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
 - Open without gateway for eth.limo, eth.link and bzz.link pages ([#70](https://github.com/solardev-xyz/freedom-browser/issues/70)):
@@ -91,7 +91,7 @@ All notable changes to Freedom will be documented in this file.
 - GitHub import refuses `.` and `..` as a repository name ([#636](https://github.com/solardev-xyz/freedom-browser/issues/636))
 - dApps no longer see the proof server's address in a failed chain read ([#681](https://github.com/solardev-xyz/freedom-browser/issues/681))
 - A malicious Ethereum peer can't forge Myotis's verified balances, nonces or contract state ([#725](https://github.com/solardev-xyz/freedom-browser/pull/725))
-- The Swarm node holds up against malicious peers and uploads ([#729](https://github.com/solardev-xyz/freedom-browser/pull/729)):
+- Malicious peers and uploads can no longer disrupt the Swarm node ([#729](https://github.com/solardev-xyz/freedom-browser/pull/729)):
   - A crafted upload can't freeze it
   - Forged copies of a page are rejected
   - Made-up peer addresses or stalled transfers can't fill its memory
