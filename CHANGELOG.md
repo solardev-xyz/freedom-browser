@@ -48,6 +48,7 @@ All notable changes to Freedom will be documented in this file.
 - IPFS sites no longer fail when one routing service is unreachable ([#700](https://github.com/solardev-xyz/freedom-browser/issues/700))
 - A `bzz://` or `ipfs://` address Freedom can't open is no longer sent to the search engine ([#621](https://github.com/solardev-xyz/freedom-browser/issues/621))
 - Sites can save to a file you picked in their save dialog ([#671](https://github.com/solardev-xyz/freedom-browser/issues/671)):
+  - System folders and your home folder itself stay refused
   - Listed under the site's permissions until you quit
 - Dark sites such as x.com fill the window with their own background ([#923](https://github.com/solardev-xyz/freedom-browser/issues/923))
 - The page context menu opens at the cursor on a zoomed page ([#731](https://github.com/solardev-xyz/freedom-browser/issues/731))
@@ -70,18 +71,30 @@ All notable changes to Freedom will be documented in this file.
 ### Security
 
 - Websites see a plain Chrome User-Agent, not one naming Freedom and its version ([#471](https://github.com/solardev-xyz/freedom-browser/issues/471))
-- A dApp in a background tab can't act under the site in the visible tab ([#764](https://github.com/solardev-xyz/freedom-browser/issues/764))
+- A dApp in a background tab can't act under the site in the visible tab ([#764](https://github.com/solardev-xyz/freedom-browser/issues/764)):
+  - Approval prompts name the site that is asking
 - A dApp can't swap the request on an open wallet prompt ([#807](https://github.com/solardev-xyz/freedom-browser/issues/807))
 - A page opened during a connect prompt doesn't get the previous page's account ([#808](https://github.com/solardev-xyz/freedom-browser/issues/808))
 - A look-alike ENS primary name gets the untrusted-name warning on a send ([#756](https://github.com/solardev-xyz/freedom-browser/pull/756))
 - `.onion` addresses no longer fall back to your normal DNS after Tor restarts ([#809](https://github.com/solardev-xyz/freedom-browser/issues/809))
-- Pages can't make Freedom look up hostnames with DNS prefetch hints ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
-- The Publish page uploads only files you chose in the file picker ([#660](https://github.com/solardev-xyz/freedom-browser/issues/660))
-- Radicle seeds can't inject markup into the repository browser ([#661](https://github.com/solardev-xyz/freedom-browser/issues/661))
+- Pages can't make Freedom look up hostnames with DNS prefetch hints ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Reasoning: these lookups skipped the proxy, so a hostname could leak data
+- The Publish page uploads only files you chose in the file picker ([#660](https://github.com/solardev-xyz/freedom-browser/issues/660)):
+  - Windows device names and paths Windows would silently alter are refused
+- Radicle seeds can't inject markup into the repository browser ([#661](https://github.com/solardev-xyz/freedom-browser/issues/661)):
+  - Its Content Security Policy blocks injected frames and styles
 - Local Radicle data is served only to Freedom's own repository viewer ([#662](https://github.com/solardev-xyz/freedom-browser/issues/662))
-- A malicious Ethereum peer can't forge Myotis's verified balances or contract state ([#725](https://github.com/solardev-xyz/freedom-browser/pull/725))
-- Malicious Swarm peers or uploads can't freeze the Swarm node or fill its memory ([#729](https://github.com/solardev-xyz/freedom-browser/pull/729))
-- A malicious IPFS provider can't exhaust Freedom's memory ([#659](https://github.com/solardev-xyz/freedom-browser/issues/659))
+- GitHub import refuses `.` and `..` as a repository name ([#636](https://github.com/solardev-xyz/freedom-browser/issues/636))
+- dApps no longer see the proof server's address in a failed chain read ([#681](https://github.com/solardev-xyz/freedom-browser/issues/681))
+- A malicious Ethereum peer can't forge Myotis's verified balances, nonces or contract state ([#725](https://github.com/solardev-xyz/freedom-browser/pull/725))
+- The Swarm node holds up against malicious peers and uploads ([#729](https://github.com/solardev-xyz/freedom-browser/pull/729)):
+  - A crafted upload can't freeze it
+  - Forged copies of a page are rejected
+  - Made-up peer addresses or stalled transfers can't fill its memory
+  - A damaged stamp file or cheque record no longer stops it or resets cheques
+- A malicious IPFS provider can't exhaust Freedom's memory ([#659](https://github.com/solardev-xyz/freedom-browser/issues/659)):
+  - Seven further advisories fixed in the IPFS node's dependencies
+- Release builds pin CI actions to exact commits and restore no npm cache ([#639](https://github.com/solardev-xyz/freedom-browser/pull/639))
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.61 to 0.5.77
   - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.5 to 0.4.6
