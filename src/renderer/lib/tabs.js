@@ -2716,9 +2716,20 @@ export const initTabs = async () => {
     });
   });
 
-  electronAPI?.onNavigateToUrl?.((url) => {
+  electronAPI?.onNavigateToUrl?.((url, guestId) => {
     if (url && onLoadTarget) {
-      pushDebug(`Navigating to URL: ${url}`);
+      // The navigation belongs to the tab whose page started it, which is not
+      // necessarily the active one: a background page's scripted `location`
+      // change (the Swarm error page's auto-retry, or any site) must not load
+      // into the tab the user is looking at (#969). A navigation whose tab is
+      // gone, or that names none, is dropped rather than guessed. A read-only
+      // workspace viewer never follows its page, as before.
+      const sourceTab = getTabByGuestId(guestId);
+      if (!sourceTab || sourceTab.kind === 'workspace-viewer') {
+        pushDebug(`Dropped page navigation with no source tab: ${url}`);
+        return;
+      }
+      pushDebug(`Navigating tab ${sourceTab.id} to URL: ${url}`);
       // The main process intercepted a will-navigate for a custom protocol
       // (`bzz://`, `ens://`, `ipfs://`, `ipns://`, `freedom://`, `rad:`,
       // `ethereum:`) and called `event.preventDefault()`. That prevent
@@ -2727,11 +2738,11 @@ export const initTabs = async () => {
       // the cancelled navigation, which would clear `tab.isLoading` and
       // kill the spinner during the slow ENS lookup that follows.
       //
-      // We mark the active tab here so the per-tab handlers in
-      // `createWebview` can swallow exactly that one phantom. Active tab
-      // is correct because the user just clicked a link in the
-      // foreground. `pendingAbortUrl` (1500 ms self-clear) is the primary
-      // matcher used by `did-fail-load` when Chromium emits one.
+      // We mark the source tab here so the per-tab handlers in
+      // `createWebview` can swallow exactly that one phantom: it is the
+      // webview whose navigation was cancelled. `pendingAbortUrl` (1500 ms
+      // self-clear) is the primary matcher used by `did-fail-load` when
+      // Chromium emits one.
       //
       // We also arm `suppressNextStop` proactively (with its own 200 ms
       // self-clear) for two reasons exposed by live tracing:
@@ -2748,31 +2759,28 @@ export const initTabs = async () => {
       // The 200 ms cap is far shorter than any real `did-stop-loading`
       // following the ENS resolution + content fetch, so an unconsumed
       // flag can't swallow a legitimate later stop.
-      const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
-      if (activeTab) {
-        activeTab.pendingAbortUrl = url;
-        if (activeTab.pendingAbortTimer) {
-          clearTimeout(activeTab.pendingAbortTimer);
-        }
-        activeTab.pendingAbortTimer = setTimeout(() => {
-          activeTab.pendingAbortUrl = null;
-          activeTab.pendingAbortTimer = null;
-        }, 1500);
-
-        activeTab.suppressNextStop = true;
-        if (activeTab.suppressNextStopTimer) {
-          clearTimeout(activeTab.suppressNextStopTimer);
-        }
-        activeTab.suppressNextStopTimer = setTimeout(() => {
-          activeTab.suppressNextStop = false;
-          activeTab.suppressNextStopTimer = null;
-        }, 200);
+      sourceTab.pendingAbortUrl = url;
+      if (sourceTab.pendingAbortTimer) {
+        clearTimeout(sourceTab.pendingAbortTimer);
       }
+      sourceTab.pendingAbortTimer = setTimeout(() => {
+        sourceTab.pendingAbortUrl = null;
+        sourceTab.pendingAbortTimer = null;
+      }, 1500);
+
+      sourceTab.suppressNextStop = true;
+      if (sourceTab.suppressNextStopTimer) {
+        clearTimeout(sourceTab.suppressNextStopTimer);
+      }
+      sourceTab.suppressNextStopTimer = setTimeout(() => {
+        sourceTab.suppressNextStop = false;
+        sourceTab.suppressNextStopTimer = null;
+      }, 200);
       // The page navigated itself (a link click or a scripted `location`
       // change to a custom scheme); the main process cancelled it and handed
       // it back here. Flagged as page-initiated so it repaints the address
       // bar only when the user isn't mid-edit. See #305.
-      onLoadTarget(url, null, null, { pageInitiated: true });
+      onLoadTarget(url, null, sourceTab.webview, { pageInitiated: true });
     }
   });
 

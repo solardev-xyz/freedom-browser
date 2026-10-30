@@ -591,7 +591,7 @@ describe('webcontents-setup', () => {
     expect(event.preventDefault).toHaveBeenCalled();
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'bzz://0123456789abcdef'
+      'bzz://0123456789abcdef', contents.id
     );
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted custom protocol navigation')
@@ -604,7 +604,7 @@ describe('webcontents-setup', () => {
     expect(ethEvent.preventDefault).toHaveBeenCalled();
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'ethereum:vitalik.eth@1?value=1e16'
+      'ethereum:vitalik.eth@1?value=1e16', contents.id
     );
 
     const httpEvent = {
@@ -664,7 +664,7 @@ describe('webcontents-setup', () => {
     contents.emit('will-navigate', event, target);
 
     expect(event.preventDefault).toHaveBeenCalled();
-    expect(parentWindow.webContents.send).toHaveBeenCalledWith('navigate-to-url', target);
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith('navigate-to-url', target, contents.id);
   });
 
   test('confines isolated preview pages to their exact origin and denies popups', () => {
@@ -732,7 +732,7 @@ describe('webcontents-setup', () => {
     // The navigation itself still works.
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'rad:zSECRETRIDXYZZY'
+      'rad:zSECRETRIDXYZZY', contents.id
     );
   });
 
@@ -987,7 +987,7 @@ describe('webcontents-setup', () => {
       expect(() =>
         contents.emit('will-navigate', { preventDefault: jest.fn() }, 'freedom://settings')
       ).not.toThrow();
-      expect(live.webContents.send).toHaveBeenCalledWith('navigate-to-url', 'freedom://settings');
+      expect(live.webContents.send).toHaveBeenCalledWith('navigate-to-url', 'freedom://settings', contents.id);
     });
 
     test('skips a window whose webContents is destroyed, and routes to a live one', () => {
@@ -1108,7 +1108,7 @@ describe('webcontents-setup', () => {
 
       expect(otherWindow.webContents.send).toHaveBeenCalledWith(
         'navigate-to-url',
-        'freedom://settings'
+        'freedom://settings', contents.id
       );
     });
 
