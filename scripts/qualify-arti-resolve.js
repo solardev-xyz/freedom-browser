@@ -30,18 +30,31 @@
  *     can't be seen through SOCKS, but its exit can: each connection asks an
  *     echo service (`--echo-url`, check.torproject.org's by default) for the
  *     address it comes from.
- *     - One set of credentials asks twice: both must come from the same
- *       exit, since Arti keeps a set of credentials on its circuit.
- *     - Three more sets ask once each. With those four sets, at least two
- *       exits must answer: four circuits of Tor's thousands of exits, all on
- *       one, is a chance too small to matter, while credentials that
- *       weren't isolated would all share one circuit.
+ *     - Four sets of credentials are made up front, and asked in eight
+ *       rounds: each round asks every set once, in an order drawn at
+ *       random, so each set's connections are interleaved with the others'.
+ *     - No exit may answer for two sets, and the sets may change their
+ *       exits at most six times in all, over their 28 connections after the
+ *       first: Arti keeps a set on its circuit, but now and then moves it to
+ *       a new one, which the live runs saw about once in fifteen.
+ *     - A proxy that ignores credentials picks each connection's exit
+ *       without knowing which set it is for. A connection given another
+ *       set's exit fails the check, and one given a new exit spends one of
+ *       the six changes. In a round where it gives no new exit, it must put
+ *       all four sets back on their own exits, in an order drawn at random:
+ *       one chance in 24. Whatever exits it uses, and whenever it changes
+ *       them, it passes with a chance of at most (1/12) x (1/24)^5, under
+ *       one in 90 million. A proxy that reuses a circuit for two connections
+ *       in a row puts two sets on one exit, and fails.
+ *     - Its retries don't add to that chance: an attempt that completes is
+ *       final, passed or failed. Only an attempt that ends in an error, a
+ *       connection or the echo service failing, is tried again.
  *
- * Each check is tried up to three times before it counts as failed. Each
- * attempt of the credentials check sends new credentials, so Arti gives it
- * a new isolated circuit: one circuit's exit can keep failing a name (reply
- * 0x01 on every attempt), which says nothing about Arti, and a retry on the
- * same credentials would only ask that exit again.
+ * Each other check is tried up to three times before it counts as failed.
+ * Each attempt of the credentials check sends new credentials, so Arti
+ * gives it a new isolated circuit: one circuit's exit can keep failing a
+ * name (reply 0x01 on every attempt), which says nothing about Arti, and a
+ * retry on the same credentials would only ask that exit again.
  *
  * Only the pinned Arti qualifies: `qualified` needs `arti --version` to
  * name `PINNED_ARTI_VERSION` (scripts/fetch-arti.js) and the required checks
@@ -84,8 +97,20 @@ const BOOTSTRAPPED = /Sufficiently bootstrapped/i;
 /** The echo service the isolation check asks for each connection's exit. */
 const DEFAULT_ECHO_URL = 'https://check.torproject.org/api/ip';
 
-/** How many sets of credentials the isolation check asks with, in all. */
+/** How many sets of credentials the isolation check asks with. */
 const ISOLATION_SETS = 4;
+
+/** How many times the isolation check asks each set, a round each. */
+const ISOLATION_ROUNDS = 8;
+
+/** How many times the sets may change their exits, in all. */
+const ISOLATION_SWITCHES = 6;
+
+/** The longest answer the echo service may give, headers aside. */
+const ECHO_MAX_BYTES = 4096;
+
+/** How many times the isolation check asks for one connection's exit. */
+const ECHO_TRIES = 3;
 
 function parseArgs(argv) {
   const options = {
@@ -234,17 +259,22 @@ function startArti(artiPath, configPath, timeoutMs, launcher = []) {
  * error, attempts }`. A check that fails is tried again, up to `attempts`
  * times: a fresh circuit through Tor can take longer than one request's
  * deadline, which says nothing about whether Arti can `RESOLVE`.
+ *
+ * With `retryFailures` false, only an attempt that throws is tried again:
+ * one that returns, passed or failed, is final.
  */
-async function check(run, attempts = 3) {
+async function check(run, attempts = 3, { retryFailures = true } = {}) {
   let outcome;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let threw = false;
     try {
       outcome = await run();
     } catch (error) {
+      threw = true;
       outcome = { ok: false, error: error.message };
     }
     outcome.attempts = attempt;
-    if (outcome.ok) break;
+    if (outcome.ok || (!threw && !retryFailures)) break;
   }
   return outcome;
 }
@@ -267,6 +297,11 @@ function qualifies(report, { requireCredentials, isolation = false }) {
  * as the echo service at `echoUrl` sees it: a `GET` through a `CONNECT` to
  * its host, over TLS for an `https` URL. Its answer is JSON with an `IP`, as
  * check.torproject.org's is.
+ *
+ * It fails closed: on a refused connection, a status other than 200, a body
+ * of more than `ECHO_MAX_BYTES`, an answer that isn't JSON naming an IP
+ * address, or no whole answer within `timeoutMs` of the request, however
+ * steadily it trickles in.
  */
 async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
   const url = new URL(echoUrl);
@@ -282,6 +317,7 @@ async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
   }
   const connection = secure ? tls.connect({ socket, servername: url.hostname }) : socket;
   let body;
+  let deadline = null;
   try {
     body = await new Promise((resolve, reject) => {
       const req = (secure ? https : http).request(
@@ -296,8 +332,23 @@ async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
         },
         (res) => {
           const chunks = [];
-          res.on('data', (chunk) => chunks.push(chunk));
+          let bytes = 0;
+          let tooLarge = false;
+          res.on('data', (chunk) => {
+            if (tooLarge) return;
+            bytes += chunk.length;
+            if (bytes > ECHO_MAX_BYTES) {
+              // Settled first, so that the end of what has arrived can't
+              // stand for the answer.
+              tooLarge = true;
+              reject(new Error(`the echo service's answer is over ${ECHO_MAX_BYTES} bytes`));
+              req.destroy();
+              return;
+            }
+            chunks.push(chunk);
+          });
           res.on('end', () => {
+            if (tooLarge) return;
             if (res.statusCode !== 200) {
               reject(new Error(`the echo service answered ${res.statusCode}`));
             } else {
@@ -309,6 +360,10 @@ async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
       );
       req.on('timeout', () => req.destroy(new Error('no answer from the echo service')));
       req.on('error', reject);
+      deadline = setTimeout(
+        () => req.destroy(new Error(`no whole answer from the echo service in ${timeoutMs} ms`)),
+        timeoutMs
+      );
       req.end();
       // The SOCKS client hands the connection over paused. Over TLS, the TLS
       // socket reads it; in the clear, it flows once the request has taken it,
@@ -316,9 +371,15 @@ async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
       if (!secure) process.nextTick(() => socket.resume());
     });
   } finally {
+    clearTimeout(deadline);
     connection.destroy();
   }
-  const ip = JSON.parse(body).IP;
+  let ip;
+  try {
+    ip = JSON.parse(body).IP;
+  } catch {
+    throw new Error("the echo service's answer isn't JSON");
+  }
   if (typeof ip !== 'string' || net.isIP(ip) === 0) {
     throw new Error('the echo service named no address');
   }
@@ -326,25 +387,78 @@ async function exitAddress(proxy, credentials, echoUrl, timeoutMs = 60000) {
 }
 
 /**
- * The isolation check, asking `exit(credentials)` for the exit of a new
- * connection with those credentials: one set twice, then
- * `ISOLATION_SETS - 1` more once each. It passes when the first set's two
- * connections share their exit, and the sets' first connections come from
- * at least two.
+ * `items`, in an order drawn at random, from the operating system's
+ * generator: a proxy can't predict it.
  */
-async function isolation(exit, credentials = freshCredentials) {
-  const first = credentials();
-  const same = [await exit(first), await exit(first)];
-  const distinct = [same[0]];
-  for (let i = 1; i < ISOLATION_SETS; i += 1) {
-    distinct.push(await exit(credentials()));
+function shuffled(items) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
   }
-  const exits = new Set(distinct).size;
+  return out;
+}
+
+/**
+ * The isolation check, asking `exit(credentials)` for the exit of a new
+ * connection with those credentials. `ISOLATION_SETS` sets are made up
+ * front, and asked in `ISOLATION_ROUNDS` rounds, each set once a round, in
+ * an order `permute` draws for each round. It passes when no exit answers
+ * for two sets, and the sets change their exits at most
+ * `ISOLATION_SWITCHES` times in all. `credentials` and `permute` are seams
+ * for the tests.
+ */
+async function isolation(exit, { credentials = freshCredentials, permute = shuffled } = {}) {
+  const sets = Array.from({ length: ISOLATION_SETS }, () => credentials());
+  const observations = sets.map(() => []);
+  const order = [];
+  for (let round = 0; round < ISOLATION_ROUNDS; round += 1) {
+    for (const set of permute([...sets.keys()])) {
+      order.push(set);
+      observations[set].push(await exit(sets[set]));
+    }
+  }
+  const switches = observations.map(
+    (exits) => exits.filter((exit, i) => i > 0 && exit !== exits[i - 1]).length
+  );
+  const owners = new Map();
+  let shared = false;
+  observations.forEach((exits, set) => {
+    for (const exit of exits) {
+      if (owners.has(exit) && owners.get(exit) !== set) shared = true;
+      owners.set(exit, set);
+    }
+  });
+  const steady = switches.reduce((sum, n) => sum + n, 0) <= ISOLATION_SWITCHES;
   return {
-    ok: same[0] === same[1] && exits >= 2,
-    same_credentials: same,
-    distinct_credentials: distinct,
-    exits,
+    ok: steady && !shared,
+    steady,
+    shared,
+    switches,
+    exits: owners.size,
+    observations,
+    order,
+  };
+}
+
+/**
+ * `exit`, asked again with the same credentials when it fails, up to
+ * `tries` times in all: one exit's trouble reaching the echo service says
+ * nothing about isolation. Asking again can't help a proxy blind to
+ * credentials pass: whatever exit it gives the next try, it still doesn't
+ * know which set that is for.
+ */
+function retrying(exit, tries = ECHO_TRIES) {
+  return async (credentials) => {
+    let failure;
+    for (let i = 0; i < tries; i += 1) {
+      try {
+        return await exit(credentials);
+      } catch (error) {
+        failure = error;
+      }
+    }
+    throw failure;
   };
 }
 
@@ -420,8 +534,13 @@ async function qualify(options, { launcher = [] } = {}) {
     report.resolve = await resolveWith(() => null);
     report.resolve_with_credentials = await resolveWith(freshCredentials);
     if (options.isolation) {
-      report.isolation = await check(() =>
-        isolation((credentials) => exitAddress(proxy, credentials, options.echoUrl))
+      // A completed attempt is final, so retries can't add to the chance
+      // of a false pass.
+      report.isolation = await check(
+        () =>
+          isolation(retrying((credentials) => exitAddress(proxy, credentials, options.echoUrl))),
+        3,
+        { retryFailures: false }
       );
     }
     report.connect = report.resolve.ok
@@ -464,6 +583,12 @@ module.exports = {
   verdict,
   artiCommand,
   isolation,
+  retrying,
+  shuffled,
   exitAddress,
   qualify,
+  ISOLATION_SETS,
+  ISOLATION_ROUNDS,
+  ISOLATION_SWITCHES,
+  ECHO_MAX_BYTES,
 };
