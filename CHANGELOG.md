@@ -8,9 +8,10 @@ All notable changes to Freedom will be documented in this file.
 
 - Freedom Agent: an AI assistant that operates the browser ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
   - Off by default, under Settings > AI
-  - ChatGPT, Meta Muse, Claude, API keys or Ollama
-  - Reads and operates pages, including their WebMCP tools
-  - Opens and closes tabs, uploads and downloads files
+  - All major models, or local ones through Ollama
+  - Requests go straight to your provider, with no Freedom server in between
+  - Each chat lists where requests went, and which were encrypted or verified
+  - Operates pages, tabs, uploads and downloads, and sites' WebMCP tools
   - Starts and stops the Swarm, IPFS, Radicle, Tor and Myotis nodes
   - Sends funds and publishes to Swarm after your approval
   - Edits and runs local projects
