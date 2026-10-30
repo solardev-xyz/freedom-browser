@@ -205,6 +205,14 @@ function hasSealedPassword(data) {
   return withKeysDir(data, (keys) => hasEntry(keys, SEALED_FILE));
 }
 
+/**
+ * SHA-256 (hex) of keys/swarm.key as it is now, or null when there is none.
+ * @param {import('../private-files').PrivateDir|string} data the data directory
+ */
+function keystoreDigestOf(data) {
+  return withKeysDir(data, (keys) => keystoreDigest(keys));
+}
+
 /** Whether keys/ holds a keystore (`keys`: the held keys/ handle, or null). */
 function keystoreExists(keys) {
   return hasEntry(keys, 'swarm.key');
@@ -650,6 +658,7 @@ module.exports = {
   withKeystoreLock,
   keystoreAddress,
   keystoreOpensWith,
+  keystoreDigestOf,
   sealedPasswordPath,
   _setSafeStorageForTests: (storage) => {
     safeStorageOverride = storage;

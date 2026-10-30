@@ -525,6 +525,52 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     expect(configText()).not.toMatch(/^password:/m);
   });
 
+  // The K-3 round-5 window: the broken-seal fallback checks the keystore as
+  // it is after the seal's keychain await, and that it is still the one
+  // checked before the config.yaml password is accepted.
+  test('a keystore appearing while a broken seal opens is checked, and refused', async () => {
+    const storage = fakeSafeStorage();
+    const { ant, keystore } = loadAntManager(storage);
+    // An unopenable seal bound to no keystore, and no keystore yet.
+    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), sealRecord('v11zz'));
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: stale-config-password\n';
+    fs.writeFileSync(configPath, configBefore);
+    storage.decryptStringAsync.mockImplementationOnce(async () => {
+      await writeRealKeystore('replacement-password');
+      throw new Error('Error while decrypting the ciphertext');
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(await opensKeystore('replacement-password')).toBe(true);
+  });
+
+  test("a keystore replaced during the fallback's check is refused", async () => {
+    await writeRealKeystore('from-config');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), sealRecord('v11zz', '{}'));
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: from-config\n';
+    fs.writeFileSync(configPath, configBefore);
+    const replacement = '{"address":"' + '44'.repeat(20) + '","replaced":"during the check"}';
+    // keystoreOpensWith has read swarm.key's bytes and is about to run scrypt
+    // on them: the keystore is replaced now.
+    const realParse = JSON.parse;
+    let swapped = false;
+    jest.spyOn(JSON, 'parse').mockImplementation((text, ...rest) => {
+      if (!swapped && typeof text === 'string' && text.includes('"Crypto"')) {
+        swapped = true;
+        fs.writeFileSync(swarmKeyPath, replacement);
+      }
+      return realParse(text, ...rest);
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    JSON.parse.mockRestore();
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(replacement);
+  });
+
   test('a seal that will not open never shadows a password config.yaml still has', async () => {
     await writeRealKeystore('from-config');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());

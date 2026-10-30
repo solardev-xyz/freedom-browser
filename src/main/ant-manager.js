@@ -362,10 +362,13 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
     if (hadSeal) {
       // A broken pair can leave both (a seal for another keystore that could
       // not be withdrawn): the config.yaml password is used only if it opens
-      // keys/swarm.key, and otherwise the start asks for re-injection.
-      if (hasKeystore) {
-        const check = await keystorePassword.keystoreOpensWith(data, configPassword.value);
-        if (!check.opens) throw new keystorePassword.KeystorePasswordUnavailableError();
+      // keys/swarm.key as it is now, not as it was before the seal's
+      // keychain await (no keystore costs no scrypt), and only if that
+      // keystore is still the one checked. Otherwise the start asks for
+      // re-injection.
+      const check = await keystorePassword.keystoreOpensWith(data, configPassword.value);
+      if (!check.opens || keystorePassword.keystoreDigestOf(data) !== check.digest) {
+        throw new keystorePassword.KeystorePasswordUnavailableError();
       }
       log.warn('[Ant] The sealed keystore password will not open; using the one in config.yaml');
       return { password: configPassword.value, rawPasswordLine: null, sealed: false };
@@ -398,7 +401,9 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
   return {
     password,
     rawPasswordLine: null,
-    sealed: await keystorePassword.sealPassword(data, password),
+    // Checked too, cheaply (no keystore, no scrypt): a keystore that
+    // appeared during the awaits above never gets this new password sealed.
+    sealed: await keystorePassword.sealPassword(data, password, { verifyKeystore: true }),
   };
 }
 
