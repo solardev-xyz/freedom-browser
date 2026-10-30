@@ -440,10 +440,12 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
         ) {
           log.info(`${tag} intercepted custom protocol navigation: ${navUrlForLog(contents, url)}`);
           event.preventDefault();
-          // Send to the owning window to handle via the browser's navigation system
+          // Send to the owning window to handle via the browser's navigation
+          // system, naming the guest that asked: the window loads it into that
+          // guest's tab, never into whichever tab happens to be active (#969).
           const parentWindow = ownerWindowOf(contents);
           if (parentWindow) {
-            parentWindow.webContents.send('navigate-to-url', url);
+            parentWindow.webContents.send('navigate-to-url', url, contents.id);
           }
         }
       });

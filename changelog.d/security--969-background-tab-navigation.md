@@ -1,0 +1,1 @@
+- A page in a background tab can no longer load a `bzz://`, `ens://` or other dweb address into the tab you are viewing ([#969](https://github.com/solardev-xyz/freedom-browser/issues/969))
