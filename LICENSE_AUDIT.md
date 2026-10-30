@@ -7,7 +7,7 @@
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
 
-> **What changed in this revision.** Re-derived for the 0.8.8-rc.1 cut against the installed tree. The production walk below went from 273 to 390 unique `name@version` entries. The same walk over a v0.8.7 install counts 113 package names that are new in 0.8.8, almost all of them the agent's npm stack: `@earendil-works/pi-coding-agent` 1.0.2 and its siblings (MIT), the model provider SDKs `openai`, `@google/genai` and `@aws-sdk/client-bedrock-runtime` with its `@aws-sdk/*`/`@smithy/*` helpers (Apache-2.0) and `@anthropic-ai/sdk` (MIT), `@phala/dcap-qvl` 0.6.5 (Apache-2.0), `protobufjs` (BSD-3-Clause) and `pdfjs-dist` 6.3.289. Every one declares a licence; none is GPL or AGPL by its licence field, the new licence families are `Unlicense` (`fast-sha256`) and `BSD-2-Clause` (`webidl-conversions`), and no new Apache-2.0 package ships a `NOTICE` file. Reading inside the packages found what the licence fields hide: **`pdfjs-dist` ships GPL-2.0 Liberation Sans fonts**, an open blocker (see _pdfjs-dist_ below and [#962](https://github.com/solardev-xyz/freedom-browser/issues/962)), plus permissive fonts and WebAssembly decoders, and its optional dependency `@napi-rs/canvas` adds a Skia addon Freedom never loads. `NOTICES` now attributes both. Shipped components that moved since 0.8.7, each licence re-read at the version being shipped: npm `electron` 44.7.0 → 45.1.0 (MIT), `@ghostery/adblocker` 2.18.2 → 2.20.3 (MPL-2.0), `@ethersphere/bee-js` 13.1.0 → 13.2.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.10.0 → 7.11.1 (Apache-2.0), `@safe-global/protocol-kit` 8.0.7 → 8.0.11 (MIT), `@x402/core` and `@x402/evm` 2.28.0 → 2.29.0 (Apache-2.0), `electron-updater` 6.8.9 → 6.8.11 (MIT), `@corpus-core/colibri-stateless` 3.0.2 → 3.0.3 (MIT; up to 3.0.2 its WASM compiled in an `op_zstd` wrapper marked PolyForm-Noncommercial, which 3.0.3 relicenses to MIT, corpus-core/colibri-stateless#403); bundled Ant v0.5.61 → v0.5.77 and freedom-ipfs v0.4.5 → v0.4.6 (`MIT OR Apache-2.0`, license files unchanged across the range), Myotis v0.1.14 → v0.1.18 (see the dated updates below). Arti 2.7.0 and libradicle 0.8.0 did not move. whisper.cpp and the Codex Windows sandbox are new in this cycle and were recorded when they landed.
+> **What changed in this revision.** Re-derived for the 0.8.8-rc.1 cut against the installed tree. The production walk below went from 273 to 388 unique `name@version` entries. The same walk over a v0.8.7 install counts 113 package names that are new in 0.8.8, almost all of them the agent's npm stack: `@earendil-works/pi-coding-agent` 1.0.2 and its siblings (MIT), the model provider SDKs `openai`, `@google/genai` and `@aws-sdk/client-bedrock-runtime` with its `@aws-sdk/*`/`@smithy/*` helpers (Apache-2.0) and `@anthropic-ai/sdk` (MIT), `@phala/dcap-qvl` 0.6.5 (Apache-2.0), `protobufjs` (BSD-3-Clause) and `pdfjs-dist` 6.3.289. Every one declares a licence; none is GPL or AGPL by its licence field, the new licence families are `Unlicense` (`fast-sha256`) and `BSD-2-Clause` (`webidl-conversions`), and no new Apache-2.0 package ships a `NOTICE` file. Reading inside the packages found what the licence fields hide: `pdfjs-dist` shipped **GPL-2.0 Liberation Sans 1.x fonts**, and its optional dependency `@napi-rs/canvas` packaged a Skia addon Freedom never loads. Per the maintainer's decision in [#962](https://github.com/solardev-xyz/freedom-browser/issues/962) both are now left out of the package (_pdfjs-dist_ below), Liberation Sans 2.1.5 (OFL-1.1) ships in `src/renderer/assets/pdf-fonts/` instead, and `NOTICES` attributes pdfjs-dist's remaining bundled parts. Shipped components that moved since 0.8.7, each licence re-read at the version being shipped: npm `electron` 44.7.0 → 45.1.0 (MIT), `@ghostery/adblocker` 2.18.2 → 2.20.3 (MPL-2.0), `@ethersphere/bee-js` 13.1.0 → 13.2.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.10.0 → 7.11.1 (Apache-2.0), `@safe-global/protocol-kit` 8.0.7 → 8.0.11 (MIT), `@x402/core` and `@x402/evm` 2.28.0 → 2.29.0 (Apache-2.0), `electron-updater` 6.8.9 → 6.8.11 (MIT), `@corpus-core/colibri-stateless` 3.0.2 → 3.0.3 (MIT; up to 3.0.2 its WASM compiled in an `op_zstd` wrapper marked PolyForm-Noncommercial, which 3.0.3 relicenses to MIT, corpus-core/colibri-stateless#403); bundled Ant v0.5.61 → v0.5.77 and freedom-ipfs v0.4.5 → v0.4.6 (`MIT OR Apache-2.0`, license files unchanged across the range), Myotis v0.1.14 → v0.1.18 (see the dated updates below). Arti 2.7.0 and libradicle 0.8.0 did not move. whisper.cpp and the Codex Windows sandbox are new in this cycle and were recorded when they landed.
 >
 > **2026-10-25 update (v0.1.18):** Myotis is now pinned to v0.1.18. `LICENSE` and `NOTICE` are byte-identical to v0.1.16 (`git diff v0.1.16 v0.1.18 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.16 to 0.1.18) and gives `myotis-engine` a direct dependency on `libc`, already in the lock; no crate is added or removed.
 >
@@ -32,17 +32,17 @@ Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
 ## Executive Summary
 
-**VERDICT: BLOCKED** until [#962](https://github.com/solardev-xyz/freedom-browser/issues/962) is decided: `pdfjs-dist` ships GPL-2.0 Liberation Sans fonts in `app.asar`. Everything else is OK to ship under MPL-2.0, with the notice obligations in `NOTICES` met as written.
+**VERDICT: OK TO SHIP UNDER MPL-2.0**, with the notice obligations in `NOTICES` met as written.
 
 ### Key Findings
 
 | Category                                                    | Count       | Status                                                             |
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
-| Production npm packages (unique name@version)               | 390         | See distribution below                                             |
+| Production npm packages (unique name@version)               | 388         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
 | External binaries / native addons shipped in `resources/`   | 7           | Ant, freedom-ipfs, libradicle, Myotis, Arti, Codex Windows sandbox, whisper.cpp                        |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
-| Strong copyleft (GPL/AGPL)                                  | 4 files     | Liberation Sans fonts in `pdfjs-dist` — **open** (#962)            |
+| Strong copyleft (GPL/AGPL)                                  | 0           | Two found and removed — see below and #962                         |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
 | Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
 | Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
@@ -224,19 +224,13 @@ Electron's dist also carries its MIT `LICENSE` beside the executable. electron-b
 - **License:** MIT OR X11
 - **Risk:** Green
 
-### @napi-rs/canvas — _new in 0.8.8, never loaded_
-
-- **Version:** 1.0.13, an optional dependency of `pdfjs-dist`, with one `@napi-rs/canvas-<platform>` package per target
-- **License:** MIT (binding). `skia.<platform>.node` statically links Skia (BSD-3-Clause) and the libraries its `sbom.cdx.json` lists: FreeType (FTL), ICU, libjpeg-turbo (BSD-3-Clause AND IJG AND Zlib), libpng (libpng-2.0), libwebp, libjxl, libavif/libaom, harfbuzz, expat, brotli, highway, wuffs, zlib, and the MPL-2.0 Rust crates `cssparser`, `cssparser-macros`, `dtoa-short` and `selectors`
-- **Risk:** Yellow (requires notice)
-- **Notes:** npm installs optional dependencies, so electron-builder packages it (about 37 MB per platform, unpacked by `asarUnpack`'s `**/*.node`). Freedom never loads it: PDF.js runs in a sandboxed `BrowserWindow` and uses Chromium's canvas. FreeType's FTL and the IJG licence require an acknowledgement in the documentation, which `NOTICES` carries. Nine SBOM components declare no licence: the binding's own crates and Rust build tooling. Excluding `node_modules/@napi-rs/**` from the package is recommended in [#962](https://github.com/solardev-xyz/freedom-browser/issues/962).
-
-### pdfjs-dist — _new in 0.8.8, open GPL question_
+### pdfjs-dist — _new in 0.8.8_
 
 - **Version:** 6.3.289 (exact pin), the agent's PDF processor
-- **License:** Apache-2.0 for PDF.js itself. The package also ships, each with its licence text beside it: PDFium's JBIG2 decoder (`wasm/jbig2.wasm`) and Foxit fonts (`standard_fonts/Foxit*.pfb`), BSD-3-Clause; OpenJPEG (`wasm/openjpeg.wasm`), BSD-2-Clause; qcms and QuickJS (`wasm/qcms_bg.wasm`, `wasm/quickjs-eval.wasm`), MIT; Adobe CMaps (`cmaps/`), BSD-3-Clause; ICC profiles (`iccs/`), CC0-1.0; and **Liberation Sans** (`standard_fonts/LiberationSans-*.ttf`), **GPL-2.0 with Red Hat's font exception**
-- **Risk:** **Red (open blocker)**
-- **Notes:** The font exception covers documents that embed the font, not redistribution of the font files, and `src/renderer/lib/pdf-processor.js` loads them through `standardFontDataUrl`. `licenses-audit.test.js` cannot see this: it reads each package's licence field (Apache-2.0 here) and the files under `src/`, not files inside packages. The options (an aggregate position like #412's, excluding the fonts, or OFL-licensed Liberation 2.x) are in [#962](https://github.com/solardev-xyz/freedom-browser/issues/962); until one is decided, `licenses-audit.json` records a blocker and the test fails.
+- **License:** Apache-2.0 for PDF.js itself. The package also ships, each with its licence text beside it: PDFium's JBIG2 decoder (`wasm/jbig2.wasm`), BSD-3-Clause; OpenJPEG (`wasm/openjpeg.wasm`), BSD-2-Clause; qcms and QuickJS (`wasm/qcms_bg.wasm`, `wasm/quickjs-eval.wasm`), MIT; Adobe CMaps (`cmaps/`), BSD-3-Clause; ICC profiles (`iccs/`), CC0-1.0
+- **Risk:** Green
+- **Excluded from the package:** `standard_fonts/`, whose Liberation Sans 1.x is **GPL-2.0** with a font exception that covers documents embedding the font, not redistributing the font files; and the optional dependency `@napi-rs/canvas`, a Skia addon of about 37 MB per platform that the PDF processor never loads (it runs PDF.js in a sandboxed `BrowserWindow` on Chromium's canvas). npm still installs both, so `build.files` leaves them out in the top-level list and every platform list, and `scripts/check-asar-contents.js` fails a build that packs either. `licenses-audit.test.js` could not have seen the fonts: it reads each package's licence field (Apache-2.0 here) and the files under `src/`, not files inside packages. Decided in [#962](https://github.com/solardev-xyz/freedom-browser/issues/962).
+- **Standard fonts it uses instead:** `src/renderer/assets/pdf-fonts/` (see _Assets_), set as `standardFontDataUrl`. With `useSystemFonts` on, PDF.js fetches only Symbol and ZapfDingbats outright and names the Liberation Sans files as the `@font-face` fallback for Helvetica.
 
 ---
 
@@ -246,7 +240,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 
 | License                           | Count   |
 | --------------------------------- | ------- |
-| MIT                               | 256     |
+| MIT                               | 254     |
 | Apache-2.0                        | 59      |
 | ISC                               | 24      |
 | BSD-3-Clause                      | 17      |
@@ -263,7 +257,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 | BSD-2-Clause                      | 1       |
 | Python-2.0                        | 1       |
 | Unlicense                         | 1       |
-| **Total**                         | **390** |
+| **Total**                         | **388** |
 
 ---
 
@@ -282,6 +276,7 @@ Two paths put non-code files in the artifacts, and both are inventoried here. `b
 | `src/renderer/assets/chains/*.png` (3)                                           | `app.asar`       | Chain marks                        | Third-party marks — see below                                  |
 | `src/renderer/assets/tokens/*.png` (8)                                           | `app.asar`       | Token marks                        | Third-party marks — see below                                  |
 | `src/main/myotis/native/*.c`                                                     | `app.asar`       | Myotis supervisor sources          | MPL-2.0, Freedom's own                                         |
+| `src/renderer/assets/pdf-fonts/` (Liberation Sans 2.1.5, 2 Foxit fonts)          | `app.asar`       | PDF standard fonts                 | OFL-1.1 (Liberation Sans, unmodified), BSD-3-Clause (Foxit)    |
 
 The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances) are dual-licensed **data, not code**. Freedom takes the CC BY-SA arm, which needs attribution only; the GPL arm is not exercised. Attributed in `NOTICES`.
 
@@ -339,8 +334,8 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
 14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 15. **AppImage runtime** (Linux `.AppImage` only) — MIT runtime with statically linked LGPL-2.1 libfuse, BSD squashfuse/zstd, MIT musl/mimalloc and Zlib zlib; not checked by `licenses-audit.test.js`, see _AppImage runtime_
-16. **pdfjs-dist** — Apache-2.0, plus its bundled JBIG2, OpenJPEG, qcms, QuickJS, Foxit and Liberation fonts, CMaps and ICC profiles (see _pdfjs-dist_)
-17. **@napi-rs/canvas** — MIT, plus Skia and the libraries it links, with the FreeType and IJG acknowledgements (see _@napi-rs/canvas_)
+16. **pdfjs-dist** — Apache-2.0, plus its bundled JBIG2, OpenJPEG, qcms, QuickJS, CMaps and ICC profiles (see _pdfjs-dist_)
+17. **PDF standard fonts** in `src/renderer/assets/pdf-fonts/` — Liberation Sans 2.1.5 under OFL-1.1 with its Reserved Font Name, and the two Foxit fonts under BSD-3-Clause
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
@@ -356,9 +351,9 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 
 ## Copyleft Analysis
 
-### Strong copyleft (GPL/AGPL): one open question, one found and removed
+### Strong copyleft (GPL/AGPL): NONE — two found and removed
 
-`pdfjs-dist` ships Liberation Sans (GPL-2.0 with a font exception) in `standard_fonts/`; see _pdfjs-dist_ above and [#962](https://github.com/solardev-xyz/freedom-browser/issues/962). `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL.
+`pdfjs-dist`'s `standard_fonts/` carried Liberation Sans 1.x (GPL-2.0 with a font exception) and is now left out of the package; see _pdfjs-dist_ above and [#962](https://github.com/solardev-xyz/freedom-browser/issues/962). `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL.
 
 The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches. The uBlock Origin filters and scriptlets in `assets/adblock/` are GPL-only, shipped alongside Freedom as separate files rather than combined with it — see _The GPL question_ under _Assets_ for the position and the maintainer's decision.
 
@@ -430,7 +425,7 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 - [x] Myotis's upstream `NOTICE` reproduced verbatim
 - [x] LGPL relinking instructions present in `NOTICES`
 - [x] Maintainer decision recorded for the AppImage runtime's LGPL-2.1 libfuse
-- [ ] No GPL/AGPL code in the packaged artifact: Liberation Sans in `pdfjs-dist` is open ([#962](https://github.com/solardev-xyz/freedom-browser/issues/962))
+- [x] No GPL/AGPL code in the packaged artifact
 - [ ] Add MPL-2.0 header comments to source files (optional but recommended)
 - [x] Electron's `LICENSES.chromium.html` ships in every artifact, macOS included
 

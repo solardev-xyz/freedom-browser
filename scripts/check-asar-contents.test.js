@@ -84,6 +84,27 @@ describe('findAsarProblems', () => {
     ]);
   });
 
+  test('flags dependency paths build.files leaves out (#962)', () => {
+    const files = [
+      'node_modules/pdfjs-dist/build/pdf.mjs',
+      'node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf',
+      'node_modules/pdfjs-dist/standard_fonts/FoxitSymbol.pfb',
+      'node_modules/@napi-rs/canvas/index.js',
+      'node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node',
+    ];
+    expect(findAsarProblems({ files, targets })).toEqual([
+      'excluded dependency path packed: node_modules/pdfjs-dist/standard_fonts/',
+      'excluded dependency path packed: node_modules/@napi-rs/',
+    ]);
+  });
+
+  test.each(['mac', 'linux', 'win'])('%s files list leaves out those paths', (platform) => {
+    for (const files of [pkg.build.files, pkg.build[platform].files]) {
+      expect(files).toContain('!**/node_modules/pdfjs-dist/standard_fonts/**');
+      expect(files).toContain('!**/node_modules/@napi-rs/**');
+    }
+  });
+
   test('flags helpers, probes and fixtures in test-only directories under src', () => {
     const files = [
       'src/main/wallet/safe/__tests__/helpers/test-owners.js',
