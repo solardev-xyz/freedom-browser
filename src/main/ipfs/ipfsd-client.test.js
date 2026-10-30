@@ -297,6 +297,10 @@ test('the confinement report: its public part, and what a log line carries', () 
     ...CONFINEMENT,
     reasons: { network: 'TCP rules need Landlock ABI 4' },
   });
+  // glibc's resolver, or freedom-ipfsd's own over resolv.conf.
+  for (const resolution of ['system', 'files_only', 'resolv_conf']) {
+    expect(validConfinement({ ...CONFINEMENT, resolution })).toMatchObject({ resolution });
+  }
   // Off Linux in direct mode, no resolution.
   expect(validConfinement({ ...CONFINEMENT, resolution: undefined })).toMatchObject({
     resolution: null,

@@ -57,7 +57,10 @@ const KINDS = new Set(['persistent', 'ephemeral']);
 // "Reporting").
 const STATUSES = new Set(['enforced', 'partial', 'unavailable', 'blocked', 'none']);
 const PROPERTIES = ['files', 'exec', 'ipc', 'network'];
-const RESOLUTIONS = new Set(['system', 'files_only']);
+// What resolves names while confined: glibc's resolver (`system`, or
+// `files_only` when it can't reach DNS) or, for freedom-ipfsd from 0.3.0, its
+// own over /etc/resolv.conf (`resolv_conf`).
+const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf']);
 const MECHANISM = /^[a-z0-9+-]{1,64}$/;
 const GAP = /^[a-z_]{1,32}$/;
 const MAX_GAPS = 16;
