@@ -8,7 +8,6 @@ All notable changes to Freedom will be documented in this file.
 
 - Freedom Agent: an AI assistant that operates the browser ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
   - Off by default, under Settings > AI
-  - All major models, or local ones through Ollama
   - Requests go straight to your provider, with no Freedom server in between
   - Each chat lists where requests went, and which were encrypted or verified
   - Operates pages, tabs, uploads and downloads, and sites' WebMCP tools
@@ -16,6 +15,12 @@ All notable changes to Freedom will be documented in this file.
   - Sends funds and publishes to Swarm after your approval
   - Edits and runs local projects
   - Dictation, also on-device with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5
+- Model providers for Agent, most private first ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Self-hosted: Ollama on your device, or any OpenAI-compatible server
+  - Encrypted private models on secure hardware Freedom checks: NEAR AI and Venice
+  - Zero data retention on request: OpenRouter
+  - Under each lab's API terms: OpenAI, Anthropic, xAI and Meta
+  - Subscriptions: ChatGPT, Claude and Meta Muse
 - `.eth`, `.wei` and `.gwei` registration and renewal through Agent ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
 - Open without gateway for eth.limo, eth.link and bzz.link pages ([#70](https://github.com/solardev-xyz/freedom-browser/issues/70)):
   - Offered from a pill in the address bar
