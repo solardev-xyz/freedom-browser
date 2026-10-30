@@ -268,6 +268,16 @@ async function sealPassword(data, password, { verifyKeystore = false } = {}) {
   }
 }
 
+// Remove a seal just published for a keystore that changed meanwhile.
+// A failure is reported and left: the caller fails closed either way.
+function withdrawSeal(keys) {
+  try {
+    keys.remove(SEALED_FILE);
+  } catch (err) {
+    console.warn('[AntKeystore] Could not withdraw a seal for a changed keystore:', err.message);
+  }
+}
+
 // keys/swarm.key appeared or changed after its password was checked.
 function keystoreChanged() {
   return new KeystorePasswordUnavailableError(
@@ -301,6 +311,15 @@ async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
     }
     // Published as those verified bytes, atomically (temp file and rename).
     keys.write(SEALED_FILE, encodeSeal(stored.ciphertext, digest));
+    // The keystore can still change while that write runs: checked once
+    // more, and a seal now bound to the wrong keystore is taken back.
+    if (keystoreDigest(keys) !== digest) {
+      withdrawSeal(keys);
+      // After a check (migration) this fails closed whatever happened to the
+      // withdrawal, so the config.yaml password stays where it is.
+      if (expectedDigest !== undefined) throw keystoreChanged();
+      throw new Error('the keystore changed while it was being sealed');
+    }
     return true;
   } finally {
     if (staged) {
@@ -583,7 +602,9 @@ async function keystoreOpensWith(data, password) {
   const digest = crypto.createHash('sha256').update(raw).digest('hex');
   try {
     const text = raw.toString('utf-8');
-    const declared = String(JSON.parse(text)?.address || '').toLowerCase().replace(/^0x/, '');
+    const declared = String(JSON.parse(text)?.address || '')
+      .toLowerCase()
+      .replace(/^0x/, '');
     const { Wallet } = require('ethers');
     const wallet = await Wallet.fromEncryptedJson(text, password);
     return { opens: wallet.address.toLowerCase().slice(2) === declared, digest };

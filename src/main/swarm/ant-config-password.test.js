@@ -38,12 +38,15 @@ describe('readConfigPassword', () => {
     expect(read(line)).toEqual({ kind: 'value', value });
   });
 
-  test.each(['password:', 'password: ~', 'password: null', 'password: NULL', 'password: # only a comment'])(
-    '%s is no password',
-    (line) => {
-      expect(read(line)).toEqual({ kind: 'none' });
-    }
-  );
+  test.each([
+    'password:',
+    'password: ~',
+    'password: null',
+    'password: NULL',
+    'password: # only a comment',
+  ])('%s is no password', (line) => {
+    expect(read(line)).toEqual({ kind: 'none' });
+  });
 
   test('a config without the key has no password', () => {
     expect(readConfigPassword('api-addr: 127.0.0.1:1633\n')).toEqual({ kind: 'none' });
@@ -102,7 +105,7 @@ describe('yamlPasswordScalar', () => {
   });
 });
 
-describe('readConfigPassword against Ant\'s serde_yaml (fixture)', () => {
+describe("readConfigPassword against Ant's serde_yaml (fixture)", () => {
   const fixture = require('./__fixtures__/ant-config-password.serde-yaml.json');
 
   test('the fixture is the pinned parser', () => {

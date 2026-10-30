@@ -172,8 +172,9 @@ function readConfigPassword(configText) {
 function yamlPasswordScalar(value) {
   if (/^[0-9A-Za-z][0-9A-Za-z._+=/-]*$/.test(value) && !NULL_PLAIN.has(value)) return value;
   // libyaml reads NEL, LS and PS as line breaks, even inside quotes.
-  return JSON.stringify(value).replace(/[\u0085\u2028\u2029]/g, (ch) =>
-    ({ '\u0085': '\\N', '\u2028': '\\L', '\u2029': '\\P' })[ch]
+  return JSON.stringify(value).replace(
+    /[\u0085\u2028\u2029]/g,
+    (ch) => ({ '\u0085': '\\N', '\u2028': '\\L', '\u2029': '\\P' })[ch]
   );
 }
 

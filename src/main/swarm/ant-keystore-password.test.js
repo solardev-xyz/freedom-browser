@@ -25,7 +25,8 @@ function fakeSafeStorage({ backend = 'gnome_libsecret', available = true, prefix
     ),
     decryptStringAsync: jest.fn(async (buffer) => {
       const text = buffer.toString();
-      if (!/^v1[012][0-9a-f]+$/.test(text)) throw new Error('Error while decrypting the ciphertext');
+      if (!/^v1[012][0-9a-f]+$/.test(text))
+        throw new Error('Error while decrypting the ciphertext');
       return { result: Buffer.from(text.slice(3), 'hex').toString(), shouldReEncrypt: false };
     }),
   };
@@ -39,7 +40,9 @@ function sealRecord(ciphertext, keystoreBytes = null) {
     version: 2,
     ciphertext: Buffer.from(ciphertext).toString('base64'),
     keystoreSha256:
-      keystoreBytes === null ? null : crypto.createHash('sha256').update(keystoreBytes).digest('hex'),
+      keystoreBytes === null
+        ? null
+        : crypto.createHash('sha256').update(keystoreBytes).digest('hex'),
   });
 }
 
@@ -130,7 +133,10 @@ describe('ant keystore password (K-3)', () => {
   test('a sealed password that will not open is the re-inject error', async () => {
     const keystore = loadWith(fakeSafeStorage());
     fs.mkdirSync(path.join(dataDir, 'keys'));
-    fs.writeFileSync(keystore.sealedPasswordPath(dataDir), Buffer.from('other-key').toString('base64'));
+    fs.writeFileSync(
+      keystore.sealedPasswordPath(dataDir),
+      Buffer.from('other-key').toString('base64')
+    );
     await expect(keystore.unsealPassword(dataDir)).rejects.toThrow(
       keystore.KeystorePasswordUnavailableError
     );
@@ -157,7 +163,9 @@ describe('ant keystore password (K-3)', () => {
   // exact password, and only then published: a failed or interrupted seal
   // leaves the previous state, never a file that won't open.
   const stagingLeft = () =>
-    fs.readdirSync(path.join(dataDir, 'keys')).filter((name) => name !== 'keystore-password.sealed');
+    fs
+      .readdirSync(path.join(dataDir, 'keys'))
+      .filter((name) => name !== 'keystore-password.sealed');
 
   test('a seal whose write fails part-way publishes nothing', async () => {
     const keystore = loadWith(fakeSafeStorage());
@@ -227,7 +235,10 @@ describe('ant keystore password (K-3)', () => {
   test('a seal that does not read back as the password is never published', async () => {
     const storage = fakeSafeStorage();
     const keystore = loadWith(storage);
-    storage.decryptStringAsync.mockResolvedValueOnce({ result: 'something-else', shouldReEncrypt: false });
+    storage.decryptStringAsync.mockResolvedValueOnce({
+      result: 'something-else',
+      shouldReEncrypt: false,
+    });
 
     expect(await keystore.sealPassword(dataDir, 'pw-exact')).toBe(false);
     expect(keystore.hasSealedPassword(dataDir)).toBe(false);
@@ -364,7 +375,11 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
       userDataDir,
       electronOverrides: { safeStorage },
       extraMocks: {
-        [require.resolve('../logger')]: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }),
+        [require.resolve('../logger')]: () => ({
+          info: jest.fn(),
+          warn: jest.fn(),
+          error: jest.fn(),
+        }),
         [require.resolve('../settings-store')]: () => ({
           loadSettings: jest.fn(() => ({})),
           saveSettings: jest.fn(() => true),
@@ -434,20 +449,31 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   test.each([
     ['double quotes', 'password: "quoted-password"', 'quoted-password'],
     ['single quotes', "password: 'single-quoted'", 'single-quoted'],
-    ['a trailing comment', 'password: public-fixture-password # operator comment', 'public-fixture-password'],
-    ['escapes', 'password: "tab\\tquote\\"back\\\\slash\\u00e9"  # note', 'tab\tquote"back\\slash\u00e9'],
-    ["a doubled single quote", "password: 'it''s'", "it's"],
+    [
+      'a trailing comment',
+      'password: public-fixture-password # operator comment',
+      'public-fixture-password',
+    ],
+    [
+      'escapes',
+      'password: "tab\\tquote\\"back\\\\slash\\u00e9"  # note',
+      'tab\tquote"back\\slash\u00e9',
+    ],
+    ['a doubled single quote', "password: 'it''s'", "it's"],
     ['a # inside the value', 'password: hash#inside', 'hash#inside'],
-  ])("an older build's password with %s migrates as Ant decodes it", async (_label, line, decoded) => {
-    await writeRealKeystore(decoded);
-    fs.writeFileSync(configPath, `api-addr: 127.0.0.1:1633\n${line}\n`);
-    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+  ])(
+    "an older build's password with %s migrates as Ant decodes it",
+    async (_label, line, decoded) => {
+      await writeRealKeystore(decoded);
+      fs.writeFileSync(configPath, `api-addr: 127.0.0.1:1633\n${line}\n`);
+      const { ant, keystore } = loadAntManager(fakeSafeStorage());
 
-    const { sealedPassword } = await ant.ensureConfig(dataDir, 1633, 1634);
-    expect(sealedPassword).toBe(decoded);
-    expect(await keystore.unsealPassword(dataDir)).toBe(decoded);
-    expect(configText()).not.toMatch(/^password:/m);
-  });
+      const { sealedPassword } = await ant.ensureConfig(dataDir, 1633, 1634);
+      expect(sealedPassword).toBe(decoded);
+      expect(await keystore.unsealPassword(dataDir)).toBe(decoded);
+      expect(configText()).not.toMatch(/^password:/m);
+    }
+  );
 
   test('without a keyring a quoted password is written back as the same YAML value', async () => {
     fs.writeFileSync(swarmKeyPath, '{}');
@@ -456,7 +482,10 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
 
     await ant.ensureConfig(dataDir, 1633, 1634);
     const { readConfigPassword } = require('./ant-config-password');
-    expect(readConfigPassword(configText())).toEqual({ kind: 'value', value: 'with space # and hash' });
+    expect(readConfigPassword(configText())).toEqual({
+      kind: 'value',
+      value: 'with space # and hash',
+    });
   });
 
   test('a password line it does not decode is left exactly as it is, unsealed', async () => {
@@ -497,7 +526,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   });
 
   test('a seal that will not open never shadows a password config.yaml still has', async () => {
-    fs.writeFileSync(swarmKeyPath, '{}');
+    await writeRealKeystore('from-config');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());
     const unopenable = sealRecord('v11zz', '{}');
     fs.writeFileSync(keystore.sealedPasswordPath(dataDir), unopenable);
@@ -509,7 +538,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     expect(fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8')).toBe(unopenable);
   });
 
-  posixTest("a start removes the handoff a killed launch left, whatever it starts", async () => {
+  posixTest('a start removes the handoff a killed launch left, whatever it starts', async () => {
     const handoffDir = path.join(userDataDir, 'run', 'ant-handoff');
     fs.mkdirSync(handoffDir, { recursive: true, mode: 0o700 });
     const orphan = path.join(handoffDir, 'password-0123456789abcdef');
@@ -603,6 +632,60 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     );
   });
 
+  // The K-3 round-4 window: the keystore replaced while the verified seal is
+  // published (the second seal write), after the last check before it.
+  const replaceOnSealWrite = (nth, replacementBytes) => {
+    const realWrite = fs.writeFileSync;
+    let seen = 0;
+    return jest.spyOn(fs, 'writeFileSync').mockImplementation((target, data, ...rest) => {
+      if (typeof target === 'number' && String(data).includes('"keystoreSha256"')) {
+        seen += 1;
+        if (seen === nth) realWrite(swarmKeyPath, replacementBytes);
+      }
+      return realWrite(target, data, ...rest);
+    });
+  };
+  const REPLACEMENT = '{"address":"' + '33'.repeat(20) + '","replaced":"while published"}';
+
+  test('a keystore replaced while the verified seal is published takes the seal back', async () => {
+    await writeRealKeystore('checked-password');
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: checked-password\n';
+    fs.writeFileSync(configPath, configBefore);
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    const spy = replaceOnSealWrite(2, REPLACEMENT);
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    spy.mockRestore();
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(REPLACEMENT);
+    expect(fs.readdirSync(path.join(dataDir, 'keys'))).toEqual(['swarm.key']);
+  });
+
+  test('a seal that cannot be taken back still fails closed, and the next start refuses it', async () => {
+    await writeRealKeystore('checked-password');
+    const configBefore = 'api-addr: 127.0.0.1:1633\npassword: checked-password\n';
+    fs.writeFileSync(configPath, configBefore);
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    const spy = replaceOnSealWrite(2, REPLACEMENT);
+    const realUnlink = fs.unlinkSync;
+    const unlink = jest.spyOn(fs, 'unlinkSync').mockImplementation((target) => {
+      if (path.basename(String(target)) === 'keystore-password.sealed') {
+        throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      }
+      return realUnlink(target);
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    spy.mockRestore();
+    unlink.mockRestore();
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(REPLACEMENT);
+    // The leftover seal is bound to the checked keystore, not this one.
+    await expect(keystore.unsealPassword(dataDir)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+  });
+
   test('the matching config.yaml password is sealed, and the seal opens the keystore', async () => {
     await writeRealKeystore('matching-password');
     fs.writeFileSync(configPath, 'password: matching-password\n');
@@ -689,7 +772,9 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     const { ant, keystore } = loadAntManager(storage);
     expect(await keystore.sealPassword(dataDir, 'original')).toBe(true);
     fs.writeFileSync(configPath, 'api-addr: 127.0.0.1:1633\n');
-    storage.decryptStringAsync.mockRejectedValue(new Error('Error while decrypting the ciphertext'));
+    storage.decryptStringAsync.mockRejectedValue(
+      new Error('Error while decrypting the ciphertext')
+    );
 
     await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
     expect(configText()).toBe('api-addr: 127.0.0.1:1633\n');

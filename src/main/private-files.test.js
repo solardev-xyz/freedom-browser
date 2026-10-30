@@ -550,7 +550,7 @@ posix('directory listing and removal through a handle (K-3)', () => {
   });
 
   (process.platform === 'linux' ? test : test.skip)(
-    'bound, the same swap removes only the held directory\'s empty child',
+    "bound, the same swap removes only the held directory's empty child",
     () => {
       fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
       withPrivateDir(data, (dir) => {
@@ -565,18 +565,21 @@ posix('directory listing and removal through a handle (K-3)', () => {
 
   // Descriptor-relative removal exists on Linux only; elsewhere every
   // removeDir is refused (above).
-  (process.platform === 'linux' ? test : test.skip)('a link at the name is refused, never its target removed', () => {
-    fs.symlinkSync(path.join(outsideDir, 'h-held'), path.join(data, 'run', 'h-link'));
-    fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
-    withPrivateDir(data, (dir) => {
-      const run = dir.openDir('run');
-      expect(() => run.removeDir('h-link')).toThrow(/ENOTDIR/);
-      expect(run.removeDir('h-held')).toBe(true);
-      expect(run.removeDir('h-held')).toBe(false);
-      expect(run.entries()).toEqual(['h-link']);
-    });
-    expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
-  });
+  (process.platform === 'linux' ? test : test.skip)(
+    'a link at the name is refused, never its target removed',
+    () => {
+      fs.symlinkSync(path.join(outsideDir, 'h-held'), path.join(data, 'run', 'h-link'));
+      fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        expect(() => run.removeDir('h-link')).toThrow(/ENOTDIR/);
+        expect(run.removeDir('h-held')).toBe(true);
+        expect(run.removeDir('h-held')).toBe(false);
+        expect(run.entries()).toEqual(['h-link']);
+      });
+      expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+    }
+  );
 });
 
 // Review R3-M2. Windows has no O_NOFOLLOW: an ordinary open there follows a

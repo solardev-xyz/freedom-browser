@@ -360,6 +360,13 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
     // A seal that won't open is left alone: the config.yaml password is used
     // as it is, and only a config.yaml without a seal beside it is migrated.
     if (hadSeal) {
+      // A broken pair can leave both (a seal for another keystore that could
+      // not be withdrawn): the config.yaml password is used only if it opens
+      // keys/swarm.key, and otherwise the start asks for re-injection.
+      if (hasKeystore) {
+        const check = await keystorePassword.keystoreOpensWith(data, configPassword.value);
+        if (!check.opens) throw new keystorePassword.KeystorePasswordUnavailableError();
+      }
       log.warn('[Ant] The sealed keystore password will not open; using the one in config.yaml');
       return { password: configPassword.value, rawPasswordLine: null, sealed: false };
     }
