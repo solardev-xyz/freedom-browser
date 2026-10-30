@@ -2530,7 +2530,14 @@ export const routeInternalPageNavigation = (pageName, subPath = null, currentWeb
     return false;
   }
 
-  openOrFocusInternalPage(pageName, subPath);
+  // Answered by another tab. Switch to it only when the navigating tab is the
+  // one the user is looking at: a background page navigating itself to
+  // `freedom://settings` (a scripted `location` change, replayed here with
+  // that tab's own webview) must not pull the user away from the page they
+  // are reading, so the internal page opens or is routed in the background,
+  // as a Ctrl/Cmd+click does (#969).
+  const background = !!currentTab && currentTab.id !== tabState.activeTabId;
+  openOrFocusInternalPage(pageName, subPath, { background });
   return true;
 };
 
