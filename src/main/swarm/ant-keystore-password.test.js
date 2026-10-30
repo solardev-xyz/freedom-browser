@@ -673,8 +673,10 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
   });
 
   // Every commit a start makes is immediately preceded by the guard: a
-  // seal or reseal publication, the config.yaml write, and the password
-  // handed back for Ant. A commit added without one fails this.
+  // seal or reseal publication, an orphaned seal's removal, the sealed
+  // password handed back by unsealPassword, the config.yaml write, and the
+  // password handed back for Ant. A commit added without one, or a guard
+  // removed, fails this.
   describe('every commit is guarded', () => {
     const COMMITS = new Set(['config.yaml', 'keystore-password.sealed']);
     const run = async (storage, { arrange = async () => {} } = {}) => {
@@ -688,18 +690,37 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
         if (COMMITS.has(name)) events.push(`commit:${name}`);
         return realRename(from, to);
       });
+      // Removing the published seal (an orphan's, here) is a commit too.
+      const realUnlink = fs.unlinkSync;
+      jest.spyOn(fs, 'unlinkSync').mockImplementation((target) => {
+        if (path.basename(String(target)) === 'keystore-password.sealed') {
+          events.push('commit:forget');
+        }
+        return realUnlink(target);
+      });
+      // So is unsealPassword handing a password back to its caller.
+      const realUnseal = keystore.unsealPassword;
+      jest.spyOn(keystore, 'unsealPassword').mockImplementation(async (...args) => {
+        const password = await realUnseal(...args);
+        if (password !== null) events.push('commit:unseal');
+        return password;
+      });
       try {
         await ant.ensureConfig(dataDir, 1633, 1634);
         events.push('returned');
       } finally {
         keystore._setGuardHookForTests(null);
         fs.renameSync.mockRestore();
+        fs.unlinkSync.mockRestore();
+        keystore.unsealPassword.mockRestore();
       }
       return events;
     };
     const GUARD_FOR = {
       'commit:config.yaml': ['guard:config'],
       'commit:keystore-password.sealed': ['guard:seal', 'guard:reseal'],
+      'commit:forget': ['guard:forget'],
+      'commit:unseal': ['guard:unseal'],
       returned: ['guard:handoff'],
     };
     const expectGuarded = (events, expectedCommits) => {
@@ -742,7 +763,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
             await keystore.sealPassword(dataDir, 'sealed-password');
           },
         },
-        ['commit:config.yaml', 'returned'],
+        ['commit:unseal', 'commit:config.yaml', 'returned'],
       ],
       [
         "a rotated key's reseal",
@@ -753,7 +774,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
             await keystore.sealPassword(dataDir, 'sealed-password');
           },
         },
-        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+        ['commit:keystore-password.sealed', 'commit:unseal', 'commit:config.yaml', 'returned'],
       ],
       [
         'the broken-seal fallback',
@@ -780,7 +801,7 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
             fs.rmSync(swarmKeyPath);
           },
         },
-        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+        ['commit:forget', 'commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
       ],
     ])(
       '%s',
@@ -801,6 +822,37 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
         expectGuarded(events, expectedCommits);
       }
     );
+
+    // The two guards a removal would most quietly lose: the sequences a
+    // start records without them are refused (as removing either guard from
+    // the code was checked to fail the scenarios above).
+    test.each([
+      [
+        'guard:forget',
+        async (keystore) => {
+          fs.writeFileSync(swarmKeyPath, '{}');
+          await keystore.sealPassword(dataDir, 'orphaned');
+          fs.rmSync(swarmKeyPath);
+        },
+      ],
+      [
+        'guard:unseal',
+        async (keystore) => {
+          await writeRealKeystore('sealed-password');
+          await keystore.sealPassword(dataDir, 'sealed-password');
+        },
+      ],
+    ])('a start without %s is refused', async (guard, arrange) => {
+      const events = await run(fakeSafeStorage(), { arrange });
+      expect(events).toContain(guard);
+      const withoutGuard = events.filter((event) => event !== guard);
+      expect(() =>
+        expectGuarded(
+          withoutGuard,
+          withoutGuard.filter((e) => GUARD_FOR[e])
+        )
+      ).toThrow();
+    });
   });
 
   test('a seal that will not open never shadows a password config.yaml still has', async () => {
