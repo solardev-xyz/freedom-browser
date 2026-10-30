@@ -6,10 +6,14 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Freedom Agent: browse and work on projects with your own AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+- Freedom Agent: your own AI model, at work in your tabs, nodes and wallet ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
   - Off by default, turned on under Settings > AI
   - ChatGPT, Meta Muse and Claude subscriptions, API keys or Ollama
-  - Publishing to Swarm checks the files for secrets and keys first
+  - Reads, clicks, types and scrolls in pages, and uses their WebMCP tools
+  - Opens, switches and closes tabs, and uploads and downloads files
+  - Checks, starts and stops the Swarm, IPFS, Radicle, Tor and Myotis nodes
+  - Sends wallet funds and publishes to Swarm only once you approve
+  - Edits, runs and previews local projects
   - Dictation, also on-device with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5
 - `.eth`, `.wei` and `.gwei` registration and renewal through Agent ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457))
 - Open without gateway for eth.limo, eth.link and bzz.link pages ([#70](https://github.com/solardev-xyz/freedom-browser/issues/70)):
