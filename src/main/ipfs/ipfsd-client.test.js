@@ -297,10 +297,15 @@ test('the confinement report: its public part, and what a log line carries', () 
     ...CONFINEMENT,
     reasons: { network: 'TCP rules need Landlock ABI 4' },
   });
-  // glibc's resolver, or freedom-ipfsd's own over resolv.conf.
-  for (const resolution of ['system', 'files_only', 'resolv_conf']) {
+  // glibc's resolver, or freedom-ipfsd's own over resolv.conf or its
+  // fallback, whose reason is kept.
+  for (const resolution of ['system', 'files_only', 'resolv_conf', 'fallback']) {
     expect(validConfinement({ ...CONFINEMENT, resolution })).toMatchObject({ resolution });
   }
+  const why = "the system's DNS configuration couldn't be parsed: …";
+  expect(
+    validConfinement({ ...CONFINEMENT, resolution: 'fallback', reasons: { resolution: why } })
+  ).toMatchObject({ resolution: 'fallback', reasons: { resolution: why } });
   // Off Linux in direct mode, no resolution.
   expect(validConfinement({ ...CONFINEMENT, resolution: undefined })).toMatchObject({
     resolution: null,

@@ -59,8 +59,10 @@ const STATUSES = new Set(['enforced', 'partial', 'unavailable', 'blocked', 'none
 const PROPERTIES = ['files', 'exec', 'ipc', 'network'];
 // What resolves names while confined: glibc's resolver (`system`, or
 // `files_only` when it can't reach DNS) or, for freedom-ipfsd from 0.3.0, its
-// own over /etc/resolv.conf (`resolv_conf`).
-const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf']);
+// own one DNS configuration: /etc/resolv.conf as parsed (`resolv_conf`), or
+// its built-in servers where that can't be read or parsed (`fallback`, with
+// the reason).
+const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf', 'fallback']);
 const MECHANISM = /^[a-z0-9+-]{1,64}$/;
 const GAP = /^[a-z_]{1,32}$/;
 const MAX_GAPS = 16;
