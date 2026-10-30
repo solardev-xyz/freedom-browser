@@ -21,6 +21,12 @@ function assetUrl(relativePath) {
   return new URL(`../../../node_modules/pdfjs-dist/${relativePath}`, import.meta.url).href;
 }
 
+// Not pdfjs-dist's standard_fonts/: build.files leaves that directory out
+// because of its Liberation Sans 1.x licence (#962). This one carries Liberation
+// Sans 2.1.5 (OFL-1.1) under the file names PDF.js looks up, plus the two
+// Foxit fonts it fetches while useSystemFonts is on.
+const STANDARD_FONT_DATA_URL = new URL('../assets/pdf-fonts/', import.meta.url).href;
+
 function safeError(error) {
   const name = typeof error?.name === 'string' ? error.name : '';
   const message = typeof error?.message === 'string' ? error.message : '';
@@ -69,7 +75,8 @@ async function loadDocument(data) {
     data,
     cMapUrl: assetUrl('cmaps/'),
     cMapPacked: true,
-    standardFontDataUrl: assetUrl('standard_fonts/'),
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    useSystemFonts: true,
     wasmUrl: assetUrl('wasm/'),
     iccUrl: assetUrl('iccs/'),
     enableScripting: false,

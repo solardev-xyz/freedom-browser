@@ -12,8 +12,7 @@
       "better-sqlite3",
       "freedom_ipfs_native.node",
       "libradicle.node",
-      "myotis-node.node",
-      "@napi-rs/canvas (skia.<platform>.node, installed as an optional dependency of pdfjs-dist and never loaded)"
+      "myotis-node.node"
     ],
     "external_binaries": ["antd", "arti", "myotis-supervisor", "whisper-cli"],
     "vendored_renderer_bundles": [
@@ -22,7 +21,7 @@
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries. Since 0.8.8 the agent's npm stack ships in app.asar too, including pdfjs-dist with its own fonts and WebAssembly decoders and, through pdfjs-dist's optional dependency, the @napi-rs/canvas Skia addon, which asarUnpack's **/*.node puts under app.asar.unpacked."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries. Since 0.8.8 the agent's npm stack ships in app.asar too, including pdfjs-dist with its WebAssembly decoders. build.files leaves out pdfjs-dist's standard_fonts/ and its optional @napi-rs/canvas Skia addon (#962), and scripts/check-asar-contents.js fails a build that packs either."
   },
   "dependencies": [
     {
@@ -896,17 +895,14 @@
           "BSD-3-Clause",
           "BSD-2-Clause",
           "MIT",
-          "CC0-1.0",
-          "GPL-2.0-only WITH Font-exception-2.0"
+          "CC0-1.0"
         ],
-        "raw": "Apache-2.0 (PDF.js); bundles PDFium's JBIG2 decoder and Foxit fonts (BSD-3-Clause), OpenJPEG (BSD-2-Clause), qcms and QuickJS (MIT), Adobe CMaps (BSD-3-Clause), ICC profiles (CC0-1.0) and Liberation Sans (GPL-2.0 with Red Hat's font exception)",
+        "raw": "Apache-2.0 (PDF.js); bundles PDFium's JBIG2 decoder (BSD-3-Clause), OpenJPEG (BSD-2-Clause), qcms and QuickJS (MIT), Adobe CMaps (BSD-3-Clause) and ICC profiles (CC0-1.0)",
         "license_files": [
           "LICENSE",
           "wasm/LICENSE_JBIG2",
           "wasm/LICENSE_OPENJPEG",
           "wasm/LICENSE_QCMS",
-          "standard_fonts/LICENSE_FOXIT",
-          "standard_fonts/LICENSE_LIBERATION",
           "cmaps/LICENSE",
           "iccs/LICENSE"
         ],
@@ -914,60 +910,20 @@
       },
       "bundled_with_app": true,
       "linking_or_integration": "renderer-asset",
-      "risk": "red",
-      "issues": [
-        {
-          "kind": "copyleft",
-          "details": "standard_fonts/LiberationSans-{Regular,Bold,Italic,BoldItalic}.ttf are GPL-2.0 with a font exception that covers documents embedding the font, not redistribution of the font files. They ship unmodified in app.asar and src/renderer/lib/pdf-processor.js loads them through standardFontDataUrl. The package's own licence field says Apache-2.0, so the production-tree sweep in licenses-audit.test.js cannot see them.",
-          "recommended_fix": "Maintainer decision in https://github.com/solardev-xyz/freedom-browser/issues/962: treat them as aggregated data (the uBlock precedent, #412), exclude them from build.files, or replace them with OFL-licensed Liberation 2.x."
-        }
-      ]
-    },
-    {
-      "name": "@napi-rs/canvas",
-      "version": "1.0.13",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/Brooooooklyn/canvas"
-      },
-      "license": {
-        "spdx": [
-          "MIT",
-          "BSD-3-Clause",
-          "FTL",
-          "ICU",
-          "IJG",
-          "libpng-2.0",
-          "Zlib",
-          "BSD-2-Clause",
-          "Apache-2.0",
-          "MPL-2.0"
-        ],
-        "raw": "MIT (binding); the per-platform skia.<platform>.node statically links Skia (BSD-3-Clause) and the libraries its sbom.cdx.json lists: FreeType (FTL), ICU, libjpeg-turbo (BSD-3-Clause AND IJG AND Zlib), libpng (libpng-2.0), libwebp, libjxl, libavif/libaom, harfbuzz, expat, brotli, highway, wuffs, zlib and the MPL-2.0 Rust crates cssparser, cssparser-macros, dtoa-short and selectors",
-        "license_files": [
-          "LICENSE",
-          "sbom.cdx.json"
-        ],
-        "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "native-addon",
-      "risk": "yellow",
+      "risk": "green",
       "issues": [
         {
           "kind": "note",
-          "details": "Installed as pdfjs-dist's optional dependency and packaged, roughly 37 MB per platform, but never loaded: PDF.js runs in a sandboxed BrowserWindow and uses Chromium's canvas. FreeType's FTL and the IJG licence require an acknowledgement in the documentation, which NOTICES carries. Nine SBOM components declare no licence: the binding's own crates (canvas, skia-fontations) and Rust build tooling (anstyle, clap, clap_builder, clap_lex, cxxbridge-cmd, strsim).",
-          "recommended_fix": "Exclude node_modules/@napi-rs/** from the package (https://github.com/solardev-xyz/freedom-browser/issues/962); until then keep the NOTICES entry."
+          "details": "build.files leaves out standard_fonts/, whose Liberation Sans 1.x is GPL-2.0 with a font exception that does not cover redistributing the fonts, and its optional dependency @napi-rs/canvas, a Skia addon the PDF processor never loads (#962). scripts/check-asar-contents.js fails a build that packs either. The standard fonts the processor uses ship from src/renderer/assets/pdf-fonts/ instead (see assets).",
+          "recommended_fix": null
         }
       ]
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 390,
+    "unique_packages": 388,
     "counts": {
-      "MIT": 256,
+      "MIT": 254,
       "Apache-2.0": 59,
       "ISC": 24,
       "BSD-3-Clause": 17,
@@ -985,7 +941,7 @@
       "Python-2.0": 1,
       "Unlicense": 1
     },
-    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all. Counted on a Linux x64 install: platform-specific optional packages (one @napi-rs/canvas-<platform> per target) count once. Counts follow each package's declared licence field, so files a package bundles under another licence (pdfjs-dist's fonts) are recorded on its dependencies entry instead"
+    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all. Counted on a Linux x64 install, leaving out @napi-rs/canvas and its platform package, which npm installs but build.files excludes. Counts follow each package's declared licence field, so files a package bundles under another licence (pdfjs-dist's fonts) are recorded on its dependencies entry instead"
   },
   "dev_dependencies_summary": {
     "risk_assessment": "Dev dependencies are not shipped with the application and do not affect the license of the distributed product. Notable: caniuse-lite is CC-BY-4.0 but is never distributed.",
@@ -1018,6 +974,31 @@
           "kind": "trademark",
           "details": "Official provider icons bundled locally; source URLs and attribution are recorded in the directory README and NOTICES. Per-mark redistribution terms remain unconfirmed.",
           "recommended_fix": "Confirm brand terms before a final tag, or use generic glyphs."
+        }
+      ]
+    },
+    {
+      "name": "PDF standard fonts",
+      "path": "src/renderer/assets/pdf-fonts/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "OFL-1.1",
+          "BSD-3-Clause"
+        ],
+        "raw": "Liberation Sans 2.1.5 (OFL-1.1, unmodified, Reserved Font Name Liberation); FoxitSymbol.pfb and FoxitDingbats.pfb copied from pdfjs-dist (BSD-3-Clause, PDFium)",
+        "license_files": [
+          "LICENSE_LIBERATION",
+          "LICENSE_FOXIT"
+        ],
+        "notice_required": true
+      },
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Replaces pdfjs-dist's standard_fonts/ for the agent's PDF processor (#962). Liberation Sans 2.1.5 comes unmodified from the upstream release tarball (sha256 7191c669...); the OFL's Reserved Font Name means any subset or edit would have to be renamed. The directory README records each file's sha256, and src/renderer/lib/pdf-processor.test.js fails if the Foxit copies drift from the installed pdfjs-dist.",
+          "recommended_fix": null
         }
       ]
     },
@@ -1115,37 +1096,31 @@
   ],
   "summary": {
     "green": 381,
-    "yellow": 4,
+    "yellow": 3,
     "orange": 5,
-    "red": 1,
+    "red": 0,
     "unknown": 0
   },
-  "blockers": [
-    {
-      "kind": "copyleft",
-      "component": "Liberation Sans (pdfjs-dist 6.3.289, standard_fonts/LiberationSans-*.ttf)",
-      "details": "GPL-2.0 font files with Red Hat's font exception ship unmodified in app.asar and are loaded by the agent's PDF processor. The exception does not cover redistributing the fonts, so this is GPL-2.0 distribution that no maintainer decision covers yet.",
-      "recommended_fix": "Decide in https://github.com/solardev-xyz/freedom-browser/issues/962: an aggregate position like #412, excluding the fonts from the package, or OFL-licensed Liberation 2.x."
-    }
-  ],
+  "blockers": [],
   "resolved_since_last_audit": [
     {
       "kind": "copyleft",
       "component": "qrious 4.0.2 (src/renderer/vendor/qrious.min.js)",
       "details": "A GPL-3.0 QR-code library was committed under src/renderer/vendor/ and shipped inside app.asar via the src/**/* files pattern, unreferenced by any source file. GPL-3.0 is strong copyleft and is not compatible with distributing Freedom under MPL-2.0. The 2026-08-19 audit's `Copyleft: 0` line missed it.",
       "resolution": "Deleted, together with two other unreferenced vendor files (qrcode.esm.js, and qrcode.min.js which was a 64-byte jsDelivr 404 body). The app's QR rendering uses the npm `qrcode` package (MIT) from the main process."
+    },
+    {
+      "kind": "copyleft",
+      "component": "Liberation Sans 1.x (pdfjs-dist 6.3.289, standard_fonts/LiberationSans-*.ttf)",
+      "details": "GPL-2.0 font files with Red Hat's font exception, which does not cover redistributing the fonts, came into app.asar with the agent's PDF processor, and the processor loaded them. pdfjs-dist's optional @napi-rs/canvas also packaged an unused Skia addon of about 37 MB per platform with unattributed native libraries.",
+      "resolution": "Maintainer decision in #962: build.files leaves out pdfjs-dist's standard_fonts/ and node_modules/@napi-rs/, scripts/check-asar-contents.js fails a build that packs either, and the processor's standardFontDataUrl points at src/renderer/assets/pdf-fonts/, which carries unmodified Liberation Sans 2.1.5 (OFL-1.1) plus the two Foxit fonts it fetches."
     }
   ],
   "verdict": {
-    "status": "BLOCKED",
-    "message": "Not OK to ship until https://github.com/solardev-xyz/freedom-browser/issues/962 is decided: pdfjs-dist ships GPL-2.0 Liberation Sans fonts in app.asar. Everything else is compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
+    "status": "OK_TO_SHIP",
+    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code ships: the unreferenced qrious bundle was removed in 0.8.5, and pdfjs-dist's GPL-2.0 Liberation Sans 1.x fonts are left out of the package in favour of OFL-licensed Liberation Sans 2.1.5 (#962). The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
-    {
-      "priority": "required",
-      "action": "Decide the pdfjs-dist Liberation fonts",
-      "details": "pdfjs-dist ships GPL-2.0 Liberation Sans fonts in app.asar (https://github.com/solardev-xyz/freedom-browser/issues/962). Record the decision here and in LICENSE_AUDIT.md, then clear the blocker."
-    },
     {
       "priority": "required",
       "action": "Keep third-party notices current",
@@ -1177,9 +1152,9 @@
       "details": "solardev-xyz/libradicle declares MIT OR Apache-2.0 in Cargo.toml but commits no license text."
     },
     {
-      "priority": "recommended",
-      "action": "Stop packaging @napi-rs/canvas",
-      "details": "pdfjs-dist's optional @napi-rs/canvas ships a Skia addon per platform that Freedom never loads. Excluding node_modules/@napi-rs/** from build.files removes it and its NOTICES entry (https://github.com/solardev-xyz/freedom-browser/issues/962)."
+      "priority": "required",
+      "action": "Keep pdfjs-dist's excluded paths out of the package",
+      "details": "build.files leaves out node_modules/pdfjs-dist/standard_fonts/ (GPL-2.0 Liberation Sans 1.x) and node_modules/@napi-rs/ (unused Skia addon), in the top-level list and every platform list. scripts/check-asar-contents.js fails a build that packs either, and the PDF processor reads its standard fonts from src/renderer/assets/pdf-fonts/ (#962)."
     }
   ]
 }
