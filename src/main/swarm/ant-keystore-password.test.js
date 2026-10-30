@@ -571,6 +571,238 @@ describe('Ant config.yaml and the sealed password (K-3)', () => {
     expect(fs.readFileSync(swarmKeyPath, 'utf8')).toBe(replacement);
   });
 
+  // K-3 round 6: ensureConfig pins keys/swarm.key's digest before any await,
+  // and a synchronous guard re-reads it immediately before every commit.
+  // A keystore appearing during a fresh start's keyring awaits, however
+  // they end, gets no config.yaml and no seal.
+  test.each([
+    [
+      'the keyring availability check',
+      (storage, appear) =>
+        storage.isAsyncEncryptionAvailable.mockImplementationOnce(async () => {
+          await appear();
+          return false;
+        }),
+    ],
+    [
+      'a failed encryption',
+      (storage, appear) =>
+        storage.encryptStringAsync.mockImplementationOnce(async () => {
+          await appear();
+          throw new Error('encryption failed');
+        }),
+    ],
+    [
+      'a fallback-key (v10) ciphertext',
+      (storage, appear) =>
+        storage.encryptStringAsync.mockImplementationOnce(async (text) => {
+          await appear();
+          return Buffer.from(`v10${Buffer.from(text).toString('hex')}`);
+        }),
+    ],
+  ])('a keystore appearing during %s on a fresh start is refused', async (_label, arrange) => {
+    const storage = fakeSafeStorage();
+    arrange(storage, () => writeRealKeystore('replacement-password'));
+    const { ant, keystore } = loadAntManager(storage);
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.existsSync(configPath)).toBe(false);
+    expect(fs.readdirSync(path.join(dataDir, 'keys'))).toEqual(['swarm.key']);
+    expect(await opensKeystore('replacement-password')).toBe(true);
+  });
+
+  // A keystore replaced while a healthy seal is opened, or while a rotated
+  // key reseals it, is never handed the old password.
+  const sealedStart = async (storage) => {
+    await writeRealKeystore('sealed-password');
+    const { ant, keystore } = loadAntManager(storage);
+    expect(await keystore.sealPassword(dataDir, 'sealed-password')).toBe(true);
+    const configBefore = 'api-addr: 127.0.0.1:1633\n';
+    fs.writeFileSync(configPath, configBefore);
+    const sealBefore = fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8');
+    return { ant, keystore, configBefore, sealBefore };
+  };
+
+  test('a keystore replaced during an ordinary decrypt is refused', async () => {
+    const storage = fakeSafeStorage();
+    const { ant, keystore, configBefore, sealBefore } = await sealedStart(storage);
+    const decrypt = storage.decryptStringAsync.getMockImplementation();
+    storage.decryptStringAsync.mockImplementationOnce(async (buffer) => {
+      await writeRealKeystore('replacement-password');
+      return decrypt(buffer);
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8')).toBe(sealBefore);
+    expect(await opensKeystore('replacement-password')).toBe(true);
+  });
+
+  test("a keystore replaced during a rotated key's reseal is refused", async () => {
+    const storage = fakeSafeStorage();
+    const { ant, keystore, configBefore, sealBefore } = await sealedStart(storage);
+    const decrypt = storage.decryptStringAsync.getMockImplementation();
+    storage.decryptStringAsync.mockImplementationOnce(async (buffer) => ({
+      ...(await decrypt(buffer)),
+      shouldReEncrypt: true,
+    }));
+    const encrypt = storage.encryptStringAsync.getMockImplementation();
+    storage.encryptStringAsync.mockImplementationOnce(async (text) => {
+      await writeRealKeystore('replacement-password');
+      return encrypt(text);
+    });
+
+    await expect(ant.ensureConfig(dataDir, 1633, 1634)).rejects.toThrow(keystore.REINJECT_MESSAGE);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore);
+    expect(fs.readFileSync(keystore.sealedPasswordPath(dataDir), 'utf8')).toBe(sealBefore);
+    expect(fs.readdirSync(path.join(dataDir, 'keys')).sort()).toEqual([
+      'keystore-password.sealed',
+      'swarm.key',
+    ]);
+  });
+
+  test('a healthy sealed start still runs no scrypt', async () => {
+    await writeRealKeystore('sealed-password');
+    const { ant, keystore } = loadAntManager(fakeSafeStorage());
+    expect(await keystore.sealPassword(dataDir, 'sealed-password')).toBe(true);
+    // The registry the module requires ethers from, after loadAntManager.
+    const decrypt = jest.spyOn(require('ethers').Wallet, 'fromEncryptedJson');
+
+    expect((await ant.ensureConfig(dataDir, 1633, 1634)).sealedPassword).toBe('sealed-password');
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  // Every commit a start makes is immediately preceded by the guard: a
+  // seal or reseal publication, the config.yaml write, and the password
+  // handed back for Ant. A commit added without one fails this.
+  describe('every commit is guarded', () => {
+    const COMMITS = new Set(['config.yaml', 'keystore-password.sealed']);
+    const run = async (storage, { arrange = async () => {} } = {}) => {
+      const { ant, keystore } = loadAntManager(storage);
+      await arrange(keystore);
+      const events = [];
+      keystore._setGuardHookForTests((site) => events.push(`guard:${site}`));
+      const realRename = fs.renameSync;
+      jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        const name = path.basename(String(to));
+        if (COMMITS.has(name)) events.push(`commit:${name}`);
+        return realRename(from, to);
+      });
+      try {
+        await ant.ensureConfig(dataDir, 1633, 1634);
+        events.push('returned');
+      } finally {
+        keystore._setGuardHookForTests(null);
+        fs.renameSync.mockRestore();
+      }
+      return events;
+    };
+    const GUARD_FOR = {
+      'commit:config.yaml': ['guard:config'],
+      'commit:keystore-password.sealed': ['guard:seal', 'guard:reseal'],
+      returned: ['guard:handoff'],
+    };
+    const expectGuarded = (events, expectedCommits) => {
+      events.forEach((event, index) => {
+        if (GUARD_FOR[event])
+          expect([event, GUARD_FOR[event]]).toEqual([
+            event,
+            expect.arrayContaining([events[index - 1]]),
+          ]);
+      });
+      expect(events.filter((event) => GUARD_FOR[event])).toEqual(expectedCommits);
+    };
+
+    test.each([
+      [
+        'a fresh start with a keyring',
+        {},
+        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+      ],
+      [
+        'a fresh start without one',
+        { storage: { available: false } },
+        ['commit:config.yaml', 'returned'],
+      ],
+      [
+        'a migration',
+        {
+          arrange: async () => {
+            await writeRealKeystore('migrated-password');
+            fs.writeFileSync(configPath, 'password: migrated-password\n');
+          },
+        },
+        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+      ],
+      [
+        'a healthy sealed start',
+        {
+          arrange: async (keystore) => {
+            await writeRealKeystore('sealed-password');
+            await keystore.sealPassword(dataDir, 'sealed-password');
+          },
+        },
+        ['commit:config.yaml', 'returned'],
+      ],
+      [
+        "a rotated key's reseal",
+        {
+          rotate: true,
+          arrange: async (keystore) => {
+            await writeRealKeystore('sealed-password');
+            await keystore.sealPassword(dataDir, 'sealed-password');
+          },
+        },
+        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+      ],
+      [
+        'the broken-seal fallback',
+        {
+          arrange: async (keystore) => {
+            await writeRealKeystore('from-config');
+            fs.writeFileSync(keystore.sealedPasswordPath(dataDir), sealRecord('v11zz'));
+            fs.writeFileSync(configPath, 'password: from-config\n');
+          },
+        },
+        ['commit:config.yaml', 'returned'],
+      ],
+      [
+        'a raw config.yaml password',
+        { arrange: async () => fs.writeFileSync(configPath, 'password: !!str raw\n') },
+        ['commit:config.yaml', 'returned'],
+      ],
+      [
+        'an orphaned seal',
+        {
+          arrange: async (keystore) => {
+            fs.writeFileSync(swarmKeyPath, '{}');
+            await keystore.sealPassword(dataDir, 'orphaned');
+            fs.rmSync(swarmKeyPath);
+          },
+        },
+        ['commit:keystore-password.sealed', 'commit:config.yaml', 'returned'],
+      ],
+    ])(
+      '%s',
+      async (
+        _label,
+        { storage: storageOptions = {}, rotate = false, arrange },
+        expectedCommits
+      ) => {
+        const storage = fakeSafeStorage(storageOptions);
+        if (rotate) {
+          const decrypt = storage.decryptStringAsync.getMockImplementation();
+          storage.decryptStringAsync.mockImplementation(async (buffer) => ({
+            ...(await decrypt(buffer)),
+            shouldReEncrypt: storage.decryptStringAsync.mock.calls.length === 2,
+          }));
+        }
+        const events = await run(storage, { arrange });
+        expectGuarded(events, expectedCommits);
+      }
+    );
+  });
+
   test('a seal that will not open never shadows a password config.yaml still has', async () => {
     await writeRealKeystore('from-config');
     const { ant, keystore } = loadAntManager(fakeSafeStorage());

@@ -329,6 +329,7 @@ function loadAntManagerModule(options = {}) {
       return dir;
     }),
     handleFor: (dir) => handles.find((handle) => handle.path === dir),
+    handlesFor: (dir) => handles.filter((handle) => handle.path === dir),
   };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
@@ -361,6 +362,8 @@ function loadAntManagerModule(options = {}) {
         saveSettings,
       }),
       crypto: () => ({
+        // Hashing as it is (the keystore pin's digest); random bytes chosen.
+        ...jest.requireActual('crypto'),
         randomBytes,
       }),
       fs: () => fsMock,
@@ -628,7 +631,11 @@ describe('ant-manager', () => {
     expect(ctx.privateFiles.openPrivateDir).toHaveBeenCalledWith(dataDir);
     const data = ctx.privateFiles.handleFor(dataDir);
     expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
-    expect(ctx.privateFiles.handleFor(keysDir).repair).toHaveBeenCalledWith('swarm.key');
+    expect(
+      ctx.privateFiles
+        .handlesFor(keysDir)
+        .some((keys) => keys.repair.mock.calls.some(([name]) => name === 'swarm.key'))
+    ).toBe(true);
     expect(data.read).toHaveBeenCalledWith('config.yaml');
     expect(data.write).toHaveBeenCalledWith('config.yaml', expect.any(String));
     expect(data.close).toHaveBeenCalled();
@@ -681,8 +688,8 @@ describe('ant-manager', () => {
     expect(keystorePassword.sealPassword).toHaveBeenCalledWith(
       expect.objectContaining({ path: dataDir }),
       'legacy-keystore-password',
-      // A keystore is there: the password must open it before it is sealed.
-      { verifyKeystore: true }
+      // The password must open the pinned keystore before it is sealed.
+      { verifyKeystore: true, pin: expect.objectContaining({ expected: expect.any(String) }) }
     );
     const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
     expect(config).not.toMatch(/^password:/m);

@@ -237,7 +237,12 @@ function keystoreExists(keys) {
  *   password does not open keys/swarm.key, or the keystore appeared or
  *   changed after it was checked
  */
-async function sealPassword(data, password, { verifyKeystore = false } = {}) {
+async function sealPassword(data, password, { verifyKeystore = false, pin } = {}) {
+  // The keystore this seal is for: the caller's pin (ensureConfig), or the
+  // one on disk now (injection, recovery), whose change means no seal.
+  const keystorePin = pin || pinKeystore(data, { strict: false });
+  // No keyring returns before any check; the caller's commit guard still
+  // stands between that and writing config.yaml.
   const storage = await availableStorage();
   if (!storage) return false;
   let ciphertext;
@@ -251,7 +256,6 @@ async function sealPassword(data, password, { verifyKeystore = false } = {}) {
   // Only once the seal will really happen, so a keyring-less host never
   // pays for the check: a password that does not open keys/swarm.key is not
   // sealed, and the caller leaves everything as it was.
-  let expectedDigest;
   if (verifyKeystore) {
     const check = await keystoreOpensWith(data, password);
     if (!check.opens) {
@@ -259,12 +263,12 @@ async function sealPassword(data, password, { verifyKeystore = false } = {}) {
         new Error('the password does not open keys/swarm.key')
       );
     }
-    expectedDigest = check.digest;
+    keystorePin.confirm(check.digest);
   }
   let opened = null;
   try {
     opened = openKeys(data, { create: true });
-    return await sealInto(opened.keys, storage, ciphertext, password, expectedDigest);
+    return await sealInto(opened.keys, storage, ciphertext, password, keystorePin, 'seal');
   } catch (err) {
     // A keystore that changed after the check is not an ordinary failure to
     // seal: nothing may go on as if the password were the keystore's.
@@ -293,14 +297,58 @@ function keystoreChanged() {
   );
 }
 
-async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
+// Tests: told the site of every commit guard, as it runs.
+let guardHook = null;
+
+/**
+ * The keystore a decision is made against: keys/swarm.key's SHA-256 when it
+ * was pinned (null: none), and the one check that stands immediately before
+ * every commit made on that decision: publishing a seal or a reseal,
+ * handing a sealed password back, writing config.yaml, handing the
+ * password to Ant (ensureConfig). Everything a decision awaited (the
+ * keychain, scrypt) happened before its guard, and the guard itself is
+ * synchronous, so no keystore change can fall between the check and the
+ * commit within this process.
+ *
+ * A strict pin (ensureConfig) fails with the re-inject error; a lenient one
+ * (sealing after injection or recovery) just stops that seal.
+ */
+class KeystorePin {
+  constructor(data, { strict = true } = {}) {
+    this.data = data;
+    this.strict = strict;
+    this.expected = keystoreDigestOf(data);
+  }
+
+  changed() {
+    return this.strict
+      ? keystoreChanged()
+      : new Error('the keystore changed while it was being sealed');
+  }
+
+  /** A digest a check produced must be the pinned keystore's. */
+  confirm(digest) {
+    if (digest !== this.expected) throw this.changed();
+  }
+
+  /** The commit guard: keys/swarm.key re-read, still the pinned one. */
+  guard(site) {
+    guardHook?.(site);
+    if (keystoreDigestOf(this.data) !== this.expected) throw this.changed();
+  }
+}
+
+/** Pin keys/swarm.key as it is now (`data`: a PrivateDir or path). */
+function pinKeystore(data, options) {
+  return new KeystorePin(data, options);
+}
+
+async function sealInto(keys, storage, ciphertext, password, pin, site) {
   let staged = false;
   try {
-    // Bound to the keystore on disk now: the one this password opens.
-    const digest = keystoreDigest(keys);
-    if (expectedDigest !== undefined && digest !== expectedDigest) {
-      throw keystoreChanged();
-    }
+    // Bound to the pinned keystore: the one this password opens.
+    pin.confirm(keystoreDigest(keys));
+    const digest = pin.expected;
     keys.write(STAGED_FILE, encodeSeal(ciphertext, digest));
     staged = true;
     // What is on disk, not what was meant to be: it must open to exactly
@@ -311,22 +359,17 @@ async function sealInto(keys, storage, ciphertext, password, expectedDigest) {
     }
     const { result } = await storage.decryptStringAsync(stored.ciphertext);
     if (result !== password) throw new Error('the staged seal does not open to the password');
-    if (stored.keystoreSha256 !== digest || keystoreDigest(keys) !== digest) {
-      // After a check (migration) that is a keystore this password was not
-      // checked against: fail closed. Otherwise just no seal.
-      if (expectedDigest !== undefined) throw keystoreChanged();
-      throw new Error('the keystore changed while it was being sealed');
-    }
+    if (stored.keystoreSha256 !== digest) throw new Error('the staged seal names another keystore');
     // Published as those verified bytes, atomically (temp file and rename).
+    pin.guard(site);
     keys.write(SEALED_FILE, encodeSeal(stored.ciphertext, digest));
     // The keystore can still change while that write runs: checked once
     // more, and a seal now bound to the wrong keystore is taken back.
     if (keystoreDigest(keys) !== digest) {
       withdrawSeal(keys);
-      // After a check (migration) this fails closed whatever happened to the
-      // withdrawal, so the config.yaml password stays where it is.
-      if (expectedDigest !== undefined) throw keystoreChanged();
-      throw new Error('the keystore changed while it was being sealed');
+      // A strict pin fails closed whatever happened to the withdrawal, so
+      // the config.yaml password stays where it is.
+      throw pin.changed();
     }
     return true;
   } finally {
@@ -365,12 +408,16 @@ function removeStaleSealStaging(keys) {
 /**
  * The sealed password, or null when there is none.
  * @param {import('../private-files').PrivateDir|string} data the data directory
+ * @param {{pin?: KeystorePin}} [options] the keystore the caller decided
+ *   against (ensureConfig); otherwise keys/swarm.key as it is now
  * @returns {Promise<string|null>}
  * @throws {KeystorePasswordUnavailableError} when it cannot be read or
- *   decrypted, was sealed for another keystore than keys/swarm.key, or
- *   (Linux) was not sealed with a keyring's key
+ *   decrypted, was sealed for another keystore than the pinned one, the
+ *   keystore changed while it was opened, or (Linux) was not sealed with a
+ *   keyring's key
  */
-async function unsealPassword(data) {
+async function unsealPassword(data, { pin } = {}) {
+  const keystorePin = pin || pinKeystore(data);
   const { keys, close } = openKeys(data, { create: false });
   try {
     if (!hasEntry(keys, SEALED_FILE)) return null;
@@ -381,16 +428,20 @@ async function unsealPassword(data) {
       if (record === null) return null;
       if (!keyedByKeyring(record.ciphertext)) throw new Error('not sealed with a keyring key');
       // Checked before the seal is trusted (or the keychain asked): a seal
-      // for another keystore than the one on disk is a broken pair.
-      if (record.keystoreSha256 !== keystoreDigest(keys)) {
+      // for another keystore than the pinned one is a broken pair.
+      if (record.keystoreSha256 !== keystorePin.expected) {
         throw new Error('the seal belongs to another keystore');
       }
       const { result, shouldReEncrypt } = await storage.decryptStringAsync(record.ciphertext);
       if (typeof result !== 'string' || !result) throw new Error('empty password');
       // The keychain rotated its key: store it under the current one.
-      if (shouldReEncrypt) await resealInto(keys, storage, result);
+      if (shouldReEncrypt) await resealInto(keys, storage, result, keystorePin);
+      // Handed back only for the keystore it was sealed for, after every
+      // await above.
+      keystorePin.guard('unseal');
       return result;
     } catch (err) {
+      if (err instanceof KeystorePasswordUnavailableError) throw err;
       throw new KeystorePasswordUnavailableError(err);
     }
   } finally {
@@ -398,11 +449,13 @@ async function unsealPassword(data) {
   }
 }
 
-async function resealInto(keys, storage, password) {
+async function resealInto(keys, storage, password, pin) {
   try {
     const ciphertext = await storage.encryptStringAsync(password);
-    if (keyedByKeyring(ciphertext)) await sealInto(keys, storage, ciphertext, password);
+    if (keyedByKeyring(ciphertext))
+      await sealInto(keys, storage, ciphertext, password, pin, 'reseal');
   } catch (err) {
+    if (err instanceof KeystorePasswordUnavailableError) throw err;
     console.warn('[AntKeystore] Could not re-seal the keystore password:', err.message);
   }
 }
@@ -659,8 +712,12 @@ module.exports = {
   keystoreAddress,
   keystoreOpensWith,
   keystoreDigestOf,
+  pinKeystore,
   sealedPasswordPath,
   _setSafeStorageForTests: (storage) => {
     safeStorageOverride = storage;
+  },
+  _setGuardHookForTests: (hook) => {
+    guardHook = hook;
   },
 };

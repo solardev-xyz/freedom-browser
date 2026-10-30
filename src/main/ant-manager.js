@@ -341,12 +341,13 @@ function isManagedAntNode() {
  * @returns {Promise<{password: string|null, rawPasswordLine: string|null,
  *   sealed: boolean}>}
  */
-async function resolveKeystorePassword(data, configPassword, hasKeystore) {
+async function resolveKeystorePassword(data, configPassword, pin) {
+  const hasKeystore = pin.expected !== null;
   const hadSeal = keystorePassword.hasSealedPassword(data);
   let sealedPassword = null;
   let unsealError = null;
   try {
-    sealedPassword = await keystorePassword.unsealPassword(data);
+    sealedPassword = await keystorePassword.unsealPassword(data, { pin });
   } catch (err) {
     unsealError = err;
   }
@@ -367,9 +368,8 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
       // keystore is still the one checked. Otherwise the start asks for
       // re-injection.
       const check = await keystorePassword.keystoreOpensWith(data, configPassword.value);
-      if (!check.opens || keystorePassword.keystoreDigestOf(data) !== check.digest) {
-        throw new keystorePassword.KeystorePasswordUnavailableError();
-      }
+      if (!check.opens) throw new keystorePassword.KeystorePasswordUnavailableError();
+      pin.confirm(check.digest);
       log.warn('[Ant] The sealed keystore password will not open; using the one in config.yaml');
       return { password: configPassword.value, rawPasswordLine: null, sealed: false };
     }
@@ -387,12 +387,14 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
       // appears meanwhile is checked too (none is the null digest).
       sealed: await keystorePassword.sealPassword(data, configPassword.value, {
         verifyKeystore: true,
+        pin,
       }),
     };
   }
   if (unsealError) {
     if (hasKeystore) throw unsealError;
     // No keystore needs it any more: drop the copy that will not open.
+    pin.guard('forget');
     keystorePassword.forgetSealedPassword(data);
   }
   if (hasKeystore) throw new keystorePassword.KeystorePasswordUnavailableError();
@@ -403,7 +405,7 @@ async function resolveKeystorePassword(data, configPassword, hasKeystore) {
     rawPasswordLine: null,
     // Checked too, cheaply (no keystore, no scrypt): a keystore that
     // appeared during the awaits above never gets this new password sealed.
-    sealed: await keystorePassword.sealPassword(data, password, { verifyKeystore: true }),
+    sealed: await keystorePassword.sealPassword(data, password, { verifyKeystore: true, pin }),
   };
 }
 
@@ -442,6 +444,11 @@ async function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
 
 async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
+  // The keystore this start decides against, pinned before any await. Every
+  // commit below (a seal, config.yaml, the password handed to Ant) is
+  // preceded by the pin's synchronous guard: a keystore that appeared or
+  // changed meanwhile fails the start with the re-inject error (K-3).
+  const pin = keystorePassword.pinKeystore(data);
   if (keys) keystorePassword.removeStaleSealStaging(keys);
 
   // The password an existing config.yaml still gives Ant, if any
@@ -454,11 +461,10 @@ async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
     log.warn('[Ant] Could not read the existing config');
   }
 
-  const hasKeystore = keystorePassword.keystoreExists(keys);
   const { password, rawPasswordLine, sealed } = await resolveKeystorePassword(
     data,
     configPassword,
-    hasKeystore
+    pin
   );
 
   const resolverRpcEndpoint = getPrimaryEthereumRpcUrl();
@@ -479,6 +485,7 @@ async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
   });
 
   // config.yaml can hold the keystore password: owner-only (K-3).
+  pin.guard('config');
   data.write(CONFIG_FILE, configContent);
   log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
@@ -498,6 +505,7 @@ async function writeConfigWithHandles(data, keys, dataDir, apiPort, p2pPort) {
     log.info('[Ant] No injected keystore; antd will self-initialize its node identity on start');
   }
 
+  pin.guard('handoff');
   return { configPath, sealedPassword: sealed ? password : null };
 }
 
