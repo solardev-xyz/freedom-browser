@@ -1,1 +1,0 @@
-- The local Radicle repository viewer's data is only served to Freedom's own viewer page, not to a look-alike file opened from elsewhere on disk ([#662](https://github.com/solardev-xyz/freedom-browser/issues/662))

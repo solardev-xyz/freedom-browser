@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.8-dev",
+  "version": "0.8.8",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -174,6 +174,8 @@
         "!src/**/__tests__/**",
         "!src/**/__fixtures__/**",
         "!src/**/__mocks__/**",
+        "!**/node_modules/pdfjs-dist/standard_fonts/**",
+        "!**/node_modules/@napi-rs/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
       ],
       "extraResources": [
@@ -231,6 +233,8 @@
         "!src/**/__tests__/**",
         "!src/**/__fixtures__/**",
         "!src/**/__mocks__/**",
+        "!**/node_modules/pdfjs-dist/standard_fonts/**",
+        "!**/node_modules/@napi-rs/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
       ],
       "extraResources": [
@@ -304,6 +308,8 @@
         "!src/**/__tests__/**",
         "!src/**/__fixtures__/**",
         "!src/**/__mocks__/**",
+        "!**/node_modules/pdfjs-dist/standard_fonts/**",
+        "!**/node_modules/@napi-rs/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
       ],
       "extraResources": [
@@ -336,7 +342,9 @@
       "!**/*.test.c",
       "!src/**/__tests__/**",
       "!src/**/__fixtures__/**",
-      "!src/**/__mocks__/**"
+      "!src/**/__mocks__/**",
+      "!**/node_modules/pdfjs-dist/standard_fonts/**",
+      "!**/node_modules/@napi-rs/**"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
@@ -409,14 +417,14 @@
     "node": ">=24.11.0 <25"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.9",
+    "@babel/core": "^8.0.10",
     "@babel/preset-env": "^8.0.7",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^45.0.0",
+    "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",
@@ -427,7 +435,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "3.0.2",
+    "@corpus-core/colibri-stateless": "3.0.3",
     "@earendil-works/pi-coding-agent": "1.0.2",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",

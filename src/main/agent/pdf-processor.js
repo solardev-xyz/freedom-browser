@@ -201,7 +201,7 @@ class PdfProcessor {
         path.join(rendererRoot, 'pages', 'pdf-processor.html'),
         path.join(rendererRoot, 'lib', 'pdf-processor.js'),
       ],
-      allowedRoots: [pdfRoot],
+      allowedRoots: [pdfRoot, path.join(rendererRoot, 'assets', 'pdf-fonts')],
     });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-attach-webview', (event) => event.preventDefault());

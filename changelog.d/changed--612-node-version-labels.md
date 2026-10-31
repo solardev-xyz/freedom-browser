@@ -1,1 +1,0 @@
-- Node versions in the Nodes menu drop the "v" prefix, so every row reads like `Ant 0.5.64` ([#612](https://github.com/solardev-xyz/freedom-browser/issues/612))
