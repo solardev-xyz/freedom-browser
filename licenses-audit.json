@@ -53,7 +53,7 @@
     },
     {
       "name": "electron",
-      "version": "45.1.0",
+      "version": "45.2.1",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
