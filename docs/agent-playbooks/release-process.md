@@ -332,6 +332,8 @@ This step is intentionally separate from §4 — §4 verifies the source tree; �
 
 Order matters: `freedom.baby/downloads` is what existing installs poll for updates, so it goes live together with the GitHub release, never before the smoke test and never with candidate files.
 
+The uploads and the website steps below run on **fra1**, the host that serves `freedom.baby`: `ssh ubuntu@fra1.econode.io` (`freedom.baby` is the same machine), docroot `/home/ubuntu/www/freedom.baby`, website checkout `~/freedom-website`. Connect by name, not by its IPv4 address: the machines that run releases trust fra1's host key under those names, and from hel1 both resolve to IPv6 only, so an IP-based `ssh` stops at "Host key verification failed" (the 0.8.8 publish hit this).
+
 1. Download the final's assets from its draft release (`gh release download v<version> --dir dist-release`). These are the bytes to publish everywhere — do **not** rebuild locally, or GitHub and `freedom.baby` would serve two different signed builds of one version with different hashes.
 2. Upload them to `https://freedom.baby/downloads`: every installer / archive / `.blockmap` plus all four manifests (`latest-mac.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`, `latest-win-x64.yml`) so existing installs pick up the update via `electron-updater` (`publish.provider = generic` pointing at that URL). Never upload `rc.N` files or manifests there — the updater auto-downloads whatever the manifest advertises.
 3. Update the Freedom website ([`solardev-xyz/freedom-website`](https://github.com/solardev-xyz/freedom-website); its README has the commands):
