@@ -106,7 +106,7 @@ All notable changes to Freedom will be documented in this file.
   - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.5 to 0.4.6
   - [Myotis](https://github.com/biafra23/myotis) 0.1.14 to 0.1.18
 - Updated runtime dependencies:
-  - Electron 44.7.0 to 45.1.0 (Chromium 152.0.7977.130 to 156.0.8078.49, Node 24.21.0 to 24.22.1)
+  - Electron 44.7.0 to 45.2.1 (Chromium 152.0.7977.130 to 156.0.8078.75, Node 24.21.0 to 24.22.1)
   - `@corpus-core/colibri-stateless` 3.0.2 to 3.0.3
   - `@ethersphere/bee-js` 13.1.0 to 13.2.0
   - `@ghostery/adblocker` 2.18.2 to 2.20.3
