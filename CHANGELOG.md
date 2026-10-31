@@ -2,7 +2,7 @@
 
 All notable changes to Freedom will be documented in this file.
 
-## [Unreleased]
+## [0.8.8] - 2026-10-31 "Goa"
 
 ### Added
 
