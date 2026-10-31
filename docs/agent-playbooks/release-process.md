@@ -239,7 +239,7 @@ What `.github/workflows/release.yml` then does:
 | `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 + site permissions against the silently installed NSIS package and the portable zip, a runner each             |
 | `release`           | `ubuntu-latest`    | after **all four builds and all four smoke jobs** succeeded: one GitHub Release with every file above and the `.blockmap`s    |
 
-- **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers.
+- **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers. Once the next candidate's pre-release is published, delete this one's release (`gh release delete v<version>-rc.N --yes`), keeping the tag: only the candidate under test stays on the Releases page.
 - **Final tag** (`v<version>`): the release stays a **draft** until you publish it in §7. Drafts are visible and downloadable only to people with write access to the repo.
 - A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
 - Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
@@ -343,7 +343,7 @@ Order matters: `freedom.baby/downloads` is what existing installs poll for updat
    - Re-pin the weekly re-push (`deploy/freedom-swarm-repush.service` in the website repo) to the new reference and reinstall the unit on fra1. It re-uploads the site every week so the published content stays retrievable, and its `--expect` makes it fail rather than publish anything else, so a deploy it was not re-pinned to fails the next run.
 4. Publish the draft GitHub Release (`gh release edit v<version> --draft=false`, or the Publish button). Give it the release notes from the changelog section; the workflow only wrote a one-line placeholder. Confirm the page lists every artifact from the table in §5.
 
-Candidate pre-releases can stay on the Releases page; they are marked Pre-release and sort below the final. Delete them only if they are known-broken and you do not want anyone to keep installing them.
+Once the final is published, delete the last candidate's pre-release (`gh release delete v<version>-rc.N --yes`, without `--cleanup-tag`), so no candidate of a shipped version stays on the Releases page. The release dashboard in freedom-org does this, and the per-candidate deletes of §5, on its own.
 
 ## 8. Merge the release branch into `main`
 
