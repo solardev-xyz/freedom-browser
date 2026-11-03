@@ -42,7 +42,13 @@ const FIXTURE_BODY =
   // `contextmenu` has somewhere to land.
   '<a id="img-link" href="target.html"><img id="linked-img" src="thumb.png" alt="thumb" width="40" height="40"></a>' +
   '<a id="video-link" href="target.html"><video id="linked-video" src="clip.mp4" width="40" height="40"></video></a>' +
-  '<video id="bare-video" width="40" height="40"></video>';
+  '<video id="bare-video" width="40" height="40"></video>' +
+  // Two <source>s where the first is a type Chromium can't play, so resource
+  // selection skips it and plays the second: Copy Video Address must copy the
+  // one in `currentSrc`, not the first listed.
+  '<video id="multi-video" width="40" height="40">' +
+  '<source src="skipped.webm" type="video/x-freedom-unplayable">' +
+  '<source src="picked.mp4" type="video/mp4"></video>';
 
 // Load the fixture into the active tab and wait for it to render.
 async function openFixture(window, harness) {
@@ -497,6 +503,36 @@ test('disables the video actions for a video with no source URL', async ({ windo
     { label: 'Inspect', disabled: false },
   ]);
   await window.screenshot({ path: 'test-results/page-context-menu-bare-video.png' });
+});
+
+test('copies the source a multi-<source> video picked, not the first one', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() =>
+          document
+            .querySelector('webview:not(.hidden)')
+            .executeJavaScript("document.getElementById('multi-video').currentSrc")
+        ),
+      { message: 'Waiting for resource selection to pick a <source>', timeout: 10_000 }
+    )
+    .toMatch(/\/picked\.mp4$/);
+  await electronApp.evaluate(({ clipboard }) => clipboard.writeText('before'));
+
+  await openMenuOver(window, 'multi-video');
+  await expect(menu(window)).toBeVisible();
+  const copy = window.locator('#page-context-menu [data-action="copy-media-address"]');
+  await expect(copy).toBeEnabled();
+  await clickOverGuest(copy);
+
+  await expect
+    .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
+    .toMatch(/\/picked\.mp4$/);
 });
 
 test('withholds the item when nothing is selected', async ({ window, harness }) => {
