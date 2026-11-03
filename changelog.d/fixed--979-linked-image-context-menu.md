@@ -1,0 +1,2 @@
+- Right-clicking an image, video, or audio inside a link now displays both the link actions and media actions ([#979](https://github.com/solardev-xyz/freedom-browser/issues/979))
+  - Previously only image actions appeared for linked images, omitting "Open Link in New Tab" and "Copy Link Address"
