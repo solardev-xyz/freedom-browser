@@ -154,10 +154,21 @@ export const showPageContextMenu = (x, y, context) => {
         mediaGroup.classList.add('visible');
         const kind =
           context.mediaType === 'video' ? 'Video' : context.mediaType === 'audio' ? 'Audio' : 'Media';
+        // A <video>/<audio> with no addressable source (fed by `srcObject`
+        // from a camera/WebRTC stream, or with no src/<source> yet) still gets
+        // the group, but with both items disabled, as Chrome does: an enabled
+        // item that silently does nothing is worse than a greyed-out one.
+        const noSrc = !context.mediaSrc;
         const openBtn = mediaGroup.querySelector('[data-action="open-media-new-tab"]');
-        if (openBtn) openBtn.textContent = `Open ${kind} in New Tab`;
+        if (openBtn) {
+          openBtn.textContent = `Open ${kind} in New Tab`;
+          openBtn.disabled = noSrc;
+        }
         const copyBtn = mediaGroup.querySelector('[data-action="copy-media-address"]');
-        if (copyBtn) copyBtn.textContent = `Copy ${kind} Address`;
+        if (copyBtn) {
+          copyBtn.textContent = `Copy ${kind} Address`;
+          copyBtn.disabled = noSrc;
+        }
       }
     }
   } else if (context.selectedText) {

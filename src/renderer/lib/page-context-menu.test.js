@@ -529,6 +529,30 @@ describe('page-context-menu', () => {
     expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
   });
 
+  // A <video> fed by srcObject (camera/WebRTC) or with no src/<source> has no
+  // address to open or copy: the media group still shows, as in Chrome, but
+  // its items are disabled rather than silent no-ops — and re-enabled the next
+  // time the menu opens over media that does have one.
+  test('disables the media items when the element has no source URL', async () => {
+    const { mod, mediaGroup, pageGroup, mediaOpenBtn, mediaCopyBtn } =
+      await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    mod.showPageContextMenu(10, 20, { mediaType: 'video' });
+    expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(pageGroup.classList.add).not.toHaveBeenCalledWith('visible');
+    expect(mediaOpenBtn.textContent).toBe('Open Video in New Tab');
+    expect(mediaOpenBtn.disabled).toBe(true);
+    expect(mediaCopyBtn.disabled).toBe(true);
+
+    mod.showPageContextMenu(10, 20, {
+      mediaType: 'audio',
+      mediaSrc: 'https://example.com/track.mp3',
+    });
+    expect(mediaOpenBtn.disabled).toBe(false);
+    expect(mediaCopyBtn.disabled).toBe(false);
+  });
+
   test('withholds view source on browser-owned trust interstitials', async () => {
     const { mod, pageContextMenu, viewSourceBtn, pushDebug } = await loadPageContextMenuModule();
 
