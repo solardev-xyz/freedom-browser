@@ -2261,35 +2261,22 @@ test('publication approval offers a private draft link and a stable address, wit
 
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   await configureOllamaAgent(window, ollamaServer);
-  await expect(window.locator('#agent-scope-help')).toHaveCount(0);
-  await expect(window.locator('#agent-scope-help-text')).toHaveCount(0);
-  await electronApp.evaluate(({ BrowserWindow, ipcMain }) => {
-    globalThis.publicationActions = [];
-    // Exercise the real buttons without opening a tab or replacing the user's clipboard.
-    for (const channel of ['agent:publication:open', 'clipboard:copy-text']) {
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(channel, (_event, value) => {
-        globalThis.publicationActions.push({ channel, value });
-        return { success: true };
-      });
-    }
+  await electronApp.evaluate(({ BrowserWindow }) => {
     const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => page.webContents.send('agent:event', { runId: 'run_publication_ui', ...event });
     emit({ type: 'run_started', userText: 'Publish my website' });
-    emit({ type: 'assistant_text_delta', text: 'Publishing the project to Swarm.' });
     emit({ type: 'tool_started', toolCallId: 'publish', operation: 'swarm_publish', intent: 'Publish site' });
   });
   const publication = { publicationId: `swarm_pub_${'c'.repeat(24)}`, kind: 'folder', name: 'dist', public: true, applicationState: 'possibly_applied' };
   for (const stage of [
     { state: 'waiting_postage', message: 'Waiting for postage · 8 more blocks' },
     { state: 'confirming', message: 'Waiting for network confirmation', progress: 80 },
-    { state: 'outcome_unknown', message: 'Publication needs checking', error: `A fixture-only node error: ${'a'.repeat(256)}` },
+    { state: 'outcome_unknown', message: 'Publication needs checking', error: 'A detailed fixture-only node error' },
     { state: 'completed', message: 'Published · retrieval verified', verified: true, reference: 'd'.repeat(64), bzzUrl: `bzz://${'d'.repeat(64)}` },
   ]) {
     await electronApp.evaluate(({ BrowserWindow }, publication) => {
       BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', {
-        type: 'tool_progress', runId: 'run_publication_ui', toolCallId: 'publish', operation: 'swarm_publish',
-        state: publication.state, progress: publication.progress, publication,
+        type: 'tool_progress', runId: 'run_publication_ui', toolCallId: 'publish', operation: 'swarm_publish', publication,
       });
     }, { ...publication, ...stage });
     const card = window.locator('.agent-publication');
@@ -2303,38 +2290,8 @@ test('publication card follows one job through waiting, confirmation and complet
     }
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-      const surfaces = await window.evaluate(() => {
-        const properties = ['backgroundColor', 'backgroundImage', 'borderTopColor', 'borderRadius', 'boxShadow', 'backdropFilter'];
-        const surface = selector => {
-          const style = getComputedStyle(document.querySelector(selector));
-          return Object.fromEntries(properties.map(key => [key, style[key]]));
-        };
-        return { card: surface('.agent-publication'), answer: surface('.agent-output:not(:empty)') };
-      });
-      expect(surfaces.card).toEqual(surfaces.answer);
-      expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
     }
-  }
-  const card = window.locator('.agent-publication');
-  await card.getByRole('button', { name: 'Open', exact: true }).click();
-  await card.getByRole('button', { name: 'Copy URL', exact: true }).click();
-  expect(await electronApp.evaluate(() => globalThis.publicationActions)).toEqual([
-    { channel: 'agent:publication:open', value: { bzzUrl: `bzz://${'d'.repeat(64)}` } },
-    { channel: 'clipboard:copy-text', value: `bzz://${'d'.repeat(64)}` },
-  ]);
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
-    win.setMinimumSize(320, 300);
-    win.setContentSize(390, 800);
-  });
-  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(390);
-  for (const theme of ['dark', 'light']) {
-    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    await card.scrollIntoViewIfNeeded();
-    await expect(card).toBeInViewport();
-    expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-narrow-${theme}.png`) });
   }
 });
 

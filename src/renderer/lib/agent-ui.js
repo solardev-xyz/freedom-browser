@@ -152,6 +152,9 @@ let panelHeader = null;
 let floatTitle = null;
 let runHeader = null;
 let runHeaderHome = null;
+let scopeHelpButton = null;
+let scopeHelpText = null;
+let scopeNotice = '';
 let sessionSidebarOpen = true;
 let compactAgentLayout = false;
 let compactWorkspaceOpen = false;
@@ -747,6 +750,7 @@ function setAgentView(nextView) {
   if (nextView !== 'workspace') dictation?.cancel();
   sessionPrivacy?.close();
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
   agentView = nextView;
   if (elements.panel.dataset) elements.panel.dataset.agentView = nextView;
@@ -789,6 +793,32 @@ function setConversationTitle(nextTitle) {
     floatTitle.textContent = conversationTitle;
     floatTitle.title = conversationTitle;
   }
+}
+
+// Why Agent may or may not use the current page is reference, not news: in
+// the floating column it lives behind the header's help button instead of
+// occupying the status line, which stays free for live runtime messages.
+function setScopeNotice(text = '') {
+  scopeNotice = text;
+  if (scopeHelpText) scopeHelpText.textContent = text;
+  if (scopeHelpButton) scopeHelpButton.hidden = !text;
+  if (!text) setScopeHelpOpen(false);
+}
+
+// The explanation follows the conversation's own shared-page state, so a
+// reopened conversation and a new chat never show a previous chat's note.
+function scopeNoticeForConversation() {
+  if (!currentConversationId && !currentRunId) return '';
+  return conversationRendererTabId
+    ? 'Agent can use the page you shared and any tabs it opens.'
+    : 'Agent can use only the tabs it opens for this conversation.';
+}
+
+function setScopeHelpOpen(open) {
+  if (!scopeHelpButton || !scopeHelpText) return;
+  const next = open === true && Boolean(scopeNotice);
+  scopeHelpText.hidden = !next;
+  scopeHelpButton.setAttribute('aria-expanded', String(next));
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
@@ -1343,6 +1373,7 @@ async function refreshWorkspaceProjection() {
 
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   // The model menu's right/bottom/room are measured for the layout it opened
   // in, and the switch animates the columns (so re-measuring now would read a
   // mid-transition layout). Close it, like the mode menu; reopening measures
@@ -1456,12 +1487,7 @@ function observeComposerHeight() {
     // scrollHeight stays the composer's natural height while it scrolls.
     const header = panelInner?.querySelector?.('.agent-sidebar-header');
     const room = panelInner?.clientHeight || 0;
-    const strip = elements.processCompact;
-    // The strip can scroll in a cramped sheet too. Its natural height must
-    // stay in the calculation after it shrinks, or the class oscillates.
-    const stripHeight = strip && strip.parentNode !== elements.composerWrap
-      ? (strip.scrollHeight || 0) + (strip.offsetHeight || 0) - (strip.clientHeight || 0) : 0;
-    const needed = (header?.offsetHeight || 0) + stripHeight + (elements.composerWrap.scrollHeight || 0);
+    const needed = (header?.offsetHeight || 0) + (elements.composerWrap.scrollHeight || 0);
     document.body?.classList?.toggle('agent-floating-sheet-cramped', room > 0 && needed > room + 1);
     captureLauncherSnapshot();
   };
@@ -1469,7 +1495,6 @@ function observeComposerHeight() {
   if (typeof ResizeObserver === 'function') {
     composerResizeObserver = new ResizeObserver(update);
     composerResizeObserver.observe(elements.composerWrap);
-    if (elements.processCompact) composerResizeObserver.observe(elements.processCompact);
     if (elements.examples) composerResizeObserver.observe(elements.examples);
     if (panelInner) composerResizeObserver.observe(panelInner);
   }
@@ -1578,6 +1603,7 @@ function showPrimaryView() {
 }
 
 function showProviderSetup() {
+  setScopeHelpOpen(false);
   closeComposerPopovers();
   closePanel();
   // Nothing to manage yet: go straight to the provider picker.
@@ -1589,6 +1615,7 @@ function setPanelOpen(nextOpen) {
   if (!nextOpen) sessionPrivacy?.close();
   if (!nextOpen) {
     setModeMenuOpen(false);
+    setScopeHelpOpen(false);
   }
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
@@ -1954,6 +1981,7 @@ function resetConversationUi() {
   elements.emptyState.hidden = false;
   clearApproval();
   setMessage(elements.runMessage);
+  setScopeNotice();
   syncFloatingPresentation();
 }
 
@@ -4056,6 +4084,7 @@ function applyReadyConversationState(state) {
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
   providerUi.renderActiveModel();
+  setScopeNotice(scopeNoticeForConversation());
   renderTaskPages();
   renderSessionSidebar();
   renderPageContext();
@@ -4320,10 +4349,11 @@ function applyAgentEvent(event) {
     setRunState('running', 'Running');
     setLiveStatus(event.runId, 'Thinking…');
     elements.emptyState.hidden = true;
-    const scope = conversationRendererTabId
-      ? 'Agent can use the page you shared and any tabs it opens.'
-      : 'Agent can use only the tabs it opens for this conversation.';
-    // Keep the scope explanation inline in Agent-first mode.
+    const scope =
+      scopeNoticeForConversation() ||
+      'Agent can use only the tabs it opens for this conversation.';
+    setScopeNotice(scope);
+    // Agent-first mode has no floating header, so it keeps the inline notice.
     setMessage(elements.runMessage, agentFirstMode ? scope : '');
     void refreshSessionHistory();
     return;
@@ -5065,6 +5095,11 @@ export function initAgentUi(options = {}) {
     renderModelMenu();
   });
   floatTitle = byId('agent-float-title');
+  scopeHelpButton = byId('agent-scope-help');
+  scopeHelpText = byId('agent-scope-help-text');
+  scopeHelpButton?.addEventListener?.('click', () =>
+    setScopeHelpOpen(scopeHelpText?.hidden !== false)
+  );
   openAiSettings = typeof options.openSettings === 'function' ? options.openSettings : () => {};
   dictation?.dispose();
   dictationBusy = false;
@@ -5389,6 +5424,12 @@ export function initAgentUi(options = {}) {
       return;
     }
     if (sessionPrivacy?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
+    if (scopeHelpText && !scopeHelpText.hidden) {
+      event.preventDefault();
+      setScopeHelpOpen(false);
+      scopeHelpButton?.focus?.();
+      return;
+    }
     const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]
       .map((host) => host.querySelector('.agent-workspace-options')).find((options) => options?.open);
     if (openOptions) {

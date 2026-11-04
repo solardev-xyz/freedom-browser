@@ -93,33 +93,10 @@
         display: var(--light-only-display);
       }
 
-      /* Preserve the setup flow inside the approved What's new glass list. */
-      .whats-new {
-        max-width: 660px;
-        margin-top: 32px;
-      }
-      .whats-new:has(.setup-banner[hidden]) { display: none; }
-      .whats-new-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-      .whats-new-header h2 {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 0;
-        font-size: 12px;
-        font-weight: 650;
-        letter-spacing: .16em;
-        text-transform: uppercase;
-        white-space: nowrap;
-        color: var(--shell-heading);
-      }
-      .whats-new-header svg { flex: none; color: var(--home-teal); }
-      .whats-new-rule {
-        flex: 1;
-        height: 1px;
-        background: linear-gradient(90deg, var(--home-card-border-hover), transparent);
-      }
-      .whats-new-list { margin: 0; padding: 0; list-style: none; }
-      .whats-new-list > li { margin: 0; }
+      /* Agent setup banner. Built like the chrome's update toast
+         (styles/update-toast.css): one solid card, one filled action, a close
+         button. Solid, not glass, so its text reads the same over any part of
+         the artwork. */
       .setup-banner {
         display: flex;
         flex-wrap: wrap;
@@ -127,35 +104,21 @@
         gap: 12px;
         max-width: 660px;
         box-sizing: border-box;
-        margin-top: 0;
-        padding: 12px;
-        border: 1px solid var(--home-card-border);
-        border-radius: 14px;
-        background: var(--home-card);
-        backdrop-filter: blur(14px) saturate(1.2);
-        box-shadow: inset 0 1px 0 var(--home-card-sheen), 0 14px 30px -24px var(--home-card-shadow);
+        margin-top: 32px;
+        padding: 12px 12px 12px 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-elev);
+        box-shadow: 0 4px 20px var(--home-card-shadow);
         color: var(--text);
         font-size: 13px;
         line-height: 1.45;
-        transition: background-color .15s ease, border-color .15s ease;
       }
       .setup-banner[hidden] {
         display: none;
       }
-      .setup-banner:hover,
-      .setup-banner:focus-within { background: var(--home-card-hover); border-color: var(--home-card-border-hover); }
-      .setup-banner-icon {
-        display: grid;
-        flex: none;
-        place-items: center;
-        width: 30px;
-        height: 30px;
-        border-radius: 9px;
-        color: var(--home-teal);
-        background: var(--home-teal-soft);
-      }
       .setup-banner-copy {
-        flex: 1 1 220px;
+        flex: 1 1 240px;
         min-width: 0;
       }
       .setup-banner-title {
@@ -198,22 +161,19 @@
         margin-left: auto;
       }
       .setup-banner-action {
-        display: inline-flex;
-        align-items: center;
-        box-sizing: border-box;
-        min-height: 40px;
-        padding: 8px 12px;
-        border-radius: 10px;
+        padding: 6px 12px;
+        border-radius: 6px;
         background: var(--accent);
         color: var(--bg);
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
         text-decoration: none;
         white-space: nowrap;
         transition: opacity 0.2s;
       }
-      .setup-banner-action::after { content: '›' / ''; margin-left: 8px; }
-      .setup-banner-action:hover { opacity: .9; }
+      .setup-banner-action:hover {
+        opacity: 0.9;
+      }
       .setup-banner-dismiss {
         display: grid;
         place-items: center;
@@ -249,7 +209,6 @@
         flex-basis: 100%;
         max-width: none;
         margin: 0;
-        padding-left: 42px;
         font-size: 12.5px;
         color: var(--danger);
       }
@@ -257,14 +216,11 @@
         display: none;
       }
       @media (max-width: 560px) {
-        .setup-banner-icon { display: none; }
-        .setup-banner-status { padding-left: 0; }
         body {
           padding: 32px 20px;
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        .setup-banner,
         .setup-banner * {
           transition: none;
         }
@@ -288,31 +244,20 @@
       The decentralized web is here. Powered by built-in nodes, this browser connects you directly
       to peers, keeping the network strong and user-controlled.
     </p>
-    <section class="whats-new" aria-labelledby="whats-new-title">
-      <header class="whats-new-header">
-        <h2 id="whats-new-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.7 5.2 4.1 8.6 9.5 9.5-5.4.9-8.8 4.3-9.5 9.5-.7-5.2-4.1-8.6-9.5-9.5 5.4-.9 8.8-4.3 9.5-9.5z" /></svg>What’s new</h2>
-        <span class="whats-new-rule" aria-hidden="true"></span>
-      </header>
-      <ul class="whats-new-list">
-        <li>
-          <div class="setup-banner" role="group" id="ai-invitation" aria-labelledby="ai-invitation-title" hidden>
-            <span class="setup-banner-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5c.7 5.2 4.1 8.6 9.5 9.5-5.4.9-8.8 4.3-9.5 9.5-.7-5.2-4.1-8.6-9.5-9.5 5.4-.9 8.8-4.3 9.5-9.5z" /></svg></span>
-            <div class="setup-banner-copy">
-              <h3 class="setup-banner-title" id="ai-invitation-title" tabindex="-1">
-                <span id="ai-invitation-heading">Meet Freedom Agent</span>
-                <span class="setup-banner-tag">Beta</span>
-              </h3>
-              <p class="setup-banner-byline" id="ai-invitation-byline">Research, build and publish to the decentralized web.</p>
-            </div>
-            <div class="setup-banner-actions">
-              <a class="setup-banner-action" id="ai-invitation-open" href="freedom://settings/ai">Set up</a>
-              <button class="setup-banner-dismiss" id="ai-invitation-dismiss" type="button" aria-label="Hide the Freedom Agent banner" title="Hide">×</button>
-            </div>
-            <p class="setup-banner-status" id="ai-invitation-status" role="status"></p>
-          </div>
-        </li>
-      </ul>
-    </section>
+    <aside class="setup-banner" id="ai-invitation" aria-labelledby="ai-invitation-title" hidden>
+      <div class="setup-banner-copy">
+        <h2 class="setup-banner-title" id="ai-invitation-title" tabindex="-1">
+          <span id="ai-invitation-heading">Meet Freedom Agent</span>
+          <span class="setup-banner-tag">Beta</span>
+        </h2>
+        <p class="setup-banner-byline" id="ai-invitation-byline">Research, build and publish to the decentralized web.</p>
+      </div>
+      <div class="setup-banner-actions">
+        <a class="setup-banner-action" id="ai-invitation-open" href="freedom://settings/ai">Set up</a>
+        <button class="setup-banner-dismiss" id="ai-invitation-dismiss" type="button" aria-label="Hide the Freedom Agent banner" title="Hide">×</button>
+      </div>
+      <p class="setup-banner-status" id="ai-invitation-status" role="status"></p>
+    </aside>
     <script src="scripts/ai-invitation-step.js"></script>
     <script src="scripts/home-ai.js"></script>
   </body>
