@@ -41,8 +41,12 @@
  *   the external gateway, whose transport decodes the body, nor beside a
  *   `content-encoding`), content-range and swarm-feed-index. A name or value
  *   past 8 KiB fails the piece (`error`), logged.
- * - **A streamed body** ends with `end`, or aborts with one of a piece's
- *   codes: `stalled` when main's body idle timer fires (a read pending, so
+ * - **A streamed body** is a byte stream: each of the service client's
+ *   reads asks for what the core's credit and the writer's room allow, at
+ *   most 64 KiB, and gets no more. The node is read one chunk at a time,
+ *   only once the last has gone, so main holds at most one chunk of the
+ *   node's transport beside what the sender holds. It ends with `end`, or
+ *   aborts with one of a piece's codes: `stalled` when main's body idle timer fires (a read pending, so
  *   the core's credit outstanding, and no byte for the plan's
  *   `body_idle_ms`); `body_stream_error` when the node's body fails, passes
  *   `max_bytes`, or its request ends; `cancelled` on the core's cancel (the
@@ -56,6 +60,8 @@
 
 const defaultLog = require('../logger');
 const { ShellError, StreamedReply, PROTOCOL_VERSION_STREAMS } = require('./core-client');
+// The most one read of a streamed body takes: one data frame.
+const { MAX_DATA } = require('./frame');
 const { backendKind, checkPath, SWARM_HEADERS } = require('../dweb/plan-validation');
 const { dialWithRetry, idleBoundBody, UNREACHABLE_CODES } = require('../dweb/plan-executor');
 
@@ -263,6 +269,78 @@ function emptyBody() {
   return new ReadableStream({ start: (controller) => controller.close() });
 }
 
+/**
+ * A streamed piece's body as the service client reads it: a byte stream,
+ * so each read asks for at most what the core's credit and the writer's
+ * room allow (64 KiB at most), and gets no more. It reads `body` one chunk
+ * at a time, only once the last is gone, so it holds at most one chunk of
+ * the node's transport. `done` runs once, on its end, error or cancel; a
+ * `life` that has aborted fails it at its next read.
+ */
+function pieceBody(body, life, done) {
+  const reader = body.getReader();
+  let rest = null;
+  // What is left of a chunk goes with the request.
+  life.addEventListener(
+    'abort',
+    () => {
+      rest = null;
+    },
+    { once: true }
+  );
+  const fail = (controller, err) => {
+    rest = null;
+    reader.cancel(err).catch(() => {});
+    controller.error(err);
+    done();
+  };
+  return new ReadableStream(
+    {
+      type: 'bytes',
+      async pull(controller) {
+        if (life.aborted) return fail(controller, life.reason);
+        if (!rest) {
+          let chunk;
+          try {
+            chunk = await reader.read();
+          } catch (err) {
+            rest = null;
+            controller.error(err);
+            done();
+            return undefined;
+          }
+          if (chunk.done) {
+            controller.close();
+            controller.byobRequest?.respond(0);
+            done();
+            return undefined;
+          }
+          if (!chunk.value.byteLength) return undefined;
+          rest = chunk.value;
+        }
+        const request = controller.byobRequest;
+        const room = request ? request.view.byteLength : MAX_DATA;
+        const n = Math.min(room, MAX_DATA, rest.byteLength);
+        if (request) {
+          request.view.set(rest.subarray(0, n));
+          request.respond(n);
+        } else {
+          // Copied: enqueueing a view gives its buffer away.
+          controller.enqueue(rest.slice(0, n));
+        }
+        rest = n === rest.byteLength ? null : rest.subarray(n);
+        return undefined;
+      },
+      cancel(reason) {
+        rest = null;
+        done();
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
 function cancelBody(response) {
   try {
     response?.body?.cancel().catch(() => {});
@@ -431,9 +509,9 @@ class DwebShell {
       const idleMs = verify.timers.body_idle_ms;
       if (FORMS[form].stream) {
         const bounded = max === null ? upstream : boundedBody(upstream, max);
-        const body = idleBoundBody(bounded, idleMs, life, done);
+        const idle = idleBoundBody(bounded, idleMs, life, () => {});
         handed = true;
-        return new StreamedReply({ status, headers }, body);
+        return new StreamedReply({ status, headers }, pieceBody(idle, life, done));
       }
       return await this.whole(status, headers, upstream, { max, idleMs, life, charge });
     } finally {

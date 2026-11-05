@@ -1045,6 +1045,27 @@ describe('through the core client at protocol 2', () => {
     expect(core.dataOf(id).equals(pattern(0, 1024 * 1024))).toBe(true);
   });
 
+  test("one 8 MiB chunk from the node goes out 64 KiB at a time, only as the core's credit allows", async () => {
+    await start();
+    const length = 8 * 1024 * 1024;
+    const body = source(length, { chunk: length });
+    const node = fakeNode('gateway', () => new Response(body.stream, { status: 200 }));
+    const v = verify(node, 'ipfs');
+    const id = core.ask(v.key.id, car());
+    await until(() => core.dataOf(id).length === WINDOW, 'the first window');
+    for (let i = 0; i < 20; i++) await tick();
+    expect(core.dataOf(id).length).toBe(WINDOW);
+    const stats = client.streamStats();
+    expect(stats.held + stats.pending).toBeLessThanOrEqual(WINDOW + MAX_DATA);
+    await drain(id);
+    expect(core.framesOf(KIND_END, id)).toHaveLength(1);
+    expect(core.dataOf(id).equals(pattern(0, length))).toBe(true);
+    for (const frame of core.framesOf(KIND_DATA, id)) {
+      expect(frame.bytes.length).toBeLessThanOrEqual(MAX_DATA);
+    }
+    await until(() => shell.stats().pieces === 0, 'the piece freed');
+  });
+
   test("main's body idle timer: a node that stops while the core has credit ends the stream stalled", async () => {
     await start();
     const body = source(500_000, { stall: 20_000, chunk: 10_000 });
