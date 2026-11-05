@@ -211,7 +211,7 @@ test('offers "Search <Engine> for …" under Copy and opens the search in a new 
     .toBe('https://duckduckgo.com/?q=otters');
 });
 
-test('a Ctrl-clicked search item opens the results behind the current tab', async ({
+test('a Cmd/Ctrl-clicked search item opens the results behind the current tab', async ({
   window,
   harness,
 }) => {
@@ -219,7 +219,7 @@ test('a Ctrl-clicked search item opens the results behind the current tab', asyn
   await selectAndOpenMenu(window, 'short');
   await expect(searchItem(window)).toBeVisible();
 
-  await clickSearchItem(window, { modifiers: ['Control'] });
+  await clickSearchItem(window, { modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
 
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
   // Chrome keeps you on the page you searched from.

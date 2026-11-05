@@ -11,7 +11,7 @@
  */
 
 import { getPermissionKey } from './dapp-provider.js';
-import { getDisplayUrlForWebview, getNavigationKeyForWebview } from './tabs.js';
+import { getDisplayUrlForWebview, getNavigationKeyForWebview, isTabAgentOwned } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest, routeToPublishSetup } from './wallet-ui.js';
 
@@ -35,6 +35,24 @@ const manifestChecks = new WeakMap();
 const navigationGenerations = new WeakMap();
 
 const getNavigationGeneration = (webview) => navigationGenerations.get(webview) ?? 0;
+
+// A site's auto-approve rule never answers for a tab in Agent custody: the
+// request is prompted instead, as dapp-provider.js does for wallet rules.
+// Main refuses an automatic write from such a tab on its own custody
+// reading (swarm-provider-ipc.js agentCustodyRefusal), so every write names
+// its guest and the path it took.
+const isAgentHeld = (webview) => isTabAgentOwned?.(Number(webview?.dataset?.tabId)) === true;
+const guestIdOf = (webview) => {
+  try {
+    return webview?.getWebContentsId?.();
+  } catch {
+    return undefined;
+  }
+};
+const approvalMeta = (webview, autoApproved) => ({
+  webContentsId: guestIdOf(webview),
+  approval: autoApproved ? 'auto' : 'user',
+});
 // Writes the node refuses with 4900 when publishing is not set up
 // (swarm-provider-ipc.js checkSwarmPreFlight). A failure for one of these
 // reasons takes the user to the setup screen, where it can be fixed.
@@ -128,14 +146,15 @@ async function handleSwarmRequest(webview, request) {
       result = await forwardToMain(method, params, permissionKey);
     } else if (method === 'swarm_publishData' || method === 'swarm_publishFiles' || method === 'swarm_publishChunk') {
       const permission = await requirePermissionAndReturn(permissionKey);
+      const autoApproved = Boolean(permission?.autoApprove?.publish) && !isAgentHeld(webview);
 
-      if (!permission?.autoApprove?.publish) {
+      if (!autoApproved) {
         await new Promise((resolve, reject) => {
           showSwarmPublishApproval(permissionKey, params, resolve, reject, method);
         });
       }
 
-      result = await executeWithPermission(method, params, permissionKey);
+      result = await executeWithPermission(method, params, permissionKey, approvalMeta(webview, autoApproved));
     } else if (
       method === 'swarm_readFeedEntry' ||
       method === 'swarm_readChunk' ||
@@ -152,12 +171,12 @@ async function handleSwarmRequest(webview, request) {
       method === 'swarm_updateFeed' ||
       method === 'swarm_writeFeedEntry'
     ) {
-      result = await handleFeedSigningRequest(method, params, permissionKey, 'feeds');
+      result = await handleFeedSigningRequest(method, params, permissionKey, 'feeds', webview);
     } else if (
       method === 'swarm_writeSingleOwnerChunk' ||
       method === 'swarm_getSigningIdentity'
     ) {
-      result = await handleFeedSigningRequest(method, params, permissionKey, 'signing');
+      result = await handleFeedSigningRequest(method, params, permissionKey, 'signing', webview);
     } else if (
       method === 'swarm_getMessagingIdentity' ||
       method === 'swarm_subscribe' ||
@@ -247,12 +266,14 @@ async function handleMessagingRequest(method, params, permissionKey, webview) {
   await requirePermission(permissionKey);
 
   const isSend = method === 'swarm_sendPss' || method === 'swarm_sendGsoc';
+  let autoApproved = false;
 
   if (method !== 'swarm_unsubscribe') {
-    const [hasGrant, autoApproved] = await Promise.all([
+    const [hasGrant, sendAutoApproved] = await Promise.all([
       window.swarmPermissions.hasMessagingGrant(permissionKey),
       isSend ? window.swarmPermissions.getAutoApprove(permissionKey, 'messaging') : false,
     ]);
+    autoApproved = hasGrant && Boolean(sendAutoApproved) && !isAgentHeld(webview);
     if (!hasGrant) {
       await new Promise((resolve, reject) => {
         showSwarmMessagingApproval(permissionKey, params, resolve, reject, { method, grantMode: true });
@@ -268,14 +289,10 @@ async function handleMessagingRequest(method, params, permissionKey, webview) {
   // Subscriptions push messages back to the page: main needs to know
   // which webview to deliver to, and only the renderer can map the
   // request to its webContents.
-  const meta = method === 'swarm_subscribe'
-    ? { webContentsId: webview.getWebContentsId() }
-    : undefined;
-
-  return executeWithPermission(method, params, permissionKey, meta);
+  return executeWithPermission(method, params, permissionKey, approvalMeta(webview, autoApproved));
 }
 
-async function handleFeedSigningRequest(method, params, permissionKey, autoApproveType) {
+async function handleFeedSigningRequest(method, params, permissionKey, autoApproveType, webview) {
   await requirePermission(permissionKey);
 
   const [hasFeedAccess, vaultStatus] = await Promise.all([
@@ -283,23 +300,31 @@ async function handleFeedSigningRequest(method, params, permissionKey, autoAppro
     window.identity?.getStatus?.(),
   ]);
   const vaultLocked = !vaultStatus?.isUnlocked;
+  let autoApproved = false;
 
   if (!hasFeedAccess) {
     await new Promise((resolve, reject) => {
       showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
     });
-  } else if (vaultLocked) {
-    await showVaultUnlock(permissionKey);
   } else {
-    const autoApproved = await window.swarmPermissions.getAutoApprove(permissionKey, autoApproveType);
+    // A locked vault does not stand in for the per-operation approval: only
+    // the site's auto-approve rule (never for an Agent-held tab) skips the
+    // feed prompt, which unlocks the vault itself. An auto-approved write
+    // still needs the vault, so it gets just the unlock screen, and main is
+    // told the rule answered.
+    autoApproved =
+      Boolean(await window.swarmPermissions.getAutoApprove(permissionKey, autoApproveType)) &&
+      !isAgentHeld(webview);
     if (!autoApproved) {
       await new Promise((resolve, reject) => {
         showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
       });
+    } else if (vaultLocked) {
+      await showVaultUnlock(permissionKey);
     }
   }
 
-  return executeWithPermission(method, params, permissionKey);
+  return executeWithPermission(method, params, permissionKey, approvalMeta(webview, autoApproved));
 }
 
 /**

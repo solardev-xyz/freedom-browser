@@ -2,7 +2,7 @@ Third-Party Notices
 
 This software includes the following third-party components.
 
-Every component listed here ships inside the packaged application. The
+The bundled components listed below ship inside the packaged application. The
 inventory is derived from `package.json`'s `build.extraResources` (the
 external binaries and native addons under `resources/`) and from what
 `build.files`' `src/**/*` pattern commits into `app.asar` — the pre-built
@@ -12,6 +12,12 @@ of those grows a component that is not named below. That is a test, not a
 packaging step: run `npm test` before you build, because packaging itself
 refuses only one thing, a missing `LICENSES.chromium.html`
 (`scripts/build.js`).
+
+Optional local dictation downloads
+  Whisper model: MIT, https://github.com/openai/whisper
+  The model downloads only when the user selects local dictation. Its license
+  accompanies the model as NOTICES.txt. Runtime and model license texts are
+  included in src/main/agent/dictation-local-notices.txt.
 
 == External binaries and native addons (resources/) ==
 
@@ -42,6 +48,30 @@ freedom-ipfsd (IPFS service)
     https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate
     (sha256 16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9)
   and its repository is https://github.com/sbstp/attohttpc.
+
+whisper.cpp
+  License: MIT; bundled miniaudio: MIT-0; stb_vorbis: MIT
+  https://github.com/ggml-org/whisper.cpp
+  Freedom builds version 1.9.5 from checksum-pinned source. The offline CLI,
+  ggml, and decoder utilities are built together. Full license texts ship
+  in resources/dictation-runtime/NOTICES.txt. No Python runtime is bundled.
+
+Codex Windows sandbox
+  License: Apache-2.0
+  https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/windows-sandbox-rs
+  Windows only. Freedom builds the sandbox library and helpers with separate
+  Freedom accounts, mutexes, firewall rules and helper names. The wrapper is
+  Freedom's own MPL-2.0 code. Upstream LICENSE and NOTICE accompany the binaries.
+  CODEX-DEPENDENCIES.txt and CODEX-DEPENDENCIES.json in resources/windows-workspace/
+  contain the selected Rust dependency notices, authors and exact source links.
+
+  Upstream NOTICE:
+  OpenAI Codex
+  Copyright 2025 OpenAI
+
+  This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+  Copyright (c) 2016-2022 Florian Dehau
+  Copyright (c) 2023-2025 The Ratatui Developers
 
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
@@ -161,10 +191,12 @@ Electron
              the mount root inside the AppImage)
     Windows  beside `Freedom.exe` in the installation directory
   The macOS copy is placed there deliberately, by
-  `package.json` `build.mac.extraResources`: on that platform
-  electron-builder deletes the copy Electron ships beside the executable,
-  and the `.dmg`/`.zip` carry only `Freedom.app`, so without it the file
-  would reach no macOS user at all.
+  `package.json` `build.mac.extraResources`: the `.dmg`/`.zip` carry only
+  `Freedom.app`, and electron-builder before 26.18 deleted the copy
+  Electron ships beside the executable, so without it the file reached no
+  macOS user at all.
+  Electron's own MIT licence text ships as `LICENSE.electron.txt`, in the
+  same place as `LICENSES.chromium.html` on each platform.
 
 == Ad blocking ==
 
@@ -201,21 +233,22 @@ Ad-blocking filter lists (bundled data, not code)
     Copyright (C) Raymond Hill and the uBlock Origin contributors
     https://github.com/gorhill/uBlock (src/js/resources/)
     Shipped unmodified as `assets/adblock/resources.json` (sha256
-    e14b498f693c4166d27971f7fdfe49b167c139a8e659cc59bedc9ab29a2348f5),
+    5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690),
     the build of those scriptlets that @ghostery/adblocker publishes:
-      https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/ublock-origin/resources.json
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/ublock-origin/resources.json
     It entered that repository in commit
-      https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6
+      https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec
     written by Ghostery's asset build script at the same tag:
-      https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/update.js
     Its script bodies are minified. The corresponding source is uBlock
-    Origin release 1.72.3rc4 (commit
-    de31aee0fcd69dc89cde558f1a0638c1aa77b75e):
-      https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources
-      https://github.com/gorhill/uBlock/blob/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/redirect-resources.js
-      https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/web_accessible_resources
-    uBlock Origin 1.73.0 stable ships byte-identical copies of those
-    three paths (https://github.com/gorhill/uBlock/tree/1.73.0). The
+    Origin development build 1.73.1b1 (commit
+    6788ed72af9bf2670bcdc1c3da3925d8b4f36443):
+      https://github.com/gorhill/uBlock/tree/6788ed72af9bf2670bcdc1c3da3925d8b4f36443/src/js/resources
+      https://github.com/gorhill/uBlock/blob/6788ed72af9bf2670bcdc1c3da3925d8b4f36443/src/js/redirect-resources.js
+      https://github.com/gorhill/uBlock/tree/6788ed72af9bf2670bcdc1c3da3925d8b4f36443/src/web_accessible_resources
+    No stable uBlock Origin release has a byte-identical copy of
+    `src/js/resources/`; the other two paths are identical in 1.73.0
+    (https://github.com/gorhill/uBlock/tree/1.73.0). The
     `MIME_TYPE_STUB.*` redirects are Ghostery's additions. The same
     references are recorded in `assets/adblock/manifest.json`
     (`resources.upstream`); how the revision was identified is written
@@ -236,6 +269,13 @@ Chain and token marks (sidebar and wallet icons)
   claims no ownership of them. No per-mark redistribution terms have been
   confirmed; see LICENSE_AUDIT.md.
 
+Model provider marks
+  The marks under `src/renderer/assets/provider-logos/` belong to OpenAI,
+  Anthropic, xAI, Meta, OpenRouter, Venice, NEAR AI and Ollama. They identify
+  their provider integrations; Freedom claims no ownership. Official source
+  URLs are recorded in that directory's README.md. Per-mark redistribution
+  terms have not been independently confirmed.
+
 Everything else committed under `src/` — the internal-page artwork and
 wordmark in `src/renderer/pages/images/`, and the Myotis supervisor
 sources in `src/main/myotis/native/` — is Freedom's own work under the
@@ -246,10 +286,43 @@ MPL-2.0 in `LICENSE`.
 npm dependencies
   See package.json for the full list.
   Most use permissive licenses (MIT, ISC, BSD, Apache-2.0, 0BSD,
-  BlueOak-1.0.0, Python-2.0). The weak-copyleft ones are:
+  BlueOak-1.0.0, Python-2.0, Unlicense). The weak-copyleft ones are:
     MPL-2.0        @ghostery/adblocker and its @remusao/* helpers
     LGPL-3.0-only  @openlv/*, websocket-mqtt (both entries above)
   Neither MPL-2.0 nor LGPL-3.0 is combined into Freedom's own sources: the
   MPL packages are consumed unmodified from npm, and the LGPL ones ship as
   the separate, replaceable `openlv.esm.js` bundle described above.
   better-sqlite3 (MIT) embeds SQLite, which is in the public domain.
+
+PDF.js (pdfjs-dist, the agent's PDF processor)
+  License: Apache-2.0
+  Copyright (c) Mozilla Foundation and PDF.js contributors
+  https://github.com/mozilla/pdf.js
+  The package ships these third-party parts, each with its licence text
+  beside it under `node_modules/pdfjs-dist/` in `app.asar` (its
+  standard_fonts/ directory is left out; see the next entry):
+  - JBIG2 decoder (wasm/jbig2.wasm), from PDFium: BSD-3-Clause,
+    Copyright 2014 The PDFium Authors (wasm/LICENSE_JBIG2)
+  - OpenJPEG (wasm/openjpeg.wasm): BSD-2-Clause, Copyright (c) 2002-2014,
+    Universite catholique de Louvain (UCL), Belgium, and the OpenJPEG
+    contributors
+    (wasm/LICENSE_OPENJPEG)
+  - qcms (wasm/qcms_bg.wasm): MIT, Copyright (C) 2009-2024 Mozilla
+    Corporation, Copyright (C) 1998-2007 Marti Maria (wasm/LICENSE_QCMS)
+  - Adobe CMaps (cmaps/): BSD-3-Clause, Copyright 1990-2009 Adobe Systems
+    Incorporated (cmaps/LICENSE)
+  - ICC colour profiles (iccs/): CC0-1.0 (iccs/LICENSE)
+  - QuickJS (wasm/quickjs-eval.wasm), the sandbox PDF.js evaluates
+    document scripts in: MIT, Copyright (c) 2017-2021 Fabrice Bellard and
+    Charlie Gordon, https://bellard.org/quickjs/
+
+PDF standard fonts (Liberation Sans 2.1.5, Foxit Symbol and Dingbats)
+  Shipped in `src/renderer/assets/pdf-fonts/` for the PDF processor, each
+  file unmodified, with its licence text beside it:
+  - Liberation Sans 2.1.5 (LiberationSans-*.ttf): SIL Open Font License
+    1.1. Digitized data copyright (c) 2010 Google Corporation with
+    Reserved Font Arimo, Tinos and Cousine. Copyright (c) 2012 Red Hat,
+    Inc. with Reserved Font Name Liberation. (LICENSE_LIBERATION)
+    https://github.com/liberationfonts/liberation-fonts
+  - FoxitSymbol.pfb, FoxitDingbats.pfb, from PDFium via pdfjs-dist:
+    BSD-3-Clause, Copyright 2014 PDFium Authors (LICENSE_FOXIT)

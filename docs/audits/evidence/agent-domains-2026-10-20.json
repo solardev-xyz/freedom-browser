@@ -1,0 +1,806 @@
+{
+  "description": "Historical public read-only domain investigation. No wallet, signing, broadcasts or paid operations. Dummy commitment secrets are public synthetic fixtures and must never be used for registration.",
+  "sources": {
+    "ens": {
+      "repo": "ensdomains/ens-contracts",
+      "branch": "staging",
+      "sha": "2a00e564caf5cf676cec66c9d13c322fb734a7f5"
+    },
+    "wns": {
+      "repo": "z0r0z/wei-names",
+      "branch": "main",
+      "sha": "54fa6223afaf80e8390b51fe4e4e69e1a922a5c8"
+    },
+    "gns": {
+      "repo": "lucadonnoh/gwei-names",
+      "branch": "main",
+      "sha": "1155c82db1536ff0e1a66674bde84fe7fbf9f918"
+    },
+    "ensv2": {
+      "repo": "ensdomains/contracts-v2",
+      "sha": "48b3e2d39513b9dd32ef1850877a29009bc807b9",
+      "branch": "main"
+    }
+  },
+  "snapshot": {
+    "checkedAt": "2026-10-20T21:20:06.377Z",
+    "sources": {
+      "ens": "0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547",
+      "base": "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85",
+      "resolver": "0xF29100983E058B709F3D539b0c765937B804AC15",
+      "wns": "0x0000000000696760E15f265e828DB644A0c242EB",
+      "gns": "0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6"
+    },
+    "reads": [
+      {
+        "label": "ens",
+        "method": "eth_getCode",
+        "bytes": 9739,
+        "keccak256": "0x64051f251ade7a7b7def7b199339ab1e6d44c28fabd824fe6523a658a0b9c93d"
+      },
+      {
+        "label": "base",
+        "method": "eth_getCode",
+        "bytes": 10542,
+        "keccak256": "0x15557327bea19f454db3ec207da1a440b6d9318af56e52e2a3eba440d4b62e0a"
+      },
+      {
+        "label": "resolver",
+        "method": "eth_getCode",
+        "bytes": 14512,
+        "keccak256": "0x186d03e26f6e0224269c8f7f13a6334d625f1b83812db2045ac7de4f292e9336"
+      },
+      {
+        "label": "wns",
+        "method": "eth_getCode",
+        "bytes": 21252,
+        "keccak256": "0x5b791c832d4373a8d4f977c37d6973a5dbe0924c6d287a2effaa549be31c0221"
+      },
+      {
+        "label": "gns",
+        "method": "eth_getCode",
+        "bytes": 19682,
+        "keccak256": "0xb0e20c7e72a371b06d4456cc5056ea06ab2366da03f8cf49698a1f956e60b068"
+      },
+      {
+        "label": "ens",
+        "method": "maxCommitmentAge",
+        "args": [],
+        "result": [
+          "86400"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "minCommitmentAge",
+        "args": [],
+        "result": [
+          "60"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "prices",
+        "args": [],
+        "result": [
+          "0x7542565191d074cE84fBfA92cAE13AcB84788CA9"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "ens",
+        "args": [],
+        "result": [
+          "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "reverseRegistrar",
+        "args": [],
+        "result": [
+          "0xa58E81fe9b61B5c3fE2AFD33CF304c454AbFc7Cb"
+        ]
+      },
+      {
+        "label": "base",
+        "method": "controllers",
+        "args": [
+          "0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547"
+        ],
+        "result": [
+          true
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "MIN_REGISTRATION_DURATION",
+        "args": [],
+        "result": [
+          "2419200"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "symbol",
+        "args": [],
+        "result": [
+          "WEI"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "rentPrice",
+        "args": [
+          "freedom-skill-research-20261020",
+          31536000
+        ],
+        "result": [
+          [
+            "2046496373659585",
+            "0"
+          ]
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "name",
+        "args": [],
+        "result": [
+          "Wei Name Service"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          2
+        ],
+        "result": [
+          "100000000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          4
+        ],
+        "result": [
+          "10000000000000000"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "available",
+        "args": [
+          "freedom-skill-research-20261020"
+        ],
+        "result": [
+          true
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          1
+        ],
+        "result": [
+          "500000000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          5
+        ],
+        "result": [
+          "500000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          3
+        ],
+        "result": [
+          "50000000000000000"
+        ]
+      },
+      {
+        "label": "ens",
+        "method": "defaultReverseRegistrar",
+        "args": [],
+        "result": [
+          "0x283F227c4Bd38ecE252C4Ae7ECE650B0e913f1f9"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "defaultFee",
+        "args": [],
+        "result": [
+          "500000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "computeId",
+        "args": [
+          "freedom-skill-research-20261020.wei"
+        ],
+        "result": [
+          "100122554369133119486688591757156669570333963788299602872696440860624457705837"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "isAvailable",
+        "args": [
+          "freedom-skill-research-20261020",
+          0
+        ],
+        "result": [
+          true
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "name",
+        "args": [],
+        "result": [
+          "Gwei Name Service"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "symbol",
+        "args": [],
+        "result": [
+          "GWEI"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "owner",
+        "args": [],
+        "result": [
+          "0x00000007988A79d16cf76B5dc4cF54dc3Af24936"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "premiumDecayPeriod",
+        "args": [],
+        "result": [
+          "1814400"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getFee",
+        "args": [
+          29
+        ],
+        "result": [
+          "500000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "normalize",
+        "args": [
+          "FrEeDoM"
+        ],
+        "result": [
+          "freedom"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "getPremium",
+        "args": [
+          "100122554369133119486688591757156669570333963788299602872696440860624457705837"
+        ],
+        "result": [
+          "0"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          2
+        ],
+        "result": [
+          "100000000000000000"
+        ]
+      },
+      {
+        "label": "wns",
+        "method": "maxPremium",
+        "args": [],
+        "result": [
+          "100000000000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "normalize",
+        "args": [
+          "FrEeDoM"
+        ],
+        "result": [
+          "freedom"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          3
+        ],
+        "result": [
+          "50000000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          29
+        ],
+        "result": [
+          "500000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          4
+        ],
+        "result": [
+          "10000000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "computeId",
+        "args": [
+          "freedom-skill-research-20261020.gwei"
+        ],
+        "result": [
+          "60517682857044842142746060433989207094958783790074157410303361135380445055732"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          1
+        ],
+        "result": [
+          "500000000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getFee",
+        "args": [
+          5
+        ],
+        "result": [
+          "500000000000000"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "getPremium",
+        "args": [
+          "60517682857044842142746060433989207094958783790074157410303361135380445055732"
+        ],
+        "result": [
+          "0"
+        ]
+      },
+      {
+        "label": "gns",
+        "method": "isAvailable",
+        "args": [
+          "freedom-skill-research-20261020",
+          0
+        ],
+        "result": [
+          true
+        ]
+      }
+    ],
+    "errors": [
+      {
+        "label": "ens",
+        "method": "base",
+        "error": "unknown function (argument=\"fragment\", value=\"base\", code=INVALID_ARGUMENT, version=6.17.0)"
+      },
+      {
+        "label": "resolver",
+        "method": "trustedETHController",
+        "error": "{\"code\":3,\"message\":\"execution reverted\",\"data\":\"0x\"}"
+      }
+    ],
+    "endpoint": "https://ethereum-rpc.publicnode.com",
+    "block": {
+      "number": 26236444,
+      "hash": "0x95ceefb5d84ad4025be173d96127ac2bdc14fe27cc29f619f84a11ebbf5e84af",
+      "timestamp": 1792531199
+    }
+  },
+  "crossChecks": {
+    "block": {
+      "number": 26236444,
+      "hash": "0x95ceefb5d84ad4025be173d96127ac2bdc14fe27cc29f619f84a11ebbf5e84af",
+      "timestamp": 1792531199
+    },
+    "checkedAt": "2026-10-20T21:32:33.417Z",
+    "checks": [
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "block hash",
+        "matches": true
+      },
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "ens bytecode hash",
+        "hash": "0x64051f251ade7a7b7def7b199339ab1e6d44c28fabd824fe6523a658a0b9c93d",
+        "matches": true
+      },
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "base bytecode hash",
+        "hash": "0x15557327bea19f454db3ec207da1a440b6d9318af56e52e2a3eba440d4b62e0a",
+        "matches": true
+      },
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "resolver bytecode hash",
+        "hash": "0x186d03e26f6e0224269c8f7f13a6334d625f1b83812db2045ac7de4f292e9336",
+        "matches": true
+      },
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "wns bytecode hash",
+        "hash": "0x5b791c832d4373a8d4f977c37d6973a5dbe0924c6d287a2effaa549be31c0221",
+        "matches": true
+      },
+      {
+        "endpoint": "https://eth.drpc.org",
+        "check": "gns bytecode hash",
+        "hash": "0xb0e20c7e72a371b06d4456cc5056ea06ab2366da03f8cf49698a1f956e60b068",
+        "matches": true
+      },
+      {
+        "check": "ENS tuple commitment",
+        "label": "freedom-skill-research-20261020",
+        "owner": "0x000000000000000000000000000000000000dEaD",
+        "duration": 31536000,
+        "secret": "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "resolver": "0x0000000000000000000000000000000000000000",
+        "data": [],
+        "reverseRecord": 0,
+        "referrer": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "expected": "0x71aa1c543a49ad037320ce4ab30646ae63121a094b3b141218fdf2141b23de2b",
+        "actual": "0x71aa1c543a49ad037320ce4ab30646ae63121a094b3b141218fdf2141b23de2b",
+        "matches": true
+      },
+      {
+        "check": "wns commitment",
+        "label": "freedom-skill-research-20261020",
+        "owner": "0x000000000000000000000000000000000000dEaD",
+        "secret": "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "expected": "0x7c3f938bd6886591be52e3e4f4167390556ed29af19fe83c582502ed5e0ca99a",
+        "actual": "0x7c3f938bd6886591be52e3e4f4167390556ed29af19fe83c582502ed5e0ca99a",
+        "matches": true
+      },
+      {
+        "check": "wns ASCII namehash",
+        "fullName": "freedom-skill-research-20261020.wei",
+        "tokenId": "100122554369133119486688591757156669570333963788299602872696440860624457705837",
+        "hash": "0xdd5b5b88e29f4cb8753d0b4adbc34889cf2df59594b64a615470313eef22296d",
+        "matches": true
+      },
+      {
+        "check": "wns Unicode normalization",
+        "input": "CAFÉ",
+        "actual": "cafÉ",
+        "expected": "cafÉ",
+        "matches": true
+      },
+      {
+        "check": "gns commitment",
+        "label": "freedom-skill-research-20261020",
+        "owner": "0x000000000000000000000000000000000000dEaD",
+        "secret": "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "expected": "0x7c3f938bd6886591be52e3e4f4167390556ed29af19fe83c582502ed5e0ca99a",
+        "actual": "0x7c3f938bd6886591be52e3e4f4167390556ed29af19fe83c582502ed5e0ca99a",
+        "matches": true
+      },
+      {
+        "check": "gns ASCII namehash",
+        "fullName": "freedom-skill-research-20261020.gwei",
+        "tokenId": "60517682857044842142746060433989207094958783790074157410303361135380445055732",
+        "hash": "0x85cbcb6ec979c80bae48290a6d9c251fbca10b97fe33c146934770ef0bdccaf4",
+        "matches": true
+      },
+      {
+        "check": "gns Unicode normalization",
+        "input": "CAFÉ",
+        "actual": "cafÉ",
+        "expected": "cafÉ",
+        "matches": true
+      },
+      {
+        "check": "wrapped controller authorized",
+        "target": "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85",
+        "controller": "0x253553366Da8546fC250F225fe3d25d0C782303b",
+        "active": false
+      },
+      {
+        "check": "wrapped controller authorized",
+        "target": "0xD4416b13d2b3a9aBae7AcD5D6C2BbDBE25686401",
+        "controller": "0x253553366Da8546fC250F225fe3d25d0C782303b",
+        "active": true
+      },
+      {
+        "check": "base authorizes wrapper",
+        "target": "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85",
+        "controller": "0xD4416b13d2b3a9aBae7AcD5D6C2BbDBE25686401",
+        "active": true
+      },
+      {
+        "check": "wrapped minCommitmentAge",
+        "value": "60"
+      },
+      {
+        "check": "wrapped maxCommitmentAge",
+        "value": "86400"
+      }
+    ],
+    "errors": [],
+    "note": "Public dummy secret; never used to submit a commitment. eth_call and code/header reads only.",
+    "endpoint": "https://eth.drpc.org",
+    "contenthashVector": {
+      "swarmManifestReference": "1212121212121212121212121212121212121212121212121212121212121212",
+      "contenthash": "0xe40101fa011b201212121212121212121212121212121212121212121212121212121212121212",
+      "byteLength": 39
+    }
+  },
+  "qualificationNotes": [
+    "Two unsuccessful probes (private/nonexistent getters) are retained in snapshot.errors; neither indicates deployment failure.",
+    "Bytecode/block hashes matched between publicnode and dRPC at the same block; upstream source/runtime equivalence is not independently proven.",
+    "Wrapped controller is authorized by NameWrapper, not directly by BaseRegistrar; BaseRegistrar authorizes NameWrapper.",
+    "ENSv2 public documentation and pinned Sepolia resolver ABI differ; mainnet v2 writes remain unqualified."
+  ],
+  "abiReference": {
+    "ensCurrentController": {
+      "address": "0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547",
+      "functions": [
+        {
+          "signature": "function available(string label) view returns (bool)",
+          "selector": "0xaeb8ce9b"
+        },
+        {
+          "signature": "function commit(bytes32 commitment)",
+          "selector": "0xf14fcbc8"
+        },
+        {
+          "signature": "function makeCommitment((string label, address owner, uint256 duration, bytes32 secret, address resolver, bytes[] data, uint8 reverseRecord, bytes32 referrer) registration) pure returns (bytes32 commitment)",
+          "selector": "0xcf7d6e01"
+        },
+        {
+          "signature": "function register((string label, address owner, uint256 duration, bytes32 secret, address resolver, bytes[] data, uint8 reverseRecord, bytes32 referrer) registration) payable",
+          "selector": "0xef9c8805"
+        },
+        {
+          "signature": "function renew(string label, uint256 duration, bytes32 referrer) payable",
+          "selector": "0x18026ad1"
+        },
+        {
+          "signature": "function rentPrice(string label, uint256 duration) view returns ((uint256 base, uint256 premium) price)",
+          "selector": "0x83e7f6ff"
+        }
+      ]
+    },
+    "ensWrappedController": {
+      "address": "0x253553366Da8546fC250F225fe3d25d0C782303b",
+      "functions": [
+        {
+          "signature": "function available(string name) view returns (bool)",
+          "selector": "0xaeb8ce9b"
+        },
+        {
+          "signature": "function commit(bytes32 commitment)",
+          "selector": "0xf14fcbc8"
+        },
+        {
+          "signature": "function makeCommitment(string name, address owner, uint256 duration, bytes32 secret, address resolver, bytes[] data, bool reverseRecord, uint16 ownerControlledFuses) pure returns (bytes32)",
+          "selector": "0x65a69dcf"
+        },
+        {
+          "signature": "function register(string name, address owner, uint256 duration, bytes32 secret, address resolver, bytes[] data, bool reverseRecord, uint16 ownerControlledFuses) payable",
+          "selector": "0x74694a2b"
+        },
+        {
+          "signature": "function renew(string name, uint256 duration) payable",
+          "selector": "0xacf1a841"
+        },
+        {
+          "signature": "function rentPrice(string name, uint256 duration) view returns ((uint256 base, uint256 premium) price)",
+          "selector": "0x83e7f6ff"
+        }
+      ]
+    },
+    "ensBase": {
+      "address": "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85",
+      "functions": [
+        {
+          "signature": "function approve(address to, uint256 tokenId)",
+          "selector": "0x095ea7b3"
+        },
+        {
+          "signature": "function available(uint256 id) view returns (bool)",
+          "selector": "0x96e494e8"
+        },
+        {
+          "signature": "function controllers(address) view returns (bool)",
+          "selector": "0xda8c229e"
+        },
+        {
+          "signature": "function nameExpires(uint256 id) view returns (uint256)",
+          "selector": "0xd6e4fa86"
+        },
+        {
+          "signature": "function ownerOf(uint256 tokenId) view returns (address)",
+          "selector": "0x6352211e"
+        },
+        {
+          "signature": "function reclaim(uint256 id, address owner)",
+          "selector": "0x28ed4f6c"
+        },
+        {
+          "signature": "function register(uint256 id, address owner, uint256 duration) returns (uint256)",
+          "selector": "0xfca247ac"
+        },
+        {
+          "signature": "function renew(uint256 id, uint256 duration) returns (uint256)",
+          "selector": "0xc475abff"
+        },
+        {
+          "signature": "function safeTransferFrom(address from, address to, uint256 tokenId)",
+          "selector": "0x42842e0e"
+        },
+        {
+          "signature": "function safeTransferFrom(address from, address to, uint256 tokenId, bytes _data)",
+          "selector": "0xb88d4fde"
+        },
+        {
+          "signature": "function setApprovalForAll(address to, bool approved)",
+          "selector": "0xa22cb465"
+        },
+        {
+          "signature": "function setResolver(address resolver)",
+          "selector": "0x4e543b26"
+        }
+      ]
+    },
+    "ensWrapper": {
+      "address": "0xD4416b13d2b3a9aBae7AcD5D6C2BbDBE25686401",
+      "functions": [
+        {
+          "signature": "function approve(address to, uint256 tokenId)",
+          "selector": "0x095ea7b3"
+        },
+        {
+          "signature": "function canModifyName(bytes32 node, address addr) view returns (bool)",
+          "selector": "0x41415eab"
+        },
+        {
+          "signature": "function controllers(address) view returns (bool)",
+          "selector": "0xda8c229e"
+        },
+        {
+          "signature": "function getData(uint256 id) view returns (address owner, uint32 fuses, uint64 expiry)",
+          "selector": "0x0178fe3f"
+        },
+        {
+          "signature": "function ownerOf(uint256 id) view returns (address owner)",
+          "selector": "0x6352211e"
+        },
+        {
+          "signature": "function renew(uint256 tokenId, uint256 duration) returns (uint256 expires)",
+          "selector": "0xc475abff"
+        },
+        {
+          "signature": "function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes data)",
+          "selector": "0xf242432a"
+        },
+        {
+          "signature": "function setApprovalForAll(address operator, bool approved)",
+          "selector": "0xa22cb465"
+        },
+        {
+          "signature": "function setResolver(bytes32 node, address resolver)",
+          "selector": "0x1896f70a"
+        },
+        {
+          "signature": "function setSubnodeRecord(bytes32 parentNode, string label, address owner, address resolver, uint64 ttl, uint32 fuses, uint64 expiry) returns (bytes32 node)",
+          "selector": "0x24c1af44"
+        }
+      ]
+    },
+    "ensPublicResolver": {
+      "address": "0xF29100983E058B709F3D539b0c765937B804AC15",
+      "functions": [
+        {
+          "signature": "function approve(bytes32 node, address delegate, bool approved)",
+          "selector": "0xa4b91a01"
+        },
+        {
+          "signature": "function contenthash(bytes32 node) view returns (bytes)",
+          "selector": "0xbc1c58d1"
+        },
+        {
+          "signature": "function multicall(bytes[] data) returns (bytes[] results)",
+          "selector": "0xac9650d8"
+        },
+        {
+          "signature": "function multicallWithNodeCheck(bytes32 nodehash, bytes[] data) returns (bytes[] results)",
+          "selector": "0xe32954eb"
+        },
+        {
+          "signature": "function setAddr(bytes32 node, uint256 coinType, bytes addressBytes)",
+          "selector": "0x8b95dd71"
+        },
+        {
+          "signature": "function setAddr(bytes32 node, address _addr)",
+          "selector": "0xd5fa2b00"
+        },
+        {
+          "signature": "function setApprovalForAll(address operator, bool approved)",
+          "selector": "0xa22cb465"
+        },
+        {
+          "signature": "function setContenthash(bytes32 node, bytes hash)",
+          "selector": "0x304e6ade"
+        },
+        {
+          "signature": "function setName(bytes32 node, string newName)",
+          "selector": "0x77372213"
+        },
+        {
+          "signature": "function setText(bytes32 node, string key, string value)",
+          "selector": "0x10f13a8c"
+        }
+      ]
+    },
+    "ensReverse": {
+      "address": "0xa58E81fe9b61B5c3fE2AFD33CF304c454AbFc7Cb",
+      "functions": [
+        {
+          "signature": "function controllers(address) view returns (bool)",
+          "selector": "0xda8c229e"
+        },
+        {
+          "signature": "function setName(string name) returns (bytes32)",
+          "selector": "0xc47f0027"
+        },
+        {
+          "signature": "function setNameForAddr(address addr, address owner, address resolver, string name) returns (bytes32)",
+          "selector": "0x7a806d6b"
+        }
+      ]
+    }
+  }
+}

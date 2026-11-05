@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // Smoke test for the IPFS node (`npm run ipfs:native:smoke`, run per shipped
-// target by ci.yml's freedom-ipfsd-smoke job against the freedom-ipfsd
-// service, the default, and its freedom-ipfs-native-addon job against the
-// add-on, the rollback: freedom-core design 0007). The checks below are the
-// same for both; "the addon" means whichever node is under test.
+// target by ci.yml's native-addons job, against the freedom-ipfsd service, the
+// default, and against the add-on, the rollback: freedom-core design 0007).
+// The checks below are the same for both; "the addon" means whichever node is
+// under test.
 //
 // Hard failures (always exit 1): the addon doesn't load or reports the wrong
 // target, the node doesn't start or isn't healthy, the diagnostics snapshots

@@ -61,6 +61,7 @@ beforeAll(() => {
   };
 
   global.document = {
+    body: { classList: { toggle: jest.fn() } },
     createElement: jest.fn((tag) => {
       if (tag === 'webview') {
         return createMockWebview();

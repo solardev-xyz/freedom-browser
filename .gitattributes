@@ -9,3 +9,6 @@ docs/audits/evidence/**/*.bin -text
 scripts/vendor/** -text
 # The Radicle backend contract fixture and its golden vectors: generated, exact bytes.
 test/fixtures/radicle-contract/** -text
+
+# Applied by scripts/fetch-arti.js to crates.io sources, which use LF.
+scripts/patches/** text eol=lf

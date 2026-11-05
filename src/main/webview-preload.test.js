@@ -197,6 +197,31 @@ function loadWebviewPreloadModule(options = {}) {
 }
 
 describe('webview-preload', () => {
+  test.each(['home.html', 'settings.html'])('opens Agent from %s without returning provider authority to home', async file => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: {
+      protocol: 'file:', pathname: `/app/pages/${file}`, href: `file:///app/pages/${file}`,
+    } });
+    await exposures.freedomAPI.openAgent();
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.openAgent({ freshPage: true });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open', { freshPage: true });
+    await exposures.freedomAPI.openAgent({ freshPage: 1, other: 'x' });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.getAgentSetupState();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:setup-state');
+    if (file === 'home.html') {
+      await expect(exposures.freedomAPI.getAgentProviderCatalog()).rejects.toThrow('only available on settings');
+      await expect(exposures.freedomAPI.getAgentProviderStatus()).rejects.toThrow('only available on settings');
+    }
+  });
+  test('does not expose the Agent launcher to other internal pages or websites', async () => {
+    const { exposures, ipcRenderer, location } = loadWebviewPreloadModule();
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    await expect(exposures.freedomAPI.getAgentSetupState()).rejects.toThrow('Open Agent from');
+    location.protocol = 'https:'; location.pathname = '/pages/home.html';
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('agent:open');
+  });
   let consoleLogSpy;
   let consoleWarnSpy;
   let consoleErrorSpy;
@@ -396,6 +421,29 @@ describe('webview-preload', () => {
     expect(consoleWarnSpy).toHaveBeenCalledWith(
       '[freedomAPI] blocked profile-management "createProfile" on page: file:///app/pages/history.html'
     );
+  });
+
+  test.each([
+    ['onAgentProviderAuthEvent', 'agent:provider:auth-event', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'home.html'],
+  ])('%s reaches %s and unsubscribes on navigation', (name, channel, file) => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: { href: `file:///app/pages/${file}`, protocol: 'file:', pathname: `/app/pages/${file}` } });
+    const callback = jest.fn();
+    exposures.freedomAPI[name](callback);
+    ipcRenderer.emit(channel, { type: 'fixture' });
+    expect(callback).toHaveBeenCalled();
+    global.window.addEventListener.mock.calls.find(([event]) => event === 'pagehide')[1]();
+    callback.mockClear();
+    ipcRenderer.emit(channel, {});
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test('provider sign-in events stay with Settings, and other pages get no provider events', async () => {
+    const home = loadWebviewPreloadModule({ location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' } });
+    await expect(home.exposures.freedomAPI.onAgentProviderAuthEvent(jest.fn())).rejects.toThrow('only available on settings');
+    const history = loadWebviewPreloadModule();
+    await expect(history.exposures.freedomAPI.onAgentProviderChanged(jest.fn())).rejects.toThrow('Open Agent from');
   });
 
   test('onSettingsUpdated forwards the broadcast and unsubscribes on pagehide', () => {
@@ -1663,6 +1711,28 @@ describe('webview-preload private windows', () => {
     );
   });
 
+  test('isolated workspace preview: no providers or provider bridges are installed', () => {
+    const { ipcRenderer, document } = loadWebviewPreloadModule({
+      location: {
+        href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+        protocol: 'freedom-preview:',
+        pathname: '/index.html',
+      },
+    });
+
+    const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
+    for (const channel of providerChannels) expect(onChannels).not.toContain(channel);
+    expect(
+      global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')
+    ).toHaveLength(0);
+    expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
+      'DOMContentLoaded'
+    );
+    expect(consoleLogSpy).toHaveBeenCalledWith(
+      '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
+    );
+  });
+
   test('normal window: falls back to DOM injection if early main-world execution fails', () => {
     const contextBridge = createContextBridgeMock();
     contextBridge.executeInMainWorld.mockImplementation(() => {
@@ -1902,6 +1972,7 @@ describe('webview-preload internal-page theme', () => {
     expect(documentElement.setAttribute).not.toHaveBeenCalled();
     expect(ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED)).toBeUndefined();
   });
+
 });
 
 // #410: filter-list scriptlets (`youtube.com##+js(json-prune, …)`) must run in
@@ -2527,6 +2598,31 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
       IPC.GET_ETHEREUM_INJECT_SOURCE,
       IPC.GET_INTERNAL_PAGES,
     ];
+
+    test('an isolated Agent preview stays provider-free with normal-window boot metadata', () => {
+      const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
+        location: {
+          href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+          protocol: 'freedom-preview:',
+          pathname: '/index.html',
+        },
+        argv: ['electron', bootArg(normalBoot)],
+      });
+      expect(providerCalls(contextBridge)).toHaveLength(0);
+      for (const channel of [
+        'dapp:provider-response',
+        'dapp:provider-event',
+        'swarm:provider-response',
+        'swarm:provider-event',
+        'radicle:provider-response',
+        'radicle:provider-event',
+      ]) {
+        expect(ipcRenderer.on.mock.calls.map(([name]) => name)).not.toContain(channel);
+      }
+      for (const channel of STATIC_CHANNELS) expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(channel);
+      expect(global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')).toHaveLength(0);
+      expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain('DOMContentLoaded');
+    });
 
     test('a page load makes none of the static sync calls and still gets its provider', () => {
       const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({

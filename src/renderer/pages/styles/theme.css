@@ -45,6 +45,7 @@ html {
   --text-meta: #6e7681;
   --text-subtle: #6e7681;
   --accent: #58a6ff;
+  --accent-strong: #58a6ff;
   --accent-muted: rgba(88, 166, 255, 0.12);
   --danger: #f85149;
   --danger-bg: #f8514915;
@@ -154,6 +155,11 @@ html {
   --shell-info-border: rgba(124, 172, 248, 0.3);
   --shell-name-border: none;
 
+  /* Start page setup banner (freedom://home): a solid card over the artwork,
+     shaded like the chrome's update toast. */
+  --home-card-shadow: rgba(0, 0, 0, 0.4);
+  --home-control-hover: rgba(255, 255, 255, 0.08);
+
   /* Profiles' modal overlay.
      The modal follows the window chrome rather than the page it sits on. */
   --m-bg: #1a1a1a;
@@ -207,6 +213,7 @@ html[data-theme='light'] {
   --text-meta: #57606a;
   --text-subtle: #8c959f;
   --accent: #0969da;
+  --accent-strong: #0550ae;
   --accent-muted: rgba(9, 105, 218, 0.1);
   --danger: #cf222e;
   --danger-bg: #ffebe9;
@@ -308,6 +315,10 @@ html[data-theme='light'] {
   --shell-info-bg: rgba(9, 105, 218, 0.1);
   --shell-info-border: rgba(9, 105, 218, 0.3);
   --shell-name-border: 1px solid #d0d7de;
+
+  /* Start page setup banner (freedom://home). */
+  --home-card-shadow: rgba(0, 0, 0, 0.15);
+  --home-control-hover: rgba(31, 35, 40, 0.06);
 
   /* Profiles' modal overlay. */
   --m-bg: #ffffff;

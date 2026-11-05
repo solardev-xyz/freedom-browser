@@ -49,9 +49,17 @@ input[type='password']:focus-visible,
 input[type='number']:focus-visible,
 input[type='url']:focus-visible,
 input[type='email']:focus-visible,
+.agent-field input[type='checkbox']:focus-visible,
 input:not([type]):focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* The Agent composer is one rounded control, including its footer. Its
+   focus-within shadow supplies the focus treatment; a ring on the inner
+   textarea slices that control into a rectangle. Keep other fields unchanged. */
+.agent-composer textarea:focus-visible {
+  outline: none;
 }

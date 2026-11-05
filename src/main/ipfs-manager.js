@@ -464,6 +464,10 @@ function checkHealth() {
   }
 }
 
+function getStatus() {
+  return { status: currentState, error: lastError };
+}
+
 function stopHealthCheck() {
   if (!healthCheckInterval) return;
   clearInterval(healthCheckInterval);
@@ -1211,6 +1215,42 @@ function ipfsBackend({ partition = null } = {}) {
   };
 }
 
+const jsonStatus = (status, message) =>
+  new Response(JSON.stringify({ code: status, message }), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
+
+/**
+ * A gateway request of main's own (the agent's node requests,
+ * node-request-controller.js), never a page's: served by the profile's
+ * backend as `ipfsBackend()` captures it, with a 503 when nothing serves
+ * and, for the external gateway, a 502 when it fails, as before the core
+ * took over `ipfs:` (freedom-core design 0006).
+ */
+async function serveNativeGatewayRequest({ path: gatewayPath, method, headers, signal }) {
+  const backend = ipfsBackend();
+  try {
+    if (!backend.ref.up) {
+      return jsonStatus(
+        503,
+        backend.ref.ipfs === 'gateway'
+          ? 'external IPFS gateway is not running'
+          : 'freedom-ipfs node is not running'
+      );
+    }
+    try {
+      return await backend.request({ path: gatewayPath, method, headers, signal });
+    } catch (err) {
+      if (err?.name === 'AbortError' || backend.ref.ipfs !== 'gateway') throw err;
+      log.warn(`[IPFS] External gateway request failed: ${err?.message || err}`);
+      return jsonStatus(502, 'external IPFS gateway request failed');
+    }
+  } finally {
+    backend.release();
+  }
+}
+
 /**
  * The freedom-ipfsd node's backend (freedom-core design 0007, "Main's side"):
  * the generation and instance serving now, captured at admission, so a
@@ -1359,7 +1399,9 @@ module.exports = {
   setUseInjectedIdentity,
   hasInjectedIdentity,
   ipfsBackend,
+  serveNativeGatewayRequest,
   getNativeDiagnostics,
+  getStatus,
   checkHealth,
   isExternalIpfsConfig,
   normalizeExternalGatewayUrl,

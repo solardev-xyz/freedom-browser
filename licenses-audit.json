@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-10-08T00:00:00.000Z",
-  "audit_baseline": "0.8.7",
+  "generated_at": "2026-10-31T00:00:00.000Z",
+  "audit_baseline": "0.8.8",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -14,14 +14,14 @@
       "libradicle.node",
       "myotis-node.node"
     ],
-    "external_binaries": ["antd", "arti", "myotis-supervisor"],
+    "external_binaries": ["antd", "arti", "myotis-supervisor", "whisper-cli"],
     "vendored_renderer_bundles": [
       "src/renderer/vendor/openlv.esm.js",
       "src/renderer/vendor/highlight.min.js",
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries. Since 0.8.8 the agent's npm stack ships in app.asar too, including pdfjs-dist with its WebAssembly decoders. build.files leaves out pdfjs-dist's standard_fonts/ and its optional @napi-rs/canvas Skia addon (#962), and scripts/check-asar-contents.js fails a build that packs either."
   },
   "dependencies": [
     {
@@ -89,8 +89,35 @@
       ]
     },
     {
+      "name": "whisper.cpp",
+      "version": "1.9.5",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/ggml-org/whisper.cpp" },
+      "license": { "spdx": ["MIT", "MIT-0"], "raw": "MIT (whisper.cpp, ggml, stb_vorbis); MIT-0 (miniaudio)", "license_files": ["NOTICES.txt"], "notice_required": true },
+      "version_pin": "src/shared/dictation-runtime.js WHISPER_VERSION",
+      "bundled_with_app": true,
+      "linking_or_integration": "native CLI and CPU libraries built from checksum-pinned upstream source",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "codex-windows-sandbox",
+      "version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/openai/codex" },
+      "license": { "spdx": ["Apache-2.0"], "raw": "Apache-2.0", "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"], "notice_required": true },
+      "version_pin": "scripts/build-windows-workspace.js REVISION",
+      "bundled_with_app": true,
+      "platforms": ["win"],
+      "linking_or_integration": "native helper process",
+      "risk": "green",
+      "issues": []
+    },
+    {
       "name": "electron",
-      "version": "44.7.0",
+      "version": "45.2.1",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
@@ -109,12 +136,12 @@
         "status": "shipped in every artifact",
         "linux": "beside the freedom executable (/opt/Freedom/, AppImage mount root), from the Electron dist",
         "win": "beside Freedom.exe in the installation directory, from the Electron dist",
-        "mac": "Freedom.app/Contents/Resources/LICENSES.chromium.html, copied by package.json build.mac.extraResources because electron-builder unlinks the dist copy on the macOS path (app-builder-lib/out/electron/electronMac.js) and the .dmg/.zip carry only the .app"
+        "mac": "Freedom.app/Contents/Resources/LICENSES.chromium.html, copied by package.json build.mac.extraResources because the .dmg/.zip carry only the .app and electron-builder before 26.18 unlinked the dist copy on the macOS path (26.18 moves it into the bundle itself; the explicit copy stays)"
       }
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.71",
+      "version": "v0.5.77",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
@@ -174,7 +201,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.16",
+      "version": "v0.1.18",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
@@ -365,7 +392,7 @@
     },
     {
       "name": "@ghostery/adblocker",
-      "version": "2.18.2",
+      "version": "2.20.3",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/ghostery/adblocker" },
@@ -468,7 +495,7 @@
     },
     {
       "name": "electron-updater",
-      "version": "6.8.9",
+      "version": "6.8.11",
       "type": "direct",
       "scope": "runtime",
       "source": {
@@ -488,7 +515,7 @@
     },
     {
       "name": "@corpus-core/colibri-stateless",
-      "version": "3.0.2",
+      "version": "3.0.3",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
@@ -501,7 +528,13 @@
       "bundled_with_app": true,
       "linking_or_integration": "js-import",
       "risk": "green",
-      "issues": []
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Up to 3.0.2 the shipped c4w.wasm compiled in src/chains/op/verifier/op_zstd.{c,h}, which carried a PolyForm-Noncommercial-1.0.0 header despite the package's MIT licence (corpus-core/colibri-stateless#401). 3.0.3 relicenses that wrapper to MIT (#403), so everything in the package is MIT. Its LICENSE now names corpus.core GmbH instead of the .NET Foundation template line.",
+          "recommended_fix": null
+        }
+      ]
     },
     {
       "name": "@ensdomains/content-hash",
@@ -539,7 +572,7 @@
     },
     {
       "name": "@ethersphere/bee-js",
-      "version": "13.1.0",
+      "version": "13.2.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/ethersphere/bee-js" },
@@ -556,7 +589,7 @@
     },
     {
       "name": "@ledgerhq/hw-app-eth",
-      "version": "7.10.0",
+      "version": "7.11.1",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/LedgerHQ/ledger-live" },
@@ -590,7 +623,7 @@
     },
     {
       "name": "@safe-global/protocol-kit",
-      "version": "8.0.7",
+      "version": "8.0.11",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/safe-global/safe-core-sdk" },
@@ -607,7 +640,7 @@
     },
     {
       "name": "@x402/core",
-      "version": "2.28.0",
+      "version": "2.29.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
@@ -624,7 +657,7 @@
     },
     {
       "name": "@x402/evm",
-      "version": "2.28.0",
+      "version": "2.29.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
@@ -780,34 +813,185 @@
       "linking_or_integration": "native-addon",
       "risk": "green",
       "issues": []
+    },
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "1.0.2",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/earendil-works/pi"
+      },
+      "license": {
+        "spdx": [
+          "MIT"
+        ],
+        "raw": "MIT",
+        "license_files": [],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Exact pin at the qualified version. The package ships no licence file of its own; its package.json declares MIT, as do its @earendil-works/* siblings (pi-agent-core, pi-ai, pi-codemode, pi-mcp, pi-telemetry, pi-tui, chord), all 1.0.2. It pulls in the model provider SDKs openai and @google/genai (Apache-2.0), @anthropic-ai/sdk (MIT) and @aws-sdk/client-bedrock-runtime with its @aws-sdk/* and @smithy/* helpers (Apache-2.0); none ships a NOTICE file. package.json overrides its exact undici pin to ^8.12.3.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "@phala/dcap-qvl",
+      "version": "0.6.5",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/Phala-Network/dcap-qvl"
+      },
+      "license": {
+        "spdx": [
+          "Apache-2.0"
+        ],
+        "raw": "Apache-2.0",
+        "license_files": [],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Exact pin. Ships no licence or NOTICE file; package.json declares Apache-2.0. Depends on elliptic (MIT), whose open GHSA-848j-6mx2-7j84 affects signing only; dcap-qvl verifies with public keys.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/mozilla/pdf.js"
+      },
+      "license": {
+        "spdx": [
+          "Apache-2.0",
+          "BSD-3-Clause",
+          "BSD-2-Clause",
+          "MIT",
+          "CC0-1.0"
+        ],
+        "raw": "Apache-2.0 (PDF.js); bundles PDFium's JBIG2 decoder (BSD-3-Clause), OpenJPEG (BSD-2-Clause), qcms and QuickJS (MIT), Adobe CMaps (BSD-3-Clause) and ICC profiles (CC0-1.0)",
+        "license_files": [
+          "LICENSE",
+          "wasm/LICENSE_JBIG2",
+          "wasm/LICENSE_OPENJPEG",
+          "wasm/LICENSE_QCMS",
+          "cmaps/LICENSE",
+          "iccs/LICENSE"
+        ],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "renderer-asset",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "build.files leaves out standard_fonts/, whose Liberation Sans 1.x is GPL-2.0 with a font exception that does not cover redistributing the fonts, and its optional dependency @napi-rs/canvas, a Skia addon the PDF processor never loads (#962). scripts/check-asar-contents.js fails a build that packs either. The standard fonts the processor uses ship from src/renderer/assets/pdf-fonts/ instead (see assets).",
+          "recommended_fix": null
+        }
+      ]
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 241,
+    "unique_packages": 360,
     "counts": {
-      "MIT": 174,
-      "Apache-2.0": 19,
-      "ISC": 18,
+      "MIT": 233,
+      "Apache-2.0": 58,
+      "ISC": 22,
+      "BSD-3-Clause": 17,
       "MPL-2.0": 10,
       "LGPL-3.0-only": 4,
       "LGPL-3.0": 1,
       "Apache-2.0 OR MIT": 3,
-      "BSD-3-Clause": 4,
+      "BlueOak-1.0.0": 3,
       "0BSD": 2,
       "(MIT OR X11)": 1,
       "(MIT OR WTFPL)": 1,
       "(BSD-2-Clause OR MIT OR Apache-2.0)": 1,
       "(Zlib OR MIT OR Apache-2.0)": 1,
+      "BSD-2-Clause": 1,
       "Python-2.0": 1,
-      "BlueOak-1.0.0": 1
+      "Unlicense": 1
     },
-    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all"
+    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all. Counted on a Linux x64 install, leaving out @napi-rs/canvas and its platform package, which npm installs but build.files excludes. Counts follow each package's declared licence field, so files a package bundles under another licence (pdfjs-dist's fonts) are recorded on its dependencies entry instead"
   },
   "dev_dependencies_summary": {
     "risk_assessment": "Dev dependencies are not shipped with the application and do not affect the license of the distributed product. Notable: caniuse-lite is CC-BY-4.0 but is never distributed.",
     "copyleft_bundled": false
   },
   "assets": [
+    {
+      "name": "optional local dictation notices",
+      "path": "src/main/agent/dictation-local-notices.txt",
+      "type": "license-text",
+      "license": { "spdx": ["MIT", "MIT-0"], "raw": "Upstream license texts for whisper.cpp, its decoder utilities, and Whisper", "notice_required": true },
+      "risk": "green",
+      "issues": [],
+      "notes": "The whisper.cpp 1.9.5 CLI is compiled from pinned source and bundled with the app. The checksum-pinned multilingual Whisper Base GGML model is an optional user-requested download. License texts ship in app.asar, beside the CLI, and beside the downloaded model as NOTICES.txt."
+    },
+    {
+      "name": "model provider marks",
+      "path": "src/renderer/assets/provider-logos/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "UNKNOWN"
+        ],
+        "raw": "Third-party provider marks; nominative identification, no ownership claimed",
+        "notice_required": true
+      },
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "trademark",
+          "details": "Official provider icons bundled locally; source URLs and attribution are recorded in the directory README and NOTICES. Per-mark redistribution terms remain unconfirmed.",
+          "recommended_fix": "Confirm brand terms before a final tag, or use generic glyphs."
+        }
+      ]
+    },
+    {
+      "name": "PDF standard fonts",
+      "path": "src/renderer/assets/pdf-fonts/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "OFL-1.1",
+          "BSD-3-Clause"
+        ],
+        "raw": "Liberation Sans 2.1.5 (OFL-1.1, unmodified, Reserved Font Name Liberation); FoxitSymbol.pfb and FoxitDingbats.pfb copied from pdfjs-dist (BSD-3-Clause, PDFium)",
+        "license_files": [
+          "LICENSE_LIBERATION",
+          "LICENSE_FOXIT"
+        ],
+        "notice_required": true
+      },
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Replaces pdfjs-dist's standard_fonts/ for the agent's PDF processor (#962). Liberation Sans 2.1.5 comes unmodified from the upstream release tarball (sha256 7191c669...); the OFL's Reserved Font Name means any subset or edit would have to be renamed. The directory README records each file's sha256, and src/renderer/lib/pdf-processor.test.js fails if the Foxit copies drift from the installed pdfjs-dist.",
+          "recommended_fix": null
+        }
+      ]
+    },
     {
       "name": "icon.png",
       "path": "assets/icon.png",
@@ -851,8 +1035,8 @@
       "issues": [
         {
           "kind": "copyleft",
-          "details": "ublock-filters.txt (modified: preprocessed and concatenated, marked in its header) and resources.json (unmodified, minified scriptlet bodies, pinned to @ghostery/adblocker v2.18.2 by sha256) ship as standalone files in extraResources, next to the GPL-3.0 text (COPYING.GPL-3.0.txt). Freedom's code does not link or include them; the engine reads the lists as data and injects the scriptlets into web pages. Treated as an aggregate under GPL-3.0 section 5, so the GPL does not extend to Freedom (#410).",
-          "recommended_fix": "Decided by the maintainer (PR #412): the aggregation position stands, matching Brave (MPL-2.0), which ships uAssets lists and a pinned uBlock build of its scriptlets as separate data files. Corresponding source is the exact public upstream, not a mirror: resources.json from gorhill/uBlock 1.72.3rc4 (de31aee0fcd69dc89cde558f1a0638c1aa77b75e; 1.73.0 identical) via ghostery/adblocker e08ecf7fe10f929d5053234017d72d65001640a6 and assets/update.js at v2.18.2; ublock-filters.txt at the uBlockOrigin/uAssets gh-pages commit each build resolves. Both are recorded in NOTICES and assets/adblock/manifest.json. Re-derive the uBlock revision on every @ghostery/adblocker bump. See LICENSE_AUDIT.md, The GPL question."
+          "details": "ublock-filters.txt (modified: preprocessed and concatenated, marked in its header) and resources.json (unmodified, minified scriptlet bodies, pinned to @ghostery/adblocker v2.20.3 by sha256) ship as standalone files in extraResources, next to the GPL-3.0 text (COPYING.GPL-3.0.txt). Freedom's code does not link or include them; the engine reads the lists as data and injects the scriptlets into web pages. Treated as an aggregate under GPL-3.0 section 5, so the GPL does not extend to Freedom (#410).",
+          "recommended_fix": "Decided by the maintainer (PR #412): the aggregation position stands, matching Brave (MPL-2.0), which ships uAssets lists and a pinned uBlock build of its scriptlets as separate data files. Corresponding source is the exact public upstream, not a mirror: resources.json from gorhill/uBlock 1.73.1b1 (6788ed72af9bf2670bcdc1c3da3925d8b4f36443; no stable release identical) via ghostery/adblocker 7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec and assets/update.js at v2.20.3; ublock-filters.txt at the uBlockOrigin/uAssets gh-pages commit each build resolves. Both are recorded in NOTICES and assets/adblock/manifest.json. Re-derive the uBlock revision on every @ghostery/adblocker bump. See LICENSE_AUDIT.md, The GPL question."
         }
       ]
     },
@@ -900,7 +1084,13 @@
       "issues": []
     }
   ],
-  "summary": { "green": 234, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": {
+    "green": 353,
+    "yellow": 3,
+    "orange": 5,
+    "red": 0,
+    "unknown": 0
+  },
   "blockers": [],
   "resolved_since_last_audit": [
     {
@@ -908,11 +1098,17 @@
       "component": "qrious 4.0.2 (src/renderer/vendor/qrious.min.js)",
       "details": "A GPL-3.0 QR-code library was committed under src/renderer/vendor/ and shipped inside app.asar via the src/**/* files pattern, unreferenced by any source file. GPL-3.0 is strong copyleft and is not compatible with distributing Freedom under MPL-2.0. The 2026-08-19 audit's `Copyleft: 0` line missed it.",
       "resolution": "Deleted, together with two other unreferenced vendor files (qrcode.esm.js, and qrcode.min.js which was a 64-byte jsDelivr 404 body). The app's QR rendering uses the npm `qrcode` package (MIT) from the main process."
+    },
+    {
+      "kind": "copyleft",
+      "component": "Liberation Sans 1.x (pdfjs-dist 6.3.289, standard_fonts/LiberationSans-*.ttf)",
+      "details": "GPL-2.0 font files with Red Hat's font exception, which does not cover redistributing the fonts, came into app.asar with the agent's PDF processor, and the processor loaded them. pdfjs-dist's optional @napi-rs/canvas also packaged an unused Skia addon of about 37 MB per platform with unattributed native libraries.",
+      "resolution": "Maintainer decision in #962: build.files leaves out pdfjs-dist's standard_fonts/ and node_modules/@napi-rs/, scripts/check-asar-contents.js fails a build that packs either, and the processor's standardFontDataUrl points at src/renderer/assets/pdf-fonts/, which carries unmodified Liberation Sans 2.1.5 (OFL-1.1) plus the two Foxit fonts it fetches."
     }
   ],
   "verdict": {
     "status": "OK_TO_SHIP",
-    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code remains after removing the unreferenced qrious bundle. The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the one MPL-2.0 crate the freedom-ipfsd binary links (attohttpc) ships in executable form, so NOTICES names its exact source (section 3.2(a)); the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
+    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code ships: the unreferenced qrious bundle was removed in 0.8.5, and pdfjs-dist's GPL-2.0 Liberation Sans 1.x fonts are left out of the package in favour of OFL-licensed Liberation Sans 2.1.5 (#962). The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the one MPL-2.0 crate the freedom-ipfsd binary links (attohttpc) ships in executable form, so NOTICES names its exact source (section 3.2(a)); the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
     {
@@ -933,7 +1129,7 @@
     {
       "priority": "required",
       "action": "Keep shipping Electron's LICENSES.chromium.html on macOS",
-      "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: electron-builder unlinks it, and the .dmg/-mac.zip carry only Freedom.app, so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
+      "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: the .dmg/-mac.zip carry only Freedom.app, and electron-builder before 26.18 unlinked it (26.18 moves it into the bundle itself), so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
     },
     {
       "priority": "required",
@@ -949,6 +1145,11 @@
       "priority": "recommended",
       "action": "Ask libradicle upstream for LICENSE files",
       "details": "solardev-xyz/libradicle declares MIT OR Apache-2.0 in Cargo.toml but commits no license text."
+    },
+    {
+      "priority": "required",
+      "action": "Keep pdfjs-dist's excluded paths out of the package",
+      "details": "build.files leaves out node_modules/pdfjs-dist/standard_fonts/ (GPL-2.0 Liberation Sans 1.x) and node_modules/@napi-rs/ (unused Skia addon), in the top-level list and every platform list. scripts/check-asar-contents.js fails a build that packs either, and the PDF processor reads its standard fonts from src/renderer/assets/pdf-fonts/ (#962)."
     }
   ]
 }

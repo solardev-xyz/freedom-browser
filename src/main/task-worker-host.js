@@ -1,9 +1,11 @@
 // A small request/response host for one lazily spawned `worker_threads`
 // worker (#503 item 12). Used by the chainlist catalog
-// (`networks/chain-catalog-worker.js`), so CPU-heavy work on a multi-MB input
-// never runs on Electron's main thread, where it freezes every window. (The
-// web3:// document decoder, #503 item 9, was its first user; the core decodes
-// those documents now, freedom-core design 0006.)
+// (`networks/chain-catalog-worker.js`) and the agent's pre-publish scan
+// (`agent/publication-scan-worker.js`, via `agent/publication-scan-host.js`),
+// so CPU-heavy work on a multi-MB input never runs on Electron's main thread,
+// where it freezes every window. (The web3:// document decoder, #503 item 9,
+// was its first user; the core decodes those documents now, freedom-core
+// design 0006.)
 //
 // Protocol: main posts `{ id, op, ...payload }`; the worker answers
 // `{ id, ok: true, result }` or `{ id, ok: false, error, code }`, and may post

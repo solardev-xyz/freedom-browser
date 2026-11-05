@@ -67,6 +67,7 @@
  */
 
 const crypto = require('crypto');
+const { permitsDictationCapture } = require('../agent/dictation-capture');
 const { ipcMain, systemPreferences } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
@@ -1087,6 +1088,11 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
   }
 
   targetSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (permission === 'media' && permitsDictationCapture(webContents, details)) {
+      void getOsBlockedMediaKeys(['microphone']).then(blocked =>
+        callback(!blocked.length && permitsDictationCapture(webContents, details)));
+      return;
+    }
     if (ALWAYS_ALLOWED.has(permission)) {
       callback(true);
       return;
@@ -1142,6 +1148,7 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
   });
 
   targetSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    if (permission === 'media' && permitsDictationCapture(webContents, details, true)) return true;
     if (ALWAYS_ALLOWED.has(permission)) {
       return true;
     }
