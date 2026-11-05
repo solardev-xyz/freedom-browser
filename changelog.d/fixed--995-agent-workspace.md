@@ -1,0 +1,1 @@
+- Workspace stays attached above the Agent composer in short chats, with controls reachable in short windows ([#995](https://github.com/solardev-xyz/freedom-browser/pull/995))
