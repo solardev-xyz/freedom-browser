@@ -33,6 +33,7 @@ const {
   KIND_STREAM_CREDIT,
   MAX_DATA,
   WINDOW,
+  WRITER_DATA_CAP,
 } = require('./frame');
 
 const tick = () => new Promise(setImmediate);
@@ -67,6 +68,8 @@ class FakeCore extends EventEmitter {
     this.stderr = new PassThrough();
     this.messages = [];
     this.streams = [];
+    this.stuck = false; // stdin reads main's writes but doesn't complete them
+    this.held = []; // the write callbacks `stuck` holds back
     this.decoder = new FrameDecoder({ kinds: CORE_KINDS });
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
@@ -78,7 +81,8 @@ class FakeCore extends EventEmitter {
           this.messages.push(frame.message);
           handler(frame.message, this);
         }
-        callback();
+        if (this.stuck) this.held.push(callback);
+        else callback();
       },
       final: (callback) => {
         callback();
@@ -97,6 +101,17 @@ class FakeCore extends EventEmitter {
 
   write(bytes) {
     this.stdout.write(bytes);
+  }
+
+  /** Completes the oldest write `stuck` held back; the next stays stuck. */
+  completeOne() {
+    this.held.shift()?.();
+  }
+
+  /** Completes every write `stuck` held back, and those after. */
+  release() {
+    this.stuck = false;
+    for (const callback of this.held.splice(0)) callback();
   }
 
   exit(code, signal = null) {
@@ -495,6 +510,89 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
     expect(core().framesOf(KIND_ABORT, 9)[0]).toMatchObject({ code: 'body_stream_error' });
   });
 
+  test.each([
+    ['a byte stream', true],
+    ['a default stream', false],
+  ])(
+    '%s that fails with its window full and nothing reading ends at once, with no more credit',
+    async (_what, bytes) => {
+      let source;
+      let reads = 0;
+      const stream = new ReadableStream(
+        bytes
+          ? {
+              type: 'bytes',
+              start(controller) {
+                source = controller;
+              },
+              pull(controller) {
+                reads += 1;
+                const request = controller.byobRequest;
+                request.view.set(body(16, 0, request.view.byteLength));
+                request.respond(request.view.byteLength);
+              },
+            }
+          : {
+              start(controller) {
+                source = controller;
+              },
+              pull(controller) {
+                reads += 1;
+                controller.enqueue(new Uint8Array(body(16, 0, MAX_DATA)));
+              },
+            },
+        { highWaterMark: 0 }
+      );
+      await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+      ask(16);
+      await until(() => core().dataOf(16).length === WINDOW, 'the first window');
+      for (let i = 0; i < 20; i++) await tick();
+      const read = reads;
+      expect(core().framesOf(KIND_ABORT, 16)).toEqual([]);
+      source.error(Object.assign(new Error('idle'), { abortCode: 'stalled' }));
+      for (let i = 0; i < 3; i++) await tick();
+      expect(core().framesOf(KIND_ABORT, 16)).toEqual([
+        expect.objectContaining({ code: 'stalled' }),
+      ]);
+      expect(core().dataOf(16).length).toBe(WINDOW);
+      expect(reads).toBe(read);
+      expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+    }
+  );
+
+  test('a body that closes with bytes still queued sends them all, under credit, then end', async () => {
+    const length = 4 * MAX_DATA;
+    const stream = new ReadableStream({
+      start(controller) {
+        for (let at = 0; at < length; at += MAX_DATA) {
+          controller.enqueue(new Uint8Array(body(17, at, MAX_DATA)));
+        }
+        controller.close();
+      },
+    });
+    await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+    ask(17);
+    await until(() => core().dataOf(17).length === WINDOW, 'the first window');
+    for (let i = 0; i < 20; i++) await tick();
+    expect(core().framesOf(KIND_END, 17)).toEqual([]);
+    expect(core().framesOf(KIND_ABORT, 17)).toEqual([]);
+    let credited = 0;
+    while (core().framesOf(KIND_END, 17).length === 0) {
+      const sent = core().dataOf(17).length;
+      if (sent > credited) {
+        core().write(encodeStreamCredit(17, sent - credited));
+        credited = sent;
+      }
+      await tick();
+    }
+    expect(
+      core()
+        .dataOf(17)
+        .equals(body(17, 0, length))
+    ).toBe(true);
+    expect(core().framesOf(KIND_ABORT, 17)).toEqual([]);
+  });
+
   test('a plain answer is the one reply; a cancel before the answer makes cancelled the one reply', async () => {
     let release;
     const late = new Promise((resolve) => {
@@ -638,4 +736,105 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
     await until(() => client.streamStats().sending === 0, 'the request done');
     expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
   });
+  test.each([
+    ['byte streams', true],
+    ['default streams', false],
+  ])(
+    "256 %s: reads started at once claim the writer's room before they start, so what it holds never passes its cap",
+    async (_what, bytes) => {
+      // Every read waits at the gate open when it starts; reads that start
+      // while one is shut wait for it together.
+      let gate;
+      const shut = () => {
+        let open;
+        const promise = new Promise((resolve) => {
+          open = resolve;
+        });
+        gate = { promise, open };
+      };
+      shut();
+      let started = 0;
+      const stream = () =>
+        new ReadableStream(
+          bytes
+            ? {
+                type: 'bytes',
+                async pull(controller) {
+                  started += 1;
+                  await gate.promise;
+                  const request = controller.byobRequest;
+                  request.view.fill(7);
+                  request.respond(request.view.byteLength);
+                },
+              }
+            : {
+                async pull(controller) {
+                  started += 1;
+                  await gate.promise;
+                  controller.enqueue(new Uint8Array(MAX_DATA).fill(7));
+                },
+              },
+          { highWaterMark: 0 }
+        );
+      await serving(() => new StreamedReply({ status: 200, headers: [] }, stream()));
+      const sender = client.current.duplex.sender;
+      // Queued plus reserved, checked after every call that adds to them.
+      let most = 0;
+      const check = () => {
+        most = Math.max(most, sender.held + sender.reserved);
+      };
+      for (const name of ['push', 'reserve', 'claim']) {
+        if (typeof sender[name] !== 'function') continue;
+        const call = sender[name].bind(sender);
+        sender[name] = (...args) => {
+          const out = call(...args);
+          check();
+          return out;
+        };
+      }
+      const settle = async () => {
+        for (let i = 0; i < 20; i++) {
+          await tick();
+          check();
+        }
+      };
+      // The writer takes main's first write and completes none.
+      core().stuck = true;
+      const fill = async () => {
+        for (let id = 1; id <= 256; id++) ask(id);
+        await until(() => started === 256, 'every first read');
+        // The first reads come back together and fill the sender.
+        let open = gate.open;
+        shut();
+        open();
+        await settle();
+        expect(sender.held).toBe(WRITER_DATA_CAP);
+        expect(started).toBe(256);
+        expect(most).toBeLessThanOrEqual(WRITER_DATA_CAP);
+        // One write at a time completes until the room it frees starts reads.
+        for (let i = 0; i < 4 && started === 256; i++) {
+          core().completeOne();
+          await settle();
+        }
+        expect(started).toBeGreaterThan(256);
+        // Room for four reads of 64 KiB was freed: only four started.
+        expect(started - 256).toBeLessThanOrEqual(4);
+        // Every read started meanwhile comes back at once.
+        open = gate.open;
+        shut();
+        open();
+        await settle();
+        expect(most).toBeLessThanOrEqual(WRITER_DATA_CAP);
+        expect(client.streamStats().held + client.streamStats().pending).toBeLessThanOrEqual(
+          WRITER_DATA_CAP
+        );
+      };
+      try {
+        await fill();
+      } finally {
+        gate.open();
+        core().release();
+      }
+    }
+  );
 });

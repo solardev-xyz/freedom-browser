@@ -20,7 +20,9 @@
  *   every piece of it, dialling or streaming.
  * - **Read strictly, before any dial:** exactly `{ for, path, headers,
  *   stream, max_bytes }`. The path is one of the closed set of forms for the
- *   backend's node; the headers are exactly that form's, at its values; and
+ *   backend's node, its CID or IPNS name decoded and parsed as the core's
+ *   verifier writes it (`cid-text.js`); the headers are exactly that form's,
+ *   at its values; and
  *   `stream` and `max_bytes` are as the form says. Anything else is
  *   `invalid_argument`, logged as a core fault. A `for` that has ended is
  *   refused too, but it is a race, not a fault.
@@ -50,7 +52,8 @@
  *   the core's credit outstanding, and no byte for the plan's
  *   `body_idle_ms`); `body_stream_error` when the node's body fails, passes
  *   `max_bytes`, or its request ends; `cancelled` on the core's cancel (the
- *   service client answers it).
+ *   service client answers it). An abort is at once, read or not: it needs
+ *   no credit from the core.
  * - **Every terminal path frees the dial and its buffers:** the piece's
  *   end, the core's cancel, the `dweb.verify` request ending, the session
  *   closing.
@@ -64,6 +67,7 @@ const { ShellError, StreamedReply, PROTOCOL_VERSION_STREAMS } = require('./core-
 const { MAX_DATA } = require('./frame');
 const { backendKind, checkPath, SWARM_HEADERS } = require('../dweb/plan-validation');
 const { dialWithRetry, idleBoundBody, UNREACHABLE_CODES } = require('../dweb/plan-executor');
+const { ipfsCid, ipnsKey } = require('./cid-text');
 
 /** The headers a reply may carry: those the core reads (design 0009). */
 const REPLY_HEADERS = ['content-type', 'content-length', 'content-range', 'swarm-feed-index'];
@@ -83,13 +87,12 @@ const CAR_ACCEPT = 'application/vnd.ipld.car; version=1; order=dfs; dups=y';
 const RAW_ACCEPT = 'application/vnd.ipld.raw';
 const RECORD_ACCEPT = 'application/vnd.ipfs.ipns-record';
 
-// A CID as the core writes it: CIDv1 in lowercase base32, or a CIDv0, which
-// a dag-pb link may name.
-const CID = '(?:b[a-z2-7]{1,269}|Qm[1-9A-HJ-NP-Za-km-z]{44})';
-const CID_PATH = new RegExp(`^/ipfs/(${CID})(?:/.*)?$`);
-const RAW_PATH = new RegExp(`^/ipfs/${CID}\\?format=raw$`);
-// An IPNS name: a CIDv1 of a key, in base36 (`k…`) or base32 (`b…`).
-const RECORD_PATH = /^\/ipns\/[kb][0-9A-Za-z]{1,269}\?format=ipns-record$/;
+// A CID as the core writes it, CIDv1 in lowercase base32 or a CIDv0 (which
+// a dag-pb link may name), and an IPNS name, a libp2p-key CIDv1 in base36 or
+// base32: each segment is decoded and parsed whole (`cid-text.js`).
+const CID_PATH = /^\/ipfs\/([^/?#]+)(?:\/.*)?$/;
+const RAW_PATH = /^\/ipfs\/([^/?#]+)\?format=raw$/;
+const RECORD_PATH = /^\/ipns\/([^/?#]+)\?format=ipns-record$/;
 const CAR_QUERY =
   /^format=car&dag-scope=entity(?:&entity-bytes=(?:[0-9]{1,20}|-[0-9]{1,20}):(?:[0-9]{1,20}|\*))?$/;
 const CHUNK_PATH = /^\/chunks\/[0-9a-f]{64}$/;
@@ -121,14 +124,17 @@ function formOf(path, kind) {
     if (FEED_PATH.test(path)) return 'feed';
     return null;
   }
-  if (RAW_PATH.test(path)) return 'raw';
-  if (RECORD_PATH.test(path)) return 'record';
+  const raw = RAW_PATH.exec(path);
+  if (raw) return ipfsCid(raw[1]) ? 'raw' : null;
+  const record = RECORD_PATH.exec(path);
+  if (record) return ipnsKey(record[1]) ? 'record' : null;
   // A CAR: a CID, a path below it that passes 0006's namespace checks, and
   // the query the core writes.
   const at = path.indexOf('?');
   if (at < 0) return null;
   const pathname = path.slice(0, at);
-  if (!CID_PATH.test(pathname) || !CAR_QUERY.test(path.slice(at + 1))) return null;
+  const root = CID_PATH.exec(pathname);
+  if (!root || !ipfsCid(root[1]) || !CAR_QUERY.test(path.slice(at + 1))) return null;
   return checkPath(pathname, 'ipfs') ? 'car' : null;
 }
 
@@ -237,12 +243,19 @@ class PieceTooLarge extends Error {
   }
 }
 
-/** `body`, pulled only when read, failed once more than `max` bytes come. */
+/** `body`, pulled only when read, failed once more than `max` bytes come,
+ * and failed as soon as `body` fails, read or not. */
 function boundedBody(body, max) {
   const reader = body.getReader();
   let seen = 0;
   return new ReadableStream(
     {
+      start(controller) {
+        reader.closed.then(
+          () => {},
+          (err) => controller.error(err)
+        );
+      },
       async pull(controller) {
         const { done, value } = await reader.read();
         if (done) {
@@ -274,48 +287,67 @@ function emptyBody() {
  * so each read asks for at most what the core's credit and the writer's
  * room allow (64 KiB at most), and gets no more. It reads `body` one chunk
  * at a time, only once the last is gone, so it holds at most one chunk of
- * the node's transport. `done` runs once, on its end, error or cancel; a
- * `life` that has aborted fails it at its next read.
+ * the node's transport. It ends once (`done` runs then): its end, its
+ * cancel, or its failure. A failure is at once, a read pending or not, so
+ * the service client ends the piece without the core's credit: `life`
+ * aborting (the request's end, its page's abort, its session's close, the
+ * core's cancel), or `body` failing (the node's error, `max_bytes`, main's
+ * idle bound).
  */
 function pieceBody(body, life, done) {
   const reader = body.getReader();
   let rest = null;
-  // What is left of a chunk goes with the request.
-  life.addEventListener(
-    'abort',
-    () => {
-      rest = null;
-    },
-    { once: true }
-  );
-  const fail = (controller, err) => {
+  let controller = null;
+  let ended = false;
+  const onAbort = () => fail(life.reason);
+  // The one terminal: false once one has happened.
+  const end = () => {
+    if (ended) return false;
+    ended = true;
+    // What is left of a chunk goes with it.
     rest = null;
-    reader.cancel(err).catch(() => {});
-    controller.error(err);
+    life.removeEventListener('abort', onAbort);
     done();
+    return true;
+  };
+  const fail = (err) => {
+    if (!end()) return;
+    controller.error(err);
+    reader.cancel(err).catch(() => {});
   };
   return new ReadableStream(
     {
       type: 'bytes',
-      async pull(controller) {
-        if (life.aborted) return fail(controller, life.reason);
+      start(streamController) {
+        controller = streamController;
+        if (life.aborted) {
+          onAbort();
+          return;
+        }
+        life.addEventListener('abort', onAbort, { once: true });
+        reader.closed.then(
+          () => {},
+          (err) => fail(err)
+        );
+      },
+      async pull() {
+        if (ended) return;
         if (!rest) {
           let chunk;
           try {
             chunk = await reader.read();
           } catch (err) {
-            rest = null;
-            controller.error(err);
-            done();
-            return undefined;
+            fail(err);
+            return;
           }
+          if (ended) return;
           if (chunk.done) {
             controller.close();
             controller.byobRequest?.respond(0);
-            done();
-            return undefined;
+            end();
+            return;
           }
-          if (!chunk.value.byteLength) return undefined;
+          if (!chunk.value.byteLength) return;
           rest = chunk.value;
         }
         const request = controller.byobRequest;
@@ -329,11 +361,9 @@ function pieceBody(body, life, done) {
           controller.enqueue(rest.slice(0, n));
         }
         rest = n === rest.byteLength ? null : rest.subarray(n);
-        return undefined;
       },
       cancel(reason) {
-        rest = null;
-        done();
+        if (!end()) return undefined;
         return reader.cancel(reason);
       },
     },
