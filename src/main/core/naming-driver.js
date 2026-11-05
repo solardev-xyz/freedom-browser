@@ -254,11 +254,13 @@ class NamingDriver {
    * signal that aborts with the request's lifetime. The plan is judged again
    * after it.
    *
-   * `use(reply)`, when given, is how the plan is consumed: called in the same
-   * synchronous turn as the final judgment (the request is neither aborted
-   * nor past its deadline, the process still serves, no control is in
-   * flight, the generations are current), so nothing can come
-   * between them; `open` returns what it returns. A plan that a control
+   * `use(reply, gen)`, when given, is how the plan is consumed: called in the
+   * same synchronous turn as the final judgment (the request is neither
+   * aborted nor past its deadline, the process still serves, no control is
+   * in flight, the generations are current), so nothing can come
+   * between them; `open` returns what it returns. `gen` is the core process
+   * that made the plan, which a `{ verify }` plan's `dweb.verify` goes to
+   * (design 0009). A plan that a control
    * overtook by then is planned again; one whose process has ended is
    * `core_unavailable`, and never used. Without `use`, the plan is returned.
    *
@@ -270,7 +272,7 @@ class NamingDriver {
    * @param {{url: string, method: string, headers: string[][], backend: object}} params
    * @param {{signal?: AbortSignal|null,
    *   ready?: ((reply: object, signal: AbortSignal) => Promise<void>)|null,
-   *   use?: ((reply: object) => any)|null}} [options]
+   *   use?: ((reply: object, gen: object) => any)|null}} [options]
    */
   async open(params, { signal = null, ready = null, use = null } = {}) {
     const host = dwebHost(params.url);
@@ -363,7 +365,7 @@ class NamingDriver {
       // Nothing is awaited between the last check and here: the final
       // judgment (the lifetime, the process, the controls, the generations)
       // and the plan's use are one synchronous step.
-      return use ? use(reply) : reply;
+      return use ? use(reply, gen) : reply;
     }
   }
 

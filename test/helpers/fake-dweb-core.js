@@ -140,7 +140,8 @@ function createFakeDwebDriver(resolvers = {}) {
       if (signal?.aborted) throw cancelled();
       if (ready) await ready(reply, signal ?? new AbortController().signal);
       if (signal?.aborted) throw cancelled();
-      return use ? use(reply) : reply;
+      // No core process made the plan.
+      return use ? use(reply, null) : reply;
     },
   };
 }

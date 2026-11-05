@@ -16,6 +16,7 @@ const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
 const { registerDwebShell } = require('./dweb-shell');
+const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 
 let client = null;
 // `shell.dweb_get`'s executor (design 0009), while a client that speaks
@@ -91,6 +92,9 @@ async function startCore() {
   attachChain(client, { running: naming.running });
   // Verified dweb fetches' pieces: registered only at protocol 2.
   dwebShell = registerDwebShell(client);
+  // `{ verify }` plans' `dweb.verify`, and `dweb.forget` as a private
+  // partition closes: likewise.
+  attachDwebVerify(client, dwebShell);
   const starting = client;
   let hello;
   try {
@@ -111,6 +115,7 @@ async function stopCore() {
   shutDown = true;
   detachNaming();
   detachChain();
+  detachDwebVerify();
   dwebShell = null;
   if (!client) return;
   const stopping = client;

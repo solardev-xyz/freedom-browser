@@ -117,7 +117,8 @@ async function dialWithRetry({ retry, attempt, signal, onRetry }) {
  * The body as Chromium reads it: pulled only when a consumer asks, failed as
  * truncated when a pending read waits `idleMs` for bytes, or when `stop`
  * aborts (the session closed). `onEnd` runs once, on every terminal path:
- * the end, an error, a cancel, the idle bound or the stop. An upstream that
+ * the end, an error, a cancel, the idle bound or the stop, given the error
+ * the body failed with, if it failed. An upstream that
  * fails ends it at once, read or not, and so does the page's abort, which
  * every backend's `request()` turns into its body's failure with its own
  * text: whatever `onEnd` frees (the slot, the backend's lease) isn't held by
@@ -143,16 +144,17 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
     if (ended) return;
     controller.error(err);
     reader.cancel(err).catch(() => {});
-    end();
+    end(err);
   };
   const onStop = () => fail(stop.reason);
-  const end = () => {
+  // `err` is what the body failed with, if it failed.
+  const end = (err) => {
     if (ended) return;
     ended = true;
     clearTimeout(timer);
     timer = null;
     stop?.removeEventListener('abort', onStop);
-    onEnd();
+    onEnd(err);
   };
   return new ReadableStream(
     {
@@ -173,7 +175,7 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
           (err) => {
             if (ended) return;
             controller.error(err);
-            end();
+            end(err);
           }
         );
       },
@@ -205,7 +207,7 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
             (err) =>
               settle(() => {
                 controller.error(err);
-                end();
+                end(err);
               })
           );
         });
@@ -233,6 +235,9 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
  *   closes: it stops the dial and the body alike
  * @param {() => void} [options.onEnd] - once the fetch is over: its body
  *   ended, errored or was cancelled, or it had none
+ * @param {(status: number, message: string) => Response} [options.errorResponse] -
+ *   main's `{ code, message }` answer: the JSON body, or a navigation's
+ *   error page (error-page.js)
  * @param {object} options.log
  * @param {string} options.tag - the handler's log prefix
  * @param {(url: string) => string} options.redactUrl
@@ -240,7 +245,17 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
  */
 async function executeFetch(
   fetch,
-  { backend, method, signal = null, stop = null, onEnd = () => {}, log, tag, redactUrl }
+  {
+    backend,
+    method,
+    signal = null,
+    stop = null,
+    onEnd = () => {},
+    errorResponse = jsonErrorResponse,
+    log,
+    tag,
+    redactUrl,
+  }
 ) {
   // The dial and its back-off stop on the page's abort or the session's.
   const dialSignal = stop && signal ? AbortSignal.any([signal, stop]) : signal || stop;
@@ -262,9 +277,9 @@ async function executeFetch(
     );
     // The native node's capacity, not its failure (design 0007, "Main's
     // side": the service's `busy`): a 503, as admission's own.
-    if (err?.name === 'BackendBusy') return jsonErrorResponse(503, err.message);
+    if (err?.name === 'BackendBusy') return errorResponse(503, err.message);
     const { status, message } = failure(kind, err);
-    return jsonErrorResponse(status, message);
+    return errorResponse(status, message);
   };
 
   let upstream;

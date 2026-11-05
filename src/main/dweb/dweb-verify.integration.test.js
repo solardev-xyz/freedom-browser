@@ -1,0 +1,230 @@
+/**
+ * Page loads through the real handler and the real freedom-cored at
+ * protocol 2 (freedom-core design 0009, step 6): the core's `dweb.open`
+ * plans a `{ verify }` plan for a backend whose verification is on, main
+ * validates it and sends `dweb.verify`, the core asks main for each piece
+ * (`shell.dweb_get`, dweb-shell.js) from a local fake node serving the
+ * honest content of freedom-core's `vectors/dweb-verify.json`, and the page
+ * gets the verified head and body, byte for byte; or the error page.
+ *
+ * Skipped unless FREEDOM_CORED_PATH names a core that speaks protocol 2 and
+ * FREEDOM_CORE_DWEB_VECTORS names freedom-core's `vectors` directory, e.g.
+ *   FREEDOM_CORED_PATH=…/freedom-core/target/debug/freedom-cored \
+ *   FREEDOM_CORE_DWEB_VECTORS=…/freedom-core/vectors \
+ *   npx jest src/main/dweb/dweb-verify.integration.test.js
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const {
+  SITE_A,
+  SITE_V1,
+  INDEX_HTML,
+  content,
+  honest,
+  fakeNode,
+  loopbackBackend,
+} = require('../../../test/helpers/dweb-verify-world');
+
+jest.mock('../logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
+let mockDriver = null;
+jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
+let mockAdmission = null;
+jest.mock('./fetch-admission', () => {
+  const actual = jest.requireActual('./fetch-admission');
+  return {
+    ...actual,
+    acquireDwebFetch: (request) => mockAdmission.acquire(request),
+    fenceDwebSession: (partition) => mockAdmission.fence(partition),
+  };
+});
+
+const { CoreClient } = require('../core/core-client');
+const { NamingConfig } = require('../core/naming-config');
+const { registerNamingShell } = require('../core/naming-shell');
+const { NamingDriver } = require('../core/naming-driver');
+const { registerDwebShell } = require('../core/dweb-shell');
+const { attachDwebVerify, detachDwebVerify } = require('../core/dweb-verify');
+const { handleDwebRequest } = require('./dweb-handler');
+const { createFetchAdmission } = require('./fetch-admission');
+const log = require('../logger');
+
+const binary = process.env.FREEDOM_CORED_PATH;
+const vectorsDir = process.env.FREEDOM_CORE_DWEB_VECTORS;
+const describeIfCore = binary && vectorsDir ? describe : describe.skip;
+jest.setTimeout(30_000);
+
+const quietLog = { debug() {}, info() {}, warn() {}, error() {} };
+const NAVIGATION = { Accept: 'text/html,application/xhtml+xml,*/*;q=0.8' };
+
+function sources() {
+  return {
+    ens: {
+      getEffectiveRpcEndpoints: () => ['https://a.rpc.example'],
+      getDirectRpcCandidate: () => ({ url: null }),
+      resolutionPolicy: () => ({ order: ['quorum'] }),
+    },
+    tezos: { getRpcEndpoints: () => ['https://t1.tez.example'] },
+    registry: { getNetwork: () => ({ quorum: { k: 3, m: 2 } }), getEndpoints: () => [] },
+    myotis: { isEnabled: () => false, isReady: () => false },
+  };
+}
+
+describeIfCore('verified page loads with the real freedom-cored at protocol 2', () => {
+  let root;
+  let client;
+  let shell;
+  let verifier;
+  let node;
+  let world;
+
+  beforeAll(() => {
+    world = honest(vectorsDir);
+  });
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockAdmission = createFetchAdmission();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-dweb-verify-'));
+    node = await fakeNode(world);
+    client = new CoreClient({
+      spawn,
+      command: binary,
+      args: [
+        'serve',
+        '--data-dir',
+        path.join(root, 'identity'),
+        '--lock-dir',
+        path.join(root, 'locks'),
+        '--parent-pid',
+        String(process.pid),
+      ],
+      log: quietLog,
+      shellVersion: 'jest',
+      protocol: 2,
+    });
+    const config = new NamingConfig({ client, sources: sources(), log: quietLog });
+    registerNamingShell(client, config, {
+      hop: async () => ({ status: 500, headers: {}, body: Buffer.alloc(0) }),
+    });
+    mockDriver = new NamingDriver({ client, config, normalize: (n) => n.toLowerCase() });
+    shell = registerDwebShell(client, { log: quietLog });
+    verifier = attachDwebVerify(client, shell, {
+      log: quietLog,
+      onSessionClosed: mockAdmission.onSessionClosed,
+    });
+    const hello = await client.start();
+    expect(hello.protocol).toBe(2);
+    expect(await config.whenReady()).toBe(true);
+  });
+
+  afterEach(async () => {
+    detachDwebVerify();
+    await client?.stop();
+    await new Promise((resolve) => node.server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const ant = (url = node.url) => loopbackBackend({ ant: 'external', up: true, verify: true }, url);
+  const gateway = (extra = {}, url = node.url) => ({
+    ...loopbackBackend({ ipfs: 'gateway', up: true, verify: true }, url),
+    ...extra,
+  });
+  const load = (url, backend, { init = {}, partition = null, onTrust } = {}) =>
+    handleDwebRequest(new Request(url, init), { backend, partition, tag: '[dweb]', onTrust });
+
+  test('Swarm: a navigation, a subresource and a seek, each verified byte for byte', async () => {
+    const onTrust = jest.fn();
+    const page = await load(`bzz://${SITE_A}/index.html`, ant(), {
+      init: { headers: NAVIGATION },
+      onTrust,
+    });
+    expect(page.status).toBe(200);
+    expect(Buffer.from(await page.arrayBuffer()).equals(content('site-index', 300))).toBe(true);
+    expect(onTrust).toHaveBeenCalledWith({ name: null, content: 'verified' });
+
+    const style = await load(`bzz://${SITE_A}/style.css`, ant());
+    expect(Number(style.headers.get('content-length'))).toBe(5000);
+    expect(Buffer.from(await style.arrayBuffer()).equals(content('site-style', 5000))).toBe(true);
+
+    const seek = await load(`bzz://${SITE_A}/style.css`, ant(), {
+      init: { headers: { Range: 'bytes=100-199' } },
+    });
+    expect(seek.status).toBe(206);
+    expect(seek.headers.get('content-range')).toBe('bytes 100-199/5000');
+    expect(
+      Buffer.from(await seek.arrayBuffer()).equals(content('site-style', 5000).subarray(100, 200))
+    ).toBe(true);
+
+    const head = await load(`bzz://${SITE_A}/style.css`, ant(), { init: { method: 'HEAD' } });
+    expect(head.status).toBe(200);
+    expect(head.body).toBeNull();
+
+    // Every piece one of the forms main admits; nothing fetched as /bzz.
+    expect(node.asked.length).toBeGreaterThan(0);
+    for (const asked of node.asked) expect(asked.url).toMatch(/^\/(chunks|bytes)\/[0-9a-f]{64}$/);
+    // Every request ended: its slot, and its pieces' context.
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  test("Swarm: a path the verified manifest doesn't hold is Ant's own 404, as content", async () => {
+    const res = await load(`bzz://${SITE_A}/missing.html`, ant(), {
+      init: { headers: NAVIGATION },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).not.toMatch(/text\/html/);
+    await res.arrayBuffer();
+    expect(mockAdmission.stats().active).toBe(0);
+  });
+
+  test('IPFS: raw blocks, and a CAR the gateway does not serve falling back to them', async () => {
+    for (const car of [false, true]) {
+      node.asked.length = 0;
+      const res = await load(`ipfs://${SITE_V1}/index.html`, gateway({ car }));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(INDEX_HTML);
+      expect(node.asked.filter(({ url }) => url.includes('format=car')).length).toBe(car ? 1 : 0);
+    }
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+  });
+
+  test("a node that is down: the core's error plan, and the error page for a navigation", async () => {
+    const down = await fakeNode(world);
+    const downUrl = down.url;
+    await new Promise((resolve) => down.server.close(resolve));
+    const nav = await load(`ipfs://${SITE_V1}/index.html`, gateway({}, downUrl), {
+      init: { headers: NAVIGATION },
+    });
+    expect(nav.status).toBeGreaterThanOrEqual(500);
+    expect(nav.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(nav.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'"
+    );
+    expect(await nav.text()).toContain('Try again');
+    const sub = await load(`ipfs://${SITE_V1}/index.html`, gateway({}, downUrl));
+    const json = await sub.json();
+    expect(json).toEqual({ code: sub.status, message: expect.any(String) });
+    // The connection is intact: main broke no rule.
+    await expect(client.request('vault.status')).resolves.toMatchObject({ exists: false });
+  });
+
+  test('a private partition: its requests name it, and its close sends dweb.forget', async () => {
+    const res = await load(`bzz://${SITE_A}/index.html`, ant(), { partition: 'private-1' });
+    expect(Buffer.from(await res.arrayBuffer()).equals(content('site-index', 300))).toBe(true);
+    const forget = jest.spyOn(verifier, 'forget');
+    mockAdmission.closeSession('private-1');
+    expect(forget).toHaveBeenCalledWith('private-1');
+    await expect(forget.mock.results[0].value).resolves.toBe(true);
+    // A closed partition plans nothing more.
+    const after = await load(`bzz://${SITE_A}/index.html`, ant(), { partition: 'private-1' });
+    expect(after.status).toBe(502);
+  });
+});
