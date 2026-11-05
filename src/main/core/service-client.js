@@ -297,8 +297,9 @@ class JsonText {
  * only as the core's credit allows, at most 64 KiB ahead: a byte stream
  * (`type: "bytes"`) through a BYOB reader, asked for at most that and the
  * room; any other in its own chunks, each at most 64 KiB, or the stream ends
- * `body_stream_error`. Its close ends the stream; its error
- * aborts it, with `stalled` if the error's `abortCode` says so (main's body
+ * `body_stream_error`. Its close ends the stream once the bytes before it
+ * have gone; its error aborts it at once, read or not and with no credit
+ * needed, with `stalled` if the error's `abortCode` says so (main's body
  * idle timer) and `body_stream_error` otherwise. The core's cancel, or the
  * generation's end, cancels it.
  */
@@ -2013,6 +2014,17 @@ class ServiceClient extends EventEmitter {
       }
       const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
       gen.pieces.set(id, piece);
+      // The body's failure ends the stream as it happens, a read pending or
+      // not: an abort goes ahead of the data and needs no credit, and the
+      // piece's pending bytes and any read's claim go with it (`dropPiece`).
+      // Its close doesn't: the bytes before it still go, under credit.
+      reader.closed.then(
+        () => {},
+        (err) => {
+          if (gen.pieces.get(id) !== piece) return;
+          this.abortPiece(gen, piece, err?.abortCode);
+        }
+      );
       this.pumpPiece(gen, piece);
     }
     this.flushStreams(gen);

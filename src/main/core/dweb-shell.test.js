@@ -58,6 +58,11 @@ const SWARM = [
   ['swarm-redundancy-fallback-mode', 'true'],
 ];
 const CAR = `/ipfs/${CID1}/docs/index.html?format=car&dag-scope=entity`;
+// CIDs that decode but aren't what the core writes: a version-2 dag-pb CID
+// in base32, a version-2 libp2p-key name and a raw CID in base36.
+const VERSION2 = 'bajybeialgbkxvh6e5ehdgwd5uld6yejwloaklsxpcq4v5a5izxzbopdbqy';
+const KEY_VERSION2 = 'k4bv5kagsd096i2qh9huzt1dquaeefryxf81wmb09lziol1h4fqax092';
+const RAW36 = 'k2cwue8xfyt8i8xatlnj19equf1vqoxslfnd9xwjltwih9ra3gh2pyme';
 
 /** Byte `offset + i` of a body: a pattern a slice of can be checked. */
 function pattern(offset, length) {
@@ -615,7 +620,7 @@ describe('the handler, as the client calls it', () => {
         raw(),
         raw(CID0),
         record(),
-        record('bafzaajaiaejcb6ofkbfvhqllnmcfwlufe2qjinyzzdkfexruglhnf27ygbb5jqo'),
+        record('bafzaajaiaejcbzdibmxyzdjbbehgvizh6g5tikvy47mshdy6gwbruvgwvd24seje'),
       ]) {
         const reply = await get(piece);
         expect(reply.result ?? reply).toMatchObject({ status: 200 });
@@ -625,7 +630,7 @@ describe('the handler, as the client calls it', () => {
         `/ipfs/${CID1}?format=raw`,
         `/ipfs/${CID0}?format=raw`,
         `/ipns/${IPNS}?format=ipns-record`,
-        '/ipns/bafzaajaiaejcb6ofkbfvhqllnmcfwlufe2qjinyzzdkfexruglhnf27ygbb5jqo?format=ipns-record',
+        '/ipns/bafzaajaiaejcbzdibmxyzdjbbehgvizh6g5tikvy47mshdy6gwbruvgwvd24seje?format=ipns-record',
       ]);
     });
 
@@ -635,6 +640,39 @@ describe('the handler, as the client calls it', () => {
         car(`/ipfs/${CID1.toUpperCase()}?format=car&dag-scope=entity`),
         'path',
       ],
+      // Text in a CID's alphabet that isn't a CID the core could write.
+      ['a raw block of an incomplete base32 quantum', raw('ba'), 'path'],
+      [
+        'a CAR of an incomplete base32 quantum',
+        car('/ipfs/ba?format=car&dag-scope=entity'),
+        'path',
+      ],
+      ['a raw block of a truncated CIDv1', raw(CID1.slice(0, -2)), 'path'],
+      ["a raw block whose CIDv1's padding bits aren't zero", raw(`${CID1.slice(0, -1)}n`), 'path'],
+      ['a raw block of a CIDv1 with a character more', raw(`${CID1}a`), 'path'],
+      ['a raw block of a version-2 CID', raw(VERSION2), 'path'],
+      ['a CAR of a version-2 CID', car(`/ipfs/${VERSION2}?format=car&dag-scope=entity`), 'path'],
+      ['a raw block of a CIDv0 below its multihash', raw(`Qm${'1'.repeat(44)}`), 'path'],
+      ['a raw block of a CIDv0 above its multihash', raw(`Qm${'z'.repeat(44)}`), 'path'],
+      [
+        'a CAR of a malformed CIDv0',
+        car(`/ipfs/Qm${'z'.repeat(44)}?format=car&dag-scope=entity`),
+        'path',
+      ],
+      ['a raw block of a CIDv0 one character short', raw(CID0.slice(0, -1)), 'path'],
+      ['a record of text that is not a CID', record('kNOTACID'), 'path'],
+      ['a record of an uppercase base36 key', record(`k${IPNS.slice(1).toUpperCase()}`), 'path'],
+      [
+        'a record of a base36 key with an uppercase character',
+        record(`${IPNS.slice(0, -1)}V`),
+        'path',
+      ],
+      ['a record of a truncated base36 key', record(IPNS.slice(0, -1)), 'path'],
+      ['a record of a dag-pb CID', record(CID1), 'path'],
+      ['a record of a raw CID in base36', record(RAW36), 'path'],
+      ['a record of a version-2 key', record(KEY_VERSION2), 'path'],
+      ['a record of a CIDv0', record(CID0), 'path'],
+      ['a record of an IPNS name too long to be a CID', record(`k${'1'.repeat(270)}`), 'path'],
       ['a CAR without its query', car(`/ipfs/${CID1}/docs`), 'path'],
       ['a CAR with another query', car(`${CAR}&foo=1`), 'path'],
       ['a CAR with a fragment', car(`${CAR}#x`), 'path'],
@@ -1145,25 +1183,60 @@ describe('through the core client at protocol 2', () => {
     await until(() => shell.stats().pieces === 0, 'the pieces freed');
   });
 
-  test("the dweb.verify's end, or its session's close, mid-body lets the node go", async () => {
-    await start();
-    for (const how of ['close', 'stop']) {
+  test.each([
+    ["its dweb.verify's end", 'close', car(), 'body_stream_error'],
+    ["its session's close", 'stop', car(), 'body_stream_error'],
+    ["the node's failure", 'fail', car(), 'body_stream_error'],
+    ["the node's failure under a raw block's bound", 'fail', raw(), 'body_stream_error'],
+    ["the core's cancel", 'cancel', car(), 'cancelled'],
+  ])(
+    'a piece that has filled its window ends at once on %s, with no more credit',
+    async (_what, how, piece, code) => {
+      await start();
       const session = new AbortController();
-      const body = source(1_000_000);
-      const node = fakeNode('gateway', () => new Response(body.stream, { status: 200 }));
-      const v = verify(node, 'ipfs', { stop: session.signal });
-      const id = core.ask(v.key.id, car());
+      // A body that never ends, and can fail while nothing reads it.
+      const node = { read: 0, cancelled: false, controller: null };
+      const body = new ReadableStream(
+        {
+          start(controller) {
+            node.controller = controller;
+          },
+          pull(controller) {
+            controller.enqueue(new Uint8Array(pattern(node.read, 16 * 1024)));
+            node.read += 16 * 1024;
+          },
+          cancel() {
+            node.cancelled = true;
+          },
+        },
+        { highWaterMark: 0 }
+      );
+      const gateway = fakeNode('gateway', () => new Response(body, { status: 200 }));
+      const v = verify(gateway, 'ipfs', { stop: session.signal });
+      const id = core.ask(v.key.id, piece);
       await until(() => core.dataOf(id).length === WINDOW, 'the first window');
+      // The window is full and no credit comes: nothing reads the body.
+      for (let i = 0; i < 20; i++) await tick();
+      expect(core.dataOf(id).length).toBe(WINDOW);
+      expect(core.ended(id)).toBe(false);
+      const read = node.read;
       if (how === 'close') v.handle.close();
-      else session.abort();
-      await until(() => body.cancelled, 'the node let go of');
-      // The core's credit then finds the body ended.
-      core.credit(id, WINDOW);
-      await until(() => core.ended(id), 'the abort');
-      expect(core.framesOf(KIND_ABORT, id)[0]).toMatchObject({ code: 'body_stream_error' });
+      else if (how === 'stop') session.abort();
+      else if (how === 'cancel') core.cancel(id);
+      else node.controller.error(Object.assign(new Error('reset'), { code: 'ECONNRESET' }));
+      for (let i = 0; i < 3; i++) await tick();
+      expect(core.framesOf(KIND_ABORT, id)).toEqual([expect.objectContaining({ code })]);
+      expect(core.framesOf(KIND_END, id)).toEqual([]);
+      expect(core.dataOf(id).length).toBe(WINDOW);
+      expect(node.read).toBe(read);
+      // The node let go of (a failed one has nothing to cancel), and nothing
+      // of the piece held.
+      expect(node.cancelled).toBe(how !== 'fail');
+      expect(client.current.pieces.has(id)).toBe(false);
       expect(shell.stats().pieces).toBe(0);
+      expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
     }
-  });
+  );
 
   test('a streamed piece with no body ends at once; HEAD verifies ask GET pieces', async () => {
     await start();

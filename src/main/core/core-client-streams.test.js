@@ -510,6 +510,89 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
     expect(core().framesOf(KIND_ABORT, 9)[0]).toMatchObject({ code: 'body_stream_error' });
   });
 
+  test.each([
+    ['a byte stream', true],
+    ['a default stream', false],
+  ])(
+    '%s that fails with its window full and nothing reading ends at once, with no more credit',
+    async (_what, bytes) => {
+      let source;
+      let reads = 0;
+      const stream = new ReadableStream(
+        bytes
+          ? {
+              type: 'bytes',
+              start(controller) {
+                source = controller;
+              },
+              pull(controller) {
+                reads += 1;
+                const request = controller.byobRequest;
+                request.view.set(body(16, 0, request.view.byteLength));
+                request.respond(request.view.byteLength);
+              },
+            }
+          : {
+              start(controller) {
+                source = controller;
+              },
+              pull(controller) {
+                reads += 1;
+                controller.enqueue(new Uint8Array(body(16, 0, MAX_DATA)));
+              },
+            },
+        { highWaterMark: 0 }
+      );
+      await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+      ask(16);
+      await until(() => core().dataOf(16).length === WINDOW, 'the first window');
+      for (let i = 0; i < 20; i++) await tick();
+      const read = reads;
+      expect(core().framesOf(KIND_ABORT, 16)).toEqual([]);
+      source.error(Object.assign(new Error('idle'), { abortCode: 'stalled' }));
+      for (let i = 0; i < 3; i++) await tick();
+      expect(core().framesOf(KIND_ABORT, 16)).toEqual([
+        expect.objectContaining({ code: 'stalled' }),
+      ]);
+      expect(core().dataOf(16).length).toBe(WINDOW);
+      expect(reads).toBe(read);
+      expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+    }
+  );
+
+  test('a body that closes with bytes still queued sends them all, under credit, then end', async () => {
+    const length = 4 * MAX_DATA;
+    const stream = new ReadableStream({
+      start(controller) {
+        for (let at = 0; at < length; at += MAX_DATA) {
+          controller.enqueue(new Uint8Array(body(17, at, MAX_DATA)));
+        }
+        controller.close();
+      },
+    });
+    await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+    ask(17);
+    await until(() => core().dataOf(17).length === WINDOW, 'the first window');
+    for (let i = 0; i < 20; i++) await tick();
+    expect(core().framesOf(KIND_END, 17)).toEqual([]);
+    expect(core().framesOf(KIND_ABORT, 17)).toEqual([]);
+    let credited = 0;
+    while (core().framesOf(KIND_END, 17).length === 0) {
+      const sent = core().dataOf(17).length;
+      if (sent > credited) {
+        core().write(encodeStreamCredit(17, sent - credited));
+        credited = sent;
+      }
+      await tick();
+    }
+    expect(
+      core()
+        .dataOf(17)
+        .equals(body(17, 0, length))
+    ).toBe(true);
+    expect(core().framesOf(KIND_ABORT, 17)).toEqual([]);
+  });
+
   test('a plain answer is the one reply; a cancel before the answer makes cancelled the one reply', async () => {
     let release;
     const late = new Promise((resolve) => {
