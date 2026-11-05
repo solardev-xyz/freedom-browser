@@ -37,6 +37,8 @@ const {
   WRITER_DATA_CAP,
 } = require('./frame');
 const { ServiceClient } = require('./service-client');
+const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
+const { createFetchAdmission } = require('../dweb/fetch-admission');
 
 const tick = () => new Promise(setImmediate);
 
@@ -867,6 +869,69 @@ describe("main's frames reach the core in the order main made them", () => {
   const opened = (id) =>
     core().send({ type: 'response', id, result: { status: 200, headers: [], body: true } });
   const at = (name) => core().wire.indexOf(name);
+
+  afterEach(() => detachDwebVerify());
+
+  test("a private partition's dweb.forget goes after the cancels of its requests, though a stream write is in flight", async () => {
+    makeClient(
+      coreAt(2, (message, fake) => {
+        if (message.method === 'dweb.forget') {
+          fake.send({ type: 'response', id: message.id, result: {} });
+        }
+      }),
+      { protocol: 2 }
+    );
+    await client.start();
+    const admission = createFetchAdmission();
+    const sent = [];
+    const shell = { open: ({ id }) => (sent.push(id), { close: () => {} }) };
+    const verifier = attachDwebVerify(client, shell, {
+      log: quietLog(),
+      onSessionClosed: admission.onSessionClosed,
+    });
+    // The profile's body: main's credit for it is the write in flight.
+    const profileId = client.current.nextId;
+    const profile = client.callStream('dweb.verify', { plan: {} });
+    await asked(profileId);
+    opened(profileId);
+    const profileBody = (await profile).body.getReader();
+    // The partition's requests: one waiting for its head, one whose body is
+    // open.
+    const params = {
+      plan: {},
+      method: 'GET',
+      partition: 'private-9',
+      private: true,
+      deadline_ms: 60_000,
+    };
+    const { signal } = admission.fence('private-9');
+    const waiting = verifier.send(client.current, params, {}, signal);
+    const open = verifier.send(client.current, params, {}, signal);
+    expect(sent).toHaveLength(2);
+    await asked(sent[1]);
+    opened(sent[1]);
+    await open.head;
+    core().write(encodeData(profileId, body(profileId, 0, 10)));
+    // The core takes main's next write, and completes none.
+    core().stuck = true;
+    await profileBody.read();
+    expect(core().wire.at(-1)).toBe(`credit:${profileId}`);
+    expect(core().held).toHaveLength(1);
+
+    admission.closeSession('private-9');
+    await expect(waiting.head).rejects.toMatchObject({ code: 'cancelled' });
+    core().release();
+    await until(() => at(`dweb.forget:${sent[1] + 1}`) !== -1, 'the forget');
+    const forget = at(`dweb.forget:${sent[1] + 1}`);
+    expect(core().messages.at(-1)).toMatchObject({
+      method: 'dweb.forget',
+      params: { partition: 'private-9' },
+    });
+    for (const id of sent) {
+      expect(at(`cancel:${id}`)).toBeGreaterThan(at(`credit:${profileId}`));
+      expect(at(`cancel:${id}`)).toBeLessThan(forget);
+    }
+  });
 
   test('a request never overtakes credit, a cancel, an abort or an end main made before it, and its cancel never overtakes it', async () => {
     // The core's request 8's body: ten bytes, then its end once `finish`.

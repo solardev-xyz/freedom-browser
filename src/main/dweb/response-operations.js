@@ -206,14 +206,21 @@ async function sniffSmallText(headers, body, declared) {
 
 /**
  * The head operations a fetch's answer gets, in order: those every response
- * gets from its backend (`strip_decoded_encoding` from the external gateway,
+ * gets from its source (`strip_decoded_encoding` from the external gateway,
  * `strip_page_state` from all), then the plan's. Small text is left to
  * `sniffSmallText`, with the declared length it needs.
  *
- * @param {object} fetch - the plan's `fetch`
- * @param {'ant'|'native'|'gateway'} kind - the backend that answered
+ * The source, not the backend, picks them (freedom-core design 0009, Main's
+ * side): a verified head is the core's (`'core'`), and describes exactly the
+ * bytes the core sends, so it never gets `strip_decoded_encoding`, and its
+ * `Content-Length` stays for `small_text`.
+ *
+ * @param {object} fetch - the plan's `fetch`, or its `verify`
+ * @param {'ant'|'native'|'gateway'|'core'} kind - what answered: the
+ *   backend's node, or the core for a verified head
  * @param {{status: number, headers: Headers}} head - rewritten in place
- * @param {string} requestUrl - the URL the node was asked
+ * @param {string} requestUrl - the URL the node was asked (for a verified
+ *   head, the bundled node's URL space)
  * @param {boolean} bodyPresent
  * @returns {{body: boolean, smallText: number|null}} whether a body follows,
  *   and the declared length to sniff when small text applies

@@ -472,6 +472,14 @@ describe('NamingDriver.open (dweb.open, freedom-core design 0006)', () => {
     });
   });
 
+  test("`use` gets the plan and the process that made it, which a verify plan's dweb.verify goes to", async () => {
+    const { driver, client } = setUp(() => planned());
+    const use = jest.fn(() => 'used');
+    expect(await driver.open(params(`bzz://${HASH}/`), { use })).toBe('used');
+    const [gen] = client.requestTo.mock.calls[0];
+    expect(use).toHaveBeenCalledWith(planned(), gen);
+  });
+
   test('an overtaken plan is planned again with attempts_used, within the remaining deadline', async () => {
     let t = 1_000;
     const replies = [

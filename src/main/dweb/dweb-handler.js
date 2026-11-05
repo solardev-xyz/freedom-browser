@@ -17,6 +17,17 @@
  *    admission, then is dialled against the captured backend
  *    (`plan-executor.js`). The driver hands the plan over (`use`) in the
  *    same synchronous turn as its final judgment, and the dial starts in it.
+ *    A `{ verify }` plan (freedom-core design 0009) takes a slot too, and
+ *    its `dweb.verify` is written in that turn, to the core process that
+ *    made the plan (`verify-executor.js`). Only a core that speaks protocol
+ *    2 has the verifier (`core/dweb-verify.js`): against any other, a
+ *    verify plan is refused at `shape`, as it was before 0009.
+ *
+ * **The error page** (0009, decision 4): with the verifier attached, a
+ * navigation-like request (a GET whose first `Accept` token is `text/html`)
+ * gets a page in plain words wherever main would answer `{ code, message }`
+ * (`error-page.js`). Every other request keeps the JSON body, and against a
+ * protocol-1 core every request does.
  *
  * **One lifetime per request.** At entry the request is fenced to its
  * session, before anything is planned: its scope is the page's abort and its
@@ -45,6 +56,10 @@ const log = require('../logger');
 const naming = require('../core/naming');
 const { validatePlan, requestMethod } = require('./plan-validation');
 const { executeFetch, jsonErrorResponse } = require('./plan-executor');
+const { executeVerify } = require('./verify-executor');
+const { isNavigation } = require('./dweb-open');
+const { errorPage } = require('./error-page');
+const { dwebVerifier } = require('../core/dweb-verify');
 const { acquireDwebFetch, fenceDwebSession } = require('./fetch-admission');
 const { redactForLog, redactUrlForLog } = require('../private/private-log-context');
 
@@ -94,19 +109,19 @@ function headerUnits(headers) {
   );
 }
 
-/** A `dweb.open` failure as the page's answer. */
-function openFailure(err, url, tag) {
+/** A `dweb.open` failure as the page's answer, through `answer`. */
+function openFailure(err, url, tag, answer) {
   switch (err?.code) {
     case 'busy':
-      return jsonErrorResponse(503, err.message || 'Too many requests');
+      return answer(503, err.message || 'Too many requests');
     case 'admission_full':
-      return jsonErrorResponse(503, err.message);
+      return answer(503, err.message);
     case 'deadline':
-      return jsonErrorResponse(504, err.message || 'Deadline passed');
+      return answer(504, err.message || 'Deadline passed');
     case 'core_unavailable':
-      return jsonErrorResponse(503, CORE_UNAVAILABLE);
+      return answer(503, CORE_UNAVAILABLE);
     case 'cancelled':
-      return jsonErrorResponse(502, 'Cancelled');
+      return answer(502, 'Cancelled');
     case 'repeated': {
       // Today's caught throw from `resolveContentName`.
       let host = '';
@@ -115,17 +130,14 @@ function openFailure(err, url, tag) {
       } catch {
         // the label falls back to ENS's
       }
-      return jsonErrorResponse(
-        502,
-        `${nameSystemLabelForHost(host)} resolver error: ${err.message}`
-      );
+      return answer(502, `${nameSystemLabelForHost(host)} resolver error: ${err.message}`);
     }
     default:
-      if (err?.name === 'AbortError') return jsonErrorResponse(502, 'Cancelled');
+      if (err?.name === 'AbortError') return answer(502, 'Cancelled');
       log.error(`[Core] dweb.open failed (${err?.code || 'error'}) for ${redactUrlForLog(url)}`, {
         tag,
       });
-      return jsonErrorResponse(502, 'dweb planning failed');
+      return answer(502, 'dweb planning failed');
   }
 }
 
@@ -140,6 +152,8 @@ function openFailure(err, url, tag) {
  *   has one
  * @param {string|null} [options.partition] - a private session's partition
  * @param {string} options.tag - the handler's log prefix
+ * @param {(trust: {name: string|null, content: string}) => void} [options.onTrust] -
+ *   a verified head's trust, for the trust panel (0009, Labels)
  * @returns {Promise<Response>}
  */
 async function handleDwebRequest(request, options) {
@@ -160,13 +174,32 @@ async function handleDwebRequest(request, options) {
   }
 }
 
-async function handle(request, { backend, partition = null, tag }, release) {
+/** Whether the request is navigation-like: a GET whose first `Accept`
+ * token is `text/html` (0009, The error page). */
+function navigationLike(request) {
+  const method = typeof request.method === 'string' ? request.method : '';
+  if (requestMethod(method) !== 'GET') return false;
+  try {
+    return isNavigation(new Headers(request.headers || {}));
+  } catch {
+    return false;
+  }
+}
+
+async function handle(request, { backend, partition = null, tag, onTrust }, release) {
+  const { url, signal } = request;
+  // Main's `{ code, message }` answers: the error page for a navigation
+  // once the core speaks protocol 2, else the JSON body.
+  const navigation = navigationLike(request);
+  const answer = (status, message) =>
+    navigation && dwebVerifier()
+      ? errorPage(status, message, url)
+      : jsonErrorResponse(status, message);
   // An answer before the request is fenced: its lease goes with it.
   const refuse = (status, message) => {
     release();
-    return jsonErrorResponse(status, message);
+    return answer(status, message);
   };
-  const { url, signal } = request;
   if (url.length > MAX_URL_UNITS) return refuse(414, 'request URL too long');
   // A Request's headers, or an in-process caller's plain object.
   const headers = [...new Headers(request.headers || {})];
@@ -176,6 +209,14 @@ async function handle(request, { backend, partition = null, tag }, release) {
   // Sent as it came, the core reading it as `(method || 'GET').toUpperCase()`.
   const method = typeof request.method === 'string' ? request.method : '';
   const admitted = { url, method, backend: backend.ref };
+  // An error plan's answer. Its message is the page's, and may name what it
+  // asked for: only a redacted variant reaches the persistent log, unless it
+  // is one of the core's fixed texts.
+  const planError = ({ status, message }) => {
+    const logged = PLAIN_ERROR_MESSAGES.has(message) ? message : redactForLog(message);
+    log.info(`${tag} ${status} for ${redactUrlForLog(url)}: ${logged}`);
+    return answer(status, message);
+  };
 
   const driver = naming.namingDriver();
   if (!driver) return refuse(503, CORE_UNAVAILABLE);
@@ -199,7 +240,8 @@ async function handle(request, { backend, partition = null, tag }, release) {
   // A fetch plan waits for its slot here, before it is used, so the driver
   // judges it once more after any wait. `life` aborts with the request.
   const ready = async (reply, life) => {
-    if (slot || validatePlan(reply?.plan, admitted) !== null || !reply.plan.fetch) return;
+    if (slot || validatePlan(reply?.plan, admitted) !== null) return;
+    if (!reply.plan.fetch && !(reply.plan.verify && dwebVerifier())) return;
     const granted = await acquireDwebFetch({ partition, signal: life });
     // Granted as the request ended: freed at once.
     if (over) granted.release();
@@ -207,23 +249,20 @@ async function handle(request, { backend, partition = null, tag }, release) {
   };
   // The plan's use: synchronous up to the dial, so nothing comes between the
   // driver's final judgment and it.
-  const use = (reply) => {
+  const use = (reply, gen = null) => {
     const plan = reply?.plan;
-    const refusal = validatePlan(plan, admitted);
+    // A verify plan needs the core's verifier: without it (a protocol-1
+    // core), it is an unknown variant, as before 0009.
+    const verifier = plan?.verify ? dwebVerifier() : null;
+    const refusal = plan?.verify && !verifier ? 'shape' : validatePlan(plan, admitted);
     if (refusal) {
       finish();
       log.error(`[Core] dweb plan refused (${refusal}) for ${redactUrlForLog(url)}`, { tag });
-      return jsonErrorResponse(502, 'dweb plan refused');
+      return answer(502, 'dweb plan refused');
     }
     if (plan.error) {
       finish();
-      // The message is the page's, and may name what it asked for: only a
-      // redacted variant reaches the persistent log, unless it is one of the
-      // core's fixed texts.
-      const { message } = plan.error;
-      const logged = PLAIN_ERROR_MESSAGES.has(message) ? message : redactForLog(message);
-      log.info(`${tag} ${plan.error.status} for ${redactUrlForLog(url)}: ${logged}`);
-      return jsonErrorResponse(plan.error.status, plan.error.message);
+      return planError(plan.error);
     }
     if (plan.redirect) {
       finish();
@@ -236,7 +275,26 @@ async function handle(request, { backend, partition = null, tag }, release) {
       // The driver runs `ready` on every plan it hands over.
       finish();
       log.error(`[dweb] a fetch plan came without its admission for ${redactUrlForLog(url)}`);
-      return jsonErrorResponse(503, 'Too many dweb requests');
+      return answer(503, 'Too many dweb requests');
+    }
+    if (plan.verify) {
+      return executeVerify(plan, {
+        verifier,
+        gen,
+        backend,
+        method,
+        partition,
+        signal,
+        stop: fence.signal,
+        onEnd: finish,
+        onTrust,
+        answer,
+        planError,
+        log,
+        tag,
+        url,
+        redactUrl: redactUrlForLog,
+      });
     }
     return executeFetch(plan.fetch, {
       backend,
@@ -244,6 +302,7 @@ async function handle(request, { backend, partition = null, tag }, release) {
       signal,
       stop: fence.signal,
       onEnd: finish,
+      errorResponse: answer,
       log,
       tag,
       redactUrl: redactUrlForLog,
@@ -259,7 +318,7 @@ async function handle(request, { backend, partition = null, tag }, release) {
     );
   } catch (err) {
     finish();
-    return openFailure(err, url, tag);
+    return openFailure(err, url, tag, answer);
   }
 }
 

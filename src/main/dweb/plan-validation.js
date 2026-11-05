@@ -8,8 +8,18 @@
  * every check for its variant, against the request main admitted (its URL,
  * method and backend); a refused plan gets a 502 and is logged as a core
  * fault. The first failing check names the refusal, in this order:
- * `shape`, `method`, `node`, `path`, `header`, `retry`, `timers`,
- * `response`, `trust`, `redirect`, `error`.
+ * `shape`, `method`, `node`, `root`, `path`, `query`, `header`, `retry`,
+ * `timers`, `response`, `trust`, `redirect`, `error`.
+ *
+ * A verify plan (freedom-core design 0009, "Verify plans") is checked as a
+ * fetch is, applied to its root, the path below it and the query, with the
+ * bundled node's headers and operations: its backend must be up with
+ * `verify`; its root in its form (`verify-plan.js`), and for a hash host the
+ * host's own; its query the admitted URL's; its content trust `verified`.
+ * With verification on, a fetch is refused at `path` for any target the
+ * core verifies: a hash host's request plans a verify, and a name's result
+ * stays a fetch only in 0009's three unverified forms. Strict mode's checks
+ * come with its setting.
  *
  * A fetch plan is also judged against the request's own plan, made again
  * here with main's copy of the core's planning (`dweb-open.js`), as the
@@ -39,6 +49,12 @@ const {
   STRIPPED_REQUEST_HEADERS,
   SWARM_HEADERS,
 } = require('./dweb-open');
+const {
+  rootInForm,
+  staysUnverified,
+  VERIFY_HEADERS,
+  VERIFY_RESPONSE_OPS,
+} = require('./verify-plan');
 
 /** Today's retry table is the most a plan may ask for. */
 const RETRY_STATUSES = new Set([500, 502, 503, 504]);
@@ -221,6 +237,17 @@ function checkResponse(response, kind) {
   return true;
 }
 
+/** Known operations, each at most once, all of them `allowed`. */
+function checkOps(response, allowed) {
+  const seen = new Set();
+  for (const op of response) {
+    if (typeof op !== 'string' || !RESPONSE_OPERATIONS.gateway.has(op)) return false;
+    if (!allowed.includes(op) || seen.has(op)) return false;
+    seen.add(op);
+  }
+  return true;
+}
+
 /** The content label is the backend's; a name label only behind a lookup
  * (`named`): a hash host's is `null`. */
 function checkTrust(trust, backend, named) {
@@ -241,6 +268,98 @@ function requestHost(request) {
   const opened = openDweb({ url: request.url, method: request.method, backend: request.backend });
   if (opened?.pending) return { named: true, target: null };
   if (opened?.fetch) return { named: false, target: opened.fetch.path };
+  // A hash host the core verifies: the verify plan it plans to.
+  if (opened?.verify) return { named: false, target: null, verify: opened.verify };
+  return null;
+}
+
+/** The request URL's query, with its `?`, as a fetch plan's target carries
+ * it (normalized as an HTTP client sends it); empty when there is none. */
+function admittedQuery(url) {
+  let search;
+  try {
+    search = new URL(url).search;
+  } catch {
+    return '';
+  }
+  if (!search) return '';
+  const target = normalizeTarget(`/${search}`);
+  const at = target?.indexOf('?') ?? -1;
+  return at < 0 ? search : target.slice(at);
+}
+
+/** A verify plan's headers: only those the bundled node reads, each at most
+ * once, lowercase, with 0006's value rules. */
+function checkVerifyHeaders(headers, node) {
+  const allowed = VERIFY_HEADERS[node];
+  return headers.every(
+    ([name, value], i) =>
+      isHeaderName(name) &&
+      isHeaderValue(value) &&
+      allowed.includes(name) &&
+      !headers.slice(0, i).some(([other]) => other === name)
+  );
+}
+
+function checkVerify(body, request, scheme) {
+  const keys = ['node', 'root', 'path', 'query', 'headers', 'retry', 'timers', 'response', 'trust'];
+  if (!exact(body, keys)) return 'shape';
+  const headers = stringPairs(body.headers);
+  const rootKeys = isObject(body.root) ? Object.keys(body.root) : [];
+  if (
+    rootKeys.length !== 1 ||
+    typeof body.root[rootKeys[0]] !== 'string' ||
+    typeof body.path !== 'string' ||
+    typeof body.query !== 'string' ||
+    !headers ||
+    !exact(body.retry, ['statuses', 'on_error', 'attempts', 'delays_ms']) ||
+    !exact(body.timers, ['queue_ms', 'headers_ms', 'body_idle_ms']) ||
+    !Array.isArray(body.response) ||
+    !exact(body.trust, ['name', 'content'])
+  ) {
+    return 'shape';
+  }
+  const method = requestMethod(request.method);
+  if (method !== 'GET' && method !== 'HEAD') return 'method';
+  const { backend } = request;
+  const kind = backendKind(backend);
+  const nodeOk =
+    backend?.up === true &&
+    backend.verify === true &&
+    ((body.node === 'ant' && scheme === 'bzz' && kind === 'ant') ||
+      (body.node === 'ipfs' &&
+        (scheme === 'ipfs' || scheme === 'ipns') &&
+        (kind === 'native' || kind === 'gateway')));
+  if (!nodeOk) return 'node';
+
+  // The root: the scheme's kind, in its form, and a hash host's own.
+  const host = requestHost(request);
+  const own = host?.verify ?? null;
+  const [rootKey] = rootKeys;
+  const reference = body.root[rootKey];
+  const keyOk = { bzz: 'swarm', ipfs: 'ipfs', ipns: 'ipns' }[scheme] === rootKey;
+  const tied = !own || (Object.hasOwn(own.root, rootKey) && own.root[rootKey] === reference);
+  if (!keyOk || !rootInForm(body.root) || !tied || !host || (!host.named && !own)) return 'root';
+
+  // The path below it: 0006's checks on /<namespace>/<root><path>, and a
+  // hash host's own.
+  const { path } = body;
+  if (!(path === '' || path.startsWith('/')) || /[?#]/.test(path)) return 'path';
+  if (!checkPath(`/${scheme}/${reference}${path}`, scheme)) return 'path';
+  if (own && own.path !== path) return 'path';
+
+  // The query: the admitted URL's.
+  if (body.query !== admittedQuery(request.url) || (own && own.query !== body.query)) {
+    return 'query';
+  }
+  if (!checkVerifyHeaders(headers, body.node)) return 'header';
+  if (!checkRetry(body.retry, kind)) return 'retry';
+  if (!checkTimers(body.timers, kind)) return 'timers';
+  const allowed = [...VERIFY_RESPONSE_OPS[body.node]];
+  if (body.node === 'ipfs') allowed.push('small_text');
+  if (!checkOps(body.response, allowed)) return 'response';
+  const nameOk = body.trust.name === null || (host.named && typeof body.trust.name === 'string');
+  if (!nameOk || body.trust.content !== 'verified') return 'trust';
   return null;
 }
 
@@ -276,6 +395,11 @@ function checkFetch(body, request, scheme) {
   // here, and no name stands behind it.
   const host = requestHost(request);
   if (!host || (!host.named && body.path !== host.target)) return 'path';
+  // With verification on, a fetch stays only for content the core can't
+  // verify: anything else would downgrade it to unverified (0009).
+  if (host.named && backend.verify === true && !staysUnverified(body.node, body.path)) {
+    return 'path';
+  }
   if (!checkHeaders(headers, scheme)) return 'header';
   if (!checkRetry(body.retry, kind)) return 'retry';
   if (!checkTimers(body.timers, kind)) return 'timers';
@@ -325,6 +449,7 @@ function validatePlan(plan, request) {
   const scheme = urlScheme(request.url);
   const known = SCHEMES.has(scheme) ? scheme : null;
   if (variant === 'fetch') return checkFetch(plan.fetch, request, known);
+  if (variant === 'verify') return checkVerify(plan.verify, request, known);
   if (variant === 'redirect') return checkRedirect(plan.redirect, request, known);
   if (variant === 'error') return checkError(plan.error);
   return 'shape';

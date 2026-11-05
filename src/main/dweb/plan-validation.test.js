@@ -419,3 +419,111 @@ describe('urlScheme', () => {
     expect(urlScheme('no-colon')).toBeNull();
   });
 });
+
+describe('verify plans (freedom-core design 0009)', () => {
+  const { openDweb } = require('./dweb-open');
+  const EXTERNAL_ANT = { ant: 'external', up: true, verify: true };
+  const VERIFIED_GATEWAY = { ipfs: 'gateway', up: true, verify: true };
+  // An IPNS name with an inlined Ed25519 key.
+  const ED25519_NAME = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+
+  const request = (url, backend, method = 'GET', headers = []) => ({
+    url,
+    method,
+    headers,
+    backend,
+  });
+  const planned = (req) => openDweb(req);
+
+  test("a hash host's plan is the verify its request plans, and only it", () => {
+    const req = request(`bzz://${HASH}/a/b.html?x=1`, EXTERNAL_ANT, 'GET', [
+      ['Range', 'bytes=0-9'],
+      ['Accept', '*/*'],
+    ]);
+    const plan = planned(req);
+    expect(plan.verify).toMatchObject({
+      node: 'ant',
+      root: { swarm: HASH },
+      path: '/a/b.html',
+      query: '?x=1',
+      headers: [['range', 'bytes=0-9']],
+      response: ['canonicalize_redirect', 'strip_page_state'],
+      trust: { name: null, content: 'verified' },
+    });
+    expect(validatePlan(plan, req)).toBeNull();
+    // Another root, another path below it, another query.
+    const other = 'ab'.repeat(32);
+    const moved = (edit) => ({ verify: { ...plan.verify, ...edit } });
+    expect(validatePlan(moved({ root: { swarm: other } }), req)).toBe('root');
+    expect(validatePlan(moved({ root: { ipfs: CID } }), req)).toBe('root');
+    expect(validatePlan(moved({ path: '/c.html' }), req)).toBe('path');
+    expect(validatePlan(moved({ query: '' }), req)).toBe('query');
+    expect(validatePlan(moved({ headers: [['accept', '*/*']] }), req)).toBe('header');
+    expect(validatePlan(moved({ response: ['small_text'] }), req)).toBe('response');
+    expect(validatePlan(moved({ trust: { name: null, content: 'unverified' } }), req)).toBe(
+      'trust'
+    );
+    // A fetch for it would downgrade it.
+    expect(validatePlan(antPlan({ trust: { name: null, content: 'unverified' } }), req)).toBe(
+      'path'
+    );
+    // Verification off: the same verify plan names a backend without it.
+    expect(validatePlan(plan, request(req.url, { ant: 'external', up: true }))).toBe('node');
+  });
+
+  test('a CIDv0 host verifies its canonical CIDv1; a path stays beneath the root', () => {
+    const req = request(`ipfs://${CIDV0.toLowerCase()}/x`, VERIFIED_GATEWAY);
+    // Chromium lowercases the host: a lowercased CIDv0 is no CID at all.
+    expect(planned(req).error).toBeDefined();
+    const v1 = request(`ipfs://${CIDV0_AS_V1}/docs/`, VERIFIED_GATEWAY, 'GET', [
+      ['accept', 'text/html'],
+    ]);
+    const plan = planned(v1);
+    expect(plan.verify.root).toEqual({ ipfs: CIDV0_AS_V1 });
+    expect(plan.verify.response).toEqual(['strip_page_state', 'small_text']);
+    expect(validatePlan(plan, v1)).toBeNull();
+    const escaped = { verify: { ...plan.verify, path: '/%2e%2e/x' } };
+    expect(validatePlan(escaped, v1)).toBe('path');
+  });
+
+  test("a name's result is verified unless it stays unverified", () => {
+    const req = request('bzz://site.eth/', EXTERNAL_ANT);
+    const fetch = antPlan({
+      path: `/bzz/${HASH}/`,
+      headers: SWARM,
+      trust: { name: 'verified', content: 'unverified' },
+    });
+    expect(validatePlan(fetch, req)).toBe('path');
+    // An encrypted reference stays a fetch.
+    const encrypted = antPlan({
+      path: `/bzz/${HASH}${HASH}/`,
+      headers: SWARM,
+      trust: { name: 'verified', content: 'unverified' },
+    });
+    expect(validatePlan(encrypted, req)).toBeNull();
+    const verify = planned(request(`bzz://${HASH}/`, EXTERNAL_ANT));
+    verify.verify.trust = { name: 'verified', content: 'verified' };
+    expect(validatePlan(verify, req)).toBeNull();
+  });
+
+  test('IPNS roots: an Ed25519 or hashed key verifies; a DNSLink name stays a fetch', () => {
+    const key = request(`ipns://${ED25519_NAME}/`, VERIFIED_GATEWAY);
+    expect(planned(key).verify.root).toEqual({ ipns: ED25519_NAME });
+    expect(validatePlan(planned(key), key)).toBeNull();
+    const dnslink = request('ipns://docs.example.org/', VERIFIED_GATEWAY);
+    expect(planned(dnslink).verify).toBeUndefined();
+  });
+
+  test('every unknown or missing member is a shape refusal', () => {
+    const req = request(`bzz://${HASH}/`, EXTERNAL_ANT);
+    const plan = planned(req);
+    expect(validatePlan({ verify: { ...plan.verify, url: 'x' } }, req)).toBe('shape');
+    const { query, ...missing } = plan.verify;
+    expect(query).toBe('');
+    expect(validatePlan({ verify: missing }, req)).toBe('shape');
+    expect(validatePlan({ verify: { ...plan.verify, root: { swarm: 1 } } }, req)).toBe('shape');
+    expect(
+      validatePlan({ verify: { ...plan.verify, root: { swarm: HASH, ipfs: CID } } }, req)
+    ).toBe('shape');
+  });
+});
