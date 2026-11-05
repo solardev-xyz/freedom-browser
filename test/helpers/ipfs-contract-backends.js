@@ -416,6 +416,8 @@ async function loadIpfsdBackend({ router, routers = [router], freshStats = true 
           tor: path.join(root, 'tor-data'),
           radicleHome: null,
         }),
+        // No override as written (`C:name` on Windows would be refused).
+        getDataDirOverrides: () => ({}),
       }),
       [path.join(SRC, 'core', 'naming.js')]: () => ({
         namingDriver: () => createFakeDwebDriver(),

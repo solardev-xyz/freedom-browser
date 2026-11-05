@@ -751,6 +751,97 @@ describe('names Win32 may read as others, on any OS (`win32`, path.win32)', () =
   });
 });
 
+describe('one path, checked and given (`win32`, path.win32, on any OS)', () => {
+  // service-grant.win32.test.js runs the drive-relative case on Windows
+  // itself, with distinct current directories on two drives and a child in
+  // the real scrubbed environment.
+  const DRIVE_RELATIVE =
+    "a path is relative to a drive's current directory (`C:name`), which a service may resolve from another";
+  const OVERRIDES = [
+    'FREEDOM_IDENTITY_DATA',
+    'FREEDOM_BEE_DATA',
+    'FREEDOM_ANT_DATA',
+    'FREEDOM_IPFS_DATA',
+    'MYOTIS_DATA_DIR',
+    'FREEDOM_TOR_DATA',
+    'FREEDOM_RADICLE_DATA',
+  ];
+
+  /** A `--profile-dir` profile, no override set, and its grant where
+   * freedom-ipfsd's is by default. */
+  function profile() {
+    for (const name of OVERRIDES) delete process.env[name];
+    const userDataDir = path.join(tempRoot, 'Elsewhere');
+    fs.mkdirSync(path.join(userDataDir, 'ipfs-data'), { recursive: true });
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    return { check, grant: path.join(userDataDir, 'ipfs-data', 'freedom-ipfs') };
+  }
+
+  test.each([
+    ['C:ipfs-data', true],
+    ['c:ipfs-data\\freedom-ipfs', true],
+    ['C:..\\ipfs-data', true],
+    ['Z:.', true],
+    ['C:', true],
+    ['C:\\ipfs-data', false],
+    ['C:/ipfs-data', false],
+    ['\\ipfs-data', false],
+    ['ipfs-data', false],
+    ['\\\\server\\share\\ipfs-data', false],
+    ['\\\\?\\C:\\ipfs-data', false],
+    ['/home/me/C:ipfs-data', false],
+  ])("path.win32: %j is relative to a drive's current directory: %s", (target, relative) => {
+    const { win32DriveRelative } = jest.requireActual('./service-grant');
+    expect(win32DriveRelative(target)).toBe(relative);
+    // Such a path is no absolute one, and path.win32 resolves it from the
+    // drive's current directory, a process's own.
+    if (relative) expect(path.win32.isAbsolute(target)).toBe(false);
+  });
+
+  test.each([
+    // The service's own: no root shows it, and the grant main passes is
+    // already resolved, so only the override as written can tell.
+    ['FREEDOM_IPFS_DATA', 'C:ipfs-data'],
+    // A root: freedom-cored is handed the identity directory.
+    ['FREEDOM_IDENTITY_DATA', 'C:ipfs-data\\freedom-ipfs'],
+    ['MYOTIS_DATA_DIR', 'D:..\\myotis'],
+    ['FREEDOM_RADICLE_DATA', 'c:radicle'],
+  ])('path.win32: %s=%j is refused as written, before anything is resolved', (name, value) => {
+    const { check, grant } = profile();
+    expect(check.ipfsGrantRefusal(grant, { win32: true })).toBeNull();
+    process.env[name] = value;
+    expect(check.ipfsGrantRefusal(grant, { win32: true })).toBe(DRIVE_RELATIVE);
+    // Off Windows it is an ordinary relative name, resolved once from main's
+    // directory, as every consumer gets it (profile-paths).
+    expect(check.ipfsGrantRefusal(grant, { win32: false, foldCase: false })).toBeNull();
+  });
+
+  test('path.win32: a drive-relative grant or root is refused before it is resolved', () => {
+    const { grantRefusal } = jest.requireActual('./service-grant');
+    const identity = { name: "this profile's identity directory", dir: path.join(tempRoot, 'id') };
+    const grant = path.join(tempRoot, 'ipfs-data', 'freedom-ipfs');
+    expect(grantRefusal([grant], [identity], { win32: true })).toBeNull();
+    expect(grantRefusal(['C:ipfs-data\\freedom-ipfs'], [identity], { win32: true })).toBe(
+      DRIVE_RELATIVE
+    );
+    expect(grantRefusal([grant], [{ name: identity.name, dir: 'C:id' }], { win32: true })).toBe(
+      DRIVE_RELATIVE
+    );
+    const { check } = profile();
+    expect(check.ipfsGrantRefusal('C:ipfs-data\\freedom-ipfs', { win32: true })).toBe(
+      DRIVE_RELATIVE
+    );
+  });
+
+  test('a grant that is not absolute is refused, on any OS: the service would resolve it again', () => {
+    const { check, grant } = profile();
+    expect(check.ipfsGrantRefusal(grant, { win32: false })).toBeNull();
+    expect(
+      check.ipfsGrantRefusal(path.relative(process.cwd(), grant) || '.', { win32: false })
+    ).toBe("a grant isn't an absolute path, which a service may resolve from another directory");
+  });
+});
+
 describe('hard links whose names are all inside the grants', () => {
   const { grantContentRefusal } = jest.requireActual('./service-grant');
   const OUTSIDE = 'the grant holds a hard link to a file with a name outside it';

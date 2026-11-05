@@ -183,8 +183,11 @@ function nativeNodeLabel(node) {
   return version ? `freedom-ipfs ${version}` : 'freedom-ipfs';
 }
 
+// Absolute, resolved once here: this one path is what the grant check
+// compares and what freedom-ipfsd and its gate are handed (freedom-core
+// design 0010), so neither resolves it again from its own directory.
 function getIpfsDataPath() {
-  const dataDir = path.join(getIpfsDataDir(), 'freedom-ipfs');
+  const dataDir = path.resolve(getIpfsDataDir(), 'freedom-ipfs');
   fs.mkdirSync(dataDir, { recursive: true });
   return dataDir;
 }

@@ -14,8 +14,21 @@ function ensureDir(dirPath) {
   return dirPath;
 }
 
-function resolveDir(envName, fallbackName) {
+/**
+ * The directory a data-directory override (`FREEDOM_IPFS_DATA`, …) names,
+ * absolute, or null when it isn't set. It is resolved here, against main's
+ * working directory (on Windows, a drive's own for `C:name`), and every
+ * consumer gets this path: a service handed it as an argument, whose
+ * environment and working directory may differ, never resolves it from
+ * another base (freedom-core design 0010, "Main's check").
+ */
+function overrideDir(envName) {
   const override = process.env[envName];
+  return override ? path.resolve(override) : null;
+}
+
+function resolveDir(envName, fallbackName) {
+  const override = overrideDir(envName);
   if (override) {
     return ensureDir(override);
   }
@@ -193,7 +206,7 @@ function getTorDataDir() {
 }
 
 function getRadicleDataDir() {
-  const override = process.env.FREEDOM_RADICLE_DATA;
+  const override = overrideDir('FREEDOM_RADICLE_DATA');
   if (override) {
     return ensureDir(override);
   }
@@ -284,7 +297,8 @@ const COMPONENT_DATA_DIRS = Object.freeze({
  * design 0010's grant check (`service-grant.js`).
  *
  * - Without `userDataDir`: the active profile's, with this process's
- *   overrides (`FREEDOM_IPFS_DATA`, …).
+ *   overrides (`FREEDOM_IPFS_DATA`, …), resolved as the getters resolve
+ *   them (`overrideDir`).
  * - With it: that profile's at their default names, the active one's too
  *   (an override is this process's alone, and not where a profile keeps
  *   its data by default).
@@ -298,7 +312,7 @@ function getComponentDataDirs(userDataDir = null, { slot = null } = {}) {
   const root = userDataDir ?? app.getPath('userData');
   const dirs = {};
   for (const [component, [name, override]] of Object.entries(COMPONENT_DATA_DIRS)) {
-    dirs[component] = (!userDataDir && process.env[override]) || path.join(root, name);
+    dirs[component] = (!userDataDir && overrideDir(override)) || path.join(root, name);
   }
   const activeProfile = getActiveProfile();
   dirs.radicleHome = getCatalogRadicleDataDir(
@@ -307,6 +321,19 @@ function getComponentDataDirs(userDataDir = null, { slot = null } = {}) {
       : activeProfile
   );
   return dirs;
+}
+
+/**
+ * This process's data-directory overrides as they are written, by
+ * component, before `overrideDir` resolves them: the grant check refuses a
+ * form a service could resolve from another base (on Windows, `C:name`).
+ */
+function getDataDirOverrides() {
+  const overrides = {};
+  for (const [component, [, override]] of Object.entries(COMPONENT_DATA_DIRS)) {
+    if (process.env[override]) overrides[component] = process.env[override];
+  }
+  return overrides;
 }
 
 function getQuickUnlockCredentialPath() {
@@ -339,6 +366,7 @@ module.exports = {
   getAntDataDir,
   getBeeDataDir,
   getComponentDataDirs,
+  getDataDirOverrides,
   getIdentityDataDir,
   getIpfsDataDir,
   getMyotisDataDir,

@@ -58,6 +58,15 @@
  *   (`\\server\share\…`, `\\?\…`, `\\.\…`) is compared only with paths on
  *   the same root: a share can name a local directory
  *   (`\\localhost\C$\…`), and one share has several names.
+ * - **One path, checked and given:** an override (`FREEDOM_IPFS_DATA`, …)
+ *   is resolved once, by profile-paths, and the service is handed the very
+ *   absolute path this check compares; a grant that isn't absolute is
+ *   refused. On Windows, a path relative to a drive's current directory
+ *   (`C:name`) is refused as written, in a grant, a root or an override,
+ *   before anything is resolved: Win32 resolves it against the drive's
+ *   hidden current directory (`=C:`), which a service spawned with its own
+ *   environment doesn't have, so there it may name another directory than
+ *   the one compared.
  * - **Only regular files, directories and symlinks in the grants**
  *   (`grantContentRefusal`): a hard link with a name outside the grants
  *   has the grants' path and another file's data (two names both inside
@@ -85,7 +94,11 @@
 const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
-const { getComponentDataDirs, getProfileUserDataDir } = require('./profile-paths');
+const {
+  getComponentDataDirs,
+  getDataDirOverrides,
+  getProfileUserDataDir,
+} = require('./profile-paths');
 const { listProfileDataDirs } = require('./profile-catalog');
 const { getLockDir } = require('./service-locks');
 
@@ -202,6 +215,18 @@ function win32Uncomparable({ real, rest }) {
   );
 }
 
+/** Whether `target`, as written, is relative to a drive's current directory
+ * (`C:name`, `C:..\name`, `C:`): Win32 resolves it against that drive's
+ * hidden current directory (`=C:`), which a process spawned with its own
+ * environment doesn't have, so it resolves the same text from the drive's
+ * root. */
+function win32DriveRelative(target) {
+  return typeof target === 'string' && /^[A-Za-z]:(?![\\/])/.test(target);
+}
+
+const DRIVE_RELATIVE =
+  "a path is relative to a drive's current directory (`C:name`), which a service may resolve from another";
+
 /** Whether `reals`, real paths, can't be compared for their roots: one on a
  * share or in a device namespace (a root beginning with two separators,
  * `path.win32`) among paths on any other root. */
@@ -245,6 +270,10 @@ function grantRefusal(grants, roots, options = {}) {
   const win32 = options.win32 ?? WIN32;
   const present = roots.filter((root) => root.dir);
   const paths = [...grants, ...present.map((root) => root.dir)];
+  // On Windows, a path relative to a drive's current directory names
+  // whatever directory that is in the process resolving it: refused as
+  // written, before resolveParts resolves it from main's.
+  if (win32 && paths.some(win32DriveRelative)) return DRIVE_RELATIVE;
   // A symlink on any of these paths that can't be followed (see
   // resolveParts) can't be compared: refused, failing closed.
   if (paths.some((p) => resolveParts(p).dangling)) {
@@ -614,6 +643,17 @@ function serviceGrantRefusal(
   grants,
   { own = [], foldCase = FOLD_CASE, win32 = WIN32, walk = {} } = {}
 ) {
+  // The overrides as written, the service's own too: profile-paths resolves
+  // each from main's directories, so neither a grant nor a root shows a
+  // drive-relative form any more.
+  if (win32 && [...grants, ...Object.values(getDataDirOverrides())].some(win32DriveRelative)) {
+    return DRIVE_RELATIVE;
+  }
+  // The service is handed the path checked: one that isn't absolute would
+  // be resolved again, from the service's own directory.
+  if (grants.some((grant) => !path.isAbsolute(grant))) {
+    return "a grant isn't an absolute path, which a service may resolve from another directory";
+  }
   const roots = protectedRoots({ own, foldCase });
   const refused = grantRefusal(grants, roots, { foldCase, win32 });
   if (refused) return refused;
@@ -649,6 +689,7 @@ module.exports = {
   serviceGrantRefusal,
   grantContentRefusal,
   ipfsGrantRefusal,
+  win32DriveRelative,
   win32Uncomparable,
   win32MixedRoots,
 };

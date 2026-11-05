@@ -118,6 +118,56 @@ describe('profile paths', () => {
     expect(paths.getRadicleDataDir()).toBe(radicleDir);
   });
 
+  // freedom-core design 0010: an override is resolved once, from main's
+  // directory, and every consumer (a service handed it as an argument too)
+  // gets that absolute path; the grant check also sees it as written.
+  test('resolves a relative override to one absolute path, for every consumer', () => {
+    for (const name of [
+      'FREEDOM_IDENTITY_DATA',
+      'FREEDOM_BEE_DATA',
+      'FREEDOM_ANT_DATA',
+      'FREEDOM_IPFS_DATA',
+      'MYOTIS_DATA_DIR',
+      'FREEDOM_TOR_DATA',
+      'FREEDOM_RADICLE_DATA',
+    ]) {
+      delete process.env[name];
+    }
+    const userDataDir = track(createTempUserDataDir());
+    const overrides = track(createTempUserDataDir());
+    // Relative where the working directory and the temporary one share a
+    // root (on Windows they may not: then path.relative keeps it absolute).
+    const relative = path.relative(process.cwd(), overrides);
+    process.env.FREEDOM_IPFS_DATA = path.join(relative, 'ipfs');
+    process.env.FREEDOM_IDENTITY_DATA = path.join(relative, 'identity');
+    process.env.FREEDOM_RADICLE_DATA = path.join(relative, 'radicle');
+    process.env.MYOTIS_DATA_DIR = path.join(relative, 'myotis');
+
+    // Each, as main resolves it: in the temporary directory.
+    const resolved = (name) => path.resolve(relative, name);
+    expect(path.isAbsolute(resolved('ipfs'))).toBe(true);
+    expect(path.relative(overrides, resolved('ipfs'))).toBe('ipfs');
+
+    const paths = loadPaths(userDataDir);
+
+    expect(paths.getIpfsDataDir()).toBe(resolved('ipfs'));
+    expect(paths.getIdentityDataDir()).toBe(resolved('identity'));
+    expect(paths.getRadicleDataDir()).toBe(resolved('radicle'));
+    expect(paths.getMyotisDataDir('gnosis')).toBe(path.join(resolved('myotis'), 'gnosis'));
+    expect(paths.getComponentDataDirs()).toMatchObject({
+      identity: resolved('identity'),
+      ipfs: resolved('ipfs'),
+      myotis: resolved('myotis'),
+      radicle: resolved('radicle'),
+    });
+    expect(paths.getDataDirOverrides()).toEqual({
+      identity: path.join(relative, 'identity'),
+      ipfs: path.join(relative, 'ipfs'),
+      myotis: path.join(relative, 'myotis'),
+      radicle: path.join(relative, 'radicle'),
+    });
+  });
+
   test("lists each component's data directory without creating any, this profile's overrides included", () => {
     const userDataDir = track(createTempUserDataDir());
     const ipfsDir = path.join(track(createTempUserDataDir()), 'elsewhere');
