@@ -57,6 +57,24 @@
  * below. A generation that ends, or breaks the protocol, errors its open
  * bodies at once, and nothing of it reaches a later one.
  *
+ * **Streams both ways** (freedom-core design 0009, Streams in the core),
+ * for the core's connection once its hello has settled protocol 2
+ * (`service.duplex(hello)`): its decoder takes all four stream frames, and
+ * the generation has one `StreamDuplex`. Main's own requests' bodies are as
+ * above, ending only with the core's verified bodies' codes. The core's
+ * requests to a handler registered with `streams: true` go through the
+ * duplex's sender: their one reply, or a head and a body when the handler
+ * answers with a `StreamedReply`. Its body is read only as the core's
+ * credit and the writer's cap allow, at most 64 KiB ahead, which counts
+ * against the cap until the sender takes it: a byte stream through a BYOB
+ * reader, asked for no more than that and the room; any other stream a
+ * chunk at a time, and a chunk past 64 KiB ends it as `body_stream_error`
+ * (a source main can't bound). It ends with `end`, or with an abort
+ * (`stalled` or `body_stream_error`), and the core's cancel aborts it with
+ * `cancelled` and cancels the body. Credit
+ * main owes, its cancels and the sender's frames are written in that
+ * order, one write in flight.
+ *
  * **Main's cancels** (0001): a request sent with a `signal` is cancelled
  * when it aborts. Its caller gets `cancelled` at once, and the process a
  * `cancel`; the process's one response still comes, and is consumed and
@@ -85,8 +103,10 @@ const {
   CORE_KINDS,
   FrameDecoder,
   FrameError,
+  StreamDuplex,
   StreamOutbox,
   StreamReceiver,
+  CORE_STREAM_KINDS,
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
@@ -94,6 +114,7 @@ const {
   KIND_JSON,
   KIND_LAST,
   KIND_STREAM_CREDIT,
+  MAX_DATA,
   MAX_MESSAGE,
   MAX_PAYLOAD,
   MAX_PULL,
@@ -101,6 +122,19 @@ const {
 } = require('./frame');
 
 const STREAM_FRAME_KINDS = new Set([KIND_DATA, KIND_END, KIND_ABORT, KIND_STREAM_CREDIT]);
+// The most the duplex's writer takes into one write (design 0009): its
+// frames are cancellable until taken.
+const STREAM_WRITE_BYTES = 256 * 1024;
+// The most main reads ahead of a body it sends the core, per read: one data
+// frame. A byte stream is asked for at most this (and the room); any other
+// stream's chunk past it can't be bounded, and ends the body.
+const MAX_READ_AHEAD = MAX_DATA;
+// How a body main sends the core ends when it fails (design 0009,
+// `shell.dweb_get`): a piece's codes, with fixed messages.
+const PIECE_ABORTS = Object.freeze({
+  stalled: 'The body stalled',
+  body_stream_error: 'The body failed',
+});
 
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
 const HELLO_TIMEOUT_MS = 10_000;
@@ -255,6 +289,43 @@ class JsonText {
   }
 }
 
+/**
+ * A handler's answer with a body (design 0009, `shell.dweb_get` with
+ * `stream: true`), for a handler registered with `streams: true`, on the
+ * core's connection at protocol 2: `result`, the head's result, goes with
+ * `body: true`, then `body`, a ReadableStream of its bytes. The body is read
+ * only as the core's credit allows, at most 64 KiB ahead: a byte stream
+ * (`type: "bytes"`) through a BYOB reader, asked for at most that and the
+ * room; any other in its own chunks, each at most 64 KiB, or the stream ends
+ * `body_stream_error`. Its close ends the stream; its error
+ * aborts it, with `stalled` if the error's `abortCode` says so (main's body
+ * idle timer) and `body_stream_error` otherwise. The core's cancel, or the
+ * generation's end, cancels it.
+ */
+class StreamedReply {
+  /**
+   * @param {object} result - the head's result, e.g. `{ status, headers }`
+   * @param {ReadableStream} body
+   */
+  constructor(result, body) {
+    if (!isObject(result)) throw new TypeError('A streamed reply needs a result object');
+    if (typeof body?.getReader !== 'function') {
+      throw new TypeError('A streamed reply needs a ReadableStream body');
+    }
+    this.result = result;
+    this.body = body;
+  }
+
+  /** Lets go of a body that was never read. */
+  discard() {
+    try {
+      this.body.cancel().catch(() => {});
+    } catch {
+      // Locked or gone: nothing to let go of.
+    }
+  }
+}
+
 /** Main's chain I/O pool: bytes held, within a limit. */
 class IoPool {
   constructor(limit) {
@@ -359,6 +430,12 @@ class Generation {
     this.outbox = null;
     this.outboxWriting = false;
     this.bodies = new Map();
+    // The core's connection at protocol 2 (design 0009): both directions'
+    // streams, and the bodies main sends (`StreamedReply`), by the core's
+    // request ID, with the pool charges of the replies its sender holds.
+    this.duplex = null;
+    this.pieces = new Map(); // id -> { id, reader, byob, pending, eof, reading, claimed }
+    this.pieceCharges = new Map(); // id -> release
     // The process's fragmented responses: one at a time, while it holds main's
     // bulk credit.
     this.reassembler = new Reassembler();
@@ -405,7 +482,9 @@ class ServiceClient extends EventEmitter {
    *   `fragments(hello)` (whether it takes main's fragmented replies), and
    *   for a stream service `streams(hello)` (whether the handshake granted
    *   `stream`), `initialKinds` (the frame kinds before it: `JSON_KINDS`;
-   *   the core's are `CORE_KINDS`) and `maxPending` (512)
+   *   the core's are `CORE_KINDS`) and `maxPending` (512); for the core at
+   *   protocol 2, `duplex(hello)` (whether the connection carries streams
+   *   both ways, design 0009)
    * @param {Function} options.spawn - child_process.spawn (injectable)
    * @param {string} options.command - path to the binary
    * @param {string[]} options.args - e.g. ['serve', '--data-dir', …]
@@ -455,6 +534,8 @@ class ServiceClient extends EventEmitter {
     // the requests whose params they accept, tried first.
     this.handlers = new Map();
     this.shapedHandlers = new Map();
+    // Those that may answer with a body (`StreamedReply`).
+    this.streamHandlers = new WeakSet();
   }
 
   /**
@@ -470,8 +551,15 @@ class ServiceClient extends EventEmitter {
    * `shell.verified`), and tell their requests apart by their params. A
    * handler registered with `when(params)` takes the requests it accepts,
    * before the one registered without, which takes the rest.
+   *
+   * With `streams: true`, on the core's connection at protocol 2 (design
+   * 0009), the handler may answer with a `StreamedReply`, and is called
+   * with `streams: true` there; its requests' replies, cancels and bodies
+   * go through the duplex. Elsewhere `streams` is false, and a
+   * `StreamedReply` is an internal error.
    */
-  handle(method, handler, { when = null } = {}) {
+  handle(method, handler, { when = null, streams = false } = {}) {
+    if (streams) this.streamHandlers.add(handler);
     if (!when) {
       this.handlers.set(method, handler);
       return;
@@ -739,9 +827,15 @@ class ServiceClient extends EventEmitter {
     // the handshake grants main its credit.
     gen.fragments = this.service.fragments(hello);
     gen.credit = gen.fragments;
-    // A process whose handshake granted `stream` (design 0007): its stream
-    // frames are taken from here on.
-    if (this.service.streams?.(hello)) {
+    // The core at protocol 2 (design 0009): stream frames both ways from
+    // here on. A process whose handshake granted `stream` (design 0007):
+    // its stream frames are taken from here on.
+    if (this.service.duplex?.(hello)) {
+      gen.duplex = new StreamDuplex();
+      gen.streams = gen.duplex.receiver;
+      gen.outbox = gen.duplex.outbox;
+      gen.decoder.setKinds(CORE_STREAM_KINDS);
+    } else if (this.service.streams?.(hello)) {
       gen.streams = new StreamReceiver();
       gen.outbox = new StreamOutbox();
       gen.decoder.setKinds(serviceKinds('receiver'));
@@ -816,6 +910,7 @@ class ServiceClient extends EventEmitter {
     this.failBodies(gen, this.unavailable(`The ${this.service.noun} exited`));
     gen.streams = null;
     gen.outbox = null;
+    gen.duplex = null;
     const pending = [...gen.pending.values()];
     gen.pending.clear();
     for (const entry of pending) {
@@ -1036,7 +1131,8 @@ class ServiceClient extends EventEmitter {
     gen.nextId += 1;
     // Every request main sends on a stream connection: a frame for an ID
     // above the highest is a protocol error.
-    gen.streams?.request(id);
+    if (gen.duplex) gen.duplex.ask(id);
+    else gen.streams?.request(id);
 
     let promise = null;
     let entry;
@@ -1229,6 +1325,19 @@ class ServiceClient extends EventEmitter {
       this.respond(gen, id, controller, { error: shellError('unknown_method') });
       return undefined;
     }
+    // One that may answer with a body, on the core's connection at protocol
+    // 2: its reply and its cancel go through the duplex's sender. Only these
+    // are the sender's (the core's IDs increase, so these do too): credit
+    // naming another of the core's requests is late below the highest of
+    // them and a protocol error above it, as for one never sent.
+    const streams = Boolean(gen.duplex) && this.streamHandlers.has(handler);
+    if (streams) {
+      try {
+        gen.duplex.request(id);
+      } catch (err) {
+        return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      }
+    }
     // What the handler holds for its reply, in main's pool until the reply
     // is serialized (or dropped).
     const lease = this.pool.lease();
@@ -1242,7 +1351,11 @@ class ServiceClient extends EventEmitter {
         if (controller.signal.aborted) return { error: shellError('cancelled') };
         let pending;
         try {
-          pending = handler(params ?? {}, { signal: controller.signal, charge: lease.charge });
+          pending = handler(params ?? {}, {
+            signal: controller.signal,
+            charge: lease.charge,
+            streams,
+          });
         } catch (err) {
           return { error: shellErrorBody(err, controller.signal) };
         }
@@ -1253,7 +1366,9 @@ class ServiceClient extends EventEmitter {
       })
       .then((outcome) => {
         try {
-          if (outcome) this.respond(gen, id, controller, outcome, lease);
+          if (!outcome) return;
+          if (streams) this.respondStreamed(gen, id, controller, outcome, lease);
+          else this.respond(gen, id, controller, outcome, lease);
         } finally {
           lease.close();
         }
@@ -1272,6 +1387,7 @@ class ServiceClient extends EventEmitter {
     const incoming = [...gen.incoming.values()];
     gen.incoming.clear();
     this.dropBulk(gen);
+    for (const piece of [...gen.pieces.values()]) this.dropPiece(gen, piece);
     for (const controller of incoming) controller.abort();
   }
 
@@ -1282,6 +1398,21 @@ class ServiceClient extends EventEmitter {
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     gen.incoming.get(id)?.abort();
     this.replaceCancelledBulk(gen, id);
+    if (gen.duplex) {
+      // A request the duplex holds: `cancelled` is its one reply, or its
+      // body's abort, and the body is let go of. Any other is late.
+      let cancel;
+      try {
+        cancel = gen.duplex.cancel(id);
+      } catch (err) {
+        return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      }
+      if (cancel === 'cancelled') {
+        const piece = gen.pieces.get(id);
+        if (piece) this.dropPiece(gen, piece);
+        this.flushStreams(gen);
+      }
+    }
     return undefined;
   }
 
@@ -1330,6 +1461,12 @@ class ServiceClient extends EventEmitter {
    * dropped. Past the pool, it is `busy`.
    */
   respond(gen, id, controller, outcome, lease = null) {
+    if (outcome.result instanceof StreamedReply) {
+      // Only a streams handler, on the core's connection at protocol 2, may
+      // send a body.
+      outcome.result.discard();
+      outcome = { error: shellError('internal') };
+    }
     if (!this.owes(gen, id, controller)) return;
     if (outcome.result instanceof JsonText) {
       this.respondText(gen, id, controller, outcome.result, lease);
@@ -1565,7 +1702,7 @@ class ServiceClient extends EventEmitter {
       );
       let replied;
       try {
-        replied = gen.streams.reply(id, opens);
+        replied = gen.duplex ? gen.duplex.answered(id, opens) : gen.streams.reply(id, opens);
       } catch (err) {
         return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
       }
@@ -1608,21 +1745,40 @@ class ServiceClient extends EventEmitter {
   /** What main holds for `gen`'s streams, for diagnostics and tests. */
   streamStats(gen = this.current) {
     if (!gen?.streams) return null;
-    return {
+    const stats = {
       outstanding: gen.streams.outstanding(),
       ringBytes: gen.streams.ringBytes(),
       bodies: gen.bodies.size,
       outbox: gen.outbox.size,
     };
+    if (gen.duplex) {
+      // The bodies main sends the core, and the core's requests the
+      // sender holds.
+      stats.pieces = gen.pieces.size;
+      stats.sending = gen.duplex.sender.live();
+      stats.held = gen.duplex.sender.held;
+      // Read ahead of a body, or claimed by a read in flight, not yet
+      // taken by the sender.
+      stats.pending = gen.duplex.sender.reserved;
+    }
+    return stats;
   }
 
-  /** A stream frame from the process, through main's receiver. */
+  /** A stream frame from the process: through the duplex on the core's
+   * connection at protocol 2, else through main's receiver. */
   onStreamFrame(gen, frame) {
     let delivery;
     try {
-      delivery = gen.streams.receive(frame);
+      delivery = gen.duplex ? gen.duplex.receive(frame) : gen.streams.receive(frame);
     } catch (err) {
       this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      return;
+    }
+    if (delivery.type === 'credit') {
+      // Room for one of the bodies main sends.
+      const piece = gen.pieces.get(delivery.id);
+      if (piece) this.pumpPiece(gen, piece);
+      this.flushStreams(gen);
       return;
     }
     const body = gen.bodies.get(delivery.id);
@@ -1668,10 +1824,11 @@ class ServiceClient extends EventEmitter {
    * the next frame of the stream. (An abort ends the body as it comes.) */
   pullBody(gen, id, body) {
     if (body.done) return undefined;
-    const pulled = gen.streams.pull(id, MAX_PULL);
+    // The duplex owes the credit itself.
+    const pulled = gen.duplex ? gen.duplex.pull(id, MAX_PULL) : gen.streams.pull(id, MAX_PULL);
     if (pulled) {
       if (pulled.credit !== null) {
-        gen.outbox.credit(id, pulled.credit);
+        if (!gen.duplex) gen.outbox.credit(id, pulled.credit);
         this.flushOutbox(gen);
       }
       if (pulled.chunk.length) body.controller.enqueue(pulled.chunk);
@@ -1723,6 +1880,10 @@ class ServiceClient extends EventEmitter {
   /** A local cancel of request `id` on a stream connection: its record
    * retires (or goes, if its end had come), and `cancel` is queued. */
   retireStream(gen, id) {
+    if (gen.duplex) {
+      if (gen.duplex.withdraw(id) === 'send_cancel') this.flushStreams(gen);
+      return;
+    }
     if (gen.streams.cancel(id) !== 'send_cancel') return;
     gen.outbox.cancel(id);
     this.flushOutbox(gen);
@@ -1735,6 +1896,10 @@ class ServiceClient extends EventEmitter {
    * stream).
    */
   flushOutbox(gen) {
+    if (gen.duplex) {
+      this.flushStreams(gen);
+      return;
+    }
     if (gen.outboxWriting || gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
     const frames = [];
     for (let frame = gen.outbox.next(); frame; frame = gen.outbox.next()) frames.push(frame);
@@ -1753,6 +1918,285 @@ class ServiceClient extends EventEmitter {
       gen.outboxWriting = false;
       this.connectionFailed(gen, 'stdin_error');
     }
+  }
+
+  // ---- the bodies main sends the core (design 0009) ----
+
+  /**
+   * The outcome of one of the core's requests to a streams handler, on the
+   * core's connection at protocol 2: queued with the duplex's sender, as a
+   * head and its body for a `StreamedReply`, otherwise as the one reply.
+   * A reply over one frame is `too_large`; one of POOL_EXEMPT_BYTES or more
+   * is charged to main's pool until it is written, and is `busy` past it.
+   * A request the core cancelled meanwhile already has its reply, and the
+   * outcome is dropped.
+   */
+  respondStreamed(gen, id, controller, outcome, lease) {
+    const streamed = outcome.result instanceof StreamedReply ? outcome.result : null;
+    let json = null;
+    let code = null;
+    try {
+      if (streamed) {
+        const result = { ...streamed.result, body: true };
+        json = Buffer.from(JSON.stringify({ type: 'response', id, result }), 'utf8');
+      } else if (outcome.result instanceof JsonText) {
+        const head = `{"type":"response","id":${id},"result":`;
+        const size = head.length + outcome.result.length + 1;
+        if (size > MAX_PAYLOAD) {
+          code = 'too_large';
+        } else {
+          json = Buffer.allocUnsafe(size);
+          const at = outcome.result.writeInto(json, json.write(head, 0, 'latin1'));
+          json.write('}', at, 'latin1');
+        }
+      } else {
+        const text = JSON.stringify({ type: 'response', id, ...outcome });
+        if (text !== JSON.stringify({ type: 'response', id })) json = Buffer.from(text, 'utf8');
+      }
+    } catch {
+      json = null;
+    }
+    lease?.close();
+    if (!code && !json) code = 'internal';
+    if (!code && json.length > MAX_PAYLOAD) code = 'too_large';
+    // Serializing ran the result's own code, which may have fenced it.
+    if (!this.owes(gen, id, controller) || !gen.duplex) {
+      streamed?.discard();
+      return;
+    }
+    let release = null;
+    if (!code && json.length >= POOL_EXEMPT_BYTES) {
+      release = this.hold(gen, json.length);
+      if (!release) code = 'busy';
+    }
+    if (code) {
+      streamed?.discard();
+      json = Buffer.from(JSON.stringify({ type: 'response', id, error: shellError(code) }));
+    }
+    const sender = gen.duplex.sender;
+    const opens = Boolean(streamed) && !code;
+    const queued = opens ? sender.head(id, json, true) : sender.reply(id, json);
+    if (queued !== 'ok') {
+      // Cancelled meanwhile: its `cancelled` is queued or written.
+      release?.();
+      if (opens) streamed.discard();
+      return;
+    }
+    if (release) gen.pieceCharges.set(id, release);
+    if (opens) {
+      let reader;
+      let byob = false;
+      try {
+        // A byte stream is read into views of the size main asks for.
+        try {
+          reader = streamed.body.getReader({ mode: 'byob' });
+          byob = true;
+        } catch {
+          reader = streamed.body.getReader();
+        }
+      } catch {
+        sender.abort(id, 'body_stream_error', PIECE_ABORTS.body_stream_error);
+        this.flushStreams(gen);
+        return;
+      }
+      const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
+      gen.pieces.set(id, piece);
+      this.pumpPiece(gen, piece);
+    }
+    this.flushStreams(gen);
+  }
+
+  /**
+   * Moves a body into its stream as the core's credit and the writer's cap
+   * allow: it reads only while the stream has room, at most MAX_READ_AHEAD
+   * at a time (a byte stream at most the room, too), and holds what the
+   * sender hasn't taken, charged to the writer's cap, reading nothing more
+   * until it has gone. A read's room is claimed from the cap before the
+   * read starts (`StreamSender#claim`), so the reads of many bodies started
+   * at once never count the same room: a byte stream's the size of its
+   * view, any other's MAX_READ_AHEAD, the most a chunk may be.
+   */
+  pumpPiece(gen, piece) {
+    const sender = gen.duplex?.sender;
+    while (sender && gen.pieces.get(piece.id) === piece) {
+      if (piece.pending) {
+        const bytes = piece.pending;
+        // Charged as the queue's once taken, as the cap's until then.
+        sender.release(bytes.length);
+        const pushed = sender.push(piece.id, bytes);
+        if (pushed.refused) {
+          piece.pending = null;
+          this.dropPiece(gen, piece);
+          return;
+        }
+        piece.pending = pushed.taken === bytes.length ? null : bytes.subarray(pushed.taken);
+        // The rest waits for credit, or for the writer to make room.
+        if (piece.pending) {
+          sender.reserve(piece.pending.length);
+          return;
+        }
+        continue;
+      }
+      if (piece.eof) {
+        // `end` follows the last byte; the body is done.
+        gen.pieces.delete(piece.id);
+        sender.finish(piece.id);
+        return;
+      }
+      if (piece.reading) return;
+      const claimed = piece.byob
+        ? sender.claim(piece.id, MAX_READ_AHEAD)
+        : sender.claim(piece.id, Math.min(MAX_READ_AHEAD, sender.dataCap), { whole: true });
+      if (claimed === null) {
+        this.dropPiece(gen, piece);
+        return;
+      }
+      if (claimed > 0) this.readPiece(gen, piece, sender, claimed);
+      return;
+    }
+  }
+
+  /** One read of a body, into the `claimed` room of `sender`'s cap: its
+   * bytes keep as much of it as they take, and the rest goes back. */
+  readPiece(gen, piece, sender, claimed) {
+    piece.reading = true;
+    piece.claimed = claimed;
+    // The read is over: its claim, unless the piece was let go of (and the
+    // claim with it) meanwhile.
+    const over = () => {
+      piece.reading = false;
+      const held = piece.claimed;
+      piece.claimed = 0;
+      return held;
+    };
+    let read;
+    try {
+      read = piece.byob ? piece.reader.read(new Uint8Array(claimed)) : piece.reader.read();
+    } catch (err) {
+      read = Promise.reject(err);
+    }
+    Promise.resolve(read).then(
+      (chunk) => {
+        const held = over();
+        if (gen.pieces.get(piece.id) !== piece) {
+          sender.release(held);
+          return;
+        }
+        if (chunk?.done) {
+          sender.release(held);
+          piece.eof = true;
+        } else if (ArrayBuffer.isView(chunk?.value)) {
+          const { buffer, byteOffset, byteLength } = chunk.value;
+          // Past the room the read claimed: a source main can't bound.
+          if (byteLength > held) {
+            sender.release(held);
+            this.abortPiece(gen, piece, null);
+            return;
+          }
+          // The claim passes to the bytes read; what they didn't take goes.
+          sender.release(held - byteLength);
+          if (byteLength) piece.pending = Buffer.from(buffer, byteOffset, byteLength);
+        } else {
+          sender.release(held);
+          this.abortPiece(gen, piece, null);
+          return;
+        }
+        this.pumpPiece(gen, piece);
+        this.flushStreams(gen);
+      },
+      (err) => {
+        sender.release(over());
+        if (gen.pieces.get(piece.id) !== piece) return;
+        this.abortPiece(gen, piece, err?.abortCode);
+      }
+    );
+  }
+
+  /** The body failed: its stream ends with `stalled` (main's body idle
+   * timer) or `body_stream_error`. */
+  abortPiece(gen, piece, abortCode) {
+    const code = abortCode === 'stalled' ? 'stalled' : 'body_stream_error';
+    this.dropPiece(gen, piece);
+    gen.duplex?.sender.abort(piece.id, code, PIECE_ABORTS[code]);
+    this.flushStreams(gen);
+  }
+
+  /** Lets go of a body main sends: its reader is cancelled, unless it
+   * ended. */
+  dropPiece(gen, piece) {
+    if (gen.pieces.get(piece.id) !== piece) return;
+    gen.pieces.delete(piece.id);
+    if (piece.pending) gen.duplex?.sender.release(piece.pending.length);
+    piece.pending = null;
+    // A read in flight gives back its claim now; its answer is dropped.
+    if (piece.claimed) gen.duplex?.sender.release(piece.claimed);
+    piece.claimed = 0;
+    if (piece.eof) return;
+    try {
+      piece.reader.cancel().catch(() => {});
+    } catch {
+      // Already released.
+    }
+  }
+
+  /** Every body main sends that may have room again. */
+  pumpPieces(gen) {
+    for (const piece of [...gen.pieces.values()]) this.pumpPiece(gen, piece);
+  }
+
+  /**
+   * Writes the duplex's frames (design 0009, Streams in the core): what
+   * main owes first (credit, and its cancels), then the sender's control
+   * entries, then its streams round-robin. Up to STREAM_WRITE_BYTES go in
+   * one write, then nothing more until it has gone: a frame not yet taken
+   * can still be purged by an abort or a cancel.
+   */
+  flushStreams(gen) {
+    if (!gen.duplex || gen.outboxWriting || gen.distrusted) return;
+    if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
+    const frames = [];
+    const wrote = [];
+    let bytes = 0;
+    while (bytes < STREAM_WRITE_BYTES) {
+      const next = gen.duplex.nextFrame();
+      if (!next) break;
+      frames.push(next.bytes);
+      wrote.push(next.wrote);
+      bytes += next.bytes.length;
+    }
+    if (!frames.length) return;
+    gen.outboxWriting = true;
+    const written = (err) => {
+      gen.outboxWriting = false;
+      if (err) {
+        this.connectionFailed(gen, 'stdin_error');
+        return;
+      }
+      for (const entry of wrote) this.streamWritten(gen, entry);
+      this.pumpPieces(gen);
+      this.flushStreams(gen);
+    };
+    try {
+      gen.child.stdin.write(frames.length === 1 ? frames[0] : Buffer.concat(frames), written);
+    } catch {
+      gen.outboxWriting = false;
+      this.connectionFailed(gen, 'stdin_error');
+    }
+  }
+
+  /** One of the duplex's frames is written. A reply, or a body's terminal,
+   * is the core's request's last: its entry goes. */
+  streamWritten(gen, wrote) {
+    if (wrote.type === 'credit' || wrote.type === 'cancel' || wrote.type === 'data') return;
+    const release = gen.pieceCharges.get(wrote.id);
+    if (release) {
+      gen.pieceCharges.delete(wrote.id);
+      release();
+    }
+    if (wrote.type === 'head') return;
+    gen.incoming.delete(wrote.id);
+    const piece = gen.pieces.get(wrote.id);
+    if (piece) this.dropPiece(gen, piece);
   }
 
   /** Ends every open body of `gen` with `error`. */
@@ -1866,6 +2310,7 @@ module.exports = {
   JsonParams,
   JsonText,
   ShellError,
+  StreamedReply,
   SHELL_ERRORS,
   MAX_INCOMING,
   scrubbedEnv,

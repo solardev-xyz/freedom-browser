@@ -192,7 +192,23 @@ jobs:
       - name: Warm the Electron binary download
         run: node -e "require('electron')"
 
+      # freedom-core's stream vectors (design 0009, amendment 5), which
+      # `stream-vectors.test.js` replays, at a reviewed commit: moved on
+      # purpose when the protocol's vectors change, never with freedom-core's
+      # main. The suite fails if the file it is pointed at is missing.
+      - name: Check out freedom-core's stream vectors
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: 6e61921727b56a511b6f515a60b1ad6b0189115d
+          path: .freedom-core
+          persist-credentials: false
+          sparse-checkout: vectors/streams.json
+          sparse-checkout-cone-mode: false
+
       - name: Run test coverage
+        env:
+          FREEDOM_CORE_STREAM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/streams.json
         run: npm run test:coverage
 
       - name: Upload coverage artifact
