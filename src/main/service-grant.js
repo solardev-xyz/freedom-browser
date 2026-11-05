@@ -53,8 +53,15 @@
  *   file outside its grant nor a special file, and a link made later by
  *   another process of the same user is outside the boundary, since that
  *   process could read the data directly. Bind mounts are out of scope.
- * - **A symlink that doesn't resolve** on a grant's or a protected root's
- *   path is refused: its target could be created later, inside a grant.
+ * - **A symlink whose target doesn't exist yet** on a grant's or a
+ *   protected root's path is compared by its target, followed by its text:
+ *   once created, the target could lie inside a grant, so that is what
+ *   counts, as for any name that doesn't exist yet. So `identity` -> the
+ *   grant's `future-identity` is refused, and Chromium's `SingletonLock`
+ *   (a symlink to `<host>-<pid>`, in every running profile's directory) is
+ *   an ordinary root. A symlink that can't be followed (a loop, more than
+ *   40 links, or a name that neither resolves nor reads as a symlink) is
+ *   refused.
  * - **A directory that can't be listed** while it is split throws: the
  *   caller refuses the grant (fails closed).
  *
@@ -77,33 +84,42 @@ function realPath(target) {
   return path.join(real, ...rest);
 }
 
+/** How many symlinks `resolveParts` follows by their text before it calls
+ * the path a loop (Linux's own limit, `MAXSYMLINKS`). */
+const MAX_LINKS = 40;
+
 /** `target`'s longest existing prefix, resolved (`real`), and the names
- * after it that don't exist yet (`rest`). `dangling` when one of those
- * names exists but doesn't resolve: a symlink to a target that doesn't
- * exist (yet), or one that loops. */
-function resolveParts(target) {
+ * after it that don't exist yet (`rest`).
+ *
+ * A symlink whose target doesn't exist yet (Chromium's `SingletonLock` in
+ * every running profile, say) is followed by its text, so the path is
+ * compared as the one its target will have once created: inside a grant,
+ * or not, as any name that doesn't exist yet. `dangling` is what can't be
+ * followed so: a loop, more than `MAX_LINKS` links, or a name that exists
+ * but neither resolves nor reads as a symlink. */
+function resolveParts(target, links = 0) {
   let rest = [];
   let prefix = path.resolve(target);
-  let real;
-  let dangling = false;
   for (;;) {
     try {
-      real = fs.realpathSync.native(prefix);
-      break;
+      return { real: fs.realpathSync.native(prefix), rest, dangling: false };
     } catch {
-      // A name that exists but doesn't resolve: its target could be
-      // created later, inside a grant, and change what it names.
-      if (existsUnresolved(prefix)) dangling = true;
-      const parent = path.dirname(prefix);
-      if (parent === prefix) {
-        real = prefix;
-        break;
+      if (existsUnresolved(prefix)) {
+        const text = linkText(prefix);
+        if (text === null || links >= MAX_LINKS) {
+          return { real: prefix, rest, dangling: true };
+        }
+        return resolveParts(
+          path.join(path.resolve(path.dirname(prefix), text), ...rest),
+          links + 1
+        );
       }
+      const parent = path.dirname(prefix);
+      if (parent === prefix) return { real: prefix, rest, dangling: false };
       rest = [path.basename(prefix), ...rest];
       prefix = parent;
     }
   }
-  return { real, rest, dangling };
 }
 
 /** Whether `entry` exists itself (`lstat`) though it doesn't resolve. */
@@ -113,6 +129,16 @@ function existsUnresolved(entry) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** `entry`'s symlink text, or null when it isn't a symlink or can't be
+ * read. */
+function linkText(entry) {
+  try {
+    return fs.readlinkSync(entry);
+  } catch {
+    return null;
   }
 }
 
@@ -167,10 +193,10 @@ function grantRefusal(grants, roots, options = {}) {
   const foldCase = options.foldCase ?? FOLD_CASE;
   const present = roots.filter((root) => root.dir);
   const paths = [...grants, ...present.map((root) => root.dir)];
-  // A symlink on any of these paths that doesn't resolve could be made to
-  // resolve later, into a grant: refused, failing closed.
+  // A symlink on any of these paths that can't be followed (see
+  // resolveParts) can't be compared: refused, failing closed.
   if (paths.some((p) => resolveParts(p).dangling)) {
-    return "a path holds a symlink that doesn't resolve, which could later name another directory";
+    return "a path holds a symlink that can't be followed: a loop, or too many links";
   }
   // On a case-insensitive volume, a missing name that isn't ASCII can't be
   // compared: refused, failing closed (these are developer overrides).

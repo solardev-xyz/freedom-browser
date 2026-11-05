@@ -527,13 +527,41 @@ describe('special files and dangling symlinks', () => {
     }
   });
 
-  test("a protected root that is a symlink to a name that doesn't exist yet is refused", () => {
+  test("a protected root that is a symlink to a name in the grant that doesn't exist yet is refused", () => {
     // identity -> the grant's future-identity, absent: once the service
-    // made it, the vault would be written into the grant.
+    // made it, the vault would be written into the grant. It is compared
+    // by its target, which lies inside the grant.
     const { userDataDir, grant, check } = profileDir();
     fs.symlinkSync(path.join(grant, 'future-identity'), path.join(userDataDir, 'identity'));
     expect(check.ipfsGrantRefusal(grant)).toBe(
-      "a path holds a symlink that doesn't resolve, which could later name another directory"
+      "the grant contains this profile's identity directory"
+    );
+    // The same through a relative link, and through a second dangling link.
+    fs.unlinkSync(path.join(userDataDir, 'identity'));
+    fs.symlinkSync('hop', path.join(userDataDir, 'identity'));
+    fs.symlinkSync(path.join('ipfs-data', 'freedom-ipfs', 'later'), path.join(userDataDir, 'hop'));
+    expect(check.ipfsGrantRefusal(grant)).toBe(
+      "the grant contains this profile's identity directory"
+    );
+  });
+
+  test("Chromium's singleton links, symlinks to names that don't exist, don't refuse a grant", () => {
+    // Every running profile's directory holds SingletonLock -> <host>-<pid>
+    // and SingletonCookie -> <number>, which never resolve. Split into its
+    // entries, the profile's directory makes them roots, compared by their
+    // targets: beside the grant, not in it.
+    const { userDataDir, grant, check } = profileDir();
+    fs.symlinkSync('runner-4242', path.join(userDataDir, 'SingletonLock'));
+    fs.symlinkSync('8051712915417346451', path.join(userDataDir, 'SingletonCookie'));
+    expect(check.ipfsGrantRefusal(grant)).toBeNull();
+    // A grant whose own path is such a link is compared by its target too.
+    const elsewhere = path.join(tempRoot, 'Spare');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(path.join(elsewhere, 'later'), path.join(tempRoot, 'spare-link'));
+    expect(check.ipfsGrantRefusal(path.join(tempRoot, 'spare-link', 'freedom-ipfs'))).toBeNull();
+    fs.symlinkSync(path.join(userDataDir, 'identity'), path.join(tempRoot, 'identity-link'));
+    expect(check.ipfsGrantRefusal(path.join(tempRoot, 'identity-link', 'freedom-ipfs'))).toBe(
+      "the grant lies inside this profile's identity directory"
     );
   });
 
@@ -542,7 +570,13 @@ describe('special files and dangling symlinks', () => {
     const loop = path.join(userDataDir, 'loop');
     fs.symlinkSync(loop, loop);
     expect(check.ipfsGrantRefusal(path.join(loop, 'freedom-ipfs'))).toBe(
-      "a path holds a symlink that doesn't resolve, which could later name another directory"
+      "a path holds a symlink that can't be followed: a loop, or too many links"
+    );
+    // Two links naming each other, neither existing otherwise.
+    fs.symlinkSync('pong', path.join(userDataDir, 'ping'));
+    fs.symlinkSync('ping', path.join(userDataDir, 'pong'));
+    expect(check.ipfsGrantRefusal(path.join(userDataDir, 'ping', 'freedom-ipfs'))).toBe(
+      "a path holds a symlink that can't be followed: a loop, or too many links"
     );
   });
 
