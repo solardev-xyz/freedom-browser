@@ -13,9 +13,12 @@
  *   for it rather than meeting `busy`;
  * - the process exits once its last instance has stopped, and comes back
  *   on the next private load;
- * - a start under `socks5` (design 0007, step 8, B2), which the service
+ * - a process spawned under `socks5` (design 0007, step 8, B2; design
+ *   0010: `--network`, which `hello` reports back), whose start the service
  *   takes only with delegated routing, and with no proxy listening, a load
- *   that fails closed: nothing reaches the router directly.
+ *   that fails closed: nothing reaches the router directly;
+ * - a change of policy (design 0010): the old process exits, and the next
+ *   load spawns one under the new policy.
  */
 
 const net = require('net');
@@ -122,6 +125,78 @@ describeIfBinary('private instances on the real freedom-ipfsd', () => {
     next.release();
   }, 60_000);
 
+  test("hello reports the process's policy and its confinement", async () => {
+    const lease = instances.lease('private-a');
+    expect(await load(lease)).toBe('private content\n');
+    const { hello } = instances.client;
+    expect(hello.network).toEqual({ mode: 'direct' });
+    expect(hello.confinement.mechanism).toMatch(/^[a-z0-9+-]+$/);
+    for (const property of ['files', 'exec', 'ipc', 'network']) {
+      expect(['enforced', 'partial', 'unavailable', 'blocked', 'none']).toContain(
+        hello.confinement[property]
+      );
+    }
+    lease.release();
+  }, 60_000);
+
+  test('a change of policy: the old process exits, and the next load spawns one under the new', async () => {
+    await instances.stop();
+    const setting = { routes: false };
+    const port = await new Promise((resolve) => {
+      const server = net.createServer().listen(0, '127.0.0.1', () => {
+        const { port: free } = server.address();
+        server.close(() => resolve(free));
+      });
+    });
+    const tor = {
+      getIpfsSocksEndpoint: () => ({ endpoint: { ip: '127.0.0.1', port }, refused: null }),
+      onIpfsSocksEndpointChange: () => () => {},
+    };
+    const network = new IpfsNetwork({ routesThroughTor: () => setting.routes, tor });
+    instances = new PrivateInstances({
+      command: binary,
+      log: quietLog,
+      shellVersion: 'jest',
+      network,
+    });
+    const { client } = instances;
+    const startInstance = client.startInstance.bind(client);
+    client.startInstance = (gen, params, options) =>
+      startInstance(
+        gen,
+        {
+          ...params,
+          routing: { ...params.routing, mode: 'delegated', delegated_routers: [fixture.router] },
+        },
+        options
+      );
+    const lease = instances.lease('private-a');
+    expect(await load(lease)).toBe('private content\n');
+    const old = client.current.child;
+    const exited = new Promise((resolve) => old.once('exit', (code) => resolve(code)));
+
+    setting.routes = true;
+    network.changed();
+    expect(await exited).toBe(0);
+    lease.release();
+
+    const seen = fixture.requests.length;
+    const next = instances.lease('private-a');
+    const res = await next.request({
+      path: `/ipfs/${file.cid}`,
+      method: 'GET',
+      headers: new Headers(),
+      headersTimeoutMs: 30_000,
+    });
+    expect(client.current.child.pid).not.toBe(old.pid);
+    expect(client.hello.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port });
+    // No proxy listens: it fails closed, and nothing reaches the router.
+    expect([502, 504]).toContain(res.status);
+    await res.arrayBuffer();
+    expect(fixture.requests.slice(seen)).toEqual([]);
+    next.release();
+  }, 60_000);
+
   test('under socks5 the service takes the start, and with no proxy a load fails closed', async () => {
     await instances.stop();
     // A loopback port nothing listens on: Tor's endpoint, down.
@@ -161,9 +236,12 @@ describeIfBinary('private instances on the real freedom-ipfsd', () => {
       headers: new Headers(),
       headersTimeoutMs: 30_000,
     });
-    // The service took the start: socks5, delegated routing.
+    // The process was spawned under socks5 and reported it; the service took
+    // the start, which carries no policy, with delegated routing.
+    expect(client.args).toContain(`socks5:127.0.0.1:${port}`);
+    expect(client.network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port });
     expect(sentStarts).toHaveLength(1);
-    expect(sentStarts[0].network).toEqual({ mode: 'socks5', ip: '127.0.0.1', port });
+    expect('network' in sentStarts[0]).toBe(false);
     expect(sentStarts[0].routing.mode).toBe('delegated');
     // Its load failed closed, and nothing reached the router directly.
     expect([502, 504]).toContain(res.status);

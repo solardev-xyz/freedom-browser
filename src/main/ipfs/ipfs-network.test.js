@@ -4,7 +4,15 @@
  * through the endpoint tor-manager offers, or none until it offers one.
  */
 
-const { IpfsNetwork, samePolicy, DIRECT } = require('./ipfs-network');
+const {
+  IpfsNetwork,
+  samePolicy,
+  supersedes,
+  networkArg,
+  canonicalIp,
+  reportsPolicy,
+  DIRECT,
+} = require('./ipfs-network');
 const { fakeTorEndpoint: fakeTor } = require('../../../test/helpers/fake-tor-endpoint');
 
 describe('IpfsNetwork', () => {
@@ -124,5 +132,61 @@ describe('IpfsNetwork', () => {
     expect(samePolicy(socks, { mode: 'direct' })).toBe(false);
     expect(samePolicy(null, null)).toBe(true);
     expect(samePolicy(null, { mode: 'direct' })).toBe(false);
+  });
+});
+
+describe('the policy at spawn and in hello (freedom-core design 0010)', () => {
+  test('`--network` takes it as `direct` or `socks5:<ip>:<port>`, IPv6 in brackets', () => {
+    expect(networkArg({ mode: 'direct' })).toBe('direct');
+    expect(networkArg({ mode: 'socks5', ip: '127.0.0.1', port: 9150 })).toBe(
+      'socks5:127.0.0.1:9150'
+    );
+    expect(networkArg({ mode: 'socks5', ip: 'fd00::5', port: 9050 })).toBe('socks5:[fd00::5]:9050');
+    expect(() => networkArg(null)).toThrow('no network policy');
+  });
+
+  test('an address is compared as the service writes it back', () => {
+    expect(canonicalIp('127.0.0.1')).toBe('127.0.0.1');
+    expect(canonicalIp('0:0:0:0:0:0:0:1')).toBe('::1');
+    expect(canonicalIp('FD00:0::5')).toBe('fd00::5');
+    // RFC 5952: the first of two equal runs is compressed.
+    expect(canonicalIp('2001:db8:0:0:1:0:0:1')).toBe('2001:db8::1:0:0:1');
+    // An IPv4-mapped address is the IPv4 address it maps.
+    expect(canonicalIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
+    expect(canonicalIp('::ffff:7f00:1')).toBe('127.0.0.1');
+    for (const refused of ['localhost', '127.1', '', null, 7]) {
+      expect(canonicalIp(refused)).toBeNull();
+    }
+  });
+
+  test("hello's network must be the policy main passed", () => {
+    const socks = { mode: 'socks5', ip: '127.0.0.1', port: 9150 };
+    expect(reportsPolicy({ mode: 'direct' }, { mode: 'direct' })).toBe(true);
+    expect(reportsPolicy(socks, { ...socks, ip: '::ffff:127.0.0.1' })).toBe(true);
+    for (const [reported, policy] of [
+      [{ mode: 'direct', ip: '127.0.0.1' }, { mode: 'direct' }],
+      [socks, { mode: 'direct' }],
+      [{ mode: 'direct' }, socks],
+      [{ ...socks, port: 9050 }, socks],
+      [{ ...socks, ip: '127.0.0.2' }, socks],
+      [null, socks],
+      [socks, null],
+    ]) {
+      expect(reportsPolicy(reported, policy)).toBe(false);
+    }
+  });
+
+  test('a process makes way for another policy, or for none while it runs direct', () => {
+    const direct = { mode: 'direct' };
+    const socks = { mode: 'socks5', ip: '127.0.0.1', port: 9150 };
+    expect(supersedes(direct, direct)).toBe(false);
+    expect(supersedes({ ...socks }, socks)).toBe(false);
+    expect(supersedes(socks, direct)).toBe(true);
+    expect(supersedes(direct, socks)).toBe(true);
+    expect(supersedes({ ...socks, port: 9151 }, socks)).toBe(true);
+    // The setting on, no endpoint yet: a direct process goes...
+    expect(supersedes(null, direct)).toBe(true);
+    // ...and Tor going down leaves a socks5 one, failing closed.
+    expect(supersedes(null, socks)).toBe(false);
   });
 });

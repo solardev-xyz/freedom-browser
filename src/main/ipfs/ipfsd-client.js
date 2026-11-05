@@ -8,23 +8,29 @@
  *   `FREEDOM_IPFSD_PATH` overrides it only when the app isn't packaged, as
  *   `FREEDOM_CORED_PATH` does.
  * - **The persistent process** is `serve --data-dir <ipfs-data>/freedom-ipfs
- *   --lock-dir <locks> --parent-pid <pid>`: it takes the data directory's
+ *   --lock-dir <locks> --network <policy> --parent-pid <pid>`: it takes the data directory's
  *   `ipfs-` gate in the core's lock directory for its whole life, and exits
  *   75 while another owner holds it (after 5 s of retries) or 74 on a
  *   filesystem it refuses. Its environment is the shared client's scrubbed
  *   one, so neither the proxy variables nor freedom-ipfs's `FREEDOM_IPFS_*`
  *   tuning reach it.
- * - **The ephemeral process** is `serve --ephemeral --parent-pid <pid>`, the
- *   private windows' (0007, "Private windows"): memory instances only, no
- *   data directory and no lock.
+ * - **The ephemeral process** is `serve --ephemeral --network <policy>
+ *   --parent-pid <pid>`, the private windows' (0007, "Private windows"):
+ *   memory instances only, no data directory and no lock.
+ * - **The network policy** is `--network` (`ipfs-network.js`'s
+ *   `networkArg`), fixed for the process's life (freedom-core design 0010):
+ *   the client spawns each process under the policy it holds, set while no
+ *   process runs (`setNetwork`). A change of policy is a new process.
  * - **The handshake** is `ipfs.hello`: protocol 1, the shell's version and
  *   `frames: ["stream"]`. A service that answers takes main's stream frames
  *   (it refuses a hello without them), so a valid result grants `stream`.
- *   It names the service's version, the freedom-ipfs build it links and
- *   which process it is; one that isn't the process main spawned is a fault.
+ *   It names the service's version, the freedom-ipfs build it links, which
+ *   process it is, the network policy it runs under and the confinement it
+ *   got (design 0010). One that isn't the process main spawned, or that runs
+ *   under another policy than main passed, is a fault.
  * - **Restarts** are the shared client's: 0.5 s, 2 s, then 10 s, none after
- *   64, 74, 75 or a protocol mismatch, and three crashes within 60 s stop
- *   them. The node counts an instance it lost to a request panic as a crash
+ *   64, 74, 75, 77 (the service refusing its confinement) or a protocol
+ *   mismatch, and three crashes within 60 s stop them. The node counts an instance it lost to a request panic as a crash
  *   too (`recordCrash`).
  * - **Hang watchdogs** (0007, "Crashes, hangs and restarts"): the service
  *   owns every deadline and always replies, so main only watches. A head
@@ -40,11 +46,27 @@ const path = require('path');
 const { app } = require('electron');
 const { ServiceClient, isObject } = require('../core/service-client');
 const { JSON_KINDS } = require('../core/frame');
+const { networkArg, reportsPolicy } = require('./ipfs-network');
+const { PINNED_IPFSD_VERSION } = require('./ipfsd-pin');
 
 const PROTOCOL_VERSION = 1;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 const GIT_COMMIT = /^[0-9a-f]{7,64}$/;
 const KINDS = new Set(['persistent', 'ephemeral']);
+// `confinement`'s statuses, mechanism and gaps (freedom-core design 0010,
+// "Reporting").
+const STATUSES = new Set(['enforced', 'partial', 'unavailable', 'blocked', 'none']);
+const PROPERTIES = ['files', 'exec', 'ipc', 'network'];
+// What resolves names while confined: glibc's resolver (`system`, or
+// `files_only` when it can't reach DNS) or, for freedom-ipfsd from 0.3.0, its
+// own one DNS configuration: /etc/resolv.conf as parsed (`resolv_conf`), or
+// its built-in servers where that can't be read or parsed (`fallback`, with
+// the reason).
+const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf', 'fallback']);
+const MECHANISM = /^[a-z0-9+-]{1,64}$/;
+const GAP = /^[a-z_]{1,32}$/;
+const MAX_GAPS = 16;
+const MAX_REASON = 512;
 // A service's requests are main's own: no caller context reaches it.
 const CONTEXT = Object.freeze({ caller: 'shell' });
 
@@ -61,6 +83,20 @@ const STATS_WATCHDOG_MS = 20_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 /** Requests outstanding per process, retiring ones included (0007, Bounds). */
 const MAX_OUTSTANDING = 512;
+
+/**
+ * The `service_version` hello must report, or null for any: the pinned
+ * release's in a packaged build (`ipfsd-pin.js`). An unpackaged build checks
+ * the release `FREEDOM_IPFSD_RELEASE_TAG` fetched instead, and nothing for a
+ * binary of the developer's own (`FREEDOM_IPFSD_PATH`) or `latest`.
+ */
+function expectedServiceVersion({ packaged = Boolean(app?.isPackaged), env = process.env } = {}) {
+  if (packaged) return PINNED_IPFSD_VERSION;
+  if (env.FREEDOM_IPFSD_PATH) return null;
+  const tag = env.FREEDOM_IPFSD_RELEASE_TAG;
+  if (!tag) return PINNED_IPFSD_VERSION;
+  return tag.startsWith('ipfsd-v') ? tag.slice('ipfsd-v'.length) : null;
+}
 
 /** Dev overrides or downloaded binaries; packaged builds always use resources.
  * Outside Electron (a script such as the native smoke), `app` is undefined,
@@ -87,37 +123,108 @@ function getIpfsdBinaryPath() {
   return path.join(process.resourcesPath, 'freedom-ipfsd', name);
 }
 
-/** The persistent process's arguments, for the profile's data directory. */
-function persistentArgs({ dataDir, lockDir, parentPid = process.pid }) {
-  return ['serve', '--data-dir', dataDir, '--lock-dir', lockDir, '--parent-pid', String(parentPid)];
+/** The persistent process's arguments, for the profile's data directory,
+ * under `network`. */
+function persistentArgs({ dataDir, lockDir, network, parentPid = process.pid }) {
+  return [
+    'serve',
+    '--data-dir',
+    dataDir,
+    '--lock-dir',
+    lockDir,
+    '--network',
+    networkArg(network),
+    '--parent-pid',
+    String(parentPid),
+  ];
 }
 
-/** The ephemeral process's arguments: no data directory, no lock. */
-function ephemeralArgs({ parentPid = process.pid } = {}) {
-  return ['serve', '--ephemeral', '--parent-pid', String(parentPid)];
+/** The ephemeral process's arguments, under `network`: no data directory,
+ * no lock. */
+function ephemeralArgs({ network, parentPid = process.pid } = {}) {
+  return [
+    'serve',
+    '--ephemeral',
+    '--network',
+    networkArg(network),
+    '--parent-pid',
+    String(parentPid),
+  ];
 }
 
-/** The public part of a valid hello result from a `kind` process, or null. */
-function validHello(result, kind) {
+/**
+ * The public part of `confinement` (freedom-core design 0010, "Reporting"):
+ * its mechanism, each property's status, the gaps a `partial` leaves, the
+ * reasons and, on Linux in `direct` mode, `resolution`. Null if it isn't one.
+ */
+function validConfinement(confinement) {
+  if (!isObject(confinement)) return null;
+  const { mechanism, gaps = [], reasons = {}, resolution = null } = confinement;
+  if (typeof mechanism !== 'string' || !MECHANISM.test(mechanism)) return null;
+  const statuses = {};
+  for (const property of PROPERTIES) {
+    if (!STATUSES.has(confinement[property])) return null;
+    statuses[property] = confinement[property];
+  }
+  if (
+    !Array.isArray(gaps) ||
+    gaps.length > MAX_GAPS ||
+    !gaps.every((gap) => typeof gap === 'string' && GAP.test(gap))
+  ) {
+    return null;
+  }
+  if (!isObject(reasons)) return null;
+  const kept = {};
+  for (const name of [...PROPERTIES, 'resolution']) {
+    const reason = reasons[name];
+    if (reason === undefined) continue;
+    if (typeof reason !== 'string') return null;
+    kept[name] = reason.slice(0, MAX_REASON);
+  }
+  if (resolution !== null && !RESOLUTIONS.has(resolution)) return null;
+  return { mechanism, ...statuses, gaps: [...gaps], reasons: kept, resolution };
+}
+
+/**
+ * The public part of a valid hello result from a `kind` process spawned
+ * under `network`, or null: one that names another process, another policy
+ * or, with `version`, another release than main expects
+ * (`expectedServiceVersion`), or reports no confinement, is a fault.
+ */
+function validHello(result, kind, network, version = null) {
   if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   const { service_version: serviceVersion, freedom_ipfs: build } = result;
   if (typeof serviceVersion !== 'string' || !VERSION.test(serviceVersion)) return null;
+  if (version !== null && serviceVersion !== version) return null;
   if (!isObject(build) || typeof build.version !== 'string' || !VERSION.test(build.version)) {
     return null;
   }
   const commit = build.git_commit ?? null;
   if (commit !== null && (typeof commit !== 'string' || !GIT_COMMIT.test(commit))) return null;
   if (result.kind !== kind) return null;
+  if (!reportsPolicy(result.network, network)) return null;
+  const confinement = validConfinement(result.confinement);
+  if (!confinement) return null;
   return {
     protocol: PROTOCOL_VERSION,
     service_version: serviceVersion,
     freedom_ipfs: { version: build.version, git_commit: commit },
     kind,
+    network: { ...network },
+    confinement,
   };
 }
 
-/** freedom-ipfsd's `kind` process, as the shared client supervises it. */
-function ipfsdService(kind) {
+/** `confinement` as a log line carries it: the statuses and gaps, without
+ * the reasons' text. */
+function confinementLog(confinement) {
+  const { mechanism, files, exec, ipc, network, gaps, resolution } = confinement;
+  return { mechanism, files, exec, ipc, network, gaps, resolution };
+}
+
+/** freedom-ipfsd's `kind` process, as the shared client supervises it,
+ * spawned under the policy `policy.network` holds. */
+function ipfsdService(kind, policy) {
   if (!KINDS.has(kind)) throw new Error(`unknown freedom-ipfsd process: ${kind}`);
   return Object.freeze({
     label: '[ipfsd]',
@@ -130,7 +237,7 @@ function ipfsdService(kind) {
       shell_version: client.shellVersion,
       frames: ['stream'],
     }),
-    validHello: (result) => validHello(result, kind),
+    validHello: (result) => validHello(result, kind, policy.network, policy.serviceVersion),
     shutdownMethod: 'ipfs.shutdown',
     shutdownGraceMs: SHUTDOWN_GRACE_MS,
     fragments: () => false,
@@ -143,11 +250,50 @@ function ipfsdService(kind) {
 
 class IpfsdClient extends ServiceClient {
   /**
-   * @param {object} options - ServiceClient's, without `service`, and:
+   * @param {object} options - ServiceClient's, without `service` and `args`,
+   *   and:
    * @param {'persistent'|'ephemeral'} [options.kind] - the process spawned
+   * @param {Function} options.argsFor - (network) => its arguments, under
+   *   that policy (`persistentArgs`, `ephemeralArgs`)
+   * @param {object} [options.network] - the policy the first process is
+   *   spawned under; `setNetwork` sets the next
+   * @param {string|null} [options.serviceVersion] - the release hello must
+   *   report (`expectedServiceVersion()`), or null for any
    */
   constructor(options) {
-    super({ ...options, service: ipfsdService(options.kind ?? 'persistent') });
+    const policy = {
+      network: options.network ?? null,
+      serviceVersion:
+        options.serviceVersion === undefined ? expectedServiceVersion() : options.serviceVersion,
+    };
+    super({
+      ...options,
+      args: policy.network ? options.argsFor(policy.network) : null,
+      service: ipfsdService(options.kind ?? 'persistent', policy),
+    });
+    this.policy = policy;
+    this.argsFor = options.argsFor;
+  }
+
+  /** The policy the process runs under, or will be spawned under. */
+  get network() {
+    return this.policy.network;
+  }
+
+  /**
+   * Sets the policy the next process is spawned under (freedom-core design
+   * 0010: fixed for a process's life). Only while no process runs: a change
+   * of policy stops the process first.
+   */
+  setNetwork(network) {
+    if (this.current) throw new Error('a freedom-ipfsd process is running');
+    this.policy.network = network;
+    this.args = this.argsFor(network);
+  }
+
+  start() {
+    if (!this.policy.network) return Promise.reject(this.unavailable('No network policy'));
+    return super.start();
   }
 
   /** `ipfs.start` on `gen`: resolves to `{ instance }` once it is live.
@@ -192,9 +338,12 @@ class IpfsdClient extends ServiceClient {
 module.exports = {
   IpfsdClient,
   getIpfsdBinaryPath,
+  expectedServiceVersion,
   persistentArgs,
   ephemeralArgs,
   validHello,
+  validConfinement,
+  confinementLog,
   ipfsdService,
   PROTOCOL_VERSION,
   HANG_GRACE_MS,
