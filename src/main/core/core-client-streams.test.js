@@ -26,6 +26,7 @@ const {
   CORE_KINDS,
   CORE_STREAM_KINDS,
   FrameDecoder,
+  JSON_KINDS,
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
@@ -35,6 +36,9 @@ const {
   WINDOW,
   WRITER_DATA_CAP,
 } = require('./frame');
+const { ServiceClient } = require('./service-client');
+const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
+const { createFetchAdmission } = require('../dweb/fetch-admission');
 
 const tick = () => new Promise(setImmediate);
 
@@ -54,6 +58,24 @@ function body(id, offset, length) {
   return out;
 }
 
+const STREAM_KIND_NAMES = {
+  [KIND_DATA]: 'data',
+  [KIND_END]: 'end',
+  [KIND_ABORT]: 'abort',
+  [KIND_STREAM_CREDIT]: 'credit',
+};
+
+/** One of main's frames as `FakeCore#wire` names it: `<method>:<id>` for a
+ * request, `<type>:<id>` for its other JSON messages (`cancel:7`), and
+ * `<kind>:<id>` for a stream frame (`credit:7`). */
+function named(frame) {
+  if (frame.kind === KIND_JSON) {
+    const { type, method, id } = frame.message;
+    return type === 'request' ? `${method}:${id}` : `${type}:${id}`;
+  }
+  return `${STREAM_KIND_NAMES[frame.kind] ?? frame.kind}:${frame.id}`;
+}
+
 /**
  * A scripted freedom-cored: `handler(message, core)` answers main's JSON
  * messages. It reads main's frames as the core does: at protocol 1 no
@@ -68,12 +90,14 @@ class FakeCore extends EventEmitter {
     this.stderr = new PassThrough();
     this.messages = [];
     this.streams = [];
+    this.wire = []; // every frame of main's, in the order the core read them (`named`)
     this.stuck = false; // stdin reads main's writes but doesn't complete them
     this.held = []; // the write callbacks `stuck` holds back
     this.decoder = new FrameDecoder({ kinds: CORE_KINDS });
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
         for (const frame of this.decoder.push(chunk)) {
+          this.wire.push(named(frame));
           if (frame.kind !== KIND_JSON) {
             this.streams.push(frame);
             continue;
@@ -837,4 +861,234 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
       }
     }
   );
+});
+
+describe("main's frames reach the core in the order main made them", () => {
+  /** Main's request `id` reached the core. */
+  const asked = (id) => until(() => core().messages.some((m) => m.id === id), `request ${id}`);
+  const opened = (id) =>
+    core().send({ type: 'response', id, result: { status: 200, headers: [], body: true } });
+  const at = (name) => core().wire.indexOf(name);
+
+  afterEach(() => detachDwebVerify());
+
+  test("a private partition's dweb.forget goes after the cancels of its requests, though a stream write is in flight", async () => {
+    makeClient(
+      coreAt(2, (message, fake) => {
+        if (message.method === 'dweb.forget') {
+          fake.send({ type: 'response', id: message.id, result: {} });
+        }
+      }),
+      { protocol: 2 }
+    );
+    await client.start();
+    const admission = createFetchAdmission();
+    const sent = [];
+    const shell = { open: ({ id }) => (sent.push(id), { close: () => {} }) };
+    const verifier = attachDwebVerify(client, shell, {
+      log: quietLog(),
+      onSessionClosed: admission.onSessionClosed,
+    });
+    // The profile's body: main's credit for it is the write in flight.
+    const profileId = client.current.nextId;
+    const profile = client.callStream('dweb.verify', { plan: {} });
+    await asked(profileId);
+    opened(profileId);
+    const profileBody = (await profile).body.getReader();
+    // The partition's requests: one waiting for its head, one whose body is
+    // open.
+    const params = {
+      plan: {},
+      method: 'GET',
+      partition: 'private-9',
+      private: true,
+      deadline_ms: 60_000,
+    };
+    const { signal } = admission.fence('private-9');
+    const waiting = verifier.send(client.current, params, {}, signal);
+    const open = verifier.send(client.current, params, {}, signal);
+    expect(sent).toHaveLength(2);
+    await asked(sent[1]);
+    opened(sent[1]);
+    await open.head;
+    core().write(encodeData(profileId, body(profileId, 0, 10)));
+    // The core takes main's next write, and completes none.
+    core().stuck = true;
+    await profileBody.read();
+    expect(core().wire.at(-1)).toBe(`credit:${profileId}`);
+    expect(core().held).toHaveLength(1);
+
+    admission.closeSession('private-9');
+    await expect(waiting.head).rejects.toMatchObject({ code: 'cancelled' });
+    core().release();
+    await until(() => at(`dweb.forget:${sent[1] + 1}`) !== -1, 'the forget');
+    const forget = at(`dweb.forget:${sent[1] + 1}`);
+    expect(core().messages.at(-1)).toMatchObject({
+      method: 'dweb.forget',
+      params: { partition: 'private-9' },
+    });
+    for (const id of sent) {
+      expect(at(`cancel:${id}`)).toBeGreaterThan(at(`credit:${profileId}`));
+      expect(at(`cancel:${id}`)).toBeLessThan(forget);
+    }
+  });
+
+  test('a request never overtakes credit, a cancel, an abort or an end main made before it, and its cancel never overtakes it', async () => {
+    // The core's request 8's body: ten bytes, then its end once `finish`.
+    let finish;
+    const finished = new Promise((resolve) => {
+      finish = resolve;
+    });
+    let gave = false;
+    const short = new ReadableStream(
+      {
+        async pull(controller) {
+          if (!gave) {
+            gave = true;
+            controller.enqueue(new Uint8Array(10).fill(8));
+            return;
+          }
+          await finished;
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    const long = source(7, 1_000_000);
+    makeClient(coreAt(2), { protocol: 2 });
+    client.handle(
+      'shell.dweb_get',
+      (params) =>
+        new StreamedReply({ status: 200, headers: [] }, params.n === 7 ? long.stream : short),
+      { streams: true }
+    );
+    await client.start();
+    // Main's requests: A and B with open bodies, C waiting for its head.
+    const a = client.current.nextId;
+    const [b, c] = [a + 1, a + 2];
+    const answers = [client.callStream('dweb.verify', {}), client.callStream('dweb.verify', {})];
+    const stopC = new AbortController();
+    const waiting = client.callStream('dweb.verify', {}, undefined, { signal: stopC.signal });
+    await asked(c);
+    opened(a);
+    opened(b);
+    const [bodyA, bodyB] = (await Promise.all(answers)).map((answer) => answer.body.getReader());
+    core().write(encodeData(a, body(a, 0, 10)));
+    core().write(encodeData(b, body(b, 0, 10)));
+    // The core's requests: 7's body fills its window, 8's sends its ten
+    // bytes.
+    for (const n of [7, 8]) {
+      core().send({
+        type: 'request',
+        id: n,
+        method: 'shell.dweb_get',
+        params: { stream: true, n },
+      });
+    }
+    await until(
+      () => core().dataOf(7).length === WINDOW && core().dataOf(8).length === 10,
+      'their bodies'
+    );
+
+    // The core takes main's next write (A's credit), and completes none.
+    core().stuck = true;
+    await bodyA.read();
+    expect(core().wire.at(-1)).toBe(`credit:${a}`);
+    // Meanwhile, behind it: B's credit, C's cancel, 7's abort for the
+    // core's cancel, and 8's end.
+    await bodyB.read();
+    stopC.abort();
+    await expect(waiting).rejects.toMatchObject({ code: 'cancelled' });
+    core().send({ type: 'cancel', id: 7 });
+    finish();
+    for (let i = 0; i < 20; i++) await tick();
+    expect(long.cancelled).toBe(true);
+    expect(core().wire.at(-1)).toBe(`credit:${a}`);
+    // A whole request, then its own cancel.
+    const x = client.current.nextId;
+    const stopX = new AbortController();
+    const request = client.requestTo(client.current, 'vault.status', {}, undefined, {
+      signal: stopX.signal,
+    });
+    stopX.abort();
+    await expect(request).rejects.toMatchObject({ code: 'cancelled' });
+
+    core().release();
+    await until(() => at(`cancel:${x}`) !== -1, "the request's cancel");
+    for (const earlier of [`credit:${a}`, `credit:${b}`, `cancel:${c}`, 'abort:7', 'end:8']) {
+      expect([earlier, at(earlier) !== -1 && at(earlier) < at(`vault.status:${x}`)]).toEqual([
+        earlier,
+        true,
+      ]);
+    }
+    expect(at(`cancel:${x}`)).toBeGreaterThan(at(`vault.status:${x}`));
+    expect(core().framesOf(KIND_ABORT, 7)[0]).toMatchObject({ code: 'cancelled' });
+    // Nothing more of 7 or 8, and both are done.
+    expect(core().wire.slice(at('abort:7') + 1)).not.toContain('data:7');
+    expect(core().framesOf(KIND_END, 8)).toHaveLength(1);
+    await until(() => client.current.incoming.size === 0, "the core's requests done");
+    expect(client.streamStats()).toMatchObject({ pieces: 0, sending: 0, held: 0 });
+  });
+
+  test("on a service's stream connection (design 0007), a request never overtakes main's earlier credit or cancel", async () => {
+    children = [];
+    log = quietLog();
+    client = new ServiceClient({
+      service: {
+        label: '[Fake]',
+        noun: 'fake service',
+        unavailableCode: 'service_unavailable',
+        protocol: 2,
+        helloMethod: 'core.hello',
+        helloParams: () => ({ protocol: 2, frames: ['stream'] }),
+        validHello: (result) => (result?.protocol === 2 ? { protocol: 2, capabilities: [] } : null),
+        shutdownMethod: 'core.shutdown',
+        fragments: () => false,
+        streams: () => true,
+        initialKinds: JSON_KINDS,
+        maxPending: 512,
+      },
+      spawn: () => {
+        const child = new FakeCore(coreAt(2));
+        children.push(child);
+        return child;
+      },
+      command: '/bin/fake-service',
+      args: [],
+      log,
+      shellVersion: 'test',
+      setTimer: (fn, ms) => ({ fn, ms }),
+      clearTimer: () => {},
+    });
+    await client.start();
+    expect(client.current.duplex).toBeNull();
+    // A and B with open bodies, C waiting for its head.
+    const a = client.current.nextId;
+    const [b, c] = [a + 1, a + 2];
+    const answers = [client.callStream('fake.get', {}), client.callStream('fake.get', {})];
+    const stopC = new AbortController();
+    const waiting = client.callStream('fake.get', {}, undefined, { signal: stopC.signal });
+    await asked(c);
+    opened(a);
+    opened(b);
+    const [bodyA, bodyB] = (await Promise.all(answers)).map((answer) => answer.body.getReader());
+    core().write(encodeData(a, body(a, 0, 10)));
+    core().write(encodeData(b, body(b, 0, 10)));
+    core().stuck = true;
+    await bodyA.read();
+    expect(core().wire.at(-1)).toBe(`credit:${a}`);
+    await bodyB.read();
+    stopC.abort();
+    await expect(waiting).rejects.toMatchObject({ code: 'cancelled' });
+    expect(client.streamStats()).toMatchObject({ outbox: 2 });
+    const x = client.current.nextId;
+    // Unanswered: it fails as the client stops.
+    client.requestTo(client.current, 'fake.x', {}).catch(() => {});
+    core().release();
+    await until(() => at(`fake.x:${x}`) !== -1, 'the request');
+    expect(at(`credit:${b}`)).toBeGreaterThan(at(`credit:${a}`));
+    expect(at(`credit:${b}`)).toBeLessThan(at(`fake.x:${x}`));
+    expect(at(`cancel:${c}`)).toBeGreaterThan(at(`credit:${a}`));
+    expect(at(`cancel:${c}`)).toBeLessThan(at(`fake.x:${x}`));
+  });
 });

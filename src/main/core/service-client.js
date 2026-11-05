@@ -74,6 +74,13 @@
  * main owes, its cancels and the sender's frames are written in that
  * order, one write in flight.
  *
+ * **Order on the wire.** A frame main writes outside the stream writer (a
+ * request, a reply, a fragment, the bulk credit) goes after every stream
+ * control frame main made before it: what waits for the stream writer's
+ * write in flight, but for data and an `end` behind it, is written first
+ * (`flushControl`). So a request never overtakes an earlier cancel, and a
+ * cancel never goes ahead of its request.
+ *
  * **Main's cancels** (0001): a request sent with a `signal` is cancelled
  * when it aborts. Its caller gets `cancelled` at once, and the process a
  * `cancel`; the process's one response still comes, and is consumed and
@@ -1178,7 +1185,7 @@ class ServiceClient extends EventEmitter {
       if (err) this.connectionFailed(gen, 'stdin_error');
     };
     try {
-      gen.child.stdin.write(frame, written);
+      this.writeInOrder(gen, frame, written);
     } catch {
       gen.pending.delete(id);
       gen.writeBytes -= frame.length;
@@ -1236,11 +1243,69 @@ class ServiceClient extends EventEmitter {
       return;
     }
     try {
-      gen.child.stdin.write(encodeFrame({ type: 'cancel', id }), (err) => {
+      this.writeInOrder(gen, encodeFrame({ type: 'cancel', id }), (err) => {
         if (err) this.connectionFailed(gen, 'stdin_error');
       });
     } catch {
       this.connectionFailed(gen, 'stdin_error');
+    }
+  }
+
+  /**
+   * Writes one of main's frames that the stream writer doesn't (a request,
+   * a reply, a fragment's header, the bulk credit), after the stream
+   * control frames main made before it (`flushControl`). Throws as
+   * `stdin.write` does.
+   */
+  writeInOrder(gen, bytes, written) {
+    this.flushControl(gen);
+    gen.child.stdin.write(bytes, written);
+  }
+
+  /**
+   * The stream writer keeps one write in flight, and what main makes
+   * meanwhile waits in its queues: a frame written past them would reach
+   * the process first (a `dweb.forget` ahead of the cancels of its
+   * partition's requests). So before such a frame, the control frames
+   * waiting go at once, in one write: credit and cancels, and on the
+   * core's connection at protocol 2 the sender's heads, replies, aborts
+   * and every `end` whose bytes have all gone (`StreamDuplex#nextControl`).
+   * Data stays queued, under the writer's cap and the process's credit, as
+   * does an `end` after it.
+   */
+  flushControl(gen) {
+    if (!gen.outboxWriting || gen.distrusted) return;
+    if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) return;
+    const frames = [];
+    const wrote = [];
+    if (gen.duplex) {
+      for (let next = gen.duplex.nextControl(); next; next = gen.duplex.nextControl()) {
+        frames.push(next.bytes);
+        wrote.push(next.wrote);
+      }
+    } else {
+      for (let frame = gen.outbox.next(); frame; frame = gen.outbox.next()) frames.push(frame);
+    }
+    if (!frames.length) return;
+    const written = (err) => {
+      if (err) {
+        this.connectionFailed(gen, 'stdin_error');
+        return;
+      }
+      if (!gen.duplex) return;
+      for (const entry of wrote) this.streamWritten(gen, entry);
+      this.pumpPieces(gen);
+      this.flushStreams(gen);
+    };
+    // Corked, they go together without being copied (a reply may be 1 MiB).
+    const { stdin } = gen.child;
+    stdin.cork();
+    try {
+      const last = frames.pop();
+      for (const frame of frames) stdin.write(frame);
+      stdin.write(last, written);
+    } finally {
+      stdin.uncork();
     }
   }
 
@@ -1588,7 +1653,7 @@ class ServiceClient extends EventEmitter {
       if (err) this.connectionFailed(gen, 'stdin_error');
     };
     try {
-      gen.child.stdin.write(frame, written);
+      this.writeInOrder(gen, frame, written);
     } catch {
       written(true);
     }
@@ -1615,7 +1680,7 @@ class ServiceClient extends EventEmitter {
       gen.credit = false;
       gen.sending = { ...reply, offset: 0, writing: false };
       try {
-        gen.child.stdin.write(encodeBegin(reply.id, reply.payload.length));
+        this.writeInOrder(gen, encodeBegin(reply.id, reply.payload.length));
       } catch {
         this.connectionFailed(gen, 'stdin_error');
         return;
@@ -1661,7 +1726,8 @@ class ServiceClient extends EventEmitter {
       this.pumpBulk(gen);
     };
     try {
-      gen.child.stdin.write(frameHeader(last ? KIND_LAST : KIND_FRAGMENT, end - offset));
+      // The header and its payload go together: nothing between them.
+      this.writeInOrder(gen, frameHeader(last ? KIND_LAST : KIND_FRAGMENT, end - offset));
       gen.child.stdin.write(payload.subarray(offset, end), written);
     } catch {
       written(true);
@@ -2251,7 +2317,7 @@ class ServiceClient extends EventEmitter {
     if (gen.retired || gen.exited || gen.ending || gen.stdinEnded || !gen.child) return;
     gen.reassembler.grant();
     try {
-      gen.child.stdin.write(encodeCredit(), (err) => {
+      this.writeInOrder(gen, encodeCredit(), (err) => {
         if (err) this.connectionFailed(gen, 'stdin_error');
       });
     } catch {

@@ -470,4 +470,36 @@ describe("the core's connection at protocol 2", () => {
       { type: 'head', id: 1 },
     ]);
   });
+
+  test("nextControl takes only what waits for nothing but the writer: main's cancels and credit, the sender's control entries, and an end whose bytes have gone", () => {
+    const duplex = new StreamDuplex();
+    for (const id of [1, 2, 3]) duplex.request(id);
+    duplex.sender.head(1, Buffer.from('{}'), true);
+    duplex.sender.head(2, Buffer.from('{}'), true);
+    expect(duplex.nextFrame().wrote).toEqual({ type: 'head', id: 1 });
+    expect(duplex.nextFrame().wrote).toEqual({ type: 'head', id: 2 });
+    // 2's bytes are taken, then it ends; 1 ends with bytes still queued.
+    duplex.sender.push(2, Buffer.alloc(10));
+    expect(duplex.nextFrame().wrote).toEqual({ type: 'data', id: 2, length: 10 });
+    duplex.sender.push(1, Buffer.alloc(10));
+    duplex.sender.finish(1);
+    duplex.sender.finish(2);
+    duplex.sender.reply(3, Buffer.from('{}'));
+    duplex.ask(4);
+    expect(duplex.withdraw(4)).toBe('send_cancel');
+    const wrote = [];
+    for (let next = duplex.nextControl(); next; next = duplex.nextControl()) wrote.push(next.wrote);
+    expect(wrote).toEqual([
+      { type: 'cancel', id: 4 },
+      { type: 'reply', id: 3 },
+      { type: 'end', id: 2 },
+    ]);
+    // 1's bytes, then its end, are left to the writer.
+    const rest = [];
+    for (let next = duplex.nextFrame(); next; next = duplex.nextFrame()) rest.push(next.wrote);
+    expect(rest).toEqual([
+      { type: 'data', id: 1, length: 10 },
+      { type: 'end', id: 1 },
+    ]);
+  });
 });
