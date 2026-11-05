@@ -64,9 +64,13 @@
  * requests to a handler registered with `streams: true` go through the
  * duplex's sender: their one reply, or a head and a body when the handler
  * answers with a `StreamedReply`. Its body is read only as the core's
- * credit and the writer's cap allow, at most one chunk ahead; it ends with
- * `end`, or with an abort (`stalled` or `body_stream_error`), and the
- * core's cancel aborts it with `cancelled` and cancels the body. Credit
+ * credit and the writer's cap allow, at most 64 KiB ahead, which counts
+ * against the cap until the sender takes it: a byte stream through a BYOB
+ * reader, asked for no more than that and the room; any other stream a
+ * chunk at a time, and a chunk past 64 KiB ends it as `body_stream_error`
+ * (a source main can't bound). It ends with `end`, or with an abort
+ * (`stalled` or `body_stream_error`), and the core's cancel aborts it with
+ * `cancelled` and cancels the body. Credit
  * main owes, its cancels and the sender's frames are written in that
  * order, one write in flight.
  *
@@ -109,6 +113,7 @@ const {
   KIND_JSON,
   KIND_LAST,
   KIND_STREAM_CREDIT,
+  MAX_DATA,
   MAX_MESSAGE,
   MAX_PAYLOAD,
   MAX_PULL,
@@ -119,6 +124,10 @@ const STREAM_FRAME_KINDS = new Set([KIND_DATA, KIND_END, KIND_ABORT, KIND_STREAM
 // The most the duplex's writer takes into one write (design 0009): its
 // frames are cancellable until taken.
 const STREAM_WRITE_BYTES = 256 * 1024;
+// The most main reads ahead of a body it sends the core, per read: one data
+// frame. A byte stream is asked for at most this (and the room); any other
+// stream's chunk past it can't be bounded, and ends the body.
+const MAX_READ_AHEAD = MAX_DATA;
 // How a body main sends the core ends when it fails (design 0009,
 // `shell.dweb_get`): a piece's codes, with fixed messages.
 const PIECE_ABORTS = Object.freeze({
@@ -282,7 +291,10 @@ class JsonText {
  * `stream: true`), for a handler registered with `streams: true`, on the
  * core's connection at protocol 2: `result`, the head's result, goes with
  * `body: true`, then `body`, a ReadableStream of its bytes. The body is read
- * only as the core's credit allows. Its close ends the stream; its error
+ * only as the core's credit allows, at most 64 KiB ahead: a byte stream
+ * (`type: "bytes"`) through a BYOB reader, asked for at most that and the
+ * room; any other in its own chunks, each at most 64 KiB, or the stream ends
+ * `body_stream_error`. Its close ends the stream; its error
  * aborts it, with `stalled` if the error's `abortCode` says so (main's body
  * idle timer) and `body_stream_error` otherwise. The core's cancel, or the
  * generation's end, cancels it.
@@ -1725,6 +1737,8 @@ class ServiceClient extends EventEmitter {
       stats.pieces = gen.pieces.size;
       stats.sending = gen.duplex.sender.live();
       stats.held = gen.duplex.sender.held;
+      // Read ahead of a body, not yet taken by the sender.
+      stats.pending = gen.duplex.sender.reserved;
     }
     return stats;
   }
@@ -1950,14 +1964,21 @@ class ServiceClient extends EventEmitter {
     if (release) gen.pieceCharges.set(id, release);
     if (opens) {
       let reader;
+      let byob = false;
       try {
-        reader = streamed.body.getReader();
+        // A byte stream is read into views of the size main asks for.
+        try {
+          reader = streamed.body.getReader({ mode: 'byob' });
+          byob = true;
+        } catch {
+          reader = streamed.body.getReader();
+        }
       } catch {
         sender.abort(id, 'body_stream_error', PIECE_ABORTS.body_stream_error);
         this.flushStreams(gen);
         return;
       }
-      const piece = { id, reader, pending: null, eof: false, reading: false };
+      const piece = { id, reader, byob, pending: null, eof: false, reading: false };
       gen.pieces.set(id, piece);
       this.pumpPiece(gen, piece);
     }
@@ -1966,22 +1987,30 @@ class ServiceClient extends EventEmitter {
 
   /**
    * Moves a body into its stream as the core's credit and the writer's cap
-   * allow: it reads a chunk only while the stream has room, and holds at
-   * most that one chunk until the sender takes it.
+   * allow: it reads only while the stream has room, at most MAX_READ_AHEAD
+   * at a time (a byte stream at most the room, too), and holds what the
+   * sender hasn't taken, charged to the writer's cap, reading nothing more
+   * until it has gone.
    */
   pumpPiece(gen, piece) {
     const sender = gen.duplex?.sender;
     while (sender && gen.pieces.get(piece.id) === piece) {
       if (piece.pending) {
-        const pushed = sender.push(piece.id, piece.pending);
+        const bytes = piece.pending;
+        // Charged as the queue's once taken, as the cap's until then.
+        sender.release(bytes.length);
+        const pushed = sender.push(piece.id, bytes);
         if (pushed.refused) {
+          piece.pending = null;
           this.dropPiece(gen, piece);
           return;
         }
-        piece.pending =
-          pushed.taken === piece.pending.length ? null : piece.pending.subarray(pushed.taken);
+        piece.pending = pushed.taken === bytes.length ? null : bytes.subarray(pushed.taken);
         // The rest waits for credit, or for the writer to make room.
-        if (piece.pending) return;
+        if (piece.pending) {
+          sender.reserve(piece.pending.length);
+          return;
+        }
         continue;
       }
       if (piece.eof) {
@@ -1996,16 +2025,18 @@ class ServiceClient extends EventEmitter {
         this.dropPiece(gen, piece);
         return;
       }
-      if (room > 0) this.readPiece(gen, piece);
+      if (room > 0) this.readPiece(gen, piece, room);
       return;
     }
   }
 
-  readPiece(gen, piece) {
+  readPiece(gen, piece, room) {
     piece.reading = true;
     let read;
     try {
-      read = piece.reader.read();
+      read = piece.byob
+        ? piece.reader.read(new Uint8Array(Math.min(room, MAX_READ_AHEAD)))
+        : piece.reader.read();
     } catch (err) {
       read = Promise.reject(err);
     }
@@ -2017,7 +2048,15 @@ class ServiceClient extends EventEmitter {
           piece.eof = true;
         } else if (ArrayBuffer.isView(chunk?.value)) {
           const { buffer, byteOffset, byteLength } = chunk.value;
-          if (byteLength) piece.pending = Buffer.from(buffer, byteOffset, byteLength);
+          // A chunk past the read-ahead: a source main can't bound.
+          if (byteLength > MAX_READ_AHEAD) {
+            this.abortPiece(gen, piece, null);
+            return;
+          }
+          if (byteLength) {
+            piece.pending = Buffer.from(buffer, byteOffset, byteLength);
+            gen.duplex?.sender.reserve(byteLength);
+          }
         } else {
           this.abortPiece(gen, piece, null);
           return;
@@ -2047,6 +2086,7 @@ class ServiceClient extends EventEmitter {
   dropPiece(gen, piece) {
     if (gen.pieces.get(piece.id) !== piece) return;
     gen.pieces.delete(piece.id);
+    if (piece.pending) gen.duplex?.sender.release(piece.pending.length);
     piece.pending = null;
     if (piece.eof) return;
     try {

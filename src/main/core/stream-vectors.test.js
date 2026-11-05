@@ -35,7 +35,9 @@
  *
  * Skipped unless the vectors are found: FREEDOM_CORE_STREAM_VECTORS names
  * the file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core
- * checkout FREEDOM_CORED_PATH was built in.
+ * checkout FREEDOM_CORED_PATH was built in. CI checks out freedom-core's at
+ * a reviewed commit and names it; a file named there that is missing fails
+ * the suite rather than skipping it.
  */
 
 const fs = require('fs');
@@ -92,6 +94,13 @@ function vectorsPath() {
 const file = vectorsPath();
 const vectors = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 const describeIfVectors = vectors ? describe : describe.skip;
+// Named outright (CI does): they must be there.
+const required = Boolean(process.env.FREEDOM_CORE_STREAM_VECTORS);
+
+(required ? test : test.skip)('the vectors FREEDOM_CORE_STREAM_VECTORS names are there', () => {
+  expect(fs.existsSync(file)).toBe(true);
+  expect(vectors?.frames?.length).toBeGreaterThan(0);
+});
 /** Whether the file has 0009's abort codes by direction (freedom-core #247;
  * see the header). */
 const ABORT_CODES_BY_DIRECTION = Boolean(vectors?.categories?.includes('abort_code'));

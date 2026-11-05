@@ -287,6 +287,7 @@ describe('the hello at protocol 2', () => {
       pieces: 0,
       sending: 0,
       held: 0,
+      pending: 0,
     });
   });
 
@@ -548,5 +549,93 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
       category: 'credit_overgrant',
     });
     await until(() => open.cancelled, 'the open body let go of');
+  });
+
+  /** Queued plus read-ahead bytes, the most seen at each check. */
+  function watchHeld() {
+    const seen = { most: 0 };
+    seen.check = () => {
+      const stats = client.streamStats();
+      if (stats) seen.most = Math.max(seen.most, stats.held + stats.pending);
+    };
+    return seen;
+  }
+
+  test('one 8 MiB chunk from a byte stream: main reads 64 KiB at a time, never past the window and one read, and credit lets it all go', async () => {
+    const length = 8 * 1024 * 1024;
+    const whole = body(14, 0, length);
+    let pulls = 0;
+    const stream = new ReadableStream(
+      {
+        type: 'bytes',
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array(whole));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+    const held = watchHeld();
+    ask(14);
+    await until(() => {
+      held.check();
+      return core().dataOf(14).length === WINDOW;
+    }, 'the first window');
+    // No credit comes back: nothing more is sent, or read.
+    for (let i = 0; i < 20; i++) {
+      await tick();
+      held.check();
+    }
+    expect(core().dataOf(14).length).toBe(WINDOW);
+    expect(client.streamStats().pending).toBeLessThanOrEqual(MAX_DATA);
+    expect(held.most).toBeLessThanOrEqual(WINDOW + MAX_DATA);
+    let credited = 0;
+    while (core().framesOf(KIND_END, 14).length === 0) {
+      const sent = core().dataOf(14).length;
+      if (sent > credited) {
+        core().write(encodeStreamCredit(14, sent - credited));
+        credited = sent;
+      }
+      await tick();
+      held.check();
+    }
+    expect(held.most).toBeLessThanOrEqual(WINDOW + MAX_DATA);
+    expect(core().dataOf(14).equals(whole)).toBe(true);
+    for (const frame of core().framesOf(KIND_DATA, 14)) {
+      expect(frame.bytes.length).toBeLessThanOrEqual(MAX_DATA);
+    }
+    expect(pulls).toBe(1);
+    await until(() => client.streamStats().sending === 0, 'the request done');
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+  });
+
+  test("one 8 MiB chunk from a stream main can't bound ends the body body_stream_error, before any of it is sent", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream(
+      {
+        pull(controller) {
+          controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    await serving(() => new StreamedReply({ status: 200, headers: [] }, stream));
+    const held = watchHeld();
+    ask(15);
+    await until(() => {
+      held.check();
+      return core().framesOf(KIND_ABORT, 15).length === 1;
+    }, 'the abort');
+    expect(core().framesOf(KIND_ABORT, 15)[0]).toMatchObject({ code: 'body_stream_error' });
+    expect(core().dataOf(15).length).toBe(0);
+    expect(cancelled).toBe(true);
+    expect(held.most).toBe(0);
+    await until(() => client.streamStats().sending === 0, 'the request done');
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
   });
 });

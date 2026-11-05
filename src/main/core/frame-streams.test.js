@@ -317,6 +317,24 @@ describe('abort codes by connection and direction (design 0009)', () => {
       }
     }
   });
+
+  test("bytes its producer reads ahead count against the writer's cap until released", () => {
+    const sender = new StreamSender({ dataCap: 64 * 1024 });
+    sender.request(1);
+    sender.head(1, Buffer.from('{}'), true);
+    expect(sender.room(1)).toBe(64 * 1024);
+    sender.reserve(60 * 1024);
+    expect(sender.room(1)).toBe(4 * 1024);
+    // A push the cap would cut below 4 KiB takes nothing.
+    sender.reserve(1);
+    expect(sender.push(1, Buffer.alloc(8 * 1024))).toEqual({ taken: 0 });
+    sender.release(60 * 1024 + 1);
+    expect(sender.push(1, Buffer.alloc(8 * 1024))).toEqual({ taken: 8 * 1024 });
+    expect(sender.room(1)).toBe(56 * 1024);
+    // Never below nothing.
+    sender.release(1);
+    expect(sender.reserved).toBe(0);
+  });
 });
 
 describe("the core's connection at protocol 2", () => {

@@ -1154,7 +1154,9 @@ const refused = (name) => ({ refused: name });
  *   for main's pieces: `PIECE_ABORT_CODES`); an abort with any other is
  *   refused (`code`), and the stream stays as it was.
  * - **Bounds.** The writer holds at most its data cap (16 MiB by default)
- *   of queued bytes, in 4 KiB blocks freed as they are written.
+ *   of queued bytes, in 4 KiB blocks freed as they are written. Bytes its
+ *   producer has read for a body and not yet pushed (`reserve`) count
+ *   against the cap too, until `release`.
  *
  * Producer refusals (`gone`, `unknown`, `answered`, `not_open`, `ended`,
  * `too_large`, `closed`, `code`) are returned as `{ refused }`; protocol
@@ -1172,7 +1174,19 @@ class StreamSender {
     this.control = []; // [entry, id]: head, reply or abort
     this.rotation = []; // ids
     this.held = 0;
+    // Read ahead by the producer, not yet pushed: charged to the cap.
+    this.reserved = 0;
     this.failed = null;
+  }
+
+  /** Charges `bytes` the producer holds for a body, outside the queues,
+   * to the writer's cap, until they are released. */
+  reserve(bytes) {
+    this.reserved += bytes;
+  }
+
+  release(bytes) {
+    this.reserved = Math.max(0, this.reserved - bytes);
   }
 
   // ---- the other side's frames ----
@@ -1256,7 +1270,7 @@ class StreamSender {
     const found = this.bodyOf(id);
     if (found.refused) return found;
     const { body, open } = found;
-    const capRoom = Math.max(0, this.dataCap - this.held);
+    const capRoom = Math.max(0, this.dataCap - this.held - this.reserved);
     const wanted = Math.min(bytes.length, room(body));
     let n = Math.min(wanted, capRoom);
     if (n < wanted && n < SMALL_FRAME) n = 0;
@@ -1408,7 +1422,7 @@ class StreamSender {
         ? request.body
         : null;
     if (!body || body.end || body.abort !== null) return null;
-    return Math.min(room(body), Math.max(0, this.dataCap - this.held));
+    return Math.min(room(body), Math.max(0, this.dataCap - this.held - this.reserved));
   }
 
   queued(id) {
