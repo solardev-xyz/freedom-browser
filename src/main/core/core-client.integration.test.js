@@ -2,6 +2,9 @@
  * Runs CoreClient against the real freedom-cored binary. Skipped unless
  * FREEDOM_CORED_PATH points at a build, e.g.
  *   FREEDOM_CORED_PATH=…/freedom-core/target/debug/freedom-cored npx jest src/main/core
+ * The fragments test calls the core's `test.*` methods, which only a debug
+ * build with the `testhooks` feature has (freedom-core #241, from 0.9.0):
+ *   cargo build -p freedom-cored --features testhooks
  */
 const fs = require('fs');
 const os = require('os');
@@ -116,8 +119,9 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   }, 20_000);
 
   test("the core's large responses arrive in fragments, and each credit goes back", async () => {
-    // The test methods answer only with their hook (debug builds), which the
-    // client's scrubbed environment would drop.
+    // The test methods answer only with their hook (a debug build with the
+    // `testhooks` feature), which the client's scrubbed environment would
+    // drop.
     const credits = [];
     const withTestMethods = (command, args, options) => {
       const env = { ...options.env, FREEDOM_CORED_TEST_METHODS: '1' };

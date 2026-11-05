@@ -13,6 +13,12 @@
  * - `receiver`: main's side, through `StreamReceiver`, the service's frames
  *   through the codec.
  *
+ * From freedom-core 0.9.0 the file also has a freedom-cored connection at
+ * protocol 2 (design 0009, "Streams in the core"): `frames` cases read as
+ * `core_streams`, and the `duplex` section. The core stays at protocol 1
+ * until its dweb thread moves it (0009, step 5), and main's `frame.js`
+ * reads protocol 2 from then on, so those cases are listed as to do here.
+ *
  * Skipped unless the vectors are found: FREEDOM_CORE_STREAM_VECTORS names
  * the file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core
  * checkout FREEDOM_CORED_PATH was built in.
@@ -92,6 +98,9 @@ const KINDS = {
   sender: serviceKinds('sender'),
   core: CORE_KINDS,
 };
+/** The sides main reads only once the core's connection is at protocol 2
+ * (see the header). */
+const PROTOCOL_2_SIDES = new Set(['core_streams']);
 
 /** A decoded frame as the vectors write it. */
 function frameJson(frame) {
@@ -375,6 +384,10 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
 
   describe('frames', () => {
     for (const entry of vectors?.frames || []) {
+      if (PROTOCOL_2_SIDES.has(entry.side)) {
+        test.todo(`${entry.id} (${entry.side}, protocol 2)`);
+        continue;
+      }
       test(`${entry.id} (${entry.side})`, () => {
         const input = bytesOf(entry.input);
         for (const chunk of [1, 2, 5, 9, 13, 4096, Math.max(1, input.length)]) {
@@ -452,6 +465,10 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
         });
       });
     }
+  });
+
+  describe("freedom-cored's connection at protocol 2 (duplex)", () => {
+    for (const entry of vectors?.duplex || []) test.todo(entry.id);
   });
 
   test('every category and refusal the file lists has a case', () => {
