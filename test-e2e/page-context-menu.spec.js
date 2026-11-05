@@ -34,7 +34,21 @@ const FIXTURE_BODY =
   // Where the test hangs a shadow root holding a login form, the shape
   // LWC/Stencil and embedded auth widgets ship. Populated from the test, not an
   // inline script, so the fixture needs no script-src of its own.
-  '<div id="shadow-host"></div>';
+  '<div id="shadow-host"></div>' +
+  // Linked media (#979): an image and a video each wrapped in a link, and a
+  // bare video with no src/<source> at all — the shape a `srcObject` camera or
+  // WebRTC preview has. None of the media has to load: the preload reads the
+  // `src` attribute off the element, and each box is sized so a synthetic
+  // `contextmenu` has somewhere to land.
+  '<a id="img-link" href="target.html"><img id="linked-img" src="thumb.png" alt="thumb" width="40" height="40"></a>' +
+  '<a id="video-link" href="target.html"><video id="linked-video" src="clip.mp4" width="40" height="40"></video></a>' +
+  '<video id="bare-video" width="40" height="40"></video>' +
+  // Two <source>s where the first is a type Chromium can't play, so resource
+  // selection skips it and plays the second: Copy Video Address must copy the
+  // one in `currentSrc`, not the first listed.
+  '<video id="multi-video" width="40" height="40">' +
+  '<source src="skipped.webm" type="video/x-freedom-unplayable">' +
+  '<source src="picked.mp4" type="video/mp4"></video>';
 
 // Load the fixture into the active tab and wait for it to render.
 async function openFixture(window, harness) {
@@ -159,6 +173,36 @@ const selectionItems = (window) =>
       .filter((item) => !item.classList.contains('hidden'))
       .map((item) => item.textContent.trim())
   );
+
+// Every row of the whole menu a user can see right now, across all visible
+// groups and in DOM order, with whether it is disabled — so the assertions see
+// the real index.html group order and the real CSS (`.visible`, `.hidden`),
+// not a stub.
+const visibleMenuItems = (window) =>
+  window.evaluate(() =>
+    [...document.querySelectorAll('#page-context-menu .context-menu-item')]
+      .filter((item) => item.checkVisibility())
+      .map((item) => ({ label: item.textContent.trim(), disabled: item.disabled }))
+  );
+
+// Raise the menu over `id` inside the guest. The event is dispatched at the
+// innermost element (the <img>/<video>), so the link above it is found only by
+// the preload's own composed-path walk.
+function openMenuOver(window, id) {
+  return window.evaluate(async (target) => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    await webview.executeJavaScript(`(() => {
+      window.getSelection().removeAllRanges();
+      const el = document.getElementById(${JSON.stringify(target)});
+      const rect = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: Math.round(rect.left + 5), clientY: Math.round(rect.top + 5),
+      }));
+      return true;
+    })()`);
+  }, id);
+}
 
 const tabCount = (window) =>
   window.evaluate(() => document.querySelectorAll('[data-test="tab"]').length);
@@ -398,6 +442,97 @@ test('clamps a select-all sized selection to a bounded query', async ({ window, 
       { message: 'Waiting for the search to reach history', timeout: 10_000 }
     )
     .toBeLessThan(2048);
+});
+
+// #979: Chrome's composite menu for linked media — the link actions first,
+// the image/media actions under them, and one Inspect at the very bottom.
+test('offers link and image actions with one Inspect for an image inside a link', async ({
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await openMenuOver(window, 'linked-img');
+
+  await expect(menu(window)).toBeVisible();
+  const items = await visibleMenuItems(window);
+  expect(items.map((item) => item.label)).toEqual([
+    'Open Link in New Tab',
+    'Open Link in New Window',
+    'Copy Link Address',
+    'Open Image in New Tab',
+    'Save Image As…',
+    'Copy Image',
+    'Copy Image Address',
+    'Inspect',
+  ]);
+  expect(items.every((item) => !item.disabled)).toBe(true);
+  await window.screenshot({ path: 'test-results/page-context-menu-linked-image.png' });
+});
+
+test('offers link and video actions with one Inspect for a video inside a link', async ({
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await openMenuOver(window, 'linked-video');
+
+  await expect(menu(window)).toBeVisible();
+  const items = await visibleMenuItems(window);
+  expect(items.map((item) => item.label)).toEqual([
+    'Open Link in New Tab',
+    'Open Link in New Window',
+    'Copy Link Address',
+    'Open Video in New Tab',
+    'Copy Video Address',
+    'Inspect',
+  ]);
+  expect(items.every((item) => !item.disabled)).toBe(true);
+});
+
+// A video with nothing to address (no src/<source>, as with a `srcObject`
+// stream): the media rows are shown but disabled, the way Chrome greys them
+// out, instead of enabled items that silently do nothing.
+test('disables the video actions for a video with no source URL', async ({ window, harness }) => {
+  await openFixture(window, harness);
+  await openMenuOver(window, 'bare-video');
+
+  await expect(menu(window)).toBeVisible();
+  expect(await visibleMenuItems(window)).toEqual([
+    { label: 'Open Video in New Tab', disabled: true },
+    { label: 'Copy Video Address', disabled: true },
+    { label: 'Inspect', disabled: false },
+  ]);
+  await window.screenshot({ path: 'test-results/page-context-menu-bare-video.png' });
+});
+
+test('copies the source a multi-<source> video picked, not the first one', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() =>
+          document
+            .querySelector('webview:not(.hidden)')
+            .executeJavaScript("document.getElementById('multi-video').currentSrc")
+        ),
+      { message: 'Waiting for resource selection to pick a <source>', timeout: 10_000 }
+    )
+    .toMatch(/\/picked\.mp4$/);
+  await electronApp.evaluate(({ clipboard }) => clipboard.writeText('before'));
+
+  await openMenuOver(window, 'multi-video');
+  await expect(menu(window)).toBeVisible();
+  const copy = window.locator('#page-context-menu [data-action="copy-media-address"]');
+  await expect(copy).toBeEnabled();
+  await clickOverGuest(copy);
+
+  await expect
+    .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
+    .toMatch(/\/picked\.mp4$/);
 });
 
 test('withholds the item when nothing is selected', async ({ window, harness }) => {
