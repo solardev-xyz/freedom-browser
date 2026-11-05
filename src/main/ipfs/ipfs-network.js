@@ -1,8 +1,10 @@
 /**
- * The network policy the IPFS instances run under (freedom-core design
- * 0007, "Network policy", "Where the proxy comes from"; step 8, B2):
- * `ipfs.start`'s `network`, the same for the profile's instance and every
- * private window's.
+ * The network policy the IPFS processes run under (freedom-core design
+ * 0007, "Network policy", "Where the proxy comes from"; design 0010, "The
+ * network policy and the lifecycle"): the `--network` argument each
+ * freedom-ipfsd process is spawned with (`networkArg`), the same for the
+ * profile's process and the private windows'. A process keeps its policy for
+ * its life: a change is a new process.
  *
  * - **`direct`**, `{ mode: 'direct' }`, unless the profile routes IPFS
  *   through Tor.
@@ -25,6 +27,8 @@
  * routes IPFS through Tor: a `direct` profile's policy can't change with
  * it, so tor-manager isn't asked (or loaded) for it.
  */
+
+const net = require('net');
 
 class IpfsNetwork {
   /**
@@ -101,10 +105,81 @@ function samePolicy(a, b) {
   return a.mode === b.mode && a.ip === b.ip && a.port === b.port;
 }
 
+/**
+ * Whether a process under `running` must make way for `next`, the policy
+ * now: a different policy, or none while it runs `direct`. No policy means
+ * the profile routes IPFS through Tor and Tor offers no endpoint yet, so a
+ * `direct` process goes, and nothing runs until Tor offers one. Tor going
+ * down under `socks5` is no change: the process stays, and fails closed.
+ */
+function supersedes(next, running) {
+  if (!next) return running?.mode === 'direct';
+  return !samePolicy(running, next);
+}
+
 /** A policy that is always `direct`, for nodes built without one. */
 const DIRECT = Object.freeze({
   current: () => ({ mode: 'direct' }),
   subscribe: () => () => {},
 });
 
-module.exports = { IpfsNetwork, samePolicy, DIRECT };
+/**
+ * The policy as `--network` takes it (freedom-core design 0007, "Spawn"):
+ * `direct`, or `socks5:<ip>:<port>`, an IPv6 address in brackets.
+ */
+function networkArg(policy) {
+  if (policy?.mode === 'direct') return 'direct';
+  if (policy?.mode === 'socks5') {
+    const host = policy.ip.includes(':') ? `[${policy.ip}]` : policy.ip;
+    return `socks5:${host}:${policy.port}`;
+  }
+  throw new Error('no network policy');
+}
+
+/**
+ * An IP literal as freedom-ipfsd writes it back in `ipfs.hello`: IPv4 as it
+ * is, IPv6 in its canonical form (RFC 5952, as the URL standard writes it),
+ * and an IPv4-mapped IPv6 address as the IPv4 address it maps, as the
+ * service reads it. Null for anything else.
+ */
+function canonicalIp(ip) {
+  if (typeof ip !== 'string') return null;
+  if (net.isIPv4(ip)) return ip;
+  if (!net.isIPv6(ip)) return null;
+  let host;
+  try {
+    host = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!mapped) return host;
+  const high = parseInt(mapped[1], 16);
+  const low = parseInt(mapped[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+/**
+ * Whether `reported`, hello's `network`, is the policy `policy` the process
+ * was spawned with (freedom-core design 0010, "Reporting"): the same mode,
+ * and under `socks5` the same port and the same address in canonical form.
+ */
+function reportsPolicy(reported, policy) {
+  if (!reported || typeof reported !== 'object' || !policy) return false;
+  if (policy.mode === 'direct') {
+    return reported.mode === 'direct' && Object.keys(reported).length === 1;
+  }
+  if (policy.mode !== 'socks5' || reported.mode !== 'socks5') return false;
+  const ip = canonicalIp(reported.ip);
+  return ip !== null && ip === canonicalIp(policy.ip) && reported.port === policy.port;
+}
+
+module.exports = {
+  IpfsNetwork,
+  samePolicy,
+  supersedes,
+  networkArg,
+  canonicalIp,
+  reportsPolicy,
+  DIRECT,
+};

@@ -13,7 +13,8 @@
  * - events from the process;
  * - restarts after 0.5 s, 2 s, then 10 s, until three crashes within 60 s;
  * - no restart after a protocol mismatch, a requested stop, or the exit
- *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held).
+ *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held, 77
+ *   confinement).
  *
  * **Generations.** Each child is one `Generation` record: its pending
  * requests, its writer budget, its decoder, stderr and timers. Its lifecycle
@@ -144,10 +145,12 @@ const RESTART_DELAYS_MS = [500, 2_000, 10_000];
 const CRASH_WINDOW_MS = 60_000;
 const MAX_CRASHES_IN_WINDOW = 3;
 // sysexits codes after which the process must not be restarted: usage (64),
-// storage or refused filesystem (74), lock held by another process (75).
-// 76 (protocol) is restarted under the crash policy, unless the handshake
-// reported a protocol mismatch.
-const NO_RESTART_EXIT_CODES = new Set([64, 74, 75]);
+// storage or refused filesystem (74), lock held by another process (75), and
+// 77, the service refusing its own confinement (freedom-core design 0010: a
+// thread or descriptor it didn't expect, or its rules refused), which a
+// restart would meet again. 76 (protocol) is restarted under the crash
+// policy, unless the handshake reported a protocol mismatch.
+const NO_RESTART_EXIT_CODES = new Set([64, 74, 75, 77]);
 // Admission limits per generation. Control frames (hello, shutdown) don't
 // count, so they always get through.
 const MAX_PENDING = 256;
@@ -491,6 +494,9 @@ class ServiceClient extends EventEmitter {
    * @param {Function} [options.setTimer]
    * @param {Function} [options.clearTimer]
    * @param {number} [options.poolBytes] - main's chain I/O pool (a test seam)
+   * @param {Function} [options.beforeSpawn] - () => null, or why the process
+   *   may not be spawned now: checked before every spawn, restarts
+   *   included. A refusal spawns nothing and fails the client.
    */
   constructor(options) {
     super();
@@ -500,6 +506,7 @@ class ServiceClient extends EventEmitter {
     // 512, retiring ones included (design 0007, Bounds).
     this.maxPending = options.service.maxPending ?? MAX_PENDING;
     this.spawnFn = options.spawn;
+    this.beforeSpawn = options.beforeSpawn ?? null;
     this.command = options.command;
     this.args = options.args;
     this.log = options.log || console;
@@ -718,6 +725,19 @@ class ServiceClient extends EventEmitter {
   // ---- generations ----
 
   spawnGeneration() {
+    // The caller's last word before each spawn, a restart's too (design
+    // 0010, step 7: main's check of a service's grant).
+    let refused;
+    try {
+      refused = this.beforeSpawn?.() ?? null;
+    } catch (err) {
+      refused = `the check before the spawn failed: ${err?.code || err?.name || 'error'}`;
+    }
+    if (refused) {
+      this.current = null;
+      this.fail('spawn refused');
+      return;
+    }
     this.generations += 1;
     const gen = new Generation(this.generations, this.service.initialKinds ?? CORE_KINDS);
     this.current = gen;

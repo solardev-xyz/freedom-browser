@@ -324,6 +324,14 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.migration }}
         run: npm run test:migration
 
+      # The service grant check's Win32 name rules (freedom-core design
+      # 0010, step 7) against real NTFS junctions: a trailing period or space,
+      # a stream, a short name or a device's name, which Win32 may read as
+      # another. `test` covers the same rules on Linux through path.win32.
+      - name: Service grant check, Win32 names
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && matrix.target == 'win-x64' }}
+        run: npx jest src/main/service-grant.win32.test.js
+
       # ── was the `freedom-ipfs-native-addon` job ──
       # freedom-ipfs native addon smoke for every desktop addon target currently
       # published in the pinned prebuilt manifest. This downloads the real release

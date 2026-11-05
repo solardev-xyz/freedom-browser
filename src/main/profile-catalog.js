@@ -555,6 +555,32 @@ function listProfileDirs(appRoot) {
     }));
 }
 
+/**
+ * Every profile the app root holds, as `{ dir, slot }`: the catalog's
+ * records, and the profile directories it doesn't list, whose slot comes
+ * from their metadata, or is null. The grant check's other profiles
+ * (freedom-core design 0010, `service-grant.js`).
+ */
+function listProfileDataDirs(appRoot) {
+  const profiles = new Map();
+  for (const record of loadCatalog(appRoot).profiles) {
+    profiles.set(path.resolve(record.dir), Number.isInteger(record.slot) ? record.slot : null);
+  }
+  for (const { dir } of listProfileDirs(appRoot)) {
+    const resolved = path.resolve(dir);
+    if (profiles.has(resolved)) continue;
+    let slot = null;
+    try {
+      const metadata = readProfileMetadata(resolved);
+      if (Number.isInteger(metadata?.slot)) slot = metadata.slot;
+    } catch {
+      // Unreadable metadata: its directory is protected all the same.
+    }
+    profiles.set(resolved, slot);
+  }
+  return [...profiles].map(([dir, slot]) => ({ dir, slot }));
+}
+
 function isPathInside(parentDir, childPath) {
   const relative = path.relative(path.resolve(parentDir), path.resolve(childPath));
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -1427,6 +1453,7 @@ module.exports = {
   hashPath,
   importProfile,
   listProfileSummaries,
+  listProfileDataDirs,
   loadCatalog,
   renameProfile,
   readProfileMetadata,

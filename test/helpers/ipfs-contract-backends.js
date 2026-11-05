@@ -404,7 +404,21 @@ async function loadIpfsdBackend({ router, routers = [router], freshStats = true 
         clearService: jest.fn(),
       }),
       [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
-      [path.join(SRC, 'profile-paths.js')]: () => ({ getIpfsDataDir: () => dataDir }),
+      [path.join(SRC, 'profile-paths.js')]: () => ({
+        getIpfsDataDir: () => dataDir,
+        // The grant check's roots (design 0010): this profile's userData
+        // directory is the temporary root, and the other components sit
+        // beside the data directory in it.
+        getProfileUserDataDir: () => root,
+        getComponentDataDirs: () => ({
+          identity: path.join(root, 'identity'),
+          ipfs: dataDir,
+          tor: path.join(root, 'tor-data'),
+          radicleHome: null,
+        }),
+        // No override as written (`C:name` on Windows would be refused).
+        getDataDirOverrides: () => ({}),
+      }),
       [path.join(SRC, 'core', 'naming.js')]: () => ({
         namingDriver: () => createFakeDwebDriver(),
       }),
