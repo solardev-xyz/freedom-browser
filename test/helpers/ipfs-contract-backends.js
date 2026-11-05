@@ -406,8 +406,10 @@ async function loadIpfsdBackend({ router, routers = [router], freshStats = true 
       [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
       [path.join(SRC, 'profile-paths.js')]: () => ({
         getIpfsDataDir: () => dataDir,
-        // The grant check's roots (design 0010): the other components, beside
-        // the data directory in the temporary root.
+        // The grant check's roots (design 0010): this profile's userData
+        // directory is the temporary root, and the other components sit
+        // beside the data directory in it.
+        getProfileUserDataDir: () => root,
         getComponentDataDirs: () => ({
           identity: path.join(root, 'identity'),
           ipfs: dataDir,
