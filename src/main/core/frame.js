@@ -1377,13 +1377,39 @@ class StreamSender {
    */
   nextFrame() {
     if (this.failed) return null;
+    const control = this.takeControl();
+    if (control) return control;
+    while (this.rotation.length) {
+      const frame = this.writeStream(this.rotation.shift());
+      if (frame) return frame;
+    }
+    return null;
+  }
+
+  /**
+   * The next frame that waits for nothing but the writer, or null: the
+   * control queue's, as `nextFrame` takes them, then an `end` whose body's
+   * bytes have all been taken. Data stays in the rotation. For a writer
+   * that must put what is waiting ahead of a frame of its own.
+   */
+  nextControl() {
+    if (this.failed) return null;
+    const control = this.takeControl();
+    if (control) return control;
+    const at = this.rotation.findIndex((id) => {
+      const request = this.requests.get(id);
+      if (request?.state !== 'open') return false;
+      const { body } = request;
+      return body.end && body.abort === null && body.queue.length === 0;
+    });
+    if (at === -1) return null;
+    return this.writeStream(this.rotation.splice(at, 1)[0]);
+  }
+
+  takeControl() {
     while (this.control.length) {
       const [entry, id] = this.control.shift();
       const frame = this.writeControl(entry, id);
-      if (frame) return frame;
-    }
-    while (this.rotation.length) {
-      const frame = this.writeStream(this.rotation.shift());
       if (frame) return frame;
     }
     return null;
@@ -1646,6 +1672,21 @@ class StreamDuplex {
       return { wrote, bytes };
     }
     const sent = this.sender.nextFrame();
+    return sent && { wrote: sent.written, bytes: sent.bytes };
+  }
+
+  /**
+   * As `nextFrame`, of only what waits for nothing but the writer: the
+   * outbox's credit and cancels, then the sender's `nextControl`. No data.
+   */
+  nextControl() {
+    if (this.failed) return null;
+    const owed = this.outbox.nextWrite();
+    if (owed) {
+      const { bytes, ...wrote } = owed;
+      return { wrote, bytes };
+    }
+    const sent = this.sender.nextControl();
     return sent && { wrote: sent.written, bytes: sent.bytes };
   }
 
