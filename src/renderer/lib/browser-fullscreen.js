@@ -102,8 +102,10 @@ export function initBrowserFullscreen({
       // it on screen: let go of that focus, leaving the keyboard with the
       // chrome's document as hiding the toolbar outright used to.
       const toolbar = document.querySelector?.('.toolbar');
+      const workspaceNav = document.querySelector?.('.agent-workspace-nav');
       const focused = document.activeElement;
-      if (toolbar && focused && focused !== document.body && toolbar.contains?.(focused)) {
+      if (focused && focused !== document.body &&
+          (toolbar?.contains?.(focused) || workspaceNav?.contains?.(focused))) {
         focused.blur?.();
       }
       showHint(hint, platform);

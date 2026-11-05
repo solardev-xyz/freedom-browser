@@ -74,6 +74,19 @@ const EXTRA_RESOURCES = {
     noticeMatch: /^freedom-ipfsd \(IPFS service\)$/m,
     pin: { file: 'scripts/fetch-freedom-ipfsd.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
   },
+  'out/dictation-runtime/${os}-${arch}/': {
+    thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
+    noticeMatch: /^whisper\.cpp$/m,
+    pin: { file: 'src/shared/dictation-runtime.js', re: /WHISPER_VERSION = '([^']+)'/ },
+  },
+  'out/windows-workspace/${arch}/': {
+    thirdParty: true, label: 'Codex Windows sandbox', auditName: 'codex-windows-sandbox',
+    noticeMatch: /^Codex Windows sandbox$/m,
+    pin: { file: 'scripts/build-windows-workspace.js', re: /const REVISION = '([^']+)'/ },
+    platformClaims: [{ file: 'NOTICES', line: /^ {2}Windows only\. Freedom builds the sandbox library.*$/m }],
+  },
+  'out/macos-supervisor/${arch}/': { firstParty: true, label: 'Freedom workspace supervisor' },
+  'out/linux-workspace-owner/${arch}/': { firstParty: true, label: 'Freedom workspace owner' },
   'ant-bin/${os}-${arch}/': {
     thirdParty: true,
     label: 'Ant',
@@ -197,6 +210,35 @@ const VENDOR_FILES = {
  * every `auditName` in licenses-audit.json.
  */
 const SRC_ASSETS = {
+  'src/main/agent/': {
+    thirdParty: true,
+    label: 'optional local dictation notices',
+    auditName: 'optional local dictation notices',
+    noticeMatch: /^Optional local dictation downloads$/m,
+    files: ['dictation-local-notices.txt'],
+  },
+  'src/main/agent/workspace-execution/native/windows/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter manifest",
+  },
+  'src/main/agent/workspace-execution/native/windows/src/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter source",
+  },
+  'src/renderer/assets/pdf-fonts/': {
+    thirdParty: true,
+    label: 'PDF standard fonts',
+    auditName: 'PDF standard fonts',
+    noticeMatch: /^PDF standard fonts \(Liberation Sans 2\.1\.5, Foxit Symbol and Dingbats\)$/m,
+  },
+  'src/renderer/assets/provider-logos/': {
+    thirdParty: true,
+    label: 'model provider marks',
+    auditName: 'model provider marks',
+    noticeMatch: /^Model provider marks$/m,
+  },
+  'src/main/agent/workspace-execution/native/': {
+    thirdParty: false,
+    label: "Freedom's own workspace supervisor sources",
+  },
   'src/main/myotis/native/': {
     thirdParty: false,
     label: "Freedom's own Myotis supervisor sources",
@@ -317,7 +359,8 @@ function shippedSrcFiles() {
       const child = `${rel}/${entry.name}`;
       if (entry.isDirectory()) {
         if (entry.name !== 'coverage') walk(child);
-      } else if (!child.endsWith('.test.js')) {
+      } else if (!child.endsWith('.test.js') && entry.name !== '.DS_Store') {
+        // electron-builder excludes Finder metadata through its default file matcher.
         files.push(child);
       }
     }
@@ -350,7 +393,9 @@ describe('bundled-component inventory', () => {
   it('classifies every non-source file the src/**/* pattern ships', () => {
     for (const file of shippedSrcAssets()) {
       const dir = `${path.dirname(file)}/`;
-      expect({ file, classified: dir in SRC_ASSETS }).toEqual({ file, classified: true });
+      const meta = SRC_ASSETS[dir];
+      const classified = Boolean(meta && (!meta.files || meta.files.includes(path.basename(file))));
+      expect({ file, classified }).toEqual({ file, classified: true });
     }
   });
 
@@ -511,14 +556,32 @@ describe("Chromium's third-party notices reach every artifact", () => {
     }).toEqual({ file: CHROMIUM_NOTICES, present: true });
   });
 
-  it('is still unlinked from the macOS app dir by the installed electron-builder', () => {
-    // The whole reason for the mac-only copy below. If a future
-    // electron-builder stops deleting it, this fails and the copy can be
-    // reconsidered rather than carried forever as cargo cult.
-    const macPack = 'node_modules/app-builder-lib/out/electron/electronMac.js';
-    if (!fs.existsSync(path.join(repoRoot, macPack))) return; // bare checkout
-    const unlinks = /unlinkIfExists[^\n]*appOutDir, "LICENSES\.chromium\.html"/.test(read(macPack));
-    expect({ macPack, unlinks }).toEqual({ macPack, unlinks: true });
+  it('is moved into the macOS bundle by the installed electron-builder too', () => {
+    // electron-builder up to 26.15 deleted the copy beside the executable on
+    // the macOS path, which is why the mac-only copy below exists. From 26.18
+    // it moves that copy into Contents/Resources itself
+    // (electron-userland/electron-builder#9407). The explicit copy stays so
+    // the shipped file does not hinge on electron-builder internals; if a
+    // future electron-builder stops moving it, this fails and the change
+    // gets a look instead of passing unnoticed.
+    const framework = 'node_modules/app-builder-lib/out/electron/ElectronFramework.js';
+    if (!fs.existsSync(path.join(repoRoot, framework))) return; // bare checkout
+    const moves = /isMac \? \[move\("LICENSES\.chromium\.html"\)\]/.test(read(framework));
+    expect({ framework, moves }).toEqual({ framework, moves: true });
+  });
+
+  it("keeps Electron's own MIT licence as LICENSE.electron.txt", () => {
+    // Same electron-builder step as above: from 26.18 it renames Electron's
+    // LICENSE to LICENSE.electron.txt on every platform (beside the executable,
+    // or in Contents/Resources on macOS). Freedom has no copy of its own for
+    // this file, so if electron-builder stops doing it, Electron's licence
+    // text silently leaves the artifacts; this check is what notices.
+    const framework = 'node_modules/app-builder-lib/out/electron/ElectronFramework.js';
+    if (!fs.existsSync(path.join(repoRoot, framework))) return; // bare checkout
+    const renames = /move\("LICENSE", "LICENSE\.electron\.txt"\)/.test(read(framework));
+    expect({ framework, renames }).toEqual({ framework, renames: true });
+    // The range has to express the requirement, not just the lockfile.
+    expect(pkg.devDependencies['electron-builder']).toMatch(/^\^26\.(1[89]|[2-9]\d)\./);
   });
 
   it('is copied into the macOS bundle, which the .dmg and .zip actually carry', () => {
@@ -535,6 +598,7 @@ describe("Chromium's third-party notices reach every artifact", () => {
       'Freedom.app/Contents/Resources/',
       'freedom` executable',
       'Freedom.exe',
+      'LICENSE.electron.txt',
     ]) {
       expect({ required, stated: electronEntry.includes(required) }).toEqual({
         required,

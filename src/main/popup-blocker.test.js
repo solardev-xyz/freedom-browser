@@ -20,7 +20,7 @@ const INTERNAL_HOME_URL = pathToFileURL(
 
 let userDataDir;
 
-function load({ partitions = {} } = {}) {
+function load({ partitions = {}, handlers } = {}) {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const ctx = loadMainModule(require.resolve('./popup-blocker'), {
     userDataDir,
@@ -32,11 +32,12 @@ function load({ partitions = {} } = {}) {
       }),
     },
   });
-  ctx.mod.registerPopupBlockerIpc();
+  ctx.mod.registerPopupBlockerIpc(handlers);
+  const custody = require('./wallet/agent-tab-custody');
   const external = require('./external-protocol');
   const permissions = require('./permissions/permissions-manager');
   const store = require('./permissions/permissions-store');
-  return { ...ctx, log, external, permissions, store };
+  return { ...ctx, log, external, permissions, store, custody };
 }
 
 // A tab guest: an input-event emitter with the bits the gate reads.
@@ -200,6 +201,42 @@ describe('popup-blocker', () => {
       // None of the refusals spent the gesture, and none was reported.
       expect(blockedReports(wc)).toHaveLength(0);
       expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), { url: 'ipfs://a/' })).toBe(true);
+    });
+
+    test('a page in Agent custody gets its dweb-link popup as an Agent-held tab, never a user tab', async () => {
+      const openAgentPopup = jest.fn(async () => true);
+      const ctx = load({ handlers: { openAgentPopup } });
+      const wc = guest();
+      ctx.external.trackUserGestures(wc);
+      ctx.custody.setAgentPageCustody(wc, true);
+      click(wc);
+      const request = { url: 'bzz://site.example/x', targetName: null, reuseOnly: false };
+      // false: the preload must not send link:navigate (an ordinary user tab).
+      expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), request)).toBe(false);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(openAgentPopup).toHaveBeenCalledWith(wc, 'bzz://site.example/x');
+      expect(blockedReports(wc)).toHaveLength(0);
+      // Still gated by the popup blocker: the gesture was spent.
+      openAgentPopup.mockClear();
+      expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), request)).toBe(false);
+      await Promise.resolve();
+      expect(openAgentPopup).not.toHaveBeenCalled();
+      expect(blockedReports(wc)).toHaveLength(1);
+      // Once the user takes the tab back, its popups are ordinary again.
+      ctx.custody.setAgentPageCustody(wc, false);
+      click(wc);
+      expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), request)).toBe(true);
+      expect(openAgentPopup).not.toHaveBeenCalled();
+    });
+
+    test('an Agent-held claim with no Agent runtime opens nothing', async () => {
+      const ctx = load();
+      const wc = guest();
+      ctx.external.trackUserGestures(wc);
+      ctx.custody.setAgentPageCustody(wc, true);
+      click(wc);
+      expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), { url: 'ipfs://a/' })).toBe(false);
     });
 
     test('a blocked claim from a guest with no live host reports nothing and does not throw', async () => {

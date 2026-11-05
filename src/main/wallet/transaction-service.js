@@ -9,7 +9,11 @@
 const { parseUnits, formatUnits, Interface, Transaction, keccak256 } = require('ethers');
 const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
-const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
+const {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  isRemoteSendProvablyUnsent,
+} = require('./remote/errors');
 const { closedText, getIntentStore } = require('./intent-store');
 const { reserve, withAccountLock, withIntentKeyLock } = require('./nonce-reservations');
 
@@ -304,6 +308,26 @@ function toSendError(err) {
   return new Error(`Transaction failed: ${err.message}`, { cause: err });
 }
 
+// A send with `redactErrors` (the domains flow: its commitment and reveal
+// carry preimages) logs no details and fails with one of two plain errors.
+// The operation journal (domains/service.js) owns the reconciliation of an
+// uncertain one.
+const WITHHELD = 'Sensitive transaction details withheld';
+
+function logFailure(label, err, redact) {
+  console.error(`[TransactionService] ${label}:`, redact ? WITHHELD : err);
+}
+
+function redactedSendError(broadcastAttempted) {
+  const error = new Error(
+    broadcastAttempted
+      ? 'The wallet transaction did not return a confirmed broadcast result. Inspect the saved operation before retrying.'
+      : 'The wallet did not broadcast this transaction. A fresh approval is needed to resume.'
+  );
+  error.code = broadcastAttempted ? 'DOMAIN_BROADCAST_UNKNOWN' : 'DOMAIN_NOT_BROADCAST';
+  return error;
+}
+
 /**
  * Phone wallets (the remote signer) populate fees, pick the nonce and
  * broadcast through their own RPC, so main has neither the nonce nor the
@@ -315,10 +339,20 @@ function toSendError(err) {
  * REMOTE_OUTCOME_UNKNOWN (remote/bridge.js), passed through as it is: the
  * payment may have been sent, and nothing here sends it again.
  */
-async function sendThroughDevice({ to, value, data, chainId }, signer) {
+async function sendThroughDevice({ to, value, data, chainId, redactErrors = false }, signer) {
+  let broadcastAttempted = false;
   try {
     const from = await signer.getAddress();
-    const hash = await signer.sendTransaction({ to, value, data, chainId });
+    broadcastAttempted = true;
+    let hash;
+    try {
+      hash = await signer.sendTransaction({ to, value, data, chainId });
+    } catch (err) {
+      // A phone rejection, or a failure before the request ever reached
+      // the phone, broadcast nothing; only the rest stays uncertain.
+      if (isRemoteSendProvablyUnsent(err)) broadcastAttempted = false;
+      throw err;
+    }
     await verifyDeviceBroadcastFrom(hash, from, chainId);
     console.log('[TransactionService] Transaction broadcast by signer:', hash);
     return {
@@ -330,7 +364,8 @@ async function sendThroughDevice({ to, value, data, chainId }, signer) {
       explorerUrl: getTxExplorerUrl(chainId, hash),
     };
   } catch (err) {
-    console.error('[TransactionService] Transaction failed:', err);
+    logFailure('Transaction failed', err, redactErrors);
+    if (redactErrors) throw redactedSendError(broadcastAttempted);
     throw toSendError(err);
   }
 }
@@ -374,8 +409,10 @@ function shortText(value, max) {
  * @param {Object} intent - Intent store view: intentId, chainId, sender, nonce
  * @param {{ handoffId: string, hash: string, raw: string }} handoff
  * @param {{ resent?: boolean }} [extra]
+ * @param {{ redact?: boolean }} [options] `redactErrors`: fail as
+ *   redactedSendError, `rejected` as possibly broadcast, and log no details
  */
-async function broadcastIntent(intent, handoff, extra = {}) {
+async function broadcastIntent(intent, handoff, extra = {}, { redact = false } = {}) {
   const { intentId, chainId } = intent;
   const { hash, raw } = handoff;
   // Everything the result needs, before the bytes go anywhere.
@@ -431,7 +468,9 @@ async function broadcastIntent(intent, handoff, extra = {}) {
   }
 
   if (outcome === 'rejected' || outcome === 'not_sent') {
-    console.error('[TransactionService] Transaction failed:', failure);
+    logFailure('Transaction failed', failure, redact);
+    // Fail-closed for the domains journal: only `not_sent` proves nothing left.
+    if (redact) throw redactedSendError(outcome !== 'not_sent');
     const error = toSendError(failure);
     error.outcome = outcome;
     error.intentId = intentId;
@@ -441,7 +480,7 @@ async function broadcastIntent(intent, handoff, extra = {}) {
   if (failure) {
     console.warn(
       `[TransactionService] Broadcast of ${hash} ended without an outcome:`,
-      failure.message
+      redact ? WITHHELD : failure.message
     );
   }
   console.log(`[TransactionService] Transaction ${outcome}:`, hash);
@@ -522,7 +561,9 @@ async function commitNewIntent(params, signer, { context = {}, key = null } = {}
       });
     });
   } catch (err) {
-    console.error('[TransactionService] Transaction failed:', err);
+    // Before the commit: nothing was signed into the records or sent.
+    logFailure('Transaction failed', err, params.redactErrors);
+    if (params.redactErrors) throw redactedSendError(false);
     throw toSendError(err);
   }
   return intent;
@@ -530,15 +571,16 @@ async function commitNewIntent(params, signer, { context = {}, key = null } = {}
 
 // A committed new intent, handed to the broadcaster once the account's
 // lock is released.
-async function handOff(intent) {
+async function handOff(intent, { redact = false } = {}) {
   let handoff;
   try {
     handoff = await getIntentStore().handoff(intent.intentId);
   } catch (err) {
-    console.error('[TransactionService] Transaction not sent:', err);
+    logFailure('Transaction not sent', err, redact);
+    if (redact) throw redactedSendError(false);
     throw notSent(err, intent.intentId);
   }
-  return broadcastIntent(intent, handoff);
+  return broadcastIntent(intent, handoff, {}, { redact });
 }
 
 const KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -861,6 +903,9 @@ async function sendUnderKey(params, signer, intentKey, context, onCommitted = nu
  * @param {string} [params.maxPriorityFeePerGas] - Max priority fee (EIP-1559)
  * @param {string} [params.gasPrice] - Gas price (legacy)
  * @param {number} params.chainId - Chain ID
+ * @param {boolean} [params.redactErrors] - Log no details, and fail with
+ *   DOMAIN_NOT_BROADCAST (nothing went out) or DOMAIN_BROADCAST_UNKNOWN
+ *   (it may have): the domains flow, whose transactions carry preimages
  * @param {import('./signers').Signer} signer - Signer for the sending account
  * @param {Object} [options]
  * @param {string} [options.intentKey] - Names the intent across retries.
@@ -888,7 +933,7 @@ async function signAndSendTransaction(
   if (intentKey) return sendUnderKey(params, signer, intentKey, context, onCommitted);
   const committed = await commitNewIntent(params, signer, { context });
   onCommitted?.();
-  return handOff(committed);
+  return handOff(committed, { redact: Boolean(params.redactErrors) });
 }
 
 /**

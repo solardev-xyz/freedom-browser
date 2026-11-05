@@ -164,8 +164,23 @@ describe('remote-session broker', () => {
 
     harness.session.response.resolve({ result: '0xsignature' });
     await tick();
-    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', result: '0xsignature' });
+    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', attempt: 1, result: '0xsignature' });
     expect(harness.session.close).toHaveBeenCalled();
+  });
+
+  test('asks main only once the request is about to be handed to the phone', async () => {
+    const harness = createHarness();
+    await startBroker(harness);
+
+    harness.handlers.request(JOB);
+    await tick();
+    expect(harness.remoteSigner.requestSent).not.toHaveBeenCalled();
+
+    harness.session.link.resolve();
+    await tick();
+    expect(harness.remoteSigner.requestSent).toHaveBeenCalledWith('job-1');
+    expect(harness.remoteSigner.requestSent.mock.invocationCallOrder[0])
+      .toBeLessThan(harness.session.send.mock.invocationCallOrder[0]);
   });
 
   test('treats a bare (non-envelope) payload as the result', async () => {
@@ -179,7 +194,7 @@ describe('remote-session broker', () => {
     harness.session.response.resolve('0xbaresig');
     await tick();
 
-    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', result: '0xbaresig' });
+    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', attempt: 1, result: '0xbaresig' });
   });
 
   test('forwards phone JSON-RPC errors to main as rpcCode', async () => {
@@ -194,7 +209,7 @@ describe('remote-session broker', () => {
     await tick();
 
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
-      jobId: 'job-1',
+      jobId: 'job-1', attempt: 1,
       error: { rpcCode: 4001, message: 'User denied.' },
     });
   });
@@ -250,7 +265,7 @@ describe('remote-session broker', () => {
     await tick();
 
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
-      jobId: 'job-1',
+      jobId: 'job-1', attempt: 1,
       error: { code: 'REMOTE_UNKNOWN', message: 'No common transport with peer' },
     });
     expect(events.some((e) => e.phase === 'error')).toBe(true);
@@ -267,7 +282,7 @@ describe('remote-session broker', () => {
     await tick();
 
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
-      jobId: 'job-1',
+      jobId: 'job-1', attempt: 1,
       error: { code: 'REMOTE_UNKNOWN', message: 'Session failed to connect' },
     });
   });
@@ -282,7 +297,7 @@ describe('remote-session broker', () => {
     await tick();
 
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
-      jobId: 'job-1',
+      jobId: 'job-1', attempt: 1,
       error: { code: 'REMOTE_UNKNOWN', message: 'Session failed to connect' },
     });
     expect(harness.session.close).toHaveBeenCalled();
@@ -439,6 +454,7 @@ describe('remote-session broker', () => {
       });
       expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
         jobId: 'job-tx',
+        attempt: 1,
         result: '0x' + 'ab'.repeat(32),
       });
     });
@@ -487,6 +503,7 @@ describe('remote-session broker', () => {
       expect(calls).toEqual(['wallet_switchEthereumChain']);
       expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
         jobId: 'job-tx',
+        attempt: 1,
         error: { rpcCode: 4001, message: 'User rejected the request.' },
       });
       expect(harness.session.close).toHaveBeenCalled();
@@ -506,6 +523,7 @@ describe('remote-session broker', () => {
 
       expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
         jobId: 'job-tx',
+        attempt: 1,
         error: { rpcCode: 4902, message: 'Unrecognized chain ID' },
       });
     });
@@ -542,7 +560,7 @@ describe('remote-session broker', () => {
     await tick();
     secondSession.response.resolve({ result: '0xfresh' });
     await tick();
-    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', result: '0xfresh' });
+    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({ jobId: 'job-1', attempt: 2, result: '0xfresh' });
   });
 
   test('retryJob is a no-op for settled or unknown jobs', async () => {

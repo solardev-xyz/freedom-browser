@@ -22,16 +22,20 @@ const {
   acceleratorFromEvent,
   validateBinding,
   findConflict,
+  isShortcutActive,
   formatAccelerator,
 } = require('../shared/shortcuts');
 const { loadSettings, saveSettings, getRevertedShortcutOverrides } = require('./settings-store');
 const { registerTabSwitchKeysIpc } = require('./tab-switch-keys');
 
 const getOverrides = () => loadSettings()?.shortcutOverrides || {};
+// AI shortcuts (Show Agent, Start dictation) only exist while AI is on.
+const getFeatures = () => ({ aiEnabled: loadSettings()?.enableAi === true });
 
 // Full render model for the settings page.
 function getShortcutState(platform = process.platform) {
   const overrides = getOverrides();
+  const features = getFeatures();
   // Remaps the store had to revert because another entry's default or fixed
   // alias claimed the chord — at load (a newer release's default) or on a
   // save (Reset handing a default back). Shown on the row so the change is
@@ -49,8 +53,9 @@ function getShortcutState(platform = process.platform) {
       editable: entry.editable !== false,
       warnOnEdit: entry.warnOnEdit === true,
       // Dev-only entries (App Developer Tools) have no menu item in
-      // packaged builds — don't list a shortcut that doesn't exist.
-      hidden: entry.devOnly === true && app.isPackaged === true,
+      // packaged builds, and AI entries do nothing while AI is off — don't
+      // list a shortcut that doesn't exist.
+      hidden: (entry.devOnly === true && app.isPackaged === true) || !isShortcutActive(entry, features),
       accelerator,
       formatted: formatAccelerator(accelerator, platform),
       defaultAccelerator,
@@ -76,7 +81,8 @@ function getShortcutState(platform = process.platform) {
 // binding, including conflict info so the UI can offer a swap.
 function previewBinding({ id, event } = {}, platform = process.platform) {
   const entry = getShortcutById(id);
-  if (!entry) return { ok: false, reason: 'unknown-shortcut' };
+  const features = getFeatures();
+  if (!entry || !isShortcutActive(entry, features)) return { ok: false, reason: 'unknown-shortcut' };
 
   const accelerator = acceleratorFromEvent(event, platform);
   // Only modifiers held so far — the UI keeps listening.
@@ -86,7 +92,7 @@ function previewBinding({ id, event } = {}, platform = process.platform) {
   if (!validity.ok) return { ok: false, reason: validity.reason, accelerator };
 
   const overrides = getOverrides();
-  const conflict = findConflict(entry, accelerator, overrides, platform);
+  const conflict = findConflict(entry, accelerator, overrides, platform, features);
   return {
     ok: true,
     accelerator,
@@ -112,14 +118,15 @@ function setOverride(
   platform = process.platform
 ) {
   const entry = getShortcutById(id);
-  if (!entry) return { ok: false, reason: 'unknown-shortcut' };
+  const features = getFeatures();
+  if (!entry || !isShortcutActive(entry, features)) return { ok: false, reason: 'unknown-shortcut' };
 
   const validity = validateBinding(entry, accelerator, platform);
   if (!validity.ok) return { ok: false, reason: validity.reason };
 
   const overrides = { ...getOverrides() };
   const normalized = normalizeAccelerator(accelerator, platform);
-  const conflict = findConflict(entry, normalized, overrides, platform);
+  const conflict = findConflict(entry, normalized, overrides, platform, features);
 
   if (conflict) {
     if (conflict.fixed || !swapWithConflict) {
@@ -136,14 +143,23 @@ function setOverride(
   return saved ? { ok: true } : { ok: false, reason: 'save-failed' };
 }
 
-// Reset one shortcut (id given) or all of them (no id) to defaults.
+// Reset one shortcut (id given) or all of them (no id) to defaults. "All"
+// means every shortcut the page lists: a remap of an AI shortcut made
+// before AI was turned off is kept for when it is turned back on.
 function resetOverride({ id } = {}) {
   const overrides = { ...getOverrides() };
   if (id === undefined || id === null) {
-    const saved = saveSettings({ shortcutOverrides: {} });
+    const features = getFeatures();
+    const kept = Object.fromEntries(
+      Object.entries(overrides).filter(([key]) => !isShortcutActive(key, features))
+    );
+    const saved = saveSettings({ shortcutOverrides: kept });
     return saved ? { ok: true } : { ok: false, reason: 'save-failed' };
   }
-  if (!getShortcutById(id)) return { ok: false, reason: 'unknown-shortcut' };
+  // Same gate as setOverride: an AI shortcut hidden while AI is off keeps
+  // its remap for when AI is turned back on.
+  const entry = getShortcutById(id);
+  if (!entry || !isShortcutActive(entry, getFeatures())) return { ok: false, reason: 'unknown-shortcut' };
   delete overrides[id];
   const saved = saveSettings({ shortcutOverrides: overrides });
   return saved ? { ok: true } : { ok: false, reason: 'save-failed' };

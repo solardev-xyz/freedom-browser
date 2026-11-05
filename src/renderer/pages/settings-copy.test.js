@@ -110,7 +110,7 @@ describe('settings.html section headings match their nav label (#276)', () => {
   test('every nav entry carries exactly one page heading, and it is the nav label', () => {
     const titles = entryTitles();
     const items = navItems();
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
     // One `<h2>` per entry however many panels it owns (#268) — a second
     // would put two page headings on one route.
     const mismatches = items
@@ -488,5 +488,18 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
       'Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.'
     );
     expect(section('ens')).toContain('choose which servers Freedom');
+  });
+});
+
+describe('settings.html AI heading (#838)', () => {
+  test('the AI section heading carries no Beta pill', () => {
+    const ai = section('ai');
+    expect(ai).toMatch(/^\s*<h2 class="section-title">AI<\/h2>/);
+    expect(ai.slice(0, ai.indexOf('section-description'))).not.toContain('resolver-badge');
+  });
+
+  test('the start-page banner keeps its Beta tag', () => {
+    const home = fs.readFileSync(path.join(__dirname, 'home.html'), 'utf8');
+    expect(home).toContain('<span class="setup-banner-tag">Beta</span>');
   });
 });

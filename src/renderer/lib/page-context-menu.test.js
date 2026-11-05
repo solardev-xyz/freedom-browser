@@ -514,6 +514,36 @@ describe('page-context-menu', () => {
     expect(activeWebview.reloadIgnoringCache).not.toHaveBeenCalled();
   });
 
+  // R1-F1: Back/Forward/Reload from the page menu must not navigate a tab the
+  // Agent owns, the same as the toolbar buttons and the app menu.
+  test('Back/Forward/Reload do nothing while the active tab is Agent-owned', async () => {
+    const { mod, pageContextMenu, activeWebview } = await loadPageContextMenuModule();
+    const onReload = jest.fn();
+    let agentOwned = true;
+    await mod.initPageContextMenu({ onReload, isActiveTabAgentOwned: () => agentOwned });
+    activeWebview.canGoBack = jest.fn(() => true);
+    activeWebview.canGoForward = jest.fn(() => true);
+    activeWebview.goBack = jest.fn();
+    activeWebview.goForward = jest.fn();
+
+    for (const action of ['back', 'forward', 'reload']) {
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+      await triggerMenuAction(pageContextMenu, action);
+    }
+    expect(activeWebview.goBack).not.toHaveBeenCalled();
+    expect(activeWebview.goForward).not.toHaveBeenCalled();
+    expect(onReload).not.toHaveBeenCalled();
+
+    agentOwned = false;
+    for (const action of ['back', 'forward', 'reload']) {
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+      await triggerMenuAction(pageContextMenu, action);
+    }
+    expect(activeWebview.goBack).toHaveBeenCalledTimes(1);
+    expect(activeWebview.goForward).toHaveBeenCalledTimes(1);
+    expect(onReload).toHaveBeenCalledTimes(1);
+  });
+
   test('dispatches page and link actions through menu clicks', async () => {
     const { mod, pageContextMenu, activeWebview, electronAPI, pushDebug, backdrop, urlUtils } =
       await loadPageContextMenuModule();

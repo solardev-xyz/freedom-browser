@@ -52,6 +52,11 @@ let onOpening = null;
 // exhausted auto-retry run. Falls back to the bare reload when not wired.
 let onReload = null;
 
+// Whether the active tab is in Agent custody (`tabs.js`'s `isTabAgentOwned`),
+// injected for the same import-cycle reason. Back/Forward from this menu must
+// not navigate a tab the Agent owns, the same as the toolbar buttons.
+let isActiveTabAgentOwned = () => false;
+
 const currentUrlOf = (webview) => {
   try {
     return webview?.getURL?.() || null;
@@ -302,15 +307,17 @@ const handleAction = async (action, { background = false } = {}) => {
     // that drives the post-traversal ENS trust refresh (#86) is recorded
     // here too rather than only on the one call site the issue named.
     case 'back':
+      if (isActiveTabAgentOwned()) break;
       goBackInHistory(activeWebview);
       break;
 
     case 'forward':
+      if (isActiveTabAgentOwned()) break;
       goForwardInHistory(activeWebview);
       break;
 
     case 'reload':
-      if (!activeWebview) break;
+      if (!activeWebview || isActiveTabAgentOwned()) break;
       if (onReload) onReload(activeWebview);
       else activeWebview.reloadIgnoringCache();
       break;
@@ -470,6 +477,8 @@ export const initPageContextMenu = async (options = {}) => {
   pageContextMenu = document.getElementById('page-context-menu');
   onOpening = options.onOpening ?? null;
   onReload = options.onReload ?? null;
+  isActiveTabAgentOwned =
+    typeof options.isActiveTabAgentOwned === 'function' ? options.isActiveTabAgentOwned : () => false;
 
   // Handle menu item clicks
   if (pageContextMenu) {

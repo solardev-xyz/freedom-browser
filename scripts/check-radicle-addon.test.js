@@ -1,5 +1,5 @@
 /**
- * Addon load/ABI check used by the `radicle-addon-load` CI matrix.
+ * Addon load/ABI check used by the `native-addons` CI matrix.
  *
  * libradicle is the only Radicle runtime — there is no executable fallback —
  * so a release asset that loads but is missing an export the app calls, or

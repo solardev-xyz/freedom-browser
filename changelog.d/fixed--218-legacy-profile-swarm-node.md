@@ -1,1 +1,0 @@
-- A profile opened with `--profile-dir` asks before using a Swarm node already running on port 1633, as other profiles do ([#218](https://github.com/solardev-xyz/freedom-browser/issues/218))

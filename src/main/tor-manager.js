@@ -415,8 +415,11 @@ async function applyTorProxy(
 
   if (superseded()) {
     // Stopped or restarted while the proxy was being applied: no RUNNING for
-    // it, and the routing in force now is the last word, not this apply's.
-    reassertOnionRouting().catch(() => {});
+    // this run, and the routing in force now (the stop's DIRECT or the
+    // restart's PAC) is re-applied over whatever this apply's calls left.
+    reassertOnionRouting().catch((err) => {
+      log.error('[Tor] Failed to re-apply .onion routing:', err.message);
+    });
     return false;
   }
   if (retired()) return false;
@@ -1007,6 +1010,10 @@ function registerTorIpc() {
   syncProfileMode();
 }
 
+function getStatus() {
+  return { status: currentState, error: lastError };
+}
+
 module.exports = {
   registerTorIpc,
   startTor,
@@ -1021,6 +1028,7 @@ module.exports = {
   getTorDataPath,
   writeArtiConfig,
   checkBinary,
+  getStatus,
   syncProfileMode,
   STATUS,
 };

@@ -102,6 +102,10 @@ const element = (tagName, attrs = '') => {
   }
   const node = {
     tagName,
+    getAttribute(name) {
+      const match = attrs.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+      return match ? decode(match[1]) : null;
+    },
     id: (attrs.match(/\bid="([^"]*)"/) || [])[1] || '',
     classList: { contains: (name) => classes.has(name) },
     style,
@@ -177,7 +181,7 @@ const NAV_LABELS = Object.fromEntries(
 // `data-title` to be named by until then (Chains, RPC Providers).
 const PANEL_TAGS = [
   ...SOURCE.matchAll(
-    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?>/g
+    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?[^>]*>/g
   ),
 ];
 const PANEL_NAV = Object.fromEntries(PANEL_TAGS.map(([, id, nav]) => [id, nav]));
@@ -209,8 +213,8 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(18);
-    expect(Object.keys(NAV_LABELS)).toHaveLength(10);
+    expect(sections).toHaveLength(21);
+    expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
 
@@ -237,13 +241,49 @@ describe('the markup reader these tests are built on', () => {
   });
 });
 
+// The AI subpages ship `hidden` (AI is off by default) and agent-settings.js
+// lifts that once AI is on; this flips the parsed markup the same way.
+const AI_PAGES = ['providers', 'voice'];
+function withAi(enabled, run) {
+  const pages = CONTENT.children.filter((child) => AI_PAGES.includes(child.id));
+  const before = pages.map((page) => page.hidden);
+  pages.forEach((page) => {
+    page.hidden = !enabled;
+  });
+  try {
+    return run();
+  } finally {
+    pages.forEach((page, i) => {
+      page.hidden = before[i];
+    });
+  }
+}
+
 describe('buildSettingsSearchIndex', () => {
+  test('finds nothing on the AI subpages while AI is off, and all of it once on', () => {
+    const aiResults = () =>
+      ['dictation', 'language', 'audio privacy', 'models & providers'].flatMap((query) =>
+        search(query).filter((result) => AI_PAGES.includes(result.sectionId))
+      );
+    // Shipped markup is the AI-off state.
+    expect(AI_PAGES.map((id) => CONTENT.children.find((child) => child.id === id).hidden)).toEqual(
+      [true, true]
+    );
+    expect(aiResults()).toEqual([]);
+    // The AI entry itself stays findable: it is where AI is turned on.
+    expect(labelsOf(search('enable ai'))).toContain('Enable AI features');
+    expect(withAi(true, () => labelsOf(aiResults()))).toEqual(
+      expect.arrayContaining(['Voice dictation', 'Language', 'Audio privacy', 'Models & providers'])
+    );
+  });
+
+
   test('indexes one entry per section, named by its own heading', () => {
-    const sections = index().filter(isSectionEntry);
+    const sections = withAi(true, () => index().filter(isSectionEntry));
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(17);
+    expect(sections).toHaveLength(20);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -259,6 +299,32 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
     expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
     expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
+    expect(named('voice')).toMatchObject({
+      label: 'Voice dictation',
+      section: 'AI › Voice dictation',
+    });
+  });
+
+  test('keeps a provider catalogue searchable while its detail heading changes', () => {
+    const content = parseFragment(
+      '<section class="section" id="providers" data-search-title="Models &amp; providers"><h2 class="section-title">Ollama</h2></section>'
+    );
+    expect(buildSettingsSearchIndex(content, { groups: { providers: 'AI' } })[0]).toMatchObject({
+      sectionId: 'providers',
+      label: 'Models & providers',
+      section: 'AI › Models & providers',
+    });
+  });
+
+  test('keeps the service detail route for a preference revealed from another section', () => {
+    const content = parseFragment(
+      '<section class="section" id="voice"><h2 class="section-title">Voice dictation</h2><div class="row" data-settings-route="ai/voice/openrouter"><p class="row-label">Audio privacy</p></div></section>'
+    );
+    expect(
+      buildSettingsSearchIndex(content).find(
+        (entry) => entry.label === 'Audio privacy'
+      )
+    ).toMatchObject({ sectionId: 'voice', route: 'ai/voice/openrouter' });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {
@@ -313,6 +379,25 @@ describe('buildSettingsSearchIndex', () => {
     expect(entries.find((entry) => entry.label === 'Theme').help).toBe(
       'Applies to both the browser chrome and internal pages.'
     );
+  });
+
+  test("AI's intro keeps its 'AI is off' note inside the live-region wrapper (#835)", () => {
+    // The note moved into an `aria-live` wrapper so revealing it is
+    // announced; `.settings-search-intro` keeps it in the section's intro,
+    // so "chats" or "development servers" still find the AI section.
+    const ai = index().find((entry) => entry.sectionId === 'ai');
+    expect(ai.help).toContain('Your saved chats, connections and projects are kept');
+    expect(ai.help).toContain('Running development servers remain available');
+    expect(search('development servers').some((entry) => entry.sectionId === 'ai')).toBe(true);
+    // Without the marker the wrapped note drops out of the intro.
+    const fragment = parseFragment(
+      '<section class="section" id="demo"><h2 class="section-title">Demo</h2>' +
+        '<div aria-live="polite"><p class="row-help">Wrapped note</p></div>' +
+        '<div class="settings-search-intro" aria-live="polite"><p class="row-help">Marked note</p></div>' +
+        '</section>'
+    );
+    const demo = buildSettingsSearchIndex(fragment, {}).find((entry) => entry.sectionId === 'demo');
+    expect(demo.help).toBe('Marked note');
   });
 
   test('skips the result list itself, so a search cannot index its own output', () => {

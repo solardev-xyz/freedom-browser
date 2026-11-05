@@ -463,6 +463,10 @@ function checkHealth() {
   }
 }
 
+function getStatus() {
+  return { status: currentState, error: lastError };
+}
+
 function stopHealthCheck() {
   if (!healthCheckInterval) return;
   clearInterval(healthCheckInterval);
@@ -1348,6 +1352,7 @@ module.exports = {
   hasInjectedIdentity,
   ipfsBackend,
   getNativeDiagnostics,
+  getStatus,
   checkHealth,
   isExternalIpfsConfig,
   normalizeExternalGatewayUrl,

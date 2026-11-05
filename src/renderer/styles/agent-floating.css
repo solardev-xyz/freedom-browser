@@ -1,0 +1,1035 @@
+/* Floating Agent (browser mode).
+
+   Agent no longer docks a solid column beside the page: it floats over the
+   live page, which keeps its width. agent-ui.js sets `.agent-floating` on
+   #agent-sidebar outside Agent-first mode, `data-presentation` and
+   `data-agent-view`:
+
+     launcher  no task yet: one centred card holding the composer;
+     column    a task exists or a conversation was reopened: individual
+               speech bubbles and a persistent header, with a separate
+               composer card below them.
+
+   The cards ("glass" below, after the name of their tokens) are opaque,
+   with no backdrop blur: a translucent fill let busy pages show through the
+   text (#865). They appear and leave by interpolating their own fill,
+   border and shadow while the content inside them fades with opacity, and
+   they move with transform.
+   The conversation has no enclosing background. Its speech bubbles use
+   their own near-opaque fills; the stationary header, Workspace slip and
+   composer use the card surface.
+
+   Everything here is scoped under `.agent-floating`, so Agent-first mode
+   keeps the layout in agent.css untouched. */
+
+.app-body {
+  position: relative;
+}
+
+/* Floating-only nodes stay out of every other layout. */
+.agent-float-title,
+.agent-scope-help {
+  display: none;
+}
+
+.agent-sidebar.agent-floating {
+  --muted: var(--agent-glass-muted);
+  --agent-float-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --agent-float-column-width: min(408px, calc(100% - 20px));
+
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: block;
+  width: auto;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  pointer-events: none;
+  visibility: visible;
+  transition: visibility 0s linear 0s;
+}
+
+/* Closed: the surfaces dissolve first, then the layer stops existing for
+   hit-testing and focus (agent-ui.js also makes it inert). */
+.agent-sidebar.agent-floating.collapsed {
+  width: auto;
+  border: 0;
+  visibility: hidden;
+  transition: visibility 0s linear 300ms;
+}
+
+.agent-floating .agent-sidebar-inner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  transition: transform 360ms var(--agent-float-ease);
+}
+
+.agent-floating .agent-pane-resizer {
+  display: none;
+}
+
+/* ── Glass ──────────────────────────────────────────────────────────────── */
+
+.agent-floating[data-presentation='launcher'] .agent-sidebar-inner,
+.agent-floating[data-presentation='column'] .agent-composer-wrap,
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-process-compact,
+.agent-floating-ghost {
+  background-color: var(--agent-glass);
+  border: 1px solid var(--agent-glass-border);
+  box-shadow:
+    var(--agent-glass-shadow-soft),
+    inset 0 1px 0 var(--agent-glass-highlight);
+  transition:
+    background-color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease,
+    transform 360ms var(--agent-float-ease);
+}
+
+.agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner,
+.agent-floating.collapsed[data-presentation='column'] .agent-composer-wrap,
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header,
+.agent-floating.collapsed[data-presentation='column'] .agent-process-compact {
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* The content inside the cards fades on its own. */
+.agent-floating[data-presentation='launcher'] .agent-sidebar-inner > *,
+.agent-floating[data-presentation='column'] .agent-sidebar-header > *,
+.agent-floating[data-presentation='column'] .agent-scope-help,
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view,
+.agent-floating[data-presentation='column'] .agent-workspace-body,
+.agent-floating[data-presentation='column'] .agent-process-compact > *,
+.agent-floating[data-presentation='column'] .agent-composer-wrap > * {
+  transition: opacity 200ms ease;
+}
+
+.agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner > *,
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header > *,
+.agent-floating.collapsed[data-presentation='column'] .agent-scope-help,
+.agent-floating.collapsed[data-presentation='column'] .agent-loading-view,
+.agent-floating.collapsed[data-presentation='column'] .agent-setup-view,
+.agent-floating.collapsed[data-presentation='column'] .agent-workspace-body,
+.agent-floating.collapsed[data-presentation='column'] .agent-process-compact > *,
+.agent-floating.collapsed[data-presentation='column'] .agent-composer-wrap > * {
+  opacity: 0;
+}
+
+/* ── Launcher: one centred card ─────────────────────────────────────────── */
+
+.agent-floating[data-presentation='launcher'] .agent-sidebar-inner {
+  --agent-launcher-top: clamp(32px, 14vh, 148px);
+  top: var(--agent-launcher-top);
+  right: 0;
+  left: 0;
+  width: min(664px, calc(100% - 32px));
+  max-height: calc(100% - var(--agent-launcher-top) - 24px);
+  margin-inline: auto;
+  pointer-events: auto;
+  border-radius: 26px;
+  box-shadow:
+    var(--agent-glass-shadow),
+    inset 0 1px 0 var(--agent-glass-highlight);
+}
+
+.agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner {
+  transform: translateY(12px) scale(0.985);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-sidebar-header {
+  padding: 12px 12px 0 14px;
+  border-bottom: 0;
+}
+
+/* The scope explanation belongs to a conversation, not to the launcher or
+   the provider and services screens. */
+.agent-floating[data-presentation='launcher'] #agent-scope-help,
+.agent-floating:not([data-agent-view='workspace']) #agent-scope-help {
+  display: none;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-view,
+.agent-floating[data-presentation='launcher'] .agent-workspace-body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+/* The ideas sit inside the launcher card, under the composer, so they share
+   its glass, border and shadow instead of floating over the page (#864).
+   The card is max-height capped and the view only reserves the composer, so
+   when a long draft grows the composer the ideas give way: they shrink and
+   scroll inside the card rather than painting past its bottom edge. They
+   give way last: the greeting above (which scrolls itself) shrinks 1000x
+   harder, so it absorbs the shortfall first, and only once it is frozen at
+   its min-height does flex hand the rest to the ideas. (A fractional shrink
+   on the ideas would not do it: flex scales the shortfall down when the
+   unfrozen shrink factors sum below 1.) The
+   4px padding (taken out of the margin) keeps the cards where they were and
+   leaves room for their focus outline, which the scroller would clip. */
+.agent-floating[data-presentation='launcher'] .agent-workspace-view {
+  min-height: var(--agent-composer-height, 160px);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-view > .agent-workspace-body {
+  flex-shrink: 1000;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-examples {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 10px 10px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Never darker than the launcher card they sit in: one step lighter in dark
+   theme, the same white in light theme, where the border sets them apart.
+   No shadow of their own: the scroller above would clip it at its edges, and
+   the card already carries one (#864, #865). */
+.agent-floating[data-presentation='launcher'] .agent-example {
+  background: var(--agent-glass-raised);
+}
+
+.agent-floating[data-presentation='column'] .agent-examples {
+  display: none;
+}
+
+/* Prioritise composer controls when there is no room for a separate row. */
+@media (max-height: 520px), (max-width: 380px) and (max-height: 600px) {
+  .agent-floating[data-presentation='launcher'] .agent-examples {
+    display: none;
+  }
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-scroll {
+  flex: 0 1 auto;
+  padding: 0 24px;
+  overflow: auto;
+}
+
+@media (max-height: 700px) {
+  .agent-floating[data-presentation='launcher'] .agent-sidebar-inner {
+    --agent-launcher-top: 16px;
+  }
+
+  .agent-floating[data-presentation='launcher'] .agent-example-detail,
+  .agent-floating-ghost-greeting .agent-example-detail,
+  .agent-floating[data-presentation='launcher'] .agent-empty-state-icon,
+  .agent-floating-ghost-greeting .agent-empty-state-icon {
+    display: none;
+  }
+
+  .agent-floating[data-presentation='launcher'] .agent-example,
+  .agent-floating-ghost-greeting .agent-example {
+    padding: 9px 12px;
+  }
+}
+
+.agent-floating[data-presentation='launcher'] .agent-run-header {
+  display: none;
+}
+
+.agent-floating[data-presentation='launcher'] #agent-run-message:empty {
+  display: none;
+}
+
+.agent-floating[data-presentation='launcher'] #agent-run-message {
+  margin: 6px 0 0;
+}
+
+/* The shared empty state (agent.css), placed in the card and tinted for
+   the glass; its size and alignment come from the component. */
+.agent-floating[data-presentation='launcher'] .agent-empty-state,
+.agent-floating-ghost-greeting {
+  margin: 14px auto 18px;
+  color: var(--agent-glass-muted);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-composer-wrap {
+  padding: 0 14px 14px;
+  background: transparent;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-composer {
+  background: var(--agent-glass-field);
+  border-color: var(--agent-glass-border);
+  box-shadow: none;
+}
+
+/* ── Column: chat bubbles over the page ────────────────────────────────── */
+
+.agent-floating[data-presentation='column'] .agent-sidebar-inner {
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 0;
+  width: var(--agent-float-column-width);
+  pointer-events: none;
+}
+
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-inner {
+  transform: translateX(28px);
+}
+
+/* Scrolling bubbles and notices use near-opaque fills without live blur. */
+.agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view,
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty),
+.agent-floating[data-presentation='column'] .agent-output:not(:empty),
+.agent-floating[data-presentation='column'] .agent-subagent-report,
+.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking,
+.agent-floating[data-presentation='column'] .agent-live-status {
+  background: var(--agent-bubble-agent);
+  border: 1px solid var(--agent-bubble-border);
+  box-shadow: var(--agent-bubble-shadow);
+}
+
+/* Helper reports are agent speech too: same surface, shape and width. */
+.agent-floating[data-presentation='column'] .agent-subagent-report {
+  max-width: 94%;
+  padding: 10px 14px;
+  border-radius: 18px 18px 18px 6px;
+}
+
+/* Help and system notices use a denser fill than the bubbles. */
+.agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
+  background: color-mix(in srgb, var(--agent-bubble-agent) 70%, var(--bg));
+}
+
+/* Compact header: title over status on the left; the New chat (compose)
+   icon, help and the window controls on the right. Long statuses ellipsize under the title. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header {
+  display: grid;
+  grid-template-areas:
+    'title lifecycle actions'
+    'status lifecycle actions';
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 4px;
+  margin: 0 0 4px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 16px;
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-title-row {
+  grid-area: title;
+  min-width: 0;
+}
+
+/* Setup has no run status under its title: centre the title in the header. */
+.agent-floating[data-presentation='column'][data-agent-view='setup'] .agent-sidebar-title-row {
+  grid-row: title-start / status-end;
+}
+
+/* A new task has no run status either (#876): centre the title the same way. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header:has(#agent-run-status[hidden]) .agent-sidebar-title-row {
+  grid-row: title-start / status-end;
+}
+
+.agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 0;
+}
+
+/* The hidden settings headings otherwise leave an empty flex item and gap
+   before the conversation title, offsetting it from the status below. */
+.agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-title-row > div {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header-actions {
+  grid-area: actions;
+}
+
+.agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-float-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 640;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header .agent-run-header {
+  display: contents;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header #agent-run-status {
+  grid-area: status;
+  justify-self: start;
+  max-width: 100%;
+  margin-top: 1px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  background: none;
+  border: 0;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header #agent-run-status.active::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 6px 1px 0;
+  vertical-align: middle;
+  content: '';
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header .agent-lifecycle-actions {
+  grid-area: lifecycle;
+}
+
+.agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]) {
+  display: block;
+  margin: 0 6px 6px;
+  padding: 9px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  border-radius: 14px;
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-view {
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 6px 6px;
+  border-radius: 18px;
+}
+
+/* Set up Agent and Services are sheets hanging from the header: exactly
+   its width and corner radius, as tall as what they hold (scrolling past
+   the column's height), and opaque — the page's own text read through the
+   near-opaque bubble fill at narrow widths. */
+.agent-floating[data-presentation='column'] .agent-setup-view {
+  flex: 0 1 auto;
+  margin: 0;
+  border-radius: 16px;
+  background: var(--agent-sheet);
+}
+
+/* Header and sheet are one card (#863), like the docked panel: the header
+   is the card's top, the sheet its body, with no gap or seam between them.
+   The card's drop shadow sits on the sheet, and the header stacks above
+   it so that shadow tucks under the header instead of across its foot. */
+.agent-floating[data-presentation='column']:is([data-agent-view='setup'], [data-agent-view='services'])
+  .agent-sidebar-header {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 0;
+  border-bottom-width: 0;
+  border-radius: 16px 16px 0 0;
+}
+
+/* Its highlight only while open: the collapse rule's box-shadow:none has to
+   win so the line dissolves with the card. */
+.agent-floating:not(.collapsed)[data-presentation='column']:is([data-agent-view='setup'], [data-agent-view='services'])
+  .agent-sidebar-header {
+  box-shadow: inset 0 1px 0 var(--agent-glass-highlight);
+}
+
+.agent-floating[data-presentation='column'] .agent-setup-view {
+  padding-top: 8px;
+  border-top-width: 0;
+  border-radius: 0 0 16px 16px;
+  box-shadow: var(--agent-glass-shadow-soft);
+}
+
+/* No status yet: the empty line would only pad the sheet's foot. */
+.agent-floating[data-presentation='column'] .agent-setup-view > .agent-message:empty {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-workspace-view {
+  min-height: 0;
+  pointer-events: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-workspace-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin-bottom: -6px;
+  pointer-events: auto;
+}
+
+/* The conversation's one scrollbar. Bubbles grow with their content; only
+   code and tables scroll sideways, inside themselves. */
+.agent-floating[data-presentation='column'] .agent-workspace-scroll {
+  padding: 12px 8px;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  /* Fade only the stationary scroll viewport. Its top starts at the header's
+     lower edge, not beneath it, so no bubble or scrollbar shows through the
+     header's glass (#866); the six-pixel bottom edge tucks beneath the
+     composer. Neither glass surface is masked. */
+  /* theme-literal: black is an opaque alpha mask, not a visible surface */
+  mask-image: linear-gradient(to bottom, transparent, black 6px, black calc(100% - 6px), transparent);
+}
+
+/* Runtime notices: a small system line, errors keep their colour. It stays
+   in DOM order: reordering it below the transcript (flex `order`) made it the
+   scroll anchor, which pinned the view while an answer streamed in. */
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px auto 14px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  border-radius: 12px;
+}
+
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty):not(.error) {
+  color: var(--muted);
+}
+
+.agent-floating[data-presentation='column'] .agent-empty-state {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-transcript {
+  gap: 0;
+  padding: 0;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn {
+  min-width: 0;
+  gap: 8px;
+  /* `backwards`, not `both`: a finished animation that keeps filling stays
+     "active" and leaves every turn, however tall, on its own compositor
+     layer for the life of the conversation. */
+  animation: agent-floating-turn 320ms var(--agent-float-ease) backwards;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn + .agent-turn {
+  margin-top: 20px;
+}
+
+/* User and guidance bubbles: right, accent-tinted. Guidance keeps its own
+   sizing inside .agent-guidance-content. */
+.agent-floating[data-presentation='column'] .agent-user-message {
+  padding: 9px 13px;
+  font-size: 12.5px;
+  background: var(--agent-bubble-user);
+  border: 1px solid var(--agent-bubble-border);
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: var(--agent-bubble-shadow);
+}
+
+.agent-floating[data-presentation='column'] .agent-user-message:not(.agent-guidance-message) {
+  max-width: 86%;
+}
+
+/* Agent bubble: left, neutral; absent until the first token arrives. */
+.agent-floating[data-presentation='column'] .agent-output:empty {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-output:not(:empty) {
+  width: fit-content;
+  min-width: 0;
+  max-width: 94%;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  border-radius: 18px 18px 18px 6px;
+}
+
+/* Painted glass keeps the scrolling surface inexpensive: no backdrop blur,
+   filters, extra layers or animated highlights on the moving messages. */
+.agent-floating[data-presentation='column'] .agent-output:not(:empty),
+.agent-floating[data-presentation='column'] .agent-subagent-report {
+  background-color: var(--agent-message-surface);
+  background-image: var(--agent-message-sheen);
+  border-color: var(--agent-message-border);
+  box-shadow: var(--agent-message-shadow);
+}
+
+.agent-floating[data-presentation='column'] .agent-user-message {
+  background-image: var(--agent-message-sheen);
+  border-color: var(--agent-message-border);
+  box-shadow: var(--agent-message-shadow);
+}
+
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown pre,
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown table {
+  max-width: 100%;
+}
+
+/* Prose and URLs may break anywhere; table cells wrap only between words
+   and the table scrolls sideways instead of crushing its columns. */
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown th,
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown td {
+  min-width: 7ch;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown th {
+  white-space: nowrap;
+}
+
+/* Activity: a quiet capsule ("Worked for 42s · 11 actions") that opens into
+   a timeline. The list keeps every step, failure and approval; the step
+   glyphs stay in the text for assistive technology and become dots here. */
+.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking {
+  width: fit-content;
+  max-width: 94%;
+  padding: 5px 12px 5px 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  border-radius: 999px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[open]:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-thinking[open] {
+  width: 94%;
+  padding: 7px 14px 9px 12px;
+  border-radius: 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary,
+.agent-floating[data-presentation='column'] .agent-thinking > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  list-style: none;
+  line-height: 1.4;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::-webkit-details-marker,
+.agent-floating[data-presentation='column'] .agent-thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  content: '';
+  background: var(--accent);
+  border-radius: 50%;
+  opacity: 0.85;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::after,
+.agent-floating[data-presentation='column'] .agent-thinking > summary::after {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  content: '';
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-1px) rotate(-45deg);
+  transition: transform 160ms ease;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[open] > summary::after,
+.agent-floating[data-presentation='column'] .agent-thinking[open] > summary::after {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary:focus-visible,
+.agent-floating[data-presentation='column'] .agent-thinking > summary:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-list {
+  position: relative;
+  margin: 8px 0 0 2px;
+  padding: 0 0 0 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-list::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 3px;
+  width: 1px;
+  content: '';
+  background: currentColor;
+  opacity: 0.25;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item {
+  position: relative;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  border-bottom: 0;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-state {
+  position: absolute;
+  top: 8px;
+  left: -16px;
+  width: 7px;
+  height: 7px;
+  overflow: hidden;
+  color: transparent;
+  font-size: 7px;
+  line-height: 7px;
+  background: var(--agent-bubble-agent);
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item:not(.failed):not(.cancelled) .agent-tool-state {
+  border-color: var(--accent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.failed {
+  color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.failed .agent-tool-state {
+  background: var(--agent-danger);
+  border-color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.cancelled .agent-tool-state {
+  border-style: dashed;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-approval {
+  font-size: 10.5px;
+  border-color: var(--agent-bubble-border);
+}
+
+/* Live state from agent-ui.js: the activity is working|done|failed, each
+   step running|succeeded|failed|cancelled, and data-approval mirrors the
+   step's approval label. Only the live dots move, and only while working. */
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='working'] > summary::before,
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='working'] .agent-tool-item[data-state='running'] .agent-tool-state {
+  animation: agent-floating-live 1.6s ease-in-out infinite;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='done'] > summary::before {
+  width: 4px;
+  height: 8px;
+  margin: 0 1px 2px;
+  background: none;
+  border-right: 1.5px solid var(--secure-fg);
+  border-bottom: 1.5px solid var(--secure-fg);
+  border-radius: 0;
+  opacity: 1;
+  transform: rotate(45deg);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='failed'] > summary {
+  color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='failed'] > summary::before {
+  background: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='running'] {
+  color: var(--text);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='running'] .agent-tool-state,
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='succeeded'] .agent-tool-state {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='requested'] .agent-tool-approval {
+  color: var(--agent-caution);
+  border-color: color-mix(in srgb, var(--agent-caution) 45%, transparent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='approved'] .agent-tool-approval,
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='reviewer_approved'] .agent-tool-approval {
+  color: var(--secure-fg);
+  border-color: color-mix(in srgb, var(--secure-fg) 45%, transparent);
+}
+
+@keyframes agent-floating-live {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.agent-floating[data-presentation='column'] .agent-live-status {
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+/* A stationary glass slip rises from behind the composer. Its lower edge
+   tucks underneath the card; padding keeps expanded controls above it. */
+.agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+  flex: 0 0 auto;
+  z-index: 1;
+  width: auto;
+  margin: 0 14px -16px;
+  padding-bottom: 16px;
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-process-compact-toggle {
+  min-height: 40px;
+  padding: 10px 14px;
+  border-radius: 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-process-compact-popover {
+  padding-bottom: 10px;
+}
+
+/* The composer stays its own stationary glass card. */
+.agent-floating[data-presentation='column'] .agent-composer-wrap {
+  z-index: 2;
+  margin-top: 0;
+  padding: 4px;
+  border-radius: 24px;
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-composer {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+@keyframes agent-floating-turn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* The centred card dissolving while its composer moves to the column. */
+.agent-floating-ghost {
+  --muted: var(--agent-glass-muted);
+  position: fixed;
+  z-index: 39;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 26px;
+}
+
+.agent-floating-ghost-greeting {
+  position: absolute;
+  margin: 0;
+}
+
+/* Page chrome that lives in the column's corner moves out of its way. */
+@media (min-width: 720px) {
+  body.agent-floating-column .download-shelf,
+  body.agent-floating-column .find-bar {
+    right: calc(min(408px, 100vw - 20px) + 22px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Out-ranks both presentations' collapsed offsets: nothing slides. */
+  .agent-sidebar.agent-floating[data-presentation] .agent-sidebar-inner,
+  .agent-sidebar.agent-floating.collapsed[data-presentation] .agent-sidebar-inner {
+    transform: none;
+  }
+
+  /* Same specificity as the live-state rules, later in the sheet. */
+  .agent-floating[data-presentation='column'] .agent-turn,
+  .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] > summary::before,
+  .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] .agent-tool-item[data-state] .agent-tool-state {
+    animation: none;
+  }
+}
+
+.agent-floating[data-presentation='column'] .agent-composer-wrap {
+  margin-top: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-outcome {
+  background: var(--agent-message-surface);
+  border-color: var(--agent-message-border);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-outcome-copy {
+  font-size: 12px;
+}
+
+/* Narrow windows (#874): a 408px side column would cover most of the page,
+   so the conversation becomes one full-width bottom sheet instead, about
+   half the height: the page keeps its top half and the chat keeps a usable
+   width. Header, transcript and composer share the sheet's opaque surface,
+   divided by hairlines rather than floating as separate cards. */
+@media (max-width: 719px) {
+  /* The sheet's insets inside the page area. Its height is clamped against
+     both, so a short window shrinks the sheet instead of pushing it up over
+     the Find bar or, with the download shelf showing, out of the page area
+     onto the toolbar. Page hints below read the same bottom inset. */
+  body.agent-floating-column {
+    --agent-sheet-top: 8px;
+    --agent-sheet-bottom: 8px;
+  }
+
+  body.agent-floating-column:has(.find-bar:not([hidden])) {
+    --agent-sheet-top: 54px;
+  }
+
+  body.agent-floating-column.has-visible-downloads {
+    --agent-sheet-bottom: calc(var(--download-shelf-height, 0px) + 28px);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-inner {
+    --agent-sheet-room: calc(100% - var(--agent-sheet-top, 8px) - var(--agent-sheet-bottom, 8px));
+    top: auto;
+    right: 8px;
+    bottom: var(--agent-sheet-bottom, 8px);
+    left: 8px;
+    width: auto;
+    height: clamp(min(320px, var(--agent-sheet-room)), 52%, var(--agent-sheet-room));
+    /* clip, not hidden: scrollIntoView must not scroll the header away. */
+    overflow: clip;
+    pointer-events: auto;
+    background-color: var(--agent-sheet);
+    border: 1px solid var(--agent-glass-border);
+    border-radius: 18px;
+    box-shadow:
+      var(--agent-glass-shadow),
+      inset 0 1px 0 var(--agent-glass-highlight);
+    transition:
+      background-color 240ms ease,
+      border-color 240ms ease,
+      box-shadow 240ms ease,
+      transform 360ms var(--agent-float-ease);
+  }
+
+  .agent-floating.collapsed[data-presentation='column'] .agent-sidebar-inner {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transform: translateY(28px);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-sidebar-header,
+  .agent-floating[data-presentation='column'] .agent-composer-wrap,
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    background-color: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* The header is part of the sheet's surface, but paints it itself
+     (inherited from the sheet, so it follows the collapse fade) rather than
+     going transparent: nothing of the page may read through it (#803). */
+  .agent-floating[data-presentation='column'] .agent-sidebar-header {
+    background-color: inherit;
+    margin: 0;
+    padding: 8px 8px 8px 14px;
+    border-bottom: 1px solid var(--agent-glass-border);
+  }
+
+  /* Set up Agent and Services (#863's one card) are the sheet's body here:
+     the sheet already draws the card's edge, corners and drop shadow, so a
+     second card of their own would float half-way down it. The header keeps
+     #863's seamless join above them. */
+  .agent-floating[data-presentation='column'] .agent-setup-view {
+    background: inherit;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* The transcript takes whatever the header and composer leave. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view {
+    flex: 1 1 auto;
+    margin-top: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-body {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-scroll {
+    padding: 12px 12px;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+    margin: 0;
+    padding-bottom: 0;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    padding: 4px 6px 6px;
+    border-top: 1px solid var(--agent-glass-border);
+  }
+
+  /* An approval card can be taller than the sheet: the transcript gives up
+     its space first, then the card scrolls inside the composer area so its
+     buttons stay reachable under the header. */
+  .agent-floating[data-presentation='column'] .agent-workspace-view:has(.agent-approval:not([hidden])) > .agent-workspace-body {
+    flex-shrink: 1000;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-composer-wrap:has(.agent-approval:not([hidden])) {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  /* A sheet shorter than its header plus composer (agent-ui sets the class)
+     scrolls the composer under the header, like a tall approval card. */
+  body.agent-floating-sheet-cramped .agent-floating[data-presentation='column'] .agent-composer-wrap {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  /* Page hints sit 14px above the sheet, with or without downloads. */
+  body.agent-floating-column .agent-page-lock-hint,
+  body.agent-floating-column .link-status--right {
+    bottom: calc(var(--agent-floating-panel-height, 360px) + var(--agent-sheet-bottom, 8px) + 14px);
+  }
+}
+
+@media (min-width: 720px) {
+  body.agent-floating-column .agent-page-lock-hint,
+  body.agent-floating-column .link-status--right {
+    right: calc(min(408px, 100vw - 20px) + 22px);
+    max-width: calc(100vw - min(408px, 100vw - 20px) - 42px);
+  }
+}
