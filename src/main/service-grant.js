@@ -44,6 +44,20 @@
  *   yet aren't all ASCII is refused: such a volume folds case by Unicode
  *   rules, which no string comparison here reproduces (these are
  *   developer overrides, `FREEDOM_*_DATA`).
+ * - **On Windows, a name Win32 may read as another is refused**, not
+ *   normalized here: Win32 strips a name's trailing periods and spaces
+ *   (`freedom-ipfs.` is `freedom-ipfs`), reads a `:` as a stream
+ *   (`freedom-ipfs::$INDEX_ALLOCATION` is the directory itself) and a
+ *   device's name (`NUL`, `com1.log`) as the device, and gives a long name
+ *   an 8.3 short name (`FREEDO~1`) when it is created. So on any path
+ *   compared, a name with a trailing period or space, a `:` or another
+ *   character a Win32 name can't hold, or a device's name is refused, and
+ *   so is a name with a `~` that doesn't exist yet (one that exists is
+ *   resolved to its long name). A trailing separator is no name: it is
+ *   normalized away first. A path on a share or in a device namespace
+ *   (`\\server\share\…`, `\\?\…`, `\\.\…`) is compared only with paths on
+ *   the same root: a share can name a local directory
+ *   (`\\localhost\C$\…`), and one share has several names.
  * - **Only regular files, directories and symlinks in the grants**
  *   (`grantContentRefusal`): a hard link with a name outside the grants
  *   has the grants' path and another file's data (two names both inside
@@ -76,6 +90,7 @@ const { listProfileDataDirs } = require('./profile-catalog');
 const { getLockDir } = require('./service-locks');
 
 const FOLD_CASE = process.platform === 'darwin' || process.platform === 'win32';
+const WIN32 = process.platform === 'win32';
 
 /** `target` absolute, its longest existing prefix resolved through its
  * symlinks (`realpath`), and the rest appended. */
@@ -159,6 +174,42 @@ function fold(target, foldCase) {
   return foldCase ? target.normalize('NFC').toLowerCase() : target;
 }
 
+// The names Win32 keeps for devices, alone or before an extension: `NUL`
+// and `nul.txt` there open the device, not a file.
+const WIN32_DEVICES = /^(con|prn|aux|nul|clock\$|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
+
+/** Whether Win32 may read the name `name` as another, or as no file (see
+ * the module's doc); `missing` when it doesn't exist yet, so may also be a
+ * short name (`~`) a long name gets later. */
+function win32Alias(name, missing) {
+  if (/[. ]$/.test(name)) return true;
+  // eslint-disable-next-line no-control-regex
+  if (/[<>:"|?*\x00-\x1f]/.test(name)) return true;
+  if (WIN32_DEVICES.test(name.split('.')[0].trimEnd())) return true;
+  return missing && name.includes('~');
+}
+
+/** Whether a path, as `resolveParts` splits it (`real`, then `rest`, the
+ * names that don't exist yet), holds a name Win32 may read as another.
+ * Names are split by Win32's rules (`path.win32`), after the path's root. */
+function win32Uncomparable({ real, rest }) {
+  const names = real
+    .slice(path.win32.parse(real).root.length)
+    .split(/[\\/]+/)
+    .filter(Boolean);
+  return (
+    names.some((name) => win32Alias(name, false)) || rest.some((name) => win32Alias(name, true))
+  );
+}
+
+/** Whether `reals`, real paths, can't be compared for their roots: one on a
+ * share or in a device namespace (a root beginning with two separators,
+ * `path.win32`) among paths on any other root. */
+function win32MixedRoots(reals, foldCase) {
+  const roots = new Set(reals.map((real) => fold(path.win32.parse(real).root, foldCase)));
+  return roots.size > 1 && [...roots].some((root) => /^[\\/]{2}/.test(root));
+}
+
 /** `target` as the check compares it: its real path, folded when
  * `foldCase`. */
 function canonical(target, { foldCase = FOLD_CASE } = {}) {
@@ -191,12 +242,27 @@ const RELATION_TEXT = { equal: 'is', inside: 'lies inside', contains: 'contains'
  */
 function grantRefusal(grants, roots, options = {}) {
   const foldCase = options.foldCase ?? FOLD_CASE;
+  const win32 = options.win32 ?? WIN32;
   const present = roots.filter((root) => root.dir);
   const paths = [...grants, ...present.map((root) => root.dir)];
   // A symlink on any of these paths that can't be followed (see
   // resolveParts) can't be compared: refused, failing closed.
   if (paths.some((p) => resolveParts(p).dangling)) {
     return "a path holds a symlink that can't be followed: a loop, or too many links";
+  }
+  // On Windows, a name Win32 may read as another, or a share's root among
+  // others, can't be compared: refused, failing closed.
+  if (win32 && paths.some((p) => win32Uncomparable(resolveParts(p)))) {
+    return "a path holds a name Windows may read as another (a trailing period or space, a stream, a device's name, or a short name that doesn't exist yet), which can't be compared";
+  }
+  if (
+    win32 &&
+    win32MixedRoots(
+      paths.map((p) => realPath(p)),
+      foldCase
+    )
+  ) {
+    return "a path lies on a share or in a device namespace that the others don't, which can't be compared";
   }
   // On a case-insensitive volume, a missing name that isn't ASCII can't be
   // compared: refused, failing closed (these are developer overrides).
@@ -544,14 +610,17 @@ function grantContentRefusal(
  * it another owner's data through the layout (refused even when the grant
  * is elsewhere).
  */
-function serviceGrantRefusal(grants, { own = [], foldCase = FOLD_CASE, walk = {} } = {}) {
+function serviceGrantRefusal(
+  grants,
+  { own = [], foldCase = FOLD_CASE, win32 = WIN32, walk = {} } = {}
+) {
   const roots = protectedRoots({ own, foldCase });
-  const refused = grantRefusal(grants, roots, { foldCase });
+  const refused = grantRefusal(grants, roots, { foldCase, win32 });
   if (refused) return refused;
   const held = grantContentRefusal(grants, walk);
   if (held) return held;
   for (const dir of thisProfile(own).ownDirs) {
-    const collision = grantRefusal([dir], roots, { foldCase });
+    const collision = grantRefusal([dir], roots, { foldCase, win32 });
     if (collision) {
       return `the service's own default directory resolves into a protected root (${collision.replace(
         /^the grant /,
@@ -580,4 +649,6 @@ module.exports = {
   serviceGrantRefusal,
   grantContentRefusal,
   ipfsGrantRefusal,
+  win32Uncomparable,
+  win32MixedRoots,
 };

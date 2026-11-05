@@ -614,6 +614,143 @@ describe('special files and dangling symlinks', () => {
   });
 });
 
+describe('names Win32 may read as others, on any OS (`win32`, path.win32)', () => {
+  // service-grant.win32.test.js runs the same against NTFS junctions on
+  // CI's Windows runner.
+  const WIN32_NAME =
+    "a path holds a name Windows may read as another (a trailing period or space, a stream, a device's name, or a short name that doesn't exist yet), which can't be compared";
+
+  /** A profile before freedom-ipfsd's first start: `ipfs-data` made, the
+   * grant in it not yet. With `override`, FREEDOM_IPFS_DATA puts the IPFS
+   * data elsewhere, so the grant is outside the default `ipfs-data`. */
+  function fresh({ override = false } = {}) {
+    const userDataDir = path.join(tempRoot, 'Elsewhere');
+    const ipfsData = override
+      ? path.join(tempRoot, 'IpfsOverride')
+      : path.join(userDataDir, 'ipfs-data');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.mkdirSync(ipfsData, { recursive: true });
+    if (override) process.env.FREEDOM_IPFS_DATA = ipfsData;
+    const check = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    return { userDataDir, ipfsData, grant: path.join(ipfsData, 'freedom-ipfs'), check };
+  }
+
+  test("a fresh profile's grant passes: none of its names, present or not yet, is an alias", () => {
+    const { grant, check } = fresh();
+    expect(check.ipfsGrantRefusal(grant, { win32: true })).toBeNull();
+  });
+
+  test.each(['freedom-ipfs.', 'freedom-ipfs ', 'freedom-ipfs. .'])(
+    'a dangling identity link to %j, Win32 aliases of the grant, is refused before the grant exists',
+    (name) => {
+      // Once freedom-ipfsd made freedom-ipfs, Win32 would open the link's
+      // target as it: the vault in the grant. Compared as written, it is
+      // a sibling.
+      for (const override of [false, true]) {
+        fs.rmSync(path.join(tempRoot, 'Elsewhere'), { recursive: true, force: true });
+        const { userDataDir, ipfsData, grant, check } = fresh({ override });
+        fs.symlinkSync(path.join(ipfsData, name), path.join(userDataDir, 'identity'));
+        expect(fs.existsSync(grant)).toBe(false);
+        expect(check.ipfsGrantRefusal(grant, { win32: true })).toBe(WIN32_NAME);
+        // On a POSIX volume the name is its own. In ipfs-data, the link is
+        // still refused, as a root inside the service's own default
+        // directory; with the grant moved out of it, nothing else refuses it.
+        expect(check.ipfsGrantRefusal(grant, { win32: false })).toBe(
+          override
+            ? null
+            : "the service's own default directory resolves into a protected root (contains this profile's identity directory)"
+        );
+      }
+    }
+  );
+
+  test.each([
+    'FREEDO~1',
+    'freedom-ipfs:vault',
+    'freedom-ipfs::$INDEX_ALLOCATION',
+    'NUL',
+    'nul.txt',
+    'con .log',
+    'COM1',
+    'LPT³',
+    'CONOUT$',
+    'freedom-ipfs?',
+  ])('a dangling identity link to %j, a short name, a stream or a device, is refused', (name) => {
+    const { userDataDir, ipfsData, grant, check } = fresh({ override: true });
+    fs.symlinkSync(path.join(ipfsData, name), path.join(userDataDir, 'identity'));
+    expect(check.ipfsGrantRefusal(grant, { win32: true })).toBe(WIN32_NAME);
+    expect(check.ipfsGrantRefusal(grant, { win32: false, foldCase: false })).toBeNull();
+  });
+
+  test('a name with a trailing period is refused where it exists too; a `~` only where it does not', () => {
+    // A name that exists is resolved, but a literal `spare.` (made through
+    // `\\?\`) is one Win32 opens as `spare`.
+    const { check } = fresh();
+    fs.mkdirSync(path.join(tempRoot, 'spare.'));
+    expect(
+      check.ipfsGrantRefusal(path.join(tempRoot, 'spare.', 'freedom-ipfs'), { win32: true })
+    ).toBe(WIN32_NAME);
+    // A long name may hold a `~`: it exists, so it was resolved as itself.
+    fs.mkdirSync(path.join(tempRoot, 'Spare~1'));
+    expect(
+      check.ipfsGrantRefusal(path.join(tempRoot, 'Spare~1', 'freedom-ipfs'), { win32: true })
+    ).toBeNull();
+    expect(
+      check.ipfsGrantRefusal(path.join(tempRoot, 'Spare~2', 'freedom-ipfs'), { win32: true })
+    ).toBe(WIN32_NAME);
+  });
+
+  /** `target`, a Win32 path, as resolveParts would split it with its last
+   * `missing` names not existing yet. */
+  function win32Parts(target, missing) {
+    const resolved = path.win32.resolve(target);
+    const { root } = path.win32.parse(resolved);
+    const names = resolved.slice(root.length).split('\\').filter(Boolean);
+    const at = names.length - missing;
+    return { real: path.win32.join(root, ...names.slice(0, at)), rest: names.slice(at) };
+  }
+
+  test.each([
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs.', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs ', 1, true],
+    // A trailing separator hides no period, and is no name itself.
+    ['C:/Users/me/ipfs-data/freedom-ipfs./', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs\\', 1, false],
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs\\.\\', 1, false],
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs:vault', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\freedom-ipfs::$INDEX_ALLOCATION', 1, true],
+    ['C:\\Users\\me\\vault:secret\\freedom-ipfs', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\FREEDO~1', 1, true],
+    ['C:\\Users\\me~work\\ipfs-data\\freedom-ipfs', 1, false],
+    ['C:\\Users\\me~work\\ipfs-data\\freedom-ipfs', 3, true],
+    ['C:\\Users\\me\\ipfs-data\\NUL', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\nul.txt', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\con .log', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\COM¹', 1, true],
+    ['C:\\Users\\me\\AUX\\freedom-ipfs', 1, true],
+    ['C:\\Users\\me\\ipfs-data\\COM10', 1, false],
+    ['C:\\Users\\me\\ipfs-data\\nullable', 1, false],
+    ['C:\\Users\\me\\ipfs-data\\console.log', 1, false],
+    ['C:\\Users\\me\\Local Storage\\leveldb', 2, false],
+    ['\\\\server\\share\\me\\ipfs-data\\freedom-ipfs', 1, false],
+  ])('path.win32: %j with %i missing names is an alias: %s', (target, missing, alias) => {
+    const { win32Uncomparable } = jest.requireActual('./service-grant');
+    expect(win32Uncomparable(win32Parts(target, missing))).toBe(alias);
+  });
+
+  test.each([
+    [['C:\\Users\\me\\ipfs-data\\freedom-ipfs', '\\\\localhost\\C$\\Users\\me\\identity'], true],
+    [['C:\\Users\\me\\identity', '\\\\?\\C:\\Users\\me\\identity'], true],
+    [['C:\\Users\\me\\identity', '\\\\.\\NUL'], true],
+    [['\\\\srv\\share\\me\\a', '\\\\10.0.0.5\\share\\me\\b'], true],
+    [['\\\\srv\\share\\me\\a', '\\\\SRV\\Share\\me\\b'], false],
+    [['C:\\Users\\me\\a', 'D:\\data\\b', 'c:\\Users\\me\\c'], false],
+  ])('path.win32: the roots of %j are mixed with a share or device: %s', (reals, mixed) => {
+    const { win32MixedRoots } = jest.requireActual('./service-grant');
+    expect(win32MixedRoots(reals, true)).toBe(mixed);
+  });
+});
+
 describe('hard links whose names are all inside the grants', () => {
   const { grantContentRefusal } = jest.requireActual('./service-grant');
   const OUTSIDE = 'the grant holds a hard link to a file with a name outside it';
