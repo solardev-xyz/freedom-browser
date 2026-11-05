@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 75,
+  "total": 76,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -127,6 +127,14 @@
       "theme": "light",
       "el": "span#ipfs-data-read",
       "text": "0 B",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#ipfs-sandbox-text",
+      "text": "Unknown",
       "ratio": 3.85,
       "bar": 4.5
     },
