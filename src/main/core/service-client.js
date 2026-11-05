@@ -249,6 +249,9 @@ const SHELL_ERRORS = Object.freeze({
   busy: 'Busy',
   unknown_method: 'Unknown method',
   internal: 'Internal error',
+  // Params main refuses before doing anything for them (design 0009,
+  // `shell.dweb_get`: read strictly).
+  invalid_argument: 'Invalid argument',
 });
 
 /** A handler's terminal error for one of the process's requests: one of
@@ -304,8 +307,9 @@ class JsonText {
  * only as the core's credit allows, at most 64 KiB ahead: a byte stream
  * (`type: "bytes"`) through a BYOB reader, asked for at most that and the
  * room; any other in its own chunks, each at most 64 KiB, or the stream ends
- * `body_stream_error`. Its close ends the stream; its error
- * aborts it, with `stalled` if the error's `abortCode` says so (main's body
+ * `body_stream_error`. Its close ends the stream once the bytes before it
+ * have gone; its error aborts it at once, read or not and with no credit
+ * needed, with `stalled` if the error's `abortCode` says so (main's body
  * idle timer) and `body_stream_error` otherwise. The core's cancel, or the
  * generation's end, cancels it.
  */
@@ -564,6 +568,10 @@ class ServiceClient extends EventEmitter {
    * with `streams: true` there; its requests' replies, cancels and bodies
    * go through the duplex. Elsewhere `streams` is false, and a
    * `StreamedReply` is an internal error.
+   *
+   * Every handler is called as `handler(params, { signal, charge, streams,
+   * generation })`: `generation` is the number of the process that asked,
+   * as `onSent` (requestTo) reports it for main's own requests.
    */
   handle(method, handler, { when = null, streams = false } = {}) {
     if (streams) this.streamHandlers.add(handler);
@@ -656,16 +664,27 @@ class ServiceClient extends EventEmitter {
    * being taken and the frame written. False sends nothing, and the
    * request fails `fenced`. `params` may be a JsonParams, already
    * serialized, so no caller code runs while the request is encoded.
+   *
+   * `onSent(id, generation)` runs once the frame is written, before
+   * anything the process sends is read: the request's envelope ID and the
+   * generation's number, which the process's own requests about this one
+   * name (design 0009, `shell.dweb_get`'s `for`). It must not throw.
    */
   requestTo(
     gen,
     method,
     params = {},
     context = { caller: 'chrome' },
-    { watchdogMs = null, signal = null, untilResponse = false, fence = null } = {}
+    { watchdogMs = null, signal = null, untilResponse = false, fence = null, onSent = null } = {}
   ) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
-    return this.send(gen, method, params, context, { watchdogMs, signal, untilResponse, fence });
+    return this.send(gen, method, params, context, {
+      watchdogMs,
+      signal,
+      untilResponse,
+      fence,
+      onSent,
+    });
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
@@ -1084,6 +1103,7 @@ class ServiceClient extends EventEmitter {
       untilResponse = false,
       fence = null,
       stream = false,
+      onSent = null,
     } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
@@ -1191,7 +1211,13 @@ class ServiceClient extends EventEmitter {
       gen.writeBytes -= frame.length;
       this.connectionFailed(gen, 'stdin_error');
       entry.settle({ error: this.unavailable() });
+      return promise;
     }
+    // The request is on its way, under this ID in this generation: the
+    // caller may key what the process's requests about it will name (design
+    // 0009: `shell.dweb_get`'s `for`). Nothing the process sends is read
+    // before this returns.
+    onSent?.(id, gen.number);
     return promise;
   }
 
@@ -1420,6 +1446,7 @@ class ServiceClient extends EventEmitter {
             signal: controller.signal,
             charge: lease.charge,
             streams,
+            generation: gen.number,
           });
         } catch (err) {
           return { error: shellErrorBody(err, controller.signal) };
@@ -1804,8 +1831,14 @@ class ServiceClient extends EventEmitter {
   /** `callStream` to the ready process `gen` names, as `requestTo`. */
   requestStreamTo(gen, method, params = {}, context = { caller: 'shell' }, options = {}) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
-    const { watchdogMs = null, signal = null, fence = null } = options;
-    return this.send(gen, method, params, context, { watchdogMs, signal, fence, stream: true });
+    const { watchdogMs = null, signal = null, fence = null, onSent = null } = options;
+    return this.send(gen, method, params, context, {
+      watchdogMs,
+      signal,
+      fence,
+      onSent,
+      stream: true,
+    });
   }
 
   /** What main holds for `gen`'s streams, for diagnostics and tests. */
@@ -2067,6 +2100,17 @@ class ServiceClient extends EventEmitter {
       }
       const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
       gen.pieces.set(id, piece);
+      // The body's failure ends the stream as it happens, a read pending or
+      // not: an abort goes ahead of the data and needs no credit, and the
+      // piece's pending bytes and any read's claim go with it (`dropPiece`).
+      // Its close doesn't: the bytes before it still go, under credit.
+      reader.closed.then(
+        () => {},
+        (err) => {
+          if (gen.pieces.get(id) !== piece) return;
+          this.abortPiece(gen, piece, err?.abortCode);
+        }
+      );
       this.pumpPiece(gen, piece);
     }
     this.flushStreams(gen);

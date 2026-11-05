@@ -150,6 +150,11 @@ class CoreClient extends ServiceClient {
     super({ ...options, service: CORE_SERVICES.get(protocol) });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
   }
+
+  /** The protocol main asks for, and every ready hello settled. */
+  get protocol() {
+    return this.service.protocol;
+  }
 }
 
 module.exports = {
