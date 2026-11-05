@@ -333,6 +333,7 @@ function validatePlan(plan, request) {
 module.exports = {
   validatePlan,
   backendKind,
+  checkPath,
   contentTrust,
   normalizeTarget,
   requestMethod,

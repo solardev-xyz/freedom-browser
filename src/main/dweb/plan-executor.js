@@ -34,6 +34,9 @@ class BodyIdleError extends Error {
   constructor(ms) {
     super(`dweb response body idle for ${ms} ms`);
     this.name = 'BodyIdleError';
+    // A piece's body that main sends the core ends with this abort code
+    // (freedom-core design 0009, `shell.dweb_get`: main's body idle timer).
+    this.abortCode = 'stalled';
   }
 }
 
@@ -328,8 +331,11 @@ async function executeFetch(
 
 module.exports = {
   executeFetch,
+  dialWithRetry,
+  idleBoundBody,
   failure,
   jsonErrorResponse,
   BodyIdleError,
   NULL_BODY_STATUSES,
+  UNREACHABLE_CODES,
 };

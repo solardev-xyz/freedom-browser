@@ -15,8 +15,12 @@ const { CoreClient } = require('./core-client');
 const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
+const { registerDwebShell } = require('./dweb-shell');
 
 let client = null;
+// `shell.dweb_get`'s executor (design 0009), while a client that speaks
+// protocol 2 runs; null against the pinned core, which speaks 1.
+let dwebShell = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
 let shutDown = false;
 
@@ -85,6 +89,8 @@ async function startCore() {
   // Chain data: its configuration, executors (under naming's bound on
   // verifier operations) and drivers.
   attachChain(client, { running: naming.running });
+  // Verified dweb fetches' pieces: registered only at protocol 2.
+  dwebShell = registerDwebShell(client);
   const starting = client;
   let hello;
   try {
@@ -105,6 +111,7 @@ async function stopCore() {
   shutDown = true;
   detachNaming();
   detachChain();
+  dwebShell = null;
   if (!client) return;
   const stopping = client;
   client = null;
@@ -115,6 +122,12 @@ function getCoreClient() {
   return client;
 }
 
+/** `shell.dweb_get`'s executor, whose `open()` a `dweb.verify` request
+ * calls; null unless the core client speaks protocol 2. */
+function getDwebShell() {
+  return dwebShell;
+}
+
 module.exports = {
   isCoreEnabled,
   getCoredBinaryPath,
@@ -122,4 +135,5 @@ module.exports = {
   startCore,
   stopCore,
   getCoreClient,
+  getDwebShell,
 };
