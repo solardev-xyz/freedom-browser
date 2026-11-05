@@ -28,6 +28,13 @@
  * (EIP-1193 4001 rejected, 4100 unauthorized, 4200 unsupported): an
  * internal or unrecognised error proves nothing about the broadcast.
  *
+ * Every rejection also says whether the request reached the phone
+ * (`requestDelivered`) and whether another attempt of the job may have
+ * (`otherAttemptDelivered`), for callers that journal an irreversible send
+ * (`isRemoteSendProvablyUnsent` in ./errors.js). The broker mints no new
+ * code for a payment once its request went, so a payment has at most one
+ * delivered attempt.
+ *
  * Responses are only accepted from the webContents the job was sent to —
  * a dApp webview must not be able to answer (or cancel) signing jobs.
  */
@@ -68,6 +75,21 @@ function jobOf(event, jobId) {
   return job;
 }
 
+/**
+ * Record on a rejection whether the request ever reached the phone. A phone
+ * that never saw an eth_sendTransaction cannot have broadcast it, so callers
+ * journaling an irreversible send can tell "provably unsent" from "the phone
+ * may still have broadcast it". Another attempt can have reached the phone
+ * only for a request that isn't a payment (a payment gets no new code once
+ * its request went), so that is the fail-closed answer for those.
+ */
+function markDelivery(err, job) {
+  const delivered = Boolean(job?.requestSent);
+  err.requestDelivered = delivered;
+  err.otherAttemptDelivered = delivered && job.method !== PAYMENT_METHOD;
+  return err;
+}
+
 function getTargetWindow() {
   return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
 }
@@ -91,7 +113,7 @@ function settleJob(jobId, settle) {
 function requestRemoteSignature(job, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const win = getTargetWindow();
   if (!win || win.webContents.isDestroyed()) {
-    return Promise.reject(createRemoteError(REMOTE_ERROR_CODES.NO_UI));
+    return Promise.reject(markDelivery(createRemoteError(REMOTE_ERROR_CODES.NO_UI)));
   }
 
   const jobId = randomUUID();
@@ -102,10 +124,13 @@ function requestRemoteSignature(job, timeoutMs = DEFAULT_TIMEOUT_MS) {
           job.webContents.send('remote-signer:abort', { jobId });
         }
         reject(
-          createRemoteError(
-            paymentMayHaveLeft(job)
-              ? REMOTE_ERROR_CODES.OUTCOME_UNKNOWN
-              : REMOTE_ERROR_CODES.TIMEOUT
+          markDelivery(
+            createRemoteError(
+              paymentMayHaveLeft(job)
+                ? REMOTE_ERROR_CODES.OUTCOME_UNKNOWN
+                : REMOTE_ERROR_CODES.TIMEOUT
+            ),
+            job
           )
         );
       });
@@ -156,7 +181,7 @@ function registerRemoteSignerIpc() {
     if (!job) return;
     settleJob(jobId, ({ resolve, reject }) => {
       if (error) {
-        reject(errorOf(job, error));
+        reject(markDelivery(errorOf(job, error), job));
       } else {
         resolve(result);
       }

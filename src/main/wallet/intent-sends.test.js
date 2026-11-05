@@ -1032,7 +1032,11 @@ describe('the only way to sign, and to read pending', () => {
       'wallet/signers.js',
       SERVICE,
     ]);
-    expect(Object.keys(pending)).toEqual([SERVICE]);
+    // The domains flow (main's agent work) reads the pending count too, but
+    // only as a floor that refuses a recovery hash (domains/service.js,
+    // beforeSend): it signs nothing (it is not in `signing` above), and no
+    // nonce comes from it.
+    expect(Object.keys(pending).sort()).toEqual(['domains/service.js', SERVICE]);
 
     expect(service.signing).toHaveLength(2);
     for (const site of service.signing) expect(inAccountLock(site, service)).toBe(true);

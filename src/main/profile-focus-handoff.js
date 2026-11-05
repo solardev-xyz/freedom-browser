@@ -141,7 +141,11 @@ function takeAck(paths, nonce) {
   }
   const shared = readJsonFile(paths.ackPath);
   if (shared?.nonce === nonce) {
-    // An older running build, which never clears the request it handled.
+    // An older running build, which never clears the request it handled. Or
+    // this build, whose watcher writes the per-request ack and then the shared
+    // one between our two reads above: collect the per-request copy too, or it
+    // lingers until the stale-ack sweep.
+    removeFileQuietly(ackFileFor(paths, nonce));
     removeFileQuietly(requestFileFor(paths, nonce));
     removeSharedRequest(paths, nonce);
     return shared;
@@ -465,6 +469,7 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
         // confirmation; it still waits on the lock release for the real signal.
         await (onQuit ? onQuit(request) : Promise.resolve());
       } else {
+        if (options.allowFocus === false) throw new Error('This profile is held by an automation runtime. Stop that runtime or open a different profile.');
         await onFocusWindow(request);
       }
       writeAck(request, { ok: true });

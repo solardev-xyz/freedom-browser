@@ -98,4 +98,91 @@ describe('radicle-consent owner binding', () => {
     const { mod } = await loadConsent();
     expect(() => mod.dismissRadicleConsent(createElement('webview'))).not.toThrow();
   });
+
+  test('the per-write prompt shows the exact content to be signed', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_createIssue',
+      { rid: 'rad:zExample', title: '<b>Bug</b>', description: 'Steps to reproduce' },
+      owner
+    );
+
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
+    expect(elementsById['radicle-consent-wants'].textContent).toBe(
+      'asks to open an issue in rad:zExample'
+    );
+    expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
+      'Title: <b>Bug</b>',
+      'Description: Steps to reproduce',
+    ]);
+    expect(elementsById['radicle-consent-warning'].textContent).toContain('Freedom Agent');
+    expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
+
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toBeUndefined();
+  });
+
+  test('the per-write prompt names every parameter main signs with', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const lines = () => elementsById['radicle-consent-allows'].children.map((li) => li.textContent);
+    const show = (method, params) => {
+      const promptPromise = mod.showRadicleSignedWriteApproval(
+        'https://app.example',
+        method,
+        params,
+        owner
+      );
+      const seen = {
+        title: elementsById['radicle-consent-title'].textContent,
+        wants: elementsById['radicle-consent-wants'].textContent,
+        allows: lines(),
+      };
+      elementsById['radicle-consent-approve'].dispatch('click');
+      return promptPromise.then(() => seen);
+    };
+
+    // commentPatch is signed against revisionId when given, not patchId.
+    const patch = await show('radicle_commentPatch', {
+      rid: 'rad:zExample',
+      patchId: 'aaaa',
+      revisionId: 'bbbb',
+      body: 'LGTM',
+    });
+    expect(patch.wants).toBe(
+      'asks to comment on revision bbbb (the page says it belongs to patch aaaa) in rad:zExample'
+    );
+    expect(patch.allows).toEqual(['Comment: LGTM']);
+    const plainPatch = await show('radicle_commentPatch', {
+      rid: 'rad:zExample',
+      patchId: 'aaaa',
+      body: 'x',
+    });
+    expect(plainPatch.wants).toBe('asks to comment on patch aaaa in rad:zExample');
+
+    const labelled = await show('radicle_createIssue', {
+      rid: 'rad:zExample',
+      title: 'T',
+      description: 'D',
+      labels: ['bug', 'a, b'],
+    });
+    expect(labelled.allows).toEqual(['Title: T', 'Description: D', 'Label: bug', 'Label: a, b']);
+
+    const reply = await show('radicle_commentIssue', {
+      rid: 'rad:zExample',
+      issueId: 'cccc',
+      body: 'Me too',
+      replyTo: 'dddd',
+    });
+    expect(reply.allows).toEqual(['Comment: Me too', 'In reply to comment dddd']);
+
+    // An unknown signed write never borrows another method's summary.
+    const unknown = await show('radicle_somethingNew', { rid: 'rad:zExample', x: 1 });
+    expect(unknown.title).toBe('Sign this as you?');
+    expect(unknown.allows).toEqual(['Parameters: {"rid":"rad:zExample","x":1}']);
+  });
 });

@@ -1,0 +1,74 @@
+'use strict';
+
+const { OPERATIONS } = require('./contract/operations');
+
+const OPERATION_CLASSES = Object.freeze({
+  [OPERATIONS.LIST_TABS]: 'observe',
+  [OPERATIONS.CREATE_TAB]: 'control',
+  [OPERATIONS.GET_TAB]: 'observe',
+  [OPERATIONS.FOCUS_TAB]: 'control',
+  [OPERATIONS.CLOSE_TAB]: 'control',
+  [OPERATIONS.SNAPSHOT]: 'observe',
+  [OPERATIONS.LIST_FRAMES]: 'observe',
+  [OPERATIONS.READ_FRAME]: 'observe',
+  [OPERATIONS.TARGET_POINT]: 'observe',
+  [OPERATIONS.SCREENSHOT]: 'observe',
+  [OPERATIONS.WAIT]: 'observe',
+  [OPERATIONS.NAVIGATE]: 'navigate',
+  [OPERATIONS.CLICK]: 'interact',
+  [OPERATIONS.TYPE]: 'interact',
+  [OPERATIONS.SELECT]: 'interact',
+  [OPERATIONS.LIST_PAGE_TOOLS]: 'observe',
+  [OPERATIONS.CALL_PAGE_TOOL]: 'interact',
+  [OPERATIONS.GET_DIALOG]: 'observe',
+  [OPERATIONS.HANDLE_DIALOG]: 'interact',
+  [OPERATIONS.PRESS]: 'interact',
+  [OPERATIONS.SCROLL]: 'interact',
+  [OPERATIONS.UPLOAD]: 'transfer',
+  [OPERATIONS.DOWNLOAD]: 'transfer',
+  [OPERATIONS.WALLET_ACTION]: 'interact',
+  [OPERATIONS.WALLET_TRANSFER]: 'privileged',
+  [OPERATIONS.NODE_STATUS]: 'observe',
+  [OPERATIONS.NODE_REQUEST]: 'privileged',
+  [OPERATIONS.NODE_OPERATION_STATUS]: 'observe',
+  [OPERATIONS.NODE_LIFECYCLE]: 'privileged',
+  [OPERATIONS.NODE_DIAGNOSTICS]: 'observe',
+  [OPERATIONS.APP_DIAGNOSTICS]: 'observe',
+  [OPERATIONS.SWARM_PUBLISH]: 'privileged',
+  [OPERATIONS.SWARM_PUBLICATION_STATUS]: 'observe',
+  [OPERATIONS.LIST_DOWNLOADS]: 'observe',
+  [OPERATIONS.STOP_LOADING]: 'control',
+});
+
+class AutomationPolicyController {
+  constructor({ allowedClasses = [] } = {}) {
+    this.allowedClasses = new Set(allowedClasses);
+  }
+
+  async authorize({ operation }) {
+    const operationClass = OPERATION_CLASSES[operation];
+    if (!operationClass || !this.allowedClasses.has(operationClass)) {
+      return {
+        allowed: false,
+        reason: `Automation operation class is not enabled: ${operationClass || 'unknown'}`,
+      };
+    }
+    return { allowed: true, operationClass };
+  }
+}
+
+function createInitialAutomationPolicy() {
+  // The kernel has no external transport in WP1. This explicit allowlist
+  // enables the vertical spike while ensuring every call already crosses the
+  // policy boundary. Later work replaces these class-wide grants with
+  // capability manifests, origin scopes, and approval decisions.
+  return new AutomationPolicyController({
+    allowedClasses: ['observe', 'navigate', 'interact', 'control', 'transfer', 'privileged'],
+  });
+}
+
+module.exports = {
+  OPERATION_CLASSES,
+  AutomationPolicyController,
+  createInitialAutomationPolicy,
+};

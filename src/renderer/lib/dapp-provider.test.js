@@ -1,3 +1,143 @@
+'use strict';
+
+const flush = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+describe('dApp provider Agent wallet handoff', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    jest.doMock('./wallet/safe-signing.js', () => ({
+      openSafeMessageBoard: jest.fn(), abandonSafeMessageBoard: jest.fn(),
+    }));
+    // A request's identity is its own webview's committed page (#764).
+    jest.doMock('./tabs.js', () => ({
+      getDisplayUrlForWebview: jest.fn(() => 'https://app.example/swap'),
+    }));
+    global.document = {
+      getElementById: jest.fn(() => ({ value: 'https://app.example/swap' })),
+    };
+    global.window = {
+      addEventListener: jest.fn(),
+      electronAPI: {
+        getSettings: jest.fn(async () => ({ enableIdentityWallet: true })),
+        handleAgentWalletRequest: jest.fn(),
+      },
+      dappPermissions: {
+        getPermission: jest.fn(),
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete global.document;
+    delete global.window;
+  });
+
+  test('uses an armed Agent-native result without opening the legacy wallet sidebar', async () => {
+    const showDappConnect = jest.fn();
+    jest.doMock('./wallet-ui.js', () => ({
+      showDappConnect,
+      getSelectedChainId: jest.fn(() => 100),
+      setSelectedChainId: jest.fn(),
+      updateConnectionBanner: jest.fn(),
+      showDappTxApproval: jest.fn(),
+      showDappSignApproval: jest.fn(),
+      showVaultUnlock: jest.fn(),
+      updateSwarmConnectionBanner: jest.fn(),
+      updateX402ConnectionBanner: jest.fn(),
+    }));
+    jest.doMock('./wallet/dapp-tx.js', () => ({
+      buildDappTxContext: jest.fn(),
+      extractSelector: jest.fn(),
+    }));
+    window.electronAPI.handleAgentWalletRequest.mockResolvedValue({
+      handled: true,
+      result: ['0x1111111111111111111111111111111111111111'],
+    });
+    const listeners = new Map();
+    const webview = {
+      dataset: { tabId: '7' },
+      addEventListener: jest.fn((type, listener) => listeners.set(type, listener)),
+      send: jest.fn(),
+    };
+    const { setupWebviewProvider } = await import('./dapp-provider.js');
+    await flush();
+    setupWebviewProvider(webview);
+    listeners.get('did-frame-navigate')({ isMainFrame: true, frameProcessId: 1, frameRoutingId: 2 });
+
+    listeners.get('ipc-message')({
+      frameId: [1, 2],
+      channel: 'dapp:provider-request',
+      args: [{ id: 1, method: 'eth_requestAccounts', params: [] }],
+    });
+    await flush();
+    await flush();
+
+    expect(window.electronAPI.handleAgentWalletRequest).toHaveBeenCalledWith(7, {
+      method: 'eth_requestAccounts',
+      params: [],
+      displayUrl: 'https://app.example/swap',
+      permissionKey: 'https://app.example',
+      chainId: 100,
+    });
+    expect(showDappConnect).not.toHaveBeenCalled();
+    expect(window.dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(webview.send).toHaveBeenCalledWith('dapp:provider-response', {
+      id: 1,
+      result: ['0x1111111111111111111111111111111111111111'],
+      error: null,
+    });
+  });
+
+  test('preserves the existing human wallet flow when no Agent action is armed', async () => {
+    const showDappConnect = jest.fn((_url, _key, resolve) => resolve(['0xhuman']));
+    jest.doMock('./wallet-ui.js', () => ({
+      showDappConnect,
+      getSelectedChainId: jest.fn(() => 100),
+      setSelectedChainId: jest.fn(),
+      updateConnectionBanner: jest.fn(),
+      showDappTxApproval: jest.fn(),
+      showDappSignApproval: jest.fn(),
+      showVaultUnlock: jest.fn(),
+      updateSwarmConnectionBanner: jest.fn(),
+      updateX402ConnectionBanner: jest.fn(),
+    }));
+    jest.doMock('./wallet/dapp-tx.js', () => ({
+      buildDappTxContext: jest.fn(),
+      extractSelector: jest.fn(),
+    }));
+    window.electronAPI.handleAgentWalletRequest.mockResolvedValue({ handled: false });
+    window.dappPermissions.getPermission.mockResolvedValue(null);
+    const listeners = new Map();
+    const webview = {
+      dataset: { tabId: '7' },
+      addEventListener: jest.fn((type, listener) => listeners.set(type, listener)),
+      send: jest.fn(),
+    };
+    const { setupWebviewProvider } = await import('./dapp-provider.js');
+    await flush();
+    setupWebviewProvider(webview);
+    listeners.get('did-frame-navigate')({ isMainFrame: true, frameProcessId: 1, frameRoutingId: 2 });
+
+    listeners.get('ipc-message')({
+      frameId: [1, 2],
+      channel: 'dapp:provider-request',
+      args: [{ id: 2, method: 'eth_requestAccounts', params: [] }],
+    });
+    await flush();
+    await flush();
+
+    expect(showDappConnect).toHaveBeenCalledTimes(1);
+    expect(webview.send).toHaveBeenCalledWith('dapp:provider-response', {
+      id: 2,
+      result: ['0xhuman'],
+      error: null,
+    });
+  });
+});
+
 /**
  * Tests for the renderer-side dApp provider handler.
  *
@@ -13,8 +153,10 @@ const { createDocument, createElement } = require('../../../test/helpers/fake-do
 const originalWindow = global.window;
 const originalDocument = global.document;
 
+// Enough turns for a signature request's whole path: main's view of what
+// it signs (freedom-core #88) and the page's chain come before the prompt.
 const flushMicrotasks = async () => {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 25; i++) {
     await Promise.resolve();
   }
 };
@@ -990,6 +1132,26 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
     );
   });
 
+  test('a page with no committed identity cannot connect or switch chains', async () => {
+    const { addWebview, commitMainFrameOf, sendRequestFrom, walletUi, dappPermissions } = await twoTabs();
+    const fresh = addWebview({ url: '', webContentsId: 88 });
+    commitMainFrameOf(fresh, MAIN_FRAME);
+
+    sendRequestFrom(fresh, { id: 1, method: 'eth_accounts', params: [] });
+    sendRequestFrom(fresh, { id: 2, method: 'eth_requestAccounts', params: [] });
+    sendRequestFrom(fresh, { id: 3, method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    sendRequestFrom(fresh, { id: 4, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee' }] });
+    await flushMicrotasks();
+
+    const byId = Object.fromEntries(responsesSentTo(fresh).map(([, r]) => [r.id, r]));
+    expect(byId[1].result).toEqual([]);
+    for (const id of [2, 3, 4]) expect(byId[id].error.code).toBe(4100);
+    expect(dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(walletUi.showDappConnect).not.toHaveBeenCalled();
+    expect(walletUi.showDappTxApproval).not.toHaveBeenCalled();
+    expect(walletUi.setSelectedChainId).not.toHaveBeenCalled();
+  });
+
   // A DNS-named ENS site over IPNS commits as ipns://<key> but is shown as
   // ens://example.com; it keeps the name key its grants were stored under
   // before #764, and main cross-checks the name against the guest's key.
@@ -1337,5 +1499,39 @@ describe('dapp-provider: the chain typed data is compared with', () => {
     sendRequest({ id: 2, method: 'eth_signTypedData_v4', params: ['0xsafe', typedFor(100)] });
     await flushMicrotasks();
     expect(walletMocks.safeMessageStart).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Agent provider merge boundaries', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test.each([true, false])('drops delayed Agent handled=%s results before reply or fallback after navigation', async (handled) => {
+    const { webview, sendRequest, walletUi, dappPermissions } = await loadProvider();
+    webview.dataset.tabId = '7';
+    const pending = deferred();
+    window.electronAPI.handleAgentWalletRequest = jest.fn(() => pending.promise);
+    sendRequest({ id: 1, method: 'eth_requestAccounts', params: [] });
+    await flushMicrotasks();
+    webview.dispatch('did-navigate', { url: 'https://replacement.example' });
+    pending.resolve({ handled, result: ['0xaccount'] });
+    await flushMicrotasks();
+    expect(responsesSentTo(webview)).toHaveLength(0);
+    expect(walletUi.showDappConnect).not.toHaveBeenCalled();
+    expect(dappPermissions.getPermission).not.toHaveBeenCalled();
+  });
+
+  test('pins the Agent wallet request to the onchain app chain', async () => {
+    const { webview, sendRequest } = await loadProvider({
+      webviewUrl: 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/',
+    });
+    webview.dataset.tabId = '7';
+    window.electronAPI.handleAgentWalletRequest = jest.fn(async () => ({ handled: true, result: [] }));
+    sendRequest({ id: 1, method: 'eth_requestAccounts', params: [] });
+    await flushMicrotasks();
+    expect(window.electronAPI.handleAgentWalletRequest).toHaveBeenCalledWith(7, expect.objectContaining({ chainId: 1 }));
   });
 });

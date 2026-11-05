@@ -319,6 +319,9 @@ async function start(options = {}) {
     DAPP_TX_ELEMENT_IDS.map((id) => [id, createElement('button')])
   );
   elements['dapp-tx-auto-approve'].checked = false;
+  // Hidden until shown, as in index.html: main's prompt guard
+  // (dapp-prompt-guard.js) reads a visible screen as a prompt showing.
+  elements['sidebar-dapp-tx'].classList.add('hidden');
   global.document = createDocument({ elementsById: elements });
   global.window = rendererWindow(phone);
   mockRendererModules();

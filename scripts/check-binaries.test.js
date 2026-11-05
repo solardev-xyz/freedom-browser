@@ -112,6 +112,9 @@ describe('Myotis supervisor build inputs', () => {
     expect(packageJson.build.mac.binaries).toContain(
       'Contents/Resources/myotis-node/myotis-supervisor'
     );
+    expect(packageJson.build.mac.binaries).not.toContain(
+      'Contents/Resources/myotis-node/myotis-supervisor.exe'
+    );
   });
 });
 

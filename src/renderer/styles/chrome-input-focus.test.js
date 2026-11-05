@@ -173,4 +173,17 @@ describe('chrome text-field focus', () => {
       expect(targetsAFormField(selector)).toBe(false);
     }
   });
+
+  test('the composite Agent composer uses its container focus treatment', () => {
+    const css = fs.readFileSync(path.join(STYLES_DIR, SHARED_SHEET), 'utf8');
+    const rules = focusRules(css);
+    const textarea = rules.findIndex(({ selector }) => selector === 'textarea:focus-visible');
+    const composer = rules.findIndex(({ selector }) => selector === '.agent-composer textarea:focus-visible');
+    expect(composer).toBeGreaterThan(textarea);
+    expect(rules[composer].body).toMatch(/outline:\s*none/);
+
+    const agentCss = fs.readFileSync(path.join(STYLES_DIR, 'agent.css'), 'utf8');
+    const container = focusRules(agentCss).find(({ selector }) => selector === '.agent-composer:focus-within');
+    expect(container.body).toMatch(/box-shadow:/);
+  });
 });

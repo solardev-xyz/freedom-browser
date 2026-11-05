@@ -345,6 +345,7 @@ export function createRemoteSessionBroker({
         if (switched.error) {
           emit({ jobId, kind, phase: 'error', method, error: switched.error });
           settle(jobId, {
+            attempt,
             error: { rpcCode: switched.error.code, message: switched.error.message },
           });
           return;
@@ -376,10 +377,10 @@ export function createRemoteSessionBroker({
         emit({ jobId, kind, phase: 'error', method, error });
         // rpcCode: main maps EIP-1193 codes (4001 …) to REMOTE_* there,
         // where the error registry lives.
-        settle(jobId, { error: { rpcCode: error.code, message: error.message } });
+        settle(jobId, { attempt, error: { rpcCode: error.code, message: error.message } });
       } else {
         emit({ jobId, kind, phase: 'done', method });
-        settle(jobId, { result });
+        settle(jobId, { attempt, result });
       }
     } catch (err) {
       if (stale()) return; // failures of a torn-down session are noise
@@ -388,7 +389,7 @@ export function createRemoteSessionBroker({
       // generic registry text — surface what actually happened.
       const message = err?.message || String(err);
       emit({ jobId, kind, phase: 'error', method, error: { message } });
-      settle(jobId, { error: { code: 'REMOTE_UNKNOWN', message } });
+      settle(jobId, { attempt, error: { code: 'REMOTE_UNKNOWN', message } });
     }
   }
 

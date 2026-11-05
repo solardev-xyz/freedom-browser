@@ -90,4 +90,41 @@ const UNREADABLE_ANSWER =
   "Your phone's answer couldn't be read, so it's unknown whether this payment was sent. " +
   "Check your phone's wallet before you try again.";
 
-module.exports = { REMOTE_ERROR_CODES, UNREADABLE_ANSWER, createRemoteError, mapRemoteRpcError };
+// Refusals that are only ever produced without the phone acting on the
+// request: it never reached a phone (NO_UI), or the phone wallet declined
+// it (EIP-1193 4001/4100/4200). Nothing was broadcast by *that* attempt.
+const UNSENT_CODES = new Set([
+  REMOTE_ERROR_CODES.NO_UI,
+  REMOTE_ERROR_CODES.USER_REJECTED,
+  REMOTE_ERROR_CODES.WRONG_ACCOUNT,
+  REMOTE_ERROR_CODES.UNSUPPORTED,
+]);
+
+/**
+ * Whether a failed eth_sendTransaction provably broadcast nothing: any
+ * bridge failure before the request was delivered to the phone, or a
+ * definitive refusal when no *other* attempt of the same job reached the
+ * phone. A "New code" retry re-sends a request under the same job, so a
+ * refusal on attempt 2 would say nothing about attempt 1 (the broker
+ * mints no new code for a payment once its request went, and the bridge
+ * reports `otherAttemptDelivered` accordingly). A timeout, cancel, bad
+ * response, unknown error or OUTCOME_UNKNOWN after delivery stays
+ * uncertain too. Fails closed: a refusal without the bridge's explicit
+ * `otherAttemptDelivered === false` is not proof.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isRemoteSendProvablyUnsent(err) {
+  if (!err || typeof err.code !== 'string' || !err.code.startsWith('REMOTE_')) return false;
+  if (err.requestDelivered === false) return true;
+  return UNSENT_CODES.has(err.code) && err.otherAttemptDelivered === false;
+}
+
+module.exports = {
+  REMOTE_ERROR_CODES,
+  UNREADABLE_ANSWER,
+  createRemoteError,
+  mapRemoteRpcError,
+  isRemoteSendProvablyUnsent,
+};

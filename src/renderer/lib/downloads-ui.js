@@ -26,6 +26,7 @@ const cards = new Map();
 const dismissed = new Set();
 
 let shelfEl = null;
+let shelfResizeObserver = null;
 // Footer row under the cards: "Full Download History" (Chrome's download
 // bubble has the same action in the same spot). Built lazily on the first
 // card and hidden again once the shelf empties. #326
@@ -307,11 +308,30 @@ export const initDownloadsUi = () => {
     pushDebug('[downloads] shelf container missing — shelf disabled');
     return;
   }
+  if (typeof ResizeObserver === 'function') {
+    shelfResizeObserver = new ResizeObserver(() => {
+      // The cards' height: the shelf's padding is room for their shadows.
+      const style = getComputedStyle(shelfEl);
+      const height = cards.size
+        ? Math.max(
+            0,
+            shelfEl.getBoundingClientRect().height -
+              parseFloat(style.paddingTop) -
+              parseFloat(style.paddingBottom)
+          )
+        : 0;
+      document.body.style.setProperty('--download-shelf-height', `${height}px`);
+      document.body.classList.toggle('has-visible-downloads', height > 0);
+    });
+    shelfResizeObserver.observe(shelfEl);
+  }
   window.electronAPI?.onDownloadUpdated?.(handleDownloadUpdate);
 };
 
 // Test-only: reset module state between specs.
 export const _resetForTest = () => {
+  shelfResizeObserver?.disconnect();
+  shelfResizeObserver = null;
   for (const id of [...cards.keys()]) dismissCard(id);
   dismissed.clear();
   historyRowEl?.remove();

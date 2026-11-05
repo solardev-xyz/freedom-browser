@@ -28,6 +28,7 @@
 
 const log = require('../logger');
 const { app, ipcMain, shell, BrowserWindow, webContents } = require('electron');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
@@ -36,10 +37,108 @@ const privateStore = require('./private-downloads-store');
 const { getPartitionForWebContents } = require('../private/private-windows');
 const { loadSettings } = require('../settings-store');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
+const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
 
 // Live DownloadItems by store row id — pause/resume/cancel IPC resolves
 // through this map; settled items are removed.
 const activeItems = new Map();
+const downloadActivityListeners = new Set();
+
+// One controlled intent may be armed per page. The intent is registered
+// before trusted click input is dispatched, so even an instant data/blob
+// download is attributed to the exact Agent operation that caused it.
+const controlledIntentByWebContents = new WeakMap();
+const pendingControlledIntents = new Set();
+const controlledPages = new WeakSet();
+const blockedDownloads = new WeakMap();
+
+function setControlledPage(page, controlled) {
+  if (!page) return;
+  if (controlled) controlledPages.add(page);
+  else { controlledPages.delete(page); blockedDownloads.delete(page); }
+}
+
+function takeBlockedDownload(page) {
+  const error = page && blockedDownloads.get(page);
+  if (page) blockedDownloads.delete(page);
+  return error;
+}
+const CONTROLLED_DOWNLOAD_START_TIMEOUT_MS = 10_000;
+const DOWNLOAD_CANCELLATION_REASONS = Object.freeze({
+  USER: 'user',
+  RUN_STOPPED: 'run_stopped',
+});
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function createArtifactId() {
+  return `artifact_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`;
+}
+
+function sourceOrigin(value) {
+  if (typeof value !== 'string') return '';
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(url.protocol)) return '';
+    const host = `${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ''}`;
+    return `${url.protocol}//${host}`;
+  } catch {
+    return '';
+  }
+}
+
+function artifactReceipt(row) {
+  if (!row?.artifact_id) return null;
+  const completed = row.state === store.STATES.COMPLETED;
+  let fileStats = null;
+  if (completed && row.save_path) {
+    try {
+      const stats = fs.lstatSync(row.save_path);
+      if (stats.isFile() && !stats.isSymbolicLink()) fileStats = stats;
+    } catch {
+      // A historical download may have been moved or removed outside Freedom.
+    }
+  }
+  return Object.freeze({
+    artifactId: row.artifact_id,
+    filename: sanitizeFilename(row.filename),
+    ...(row.mime_type && { mimeType: String(row.mime_type).slice(0, 200) }),
+    bytes: Math.max(0, Number(fileStats?.size ?? row.received_bytes ?? row.total_bytes) || 0),
+    state: row.state,
+    sourceOrigin: sourceOrigin(row.url),
+    location: row.destination_kind === 'chosen' ? 'chosen_location' : 'downloads',
+    available: Boolean(fileStats),
+  });
+}
+
+function getActiveDownloadCount() {
+  return activeItems.size;
+}
+
+function notifyDownloadActivity() {
+  const activeCount = getActiveDownloadCount();
+  for (const listener of downloadActivityListeners) {
+    try {
+      listener(activeCount);
+    } catch (error) {
+      log.warn('[Downloads] Activity listener failed:', error?.message || error);
+    }
+  }
+}
+
+function onDownloadActivity(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('Download activity listener must be a function');
+  }
+  downloadActivityListeners.add(listener);
+  return () => downloadActivityListeners.delete(listener);
+}
 
 // Per-item bookkeeping for the live items above: the owning private
 // partition (null for normal windows) and the save path the item claimed.
@@ -194,6 +293,24 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
   const downloadsDir = app.getPath('downloads');
   let reservedPath = null;
   const isPrivate = !!privatePartition;
+  const controlledIntent = isPrivate ? null : controlledIntentByWebContents.get(webContents) || null;
+  const chain = item.getURLChain?.() || [item.getURL()];
+  const unexpected = !isPrivate && ((controlledPages.has(webContents) && !controlledIntent) ||
+    (controlledIntent && (controlledIntent.downloadId !== null ||
+      (controlledIntent.expectedUrl && (!chain.includes(controlledIntent.expectedUrl) || sourceOrigin(item.getURL()) !== sourceOrigin(controlledIntent.expectedUrl))))));
+  if (unexpected) {
+    item.cancel();
+    const error = new AutomationError(ERROR_CODES.APPROVAL_REQUIRED,
+      'The page attempted an unapproved download. Inspect the intended file and use browser_download to request approval; do not retry the click.',
+      { suggestedAction: 'Use browser_download for the intended file. Other download attempts were cancelled.' });
+    blockedDownloads.set(webContents, error);
+    if (controlledIntent && controlledIntent.downloadId === null) {
+      controlledIntent.failure = error;
+      controlledIntent.started.resolve(null);
+    }
+    return;
+  }
+  const destinationKind = settings.askWhereToSave === true ? 'chosen' : 'downloads';
 
   if (settings.askWhereToSave === true) {
     // No savePath set → Electron shows its native save dialog; we only seed
@@ -224,10 +341,26 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     totalBytes: item.getTotalBytes(),
     startTime: Date.now(),
     partition: privatePartition,
+    artifactId: controlledIntent?.artifactId,
+    agentConversationId: controlledIntent?.conversationId,
+    destinationKind: controlledIntent ? destinationKind : null,
   });
   const id = row.id;
   activeItems.set(id, item);
-  activeItemMeta.set(id, { privatePartition, reservedPath });
+  activeItemMeta.set(id, {
+    privatePartition,
+    reservedPath,
+    artifactId: controlledIntent?.artifactId || null,
+    agentConversationId: controlledIntent?.conversationId || null,
+    cancellationReason: null,
+  });
+  if (controlledIntent) {
+    controlledIntent.downloadId = id;
+    controlledIntent.item = item;
+    pendingControlledIntents.delete(controlledIntent);
+    controlledIntent.started.resolve({ id, row });
+  }
+  notifyDownloadActivity();
 
   const ownerWindow = ownerWindowOf(webContents);
   // PRIVATE MODE GUARD (download logging): the row lives in the in-memory
@@ -261,8 +394,20 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
       totalBytes: item.getTotalBytes(),
       // The save dialog resolves the path after insert; keep the row current.
       savePath: item.getSavePath() || null,
+      filename: path.basename(item.getSavePath() || '') || filename,
     });
-    sendToOwner(ownerWindow, serializeDownload(id, item, { isPrivate }), privatePartition);
+    const serialized = serializeDownload(id, item, { isPrivate });
+    sendToOwner(ownerWindow, serialized, privatePartition);
+    try {
+      controlledIntent?.onProgress?.({
+        artifactId: controlledIntent.artifactId,
+        receivedBytes: serialized.received_bytes,
+        totalBytes: serialized.total_bytes,
+        state: serialized.is_interrupted ? 'interrupted' : 'in_progress',
+      });
+    } catch (error) {
+      log.warn('[Downloads] Agent progress observer failed:', error?.message || error);
+    }
   });
 
   item.once('done', (_doneEvent, doneState) => {
@@ -274,10 +419,12 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     // same-named download would be handed that identical path, leaving two
     // transfers writing one file. The unwind clears `activeItemMeta`, so its
     // membership is the "do we still own the claim?" flag.
-    const ownsReservation = activeItemMeta.has(id);
+    const liveMeta = activeItemMeta.get(id);
+    const ownsReservation = Boolean(liveMeta);
     activeItems.delete(id);
     activeItemMeta.delete(id);
     interruptedItems.delete(id);
+    notifyDownloadActivity();
     if (ownsReservation) releaseSavePath(reservedPath);
 
     // Electron reports 'completed' | 'cancelled' | 'interrupted'; the store
@@ -293,6 +440,7 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
       receivedBytes: item.getReceivedBytes(),
       totalBytes: item.getTotalBytes(),
       savePath: item.getSavePath() || null,
+      filename: path.basename(item.getSavePath() || '') || filename,
       state,
       endTime: Date.now(),
     });
@@ -309,6 +457,26 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
       },
       privatePartition
     );
+    if (controlledIntent) {
+      const stored = store.getDownloadByArtifactId(controlledIntent.artifactId);
+      const receipt = artifactReceipt(stored);
+      const cancellationReason =
+        state === store.STATES.CANCELLED
+          ? liveMeta?.cancellationReason || DOWNLOAD_CANCELLATION_REASONS.USER
+          : null;
+      controlledIntent.completion.resolve({ receipt, cancellationReason });
+      try {
+        controlledIntent.onProgress?.({
+          artifactId: controlledIntent.artifactId,
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
+          state,
+          ...(state === store.STATES.COMPLETED && receipt?.available && { receipt }),
+        });
+      } catch (error) {
+        log.warn('[Downloads] Agent progress observer failed:', error?.message || error);
+      }
+    }
   });
 }
 
@@ -368,6 +536,7 @@ function cancelPartitionDownloads(partition) {
     }
   }
   if (cancelled > 0) {
+    notifyDownloadActivity();
     log.info(`[Downloads] Cancelled ${cancelled} in-flight private download(s) on ${partition}`);
   }
   return cancelled;
@@ -390,6 +559,215 @@ function withLiveFlags(rows) {
       is_interrupted: interruptedItems.has(dbRow.id),
     };
   });
+}
+
+async function runControlledDownload(options = {}) {
+  const { pageAdapter, conversationId, trigger, signal, onProgress } = options;
+  const sourceWebContents = pageAdapter?.webContents;
+  if (!sourceWebContents || typeof sourceWebContents.isDestroyed !== 'function') {
+    throw new AutomationError(
+      ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      'Controlled downloads require an attached browser page'
+    );
+  }
+  if (sourceWebContents.isDestroyed()) {
+    throw new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The download page was closed');
+  }
+  if (typeof conversationId !== 'string' || !conversationId) {
+    throw new AutomationError(
+      ERROR_CODES.POLICY_DENIED,
+      'Controlled downloads require an Agent conversation owner'
+    );
+  }
+  if (typeof trigger !== 'function') {
+    throw new TypeError('Controlled downloads require a trusted trigger');
+  }
+  if (controlledIntentByWebContents.has(sourceWebContents)) {
+    throw new AutomationError(
+      ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      'Another controlled download is already pending on this page',
+      { retryable: true }
+    );
+  }
+
+  const intent = {
+    expectedUrl: options.expectedUrl || null,
+    artifactId: createArtifactId(),
+    conversationId,
+    sourceWebContents,
+    started: createDeferred(),
+    completion: createDeferred(),
+    downloadId: null,
+    item: null,
+    onProgress: typeof onProgress === 'function' ? onProgress : null,
+  };
+  const aborted = createDeferred();
+  const onAbort = () => aborted.resolve(true);
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener?.('abort', onAbort, { once: true });
+  controlledIntentByWebContents.set(sourceWebContents, intent);
+  pendingControlledIntents.add(intent);
+
+  try {
+    try {
+      await trigger();
+    } catch (error) {
+      if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
+        controlledIntentByWebContents.delete(sourceWebContents);
+      }
+      pendingControlledIntents.delete(intent);
+      throw error;
+    }
+
+    let startTimer;
+    const startTimeout = new Promise((resolve) => {
+      startTimer = setTimeout(
+        () => resolve({ kind: 'timeout' }),
+        CONTROLLED_DOWNLOAD_START_TIMEOUT_MS
+      );
+    });
+    try {
+      const started = await Promise.race([
+        intent.started.promise.then(() => ({ kind: 'started' })),
+        aborted.promise.then(() => ({ kind: 'aborted' })),
+        startTimeout,
+      ]);
+      if (intent.failure) throw intent.failure;
+      if (started.kind === 'aborted') {
+        if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
+          controlledIntentByWebContents.delete(sourceWebContents);
+        }
+        pendingControlledIntents.delete(intent);
+        throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The download action was cancelled');
+      }
+      if (started.kind === 'timeout') {
+        if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
+          controlledIntentByWebContents.delete(sourceWebContents);
+        }
+        pendingControlledIntents.delete(intent);
+        throw new AutomationError(
+          ERROR_CODES.WAIT_TIMEOUT,
+          'The page did not start a download after the requested interaction',
+          { retryable: true }
+        );
+      }
+    } finally {
+      clearTimeout(startTimer);
+    }
+
+    const settled = await Promise.race([
+      intent.completion.promise.then((terminal) => ({ kind: 'completed', terminal })),
+      aborted.promise.then(() => ({ kind: 'aborted' })),
+    ]);
+    if (settled.kind === 'aborted') {
+      throw new AutomationError(
+        ERROR_CODES.USER_CANCELLED,
+        'Agent stopped waiting for the download; the browser continues tracking it'
+      );
+    }
+    const receipt = settled.terminal?.receipt;
+    if (!receipt || receipt.state !== store.STATES.COMPLETED) {
+      const state = receipt?.state || store.STATES.INTERRUPTED;
+      const userCancelled =
+        state === store.STATES.CANCELLED &&
+        settled.terminal?.cancellationReason === DOWNLOAD_CANCELLATION_REASONS.USER;
+      throw new AutomationError(
+        userCancelled
+          ? ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+          : state === store.STATES.CANCELLED
+            ? ERROR_CODES.USER_CANCELLED
+            : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        userCancelled
+          ? 'The user cancelled this download. Do not retry it unless the user explicitly asks again.'
+          : state === store.STATES.CANCELLED
+            ? 'The download stopped with the Agent task'
+          : 'The download did not complete successfully',
+        {
+          retryable: state !== store.STATES.CANCELLED,
+          ...(userCancelled && {
+            suggestedAction:
+              'Acknowledge the cancellation and continue without this file. Do not retry the download during this turn.',
+          }),
+        }
+      );
+    }
+    if (!receipt.available) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'The browser reported completion but the downloaded file is unavailable'
+      );
+    }
+    return { artifact: receipt };
+  } finally {
+    pendingControlledIntents.delete(intent);
+    if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
+      controlledIntentByWebContents.delete(sourceWebContents);
+    }
+    signal?.removeEventListener?.('abort', onAbort);
+  }
+}
+
+function listAgentDownloads(conversationId) {
+  if (typeof conversationId !== 'string' || !conversationId) return [];
+  return store
+    .getDownloadsByAgentConversation(conversationId)
+    .map(artifactReceipt)
+    .filter(Boolean);
+}
+
+function cancelAgentDownloads(conversationId) {
+  if (typeof conversationId !== 'string' || !conversationId) return 0;
+  let cancelled = 0;
+  for (const intent of [...pendingControlledIntents]) {
+    if (intent.conversationId !== conversationId) continue;
+    pendingControlledIntents.delete(intent);
+    if (controlledIntentByWebContents.get(intent.sourceWebContents) === intent) {
+      controlledIntentByWebContents.delete(intent.sourceWebContents);
+    }
+    intent.started.resolve(null);
+    intent.completion.resolve(null);
+    cancelled += 1;
+  }
+  for (const [id, meta] of activeItemMeta) {
+    if (meta.agentConversationId !== conversationId) continue;
+    const item = activeItems.get(id);
+    if (!item) continue;
+    try {
+      meta.cancellationReason = DOWNLOAD_CANCELLATION_REASONS.RUN_STOPPED;
+      item.cancel();
+      cancelled += 1;
+    } catch (error) {
+      log.warn('[Downloads] Could not cancel Agent download', id + ':', error?.message || error);
+    }
+  }
+  return cancelled;
+}
+
+async function openArtifact(artifactId) {
+  if (!/^artifact_[a-f0-9]{20}$/.test(artifactId)) {
+    return { success: false, error: 'Invalid artifact' };
+  }
+  const row = store.getDownloadByArtifactId(artifactId);
+  if (!row || !artifactReceipt(row)?.available || !row.save_path) {
+    return { success: false, error: 'Download is not completed' };
+  }
+  if (!fs.existsSync(row.save_path)) {
+    return { success: false, error: 'File no longer exists' };
+  }
+  const openError = await shell.openPath(row.save_path);
+  return openError ? { success: false, error: openError } : { success: true };
+}
+
+function showArtifactInFolder(artifactId) {
+  if (!/^artifact_[a-f0-9]{20}$/.test(artifactId)) {
+    return { success: false, error: 'Invalid artifact' };
+  }
+  const row = store.getDownloadByArtifactId(artifactId);
+  if (!row || !artifactReceipt(row)?.available || !row.save_path) {
+    return { success: false, error: 'File no longer exists' };
+  }
+  shell.showItemInFolder(row.save_path);
+  return { success: true };
 }
 
 /**
@@ -471,6 +849,8 @@ function registerDownloadsIpc() {
   ipcMain.handle(IPC.DOWNLOADS_CANCEL, (event, id) => {
     const item = resolveActiveItemForSender(event, id);
     if (!item) return false;
+    const meta = activeItemMeta.get(id);
+    if (meta) meta.cancellationReason = DOWNLOAD_CANCELLATION_REASONS.USER;
     item.cancel();
     return true;
   });
@@ -502,6 +882,16 @@ function registerDownloadsIpc() {
     return { success: true };
   });
 
+  ipcMain.handle(IPC.DOWNLOADS_OPEN_ARTIFACT, (_event, artifactId) =>
+    typeof artifactId === 'string' ? openArtifact(artifactId) : { success: false, error: 'Invalid artifact' }
+  );
+
+  ipcMain.handle(IPC.DOWNLOADS_SHOW_ARTIFACT_IN_FOLDER, (_event, artifactId) =>
+    typeof artifactId === 'string'
+      ? showArtifactInFolder(artifactId)
+      : { success: false, error: 'Invalid artifact' }
+  );
+
   ipcMain.handle(IPC.DOWNLOADS_REMOVE, (event, id) => {
     // Removing from the list never deletes the file, and an in-flight
     // download must be cancelled first so its row can't be orphaned.
@@ -527,9 +917,18 @@ function registerDownloadsIpc() {
 }
 
 module.exports = {
+  setControlledPage,
+  takeBlockedDownload,
   attachDownloadsManager,
   cancelPartitionDownloads,
+  getActiveDownloadCount,
+  cancelAgentDownloads,
+  listAgentDownloads,
+  openArtifact,
+  onDownloadActivity,
   registerDownloadsIpc,
+  runControlledDownload,
   sanitizeFilename,
+  showArtifactInFolder,
   uniqueSavePath,
 };

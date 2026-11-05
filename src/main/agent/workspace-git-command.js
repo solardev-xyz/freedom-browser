@@ -1,0 +1,30 @@
+'use strict';
+
+// Use only installed Git within the existing system-toolchain sandbox boundary.
+// In particular, never execute macOS /usr/bin/git: it can launch the developer
+// tools installer when the real command-line tools are absent.
+// Serialized into a separate sandbox process: coverage counters would reference
+// the parent Jest environment. Keep this function uninstrumented; helper tests
+// still execute it, including in the coverage run.
+/* istanbul ignore next */
+function workspaceGitCommand(platform = process.platform, accessible) {
+  const executable =
+    platform === 'darwin'
+      ? '/Library/Developer/CommandLineTools/usr/bin/git'
+      : platform === 'linux'
+        ? '/usr/bin/git'
+        : platform === 'win32'
+          ? require('path').join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'cmd', 'git.exe')
+        : null;
+  if (!executable) return null;
+  try {
+    if (accessible) return accessible(executable) ? executable : null;
+    const fs = require('fs');
+    fs.accessSync(executable, fs.constants.X_OK);
+    return fs.statSync(executable).isFile() ? executable : null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { workspaceGitCommand };

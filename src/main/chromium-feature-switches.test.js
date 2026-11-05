@@ -79,4 +79,26 @@ describe('Chromium feature switches', () => {
     },
     30_000
   );
+
+  // <link rel=dns-prefetch> ignores X-DNS-Prefetch-Control and resolves outside the
+  // proxy, so workspace previews depend on this Blink setting being off everywhere
+  // (test-e2e/agent-preview-dns-prefetch.spec.js measures it in the real app).
+  test('DNS prefetching is disabled for every renderer', () => {
+    const index = fs.readFileSync(path.join(MAIN_DIR, 'index.js'), 'utf8');
+    expect(index).toMatch(
+      /^app\.commandLine\.appendSwitch\('blink-settings', 'dnsPrefetchingEnabled=false'\);$/m
+    );
+    const switches = mainSources().flatMap((file) =>
+      [...fs.readFileSync(file, 'utf8').matchAll(/appendSwitch\(\s*['"`]blink-settings['"`]/g)]
+    );
+    expect(switches).toHaveLength(1);
+  });
+
+  (binary ? test : test.skip)(
+    'the shipped Electron knows the dnsPrefetchingEnabled Blink setting',
+    () => {
+      expect(fs.readFileSync(binary).includes(Buffer.from('dnsPrefetchingEnabled'))).toBe(true);
+    },
+    30_000
+  );
 });

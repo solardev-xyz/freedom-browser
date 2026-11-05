@@ -1,9 +1,11 @@
 const mockProviderSend = jest.fn();
 const mockIpcHandle = jest.fn();
 
+const mockWebContentsFromId = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: jest.fn(() => '/tmp/test-user-data') },
   ipcMain: { handle: mockIpcHandle },
+  webContents: { fromId: (...args) => mockWebContentsFromId(...args) },
   BrowserWindow: {
     getAllWindows: jest.fn(() => [
       { webContents: { isDestroyed: jest.fn(() => false), send: mockProviderSend } },
@@ -133,6 +135,111 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     origin: ORIGIN,
   });
   expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
+});
+
+test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent custody', async () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  registerRadicleProviderIpc();
+  const executeHandler = mockIpcHandle.mock.calls.find(
+    ([channel]) => channel === 'radicle:provider-execute'
+  )[1];
+  const chrome = { id: 1 };
+  const guest = { isDestroyed: () => false, hostWebContents: chrome };
+  mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+  const call = (method, meta, sender = chrome) =>
+    executeHandler({ sender }, { method, params: { rid: RID }, origin: ORIGIN, meta });
+
+  setAgentPageCustody(guest, true);
+  try {
+    for (const method of ['radicle_seed', 'radicle_unseed']) {
+      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
+        const refused = await call(method, meta);
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      }
+    }
+    expect(manager.seedRepository).not.toHaveBeenCalled();
+    expect(manager.unseedRepository).not.toHaveBeenCalled();
+    // The per-repo prompt was answered by the user: it runs.
+    expect((await call('radicle_seed', { webContentsId: 9, approval: 'user' })).result).toBeDefined();
+  } finally {
+    setAgentPageCustody(guest, false);
+  }
+
+  expect((await call('radicle_unseed', { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
+  // An automatic request main cannot tie to a guest of the sending window.
+  for (const [meta, sender] of [
+    [{ approval: 'auto' }, chrome],
+    [{ webContentsId: 10, approval: 'auto' }, chrome],
+    [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
+  ]) {
+    const refused = await call('radicle_seed', meta, sender);
+    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+  }
+  expect(manager.seedRepository).toHaveBeenCalledTimes(1);
+  expect(manager.unseedRepository).toHaveBeenCalledTimes(1);
+});
+
+test('provider IPC holds signed writes from a tab in Agent custody to a per-write prompt', async () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  permissions.hasSigningGrant.mockReturnValue(true);
+  registerRadicleProviderIpc();
+  const executeHandler = mockIpcHandle.mock.calls.find(
+    ([channel]) => channel === 'radicle:provider-execute'
+  )[1];
+  const chrome = { id: 1 };
+  const guest = { isDestroyed: () => false, hostWebContents: chrome };
+  mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+  const writes = {
+    radicle_createIssue: { rid: RID, title: 'Bug', description: 'Steps' },
+    radicle_commentIssue: { rid: RID, issueId: 'a'.repeat(40), body: 'Same here' },
+    radicle_editIssueState: { rid: RID, issueId: 'a'.repeat(40), state: 'closed' },
+    radicle_commentPatch: { rid: RID, patchId: 'b'.repeat(40), body: 'LGTM' },
+  };
+  const call = (method, meta, sender = chrome) =>
+    executeHandler({ sender }, { method, params: writes[method], origin: ORIGIN, meta });
+  const cobCalls = () =>
+    cob.createIssue.mock.calls.length +
+    cob.commentIssue.mock.calls.length +
+    cob.editIssueState.mock.calls.length +
+    cob.commentPatch.mock.calls.length;
+
+  setAgentPageCustody(guest, true);
+  try {
+    // The standing grant answering (named, or no path at all) is refused.
+    for (const method of Object.keys(writes)) {
+      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }, undefined]) {
+        const refused = await call(method, meta);
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      }
+    }
+    expect(cobCalls()).toBe(0);
+    // The user approved this write in its prompt: it signs.
+    for (const method of Object.keys(writes)) {
+      expect((await call(method, { webContentsId: 9, approval: 'user' })).result).toBeDefined();
+    }
+    expect(cobCalls()).toBe(4);
+  } finally {
+    setAgentPageCustody(guest, false);
+  }
+
+  // A tab the user holds keeps signing on the grant without a prompt.
+  for (const method of Object.keys(writes)) {
+    expect((await call(method, { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
+  }
+  expect(cobCalls()).toBe(8);
+  // A grant-answered write main cannot tie to a guest of the sending window.
+  for (const [meta, sender] of [
+    [undefined, chrome],
+    [{ approval: 'auto' }, chrome],
+    [{ webContentsId: 10, approval: 'auto' }, chrome],
+    [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
+  ]) {
+    const refused = await call('radicle_createIssue', meta, sender);
+    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+  }
+  expect(cobCalls()).toBe(8);
+  // Disclosing the identity signs nothing and stays on the grant.
+  expect((await call('radicle_getIdentity', { webContentsId: 9 })).result).toBeDefined();
 });
 
 const expectProviderError = async (promise, code, reason) => {

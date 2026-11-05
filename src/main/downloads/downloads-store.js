@@ -106,8 +106,23 @@ function migrateDatabase() {
     db.pragma('user_version = 2');
   }
 
+  if (version < 3) {
+    log.info('[Downloads] Running migration to version 3 (Agent artifact metadata)');
+    db.exec(`
+      ALTER TABLE downloads ADD COLUMN artifact_id TEXT;
+      ALTER TABLE downloads ADD COLUMN agent_conversation_id TEXT;
+      ALTER TABLE downloads ADD COLUMN destination_kind TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_downloads_artifact_id
+        ON downloads(artifact_id) WHERE artifact_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_downloads_agent_conversation
+        ON downloads(agent_conversation_id, start_time DESC)
+        WHERE agent_conversation_id IS NOT NULL;
+    `);
+    db.pragma('user_version = 3');
+  }
+
   // Future migrations go here:
-  // if (version < 3) { ... db.pragma('user_version = 3'); }
+  // if (version < 4) { ... db.pragma('user_version = 4'); }
 }
 
 // Prepared statements (lazily initialized)
@@ -122,8 +137,9 @@ function getStatements() {
     insert: database.prepare(`
       INSERT INTO downloads (
         url, filename, save_path, mime_type, total_bytes, received_bytes,
-        state, start_time, end_time, is_private, session_partition
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        state, start_time, end_time, is_private, session_partition,
+        artifact_id, agent_conversation_id, destination_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     update: database.prepare(`
       UPDATE downloads SET
@@ -131,6 +147,7 @@ function getStatements() {
         total_bytes    = COALESCE(?, total_bytes),
         state          = COALESCE(?, state),
         save_path      = COALESCE(?, save_path),
+        filename       = COALESCE(?, filename),
         end_time       = COALESCE(?, end_time)
       WHERE id = ?
     `),
@@ -145,6 +162,14 @@ function getStatements() {
     `),
     getById: database.prepare(`
       SELECT * FROM downloads WHERE id = ?
+    `),
+    getByArtifactId: database.prepare(`
+      SELECT * FROM downloads WHERE artifact_id = ?
+    `),
+    getByAgentConversation: database.prepare(`
+      SELECT * FROM downloads
+      WHERE agent_conversation_id = ?
+      ORDER BY start_time DESC
     `),
     remove: database.prepare(`
       DELETE FROM downloads WHERE id = ?
@@ -175,7 +200,19 @@ function getStatements() {
  * @returns {object} The inserted row shape (with id)
  */
 function insertDownload(entry) {
-  const { url, filename, savePath, mimeType, totalBytes, startTime, isPrivate, partition } = entry;
+  const {
+    url,
+    filename,
+    savePath,
+    mimeType,
+    totalBytes,
+    startTime,
+    isPrivate,
+    partition,
+    artifactId,
+    agentConversationId,
+    destinationKind,
+  } = entry;
   const start = startTime || Date.now();
   const privateFlag = isPrivate ? 1 : 0;
 
@@ -191,7 +228,10 @@ function insertDownload(entry) {
     start,
     null,
     privateFlag,
-    partition || null
+    partition || null,
+    artifactId || null,
+    agentConversationId || null,
+    destinationKind || null
   );
 
   log.info('[Downloads] Recorded download start:', filename, privateFlag ? '(private)' : '');
@@ -209,13 +249,16 @@ function insertDownload(entry) {
     end_time: null,
     is_private: privateFlag,
     session_partition: partition || null,
+    artifact_id: artifactId || null,
+    agent_conversation_id: agentConversationId || null,
+    destination_kind: destinationKind || null,
   };
 }
 
 /**
  * Patch a download row. Only the provided fields are written.
  * @param {number} id - Row ID
- * @param {object} patch - { receivedBytes, totalBytes, state, savePath, endTime }
+ * @param {object} patch - { receivedBytes, totalBytes, state, savePath, filename, endTime }
  * @returns {boolean} Whether a row was updated
  */
 function updateDownload(id, patch = {}) {
@@ -225,6 +268,7 @@ function updateDownload(id, patch = {}) {
     patch.totalBytes ?? null,
     patch.state ?? null,
     patch.savePath ?? null,
+    patch.filename ?? null,
     patch.endTime ?? null,
     id
   );
@@ -260,6 +304,16 @@ function searchDownloads(query, limit = 100) {
 function getDownloadById(id) {
   const stmt = getStatements().getById;
   return stmt.get(id) || null;
+}
+
+function getDownloadByArtifactId(artifactId) {
+  if (typeof artifactId !== 'string' || !artifactId) return null;
+  return getStatements().getByArtifactId.get(artifactId) || null;
+}
+
+function getDownloadsByAgentConversation(conversationId) {
+  if (typeof conversationId !== 'string' || !conversationId) return [];
+  return getStatements().getByAgentConversation.all(conversationId);
 }
 
 /**
@@ -337,6 +391,8 @@ module.exports = {
   getAllDownloads,
   searchDownloads,
   getDownloadById,
+  getDownloadByArtifactId,
+  getDownloadsByAgentConversation,
   removeDownload,
   clearDownloads,
   removeAllPrivateDownloads,
