@@ -33,6 +33,7 @@ const {
   KIND_STREAM_CREDIT,
   MAX_DATA,
   WINDOW,
+  WRITER_DATA_CAP,
 } = require('./frame');
 
 const tick = () => new Promise(setImmediate);
@@ -67,6 +68,8 @@ class FakeCore extends EventEmitter {
     this.stderr = new PassThrough();
     this.messages = [];
     this.streams = [];
+    this.stuck = false; // stdin reads main's writes but doesn't complete them
+    this.held = []; // the write callbacks `stuck` holds back
     this.decoder = new FrameDecoder({ kinds: CORE_KINDS });
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
@@ -78,7 +81,8 @@ class FakeCore extends EventEmitter {
           this.messages.push(frame.message);
           handler(frame.message, this);
         }
-        callback();
+        if (this.stuck) this.held.push(callback);
+        else callback();
       },
       final: (callback) => {
         callback();
@@ -97,6 +101,17 @@ class FakeCore extends EventEmitter {
 
   write(bytes) {
     this.stdout.write(bytes);
+  }
+
+  /** Completes the oldest write `stuck` held back; the next stays stuck. */
+  completeOne() {
+    this.held.shift()?.();
+  }
+
+  /** Completes every write `stuck` held back, and those after. */
+  release() {
+    this.stuck = false;
+    for (const callback of this.held.splice(0)) callback();
   }
 
   exit(code, signal = null) {
@@ -638,4 +653,105 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
     await until(() => client.streamStats().sending === 0, 'the request done');
     expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
   });
+  test.each([
+    ['byte streams', true],
+    ['default streams', false],
+  ])(
+    "256 %s: reads started at once claim the writer's room before they start, so what it holds never passes its cap",
+    async (_what, bytes) => {
+      // Every read waits at the gate open when it starts; reads that start
+      // while one is shut wait for it together.
+      let gate;
+      const shut = () => {
+        let open;
+        const promise = new Promise((resolve) => {
+          open = resolve;
+        });
+        gate = { promise, open };
+      };
+      shut();
+      let started = 0;
+      const stream = () =>
+        new ReadableStream(
+          bytes
+            ? {
+                type: 'bytes',
+                async pull(controller) {
+                  started += 1;
+                  await gate.promise;
+                  const request = controller.byobRequest;
+                  request.view.fill(7);
+                  request.respond(request.view.byteLength);
+                },
+              }
+            : {
+                async pull(controller) {
+                  started += 1;
+                  await gate.promise;
+                  controller.enqueue(new Uint8Array(MAX_DATA).fill(7));
+                },
+              },
+          { highWaterMark: 0 }
+        );
+      await serving(() => new StreamedReply({ status: 200, headers: [] }, stream()));
+      const sender = client.current.duplex.sender;
+      // Queued plus reserved, checked after every call that adds to them.
+      let most = 0;
+      const check = () => {
+        most = Math.max(most, sender.held + sender.reserved);
+      };
+      for (const name of ['push', 'reserve', 'claim']) {
+        if (typeof sender[name] !== 'function') continue;
+        const call = sender[name].bind(sender);
+        sender[name] = (...args) => {
+          const out = call(...args);
+          check();
+          return out;
+        };
+      }
+      const settle = async () => {
+        for (let i = 0; i < 20; i++) {
+          await tick();
+          check();
+        }
+      };
+      // The writer takes main's first write and completes none.
+      core().stuck = true;
+      const fill = async () => {
+        for (let id = 1; id <= 256; id++) ask(id);
+        await until(() => started === 256, 'every first read');
+        // The first reads come back together and fill the sender.
+        let open = gate.open;
+        shut();
+        open();
+        await settle();
+        expect(sender.held).toBe(WRITER_DATA_CAP);
+        expect(started).toBe(256);
+        expect(most).toBeLessThanOrEqual(WRITER_DATA_CAP);
+        // One write at a time completes until the room it frees starts reads.
+        for (let i = 0; i < 4 && started === 256; i++) {
+          core().completeOne();
+          await settle();
+        }
+        expect(started).toBeGreaterThan(256);
+        // Room for four reads of 64 KiB was freed: only four started.
+        expect(started - 256).toBeLessThanOrEqual(4);
+        // Every read started meanwhile comes back at once.
+        open = gate.open;
+        shut();
+        open();
+        await settle();
+        expect(most).toBeLessThanOrEqual(WRITER_DATA_CAP);
+        expect(client.streamStats().held + client.streamStats().pending).toBeLessThanOrEqual(
+          WRITER_DATA_CAP
+        );
+      };
+      try {
+        await fill();
+      } finally {
+        gate.open();
+        core().release();
+      }
+    }
+  );
 });

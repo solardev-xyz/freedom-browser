@@ -434,7 +434,7 @@ class Generation {
     // streams, and the bodies main sends (`StreamedReply`), by the core's
     // request ID, with the pool charges of the replies its sender holds.
     this.duplex = null;
-    this.pieces = new Map(); // id -> { id, reader, pending, eof, reading }
+    this.pieces = new Map(); // id -> { id, reader, byob, pending, eof, reading, claimed }
     this.pieceCharges = new Map(); // id -> release
     // The process's fragmented responses: one at a time, while it holds main's
     // bulk credit.
@@ -1769,7 +1769,8 @@ class ServiceClient extends EventEmitter {
       stats.pieces = gen.pieces.size;
       stats.sending = gen.duplex.sender.live();
       stats.held = gen.duplex.sender.held;
-      // Read ahead of a body, not yet taken by the sender.
+      // Read ahead of a body, or claimed by a read in flight, not yet
+      // taken by the sender.
       stats.pending = gen.duplex.sender.reserved;
     }
     return stats;
@@ -2010,7 +2011,7 @@ class ServiceClient extends EventEmitter {
         this.flushStreams(gen);
         return;
       }
-      const piece = { id, reader, byob, pending: null, eof: false, reading: false };
+      const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
       gen.pieces.set(id, piece);
       this.pumpPiece(gen, piece);
     }
@@ -2022,7 +2023,10 @@ class ServiceClient extends EventEmitter {
    * allow: it reads only while the stream has room, at most MAX_READ_AHEAD
    * at a time (a byte stream at most the room, too), and holds what the
    * sender hasn't taken, charged to the writer's cap, reading nothing more
-   * until it has gone.
+   * until it has gone. A read's room is claimed from the cap before the
+   * read starts (`StreamSender#claim`), so the reads of many bodies started
+   * at once never count the same room: a byte stream's the size of its
+   * view, any other's MAX_READ_AHEAD, the most a chunk may be.
    */
   pumpPiece(gen, piece) {
     const sender = gen.duplex?.sender;
@@ -2052,44 +2056,60 @@ class ServiceClient extends EventEmitter {
         return;
       }
       if (piece.reading) return;
-      const room = sender.room(piece.id);
-      if (room === null) {
+      const claimed = piece.byob
+        ? sender.claim(piece.id, MAX_READ_AHEAD)
+        : sender.claim(piece.id, Math.min(MAX_READ_AHEAD, sender.dataCap), { whole: true });
+      if (claimed === null) {
         this.dropPiece(gen, piece);
         return;
       }
-      if (room > 0) this.readPiece(gen, piece, room);
+      if (claimed > 0) this.readPiece(gen, piece, sender, claimed);
       return;
     }
   }
 
-  readPiece(gen, piece, room) {
+  /** One read of a body, into the `claimed` room of `sender`'s cap: its
+   * bytes keep as much of it as they take, and the rest goes back. */
+  readPiece(gen, piece, sender, claimed) {
     piece.reading = true;
+    piece.claimed = claimed;
+    // The read is over: its claim, unless the piece was let go of (and the
+    // claim with it) meanwhile.
+    const over = () => {
+      piece.reading = false;
+      const held = piece.claimed;
+      piece.claimed = 0;
+      return held;
+    };
     let read;
     try {
-      read = piece.byob
-        ? piece.reader.read(new Uint8Array(Math.min(room, MAX_READ_AHEAD)))
-        : piece.reader.read();
+      read = piece.byob ? piece.reader.read(new Uint8Array(claimed)) : piece.reader.read();
     } catch (err) {
       read = Promise.reject(err);
     }
     Promise.resolve(read).then(
       (chunk) => {
-        piece.reading = false;
-        if (gen.pieces.get(piece.id) !== piece) return;
+        const held = over();
+        if (gen.pieces.get(piece.id) !== piece) {
+          sender.release(held);
+          return;
+        }
         if (chunk?.done) {
+          sender.release(held);
           piece.eof = true;
         } else if (ArrayBuffer.isView(chunk?.value)) {
           const { buffer, byteOffset, byteLength } = chunk.value;
-          // A chunk past the read-ahead: a source main can't bound.
-          if (byteLength > MAX_READ_AHEAD) {
+          // Past the room the read claimed: a source main can't bound.
+          if (byteLength > held) {
+            sender.release(held);
             this.abortPiece(gen, piece, null);
             return;
           }
-          if (byteLength) {
-            piece.pending = Buffer.from(buffer, byteOffset, byteLength);
-            gen.duplex?.sender.reserve(byteLength);
-          }
+          // The claim passes to the bytes read; what they didn't take goes.
+          sender.release(held - byteLength);
+          if (byteLength) piece.pending = Buffer.from(buffer, byteOffset, byteLength);
         } else {
+          sender.release(held);
           this.abortPiece(gen, piece, null);
           return;
         }
@@ -2097,7 +2117,7 @@ class ServiceClient extends EventEmitter {
         this.flushStreams(gen);
       },
       (err) => {
-        piece.reading = false;
+        sender.release(over());
         if (gen.pieces.get(piece.id) !== piece) return;
         this.abortPiece(gen, piece, err?.abortCode);
       }
@@ -2120,6 +2140,9 @@ class ServiceClient extends EventEmitter {
     gen.pieces.delete(piece.id);
     if (piece.pending) gen.duplex?.sender.release(piece.pending.length);
     piece.pending = null;
+    // A read in flight gives back its claim now; its answer is dropped.
+    if (piece.claimed) gen.duplex?.sender.release(piece.claimed);
+    piece.claimed = 0;
     if (piece.eof) return;
     try {
       piece.reader.cancel().catch(() => {});
