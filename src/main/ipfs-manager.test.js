@@ -170,6 +170,8 @@ function loadIpfsManagerModule(options = {}) {
         this.settleStart?.(false);
         return this.shutdown;
       });
+      // Why a start failed, when the node knows (design 0010's refusals).
+      this.failureReason = options.serviceFailureReason ?? null;
       this.capture = jest.fn(() => this.pair);
       this.request = jest.fn(async () => new Response('service-body', { status: 200 }));
       this.isHealthy = jest.fn(() => options.isHealthy !== false);
@@ -230,6 +232,9 @@ function loadIpfsManagerModule(options = {}) {
   app.getVersion = () => '0.9.0-test';
   // freedom-ipfsd's gate, which the add-on takes (design 0007, Rollback).
   const takeIpfsGate = jest.fn(async () => ({ release: jest.fn(async () => {}) }));
+  // Main's grant check (freedom-core design 0010), which the service node
+  // calls before each spawn: here it records the path it was asked about.
+  const ipfsGrantRefusal = jest.fn(() => null);
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
     app,
@@ -266,6 +271,7 @@ function loadIpfsManagerModule(options = {}) {
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
       [require.resolve('./ipfs/ipfsd-gate')]: () => ({ takeIpfsGate }),
+      [require.resolve('./service-grant')]: () => ({ ipfsGrantRefusal }),
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
@@ -328,6 +334,7 @@ function loadIpfsManagerModule(options = {}) {
     },
     torListeners,
     takeIpfsGate,
+    ipfsGrantRefusal,
     setStatusMessage,
     setErrorState,
     clearErrorState,
@@ -3241,6 +3248,69 @@ describe('the freedom-ipfsd backend (the default)', () => {
     } else {
       expect(ctx.log.warn).not.toHaveBeenCalled();
     }
+  });
+
+  // freedom-core design 0010: main checks the data directory before the
+  // spawn, and a refusal says why.
+  test('the node gets the grant check, and a start it fails shows its reason', async () => {
+    const reason = "freedom-ipfs data directory overlaps another component's directory";
+    const ctx = loadIpfsManagerModule({ serviceStartOk: false, serviceFailureReason: reason });
+    ctx.mod.registerIpfsIpc();
+
+    const result = await ctx.ipcMain.invoke(IPC.IPFS_START);
+
+    expect(typeof ctx.serviceInstances[0].config.checkGrant).toBe('function');
+    expect(result).toEqual({ status: 'error', error: reason });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
+  });
+
+  // Design 0010, "Main's check": a relative data directory (an override as
+  // written) is resolved once, and that one absolute path is both what the
+  // check compares and what freedom-ipfsd, or the add-on and its gate, get.
+  test.each(['service', 'addon'])(
+    'the %s gets the very absolute path the grant check is asked about',
+    async (backend) => {
+      selectBackend(backend);
+      const ctx = loadIpfsManagerModule({ ipfsDataDir: path.join('relative', 'ipfs-data') });
+
+      await ctx.mod.startIpfs();
+
+      const resolved = path.resolve('relative', 'ipfs-data', 'freedom-ipfs');
+      expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(resolved, { recursive: true });
+      if (backend === 'service') {
+        const { config } = ctx.serviceInstances[0];
+        expect(config.dataDir).toBe(resolved);
+        expect(config.checkGrant()).toBeNull();
+        expect(ctx.ipfsGrantRefusal).toHaveBeenCalledWith(resolved);
+      } else {
+        const { config } = ctx.nativeInstances[0];
+        expect(config.dataDir).toBe(resolved);
+        await config.takeGate({ onLost: null });
+        expect(ctx.takeIpfsGate).toHaveBeenCalledWith(resolved, { onLost: null });
+      }
+    }
+  );
+
+  test("a node waiting for Tor's endpoint stays starting, and says so", async () => {
+    const ctx = loadIpfsManagerModule({
+      serviceStartPending: true,
+      settings: { routeIpfsThroughTor: true },
+    });
+    ctx.mod.registerIpfsIpc();
+
+    ctx.mod.startIpfs();
+    await new Promise((resolve) => setImmediate(resolve));
+    const node = ctx.serviceInstances[0];
+    node.config.onChange('waiting', node);
+
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Waiting for Tor');
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'starting',
+    });
+    // A node that is neither starting nor serving says nothing.
+    ctx.setStatusMessage.mockClear();
+    node.config.onChange('waiting', {});
+    expect(ctx.setStatusMessage).not.toHaveBeenCalled();
   });
 
   test('no binary: an error, and nothing spawned', async () => {
