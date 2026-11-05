@@ -335,6 +335,48 @@ describe('abort codes by connection and direction (design 0009)', () => {
     sender.release(1);
     expect(sender.reserved).toBe(0);
   });
+
+  test("a read's room is claimed from the writer's cap before it starts: no two reads count the same room", () => {
+    const sender = new StreamSender({ dataCap: 160 * 1024 });
+    for (const id of [1, 2, 3]) {
+      sender.request(id);
+      sender.head(id, Buffer.from('{}'), true);
+    }
+    // Up to `most`, as the window and the cap allow, reserved at once.
+    expect(sender.claim(1, 64 * 1024)).toBe(64 * 1024);
+    expect(sender.claim(2, 64 * 1024)).toBe(64 * 1024);
+    expect(sender.reserved).toBe(128 * 1024);
+    // The third gets what is left, and then nothing.
+    expect(sender.claim(3, 64 * 1024)).toBe(32 * 1024);
+    expect(sender.claim(3, 64 * 1024)).toBe(0);
+    expect(sender.reserved).toBe(160 * 1024);
+    // A claim the cap would cut below 4 KiB takes nothing; one that fits
+    // whole below it does.
+    sender.release(3 * 1024);
+    expect(sender.claim(3, 64 * 1024)).toBe(0);
+    expect(sender.claim(3, 2 * 1024)).toBe(2 * 1024);
+    sender.release(sender.reserved);
+    // `whole`: all of `most` from the cap, or nothing.
+    sender.reserve(100 * 1024);
+    expect(sender.claim(1, 64 * 1024, { whole: true })).toBe(0);
+    sender.release(4 * 1024);
+    expect(sender.claim(1, 64 * 1024, { whole: true })).toBe(64 * 1024);
+    sender.release(sender.reserved);
+    // The window bounds a claim; `whole` needs only some room in it.
+    expect(sender.push(2, Buffer.alloc(120 * 1024))).toEqual({ taken: 120 * 1024 });
+    expect(sender.claim(2, 64 * 1024)).toBe(8 * 1024);
+    sender.release(8 * 1024);
+    expect(sender.claim(2, 32 * 1024, { whole: true })).toBe(32 * 1024);
+    sender.release(sender.reserved);
+    expect(sender.push(2, Buffer.alloc(8 * 1024))).toEqual({ taken: 8 * 1024 });
+    expect(sender.claim(2, 64 * 1024)).toBe(0);
+    expect(sender.claim(2, 64 * 1024, { whole: true })).toBe(0);
+    // No body that takes bytes: null, and nothing claimed.
+    sender.finish(3);
+    expect(sender.claim(3, 64 * 1024)).toBeNull();
+    expect(sender.claim(9, 64 * 1024)).toBeNull();
+    expect(sender.reserved).toBe(0);
+  });
 });
 
 describe("the core's connection at protocol 2", () => {

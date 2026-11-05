@@ -1156,7 +1156,9 @@ const refused = (name) => ({ refused: name });
  * - **Bounds.** The writer holds at most its data cap (16 MiB by default)
  *   of queued bytes, in 4 KiB blocks freed as they are written. Bytes its
  *   producer has read for a body and not yet pushed (`reserve`) count
- *   against the cap too, until `release`.
+ *   against the cap too, until `release`, and so does the room a read in
+ *   flight was given (`claim`): it is taken from the cap before the read
+ *   starts, so reads in flight at once never count the same room.
  *
  * Producer refusals (`gone`, `unknown`, `answered`, `not_open`, `ended`,
  * `too_large`, `closed`, `code`) are returned as `{ refused }`; protocol
@@ -1187,6 +1189,34 @@ class StreamSender {
 
   release(bytes) {
     this.reserved = Math.max(0, this.reserved - bytes);
+  }
+
+  /**
+   * Claims room in the writer's cap for one read of stream `id`'s body,
+   * before the read starts: reserved at once, so no other read in flight
+   * counts the same room. It is up to `most` bytes, as many as the stream's
+   * window and the cap allow (none if the cap would cut it below 4 KiB, as
+   * a push); with `whole`, for a read whose size main can't choose, all of
+   * `most` from the cap or nothing, once the window has any room. Returns
+   * the bytes reserved, which the producer releases or passes to its
+   * pending bytes when the read is done, or null without a body that takes
+   * bytes.
+   */
+  claim(id, most, { whole = false } = {}) {
+    const body = this.takingBody(id);
+    if (!body) return null;
+    const window = room(body);
+    const cap = Math.max(0, this.dataCap - this.held - this.reserved);
+    let n;
+    if (whole) {
+      n = window > 0 && cap >= most ? most : 0;
+    } else {
+      const wanted = Math.min(most, window);
+      n = Math.min(wanted, cap);
+      if (n < wanted && n < SMALL_FRAME) n = 0;
+    }
+    this.reserved += n;
+    return n;
   }
 
   // ---- the other side's frames ----
@@ -1416,13 +1446,20 @@ class StreamSender {
   /** How much stream `id`'s producer may push now, or null without a body
    * that takes bytes. */
   room(id) {
+    const body = this.takingBody(id);
+    if (!body) return null;
+    return Math.min(room(body), Math.max(0, this.dataCap - this.held - this.reserved));
+  }
+
+  /** Stream `id`'s body while it takes bytes, or null. */
+  takingBody(id) {
     const request = this.requests.get(id);
     const body =
       (request?.state === 'head' || request?.state === 'open') && request.body
         ? request.body
         : null;
     if (!body || body.end || body.abort !== null) return null;
-    return Math.min(room(body), Math.max(0, this.dataCap - this.held - this.reserved));
+    return body;
   }
 
   queued(id) {
