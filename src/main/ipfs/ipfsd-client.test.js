@@ -273,9 +273,9 @@ test('hello must report the release main expects: the pinned one when packaged',
   expect(
     expectedServiceVersion({
       packaged: false,
-      env: env({ FREEDOM_IPFSD_RELEASE_TAG: 'ipfsd-v0.3.0' }),
+      env: env({ FREEDOM_IPFSD_RELEASE_TAG: 'ipfsd-v9.8.7' }),
     })
-  ).toBe('0.3.0');
+  ).toBe('9.8.7');
   expect(
     expectedServiceVersion({ packaged: false, env: env({ FREEDOM_IPFSD_RELEASE_TAG: 'latest' }) })
   ).toBeNull();
