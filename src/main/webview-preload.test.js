@@ -1580,6 +1580,7 @@ describe('injected provider request timeouts', () => {
   test.each([
     'radicle_requestAccess',
     'radicle_seed',
+    'radicle_unseed',
     'radicle_getIdentity',
     'radicle_createIssue',
     'radicle_commentIssue',
@@ -1593,12 +1594,36 @@ describe('injected provider request timeouts', () => {
     'radicle_getCapabilities',
     'radicle_getNodeStatus',
     'radicle_listSeededRepos',
-    'radicle_unseed',
     'radicle_sync',
     'radicle_getSeedStatus',
     'radicle_disconnect',
   ])('radicle %s (never prompts) keeps the 60s budget', (method) => {
     expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(60000);
+  });
+
+  test('radicle promptable methods match all node and signing methods plus connect', () => {
+    const radicleProviderSource = fs.readFileSync(
+      require.resolve('../renderer/lib/radicle-provider'),
+      'utf8'
+    );
+    const nodeMatch = radicleProviderSource.match(/const NODE_METHODS = new Set\(\[([\s\S]*?)\]\);/);
+    const signedWriteMatch = radicleProviderSource.match(/const SIGNED_WRITE_METHODS = new Set\(\[([\s\S]*?)\]\);/);
+    expect(nodeMatch).toBeTruthy();
+    expect(signedWriteMatch).toBeTruthy();
+
+    const extractStrings = (raw) =>
+      [...raw.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+    const expectedPromptMethods = new Set([
+      'radicle_requestAccess',
+      ...extractStrings(nodeMatch[1]),
+      'radicle_getIdentity',
+      ...extractStrings(signedWriteMatch[1]),
+    ]);
+
+    for (const method of expectedPromptMethods) {
+      expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(300000);
+    }
   });
 
   // Parity with the sibling provider the radicle one was modelled on.
