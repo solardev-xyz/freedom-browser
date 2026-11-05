@@ -21,6 +21,7 @@ const {
   ipnsMhToCidV1Base36,
 } = require('../../shared/cid-utils');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
+const { composeVerify } = require('./verify-plan');
 
 /** `bzz:`'s request header allowlist (security audit O-2, #429). */
 const FORWARDED_REQUEST_HEADERS = new Set([
@@ -148,7 +149,8 @@ function timers(backend) {
 }
 
 /** A fetch for a node-relative target (`/<namespace>/<ref>…`), or the
- * node's absence as an error. */
+ * node's absence as an error; a verify plan for it when the backend's
+ * verification is on (`verify-plan.js`). */
 function fetchPlan(scheme, backend, target, headers, smallText, nameTrust = null) {
   if (!backend.up) return notRunning(backend);
   let response;
@@ -158,7 +160,7 @@ function fetchPlan(scheme, backend, target, headers, smallText, nameTrust = null
   } else {
     response = ['strip_page_state', ...(smallText ? ['small_text'] : [])];
   }
-  return {
+  const plan = {
     fetch: {
       node: scheme === 'bzz' ? 'ant' : 'ipfs',
       path: normalizeTarget(target) ?? target,
@@ -169,6 +171,9 @@ function fetchPlan(scheme, backend, target, headers, smallText, nameTrust = null
       trust: { name: nameTrust, content: contentTrust(backend) },
     },
   };
+  // A backend whose verification is on gets a verify plan instead, unless
+  // the content stays unverified (freedom-core design 0009).
+  return composeVerify(plan, backend, smallText);
 }
 
 function bzzHeaders(headers) {
@@ -338,7 +343,7 @@ function openIpfs(scheme, { url, method, backend }, headers) {
  * Plans a request as `dweb.open` does, up to any lookup.
  *
  * @param {{url: string, method?: string, headers?: string[][], backend: object}} request
- * @returns {object|null} a plan (`{ fetch | redirect | error }`), `{ pending }`
+ * @returns {object|null} a plan (`{ fetch | verify | redirect | error }`), `{ pending }`
  *   for a name host, or null for a request the core can't plan (not a
  *   `bzz:`, `ipfs:` or `ipns:` URL, or a backend that doesn't serve its
  *   scheme)
@@ -358,6 +363,7 @@ function openDweb(request) {
 module.exports = {
   openDweb,
   fetchPlan,
+  isNavigation,
   errorPlan,
   contentTrust,
   normalizeTarget,
