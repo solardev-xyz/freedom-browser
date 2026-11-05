@@ -8,6 +8,7 @@ let ipfsToggleBtn = null;
 let ipfsToggleSwitch = null;
 let ipfsActiveRequestsCount = null;
 let ipfsDataRead = null;
+let ipfsSandboxText = null;
 let ipfsPeersCount = null;
 let ipfsBandwidth = null;
 let ipfsVersionText = null;
@@ -31,6 +32,7 @@ export const stopIpfsInfoPolling = () => {
   ipfsInfoPanel?.classList.remove('visible');
   if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
   if (ipfsDataRead) ipfsDataRead.textContent = '';
+  renderSandbox(null);
   if (ipfsPeersCount) ipfsPeersCount.textContent = '0';
   if (ipfsBandwidth) ipfsBandwidth.textContent = '';
   if (ipfsVersionText)
@@ -90,6 +92,41 @@ const parseNativeBuildInfo = (raw) => {
   } catch {
     return null;
   }
+};
+
+// The service's `confinement` (freedom-core design 0010, "Reporting"), off
+// the build info: `Enforced` when every property is, `Unavailable` when the
+// OS confines nothing, `Partial` otherwise. The title lists each property.
+const SANDBOX_PROPERTIES = [
+  ['files', 'Files'],
+  ['exec', 'Programs'],
+  ['ipc', 'Local IPC'],
+  ['network', 'Network'],
+];
+
+export const sandboxLabel = (confinement) => {
+  if (!confinement || typeof confinement !== 'object') return UNKNOWN;
+  if (confinement.mechanism === 'none') return 'Unavailable';
+  const full = SANDBOX_PROPERTIES.every(([key]) => ['enforced', 'none'].includes(confinement[key]));
+  return full ? 'Enforced' : 'Partial';
+};
+
+export const sandboxDetail = (confinement) => {
+  if (!confinement || typeof confinement !== 'object') return '';
+  const properties = SANDBOX_PROPERTIES.map(
+    ([key, label]) => `${label}: ${confinement[key] ?? 'unknown'}`
+  );
+  const gaps =
+    Array.isArray(confinement.gaps) && confinement.gaps.length
+      ? [`Open: ${confinement.gaps.join(', ')}`]
+      : [];
+  return [...properties, ...gaps, `Mechanism: ${confinement.mechanism}`].join('\n');
+};
+
+const renderSandbox = (confinement) => {
+  if (!ipfsSandboxText) return;
+  ipfsSandboxText.textContent = sandboxLabel(confinement);
+  ipfsSandboxText.title = sandboxDetail(confinement);
 };
 
 const readNativeVersion = (diagnostics = {}) => {
@@ -167,11 +204,15 @@ const fetchNativeStats = async () => {
       if (ipfsDataRead) {
         ipfsDataRead.textContent = formatBytes(stats.bytes_read || 0);
       }
+      renderSandbox(
+        parseNativeBuildInfo(status?.diagnostics?.nativeBuildInfo)?.service?.confinement ?? null
+      );
       updateVersionFromDiagnostics(status?.diagnostics);
     }
   } catch {
     if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
     if (ipfsDataRead) ipfsDataRead.textContent = '';
+    renderSandbox(null);
     if (ipfsPeersCount) ipfsPeersCount.textContent = UNKNOWN;
     if (ipfsBandwidth) ipfsBandwidth.textContent = UNKNOWN;
   }
@@ -352,6 +393,7 @@ export const initIpfsUi = () => {
   ipfsToggleSwitch = document.getElementById('ipfs-toggle-switch');
   ipfsActiveRequestsCount = document.getElementById('ipfs-active-requests-count');
   ipfsDataRead = document.getElementById('ipfs-data-read');
+  ipfsSandboxText = document.getElementById('ipfs-sandbox-text');
   ipfsPeersCount = document.getElementById('ipfs-peers-count');
   ipfsBandwidth = document.getElementById('ipfs-bandwidth');
   ipfsVersionText = document.getElementById('ipfs-version-text');

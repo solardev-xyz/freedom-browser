@@ -118,6 +118,113 @@ describe('profile paths', () => {
     expect(paths.getRadicleDataDir()).toBe(radicleDir);
   });
 
+  // freedom-core design 0010: an override is resolved once, from main's
+  // directory, and every consumer (a service handed it as an argument too)
+  // gets that absolute path; the grant check also sees it as written.
+  test('resolves a relative override to one absolute path, for every consumer', () => {
+    for (const name of [
+      'FREEDOM_IDENTITY_DATA',
+      'FREEDOM_BEE_DATA',
+      'FREEDOM_ANT_DATA',
+      'FREEDOM_IPFS_DATA',
+      'MYOTIS_DATA_DIR',
+      'FREEDOM_TOR_DATA',
+      'FREEDOM_RADICLE_DATA',
+    ]) {
+      delete process.env[name];
+    }
+    const userDataDir = track(createTempUserDataDir());
+    const overrides = track(createTempUserDataDir());
+    // Relative where the working directory and the temporary one share a
+    // root (on Windows they may not: then path.relative keeps it absolute).
+    const relative = path.relative(process.cwd(), overrides);
+    process.env.FREEDOM_IPFS_DATA = path.join(relative, 'ipfs');
+    process.env.FREEDOM_IDENTITY_DATA = path.join(relative, 'identity');
+    process.env.FREEDOM_RADICLE_DATA = path.join(relative, 'radicle');
+    process.env.MYOTIS_DATA_DIR = path.join(relative, 'myotis');
+
+    // Each, as main resolves it: in the temporary directory.
+    const resolved = (name) => path.resolve(relative, name);
+    expect(path.isAbsolute(resolved('ipfs'))).toBe(true);
+    expect(path.relative(overrides, resolved('ipfs'))).toBe('ipfs');
+
+    const paths = loadPaths(userDataDir);
+
+    expect(paths.getIpfsDataDir()).toBe(resolved('ipfs'));
+    expect(paths.getIdentityDataDir()).toBe(resolved('identity'));
+    expect(paths.getRadicleDataDir()).toBe(resolved('radicle'));
+    expect(paths.getMyotisDataDir('gnosis')).toBe(path.join(resolved('myotis'), 'gnosis'));
+    expect(paths.getComponentDataDirs()).toMatchObject({
+      identity: resolved('identity'),
+      ipfs: resolved('ipfs'),
+      myotis: resolved('myotis'),
+      radicle: resolved('radicle'),
+    });
+    expect(paths.getDataDirOverrides()).toEqual({
+      identity: path.join(relative, 'identity'),
+      ipfs: path.join(relative, 'ipfs'),
+      myotis: path.join(relative, 'myotis'),
+      radicle: path.join(relative, 'radicle'),
+    });
+  });
+
+  test("lists each component's data directory without creating any, this profile's overrides included", () => {
+    const userDataDir = track(createTempUserDataDir());
+    const ipfsDir = path.join(track(createTempUserDataDir()), 'elsewhere');
+    process.env.FREEDOM_IPFS_DATA = ipfsDir;
+    const paths = loadPaths(userDataDir);
+
+    expect(paths.getComponentDataDirs()).toEqual({
+      identity: path.join(userDataDir, 'identity'),
+      bee: path.join(userDataDir, 'bee-data'),
+      ant: path.join(userDataDir, 'ant-data'),
+      ipfs: ipfsDir,
+      myotis: path.join(userDataDir, 'myotis'),
+      tor: path.join(userDataDir, 'tor-data'),
+      radicle: path.join(userDataDir, 'radicle-data'),
+      radicleHome: null,
+    });
+    expect(fs.existsSync(ipfsDir)).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'identity'))).toBe(false);
+
+    // Another profile's: its default names, the override this process's alone.
+    const other = path.join(userDataDir, 'other');
+    expect(paths.getComponentDataDirs(other)).toMatchObject({
+      ipfs: path.join(other, 'ipfs-data'),
+      radicleHome: null,
+    });
+  });
+
+  test("a catalog profile's short Radicle home, and another's by its slot", () => {
+    const appRoot = path.join(track(createTempUserDataDir()), 'Freedom');
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    const activeProfile = { source: 'catalog', appRoot, metadata: { slot: 2 } };
+    const paths = loadPaths(userDataDir, { activeProfile });
+    expect(paths.getComponentDataDirs().radicleHome).toBe(path.join(appRoot, 'R', '2'));
+    const other = path.join(appRoot, 'Profiles', 'home');
+    expect(paths.getComponentDataDirs(other, { slot: 3 }).radicleHome).toBe(
+      path.join(appRoot, 'R', '3')
+    );
+    // Without its slot, none.
+    expect(paths.getComponentDataDirs(other).radicleHome).toBeNull();
+  });
+
+  test("a development build's short Radicle homes sit beside the app root, by checkout", () => {
+    const devRoot = path.join(track(createTempUserDataDir()), 'Freedom Dev');
+    const appRoot = path.join(devRoot, 'freedom-browser-abcd1234');
+    const activeProfile = {
+      source: 'catalog',
+      appRoot,
+      isDev: true,
+      checkoutHash: 'abcd1234',
+      metadata: { slot: 1 },
+    };
+    const paths = loadPaths(path.join(appRoot, 'Profiles', 'work'), { activeProfile });
+    expect(paths.getComponentDataDirs(path.join(appRoot, 'Profiles', 'home'), { slot: 4 })).toMatchObject({
+      radicleHome: path.join(devRoot, 'R', 'abcd1234', '4'),
+    });
+  });
+
   test('uses an app-owned short Radicle home for catalog profiles', async () => {
     const tempRoot = track(path.join('/tmp', `freedom-profile-paths-${Date.now()}`));
     fs.mkdirSync(tempRoot, { recursive: true });
