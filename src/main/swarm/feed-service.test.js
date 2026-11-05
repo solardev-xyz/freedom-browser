@@ -344,7 +344,8 @@ describe('feed-service', () => {
       expect(owner.toHex()).toBe(SIGNER_OWNER.slice(2));
       // Payload: unix seconds (uint64 BE) ‖ reference; the span is its length.
       const [{ identifier, payload, span }] = signer.signSoc.mock.calls[0];
-      expect(identifier).toHaveLength(32);
+      // The mock's keccak256 keeps its topic ‖ index input: 32 + 8 bytes.
+      expect(identifier).toHaveLength(40);
       expect(span).toBeUndefined();
       expect(payload).toHaveLength(40);
       const seconds = Number(Buffer.from(payload).readBigUInt64BE(0));
@@ -418,46 +419,45 @@ describe('feed-service', () => {
     });
 
     test('continues a live feed after its head when the latest lookup 404s on expired content', async () => {
-      const writer = createMockWriter();
-      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
-      mockMakeFeedWriter.mockReturnValue(writer);
+      const reader = createMockReader();
+      reader.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedReader.mockReturnValue(reader);
       mockBatchForAutoSelect();
       for (const head of [0, 1, 6, 7, 8, 1000]) {
         mockFeedChunksUpTo(head);
-        writer.uploadReference.mockClear();
-        await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).resolves.toEqual({ index: head + 1 });
-        expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: head + 1 });
+        mockUploadSingleOwnerChunk.mockClear();
+        await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF)).resolves.toEqual({ index: head + 1 });
+        expect(mockUploadSingleOwnerChunk).toHaveBeenCalledTimes(1);
       }
     });
 
     test('minIndex keeps a write above an index the caller knows, even when the probe reads the feed as empty', async () => {
       // Index 0 expired with its batch while later updates survive: the
       // probe can't see past it, so only the caller's known index helps.
-      const writer = createMockWriter();
-      writer.downloadPayload.mockRejectedValue(make404());
-      mockMakeFeedWriter.mockReturnValue(writer);
+      const reader = createMockReader();
+      reader.downloadPayload.mockRejectedValue(make404());
+      mockMakeFeedReader.mockReturnValue(reader);
       mockBatchForAutoSelect();
       mockFeedChunksUpTo(-1);
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 6 });
-      expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: 6 });
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 6 });
       // A network head past minIndex still wins.
-      writer.uploadReference.mockClear();
       mockFeedChunksUpTo(9);
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 10 });
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 10 });
       // An absent or invalid minIndex changes nothing.
-      writer.uploadReference.mockClear();
       mockFeedChunksUpTo(-1);
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: -3 })).resolves.toEqual({ index: 0 });
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: -3 })).resolves.toEqual({ index: 0 });
     });
 
     test('a 500 from an update-chunk probe fails the write instead of reading the chunk as missing', async () => {
-      const writer = createMockWriter();
-      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
-      mockMakeFeedWriter.mockReturnValue(writer);
+      const reader = createMockReader();
+      reader.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedReader.mockReturnValue(reader);
       mockBatchForAutoSelect();
       mockDownloadChunk.mockRejectedValue(new MockBeeResponseError(500, 'read chunk failed'));
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).rejects.toBeInstanceOf(MockBeeResponseError);
-      expect(writer.uploadReference).not.toHaveBeenCalled();
+      const signer = makeSigner();
+      await expect(updateFeed(signer, 'myapp.eth/blog', CONTENT_REF)).rejects.toBeInstanceOf(MockBeeResponseError);
+      expect(signer.signSoc).not.toHaveBeenCalled();
+      expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
     });
 
     test('propagates non-404 errors from resolveNextIndex (does not default to 0)', async () => {
@@ -503,7 +503,12 @@ describe('feed-service', () => {
 
       mockMakeFeedReader.mockReturnValue(createMockReader());
       mockUploadData.mockResolvedValue({ reference: new MockReference('ab'.repeat(32)) });
-      mockDownloadChunk.mockResolvedValue(new MockBytes('raw root'));
+      // The root chunk only: the feed's update chunks are still missing, so
+      // the head probe reads the feed as empty.
+      mockDownloadChunk.mockImplementation(async (ref) => {
+        if (ref === 'ab'.repeat(32)) return new MockBytes('raw root');
+        throw make404();
+      });
       mockUnmarshalContentAddressedChunk.mockReturnValue({
         payload: new MockBytes(Buffer.alloc(64, 9)),
         span: new MockSpan(4098),
@@ -583,7 +588,12 @@ describe('feed-service', () => {
       mockBatchForAutoSelect();
       const root = { payload: new MockBytes(Buffer.alloc(64, 9)), span: new MockSpan(50000) };
       mockUploadData.mockResolvedValue({ reference: new MockReference('ab'.repeat(32)) });
-      mockDownloadChunk.mockResolvedValue(new MockBytes('raw root'));
+      // The root chunk only: the feed's update chunks are still missing, so
+      // the head probe reads the feed as empty.
+      mockDownloadChunk.mockImplementation(async (ref) => {
+        if (ref === 'ab'.repeat(32)) return new MockBytes('raw root');
+        throw make404();
+      });
       mockUnmarshalContentAddressedChunk.mockReturnValue(root);
       const signer = makeSigner();
 

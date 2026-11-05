@@ -281,7 +281,12 @@ describe('dapp-sign approval lifecycle', () => {
 
   test('a message that cannot be displayed is refused and holds off nothing', async () => {
     const { mod, openApproval } = await loadDappSign();
-    await expect(mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'])).rejects.toThrow();
+    // Main's view of a message whose bytes can't be shown (freedom-core #88).
+    await expect(
+      mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'], {
+        message: { hex: 12345, rawHash: false },
+      })
+    ).rejects.toThrow();
 
     const next = await openApproval();
     expect(next.settled.state).toBe('pending');
@@ -571,6 +576,10 @@ describe('dapp-sign: the typed-data view', () => {
     expect(both).toContain('different type of data');
     expect(both).toContain('but the site is on chain 100');
 
+    // The user answers it first: a prompt on screen keeps it until then
+    // (dapp-prompt-guard.js).
+    elements['dapp-sign-reject'].dispatch('click');
+    await flush();
     await openApproval('0xdeadbeef');
     expect(warning(elements)).toBeNull();
     expect(elements['dapp-sign-typed-ignored'].classList.contains('hidden')).toBe(true);

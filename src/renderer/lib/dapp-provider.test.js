@@ -153,8 +153,10 @@ const { createDocument, createElement } = require('../../../test/helpers/fake-do
 const originalWindow = global.window;
 const originalDocument = global.document;
 
+// Enough turns for a signature request's whole path: main's view of what
+// it signs (freedom-core #88) and the page's chain come before the prompt.
 const flushMicrotasks = async () => {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 25; i++) {
     await Promise.resolve();
   }
 };

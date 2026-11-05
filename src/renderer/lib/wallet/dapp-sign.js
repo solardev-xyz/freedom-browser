@@ -244,6 +244,11 @@ export async function showDappSignApproval(webview, permissionKey, method, param
  * nothing here could show.
  */
 function displayPersonalSignMessage(message) {
+  // A view whose bytes aren't hex can't be shown, so it is never signed
+  // (showDappSignApproval refuses the request).
+  if (message && hexToBytes(message.hex) === null) {
+    throw new Error("This message can't be shown, so it can't be signed");
+  }
   if (dappSignMessage) {
     dappSignMessage.parentElement?.classList.remove('hidden');
   }

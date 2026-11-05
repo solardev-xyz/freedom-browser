@@ -410,7 +410,8 @@ function shortText(value, max) {
  * @param {{ handoffId: string, hash: string, raw: string }} handoff
  * @param {{ resent?: boolean }} [extra]
  * @param {{ redact?: boolean }} [options] `redactErrors`: fail as
- *   redactedSendError, `rejected` as possibly broadcast, and log no details
+ *   redactedSendError (`uncertain` and `rejected` as possibly broadcast,
+ *   `not_sent` as not), and log no details
  */
 async function broadcastIntent(intent, handoff, extra = {}, { redact = false } = {}) {
   const { intentId, chainId } = intent;
@@ -483,6 +484,9 @@ async function broadcastIntent(intent, handoff, extra = {}, { redact = false } =
       redact ? WITHHELD : failure.message
     );
   }
+  // The domains flow's journal reconciles a send that may have gone out
+  // (domains/service.js): it is told so, not handed a result.
+  if (redact && outcome === 'uncertain') throw redactedSendError(true);
   console.log(`[TransactionService] Transaction ${outcome}:`, hash);
   return { ...result, outcome, broadcastSource: source };
 }

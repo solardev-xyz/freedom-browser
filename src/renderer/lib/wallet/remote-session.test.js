@@ -684,6 +684,7 @@ describe('remote-session broker', () => {
       ]);
       expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
         jobId: 'job-pay',
+        attempt: 1,
         error: { code: 'REMOTE_UNKNOWN', message: 'IPC channel closed' },
       });
     });
