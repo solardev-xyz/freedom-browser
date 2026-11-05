@@ -21,10 +21,29 @@
  * header, before anything else, its direction included: no payload byte is
  * read for a frame that is refused. Kinds 0x06–0x0F stay reserved.
  *
+ * A freedom-cored connection at protocol 2 (design 0009, Streams in the
+ * core; `CORE_STREAM_KINDS`) takes all four stream frames as well as the
+ * fragment kinds: a stream is the body of a response, sent by whichever side
+ * answers the request, so the core sends main data, end and abort for
+ * main's requests and credit for the bodies main sends it.
+ *
  * Main's side of the streams is `StreamReceiver` (the ring per stream,
  * pulls and credit, retirement) and `StreamOutbox` (the credit and cancels
- * it writes). fc-protocol's `stream` module is the reference, and
+ * it writes); on the core's connection at protocol 2 also `StreamSender`
+ * (the bodies main sends in answer to the core's requests), all three in
+ * one `StreamDuplex`. fc-protocol's `stream` module is the reference, and
  * freedom-core's `vectors/streams.json` holds the cases both pass.
+ *
+ * **Abort codes** (0007, Errors; 0009, Streams in the core): every code in
+ * `ABORT_CODES` decodes, and which a stream may end with depends on who
+ * sends it. A sender refuses to write any other, and a receiver takes any
+ * other as a protocol error (`abort_code`):
+ * - a service's body, on a service connection: `SERVICE_ABORT_CODES`,
+ *   0007's five;
+ * - a verified body the core sends main at protocol 2:
+ *   `CORE_BODY_ABORT_CODES`;
+ * - a piece main sends the core at protocol 2 (`shell.dweb_get`):
+ *   `PIECE_ABORT_CODES`.
  */
 
 const KIND_JSON = 0x01;
@@ -48,7 +67,37 @@ const MAX_PULL = 64 * 1024;
 const MAX_U32 = 0xffffffff;
 // A message ID: 1 to 2^53 - 1, exact in JS.
 const MAX_ID = Number.MAX_SAFE_INTEGER;
-const ABORT_CODES = new Set(['cancelled', 'internal', 'body_stream_error', 'stopped', 'busy']);
+// Every abort code, in fc-protocol's order (`AbortCode::ALL`): 0007's five,
+// then 0009's.
+const ABORT_CODES = new Set([
+  'cancelled',
+  'internal',
+  'body_stream_error',
+  'stopped',
+  'busy',
+  'verification_failed',
+  'unverifiable',
+  'malformed',
+  'piece_failed',
+  'stalled',
+]);
+// The codes a stream may end with, by who sends it (fc-protocol's `Codes`).
+const SERVICE_ABORT_CODES = new Set([
+  'cancelled',
+  'internal',
+  'body_stream_error',
+  'stopped',
+  'busy',
+]);
+const CORE_BODY_ABORT_CODES = new Set([
+  'verification_failed',
+  'unverifiable',
+  'malformed',
+  'piece_failed',
+  'busy',
+  'cancelled',
+]);
+const PIECE_ABORT_CODES = new Set(['cancelled', 'stalled', 'body_stream_error']);
 // The largest serialized message, fragmented or not (design 0005, Frames).
 const MAX_MESSAGE = 32 * 1024 * 1024;
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -62,7 +111,7 @@ const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
  * duplicate_response). The streams' are fc-protocol's too: stream_length,
  * data_empty, stream_direction, stream_id, abort_payload, credit_zero,
  * request_order, stream_unknown, stream_not_open, credit_overgrant,
- * window_overrun and unsolicited_response.
+ * window_overrun, unsolicited_response and abort_code.
  */
 class FrameError extends Error {
   constructor(category) {
@@ -184,9 +233,13 @@ function decodeBegin(payload) {
 
 // ---- the kinds a connection takes -----------------------------------------
 
-/** A freedom-cored connection: JSON and the fragment kinds. It never grants
- * streams, so 0x02–0x0F are refused. */
+/** A freedom-cored connection at protocol 1: JSON and the fragment kinds.
+ * It never grants streams, so 0x02–0x0F are refused. */
 const CORE_KINDS = Object.freeze({ fragments: true, streams: null });
+
+/** A freedom-cored connection at protocol 2 (design 0009): JSON, the
+ * fragment kinds and the four stream frames, in both directions. */
+const CORE_STREAM_KINDS = Object.freeze({ fragments: true, streams: 'both' });
 
 /** A service connection before its handshake has granted anything: whole
  * JSON messages only. */
@@ -204,6 +257,7 @@ function serviceKinds(side) {
 
 /** Whether `side` takes stream frames of `kind`. */
 function takes(side, kind) {
+  if (side === 'both') return true;
   return side === 'receiver' ? kind !== KIND_STREAM_CREDIT : kind === KIND_STREAM_CREDIT;
 }
 
@@ -717,11 +771,19 @@ class Ring {
  * closed, and every later call reports it): data beyond the window
  * (`received - returned > 128 KiB`), a frame for a stream that isn't open,
  * a frame for an ID above the highest request sent, credit from the
- * service, a reply that isn't pending. Main's own request IDs must
- * increase (`request_order`).
+ * service, a reply that isn't pending, an abort whose code the other side
+ * never ends a stream with (`abort_code`, checked before the ID, as
+ * fc-protocol checks it). Main's own request IDs must increase
+ * (`request_order`).
+ *
+ * **The codes** it takes are a service's (`SERVICE_ABORT_CODES`), unless it
+ * is made for the core's verified bodies at protocol 2
+ * (`CORE_BODY_ABORT_CODES`, design 0009).
  */
 class StreamReceiver {
-  constructor() {
+  /** @param {object} [options] - `codes`: the abort codes it takes */
+  constructor({ codes = SERVICE_ABORT_CODES } = {}) {
+    this.codes = codes;
     this.highest = 0;
     this.entries = new Map(); // id -> { state, ring, received, returned, eof }
     this.failed = null;
@@ -779,6 +841,7 @@ class StreamReceiver {
         return this.fail(err.category);
       }
     }
+    if (kind === KIND_ABORT && !this.codes.has(frame.code)) return this.fail('abort_code');
     if (id > this.highest) return this.fail('stream_unknown');
     const entry = this.entries.get(id);
     if (entry?.state === 'retiring') {
@@ -884,9 +947,15 @@ class StreamReceiver {
 
   /** Fails the connection: every record and ring goes. */
   fail(category) {
-    this.failed = new FrameError(category);
-    this.entries.clear();
+    this.close(new FrameError(category));
     throw this.failed;
+  }
+
+  /** The connection failed with `error`, here or in the other direction:
+   * every record and ring goes, and every later call reports it. */
+  close(error) {
+    this.failed ??= error;
+    this.entries.clear();
   }
 }
 
@@ -918,25 +987,643 @@ class StreamOutbox {
     if (!this.entries.has(`cancel:${id}`)) this.entries.set(`cancel:${id}`, { id });
   }
 
+  /** Stream `id`'s terminal arrived: credit for it not yet written would
+   * cross it, so it goes (the core's connection at protocol 2). */
+  dropCredit(id) {
+    this.entries.delete(`credit:${id}`);
+  }
+
   /** The next frame to write, or null. */
   next() {
+    return this.nextWrite()?.bytes ?? null;
+  }
+
+  /** The next frame to write and what it is, or null: `{ type: 'credit',
+   * id, credit, bytes }` or `{ type: 'cancel', id, bytes }`. */
+  nextWrite() {
     const first = this.entries.entries().next();
     if (first.done) return null;
     const [key, entry] = first.value;
     if (key.startsWith('cancel:')) {
       this.entries.delete(key);
-      return encodeFrame({ type: 'cancel', id: entry.id });
+      return { type: 'cancel', id: entry.id, bytes: encodeFrame({ type: 'cancel', id: entry.id }) };
     }
     // A merged credit past a u32 goes in several frames.
     const bytes = Math.min(entry.credit, MAX_U32);
     entry.credit -= bytes;
     if (entry.credit === 0) this.entries.delete(key);
-    return encodeStreamCredit(entry.id, bytes);
+    return {
+      type: 'credit',
+      id: entry.id,
+      credit: bytes,
+      bytes: encodeStreamCredit(entry.id, bytes),
+    };
+  }
+
+  /** Streams with credit owed and not yet written. */
+  owed() {
+    let owed = 0;
+    for (const key of this.entries.keys()) if (key.startsWith('credit:')) owed += 1;
+    return owed;
+  }
+
+  /** Drops everything waiting: the connection failed. */
+  clear() {
+    this.entries.clear();
   }
 
   /** Entries waiting. */
   get size() {
     return this.entries.size;
+  }
+}
+
+// ---- the bodies main sends (the core's connection at protocol 2) ------------
+
+// A data frame under this is written only when it is all a stream has
+// pending, or all its credit allows (design 0007, Allocation bounds).
+const SMALL_FRAME = 4 * 1024;
+// The writer's cap on queued body bytes.
+const WRITER_DATA_CAP = 16 * 1024 * 1024;
+const BLOCK = 4 * 1024;
+const CANCELLED_MESSAGE = 'Cancelled';
+
+/** A stream's queued bytes, in blocks of 4 KiB, each freed once read. */
+class Fifo {
+  constructor() {
+    this.blocks = [];
+    this.start = 0;
+    this.length = 0;
+  }
+
+  /** The storage it takes. */
+  capacity() {
+    return this.blocks.length * BLOCK;
+  }
+
+  push(bytes) {
+    let at = 0;
+    while (at < bytes.length) {
+      let last = this.blocks[this.blocks.length - 1];
+      if (!last || last.used === BLOCK) {
+        last = { buffer: Buffer.alloc(BLOCK), used: 0 };
+        this.blocks.push(last);
+      }
+      const count = Math.min(bytes.length - at, BLOCK - last.used);
+      bytes.copy(last.buffer, last.used, at, at + count);
+      last.used += count;
+      this.length += count;
+      at += count;
+    }
+  }
+
+  /** Takes up to `n` bytes from the front. */
+  take(n) {
+    const count = Math.min(n, this.length);
+    const out = Buffer.allocUnsafe(count);
+    let filled = 0;
+    while (filled < count) {
+      const block = this.blocks[0];
+      const part = Math.min(count - filled, block.used - this.start);
+      block.buffer.copy(out, filled, this.start, this.start + part);
+      filled += part;
+      this.start += part;
+      this.length -= part;
+      if (this.start === block.used && (block.used === BLOCK || this.length === 0)) {
+        this.blocks.shift();
+        this.start = 0;
+      }
+    }
+    if (this.length === 0) {
+      this.blocks = [];
+      this.start = 0;
+    }
+    return out;
+  }
+}
+
+function newBody() {
+  return { queue: new Fifo(), sent: 0, credited: 0, end: false, abort: null, scheduled: false };
+}
+
+const room = (body) => Math.max(0, WINDOW - (body.sent - body.credited));
+const writable = (body) => body.abort === null && (body.queue.length > 0 || body.end);
+
+function purge(body) {
+  const purged = body.queue.length;
+  body.queue = new Fifo();
+  body.end = false;
+  return purged;
+}
+
+function jsonFrame(json) {
+  return Buffer.concat([frameHeader(KIND_JSON, json.length), json]);
+}
+
+function cancelledReply(id) {
+  return Buffer.from(
+    `{"type":"response","id":${id},"error":{"code":"cancelled","message":"${CANCELLED_MESSAGE}"}}`
+  );
+}
+
+const refused = (name) => ({ refused: name });
+
+/**
+ * The sending side of streams on one connection, as fc-protocol's
+ * `stream::Sender`: the bodies a side sends in answer to the other's
+ * requests. Main's tests play a service with it (`test/helpers/
+ * stream-sender.js`); on the core's connection at protocol 2 it holds the
+ * bodies main sends the core (`StreamDuplex`).
+ *
+ * - **Order.** The writer takes the control queue first (heads, replies,
+ *   aborts and the replies to `cancel`), then the open streams
+ *   round-robin, one frame each. Data only after its head; `end` only after
+ *   its last byte; an abort purges and follows an unwritten head; nothing of
+ *   a stream after its terminal.
+ * - **Credit.** `sent` counts the body bytes queued, `credited` what the
+ *   receiver returned. A push queues at most `128 KiB - (sent - credited)`,
+ *   and credit beyond `sent` is a protocol error. Nothing is refunded.
+ * - **Coalescing.** A stream's queued bytes are one FIFO, cut into frames
+ *   as large as the queue and 64 KiB allow. A push the writer's cap would
+ *   cut below 4 KiB takes nothing.
+ * - **Cancel.** Against a request still working, or whose head is unwritten,
+ *   the head and body go and `cancelled` is the one reply; against an open
+ *   stream, it purges and writes `abort { code: "cancelled" }`; otherwise it
+ *   is late.
+ * - **Codes.** Its streams end only with `codes` (a service's, unless made
+ *   for main's pieces: `PIECE_ABORT_CODES`); an abort with any other is
+ *   refused (`code`), and the stream stays as it was.
+ * - **Bounds.** The writer holds at most its data cap (16 MiB by default)
+ *   of queued bytes, in 4 KiB blocks freed as they are written.
+ *
+ * Producer refusals (`gone`, `unknown`, `answered`, `not_open`, `ended`,
+ * `too_large`, `closed`, `code`) are returned as `{ refused }`; protocol
+ * errors are thrown as FrameErrors, after which the sender stays failed.
+ */
+class StreamSender {
+  /** @param {object} [options] - `dataCap`: the writer's cap (16 MiB);
+   *   `codes`: the abort codes its streams may end with */
+  constructor({ dataCap = WRITER_DATA_CAP, codes = SERVICE_ABORT_CODES } = {}) {
+    this.dataCap = Math.max(dataCap, SMALL_FRAME);
+    this.codes = codes;
+    this.highest = 0;
+    // id -> { state: working | head | open | reply, json?, body?, cancelled? }
+    this.requests = new Map();
+    this.control = []; // [entry, id]: head, reply or abort
+    this.rotation = []; // ids
+    this.held = 0;
+    this.failed = null;
+  }
+
+  // ---- the other side's frames ----
+
+  request(id) {
+    this.alive();
+    if (!Number.isSafeInteger(id) || id < 1) return this.fail('stream_id');
+    if (id <= this.highest) return this.fail('request_order');
+    this.highest = id;
+    this.requests.set(id, { state: 'working' });
+    return 'ok';
+  }
+
+  /** The other side's cancel: `cancelled` or `late`. */
+  cancel(id) {
+    this.alive();
+    const request = this.requests.get(id);
+    if (!request) return 'late';
+    if (request.state === 'working' || request.state === 'head') {
+      if (request.state === 'head' && request.body) this.held -= purge(request.body);
+      this.requests.set(id, { state: 'reply', json: cancelledReply(id), cancelled: true });
+      this.control.push(['reply', id]);
+      return 'cancelled';
+    }
+    if (request.state === 'open' && request.body.abort === null) {
+      this.held -= purge(request.body);
+      this.unschedule(request.body, id);
+      request.body.abort = { code: 'cancelled', message: CANCELLED_MESSAGE };
+      this.control.push(['abort', id]);
+      return 'cancelled';
+    }
+    return 'late';
+  }
+
+  /** A stream frame from the other side, as `FrameDecoder` decodes it:
+   * `taken` or `late`. */
+  receive(frame) {
+    this.alive();
+    if (frame.credit === undefined) return this.fail('stream_direction');
+    const { id, credit } = frame;
+    if (credit === 0) return this.fail('credit_zero');
+    if (id > this.highest) return this.fail('stream_unknown');
+    const request = this.requests.get(id);
+    if (!request) return 'late';
+    const body = request.state === 'head' || request.state === 'open' ? request.body : null;
+    if (!body || body.credited + credit > body.sent) return this.fail('credit_overgrant');
+    body.credited += credit;
+    return 'taken';
+  }
+
+  // ---- the producers ----
+
+  head(id, json, hasBody) {
+    if (this.failed) return refused('closed');
+    if (json.length > MAX_PAYLOAD) return refused('too_large');
+    return this.answer(id, { state: 'head', json, body: hasBody ? newBody() : null }, 'head');
+  }
+
+  reply(id, json) {
+    if (this.failed) return refused('closed');
+    if (json.length > MAX_PAYLOAD) return refused('too_large');
+    return this.answer(id, { state: 'reply', json, cancelled: false }, 'reply');
+  }
+
+  answer(id, next, entry) {
+    const request = this.requests.get(id);
+    if (request?.state === 'working') {
+      this.requests.set(id, next);
+      this.control.push([entry, id]);
+      return 'ok';
+    }
+    if (request?.state === 'reply' && request.cancelled) return refused('gone');
+    if (request) return refused('answered');
+    return refused(this.absent(id));
+  }
+
+  /** Queues as much of `bytes` as the window and the writer's cap allow:
+   * `{ taken }`. */
+  push(id, bytes) {
+    if (this.failed) return refused('closed');
+    const found = this.bodyOf(id);
+    if (found.refused) return found;
+    const { body, open } = found;
+    const capRoom = Math.max(0, this.dataCap - this.held);
+    const wanted = Math.min(bytes.length, room(body));
+    let n = Math.min(wanted, capRoom);
+    if (n < wanted && n < SMALL_FRAME) n = 0;
+    if (n === 0) return { taken: 0 };
+    body.queue.push(bytes.subarray(0, n));
+    body.sent += n;
+    this.held += n;
+    if (open && !body.scheduled) {
+      body.scheduled = true;
+      this.rotation.push(id);
+    }
+    return { taken: n };
+  }
+
+  finish(id) {
+    if (this.failed) return refused('closed');
+    const found = this.bodyOf(id);
+    if (found.refused) return found;
+    const { body, open } = found;
+    body.end = true;
+    if (open && !body.scheduled) {
+      body.scheduled = true;
+      this.rotation.push(id);
+    }
+    return 'ok';
+  }
+
+  abort(id, code, message = 'aborted') {
+    if (this.failed) return refused('closed');
+    if (!this.codes.has(code)) return refused('code');
+    const request = this.requests.get(id);
+    if (!request) return refused(this.absent(id));
+    if (request.state === 'reply' && request.cancelled) return refused('gone');
+    if ((request.state !== 'head' && request.state !== 'open') || !request.body) {
+      return refused('not_open');
+    }
+    const { body } = request;
+    if (body.abort !== null) return refused('gone');
+    this.held -= purge(body);
+    this.unschedule(body, id);
+    body.abort = { code, message };
+    this.control.push(['abort', id]);
+    return 'ok';
+  }
+
+  bodyOf(id) {
+    const request = this.requests.get(id);
+    let body;
+    let open;
+    if (request?.state === 'head' && request.body) {
+      body = request.body;
+      open = false;
+    } else if (request?.state === 'open') {
+      body = request.body;
+      open = true;
+    } else if (request?.state === 'reply' && request.cancelled) {
+      return refused('gone');
+    } else if (request) {
+      return refused('not_open');
+    } else {
+      return refused(this.absent(id));
+    }
+    if (body.abort !== null) return refused('gone');
+    if (body.end) return refused('ended');
+    return { body, open };
+  }
+
+  // ---- the writer ----
+
+  /**
+   * The next frame to write, or null: `{ written, bytes }`, where
+   * `written` is `{ type: head | reply | cancelled | data | end | abort,
+   * id, length?, code? }`.
+   */
+  nextFrame() {
+    if (this.failed) return null;
+    while (this.control.length) {
+      const [entry, id] = this.control.shift();
+      const frame = this.writeControl(entry, id);
+      if (frame) return frame;
+    }
+    while (this.rotation.length) {
+      const frame = this.writeStream(this.rotation.shift());
+      if (frame) return frame;
+    }
+    return null;
+  }
+
+  writeControl(entry, id) {
+    const request = this.requests.get(id);
+    if (!request) return null;
+    if (entry === 'head' && request.state === 'head') {
+      this.requests.delete(id);
+      if (request.body) {
+        if (writable(request.body)) {
+          request.body.scheduled = true;
+          this.rotation.push(id);
+        }
+        this.requests.set(id, { state: 'open', body: request.body });
+      }
+      return { written: { type: 'head', id }, bytes: jsonFrame(request.json) };
+    }
+    if (entry === 'reply' && request.state === 'reply') {
+      this.requests.delete(id);
+      return {
+        written: { type: request.cancelled ? 'cancelled' : 'reply', id },
+        bytes: jsonFrame(request.json),
+      };
+    }
+    if (entry === 'abort' && request.state === 'open' && request.body.abort) {
+      this.requests.delete(id);
+      const { code, message } = request.body.abort;
+      return { written: { type: 'abort', id, code }, bytes: encodeAbort(id, code, message) };
+    }
+    return null;
+  }
+
+  writeStream(id) {
+    const request = this.requests.get(id);
+    if (request?.state !== 'open') return null;
+    const { body } = request;
+    body.scheduled = false;
+    if (body.abort !== null) return null;
+    if (body.queue.length > 0) {
+      const length = Math.min(body.queue.length, MAX_DATA);
+      const bytes = encodeData(id, body.queue.take(length));
+      this.held -= length;
+      if (writable(body)) {
+        body.scheduled = true;
+        this.rotation.push(id);
+      }
+      return { written: { type: 'data', id, length }, bytes };
+    }
+    if (body.end) {
+      this.requests.delete(id);
+      return { written: { type: 'end', id }, bytes: encodeEnd(id) };
+    }
+    return null;
+  }
+
+  // ---- what it holds ----
+
+  /** How much stream `id`'s producer may push now, or null without a body
+   * that takes bytes. */
+  room(id) {
+    const request = this.requests.get(id);
+    const body =
+      (request?.state === 'head' || request?.state === 'open') && request.body
+        ? request.body
+        : null;
+    if (!body || body.end || body.abort !== null) return null;
+    return Math.min(room(body), Math.max(0, this.dataCap - this.held));
+  }
+
+  queued(id) {
+    const request = this.requests.get(id);
+    const body =
+      (request?.state === 'head' || request?.state === 'open') && request.body
+        ? request.body
+        : null;
+    return body ? body.queue.length : null;
+  }
+
+  isLive(id) {
+    return this.requests.has(id);
+  }
+
+  live() {
+    return this.requests.size;
+  }
+
+  heldCapacity() {
+    let bytes = 0;
+    for (const request of this.requests.values()) bytes += request.body?.queue.capacity() ?? 0;
+    return bytes;
+  }
+
+  rotationEntries() {
+    return this.rotation.length;
+  }
+
+  controlEntries() {
+    return this.control.length;
+  }
+
+  unschedule(body, id) {
+    if (!body.scheduled) return;
+    this.rotation = this.rotation.filter((scheduled) => scheduled !== id);
+    body.scheduled = false;
+  }
+
+  absent(id) {
+    return id <= this.highest ? 'gone' : 'unknown';
+  }
+
+  alive() {
+    if (this.failed) throw this.failed;
+  }
+
+  fail(category) {
+    this.close(new FrameError(category));
+    throw this.failed;
+  }
+
+  /** The connection failed with `error`, here or in the other direction:
+   * everything it holds goes, and it writes nothing more. */
+  close(error) {
+    this.failed ??= error;
+    this.requests.clear();
+    this.control = [];
+    this.rotation = [];
+    this.held = 0;
+  }
+}
+
+/**
+ * Main's streams on the core's connection at protocol 2 (design 0009,
+ * Streams in the core), in both directions: the mirror of fc-protocol's
+ * `stream::Duplex`, which is the core's.
+ *
+ * A stream is the body of a response, sent by whichever side answers the
+ * request, and its ID is the request's, in the requester's ID space. So
+ * main holds two sets of streams on one connection:
+ * - **the bodies main receives** in answer to its own requests
+ *   (`dweb.verify`): a `StreamReceiver` taking the core's verified bodies'
+ *   codes, with 0007's ring per stream, and the `StreamOutbox` for its
+ *   credit and cancels;
+ * - **the bodies main sends** in answer to the core's requests
+ *   (`shell.dweb_get` with `stream: true`): a `StreamSender` whose streams
+ *   end only with a piece's codes.
+ *
+ * The same number may name a stream in each at once; a frame's kind says
+ * which. Credit goes to the sender; data, end and abort to the receiver. A
+ * protocol error in either fails the connection as a whole: neither side
+ * takes or writes anything more.
+ *
+ * **The writer** (`nextFrame`): the outbox first (credit main owes for
+ * what its consumers pulled, merged per stream while unwritten, and main's
+ * cancels), then the sender's control entries, then its streams. Credit
+ * owed for a stream whose terminal arrives would cross it, so it is
+ * dropped then, as it is when main cancels the request.
+ *
+ * `sends` and `takes` name the codes (`PIECE_ABORT_CODES` and
+ * `CORE_BODY_ABORT_CODES` for main); freedom-core's vectors model the
+ * core's side, with the two sets the other way round.
+ */
+class StreamDuplex {
+  /**
+   * @param {object} [options] - `dataCap`: the sender's writer cap (16
+   *   MiB); `sends`: the codes the bodies main sends may end with; `takes`:
+   *   the codes it takes from the other side's bodies
+   */
+  constructor({
+    dataCap = WRITER_DATA_CAP,
+    sends = PIECE_ABORT_CODES,
+    takes = CORE_BODY_ABORT_CODES,
+  } = {}) {
+    this.sender = new StreamSender({ dataCap, codes: sends });
+    this.receiver = new StreamReceiver({ codes: takes });
+    this.outbox = new StreamOutbox();
+    this.failed = null;
+  }
+
+  // ---- the core's requests, which main answers ----
+
+  /** The core sent request `id`, one main may answer with a body. */
+  request(id) {
+    this.alive();
+    return this.guard(() => this.sender.request(id));
+  }
+
+  /** The core cancelled its request `id`: `cancelled` or `late`. */
+  cancel(id) {
+    this.alive();
+    return this.guard(() => this.sender.cancel(id));
+  }
+
+  // ---- main's requests, which the core answers ----
+
+  /** Main sent request `id`. An error is main's own bug, and the
+   * connection is fine. */
+  ask(id) {
+    this.alive();
+    this.receiver.request(id);
+  }
+
+  /** The core's reply to main's request `id` arrived (`StreamReceiver.reply`). */
+  answered(id, opens) {
+    this.alive();
+    return this.guard(() => this.receiver.reply(id, opens));
+  }
+
+  /**
+   * A stream frame from the core, by its kind: credit to the sender
+   * (`{ type: 'credit', id, result }`, result `taken` or `late`); data, end
+   * and abort to the receiver (its delivery).
+   */
+  receive(frame) {
+    this.alive();
+    if (frame.kind === KIND_STREAM_CREDIT) {
+      return { type: 'credit', id: frame.id, result: this.guard(() => this.sender.receive(frame)) };
+    }
+    const delivery = this.guard(() => this.receiver.receive(frame));
+    if (delivery.type === 'end' || delivery.type === 'abort') this.outbox.dropCredit(frame.id);
+    return delivery;
+  }
+
+  /** The consumer of main's stream `id` pulls up to `max` bytes
+   * (`StreamReceiver.pull`); their credit is owed to the core. */
+  pull(id, max) {
+    if (this.failed) return null;
+    const pulled = this.receiver.pull(id, max);
+    if (pulled?.credit) this.outbox.credit(id, pulled.credit);
+    return pulled;
+  }
+
+  /** Main cancels its request `id` (`StreamReceiver.cancel`): on
+   * `send_cancel`, what is owed for it goes and its cancel is queued. */
+  withdraw(id) {
+    if (this.failed) return 'nothing';
+    const retire = this.receiver.cancel(id);
+    if (retire === 'send_cancel') this.outbox.cancel(id);
+    return retire;
+  }
+
+  /**
+   * The next frame to write, or null: `{ wrote, bytes }`, where `wrote` is
+   * the outbox's (`{ type: credit | cancel, id, credit? }`) or the
+   * sender's `written`.
+   */
+  nextFrame() {
+    if (this.failed) return null;
+    const owed = this.outbox.nextWrite();
+    if (owed) {
+      const { bytes, ...wrote } = owed;
+      return { wrote, bytes };
+    }
+    const sent = this.sender.nextFrame();
+    return sent && { wrote: sent.written, bytes: sent.bytes };
+  }
+
+  /** Streams owed credit that isn't written yet. */
+  owed() {
+    return this.outbox.owed();
+  }
+
+  alive() {
+    if (this.failed) throw this.failed;
+  }
+
+  /** Runs `fn`; a protocol error in it fails the connection both ways. */
+  guard(fn) {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof FrameError) this.fail(err);
+      throw err;
+    }
+  }
+
+  /** Fails the connection as a whole: both sides drop what they hold and
+   * take nothing more. */
+  fail(error) {
+    this.failed ??= error;
+    this.sender.close(this.failed);
+    this.receiver.close(this.failed);
+    this.outbox.clear();
   }
 }
 
@@ -952,13 +1639,19 @@ module.exports = {
   frameHeader,
   serviceKinds,
   CORE_KINDS,
+  CORE_STREAM_KINDS,
   JSON_KINDS,
   FrameDecoder,
   FrameError,
   Reassembler,
+  StreamDuplex,
   StreamOutbox,
   StreamReceiver,
+  StreamSender,
   ABORT_CODES,
+  CORE_BODY_ABORT_CODES,
+  PIECE_ABORT_CODES,
+  SERVICE_ABORT_CODES,
   ID_BYTES,
   KIND_ABORT,
   KIND_BEGIN,
@@ -975,5 +1668,7 @@ module.exports = {
   MAX_MESSAGE,
   MAX_PAYLOAD,
   MAX_PULL,
+  SMALL_FRAME,
   WINDOW,
+  WRITER_DATA_CAP,
 };

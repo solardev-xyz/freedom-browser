@@ -72,6 +72,43 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(core.state).toBe('stopped');
   });
 
+  test('protocol 2: a core that speaks it says streams; one that speaks only 1 refuses it, without a restart', async () => {
+    // The pinned core (0.9.1) speaks protocol 1 only (design 0009, step 5
+    // moves the core to 2), so main asks it for 1.
+    let spawned = 0;
+    const core = new CoreClient({
+      spawn: (...args) => {
+        spawned += 1;
+        return spawn(...args);
+      },
+      command: binary,
+      args: [
+        'serve',
+        '--data-dir',
+        path.join(root, 'identity'),
+        '--lock-dir',
+        path.join(root, 'locks'),
+        '--parent-pid',
+        String(process.pid),
+      ],
+      log: quietLog,
+      shellVersion: 'jest',
+      protocol: 2,
+    });
+    running = core;
+    const hello = await core.start().catch((error) => ({ error }));
+    if (hello.error) {
+      expect(hello.error.code).toBe('core_unavailable');
+      expect(core.state).toBe('failed');
+      expect(spawned).toBe(1);
+      return;
+    }
+    expect(hello.protocol).toBe(2);
+    expect(hello.capabilities).toContain('streams');
+    expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });
+    await expect(core.request('vault.status')).resolves.toMatchObject({ exists: false });
+  });
+
   test('stop() racing the handshake settles without a restart', async () => {
     let spawned = 0;
     const core = new CoreClient({
