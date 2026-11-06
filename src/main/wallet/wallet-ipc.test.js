@@ -62,6 +62,20 @@ jest.mock('../core/vault-backend', () => {
     },
   };
 });
+// An x402 cap edit as main confirms it (#1023): the sending window, the
+// key, the cap as the store holds it, and the change.
+const mockCapHeld = { current: { capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 3 } };
+jest.mock('../x402/permissions', () => ({
+  capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => ({
+    window: windowId,
+    origin,
+    chainId,
+    asset,
+    capAmount,
+    windowSeconds,
+    current: mockCapHeld.current,
+  }),
+}));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
   takeSiteTurn: jest.fn(async () => () => {}),
@@ -1375,6 +1389,33 @@ describe('signing handlers require a main-side confirmation', () => {
     // The hosting window's sidebar gets its token.
     const token = await mintX402(0);
     expect(() => confirmations.consumeConfirmation(token, 'x402-payment', 0, X402_PAYMENT)).not.toThrow();
+  });
+
+  test('an x402 cap edit is confirmed for the window that asks, and the cap main holds', async () => {
+    const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
+    const held = (windowId) => ({ ...edit, window: windowId, windowSeconds: undefined, current: mockCapHeld.current });
+    // What the renderer says about the window or the cap is not used.
+    const result = await handlers['wallet:confirm-signing'](
+      AUTO, 'x402-cap-update', null, { ...edit, window: 9, current: { capAmount: '1', createdAt: 1, expiresAt: 2, generation: 1 } });
+    expect(result.success).toBe(true);
+    expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held(9)))
+      .toThrow(/differs/);
+
+    const again = await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit);
+    expect(() => confirmations.consumeConfirmation(again.token, 'x402-cap-update', null, held(CHROME.id)))
+      .not.toThrow();
+
+    // A sender that is no window, or a cap main doesn't hold: no token.
+    expect(await handlers['wallet:confirm-signing']({}, 'x402-cap-update', null, edit))
+      .toMatchObject({ success: false, error: expect.stringMatching(/window/) });
+    const saved = mockCapHeld.current;
+    mockCapHeld.current = null;
+    try {
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit))
+        .toMatchObject({ success: false, error: expect.stringMatching(/No such auto-pay cap/) });
+    } finally {
+      mockCapHeld.current = saved;
+    }
   });
 
   test('wallet:confirm-signing refuses a malformed request', async () => {
