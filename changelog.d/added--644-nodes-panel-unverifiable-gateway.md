@@ -1,0 +1,2 @@
+- Verify content from this node, on by default for an external Swarm node or IPFS gateway under Settings > Nodes, checks what the node serves against the address you opened ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The Nodes panel says "This gateway doesn't serve verifiable responses" for an IPFS gateway without raw blocks while the switch is on

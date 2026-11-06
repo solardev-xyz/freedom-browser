@@ -193,22 +193,28 @@ jobs:
         run: node -e "require('electron')"
 
       # freedom-core's stream vectors (design 0009, amendment 5), which
-      # `stream-vectors.test.js` replays, at a reviewed commit: moved on
-      # purpose when the protocol's vectors change, never with freedom-core's
-      # main. The suite fails if the file it is pointed at is missing.
-      - name: Check out freedom-core's stream vectors
+      # `stream-vectors.test.js` replays, and its method table
+      # (`protocol/schema.json`, with amendment 3's protocol-2 rows), which
+      # `core-deadlines.test.js` checks main's deadline table against, at one
+      # reviewed commit: moved on purpose when the protocol's vectors or
+      # method table change, never with freedom-core's main. Each suite
+      # fails if the file it is pointed at is missing.
+      - name: Check out freedom-core's stream vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 6e61921727b56a511b6f515a60b1ad6b0189115d
+          ref: a4866e1858fc125a0c98ba2f34bc1bbe9a885950
           path: .freedom-core
           persist-credentials: false
-          sparse-checkout: vectors/streams.json
+          sparse-checkout: |
+            vectors/streams.json
+            protocol/schema.json
           sparse-checkout-cone-mode: false
 
       - name: Run test coverage
         env:
           FREEDOM_CORE_STREAM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/streams.json
+          FREEDOM_CORE_SCHEMA: ${{ github.workspace }}/.freedom-core/protocol/schema.json
         run: npm run test:coverage
 
       - name: Upload coverage artifact
@@ -1277,6 +1283,10 @@ jobs:
       # retry waits and the notice clearing on success are asserted in CI.
       # `myotis-upgrade-advisory.spec.js` does the same for the fork-watch
       # "update Freedom" notice on the Nodes card and the Settings source badge.
+      # `ipfs-unverifiable-gateway.spec.js` drives a synthetic external IPFS
+      # gateway status the same way: the Nodes menu says a gateway without raw
+      # blocks can't be verified while its verification is on (freedom-core
+      # design 0009).
       #
       # The other internal pages ride along: `internal-pages-csp.spec.js` drives
       # each page under `script-src 'self'` and fails on any CSP violation (#432),
@@ -1316,6 +1326,7 @@ jobs:
           test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
           test-e2e/myotis-upgrade-advisory.spec.js
+          test-e2e/ipfs-unverifiable-gateway.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js

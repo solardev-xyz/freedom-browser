@@ -18,7 +18,11 @@
  * its 10 s handshake timeout and 3 s shutdown grace bound them instead.
  *
  * Main's copy, checked against the core's file when it is found
- * (core-deadlines.test.js).
+ * (core-deadlines.test.js). It holds protocol 1's methods: the rows the
+ * file marks `"protocol": 2`, `dweb.verify` and `dweb.forget` (design 0009,
+ * amendment 3), aren't here until main adopts protocol 2. dweb-verify.js
+ * sends those two with watchdogs of its own, and the check compares only
+ * their deadlines.
  */
 
 /** The watchdog's margin past the core's deadline. */
