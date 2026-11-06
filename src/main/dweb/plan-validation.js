@@ -52,6 +52,7 @@ const {
 const {
   rootInForm,
   staysUnverified,
+  VERIFY_BOUND_ERRORS,
   VERIFY_HEADERS,
   VERIFY_RESPONSE_OPS,
 } = require('./verify-plan');
@@ -425,9 +426,16 @@ function checkRedirect(body, request, scheme) {
   return same ? null : 'redirect';
 }
 
-/** One of today's statuses, the same code, and a bounded message. */
-function checkError(body) {
+/** One of today's statuses, the same code, and a bounded message; or,
+ * against a backend whose verification is on, the verifier's 414 or 431
+ * with its fixed message (0009, Bounds). */
+function checkError(body, request) {
   if (!exact(body, ['status', 'code', 'message'])) return 'shape';
+  const bound = Object.values(VERIFY_BOUND_ERRORS).find(({ status }) => status === body.status);
+  if (bound) {
+    const ok = request.backend?.verify === true && body.message === bound.message;
+    return ok && body.code === body.status ? null : 'error';
+  }
   const statusOk = typeof body.status === 'number' && ERROR_STATUSES.has(body.status);
   const messageOk = typeof body.message === 'string' && body.message.length <= MAX_MESSAGE_UNITS;
   return statusOk && body.code === body.status && messageOk ? null : 'error';
@@ -451,7 +459,7 @@ function validatePlan(plan, request) {
   if (variant === 'fetch') return checkFetch(plan.fetch, request, known);
   if (variant === 'verify') return checkVerify(plan.verify, request, known);
   if (variant === 'redirect') return checkRedirect(plan.redirect, request, known);
-  if (variant === 'error') return checkError(plan.error);
+  if (variant === 'error') return checkError(plan.error, request);
   return 'shape';
 }
 
