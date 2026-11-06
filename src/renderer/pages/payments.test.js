@@ -260,3 +260,56 @@ describe('payments settled at the finalized block', () => {
     }
   });
 });
+
+// freedom-core design 0012, "Unverified payments": a phone account's payment
+// not verified shows its check, and never "Confirmed". The page script
+// keeps a copy of PHONE_CHECK in lib/wallet/intent-texts.js, held equal here.
+describe("a phone payment's check", () => {
+  const { PHONE_CHECK } = require('../lib/wallet/intent-texts.js');
+
+  const phonePayment = (state, status) =>
+    createPayment({
+      kind: 'wallet-send',
+      origin: null,
+      status,
+      metadata: state ? { phoneCheck: { state, answeredAt: 1 } } : null,
+    });
+
+  async function statusOf(payment) {
+    const ctx = await runPaymentsPage({ payments: [payment] });
+    const cell = ctx.elements.results.querySelector('tbody').querySelector('tr').querySelectorAll('td')[6];
+    return { pill: cell.querySelector('.status-pill'), note: cell.querySelector('.status-note') };
+  }
+
+  test.each([
+    ['unverified', 'unverified', 'status-unverified'],
+    ['mismatch', 'wrong-transaction', 'status-wrong-transaction'],
+    ['unknown', 'unknown', 'status-unknown'],
+  ])('%s shows its label and the line that explains it', async (state, status, className) => {
+    const { pill, note } = await statusOf(phonePayment(state, status));
+    expect(pill.textContent).toBe(PHONE_CHECK[state].label);
+    expect(pill.classList.contains(className)).toBe(true);
+    expect(note.textContent).toBe(PHONE_CHECK[state].note);
+  });
+
+  test('its record decides: a wrong or unchecked one is never "Confirmed", whatever its stored status', async () => {
+    for (const status of ['confirmed', 'pending']) {
+      for (const state of ['mismatch', 'unverified', 'unknown']) {
+        const { pill } = await statusOf(phonePayment(state, status));
+        expect(pill.textContent).toBe(PHONE_CHECK[state].label);
+      }
+    }
+  });
+
+  test('its stored status names it too, without a record', async () => {
+    const { pill, note } = await statusOf(phonePayment(null, 'wrong-transaction'));
+    expect(pill.textContent).toBe(PHONE_CHECK.mismatch.label);
+    expect(note.textContent).toBe(PHONE_CHECK.mismatch.note);
+  });
+
+  test('a verified one reads as its stored status does', async () => {
+    const { pill, note } = await statusOf(phonePayment('verified', 'confirmed'));
+    expect(pill.textContent).toBe('Confirmed');
+    expect(note).toBeNull();
+  });
+});

@@ -47,6 +47,19 @@ const STATUSES = Object.freeze({
   // A wallet intent the user closed by hand once its label couldn't be
   // read (Couldn't confirm): whether it paid is unknown.
   UNCONFIRMED: 'unconfirmed',
+  // A phone account's payment whose reported transaction main hasn't seen
+  // yet, so hasn't compared with the one confirmed (tx-recorder.js, design
+  // 0012 "Unverified payments"). Not polled for a receipt: once checked
+  // and the same, it goes on as 'pending'.
+  UNVERIFIED: 'unverified',
+  // A phone payment whose reported transaction, once visible, isn't the
+  // one confirmed (its sender, recipient, amount, data or chain differs).
+  // Never confirmed.
+  WRONG_TRANSACTION: 'wrong-transaction',
+  // A phone payment never seen on chain within a day of its answer, or
+  // whose check a clock set back ended: whether it is the one confirmed is
+  // unknown.
+  UNKNOWN: 'unknown',
 });
 const FINAL_STATUSES = new Set([
   STATUSES.CONFIRMED,
@@ -56,6 +69,8 @@ const FINAL_STATUSES = new Set([
   STATUSES.TAKEN,
   STATUSES.DROPPED,
   STATUSES.UNCONFIRMED,
+  STATUSES.WRONG_TRANSACTION,
+  STATUSES.UNKNOWN,
 ]);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 

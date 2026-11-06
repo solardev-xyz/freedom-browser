@@ -1067,8 +1067,8 @@ contextBridge.exposeInMainWorld('dappPermissions', {
   getSigningAutoApprove: (origin) => ipcRenderer.invoke('dapp:get-signing-auto-approve', origin),
   setSigningAutoApprove: (origin, enabled) =>
     ipcRenderer.invoke('dapp:set-signing-auto-approve', origin, enabled),
-  isTransactionAutoApproved: (origin, to, selector, chainId) =>
-    ipcRenderer.invoke('dapp:is-tx-auto-approved', origin, to, selector, chainId),
+  isTransactionAutoApproved: (origin, to, selector, chainId, value) =>
+    ipcRenderer.invoke('dapp:is-tx-auto-approved', origin, to, selector, chainId, value),
   removeTransactionAutoApprove: (origin, to, selector, chainId) =>
     ipcRenderer.invoke('dapp:remove-tx-auto-approve', origin, to, selector, chainId),
 });

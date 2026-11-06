@@ -1,0 +1,3 @@
+- A transaction's "Always allow" covers that call with no more value than the transaction you confirmed it from: a call that sends more asks first ([#1021](https://github.com/solardev-xyz/freedom-browser/issues/1021))
+  - A rule saved by an earlier version covers only calls that send no value. Confirm one with "Always allow" again to cover its amount
+- "Always allow" is recorded only for the site whose transaction you confirmed ([#1022](https://github.com/solardev-xyz/freedom-browser/issues/1022))

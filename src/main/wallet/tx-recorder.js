@@ -3,6 +3,17 @@
  * tx through (broadcast already returned). Confirmation is polled in the
  * background; if the app exits before resolution, payment-history's
  * repollPending picks the row up on next boot.
+ *
+ * A phone payment whose transaction wasn't visible at the answer is
+ * written `unverified`, with the fields it was confirmed for in the row's
+ * `metadata.phoneCheck` (phone-payments.js), and is not polled for a
+ * receipt: a receipt says the reported hash was mined, not that it is the
+ * payment confirmed. Its fields are checked once the transaction is
+ * visible, this run or the next (resumePhoneChecks): the same, it goes on
+ * as `pending`, and the receipt poll follows; different, it is
+ * `wrong-transaction`, for good; not seen within a day of the answer, or
+ * under a clock set back, `unknown`. If its row can't be written, the
+ * reply says `phoneCheck: 'unknown'` at once.
  */
 
 const log = require('../logger');
@@ -13,6 +24,7 @@ const {
   waitForTransaction,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
+const phonePayments = require('./phone-payments');
 const paymentHistory = require('../payment-history');
 const { KINDS, STATUSES } = paymentHistory;
 
@@ -150,37 +162,183 @@ async function signAndRecord(
   });
 }
 
+// A phone payment not yet checked keeps what it was confirmed for.
+function withPhoneRecord(metadata, phoneRecord) {
+  if (!phoneRecord) return metadata;
+  return { ...(metadata || {}), phoneCheck: { state: 'unverified', ...phoneRecord } };
+}
+
 // One payment-history row per intent: write it, or update the row an
-// earlier reply of the same intent wrote, then poll for the receipt.
+// earlier reply of the same intent wrote, then poll for the receipt. A
+// phone payment not yet checked is written `unverified` and watched
+// instead (watchPhonePayment).
 function recordSend(response, row) {
+  const { phoneRecord, ...reply } = response;
+  const unverified = reply.phoneCheck === 'unverified';
   let written;
   let existing;
   try {
-    existing = response.intentId ? findIntentRow(response, row.kind) : null;
+    existing = reply.intentId ? findIntentRow(reply, row.kind) : null;
     if (existing) {
       written =
         paymentHistory.update(existing.id, {
-          txHash: response.hash,
-          metadata: withSentFields(metadataFor(existing.metadata, response), response),
+          txHash: reply.hash,
+          metadata: withSentFields(metadataFor(existing.metadata, reply), reply),
         }) ?? existing;
     } else {
       written = paymentHistory.append({
         ...row,
-        txHash: response.hash,
-        metadata: withSentFields(metadataFor(row.metadata, response), response),
+        txHash: reply.hash,
+        ...(unverified ? { status: STATUSES.UNVERIFIED } : {}),
+        metadata: withPhoneRecord(
+          withSentFields(metadataFor(row.metadata, reply), reply),
+          unverified ? phoneRecord : null
+        ),
       });
     }
-    if (response.intentId) rowsByIntent.set(response.intentId, written.id);
+    if (reply.intentId) rowsByIntent.set(reply.intentId, written.id);
   } catch (err) {
     log.error('[TxRecorder] failed to record pending row:', err.message);
-    return { ...response, recorded: false, recordError: err.message };
+    // An unverified phone payment with no record can't be checked later:
+    // its outcome is unknown at once (design 0012, "A failed save").
+    return {
+      ...reply,
+      ...(unverified ? { phoneCheck: 'unknown' } : {}),
+      recorded: false,
+      recordError: err.message,
+    };
   }
 
-  // A row already settled by its first send's poll needs no second one.
-  if (!existing || existing.status === STATUSES.PENDING) {
-    pollReceipt(written.id, response.hash, row.chainId);
+  if (unverified) {
+    watchPhonePayment(written.id);
+  } else if (!existing || existing.status === STATUSES.PENDING) {
+    // A row already settled by its first send's poll needs no second one.
+    pollReceipt(written.id, reply.hash, row.chainId);
   }
-  return { ...response, recorded: true, paymentId: written.id };
+  return { ...reply, recorded: true, paymentId: written.id };
+}
+
+// The unverified phone payments this run watches, by row id: their next
+// recheck's timer.
+const phoneWatches = new Map();
+
+// A phone check's end, by its outcome: the row's status from then on.
+const PHONE_CHECK_STATUS = Object.freeze({
+  verified: STATUSES.PENDING,
+  mismatch: STATUSES.WRONG_TRANSACTION,
+  unknown: STATUSES.UNKNOWN,
+});
+
+/**
+ * Check an unverified phone payment's row now, or after `delay` ms, and
+ * keep checking it until it ends (phone-payments.js): after 5 s, then at
+ * doubling intervals up to every 10 minutes, and never past a day from its
+ * answer. Its age comes first, before any read. Once per row per run.
+ *
+ * @param {number} rowId
+ * @param {number} [delay] - ms before the first check (default 5 s)
+ */
+function watchPhonePayment(rowId, delay = phonePayments.FIRST_RECHECK_MS) {
+  if (phoneWatches.has(rowId)) return;
+  const schedule = (wait, previous) => {
+    const timer = setTimeout(() => {
+      checkPhonePayment(rowId)
+        .then((record) => {
+          if (!record) {
+            phoneWatches.delete(rowId);
+            return;
+          }
+          const next = phonePayments.nextRecheckIn(record, previous, Date.now());
+          schedule(next, next);
+        })
+        .catch((err) => {
+          phoneWatches.delete(rowId);
+          log.warn(`[TxRecorder] phone check failed for row ${rowId}: ${err.message}`);
+        });
+    }, wait);
+    timer.unref?.();
+    phoneWatches.set(rowId, timer);
+  };
+  schedule(delay, delay);
+}
+
+// The record of a row still unverified, or null.
+function unverifiedRecord(row) {
+  if (row?.status !== STATUSES.UNVERIFIED) return null;
+  const record = row.metadata?.phoneCheck;
+  return record && typeof record === 'object' ? record : null;
+}
+
+/**
+ * One check of an unverified phone payment's row. Returns its record while
+ * it still waits; null once it ended (verified, mismatch, unknown) or is no
+ * longer unverified. A row whose record is unreadable ends unknown.
+ */
+async function checkPhonePayment(rowId) {
+  const row = paymentHistory.getById(rowId);
+  if (row?.status !== STATUSES.UNVERIFIED) return null;
+  const record = unverifiedRecord(row);
+  const result = record
+    ? await phonePayments.recheck(row.txHash, record, row.chainId, Date.now())
+    : { state: 'unknown' };
+  if (result.state === 'unverified') {
+    if (result.error)
+      log.warn(`[TxRecorder] phone check lookup failed for row ${rowId}: ${result.error}`);
+    return record;
+  }
+  // Re-read: the lookup awaited, and the row may have been removed.
+  const current = paymentHistory.getById(rowId);
+  if (current?.status !== STATUSES.UNVERIFIED) return null;
+  const phoneCheck = {
+    ...(current.metadata?.phoneCheck || {}),
+    state: result.state,
+    checkedAt: Date.now(),
+    ...(result.state === 'mismatch' ? { code: result.code, observed: result.observed } : {}),
+  };
+  paymentHistory.update(rowId, {
+    status: PHONE_CHECK_STATUS[result.state],
+    metadata: { ...(current.metadata || {}), phoneCheck },
+  });
+  if (result.state === 'mismatch') {
+    log.warn(
+      `[TxRecorder] phone payment row ${rowId} is not the transaction confirmed (${result.code})`
+    );
+  }
+  if (result.state === 'verified') pollReceipt(rowId, current.txHash, current.chainId);
+  return null;
+}
+
+// One page of unverified rows a start reads at a time: the history store's
+// own page cap (payment-history.js MAX_LIMIT).
+const PHONE_PAGE = 500;
+
+/**
+ * At a start: check every phone payment an earlier run left unverified,
+ * now (its age first), then as watchPhonePayment does. It pages through
+ * all of them, not just the newest page, so none is left unverified past
+ * its 24 hours. The pages are read before any check runs (each check is
+ * scheduled, not run inline), so a row changing state can't shift the
+ * offsets. Best-effort, like every history read: returns how many it
+ * watches.
+ */
+function resumePhoneChecks() {
+  const ids = [];
+  try {
+    for (let offset = 0; ; offset += PHONE_PAGE) {
+      const page = paymentHistory.getRecent({
+        status: STATUSES.UNVERIFIED,
+        limit: PHONE_PAGE,
+        offset,
+      });
+      for (const row of page) ids.push(row.id);
+      if (page.length < PHONE_PAGE) break;
+    }
+  } catch (err) {
+    log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
+    if (ids.length === 0) return 0;
+  }
+  for (const id of new Set(ids)) watchPhonePayment(id, 0);
+  return new Set(ids).size;
 }
 
 const ERC20_TRANSFER = '0xa9059cbb';
@@ -310,4 +468,11 @@ function recordSettlement(intent, { label, hash, block }) {
   }
 }
 
-module.exports = { signAndRecord, resendAndRecord, replaceAndRecord, recordSettlement, KINDS };
+module.exports = {
+  signAndRecord,
+  resendAndRecord,
+  replaceAndRecord,
+  recordSettlement,
+  resumePhoneChecks,
+  KINDS,
+};
