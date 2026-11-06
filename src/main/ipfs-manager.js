@@ -41,6 +41,7 @@ const { verificationFailures } = require('./dweb/verify-failures');
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
+const { errorCodeForLog } = require('./private/private-log-context');
 
 const STATUS = {
   STOPPED: 'stopped',
@@ -1343,7 +1344,9 @@ async function serveNativeGatewayRequest({ path: gatewayPath, method, headers, s
       return await backend.request({ path: gatewayPath, method, headers, signal });
     } catch (err) {
       if (err?.name === 'AbortError' || backend.ref.ipfs !== 'gateway') throw err;
-      log.warn(`[IPFS] External gateway request failed: ${err?.message || err}`);
+      // The code only (#814): the error's text can name the page.
+      const code = errorCodeForLog(err);
+      log.warn('[IPFS] External gateway request failed' + (code ? ` (${code})` : ''));
       return jsonStatus(502, 'external IPFS gateway request failed');
     }
   } finally {

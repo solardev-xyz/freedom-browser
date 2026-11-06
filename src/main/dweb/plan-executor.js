@@ -22,6 +22,7 @@
 
 const { respond, sniffSmallText } = require('./response-operations');
 const { backendKind } = require('./plan-validation');
+const { errorCodeForLog } = require('../private/private-log-context');
 
 // Statuses that never carry a body; `new Response` refuses one with them.
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
@@ -275,11 +276,10 @@ async function executeFetch(
   };
   const fail = (err) => {
     end();
-    const code = err?.cause?.code || err?.code || '';
-    log.warn(
-      `${tag} fetch failed for ${redactUrl(requestUrl)}: ${err?.message || err}` +
-        (code ? ` (${code})` : '')
-    );
+    // The code only (#814): the error's text can name the page, and the
+    // redacted URL alone keeps a private window's page out of the log.
+    const code = errorCodeForLog(err);
+    log.warn(`${tag} fetch failed for ${redactUrl(requestUrl)}` + (code ? ` (${code})` : ''));
     // The native node's capacity, not its failure (design 0007, "Main's
     // side": the service's `busy`): a 503, as admission's own.
     if (err?.name === 'BackendBusy') return errorResponse(503, err.message);
@@ -308,7 +308,7 @@ async function executeFetch(
       onRetry: (i, delay, result) =>
         log.debug(
           `${tag} retry ${i + 1}/${fetch.retry.attempts - 1} in ${delay}ms ` +
-            `(status=${result.response?.status ?? result.error?.code ?? 'error'}) ` +
+            `(status=${result.response?.status ?? (errorCodeForLog(result.error) || 'error')}) ` +
             `${redactUrl(requestUrl)}`
         ),
     });
