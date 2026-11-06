@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { getIdentityDataDir, getQuickUnlockCredentialPath } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const vault = require('./identity/vault');
+const { withPrivateDir } = require('./private-files');
 
 const CREDENTIAL_VERSION = 2;
 
@@ -36,12 +37,31 @@ function getCurrentBinding() {
   };
 }
 
+// The credential and the vault live in the identity directory. Every read
+// of either, and every write of the credential, goes through a handle on it
+// (private-files.js): never through a link planted at the name or a swapped
+// directory, never waiting on a FIFO; the credential is written by an
+// atomic 0600 replace (K-3).
+function withCredentialDir(use) {
+  return withPrivateDir(path.dirname(getCredentialPath()), use);
+}
+
 function getVaultFingerprint() {
   const vaultPath = vault.getVaultPath(getIdentityDataDir());
-  if (!fs.existsSync(vaultPath)) {
-    return null;
-  }
-  return sha256Hex(fs.readFileSync(vaultPath));
+  const bytes = withPrivateDir(path.dirname(vaultPath), (dir) =>
+    dir.read(path.basename(vaultPath))
+  );
+  return bytes ? sha256Hex(bytes) : null;
+}
+
+/**
+ * The stored credential, parsed; null when there is none.
+ * @throws {UnsafePrivatePathError} a link or anything but our regular file
+ */
+function readCredential() {
+  const credPath = getCredentialPath();
+  const bytes = withCredentialDir((dir) => dir.read(path.basename(credPath)));
+  return bytes ? parseCredential(bytes) : null;
 }
 
 function createCredentialPayload(password) {
@@ -93,18 +113,8 @@ function validateCredentialBinding(payload) {
 }
 
 function writeCredential(password) {
-  const credPath = getCredentialPath();
-  const dir = path.dirname(credPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  fs.writeFileSync(credPath, createCredentialPayload(password), { mode: 0o600 });
-  try {
-    fs.chmodSync(credPath, 0o600);
-  } catch {
-    // Best-effort permissions hardening; Windows may ignore POSIX modes.
-  }
+  const payload = createCredentialPayload(password);
+  withCredentialDir((dir) => dir.write(path.basename(getCredentialPath()), payload));
 }
 
 async function verifyCredentialPassword(password) {
@@ -142,17 +152,20 @@ function isSecureStorageAvailable() {
  * @returns {boolean}
  */
 function isQuickUnlockEnabled() {
-  const credPath = getCredentialPath();
-  if (!fs.existsSync(credPath)) {
+  try {
+    const credential = readCredential();
+    if (!credential) {
+      return false;
+    }
+    if (credential.type === 'legacy') {
+      return true;
+    }
+    return validateCredentialBinding(credential.payload) === null;
+  } catch (err) {
+    // A credential or vault that is a link, or not our regular file.
+    console.warn('[QuickUnlock] Quick unlock unavailable:', err.message);
     return false;
   }
-
-  const credential = parseCredential(fs.readFileSync(credPath));
-  if (credential.type === 'legacy') {
-    return true;
-  }
-
-  return validateCredentialBinding(credential.payload) === null;
 }
 
 /**
@@ -202,8 +215,10 @@ async function retrievePasswordWithTouchId() {
     throw new Error('Quick unlock not enabled');
   }
 
-  const credPath = getCredentialPath();
-  const credential = parseCredential(fs.readFileSync(credPath));
+  const credential = readCredential();
+  if (!credential) {
+    throw new Error('Quick unlock not enabled');
+  }
   if (credential.type === 'bound') {
     const bindingError = validateCredentialBinding(credential.payload);
     if (bindingError) {
@@ -294,10 +309,7 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
  */
 function disableQuickUnlock() {
   try {
-    const credPath = getCredentialPath();
-    if (fs.existsSync(credPath)) {
-      fs.unlinkSync(credPath);
-    }
+    withCredentialDir((dir) => dir.remove(path.basename(getCredentialPath())));
     console.log('[QuickUnlock] Touch ID unlock disabled');
     return { success: true };
   } catch (err) {

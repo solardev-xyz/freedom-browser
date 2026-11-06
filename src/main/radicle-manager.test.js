@@ -108,6 +108,41 @@ test('pushes connection and repository metrics after native state changes', asyn
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
+const posixTest = process.platform === 'win32' ? test.skip : test;
+
+posixTest('narrows keys an older build left readable before the node starts (K-3)', async () => {
+  const ctx = loadManager();
+  const keysDir = path.join(ctx.dataDir, 'keys');
+  fs.mkdirSync(keysDir, { mode: 0o755 });
+  fs.chmodSync(keysDir, 0o755);
+  fs.writeFileSync(path.join(keysDir, 'radicle'), 'secret');
+  fs.chmodSync(path.join(keysDir, 'radicle'), 0o644);
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+  expect(fs.statSync(keysDir).mode & 0o777).toBe(0o700);
+  expect(fs.statSync(path.join(keysDir, 'radicle')).mode & 0o777).toBe(0o600);
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+posixTest('a keys/ that is a link stops the start, nothing opened through it (K-3)', async () => {
+  const ctx = loadManager();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-outside-'));
+  fs.writeFileSync(path.join(outside, 'radicle'), 'not yours');
+  fs.chmodSync(path.join(outside, 'radicle'), 0o644);
+  fs.symlinkSync(outside, path.join(ctx.dataDir, 'keys'));
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({
+    status: 'error',
+    error: expect.stringContaining('symbolic link'),
+  });
+  expect(ctx.embedded.start).not.toHaveBeenCalled();
+  expect(fs.statSync(path.join(outside, 'radicle')).mode & 0o777).toBe(0o644);
+  expect(fs.readFileSync(path.join(outside, 'radicle'), 'utf8')).toBe('not yours');
+  fs.rmSync(outside, { recursive: true, force: true });
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
 test('fails closed when the addon is unavailable', async () => {
   const ctx = loadManager({ available: false });
   await expect(ctx.mod.startRadicle()).resolves.toEqual({

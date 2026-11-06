@@ -10,6 +10,7 @@ const IPC = require('../shared/ipc-channels');
 const registry = require('./networks/network-registry');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
+const { openPrivateDir } = require('./private-files');
 const {
   getActiveProfile,
   getReservedProfilePorts,
@@ -305,6 +306,20 @@ function isManagedAntNode() {
 }
 
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
+  // The data directory and its keys/ are opened once, never through a link,
+  // and every key and config read or write below goes through those
+  // handles. A keys/ that is a link, or not ours, stops the start before
+  // anything is written (K-3).
+  const data = openPrivateDir(dataDir);
+  try {
+    const keys = data.openDir('keys', { create: false });
+    return writeConfig(data, keys, dataDir, apiPort, p2pPort);
+  } finally {
+    data.close();
+  }
+}
+
+function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   const crypto = require('crypto');
 
@@ -312,7 +327,8 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   let password;
   if (fs.existsSync(configPath)) {
     try {
-      const existingConfig = fs.readFileSync(configPath, 'utf-8');
+      // Never through a link planted at the name (K-3).
+      const existingConfig = data.read(CONFIG_FILE)?.toString('utf-8') || '';
       const passwordMatch = existingConfig.match(/^password:\s*(.+)$/m);
       if (passwordMatch) {
         password = passwordMatch[1].trim();
@@ -353,7 +369,8 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     cacheCapacityBytes: resolveCacheCapacityBytes(dataDir),
   });
 
-  fs.writeFileSync(configPath, configContent);
+  // config.yaml holds the keystore password: owner-only (K-3).
+  data.write(CONFIG_FILE, configContent);
   log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
   // Identity handling. Unlike bee, antd has no `init` subcommand: when an
@@ -362,6 +379,9 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   // (`identity.json`) on start. So there is no separate init step to run.
   const keysDir = path.join(dataDir, 'keys');
   const swarmKeyPath = path.join(keysDir, 'swarm.key');
+  // Keys an older build wrote with the umask's modes (K-3); opening keys/
+  // narrowed the directory.
+  keys?.repair('swarm.key');
 
   if (fs.existsSync(swarmKeyPath)) {
     log.info('[Ant] Using existing/injected keys from', keysDir);
