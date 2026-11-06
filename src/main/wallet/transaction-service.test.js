@@ -283,7 +283,13 @@ describe('signAndSendTransaction (signer-based)', () => {
     let broadcastingSigner;
 
     beforeEach(() => {
-      getTransaction = jest.fn(async () => ({ from: testWallet.address }));
+      getTransaction = jest.fn(async () => ({
+        from: testWallet.address,
+        to: params.to,
+        value: '0x3e8',
+        input: '0xabcdef',
+        chainId: '0x2105',
+      }));
       mockChainRequest.mockImplementation(async (_chainId, method, args) => {
         if (method === 'eth_getTransactionByHash') {
           return { result: await getTransaction(...args), source: 'direct' };
@@ -321,6 +327,83 @@ describe('signAndSendTransaction (signer-based)', () => {
       await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
         code: 'REMOTE_WRONG_ACCOUNT',
       });
+    });
+
+    // The job binds from, to, value, data and the chain: a visible
+    // transaction that differs in any of them is not the one confirmed.
+    const confirmed = {
+      from: testWallet.address,
+      to: params.to,
+      value: '0x3e8',
+      input: '0xabcdef',
+      chainId: '0x2105',
+      nonce: '0x9',
+      gas: '0x5208',
+    };
+
+    it('accepts the transaction the job asked for, whatever nonce, gas and fees the phone picked', async () => {
+      getTransaction.mockResolvedValue({ ...confirmed, to: params.to.toLowerCase(), input: '0xABCDEF' });
+      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    });
+
+    it.each([
+      ['another recipient', { to: '0x' + '22'.repeat(20) }],
+      ['a contract creation', { to: null }],
+      ['another amount', { value: '0x3e9' }],
+      ['no amount', { value: '0x0' }],
+      ['other calldata', { input: '0xabcdee' }],
+      ['no calldata', { input: '0x' }],
+      ['another chain', { chainId: '0x1' }],
+      ['an unreadable amount', { value: 'lots' }],
+    ])('rejects with REMOTE_WRONG_TRANSACTION a visible tx with %s', async (_label, change) => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        getTransaction.mockResolvedValue({ ...confirmed, ...change });
+        await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
+          code: 'REMOTE_WRONG_TRANSACTION',
+          message: expect.stringContaining("isn't the one you confirmed"),
+        });
+      } finally {
+        warn.mockRestore();
+        errorLog.mockRestore();
+      }
+    });
+
+    it('compares a plain transfer with no calldata and a value given in decimal', async () => {
+      const transfer = { to: params.to, value: '1000', chainId: 8453 };
+      getTransaction.mockResolvedValue({ ...confirmed, input: '0x' });
+      await expect(signAndSendTransaction(transfer, broadcastingSigner)).resolves.toMatchObject({ hash });
+      getTransaction.mockResolvedValue({ ...confirmed, input: '0x', value: '0x3e7' });
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(signAndSendTransaction(transfer, broadcastingSigner)).rejects.toMatchObject({
+          code: 'REMOTE_WRONG_TRANSACTION',
+        });
+      } finally {
+        errorLog.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    it('accepts a visible tx without a chain id: it was found on the job\'s chain', async () => {
+      getTransaction.mockResolvedValue({ ...confirmed, chainId: undefined });
+      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    });
+
+    it('a mismatch in a redacted send is a broadcast of unknown outcome, never "not sent"', async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        getTransaction.mockResolvedValue({ ...confirmed, to: '0x' + '22'.repeat(20) });
+        await expect(
+          signAndSendTransaction({ ...params, redactErrors: true }, broadcastingSigner)
+        ).rejects.toMatchObject({ code: 'DOMAIN_BROADCAST_UNKNOWN' });
+      } finally {
+        errorLog.mockRestore();
+        warn.mockRestore();
+      }
     });
 
     it('tolerates a tx not yet visible on our RPC (best-effort check)', async () => {

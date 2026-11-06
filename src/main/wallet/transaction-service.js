@@ -175,17 +175,41 @@ function buildTransaction({
   return tx;
 }
 
+/** A quantity (0x-hex or decimal string, number or bigint) as a BigInt, or null. */
+function quantityOf(value) {
+  if (value === undefined || value === null || value === '') return 0n;
+  if (!['string', 'number', 'bigint'].includes(typeof value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+/** Calldata as lowercase hex: none is `0x`. Null for anything else. */
+function calldataOf(data) {
+  if (data === undefined || data === null || data === '') return '0x';
+  return typeof data === 'string' && /^0x([0-9a-fA-F]{2})*$/.test(data) ? data.toLowerCase() : null;
+}
+
 /**
- * Best-effort check that a device-broadcast tx really came from the
- * signer's account: a compromised responder could report the hash of
- * someone else's transaction. The tx usually reaches our RPC a beat
+ * Best-effort check that a device-broadcast tx is the one the job asked
+ * for: a compromised responder (or the chrome renderer relaying the job)
+ * could report the hash of someone else's transaction, or of another
+ * transaction from this account. The tx usually reaches our RPC a beat
  * after the device's, so "not visible yet" is not an error — only a
- * visible mismatch is.
+ * visible mismatch is. Every field the job bound is compared: the sender
+ * (REMOTE_WRONG_ACCOUNT), then the recipient, value, calldata and chain
+ * (REMOTE_WRONG_TRANSACTION). The phone picks its own nonce, gas and fees,
+ * so those aren't.
+ *
+ * @param {string} hash - The hash the device reported
+ * @param {{from: string, to: string, value?: *, data?: string, chainId: number}} job
  */
-async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
+async function verifyDeviceBroadcast(hash, job) {
   let tx;
   try {
-    ({ result: tx } = await chainData.request(chainId, 'eth_getTransactionByHash', [hash]));
+    ({ result: tx } = await chainData.request(job.chainId, 'eth_getTransactionByHash', [hash]));
   } catch (err) {
     console.warn('[TransactionService] Device-broadcast lookup failed:', err.message);
     return;
@@ -194,8 +218,25 @@ async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
     console.warn('[TransactionService] Device-broadcast tx not visible on our RPC yet:', hash);
     return;
   }
-  if (tx.from.toLowerCase() !== expectedFrom.toLowerCase()) {
+  if (typeof tx.from !== 'string' || tx.from.toLowerCase() !== job.from.toLowerCase()) {
     throw createRemoteError(REMOTE_ERROR_CODES.WRONG_ACCOUNT);
+  }
+  const value = quantityOf(tx.value);
+  const data = calldataOf(tx.input ?? tx.data);
+  const sameTransaction =
+    typeof tx.to === 'string' &&
+    typeof job.to === 'string' &&
+    tx.to.toLowerCase() === job.to.toLowerCase() &&
+    value !== null &&
+    value === quantityOf(job.value) &&
+    data !== null &&
+    data === calldataOf(job.data) &&
+    // A transaction without a chain id (pre-EIP-155) is visible on the
+    // job's chain, which is where it was looked up.
+    (tx.chainId === undefined || tx.chainId === null || quantityOf(tx.chainId) === quantityOf(job.chainId));
+  if (!sameTransaction) {
+    console.warn('[TransactionService] Device-broadcast tx is not the one confirmed:', hash);
+    throw createRemoteError(REMOTE_ERROR_CODES.WRONG_TRANSACTION);
   }
 }
 
@@ -353,7 +394,7 @@ async function sendThroughDevice({ to, value, data, chainId, redactErrors = fals
       if (isRemoteSendProvablyUnsent(err)) broadcastAttempted = false;
       throw err;
     }
-    await verifyDeviceBroadcastFrom(hash, from, chainId);
+    await verifyDeviceBroadcast(hash, { from, to, value, data, chainId });
     console.log('[TransactionService] Transaction broadcast by signer:', hash);
     return {
       hash,

@@ -1,0 +1,2 @@
+- A payment sent from a phone account is accepted only if the transaction the phone reports has the recipient, amount, data and network you confirmed. Before, only its sender was checked ([#1025](https://github.com/solardev-xyz/freedom-browser/issues/1025))
+  - A phone that reports a different transaction gets an error telling you to check your phone's wallet
