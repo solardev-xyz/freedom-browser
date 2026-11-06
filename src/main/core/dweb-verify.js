@@ -5,9 +5,11 @@
  *
  * - **Protocol 2 only.** `attachDwebVerify` attaches a verifier only to a
  *   client that asks for protocol 2, beside dweb-shell.js's
- *   `shell.dweb_get`. Against the pinned core, which speaks protocol 1,
- *   `dwebVerifier()` is null: a `{ verify }` plan is refused as before, and
- *   nothing is sent when a partition closes.
+ *   `shell.dweb_get`. core-process.js asks for protocol 2, which the
+ *   pinned core (0.10.0) speaks, so the app's client has the verifier.
+ *   Without one (no core, or a client at protocol 1) `dwebVerifier()` is
+ *   null: a `{ verify }` plan is refused, and nothing is sent when a
+ *   partition closes.
  * - **`send`** writes `dweb.verify` to the core process that made the plan,
  *   with a hang watchdog of the head deadline and 0001's margin, and opens
  *   its pieces' context in dweb-shell.js under the envelope ID and
@@ -146,7 +148,7 @@ function detachDwebVerify() {
   verifier = null;
 }
 
-/** The attached verifier, or null (no core, or one at protocol 1). */
+/** The attached verifier, or null (no core, or a client at protocol 1). */
 function dwebVerifier() {
   return verifier;
 }
