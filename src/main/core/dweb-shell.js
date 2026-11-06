@@ -68,6 +68,7 @@ const { MAX_DATA } = require('./frame');
 const { backendKind, checkPath, SWARM_HEADERS } = require('../dweb/plan-validation');
 const { dialWithRetry, idleBoundBody, UNREACHABLE_CODES } = require('../dweb/plan-executor');
 const { ipfsCid, ipnsKey } = require('./cid-text');
+const { errorCodeForLog } = require('../private/private-log-context');
 
 /** The headers a reply may carry: those the core reads (design 0009). */
 const REPLY_HEADERS = ['content-type', 'content-length', 'content-range', 'swarm-feed-index'];
@@ -511,7 +512,7 @@ class DwebShell {
           onRetry: (i, delay, result) =>
             this.log.debug?.(
               `[Core] shell.dweb_get retry ${i + 1}/${verify.retry.attempts - 1} in ${delay}ms ` +
-                `(status=${result.response?.status ?? result.error?.code ?? 'error'})`
+                `(status=${result.response?.status ?? (errorCodeForLog(result.error) || 'error')})`
             ),
         });
       } catch (err) {
