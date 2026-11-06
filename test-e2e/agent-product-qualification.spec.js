@@ -1556,12 +1556,16 @@ test('baseline: cross-site workspace reads and interacts across origins', async 
 test('baseline: multi-tab comparison passes inside a task-owned visible workspace', async ({
   window,
   harness,
-}) => {
+  electronApp,
+}, testInfo) => {
   await harness.setContentFixture(`${PRODUCT_ORIGIN}/dashboard/alpha`, {
-    body: '<!doctype html><title>Alpha dashboard</title><main><h1>Alpha dashboard</h1><p>Alpha score: 41</p></main>',
+    body: `<!doctype html><title>Alpha dashboard</title><main><h1>Alpha dashboard</h1><p>Alpha score: 41</p><a id="popup" href="${PRODUCT_ORIGIN}/dashboard/popup" target="_blank">Open popup</a></main>`,
   });
   await harness.setContentFixture(`${PRODUCT_ORIGIN}/dashboard/beta`, {
     body: '<!doctype html><title>Beta dashboard</title><main><h1>Beta dashboard</h1><p>Beta score: 47</p></main>',
+  });
+  await harness.setContentFixture(`${PRODUCT_ORIGIN}/dashboard/popup`, {
+    body: `<!doctype html><title>Task popup</title><main><h1>Task popup</h1><a id="popup" href="${PRODUCT_ORIGIN}/dashboard/popup" target="_blank">Another popup</a></main>`,
   });
   await prepareTask(
     window,
@@ -1574,6 +1578,16 @@ test('baseline: multi-tab comparison passes inside a task-owned visible workspac
     </main>`
   );
 
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await window.evaluate(() => {
+    window.fullViewDrops = [];
+    const sample = () => {
+      if (!document.body.classList.contains('agent-first-mode')) window.fullViewDrops.push(performance.now());
+      window.fullViewFrame = requestAnimationFrame(sample);
+    };
+    window.fullViewFrame = requestAnimationFrame(sample);
+  });
   await runTask(
     window,
     'PRODUCT_MULTI_TAB_COMPARISON: open both dashboards in separate task tabs, compare them, and keep both available for inspection.'
@@ -1597,6 +1611,77 @@ test('baseline: multi-tab comparison passes inside a task-owned visible workspac
     'browser_focus_tab',
     'browser_snapshot',
   ]);
+  const drops = await window.evaluate(() => {
+    cancelAnimationFrame(window.fullViewFrame);
+    return window.fullViewDrops;
+  });
+  expect(drops).toEqual([]);
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+
+  // Keep an unrelated browser tab behind the projected task strip. Closing
+  // a task page must select a visible neighbour rather than this hidden tab.
+  const alphaId = await window.locator('.tab.active').getAttribute('data-tab-id');
+  await window.locator('#agent-first-reduce').click();
+  await window.locator('#new-tab-btn').click();
+  const foreignId = await window.locator('.tab.active').getAttribute('data-tab-id');
+  await window.locator(`.tab[data-tab-id="${alphaId}"]`).click();
+  await window.locator('#agent-first-toggle').click();
+  const taskTabs = window.locator('#agent-task-page-list .tab:not([hidden])');
+  for (let i = 0; i < 3; i += 1) {
+    const before = await window.locator('#agent-task-page-list .tab.active').getAttribute('data-tab-id');
+    // Use the accelerator's main-process menu path while the guest has focus.
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('next-tab').click());
+    await expect(window.locator('#agent-task-page-list .tab.active')).not.toHaveAttribute('data-tab-id', before);
+    await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+    await expect(window.locator('#agent-task-page-list .tab.active')).toBeVisible();
+  }
+  await window.locator(`#agent-task-page-list .tab[data-tab-id="${alphaId}"]`).click();
+  for (let i = 0; i < 3; i += 1) {
+    const target = await window.evaluate(async () => {
+      const guest = document.querySelector('webview:not(.hidden)');
+      const point = await guest.executeJavaScript(`(() => {
+        const r = document.querySelector('#popup').getBoundingClientRect();
+        return { x: Math.round(r.left + 10), y: Math.round(r.top + r.height / 2) };
+      })()`);
+      return { ...point, guestId: guest.getWebContentsId() };
+    });
+    // Chromium input gives the popup blocker one real gesture, as a browser
+    // tool click would. Scripted element.click() does not mint that grant.
+    await electronApp.evaluate(({ webContents }, { guestId, x, y }) => {
+      const guest = webContents.fromId(guestId);
+      guest.sendInputEvent({ type: 'mouseMove', x, y });
+      guest.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+      guest.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    }, target);
+    await expect(taskTabs).toHaveCount(4 + i);
+    await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+    await expect.poll(() => currentUrl(window)).toBe(`${PRODUCT_ORIGIN}/dashboard/popup`);
+  }
+  // Same-chat custody is enough for display, but not model authority: the
+  // service's scoped controller still owns only the original three pages.
+  expect(await window.evaluate(async () => (await window.electronAPI.getAgentState()).state.taskTabs.length)).toBe(3);
+  const strip = window.locator('#agent-task-page-list');
+  await expect.poll(() => strip.evaluate(el => el.scrollWidth > el.clientWidth + 1)).toBe(true);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await strip.evaluate(el => { el.scrollLeft = 0; });
+    await expect(strip).toHaveClass(/overflow-end/);
+    expect(await strip.evaluate(el => getComputedStyle(el).maskImage)).not.toBe('none');
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`full-view-tabs-${theme}.png`) });
+  }
+  await strip.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  await expect(strip).toHaveClass(/overflow-start/);
+  for (let remaining = 5; remaining >= 0; remaining -= 1) {
+    await window.locator('#agent-task-page-list .tab.active .tab-close').click();
+    await expect(taskTabs).toHaveCount(remaining);
+    await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+    if (remaining) await expect(window.locator('#agent-task-page-list .tab.active')).toBeVisible();
+  }
+  await expect(window.locator('body')).toHaveClass(/agent-workspace-page-empty/);
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
+  await window.locator('#agent-first-reduce').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator(`.tab.active[data-tab-id="${foreignId}"]`)).toBeVisible();
 });
 
 test('baseline: file delivery uses scoped download authority and a verified receipt', async ({

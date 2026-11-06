@@ -186,10 +186,15 @@ electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
   const tab = getTabById(rendererTabId);
   if (tab?.webview) stopPageLoading(tab.webview);
 });
-electronAPI.onAutomationCreateTab?.(({ url }) => createTab(url)?.id || null);
+electronAPI.onAutomationCreateTab?.(({ url }) => {
+  // Main registers the new page with its conversation after creation. Keep it
+  // backgrounded until that projection arrives instead of leaving full view.
+  const deferUntilProjected = document.body.classList.contains('agent-first-mode');
+  return createTab(url, { background: deferUntilProjected, deferUntilProjected })?.id || null;
+});
 electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
   if (!getTabById(rendererTabId)) return false;
-  closeTab(rendererTabId);
+  closeTab(rendererTabId, { focus: false });
   return !getTabById(rendererTabId);
 });
 electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
