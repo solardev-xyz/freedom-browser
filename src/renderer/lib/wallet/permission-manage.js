@@ -20,6 +20,7 @@ import {
 } from './publisher-identity-selector.js';
 import { updateX402ConnectionBanner, disconnectX402 } from './dapp-x402.js';
 import { formatRawTokenBalance, toAtomicUnits, X402_WINDOW_OPTIONS } from './wallet-utils.js';
+import { confirmSigning } from './signing-confirmation.js';
 
 // Wallet permission management
 let dappPermsScreen;
@@ -635,12 +636,16 @@ function formatRelativeFuture(seconds) {
 async function saveX402Patch(perm, patch) {
   setX402PermsError('');
   try {
-    const result = await window.electronAPI.x402UpdatePermission({
+    const edit = {
       origin: perm.origin,
       chainId: perm.chainId,
       asset: perm.asset,
       ...patch,
-    });
+    };
+    // Main applies an edit of a cap only with a single-use confirmation
+    // minted for exactly this edit, by this window (#1023).
+    const { confirmation } = await confirmSigning('x402-cap-update', null, edit);
+    const result = await window.electronAPI.x402UpdatePermission({ ...edit, confirmation });
     if (!result?.success) {
       throw new Error(result?.error || 'Could not update this auto-pay cap.');
     }

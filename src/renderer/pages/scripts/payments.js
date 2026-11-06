@@ -41,6 +41,42 @@ const CLOSED_NOTE =
   "You closed this payment. We couldn't confirm whether it went through. Check the explorer " +
   'to see what happened.';
 
+// A phone account's payment, by its check (design 0012, "Unverified
+// payments"): sent from the phone but not compared with the payment
+// confirmed yet; the wrong transaction; or one that can't be checked.
+// Copies of PHONE_CHECK in lib/wallet/intent-texts.js, held equal by
+// payments.test.js. The row's `metadata.phoneCheck.state` decides, so no
+// later write of its status can show one of them as confirmed.
+const PHONE_CHECK = {
+  unverified: {
+    text: 'Sent from phone, not checked yet',
+    status: 'unverified',
+    note:
+      'Your phone reported this payment as sent. The wallet checks that it is the payment ' +
+      'you confirmed once the network shows it.',
+  },
+  mismatch: {
+    text: 'Wrong transaction',
+    status: 'wrong-transaction',
+    note:
+      "Your phone reported a transaction that isn't the one you confirmed. Check your " +
+      "phone's wallet.",
+  },
+  unknown: {
+    text: "Couldn't check",
+    status: 'unknown',
+    note:
+      "Your phone reported this payment as sent, but the wallet couldn't check that it is " +
+      "the payment you confirmed. Check your phone's wallet.",
+  },
+};
+// The row status each check leaves (main's payment-history STATUSES).
+const PHONE_CHECK_BY_STATUS = {
+  unverified: PHONE_CHECK.unverified,
+  'wrong-transaction': PHONE_CHECK.mismatch,
+  unknown: PHONE_CHECK.unknown,
+};
+
 // A wallet payment settled at the finalized block, by the label it settled
 // on (`metadata.finality.label`, intent-labels.js): what its status says
 // (D10), the status style, and what is shown with it. Main's own label is
@@ -184,15 +220,29 @@ function finalityOf(payment) {
     : null;
 }
 
+// A phone payment's check, when it isn't verified: by its record's state,
+// or else by its stored status.
+function phoneCheckOf(payment) {
+  const state = payment.metadata?.phoneCheck?.state;
+  if (typeof state === 'string' && state !== 'verified' && Object.hasOwn(PHONE_CHECK, state)) {
+    return PHONE_CHECK[state];
+  }
+  const status = payment.status;
+  return typeof status === 'string' && Object.hasOwn(PHONE_CHECK_BY_STATUS, status)
+    ? PHONE_CHECK_BY_STATUS[status]
+    : null;
+}
+
 function statusText(status) {
   return typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)
     ? STATUS_TEXT[status]
     : status;
 }
 
-// The status pill, and for a taken or closed payment the line that explains it.
+// The status pill, and for a taken or closed payment, or a phone payment
+// not verified, the line that explains it.
 function statusCell(payment) {
-  const finality = finalityOf(payment);
+  const finality = phoneCheckOf(payment) ?? finalityOf(payment);
   const status = finality ? finality.status : payment.status;
   const pill = el('span', 'status-pill', finality ? finality.text : statusText(payment.status));
   if (/^[\w-]+$/.test(status || '')) pill.classList.add(`status-${status}`);

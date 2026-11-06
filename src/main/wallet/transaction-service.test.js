@@ -283,7 +283,13 @@ describe('signAndSendTransaction (signer-based)', () => {
     let broadcastingSigner;
 
     beforeEach(() => {
-      getTransaction = jest.fn(async () => ({ from: testWallet.address }));
+      getTransaction = jest.fn(async () => ({
+        from: testWallet.address,
+        to: params.to,
+        value: '0x3e8',
+        input: '0xabcdef',
+        chainId: '0x2105',
+      }));
       mockChainRequest.mockImplementation(async (_chainId, method, args) => {
         if (method === 'eth_getTransactionByHash') {
           return { result: await getTransaction(...args), source: 'direct' };
@@ -313,6 +319,7 @@ describe('signAndSendTransaction (signer-based)', () => {
         value: '1000',
         chainId: 8453,
         explorerUrl: `https://explorer.test/8453/${hash}`,
+        phoneCheck: 'verified',
       });
     });
 
@@ -323,14 +330,114 @@ describe('signAndSendTransaction (signer-based)', () => {
       });
     });
 
-    it('tolerates a tx not yet visible on our RPC (best-effort check)', async () => {
-      getTransaction.mockResolvedValue(null);
-      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    // The job binds from, to, value, data and the chain: a visible
+    // transaction that differs in any of them is not the one confirmed.
+    const confirmed = {
+      from: testWallet.address,
+      to: params.to,
+      value: '0x3e8',
+      input: '0xabcdef',
+      chainId: '0x2105',
+      nonce: '0x9',
+      gas: '0x5208',
+    };
+
+    it('accepts the transaction the job asked for, whatever nonce, gas and fees the phone picked', async () => {
+      getTransaction.mockResolvedValue({ ...confirmed, to: params.to.toLowerCase(), input: '0xABCDEF' });
+      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({
+        hash,
+        phoneCheck: 'verified',
+      });
     });
 
-    it('tolerates lookup failures (best-effort check)', async () => {
-      getTransaction.mockRejectedValue(new Error('rpc down'));
-      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    it.each([
+      ['another recipient', { to: '0x' + '22'.repeat(20) }],
+      ['a contract creation', { to: null }],
+      ['another amount', { value: '0x3e9' }],
+      ['no amount', { value: '0x0' }],
+      ['other calldata', { input: '0xabcdee' }],
+      ['no calldata', { input: '0x' }],
+      ['another chain', { chainId: '0x1' }],
+      // Pre-EIP-155: its signature is valid on every chain (design 0012, PHN-1).
+      ['no chain id', { chainId: undefined }],
+      ['a null chain id', { chainId: null }],
+      ['an unreadable amount', { value: 'lots' }],
+      ['unreadable calldata', { input: '0xabc' }],
+    ])('rejects with REMOTE_WRONG_TRANSACTION a visible tx with %s', async (_label, change) => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        getTransaction.mockResolvedValue({ ...confirmed, ...change });
+        await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
+          code: 'REMOTE_WRONG_TRANSACTION',
+          message: expect.stringContaining("isn't the one you confirmed"),
+        });
+      } finally {
+        warn.mockRestore();
+        errorLog.mockRestore();
+      }
+    });
+
+    it('compares a plain transfer with no calldata and a value given in decimal', async () => {
+      const transfer = { to: params.to, value: '1000', chainId: 8453 };
+      getTransaction.mockResolvedValue({ ...confirmed, input: '0x' });
+      await expect(signAndSendTransaction(transfer, broadcastingSigner)).resolves.toMatchObject({ hash });
+      getTransaction.mockResolvedValue({ ...confirmed, input: '0x', value: '0x3e7' });
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(signAndSendTransaction(transfer, broadcastingSigner)).rejects.toMatchObject({
+          code: 'REMOTE_WRONG_TRANSACTION',
+        });
+      } finally {
+        errorLog.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    it('a mismatch in a redacted send is a broadcast of unknown outcome, never "not sent"', async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        getTransaction.mockResolvedValue({ ...confirmed, to: '0x' + '22'.repeat(20) });
+        await expect(
+          signAndSendTransaction({ ...params, redactErrors: true }, broadcastingSigner)
+        ).rejects.toMatchObject({ code: 'DOMAIN_BROADCAST_UNKNOWN' });
+      } finally {
+        errorLog.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    // Not visible yet, or a failed lookup: the hash goes back, unverified,
+    // with the fields the job bound, for tx-recorder to keep and check once
+    // the transaction is visible (phone-payments.test.js).
+    it.each([
+      ['a tx not yet visible on our RPC', () => getTransaction.mockResolvedValue(null)],
+      ['a failed lookup', () => getTransaction.mockRejectedValue(new Error('rpc down'))],
+    ])('reports %s as unverified, with the bound fields', async (_label, arrange) => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        arrange();
+        const before = Date.now();
+        const result = await signAndSendTransaction(params, broadcastingSigner);
+        expect(result).toMatchObject({ hash, phoneCheck: 'unverified' });
+        expect(result.phoneRecord).toEqual({
+          from: testWallet.address.toLowerCase(),
+          to: params.to.toLowerCase(),
+          value: '1000',
+          dataLength: 3,
+          dataSha256: require('crypto')
+            .createHash('sha256')
+            .update(Buffer.from('abcdef', 'hex'))
+            .digest('hex'),
+          chainId: '8453',
+          answeredAt: expect.any(Number),
+        });
+        expect(result.phoneRecord.answeredAt).toBeGreaterThanOrEqual(before);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

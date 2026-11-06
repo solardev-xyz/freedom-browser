@@ -128,7 +128,11 @@ function permissionFor(permissionKey, walletIndex) {
   return permission && permission.walletIndex === walletIndex ? permission : null;
 }
 
-/** Main's own evaluation of a dApp's transaction auto-approve rules. */
+/**
+ * Main's own evaluation of a dApp's transaction auto-approve rules, for
+ * the transaction it is about to sign: its call, chain and value (a rule
+ * covers no more value than the send it was recorded from).
+ */
 function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
   if (!permissionFor(permissionKey, walletIndex)) return false;
   const selector = selectorOf(tx.data);
@@ -137,7 +141,8 @@ function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
     permissionKey,
     tx.to,
     selector,
-    Number(tx.chainId)
+    Number(tx.chainId),
+    tx.value
   );
 }
 
@@ -409,15 +414,26 @@ async function handleSendTransaction(
 
     // "Always allow" is recorded here, from the transaction the user just
     // confirmed — never from a free-standing renderer call — so a rule can
-    // only ever cover a (contract, selector, chain) the user saw.
+    // only ever cover a (contract, selector, chain) the user saw, with no
+    // more value than this send's. It is recorded for the site the
+    // confirmation was for (`site`, which the token binds): a flag naming
+    // another site adds no rule at all.
     let autoApproveAdded;
     if (how === 'confirmed' && confirmKind === CONFIRM_KINDS.DAPP_SEND && authorization?.rememberAutoApprove) {
-      const permissionKey = authorization.rememberAutoApprove;
+      const named =
+        typeof authorization.rememberAutoApprove === 'string'
+          ? normalizeOrigin(authorization.rememberAutoApprove)
+          : '';
       const selector = selectorOf(data);
+      if (named !== site) {
+        console.warn('[WalletIPC] "Always allow" named another site than the one confirmed; no rule added');
+      }
       autoApproveAdded = Boolean(
         selector &&
-          permissionFor(permissionKey, walletIndex) &&
-          dappPermissions.addTransactionAutoApprove(permissionKey, to, selector, Number(chainId))
+          site &&
+          named === site &&
+          permissionFor(site, walletIndex) &&
+          dappPermissions.addTransactionAutoApprove(site, to, selector, Number(chainId), value)
       );
     }
     return {
@@ -636,6 +652,11 @@ function registerWalletIpc() {
     try {
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
+      }
+      // An auto-pay cap's edit (#1023) is bound to the window confirming
+      // it and to the cap as main holds it, never to the caller's word.
+      if (kind === CONFIRM_KINDS.X402_CAP_UPDATE) {
+        payload = require('../x402/permissions').capUpdateRequest(event?.sender?.id, payload);
       }
       const index =
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT

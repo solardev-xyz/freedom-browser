@@ -1,0 +1,3 @@
+- A payment sent from a phone account is checked against the recipient, amount, data and network you confirmed, not only its sender ([#1025](https://github.com/solardev-xyz/freedom-browser/issues/1025))
+  - Payments shows it as sent from the phone and not checked yet until the network shows it
+  - A different transaction shows as Wrong transaction, never as Confirmed

@@ -62,6 +62,20 @@ jest.mock('../core/vault-backend', () => {
     },
   };
 });
+// An x402 cap edit as main confirms it (#1023): the sending window, the
+// key, the cap as the store holds it, and the change.
+const mockCapHeld = { current: { capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 3 } };
+jest.mock('../x402/permissions', () => ({
+  capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => ({
+    window: windowId,
+    origin,
+    chainId,
+    asset,
+    capAmount,
+    windowSeconds,
+    current: mockCapHeld.current,
+  }),
+}));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
   takeSiteTurn: jest.fn(async () => () => {}),
@@ -256,9 +270,10 @@ describe('signing handlers require a main-side confirmation', () => {
       const result = await handlers['wallet:dapp-send-transaction'](
         AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
       expect(result).toMatchObject({ success: true, hash: '0xhash' });
-      // Main derives the rule key from the transaction it is signing.
+      // Main derives the rule key from the transaction it is signing, its
+      // value included.
       expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
-        SITE, TX.to, '0x095ea7b3', 100);
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
     });
 
     // D12: a matching rule is paused while one of the site's payments is in
@@ -483,7 +498,51 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: SITE });
       expect(result).toMatchObject({ success: true, autoApproveAdded: true });
       expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
-        SITE, TX.to, '0x095ea7b3', 100);
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
+    });
+
+    test('"always allow" records the value of the send the user confirmed', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      const payable = { ...TX, value: '0x2386f26fc10000' };
+      const confirmation = await mint('dapp-send', 2, { ...payable, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, payable, 2, { origin: SITE }, { confirmation, rememberAutoApprove: SITE });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: true });
+      expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
+        SITE, TX.to, '0x095ea7b3', 100, '0x2386f26fc10000');
+    });
+
+    test('an auto-approved send is checked with the value main signs', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockImplementation(
+        (_site, _to, _selector, _chainId, value) => BigInt(value ?? 0) <= 10n);
+      const send = (value) => handlers['wallet:dapp-send-transaction'](
+        AUTO, { ...TX, value }, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
+      await expect(send('11')).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(signAndRecord).not.toHaveBeenCalled();
+      await expect(send('10')).resolves.toMatchObject({ success: true });
+    });
+
+    test('"always allow" naming another site than the one confirmed adds no rule', async () => {
+      // Both sites are connected on the account; the token is for SITE.
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: 'https://other.example' });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: false });
+      expect(signAndRecord).toHaveBeenCalledTimes(1);
+      expect(dappPermissions.addTransactionAutoApprove).not.toHaveBeenCalled();
+    });
+
+    test('"always allow" is recorded under the confirmed site, however the flag spells it', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: `${SITE}/swap` });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: true });
+      expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
     });
 
     test('an auto-approved send cannot add rules', async () => {
@@ -1375,6 +1434,33 @@ describe('signing handlers require a main-side confirmation', () => {
     // The hosting window's sidebar gets its token.
     const token = await mintX402(0);
     expect(() => confirmations.consumeConfirmation(token, 'x402-payment', 0, X402_PAYMENT)).not.toThrow();
+  });
+
+  test('an x402 cap edit is confirmed for the window that asks, and the cap main holds', async () => {
+    const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
+    const held = (windowId) => ({ ...edit, window: windowId, windowSeconds: undefined, current: mockCapHeld.current });
+    // What the renderer says about the window or the cap is not used.
+    const result = await handlers['wallet:confirm-signing'](
+      AUTO, 'x402-cap-update', null, { ...edit, window: 9, current: { capAmount: '1', createdAt: 1, expiresAt: 2, generation: 1 } });
+    expect(result.success).toBe(true);
+    expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held(9)))
+      .toThrow(/differs/);
+
+    const again = await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit);
+    expect(() => confirmations.consumeConfirmation(again.token, 'x402-cap-update', null, held(CHROME.id)))
+      .not.toThrow();
+
+    // A sender that is no window, or a cap main doesn't hold: no token.
+    expect(await handlers['wallet:confirm-signing']({}, 'x402-cap-update', null, edit))
+      .toMatchObject({ success: false, error: expect.stringMatching(/window/) });
+    const saved = mockCapHeld.current;
+    mockCapHeld.current = null;
+    try {
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit))
+        .toMatchObject({ success: false, error: expect.stringMatching(/No such auto-pay cap/) });
+    } finally {
+      mockCapHeld.current = saved;
+    }
   });
 
   test('wallet:confirm-signing refuses a malformed request', async () => {

@@ -29,6 +29,7 @@ import {
   ACTIONS,
   RESULT_TITLES,
   PHONE_OUTCOME_UNKNOWN,
+  PHONE_CHECK,
 } from './intent-texts.js';
 import { waitingPaymentBehind, describePayment } from './held-payments.js';
 import { resendHeldPayment } from './intent-resend.js';
@@ -495,7 +496,19 @@ function showSendPendingView() {
   if (text) text.textContent = pendingCopy.text;
 }
 
-function showSendSuccessView(explorerUrl, outcome) {
+// The success view's line under its title, as index.html has it.
+const SENT_TEXT = 'Your transaction has been broadcast to the network.';
+
+/**
+ * @param {string} [explorerUrl]
+ * @param {string} [outcome] - an intent's: `sent` or `uncertain`
+ * @param {string} [phoneCheck] - a phone account's payment: `verified`;
+ *   `unverified`, sent from the phone but its transaction not seen yet, so
+ *   not compared with the one confirmed; `unknown`, which can't be checked
+ *   (design 0012, "Unverified payments"). Neither of the last two is shown
+ *   as sent and done.
+ */
+function showSendSuccessView(explorerUrl, outcome, phoneCheck) {
   sendInputView?.classList.add('hidden');
   sendReviewView?.classList.add('hidden');
   sendPendingView?.classList.add('hidden');
@@ -503,10 +516,17 @@ function showSendSuccessView(explorerUrl, outcome) {
   sendErrorView?.classList.add('hidden');
 
   // An uncertain send may have gone out: it is no failure, only unconfirmed.
+  const phone = phoneCheck === 'unverified' || phoneCheck === 'unknown' ? PHONE_CHECK[phoneCheck] : null;
   const title = sendSuccessView?.querySelector('.send-success-title');
   if (title) {
-    title.textContent = outcome === 'uncertain' ? RESULT_TITLES.uncertain : RESULT_TITLES.sent;
+    title.textContent = phone
+      ? phone.title
+      : outcome === 'uncertain'
+        ? RESULT_TITLES.uncertain
+        : RESULT_TITLES.sent;
   }
+  const text = sendSuccessView?.querySelector('.send-success-text');
+  if (text) text.textContent = phone ? phone.note : SENT_TEXT;
 
   if (sendExplorerLink) {
     sendExplorerLink.href = explorerUrl || '#';
@@ -1684,7 +1704,7 @@ async function handleSendConfirm() {
     }
 
     console.log('[WalletUI] Transaction sent:', result.hash);
-    showSendSuccessView(result.explorerUrl, result.outcome);
+    showSendSuccessView(result.explorerUrl, result.outcome, result.phoneCheck);
 
     // What was paid, so a listener can tell its own payment from another.
     window.dispatchEvent(
@@ -1723,6 +1743,7 @@ async function handleSendConfirm() {
 
 export const __test__ = {
   lookupPrimaryNameForAddress,
+  showSendSuccessView,
   renderRecipientReview,
   isEnsLikeName,
   showSendErrorView,

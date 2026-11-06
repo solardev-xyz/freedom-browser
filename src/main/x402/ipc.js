@@ -31,6 +31,13 @@
  *
  *   x402:get-all-permissions / x402:revoke-permission — allowance UI.
  *
+ *   x402:update-permission({origin, chainId, asset, capAmount?,
+ *     windowSeconds?, confirmation}) — change an allowance's amount or
+ *     window. Changes nothing without `confirmation`: an
+ *     'x402-cap-update' token the cap editor minted through
+ *     `wallet:confirm-signing`, in this same window, for exactly this
+ *     edit of the cap as main holds it.
+ *
  * Auto-pay (active cap covers the charge) doesn't go through these —
  * the detector calls signAndQueueRetry directly. See sign-flow.js.
  */
@@ -57,10 +64,11 @@ const {
   revoke: revokePermission,
   revokeAllForOrigin,
   updatePermission,
+  capUpdateRequest,
   getAllPermissions,
 } = require('./permissions');
 const paymentHistory = require('../payment-history');
-const { signAndQueueRetry } = require('./sign-flow');
+const { signAndQueueRetry, isCapNotCoveredError } = require('./sign-flow');
 const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
 const { getActiveWalletAddress, getActiveWalletIndex } = require('../identity-manager');
 const {
@@ -460,8 +468,9 @@ function registerX402Ipc() {
       settlePendingUnlockWait(id);
       return { success: true };
     }
+    let resume = null;
     try {
-      const resume = consumePendingUnlockResume(id);
+      resume = consumePendingUnlockResume(id);
       if (!resume) {
         return { success: false, error: 'No pending unlock-resume for this tab' };
       }
@@ -471,7 +480,15 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
-      return { success: false, error: err.message };
+      // The cap no longer covers it (spent while the vault was locked):
+      // nothing was signed. Loading the page again brings its 402 back,
+      // which now goes to the approval card.
+      if (isCapNotCoveredError(err) && resume?.detection?.url) {
+        webContents.fromId(id)?.loadURL(resume.detection.url).catch((navErr) => {
+          log.error(`[x402:resume-unlock] reload failed: ${navErr.message}`);
+        });
+      }
+      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
     }
   });
 
@@ -543,7 +560,24 @@ function registerX402Ipc() {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (_event, { origin, chainId, asset, capAmount, windowSeconds } = {}) => {
+  // Changing a cap's amount or window changes what auto-pay may spend
+  // without asking (#1023), so it is gated like a payment: the cap editor
+  // mints an 'x402-cap-update' token through `wallet:confirm-signing` for
+  // the edit it is about to make, and the edit is applied only with that
+  // token, from the window that minted it, while the cap is still the one
+  // it was minted for. Any call presenting a token burns it.
+  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (event, args = {}) => {
+    const { origin, chainId, asset, capAmount, windowSeconds, confirmation } = args ?? {};
+    try {
+      consumeConfirmation(
+        confirmation,
+        CONFIRM_KINDS.X402_CAP_UPDATE,
+        null,
+        capUpdateRequest(event?.sender?.id, { origin, chainId, asset, capAmount, windowSeconds })
+      );
+    } catch (err) {
+      return { success: false, error: err.message, code: err.code };
+    }
     try {
       const updated = updatePermission(origin, chainId, asset, { capAmount, windowSeconds });
       return { success: true, permission: updated };

@@ -263,33 +263,43 @@
       .status-settled::before {
         background: #56d364;
       }
-      .status-pending {
+      /* A phone payment not checked yet (unverified) waits like pending. */
+      .status-pending,
+      .status-unverified {
         background: rgba(245, 158, 11, 0.12);
         color: var(--pay-status-pending);
       }
-      .status-pending::before {
+      .status-pending::before,
+      .status-unverified::before {
         background: #d29922;
         animation: pulse 1.6s ease-in-out infinite;
       }
-      .status-failed {
+      /* A phone payment whose transaction isn't the one confirmed
+         (wrong-transaction) reads as a failure, never as confirmed. */
+      .status-failed,
+      .status-wrong-transaction {
         background: rgba(248, 81, 73, 0.12);
         color: var(--pay-status-failed);
       }
-      .status-failed::before {
+      .status-failed::before,
+      .status-wrong-transaction::before {
         background: #f85149;
       }
       /* Couldn't confirm (unconfirmed): a payment closed by hand, whether
          it paid unknown. Dropped: never mined, its nonce taken by another
-         transaction. Both muted like no receipt, and settled. */
+         transaction. Couldn't check (unknown): a phone payment never seen
+         to check. All muted like no receipt, and settled. */
       .status-no-receipt,
       .status-dropped,
-      .status-unconfirmed {
+      .status-unconfirmed,
+      .status-unknown {
         background: rgba(110, 118, 129, 0.18);
         color: var(--pay-status-none);
       }
       .status-no-receipt::before,
       .status-dropped::before,
-      .status-unconfirmed::before {
+      .status-unconfirmed::before,
+      .status-unknown::before {
         background: #8b949e;
       }
       /* Taken: another transaction from the account used the payment's

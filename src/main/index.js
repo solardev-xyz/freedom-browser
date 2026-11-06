@@ -446,6 +446,7 @@ const { getIntentTracker } = require('./wallet/intent-tracker');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
+const { repairRpcApiKeys } = require('./wallet/rpc-api-key-store');
 const { registerNetworkConfigIpc } = require('./networks/network-ipc');
 const { registerDappPermissionsIpc } = require('./wallet/dapp-permissions');
 const {
@@ -465,6 +466,7 @@ const {
 } = require('./swarm/publish-history');
 const paymentHistory = require('./payment-history');
 const { getTransactionStatus: getTxStatus } = require('./wallet/transaction-service');
+const { resumePhoneChecks } = require('./wallet/tx-recorder');
 const { registerSwarmPermissionsIpc } = require('./swarm/swarm-permissions');
 const { registerSwarmProviderIpc } = require('./swarm/swarm-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle/radicle-permissions');
@@ -587,6 +589,10 @@ async function bootstrap() {
   // ipfs-data/freedom-ipfs/), before IPFS starts below. Like the Bee-only
   // state, it is only renamed aside here and deleted after first paint (#101).
   setAsideLegacyKuboRepo();
+  // Before the network registry or rpc-manager first reads it: an older
+  // 0644 RPC API key file becomes owner-only (K-5). Both readers repair it
+  // too, through the same key store.
+  repairRpcApiKeys();
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -726,6 +732,9 @@ async function bootstrap() {
   paymentHistory.repollPending(getTxStatus).catch((err) => {
     log.warn(`[App] payment-history repoll failed: ${err.message}`);
   });
+  // Phone payments an earlier run couldn't check yet: their fields are
+  // compared once their transactions are visible (design 0012, PHN-2).
+  resumePhoneChecks();
 
   if (!TEST_MODE) {
     // Skip registering the real bzz/ipfs/ipns/web3 handlers in test mode —

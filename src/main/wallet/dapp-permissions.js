@@ -251,17 +251,60 @@ function setSigningAutoApprove(origin, enabled) {
 }
 
 /**
+ * A transaction's `value` in wei, as a BigInt: absent means 0. Null for a
+ * value that isn't a non-negative integer (decimal or 0x-hex string,
+ * number or bigint), which no rule covers.
+ */
+function weiOf(value) {
+  if (value === undefined || value === null || value === '') return 0n;
+  if (!['string', 'number', 'bigint'].includes(typeof value)) return null;
+  try {
+    const wei = BigInt(value);
+    return wei >= 0n ? wei : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The most `value` a transaction rule covers, in wei: the value of the
+ * confirmed send it was recorded from (`maxValue`, a decimal string). A
+ * rule recorded before rules carried a value covers only calls that send
+ * none: it came from a send of at least 0, and of no more is known.
+ */
+function ruleMaxValue(rule) {
+  return typeof rule?.maxValue === 'string' && /^\d+$/.test(rule.maxValue)
+    ? BigInt(rule.maxValue)
+    : 0n;
+}
+
+function sameCall(rule, to, selector, chainId) {
+  return (
+    typeof rule?.to === 'string' &&
+    typeof rule?.selector === 'string' &&
+    rule.to.toLowerCase() === to &&
+    rule.selector.toLowerCase() === selector &&
+    rule.chainId === chainId
+  );
+}
+
+/**
  * Check if a transaction is auto-approved for an origin.
- * Matches on contract address + 4-byte function selector + chainId.
+ * Matches on contract address + 4-byte function selector + chainId, and
+ * covers no more `value` than the send the rule was recorded from.
  * Plain ETH transfers (no data) are never auto-approved.
  * @param {string} origin
  * @param {string} to - Contract address
  * @param {string} selector - 4-byte function selector (0x prefixed, 10 chars)
  * @param {number} chainId
+ * @param {string|number|bigint} [value] - The transaction's value in wei
+ *   (decimal or 0x-hex); absent means 0
  * @returns {boolean}
  */
-function isTransactionAutoApproved(origin, to, selector, chainId) {
+function isTransactionAutoApproved(origin, to, selector, chainId, value) {
   if (!to || !selector || selector.length < 10) return false;
+  const wei = weiOf(value);
+  if (wei === null) return false;
 
   const permission = getPermission(origin);
   const txRules = permission?.autoApprove?.transactions;
@@ -272,22 +315,27 @@ function isTransactionAutoApproved(origin, to, selector, chainId) {
 
   return txRules.some(
     (rule) =>
-      rule.to.toLowerCase() === normalizedTo &&
-      rule.selector.toLowerCase() === normalizedSelector &&
-      rule.chainId === chainId
+      sameCall(rule, normalizedTo, normalizedSelector, chainId) && wei <= ruleMaxValue(rule)
   );
 }
 
 /**
- * Add a transaction auto-approve rule for an origin.
+ * Add a transaction auto-approve rule for an origin, from a send the user
+ * confirmed: it covers that call with no more `value` than that send's.
+ * Added again for the same call, the rule covers the larger of the two
+ * values the user confirmed.
  * @param {string} origin
  * @param {string} to - Contract address
  * @param {string} selector - 4-byte function selector (0x prefixed)
  * @param {number} chainId
- * @returns {boolean} True if added
+ * @param {string|number|bigint} [value] - The confirmed send's value in
+ *   wei; absent means 0
+ * @returns {boolean} True if the rule covers that send now
  */
-function addTransactionAutoApprove(origin, to, selector, chainId) {
+function addTransactionAutoApprove(origin, to, selector, chainId, value) {
   if (!to || !selector || selector.length < 10 || chainId === undefined) return false;
+  const wei = weiOf(value);
+  if (wei === null) return false;
 
   const permissions = loadPermissions();
   const key = normalizeOrigin(origin);
@@ -300,21 +348,27 @@ function addTransactionAutoApprove(origin, to, selector, chainId) {
   const normalizedTo = to.toLowerCase();
   const normalizedSelector = selector.slice(0, 10).toLowerCase();
 
-  // Don't add duplicates
   const existing = permissions[key].autoApprove.transactions || [];
-  const alreadyExists = existing.some(
-    (r) => r.to.toLowerCase() === normalizedTo &&
-           r.selector.toLowerCase() === normalizedSelector &&
-           r.chainId === chainId
-  );
-  if (alreadyExists) return true;
+  const same = existing.find((r) => sameCall(r, normalizedTo, normalizedSelector, chainId));
+  if (same && ruleMaxValue(same) >= wei) return true;
 
-  existing.push({ to: normalizedTo, selector: normalizedSelector, chainId });
+  if (same) {
+    same.maxValue = wei.toString();
+  } else {
+    existing.push({
+      to: normalizedTo,
+      selector: normalizedSelector,
+      chainId,
+      maxValue: wei.toString(),
+    });
+  }
   permissions[key].autoApprove.transactions = existing;
   permissionsCache = permissions;
   savePermissions();
 
-  console.log(`[DAppPermissions] Transaction auto-approve added for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId}`);
+  console.log(
+    `[DAppPermissions] Transaction auto-approve added for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId} maxValue=${wei}`
+  );
   return true;
 }
 
@@ -384,8 +438,10 @@ function registerDappPermissionsIpc() {
   // The renderer's question before a dApp transaction: auto-approve it, or
   // show the prompt. A covering rule is paused while one of the site's
   // payments is in Payments waiting (D12, auto-approve-pause.js).
-  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, async (_event, origin, to, selector, chainId) => {
-    if (!isTransactionAutoApproved(origin, to, selector, chainId)) return false;
+  // `value` is the transaction's: a rule covers no more than the send it
+  // was recorded from.
+  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, async (_event, origin, to, selector, chainId, value) => {
+    if (!isTransactionAutoApproved(origin, to, selector, chainId, value)) return false;
     return !(await transactionAutoApprovePaused(origin));
   });
 
