@@ -20,6 +20,7 @@ const REMOTE_ERROR_CODES = {
   USER_CANCELLED: 'REMOTE_USER_CANCELLED',
   USER_REJECTED: 'REMOTE_USER_REJECTED',
   WRONG_ACCOUNT: 'REMOTE_WRONG_ACCOUNT',
+  WRONG_TRANSACTION: 'REMOTE_WRONG_TRANSACTION',
   BAD_RESPONSE: 'REMOTE_BAD_RESPONSE',
   NO_UI: 'REMOTE_NO_UI',
   UNSUPPORTED: 'REMOTE_UNSUPPORTED',
@@ -33,6 +34,9 @@ const MESSAGES = {
   [REMOTE_ERROR_CODES.USER_REJECTED]: 'Request rejected on your phone.',
   [REMOTE_ERROR_CODES.WRONG_ACCOUNT]:
     'Your phone answered from a different account than this wallet. Select the right account on your phone and try again.',
+  [REMOTE_ERROR_CODES.WRONG_TRANSACTION]:
+    "Your phone reported a transaction that isn't the one you confirmed: its recipient, amount, data or network differs. " +
+    "Check your phone's wallet.",
   [REMOTE_ERROR_CODES.BAD_RESPONSE]: 'Your phone sent an invalid response. Try again.',
   [REMOTE_ERROR_CODES.NO_UI]: 'No browser window available to show the signing QR code.',
   [REMOTE_ERROR_CODES.UNSUPPORTED]: 'This request type is not supported by phone accounts.',

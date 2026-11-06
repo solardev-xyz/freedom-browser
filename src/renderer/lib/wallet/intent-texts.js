@@ -134,6 +134,40 @@ export const RESULT_TITLES = Object.freeze({
 });
 
 /**
+ * A phone account's payment, by its check (freedom-core design 0012,
+ * "Unverified payments"). The phone signs and broadcasts the payment and
+ * reports its hash; the wallet compares that transaction with the one
+ * confirmed once the network shows it. Until then it was sent from the
+ * phone but isn't checked, and is never shown as confirmed. One the network
+ * shows different is the wrong transaction; one it never shows within a
+ * day, or that the wallet couldn't keep to check, can't be checked. The
+ * payments page keeps a copy of the labels and notes, held equal by
+ * pages/payments.test.js.
+ */
+export const PHONE_CHECK = Object.freeze({
+  unverified: Object.freeze({
+    title: 'Sent from your phone, not checked yet',
+    label: 'Sent from phone, not checked yet',
+    note:
+      'Your phone reported this payment as sent. The wallet checks that it is the payment ' +
+      'you confirmed once the network shows it.',
+  }),
+  mismatch: Object.freeze({
+    label: 'Wrong transaction',
+    note:
+      "Your phone reported a transaction that isn't the one you confirmed. Check your " +
+      "phone's wallet.",
+  }),
+  unknown: Object.freeze({
+    title: "Sent from your phone, couldn't check it",
+    label: "Couldn't check",
+    note:
+      "Your phone reported this payment as sent, but the wallet couldn't check that it is " +
+      "the payment you confirmed. Check your phone's wallet.",
+  }),
+});
+
+/**
  * The error code of a phone account's payment whose answer was lost (D13).
  * A phone signs and broadcasts the payment itself, so it may have been
  * sent: the screens title it as unknown and offer no retry, which would

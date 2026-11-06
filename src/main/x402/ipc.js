@@ -5,8 +5,9 @@
  * browser-shell webContents, NOT in the webview that hit the 402).
  * All channels that operate on a specific tab take `webContentsId`
  * explicitly — the sender is the sidebar, not the paying webview.
- * Reading a payment and approving it are for the chrome window that
- * hosts its tab alone: another window's sidebar is refused.
+ * Reading a payment, approving it, declining it and resuming it after
+ * an unlock are for the chrome window that hosts its tab alone: another
+ * window's sidebar is refused, and its payment stays as it was.
  *
  *   x402:get-details(webContentsId) — return the parsed PaymentRequired
  *     the detector stashed for that webContents, plus asset metadata
@@ -30,6 +31,13 @@
  *   x402:get-receipts({limit?}) — recent payments for the Payments tab.
  *
  *   x402:get-all-permissions / x402:revoke-permission — allowance UI.
+ *
+ *   x402:update-permission({origin, chainId, asset, capAmount?,
+ *     windowSeconds?, confirmation}) — change an allowance's amount or
+ *     window. Changes nothing without `confirmation`: an
+ *     'x402-cap-update' token the cap editor minted through
+ *     `wallet:confirm-signing`, in this same window, for exactly this
+ *     edit of the cap as main holds it.
  *
  * Auto-pay (active cap covers the charge) doesn't go through these —
  * the detector calls signAndQueueRetry directly. See sign-flow.js.
@@ -57,10 +65,11 @@ const {
   revoke: revokePermission,
   revokeAllForOrigin,
   updatePermission,
+  capUpdateRequest,
   getAllPermissions,
 } = require('./permissions');
 const paymentHistory = require('../payment-history');
-const { signAndQueueRetry } = require('./sign-flow');
+const { signAndQueueRetry, isCapNotCoveredError } = require('./sign-flow');
 const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
 const { getActiveWalletAddress, getActiveWalletIndex } = require('../identity-manager');
 const {
@@ -183,18 +192,24 @@ function refreshAndBroadcastBalances(webContentsId, address) {
     });
 }
 
+// What a window is told when it names a payment on a tab it doesn't host.
+const NOT_THIS_WINDOW = 'This payment is not on a tab of this window';
+
 function registerX402Ipc() {
   // The tab-scoped handlers accept an explicit `webContentsId` from the
   // sidebar (which is the host webContents and doesn't know which
-  // webview the 402 came from). The ones that don't read or approve a
-  // payment also fall back to `event.sender.id` for test ergonomics;
-  // production callers pass it explicitly.
+  // webview the 402 came from). Only x402:refresh-balances, which acts on
+  // no payment, also falls back to `event.sender.id`.
   //
-  // x402:get-details and x402:approve serve only the chrome window that
-  // hosts the payment's tab (`guestHostedBy`): the sender policy admits
-  // any Freedom chrome renderer, and one window must not read, or pay,
-  // the payment on another window's card. A renderer can still approve a
-  // payment on its own window's tabs, with a token it minted for it.
+  // Every handler that acts on a payment (x402:get-details, x402:approve,
+  // x402:reject, x402:cancel, x402:resume-unlock) serves only the chrome
+  // window that hosts the payment's tab (`guestHostedBy`), and only while
+  // that tab lives: the sender policy admits any Freedom chrome renderer,
+  // and one window must not read, pay, decline, navigate or resume the
+  // payment on another window's card. A refused call changes nothing: the
+  // payment stays pending for its own window. A renderer can still act on
+  // payments on its own window's tabs (approving one with a token it
+  // minted for it).
   ipcMain.handle(IPC.X402_GET_DETAILS, async (event, args = {}) => {
     // When detectionId is provided, the lookup is strict — refusing to
     // serve a different detection's data avoids "user sees A's details
@@ -229,7 +244,7 @@ function registerX402Ipc() {
       }
     }
     if (!guestHostedBy(event.sender, id)) {
-      return { success: false, error: 'This payment is not on a tab of this window' };
+      return { success: false, error: NOT_THIS_WINDOW };
     }
 
     // Resolve origin + active address once for the whole enrichment
@@ -350,7 +365,7 @@ function registerX402Ipc() {
     }
     if (!guestHostedBy(event.sender, record.webContentsId)) {
       discardConfirmation(confirmation);
-      return { success: false, error: 'This payment is not on a tab of this window' };
+      return { success: false, error: NOT_THIS_WINDOW };
     }
     if (isApprovalClaimed(detectionId)) {
       discardConfirmation(confirmation);
@@ -435,13 +450,23 @@ function registerX402Ipc() {
     }
   });
 
-  ipcMain.handle(IPC.X402_REJECT, async (_event, args = {}) => {
+  ipcMain.handle(IPC.X402_REJECT, async (event, args = {}) => {
     // Subresource approval-card reject. Settles the pending Promise with
     // approved:false; the detector returns null and the page sees the
     // 402. mainFrame paywall cancel still goes through X402_CANCEL.
+    //
+    // Judged by the awaiting detection's own tab: the caller names only
+    // the detection. Another window's refusal leaves it awaiting.
     const { detectionId } = args;
     if (!detectionId) {
       return { success: false, error: 'detectionId required' };
+    }
+    const awaiting = getPendingApproval(detectionId);
+    if (!awaiting) {
+      return { success: true, settled: false };
+    }
+    if (!guestHostedBy(event.sender, awaiting.webContentsId)) {
+      return { success: false, error: NOT_THIS_WINDOW };
     }
     const settled = settlePendingApproval(detectionId, { approved: false });
     return { success: true, settled };
@@ -454,14 +479,21 @@ function registerX402Ipc() {
     // signAndQueueRetry (closure is gone). Discard any orphan resume
     // token alongside the wait — they pair to different paths and a
     // surviving token would be consumed by a stale future call.
-    const id = args.webContentsId ?? event.sender.id;
+    //
+    // Both are keyed by the tab, so the tab named is the one judged.
+    // Another window's call leaves the wait and the token in place.
+    const id = args.webContentsId;
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: NOT_THIS_WINDOW };
+    }
     if (hasPendingUnlockWait(id)) {
       consumePendingUnlockResume(id);
       settlePendingUnlockWait(id);
       return { success: true };
     }
+    let resume = null;
     try {
-      const resume = consumePendingUnlockResume(id);
+      resume = consumePendingUnlockResume(id);
       if (!resume) {
         return { success: false, error: 'No pending unlock-resume for this tab' };
       }
@@ -471,7 +503,15 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
-      return { success: false, error: err.message };
+      // The cap no longer covers it (spent while the vault was locked):
+      // nothing was signed. Loading the page again brings its 402 back,
+      // which now goes to the approval card.
+      if (isCapNotCoveredError(err) && resume?.detection?.url) {
+        webContents.fromId(id)?.loadURL(resume.detection.url).catch((navErr) => {
+          log.error(`[x402:resume-unlock] reload failed: ${navErr.message}`);
+        });
+      }
+      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
     }
   });
 
@@ -502,7 +542,12 @@ function registerX402Ipc() {
   });
 
   ipcMain.handle(IPC.X402_CANCEL, async (event, args = {}) => {
-    const id = args.webContentsId ?? event.sender.id;
+    // Clears the tab's detection and may navigate the tab, so another
+    // window's call is refused before either: the detection stays.
+    const id = args.webContentsId;
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: NOT_THIS_WINDOW };
+    }
     clearDetectedPayment(id);
     // The renderer drives the Back itself when it can (through
     // `goBackInHistory`, so the commit is counted as a traversal — see
@@ -543,7 +588,24 @@ function registerX402Ipc() {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (_event, { origin, chainId, asset, capAmount, windowSeconds } = {}) => {
+  // Changing a cap's amount or window changes what auto-pay may spend
+  // without asking (#1023), so it is gated like a payment: the cap editor
+  // mints an 'x402-cap-update' token through `wallet:confirm-signing` for
+  // the edit it is about to make, and the edit is applied only with that
+  // token, from the window that minted it, while the cap is still the one
+  // it was minted for. Any call presenting a token burns it.
+  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (event, args = {}) => {
+    const { origin, chainId, asset, capAmount, windowSeconds, confirmation } = args ?? {};
+    try {
+      consumeConfirmation(
+        confirmation,
+        CONFIRM_KINDS.X402_CAP_UPDATE,
+        null,
+        capUpdateRequest(event?.sender?.id, { origin, chainId, asset, capAmount, windowSeconds })
+      );
+    } catch (err) {
+      return { success: false, error: err.message, code: err.code };
+    }
     try {
       const updated = updatePermission(origin, chainId, asset, { capAmount, windowSeconds });
       return { success: true, permission: updated };

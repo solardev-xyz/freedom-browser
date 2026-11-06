@@ -456,7 +456,9 @@ describe('the phone path', () => {
     };
     mockChainRequest.mockImplementation(async (_chainId, method) => {
       if (method === 'eth_getTransactionByHash') {
-        return { result: { from: ALICE.address }, source: 'direct' };
+        // The transaction the job asked for (the phone picks nonce and fees).
+        const sent = { from: ALICE.address, to: RECIPIENT, value: '0x3e8', input: '0x', chainId: `0x${CHAIN.toString(16)}` };
+        return { result: sent, source: 'direct' };
       }
       throw new Error(`unexpected read ${method}`);
     });

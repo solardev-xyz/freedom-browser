@@ -1,0 +1,1 @@
+- Another browser window can no longer decline, cancel or resume an x402 payment on a tab it doesn't show ([#1032](https://github.com/solardev-xyz/freedom-browser/issues/1032))

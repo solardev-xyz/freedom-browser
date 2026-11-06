@@ -310,6 +310,154 @@ describe('quick-unlock', () => {
     });
   });
 
+  // K-3: the credential is read, written, refreshed and removed through the
+  // identity directory's handle, so a link planted at its name after the
+  // startup repair is never followed.
+  describe('never through a link at the credential name (K-3)', () => {
+    const posixTest = originalPlatform.value === 'win32' ? test.skip : test;
+    const modeOf = (target) => fs.statSync(target).mode & 0o777;
+
+    function setUp() {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      // A file a link could point at, holding what would pass for a legacy
+      // credential if it were followed.
+      const outside = path.join(userDataDir, 'outside.dat');
+      fs.writeFileSync(outside, 'encrypted:planted');
+      fs.chmodSync(outside, 0o644);
+      const plantLink = () => {
+        fs.rmSync(credentialPath, { force: true });
+        fs.symlinkSync(outside, credentialPath);
+      };
+      const outsideUntouched = () => {
+        expect(fs.readFileSync(outside, 'utf8')).toBe('encrypted:planted');
+        expect(modeOf(outside)).toBe(0o644);
+      };
+      const ctx = loadQuickUnlock({ activeProfile: makeProfile('default', userDataDir), userDataDir });
+      return { ...ctx, credentialPath, plantLink, outsideUntouched };
+    }
+
+    const expectOwnCredential = (mod, credentialPath) => {
+      expect(fs.lstatSync(credentialPath).isSymbolicLink()).toBe(false);
+      expect(modeOf(credentialPath)).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf8')).version).toBe(
+        mod.CREDENTIAL_VERSION
+      );
+    };
+
+    beforeEach(() => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    posixTest('reading refuses a planted link; disabling removes the link only', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
+        setUp();
+      plantLink();
+
+      expect(mod.isQuickUnlockEnabled()).toBe(false);
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+
+      expect(mod.disableQuickUnlock()).toEqual({ success: true });
+      expect(fs.lstatSync(credentialPath, { throwIfNoEntry: false })).toBeUndefined();
+      outsideUntouched();
+    });
+
+    posixTest('enabling replaces a planted link, its target untouched', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
+      plantLink();
+
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expectOwnCredential(mod, credentialPath);
+      outsideUntouched();
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+    });
+
+    posixTest('a legacy refresh replaces a link planted during the Touch ID prompt', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
+        setUp();
+      fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
+      systemPreferences.promptTouchID.mockImplementation(async () => plantLink());
+
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('legacy');
+      expectOwnCredential(mod, credentialPath);
+      outsideUntouched();
+    });
+
+    posixTest('an older 0644 credential is replaced owner-only, never rewritten in place', async () => {
+      const { mod, credentialPath } = setUp();
+      fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
+      fs.chmodSync(credentialPath, 0o644);
+      // A second name for the old file: what an open reader would still see.
+      const oldInode = `${credentialPath}.old`;
+      fs.linkSync(credentialPath, oldInode);
+
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expectOwnCredential(mod, credentialPath);
+      expect(fs.readFileSync(oldInode, 'utf8')).toBe('encrypted:legacy');
+      fs.rmSync(oldInode);
+    });
+
+    // On integration the core writes the vault; main only hashes it, to bind
+    // a credential to it, and reads it through the identity directory's
+    // handle as well.
+    posixTest('a vault that is a link is never hashed: quick unlock is off, nothing prompted', async () => {
+      const { mod, credentialPath, systemPreferences, identityManager, verifyPassword } = setUp();
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+
+      // The same vault bytes, now behind a link at the vault's name.
+      const identityDir = path.dirname(credentialPath);
+      const vaultPath = path.join(identityDir, 'identity-vault.json');
+      const outsideVault = path.join(path.dirname(identityDir), 'outside-vault.json');
+      fs.renameSync(vaultPath, outsideVault);
+      fs.chmodSync(outsideVault, 0o644);
+      fs.symlinkSync(outsideVault, vaultPath);
+      systemPreferences.promptTouchID.mockClear();
+      verifyPassword.mockClear();
+      const credential = fs.readFileSync(credentialPath);
+
+      expect(mod.isQuickUnlockEnabled()).toBe(false);
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+
+      // Nor is a new credential bound to it.
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('symbolic link'),
+      });
+      expect(fs.readFileSync(credentialPath)).toEqual(credential);
+      expect(modeOf(outsideVault)).toBe(0o644);
+    });
+
+    // completeQuickSetup (freedom-core design 0001) stores the credential
+    // for a Quick Setup whose reply was lost: the same handle and writer.
+    posixTest("a lost Quick Setup's credential is stored owner-only, a planted link replaced", async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
+      const identityDir = path.dirname(credentialPath);
+      fs.chmodSync(identityDir, 0o755);
+      plantLink();
+
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
+      expectOwnCredential(mod, credentialPath);
+      expect(modeOf(identityDir)).toBe(0o700);
+      outsideUntouched();
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+    });
+  });
+
   // Security audit O-8: after Touch ID, main finishes the job itself and
   // the stored vault password never crosses IPC to any renderer.
   describe('never returns the vault password', () => {

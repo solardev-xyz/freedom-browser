@@ -225,6 +225,107 @@ describe('profile paths', () => {
     });
   });
 
+  (process.platform === 'win32' ? test.skip : test)(
+    'node and identity data dirs are owner-only, older 0755 ones narrowed (K-3)',
+    async () => {
+      const userDataDir = track(createTempUserDataDir());
+      const radicleDir = track(createTempUserDataDir());
+      fs.chmodSync(radicleDir, 0o755);
+      process.env.FREEDOM_RADICLE_DATA = radicleDir;
+      fs.mkdirSync(path.join(userDataDir, 'ant-data'), { mode: 0o755 });
+      fs.chmodSync(path.join(userDataDir, 'ant-data'), 0o755);
+      const modeOf = (dir) => fs.statSync(dir).mode & 0o777;
+
+      const paths = loadPaths(userDataDir);
+
+      expect(modeOf(paths.getIdentityDataDir())).toBe(0o700);
+      expect(modeOf(paths.getAntDataDir())).toBe(0o700);
+      expect(modeOf(paths.getBeeDataDir())).toBe(0o700);
+      expect(modeOf(paths.getRadicleDataDir())).toBe(0o700);
+      expect(modeOf(await paths.prepareRadicleDataDir())).toBe(0o700);
+    }
+  );
+
+  (process.platform === 'win32' ? test.skip : test)(
+    'a node data dir that is a link is refused, its target untouched (K-3)',
+    () => {
+      const userDataDir = track(createTempUserDataDir());
+      const elsewhere = track(createTempUserDataDir());
+      fs.chmodSync(elsewhere, 0o755);
+      fs.symlinkSync(elsewhere, path.join(userDataDir, 'ant-data'));
+
+      const paths = loadPaths(userDataDir);
+      expect(() => paths.getAntDataDir()).toThrow('symbolic link');
+      expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o755);
+    }
+  );
+
+  // K-3 on integration: the core anchors its node writes below a data
+  // directory but leaves the directory itself alone, so main's getters are
+  // what make it owner-only, at the path overrideDir() resolved.
+  (process.platform === 'win32' ? test.skip : test)(
+    'a relative override is made owner-only at the absolute path main resolved (K-3)',
+    async () => {
+      const userDataDir = track(createTempUserDataDir());
+      const overrides = track(createTempUserDataDir());
+      const relative = path.relative(process.cwd(), overrides);
+      const names = {
+        FREEDOM_IDENTITY_DATA: 'identity',
+        FREEDOM_ANT_DATA: 'ant',
+        FREEDOM_BEE_DATA: 'bee',
+        FREEDOM_RADICLE_DATA: 'radicle',
+      };
+      for (const [envName, name] of Object.entries(names)) {
+        // As an older build left them.
+        fs.mkdirSync(path.join(overrides, name), { mode: 0o755 });
+        fs.chmodSync(path.join(overrides, name), 0o755);
+        process.env[envName] = path.join(relative, name);
+      }
+      const modeOf = (dir) => fs.statSync(dir).mode & 0o777;
+
+      const paths = loadPaths(userDataDir);
+
+      const resolved = (name) => path.join(overrides, name);
+      expect(paths.getIdentityDataDir()).toBe(resolved('identity'));
+      expect(paths.getAntDataDir()).toBe(resolved('ant'));
+      expect(paths.getBeeDataDir()).toBe(resolved('bee'));
+      expect(paths.getRadicleDataDir()).toBe(resolved('radicle'));
+      expect(await paths.prepareRadicleDataDir()).toBe(resolved('radicle'));
+      for (const name of Object.values(names)) {
+        expect(modeOf(resolved(name))).toBe(0o700);
+      }
+      // The grant check's roots are the same directories.
+      expect(paths.getComponentDataDirs()).toMatchObject({
+        identity: resolved('identity'),
+        ant: resolved('ant'),
+        bee: resolved('bee'),
+        radicle: resolved('radicle'),
+      });
+    }
+  );
+
+  (process.platform === 'win32' ? test.skip : test)(
+    "a catalog profile's short Radicle home is owner-only, an older 0755 one migrated in narrowed (K-3)",
+    async () => {
+      const appRoot = track(createTempUserDataDir());
+      const userDataDir = path.join(appRoot, 'Profiles', 'work');
+      const legacyRadicleDir = path.join(userDataDir, 'radicle-data');
+      fs.mkdirSync(path.join(legacyRadicleDir, 'keys'), { recursive: true });
+      fs.writeFileSync(path.join(legacyRadicleDir, 'keys', 'radicle.pub'), 'pk');
+      fs.chmodSync(legacyRadicleDir, 0o755);
+      const activeProfile = { source: 'catalog', appRoot, isDev: false, metadata: { slot: 1 } };
+      const radicleDir = path.join(appRoot, 'R', '1');
+
+      const paths = loadPaths(userDataDir, { activeProfile });
+
+      await expect(paths.prepareRadicleDataDir()).resolves.toBe(radicleDir);
+      expect(fs.readFileSync(path.join(radicleDir, 'keys', 'radicle.pub'), 'utf-8')).toBe('pk');
+      expect(fs.statSync(radicleDir).mode & 0o777).toBe(0o700);
+      expect(paths.getRadicleDataDir()).toBe(radicleDir);
+      expect(paths.getComponentDataDirs().radicleHome).toBe(radicleDir);
+    }
+  );
+
   test('uses an app-owned short Radicle home for catalog profiles', async () => {
     const tempRoot = track(path.join('/tmp', `freedom-profile-paths-${Date.now()}`));
     fs.mkdirSync(tempRoot, { recursive: true });
