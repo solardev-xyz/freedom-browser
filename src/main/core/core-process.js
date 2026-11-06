@@ -5,12 +5,12 @@
  * `startCore()` never starts it again.
  */
 
-const path = require('path');
 const { spawn } = require('child_process');
 const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
 const { getLockDir } = require('../service-locks');
+const { getCoredBinaryPath } = require('./cored-binary');
 const { CoreClient, PROTOCOL_VERSION_STREAMS } = require('./core-client');
 const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
@@ -32,28 +32,6 @@ let shutDown = false;
  */
 function isCoreEnabled() {
   return true;
-}
-
-/** Dev overrides or downloaded binaries; packaged builds always use resources. */
-function getCoredBinaryPath() {
-  if (!app.isPackaged && process.env.FREEDOM_CORED_PATH) {
-    return process.env.FREEDOM_CORED_PATH;
-  }
-  const name = process.platform === 'win32' ? 'freedom-cored.exe' : 'freedom-cored';
-  if (!app.isPackaged) {
-    const os =
-      { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform] || process.platform;
-    return path.join(
-      __dirname,
-      '..',
-      '..',
-      '..',
-      'freedom-cored-bin',
-      `${os}-${process.arch}`,
-      name
-    );
-  }
-  return path.join(process.resourcesPath, 'freedom-cored', name);
 }
 
 async function startCore() {

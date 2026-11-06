@@ -811,13 +811,21 @@ function assertProfileDeletable(appRoot, catalog, id) {
   return { recordIndex, record, displayName, resolvedProfileDir, sharesAppRoot };
 }
 
+// The per-user lock directory's name (service-locks.js): `<appData>/Freedom/
+// locks`, which on macOS and Windows is inside the packaged app data root.
+// Not imported: that module pulls in electron.
+const SHARED_LOCK_DIR = 'locks';
+
 // Top-level entries of the app data root that belong to the app as a whole
 // rather than to the default profile stored alongside them in a packaged build:
 // the catalog and its write lock, every other profile's directory, the short
-// Radicle homes, the cross-profile updater ownership lock, and electron-log's
+// Radicle homes, the cross-profile updater ownership lock, electron-log's
 // default `logs/` dir (its default path does not follow userData, so every
-// profile writes there — see logger.js). Removing any of these while another
-// profile runs would break it; the updater lock in particular is live.
+// profile writes there — see logger.js), and on macOS and Windows the lock
+// directory every Freedom build and profile shares, which holds every core's
+// and service's gate (freedom-core design 0001: it is never deleted).
+// Removing any of these while another profile runs would break it; the
+// updater lock and the gates in particular are live.
 const APP_ROOT_SHARED_ENTRIES = new Set([
   PROFILE_REGISTRY_FILE,
   PROFILE_CATALOG_LOCK_TARGET,
@@ -827,6 +835,7 @@ const APP_ROOT_SHARED_ENTRIES = new Set([
   UPDATER_LOCK_TARGET,
   UPDATER_LOCK_DIR,
   'logs',
+  SHARED_LOCK_DIR,
 ]);
 
 function isAppRootSharedEntry(name) {
@@ -1045,9 +1054,18 @@ async function removeSparing(dir, place, index, { skip = null, keepRoot = false 
   }
 }
 
-// What a delete's callback gets where no IPFS gate is held (a development
-// build without freedom-ipfsd).
+// What a delete's callback gets where no gate is held (a development build
+// without freedom-cored or freedom-ipfsd).
 const UNGATED = Object.freeze({ gated: false, held: () => false });
+
+// A held core gate must still be held before each change a delete makes:
+// checked with nothing awaited before the step.
+function assertCoreGateHeld(coreGate) {
+  if (coreGate.gated && !coreGate.held()) {
+    throw new Error("The profile's core lock was lost; nothing was deleted");
+  }
+}
+
 // Windows refuses a rename while a scanner or indexer has a file open; those
 // clear in a moment.
 const FENCE_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
@@ -1065,12 +1083,14 @@ const FENCE_RETRY_MS = 100;
 // rename, and a gate lost before the move fails the delete with nothing
 // changed. What remains is the moment between a holder ending and main
 // hearing of it; on Windows a writer's open files refuse the rename too.
-async function fenceIpfsData(ipfsDataDir, gate) {
+async function fenceIpfsData(ipfsDataDir, gate, coreGate = UNGATED) {
   const fence = path.join(
     path.dirname(ipfsDataDir),
     `.${path.basename(ipfsDataDir)}.deleting-${process.pid}-${Date.now()}`
   );
   for (let attempt = 1; ; attempt += 1) {
+    // The core's gate too: the move is the delete's first change.
+    assertCoreGateHeld(coreGate);
     if (!gate.held()) {
       throw new Error("The IPFS data directory's lock was lost; nothing was deleted");
     }
@@ -1152,12 +1172,21 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       throw new Error(`Profile is currently open: ${displayName}`);
     }
 
-    // The profile's IPFS data goes under its gate (freedom-core design 0007,
-    // "Lifetime lock"): `withIpfsGate(dir, fn)` holds freedom-ipfsd's lock on
-    // it while `fn` runs, so a writer that holds it (the service, or the
-    // add-on under hold-lock) fails the delete before anything is changed,
-    // rather than having its directory removed under it.
+    // The whole delete runs under the profile's core gate (freedom-core
+    // design 0001, "Lifetime lock"): `withCoreGate(dir, fn)` holds
+    // freedom-cored's lock on the profile's identity directory while `fn`
+    // runs, so a core still running on it fails the delete before anything
+    // is changed, rather than having its vault and journal removed under it,
+    // and none can start until the delete is done. It is taken first: the
+    // core's lifetime lock, then a node's gate (design 0008, "Lock order").
+    //
+    // The profile's IPFS data goes under its gate too (freedom-core design
+    // 0007, "Lifetime lock"): `withIpfsGate(dir, fn)` holds freedom-ipfsd's
+    // lock on it while `fn` runs, so a writer that holds it (the service, or
+    // the add-on under hold-lock) fails the delete before anything is
+    // changed, rather than having its directory removed under it.
     const dataRoot = sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir;
+    const identityDir = path.join(dataRoot, 'identity');
     const ipfsDataDir = path.join(dataRoot, 'ipfs-data', 'freedom-ipfs');
     const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
     const radicleRoot = options.dev
@@ -1166,8 +1195,9 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
     const resolvedRadicleDir = radicleDir
       ? assertPathInside(radicleRoot, radicleDir, 'Radicle data')
       : null;
+    const withCoreGate = options.withCoreGate ?? ((_dir, fn) => fn(UNGATED));
     const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
-    return withIpfsGate(ipfsDataDir, async (gate = UNGATED) => {
+    const removeUnderGates = async (coreGate, gate) => {
       // Held: the layout must be the app's own (gatedPlace refuses anything
       // else, before any change), the gated directory moves aside first, and
       // the removal never touches it again under any name (fenceIpfsData,
@@ -1181,7 +1211,11 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       const place = gate.gated
         ? await gatedPlace(dataRoot, ipfsDataDir, { otherRoots, radicle })
         : null;
-      if (place) await fenceIpfsData(place.gated, gate);
+      // A core gate lost by now fails the delete before its first change:
+      // checked here and before each of the fence's moves, so nothing is
+      // awaited between the last check and the catalog's change.
+      assertCoreGateHeld(coreGate);
+      if (place) await fenceIpfsData(place.gated, gate, coreGate);
       catalog.profiles.splice(recordIndex, 1);
       saveCatalog(appRoot, catalog);
       if (sharesAppRoot) {
@@ -1215,7 +1249,10 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
         catalog,
         record,
       };
-    });
+    };
+    return withCoreGate(identityDir, (coreGate = UNGATED) =>
+      withIpfsGate(ipfsDataDir, (gate = UNGATED) => removeUnderGates(coreGate, gate))
+    );
   });
 }
 
