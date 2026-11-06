@@ -256,6 +256,37 @@ describe('a head and its verified body', () => {
     expect(res.status).toBe(200);
     expect(onTrust).toHaveBeenCalledWith({ name: null, content: 'latest_asserted' });
   });
+
+  test("a head whose small-text sniff fails is main's answer, with no label", async () => {
+    mockVerifier = scriptedVerifier(() => ({
+      result: head(200, [
+        ['content-type', 'application/octet-stream'],
+        ['content-length', '6'],
+      ]),
+      body: streamOf([], { fail: new Error('reset') }),
+    }));
+    const onTrust = jest.fn();
+    const res = await handle(`ipfs://${CID}/readme`, {
+      use: backend('ipfs'),
+      init: { headers: NAVIGATION },
+      onTrust,
+    });
+    expect(res.status).toBe(502);
+    expect(onTrust).not.toHaveBeenCalled();
+  });
+
+  test('an error plan from dweb.verify carries no label', async () => {
+    mockVerifier = scriptedVerifier(() => ({
+      result: {
+        error: { status: 404, code: 404, message: 'Not found on the external Swarm node' },
+      },
+      body: null,
+    }));
+    const onTrust = jest.fn();
+    const res = await handle(`bzz://${HASH}/app.js`, { onTrust });
+    expect(res.status).toBe(404);
+    expect(onTrust).not.toHaveBeenCalled();
+  });
 });
 
 describe('after the head', () => {

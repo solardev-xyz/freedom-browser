@@ -39,6 +39,7 @@
 const log = require('../logger');
 const { ipfsBackend } = require('../ipfs-manager');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
+const { serveLabelled } = require('../dweb/content-trust');
 const { jsonErrorResponse } = require('../dweb/plan-executor');
 const { BackendBusy } = require('./freedom-ipfsd-node');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
@@ -53,11 +54,13 @@ const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/pr
  * @param {boolean} [options.isPrivate] - a private window's request
  * @param {Function} [options.requestImpl] - a native node's `request()`, in
  *   place of the running backend's: an up native backend that it serves
+ * @param {(trust: object) => void} [options.onTrust] - the content's trust
+ *   (dweb-handler.js), for the trust panel
  */
 function handleRequest(
   namespace,
   request,
-  { partition = null, isPrivate = isPrivateLogContext(), requestImpl = null } = {}
+  { partition = null, isPrivate = isPrivateLogContext(), requestImpl = null, onTrust } = {}
 ) {
   let backend;
   try {
@@ -70,7 +73,7 @@ function handleRequest(
     return Promise.resolve(jsonErrorResponse(503, err.message));
   }
   return runWithPrivateLogContext(isPrivate, () =>
-    handleDwebRequest(request, { backend, partition, tag: `[${namespace}-protocol]` })
+    handleDwebRequest(request, { backend, partition, tag: `[${namespace}-protocol]`, onTrust })
   );
 }
 
@@ -94,8 +97,13 @@ function makeRegister(namespace) {
     // every request it serves as private for the duration.
     const isPrivate = !!privatePartition;
     try {
+      // Each response carries its content label for the trust panel
+      // (dweb/content-trust.js), which the session takes off before any
+      // page can read it.
       targetSession.protocol.handle(namespace, (request) =>
-        handleRequest(namespace, request, { partition: privatePartition, isPrivate })
+        serveLabelled((onTrust) =>
+          handleRequest(namespace, request, { partition: privatePartition, isPrivate, onTrust })
+        )
       );
       log.info(`[${namespace}-protocol] handler registered`);
     } catch (err) {

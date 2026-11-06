@@ -43,10 +43,11 @@ const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
   ipfs: {
     label: 'IPFS',
     endpoints: ['http://127.0.0.1:8080'],
-    // Shown with the prompt: external mode hands content integrity to the
-    // gateway, unlike the embedded node which verifies what it retrieves.
+    // Shown with the prompt: Freedom verifies what an external gateway
+    // serves, on by default and per node (freedom-core design 0009, Modes);
+    // turned off, the gateway is trusted for what it serves.
     trustNote:
-      'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
+      'Freedom verifies the content this gateway serves, if the gateway supports it. You can turn this off for the node in Settings → Nodes; the gateway is then trusted for every ipfs:// page it serves.',
     externalConfig: {
       mode: 'external',
       externalGateway: 'http://127.0.0.1:8080',

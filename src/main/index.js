@@ -314,6 +314,7 @@ const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
 const { closeDwebSession } = require('./dweb/fetch-admission');
+const { installContentTrustCapture, registerContentTrustIpc } = require('./dweb/content-trust');
 const { registerRadProtocol } = require('./radicle/rad-protocol');
 const {
   installOnchainProvenanceCapture,
@@ -669,6 +670,7 @@ async function bootstrap() {
   });
   registerX402Ipc();
   registerOnchainProvenanceIpc();
+  registerContentTrustIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
   registerPublishSetupIpc();
@@ -757,6 +759,10 @@ async function bootstrap() {
   // harness owns the `web3:` bytes in test mode, but the guard is browser
   // policy either way.
   installOnchainProvenanceCapture();
+  // The trust panel's content label (freedom-core design 0009, Labels):
+  // taken off every bzz:/ipfs:/ipns: response, kept for a main frame. Runs
+  // in test mode too, where the harness's fixtures play main's label.
+  installContentTrustCapture();
   installX402Interception();
   attachWebRequestDispatcher(defaultSession);
   // Per-site permission prompts (camera, mic, notifications, …) with

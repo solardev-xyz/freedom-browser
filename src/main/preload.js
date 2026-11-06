@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getGatewayOffer: (url) => ipcRenderer.invoke('gateway:offer', { url }),
   getOnchainAppProvenance: (webContentsId, url) =>
     ipcRenderer.invoke('onchain-app:get-provenance', { webContentsId, url }),
+  getDwebContentTrust: (webContentsId, url) =>
+    ipcRenderer.invoke('dweb:get-content-trust', { webContentsId, url }),
   resolveTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:resolve', { name }),
   invalidateTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:invalidate', { name }),
   // History

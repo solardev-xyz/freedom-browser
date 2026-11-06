@@ -735,6 +735,8 @@ const toggleTrustPopover = () => {
     value: addressInput?.value || '',
     ensTrustByName: state.ensTrustByName,
     onchainProvenance: getActiveTab()?.onchainProvenance,
+    dwebContent: getActiveTab()?.dwebContentTrust,
+    ensUriByName: state.ensUriByName,
   });
   if (!badge) return;
 
@@ -756,12 +758,15 @@ const toggleTrustPopover = () => {
   const { status, trustRows, contentRows } = buildTrustRows({
     trust,
     level,
-    uri: state.ensUriByName.get(name) || '',
+    uri: badge.uri || state.ensUriByName.get(name) || '',
     proto: state.ensProtocols.get(name),
     onchainProvenance: badge.provenance,
+    content: badge.content,
+    kind: badge.kind,
   });
   if (contentTitleEl) {
-    contentTitleEl.textContent = badge.kind === 'onchain' ? 'Loads from' : 'Resolves to';
+    contentTitleEl.textContent =
+      badge.kind === 'onchain' || badge.kind === 'content' ? 'Loads from' : 'Resolves to';
   }
 
   if (statusEl) {
@@ -795,11 +800,15 @@ const toggleTrustPopover = () => {
   const buildRow = (row) => {
     const div = document.createElement('div');
     div.className = 'trust-popover-field';
+    // A sentence row (the content label) has no label, and wraps.
+    if (row.wrap) div.classList.add('trust-popover-field-wrap');
 
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'trust-popover-field-label';
-    labelSpan.textContent = `${row.label}: `;
-    div.appendChild(labelSpan);
+    if (row.label) {
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'trust-popover-field-label';
+      labelSpan.textContent = `${row.label}: `;
+      div.appendChild(labelSpan);
+    }
 
     const valueSpan = document.createElement('span');
     valueSpan.className = 'trust-popover-field-value';
@@ -889,6 +898,9 @@ const toggleTrustPopover = () => {
 
   if (trustFieldsEl) {
     trustFieldsEl.replaceChildren(...trustRows.map(buildRow));
+    // A page with its content label alone has no resolution rows: no empty
+    // section between two dividers.
+    trustFieldsEl.hidden = trustRows.length === 0;
   }
   if (contentFieldsEl) {
     contentFieldsEl.replaceChildren(...contentRows.map(buildRow));
@@ -906,7 +918,7 @@ const toggleTrustPopover = () => {
   // Record the identity of what's now rendered before we flip the
   // popover open — `setTrustPopoverOpen(true)` doesn't clear it, only
   // the close path does.
-  trustPopoverDisplayed = { name, trust };
+  trustPopoverDisplayed = { name, trust, content: badge.content || null };
   setTrustPopoverOpen(true);
 
   // Fit-to-width truncation runs AFTER the popover is un-hidden so
@@ -923,8 +935,9 @@ const toggleTrustPopover = () => {
 
 // Update protocol icon AND trust shield from the current address-bar value.
 // Called from every site that might change either (nav events, tab switches,
-// address-bar edits). Trust shield is hidden for non-ENS URLs; the protocol
-// icon keeps indicating bzz://, ipfs://, https://, etc. as before.
+// address-bar edits). Trust shield is hidden for a page with no name trust,
+// onchain provenance or dweb content label; the protocol icon keeps
+// indicating bzz://, ipfs://, https://, etc. as before.
 const updateProtocolIcon = () => {
   if (protocolIcon) {
     const protocol = resolveProtocolIconType({
@@ -946,15 +959,20 @@ const updateProtocolIcon = () => {
       value: addressInput?.value || '',
       ensTrustByName: state.ensTrustByName,
       onchainProvenance: getActiveTab()?.onchainProvenance,
+      dwebContent: getActiveTab()?.dwebContentTrust,
+      ensUriByName: state.ensUriByName,
     });
     if (badge) {
       trustShield.setAttribute('data-trust', badge.level);
-      trustShield.setAttribute(
-        'aria-label',
-        badge.kind === 'onchain'
-          ? `Onchain application provenance: ${badge.level}`
-          : TRUST_ARIA_LABEL[badge.level] || 'Ethereum name resolution trust status'
-      );
+      let ariaLabel;
+      if (badge.kind === 'onchain') {
+        ariaLabel = `Onchain application provenance: ${badge.level}`;
+      } else if (badge.kind === 'content') {
+        ariaLabel = badge.description;
+      } else {
+        ariaLabel = TRUST_ARIA_LABEL[badge.level] || 'Ethereum name resolution trust status';
+      }
+      trustShield.setAttribute('aria-label', ariaLabel);
       trustShield.hidden = false;
     } else {
       trustShield.removeAttribute('data-trust');
@@ -964,7 +982,8 @@ const updateProtocolIcon = () => {
 
     // Stale-popover guard: if the popover is open but the address bar
     // no longer resolves to the same ENS name + trust object the
-    // popover was opened against, dismiss it. Without this, navigating
+    // popover was opened against (or its content label changed), dismiss
+    // it. Without this, navigating
     // away (to a non-ENS URL, an internal page, or a different ENS
     // name) or switching to another tab would leave a misleading
     // popover behind showing details for the previous resolution —
@@ -973,7 +992,8 @@ const updateProtocolIcon = () => {
       const stale =
         !badge ||
         badge.name !== trustPopoverDisplayed.name ||
-        badge.trust !== trustPopoverDisplayed.trust;
+        badge.trust !== trustPopoverDisplayed.trust ||
+        (badge.content || null) !== trustPopoverDisplayed.content;
       if (stale) setTrustPopoverOpen(false);
     }
   }
@@ -3106,6 +3126,8 @@ export const initNavigation = () => {
   agentReloadBtn = document.getElementById('agent-workspace-reload');
   setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 
+  // Either page record changed: the onchain provenance or the dweb content
+  // label (tabs.js).
   setOnchainProvenanceChangeHandler((tabId) => {
     if (isActiveTab(tabId)) updateProtocolIcon();
   });

@@ -277,6 +277,12 @@
   opacity: 0.8;
 }
 
+/* The resolution rows' own `hidden` toggle (a dweb page with its content
+   label alone has none) needs this to beat `display: flex` above. */
+.trust-popover-fields[hidden] {
+  display: none !important;
+}
+
 .trust-popover-content {
   display: flex;
   flex-direction: column;
@@ -315,6 +321,13 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A sentence row with no label (a dweb page's content label): it wraps
+   rather than losing its end to the ellipsis. */
+.trust-popover-field-wrap {
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .trust-popover-field-value {

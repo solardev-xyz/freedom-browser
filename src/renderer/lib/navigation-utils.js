@@ -32,10 +32,75 @@ const onchainIdentity = (value) => {
   return { contract: parsed.address, chainId: parsed.chainId };
 };
 
+// The content label of a `bzz:`, `ipfs:` or `ipns:` page (freedom-core
+// design 0009, Labels), in the design's proposed wording: the trust panel's
+// content row. Main decides the label (a verified head's, or the plan's)
+// and keeps a navigation's for its tab; a subresource never changes it.
+export const CONTENT_TRUST_SENTENCE = {
+  verified: 'Content verified by Freedom',
+  latest_asserted: 'Content verified; latest version as reported by your node',
+  node_asserted: "Content retrieved by Freedom's node",
+  unverified: 'Content not verified: served by your external node as is',
+};
+
+// The shield for a page that has only its content label (a hash or CID
+// host, or a name the chrome didn't resolve itself). A name's own shield
+// stays its resolution's; its content label is a row in the popover.
+//   - `latest_asserted` is verified content whose freshness is the node's
+//     word: the verified shield, and the popover says so.
+//   - `node_asserted` is the bundled nodes, which check what they retrieve
+//     themselves: the neutral shield, as for an RPC the user configured.
+const CONTENT_SHIELD_LEVEL = {
+  verified: 'verified',
+  latest_asserted: 'verified',
+  node_asserted: 'user-configured',
+  unverified: 'unverified',
+};
+
+const DWEB_PAGE_RE = /^(bzz|ipfs|ipns):\/\/([^/?#\s]+)/i;
+
+const dwebPage = (url) => {
+  const match = DWEB_PAGE_RE.exec(typeof url === 'string' ? url.trim() : '');
+  return match ? { scheme: match[1].toLowerCase(), host: match[2].toLowerCase() } : null;
+};
+
+const isSameDwebPage = (url, page) => {
+  const other = dwebPage(url);
+  return Boolean(other && other.scheme === page.scheme && other.host === page.host);
+};
+
+// The content label for what the address bar shows: the tab's committed
+// dweb page's (`dwebContent`, `{ url, content }`), while the address bar
+// names that page, by its URL (`bzz://<hash>/…`, `bzz://name.eth/…`), by
+// the name it was loaded as, or by a name that resolved to it (an
+// `ens://` display over an `ipns://` key). Anything else, an edited
+// address among them, has none.
+export const resolveDwebContent = ({
+  value = '',
+  dwebContent = null,
+  ensUriByName = new Map(),
+} = {}) => {
+  const content = dwebContent?.content;
+  if (!Object.hasOwn(CONTENT_TRUST_SENTENCE, content || '')) return null;
+  const page = dwebPage(dwebContent.url);
+  if (!page) return null;
+  const normalizedValue = value.trim().toLowerCase();
+  if (isSameDwebPage(normalizedValue, page)) return content;
+  const name = extractEnsName(normalizedValue);
+  if (name && (name === page.host || isSameDwebPage(ensUriByName.get(name), page))) {
+    return content;
+  }
+  return null;
+};
+
+const shortHost = (host) => (host.length > 26 ? `${host.slice(0, 12)}…${host.slice(-10)}` : host);
+
 export const resolveTrustBadge = ({
   value = '',
   ensTrustByName = new Map(),
   onchainProvenance = null,
+  dwebContent = null,
+  ensUriByName = new Map(),
 } = {}) => {
   const normalizedValue = value.toLowerCase();
   const identity = onchainIdentity(normalizedValue);
@@ -54,11 +119,25 @@ export const resolveTrustBadge = ({
       provenance: onchainProvenance,
     };
   }
+  const content = resolveDwebContent({ value: normalizedValue, dwebContent, ensUriByName });
   const ensName = extractEnsName(normalizedValue);
-  if (!ensName) return null;
-  const trust = ensTrustByName.get(ensName);
-  if (!trust || !trust.level) return null;
-  return { level: trust.level, name: ensName, trust };
+  const trust = ensName ? ensTrustByName.get(ensName) : null;
+  if (trust?.level) {
+    return { level: trust.level, name: ensName, trust, ...(content && { content }) };
+  }
+  if (!content) return null;
+  // A page with its content label alone. `trust` is the tab's record, so a
+  // new navigation's label reads as a different badge.
+  const page = dwebPage(dwebContent.url);
+  return {
+    kind: 'content',
+    level: CONTENT_SHIELD_LEVEL[content],
+    name: `${page.scheme}://${shortHost(page.host)}`,
+    trust: dwebContent,
+    content,
+    description: CONTENT_TRUST_SENTENCE[content],
+    uri: `${page.scheme}://${page.host}`,
+  };
 };
 
 // One-sentence status shown at the top of the trust popover, below the ENS
@@ -197,12 +276,24 @@ const buildOnchainContentRows = (provenance) => [
   },
 ];
 
+// The content row: the label's sentence on a line of its own, below the
+// rows that say what the name resolved to.
+const contentTrustRow = (content) => ({
+  label: '',
+  display: CONTENT_TRUST_SENTENCE[content],
+  copy: '',
+  wrap: true,
+});
+
 // Pure helper that turns a `(trust, level, uri, proto)` tuple into the
 // data the popover renders: a status sentence and two ordered arrays of
 // row descriptors for the trust and content sections. Each row is
-// `{ label, display, copy, autoFit? }` — `copy` is the empty string for
-// non-clickable summary rows, `autoFit` carries the value to feed
-// `fitFieldValueToWidth` for middle-truncation. The DOM build step in
+// `{ label, display, copy, autoFit?, wrap? }` — `copy` is the empty string
+// for non-clickable summary rows, `autoFit` carries the value to feed
+// `fitFieldValueToWidth` for middle-truncation, and `wrap` marks a sentence
+// row (no label) that wraps rather than truncating. `content` is the page's
+// content label, if it has one: a row after the content rows, or, for a
+// `kind: 'content'` badge, the status itself. The DOM build step in
 // navigation.js consumes these arrays without re-deriving anything.
 export const buildTrustRows = ({
   trust = {},
@@ -210,7 +301,24 @@ export const buildTrustRows = ({
   uri = '',
   proto = '',
   onchainProvenance = null,
+  content = null,
+  kind = null,
 } = {}) => {
+  const hasContent = Object.hasOwn(CONTENT_TRUST_SENTENCE, content || '');
+  // A page with its content label alone: the label is the status, and the
+  // page's own reference the content rows (none for a name host, which
+  // names no hash).
+  if (kind === 'content') {
+    const page = dwebPage(uri);
+    return {
+      status: hasContent ? CONTENT_TRUST_SENTENCE[content] : null,
+      trustRows: [],
+      contentRows:
+        page && isDwebNameHost(page.host)
+          ? buildContentRows({ proto: page.scheme })
+          : buildContentRows({ uri }),
+    };
+  }
   const method = trust.method;
   const isColibri = level === 'verified' && method === 'colibri';
   const isMyotis = method === 'myotis';
@@ -218,9 +326,11 @@ export const buildTrustRows = ({
   const status = onchainProvenance
     ? getOnchainTrustStatusSentence(level)
     : getTrustStatusSentence(statusKey, trust);
-  const contentRows = () => onchainProvenance
-    ? buildOnchainContentRows(onchainProvenance)
-    : buildContentRows({ uri, proto });
+  const contentRows = () => {
+    if (onchainProvenance) return buildOnchainContentRows(onchainProvenance);
+    const rows = buildContentRows({ uri, proto });
+    return hasContent ? [...rows, contentTrustRow(content)] : rows;
+  };
 
   const agreed = Array.isArray(trust.agreed) ? trust.agreed : [];
   const queried = Array.isArray(trust.queried) ? trust.queried : [];

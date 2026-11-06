@@ -466,6 +466,63 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
   });
 });
 
+// freedom-core design 0009, Labels: the registered handlers label each
+// response for the trust panel, and no gateway names its own label.
+describe('registerIpfsProtocol / registerIpnsProtocol: the content label', () => {
+  const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs-protocol');
+  const { BackendBusy } = require('./freedom-ipfsd-node');
+  const LABEL = 'x-freedom-content-trust';
+
+  const served = (ref) => ({
+    ref,
+    url: ref.ipfs === 'gateway' ? 'http://127.0.0.1:8080' : null,
+    request: jest.fn(
+      async () =>
+        new Response('<p>hi</p>', { headers: { 'content-type': 'text/html', [LABEL]: 'verified' } })
+    ),
+  });
+
+  function registered() {
+    const handlers = new Map();
+    const session = { protocol: { handle: (scheme, fn) => handlers.set(scheme, fn) } };
+    registerIpfsProtocol(session);
+    registerIpnsProtocol(session);
+    return (ns, url) => handlers.get(ns)(new Request(url));
+  }
+
+  afterEach(() => {
+    mockIpfsBackend = null;
+  });
+
+  test.each([
+    ['an external gateway', { ipfs: 'gateway', up: true }, 'unverified'],
+    ['the native node', { ipfs: 'native', up: true }, 'node_asserted'],
+  ])("%s's answer gets the plan's label, never its own", async (_label, ref, content) => {
+    const backend = served(ref);
+    mockIpfsBackend = () => backend;
+    const res = await registered()('ipfs', `ipfs://${CIDV1_BASE32}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get(LABEL)).toBe(content);
+    expect(backend.request).toHaveBeenCalledTimes(1);
+  });
+
+  test("main's own answers carry none", async () => {
+    mockIpfsBackend = () => served({ ipfs: 'native', up: true });
+    const serve = registered();
+    // An invalid reference: main answers before any node does.
+    const invalid = await serve('ipns', 'ipns://!bad-host!/');
+    expect(invalid.status).toBe(400);
+    expect(invalid.headers.has(LABEL)).toBe(false);
+    // No instance for a private partition: answered before anything is planned.
+    mockIpfsBackend = () => {
+      throw new BackendBusy('IPFS is busy');
+    };
+    const busy = await serve('ipfs', `ipfs://${CIDV1_BASE32}/`);
+    expect(busy.status).toBe(503);
+    expect(busy.headers.has(LABEL)).toBe(false);
+  });
+});
+
 describe('extensionless IPFS text navigation', () => {
   const fixture = 'Hello from IPFS Gateway Checker\n';
   // Chromium's fixed navigation Accept header — the only signal a
