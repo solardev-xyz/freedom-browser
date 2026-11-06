@@ -310,18 +310,24 @@ function isManagedAntNode() {
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   // The data directory and its keys/ are opened once, never through a link,
   // and every key and config read or write below goes through those
-  // handles. A keys/ that is a link, or not ours, stops the start before
-  // anything is written (K-3).
+  // handles. A data directory or keys/ that is a link, not ours or not
+  // owner-only once narrowed stops the start before anything is written
+  // (K-3).
   const data = openPrivateDir(dataDir);
   try {
     const keys = data.openDir('keys', { create: false });
-    return writeConfig(data, keys, dataDir, apiPort, p2pPort);
+    // antd opens keys/swarm.key by its path, following a link there. Missing
+    // is fine (antd self-initializes); a key that is a link, not a regular
+    // file of ours, or not owner-only once narrowed, stops the start here.
+    // An older build left keys with the umask's modes: they are narrowed.
+    keys?.requirePrivate('swarm.key');
+    return writeConfig(data, dataDir, apiPort, p2pPort);
   } finally {
     data.close();
   }
 }
 
-function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
+function writeConfig(data, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   const crypto = require('crypto');
 
@@ -381,9 +387,6 @@ function writeConfig(data, keys, dataDir, apiPort, p2pPort) {
   // (`identity.json`) on start. So there is no separate init step to run.
   const keysDir = path.join(dataDir, 'keys');
   const swarmKeyPath = path.join(keysDir, 'swarm.key');
-  // Keys an older build wrote with the umask's modes (K-3); opening keys/
-  // narrowed the directory.
-  keys?.repair('swarm.key');
 
   if (fs.existsSync(swarmKeyPath)) {
     log.info('[Ant] Using existing/injected keys from', keysDir);
@@ -766,7 +769,17 @@ async function startAnt() {
     return;
   }
 
-  const dataDir = getAntDataPath();
+  let dataDir;
+  try {
+    // Owner-only (K-3): one that is a link, not ours or cannot be narrowed
+    // stops the start.
+    dataDir = getAntDataPath();
+  } catch (err) {
+    log.error('[Ant] Data directory refused:', err.message);
+    updateState(STATUS.ERROR, err.message);
+    setStatusMessage('ant', 'Node failed to start');
+    return;
+  }
 
   // In injected-identity mode (an identity vault exists) never spawn antd
   // without the injected keystore: antd would self-generate a throwaway

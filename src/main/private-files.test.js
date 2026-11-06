@@ -528,3 +528,169 @@ posix('a FIFO at a private name (K-3)', () => {
     expect(fs.statSync(fifo).isFIFO()).toBe(true);
   });
 });
+
+// Review #1029 R1-1: a node is handed its key by path, and follows a link
+// there. The check before the hand-off tells a missing key (the node or the
+// core creates it) from one that is there but unsafe, which it refuses.
+describe('the check before a node gets its key (K-3)', () => {
+  let root;
+  let outside;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-require-'));
+    fs.mkdirSync(path.join(root, 'keys'), { mode: 0o700 });
+    outside = path.join(root, 'outside.key');
+    fs.writeFileSync(outside, 'not yours');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const keys = (use) => withPrivateDir(root, (dir) => use(dir.openDir('keys', { create: false })));
+
+  test('a missing key is false, a regular file of ours true', () => {
+    expect(keys((dir) => dir.requirePrivate('swarm.key'))).toBe(false);
+    fs.writeFileSync(path.join(root, 'keys', 'swarm.key'), 'mine');
+    expect(keys((dir) => dir.requirePrivate('swarm.key'))).toBe(true);
+  });
+
+  posix('POSIX modes', () => {
+    test('a key an older build left 0644 is narrowed to 0600', () => {
+      const key = path.join(root, 'keys', 'swarm.key');
+      fs.writeFileSync(key, 'mine');
+      fs.chmodSync(key, 0o644);
+      expect(keys((dir) => dir.requirePrivate('swarm.key'))).toBe(true);
+      expect(modeOf(key)).toBe(0o600);
+    });
+  });
+
+  const keyPath = () => path.join(root, 'keys', 'swarm.key');
+  test.each([
+    [
+      'a link to a file elsewhere',
+      () => fs.symlinkSync(outside, keyPath(), 'file'),
+      'symbolic link',
+    ],
+    [
+      'a dangling link',
+      () => fs.symlinkSync(path.join(root, 'nothing'), keyPath(), 'file'),
+      'symbolic link',
+    ],
+    ['a directory', () => fs.mkdirSync(keyPath()), 'not a regular file'],
+  ])('a key that is %s is refused, where repair only reports it', (_label, plant, why) => {
+    plant();
+    expect(() => keys((dir) => dir.requirePrivate('swarm.key'))).toThrow(UnsafePrivatePathError);
+    expect(() => keys((dir) => dir.requirePrivate('swarm.key'))).toThrow(why);
+    expect(keys((dir) => dir.repair('swarm.key'))).toBe(false);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('not yours');
+  });
+});
+
+// Review #1029 R1-2: a mode that could not be narrowed is refused, never
+// reported as repaired, whether the fchmod fails or does nothing.
+posix('a mode that cannot be narrowed (K-3)', () => {
+  let root;
+  let data;
+  let fchmod;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-narrow-'));
+    data = path.join(root, 'ant-data');
+    fs.mkdirSync(path.join(data, 'keys'), { recursive: true, mode: 0o700 });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const FCHMOD = {
+    fails: [
+      () => {
+        throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
+      },
+      'could not make it owner-only (EPERM',
+    ],
+    // A file system that ignores modes: the call succeeds, nothing changes.
+    'does nothing': [() => {}, 'still open to other accounts'],
+  };
+  const openFds = () => (process.platform === 'linux' ? fs.readdirSync('/proc/self/fd').length : 0);
+  // fd reads: the file's bytes, read only after the narrowing.
+  const fdReads = () => {
+    const realRead = fs.readFileSync;
+    const reads = [];
+    jest.spyOn(fs, 'readFileSync').mockImplementation((target, ...rest) => {
+      if (typeof target === 'number') reads.push(target);
+      return realRead(target, ...rest);
+    });
+    return reads;
+  };
+
+  describe.each(Object.keys(FCHMOD))('when the fchmod %s', (how) => {
+    const [impl, why] = FCHMOD[how];
+    const breakFchmod = () => {
+      fchmod = jest.spyOn(fs, 'fchmodSync').mockImplementation(impl);
+    };
+
+    test('a 0755 data directory is refused, not opened', () => {
+      fs.chmodSync(data, 0o755);
+      breakFchmod();
+      const before = openFds();
+      expect(() => openPrivateDir(data)).toThrow(UnsafePrivatePathError);
+      expect(() => openPrivateDir(data)).toThrow(why);
+      expect(() => ensurePrivateDir(data)).toThrow(why);
+      expect(() => withPrivateDir(data, () => 'used')).toThrow(why);
+      expect(repairPrivateDir(data)).toBe(false);
+      expect(fchmod).toHaveBeenCalled();
+      expect(openFds()).toBe(before);
+      expect(modeOf(data)).toBe(0o755);
+    });
+
+    test('a 0755 keys/ is refused through its parent handle', () => {
+      fs.chmodSync(path.join(data, 'keys'), 0o755);
+      breakFchmod();
+      withPrivateDir(data, (dir) => {
+        const before = openFds();
+        expect(() => dir.openDir('keys', { create: false })).toThrow(why);
+        expect(() => dir.openDir('keys')).toThrow(why);
+        expect(dir.children.size).toBe(0);
+        expect(openFds()).toBe(before);
+      });
+      expect(modeOf(path.join(data, 'keys'))).toBe(0o755);
+    });
+
+    test('a 0644 key is refused, and its bytes never read', () => {
+      const key = path.join(data, 'keys', 'swarm.key');
+      fs.writeFileSync(key, 'secret');
+      fs.chmodSync(key, 0o644);
+      breakFchmod();
+      const reads = fdReads();
+      const use = jest.fn(() => 'used');
+      withPrivateDir(data, (dir) => {
+        const keys = dir.openDir('keys', { create: false });
+        const before = openFds();
+        expect(() => keys.read('swarm.key')).toThrow(UnsafePrivatePathError);
+        expect(() => keys.read('swarm.key')).toThrow(why);
+        expect(() => keys.withFile('swarm.key', use)).toThrow(why);
+        expect(() => keys.requirePrivate('swarm.key')).toThrow(why);
+        expect(keys.repair('swarm.key')).toBe(false);
+        expect(openFds()).toBe(before);
+      });
+      expect(() => readPrivateFile(key)).toThrow(why);
+      expect(repairPrivateFile(key)).toBe(false);
+      expect(use).not.toHaveBeenCalled();
+      expect(reads).toEqual([]);
+      expect(modeOf(key)).toBe(0o644);
+    });
+
+    test('an owner-only key or directory needs no narrowing and is used as before', () => {
+      const key = path.join(data, 'keys', 'swarm.key');
+      fs.writeFileSync(key, 'secret', { mode: 0o600 });
+      breakFchmod();
+      withPrivateDir(data, (dir) => {
+        const keys = dir.openDir('keys', { create: false });
+        expect(keys.read('swarm.key').toString()).toBe('secret');
+        expect(keys.requirePrivate('swarm.key')).toBe(true);
+      });
+      expect(fchmod).not.toHaveBeenCalled();
+    });
+  });
+});

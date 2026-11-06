@@ -139,6 +139,59 @@ describe('the shared RPC key store (K-5 review)', () => {
   });
 });
 
+// Review #1029 R1-2: a key file that cannot be made owner-only is never
+// read, by either reader, and the startup repair does not report it fixed.
+describe('a key file whose fchmod fails (K-5)', () => {
+  let userDataDir;
+  let keysPath;
+  beforeEach(() => {
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-fchmod-'));
+    keysPath = path.join(userDataDir, 'rpc-api-keys.json');
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: 'old', enabled: true } }));
+    fs.chmodSync(keysPath, 0o644);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  posixTest('is refused: no reader gets its keys, and repair reports it unrepaired', () => {
+    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
+    jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
+    });
+    // The file's bytes are read through its descriptor, after the narrowing.
+    const realRead = fs.readFileSync;
+    const fdReads = [];
+    jest.spyOn(fs, 'readFileSync').mockImplementation((target, ...rest) => {
+      if (typeof target === 'number') fdReads.push(target);
+      return realRead(target, ...rest);
+    });
+
+    expect(store.repairRpcApiKeys()).toBe(false);
+    expect(() => store.readRpcApiKeys()).toThrow('could not make it owner-only');
+    const { mod: rpc } = loadMainModule(require.resolve('./rpc-manager'), {
+      userDataDir,
+      extraMocks: {
+        [require.resolve('../networks/network-registry')]: () => ({
+          getKeyedSources: jest.fn(() => ({ alchemy: { id: 'alchemy', coverage: {} } })),
+        }),
+        [require.resolve('./provider-manager')]: () => ({ onApiKeysChanged: jest.fn() }),
+      },
+    });
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    jest.dontMock(require.resolve('../networks/network-registry'));
+    const { mod: registry } = loadMainModule(require.resolve('../networks/network-registry'), {
+      userDataDir,
+    });
+    registry.getEndpoints(1, 'rpc');
+    expect(fdReads).toEqual([]);
+    expect(modeOf(keysPath)).toBe(0o644);
+  });
+});
+
 describe('a FIFO at the key file name (K-5)', () => {
   let userDataDir;
   beforeEach(() => {

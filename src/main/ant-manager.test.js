@@ -1,5 +1,11 @@
 const path = require('path');
 const IPC = require('../shared/ipc-channels');
+// The real fs and private-files.js, loaded before any test mocks fs: the
+// tests with `realPrivateFiles` hand the data directory's handles to them,
+// over a real temporary directory.
+const realFs = require('fs');
+const os = require('os');
+const realPrivateFiles = require('./private-files');
 const {
   createAppMock,
   createIpcMainMock,
@@ -268,8 +274,9 @@ function loadAntManagerModule(options = {}) {
     writeFileSync: jest.fn(),
   };
   // private-files.js over the same fake fs: directory handles whose reads
-  // and writes land on fsMock, with repairs recorded. `unsafeKeysDir`
+  // and writes land on fsMock, with key checks recorded. `unsafeKeysDir`
   // makes opening keys/ refuse, as a keys/ that is a link would.
+  // `realPrivateFiles` uses the real module over the real file system.
   const handles = [];
   const fakeDir = (dir) => {
     const handle = {
@@ -283,7 +290,7 @@ function loadAntManagerModule(options = {}) {
       write: jest.fn((name, data) =>
         fsMock.writeFileSync(path.join(dir, name), data, { mode: 0o600 })
       ),
-      repair: jest.fn(() => true),
+      requirePrivate: jest.fn((name) => fsMock.existsSync(path.join(dir, name))),
       openDir: jest.fn((name) => {
         if (options.unsafeKeysDir) {
           const err = new Error(`Refusing ${path.join(dir, name)}: it is a symbolic link`);
@@ -297,15 +304,20 @@ function loadAntManagerModule(options = {}) {
     handles.push(handle);
     return handle;
   };
-  const privateFiles = {
-    openPrivateDir: jest.fn((dir) => fakeDir(dir)),
-    // profile-paths creates the data directory through this.
-    ensurePrivateDir: jest.fn((dir) => {
-      if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      return dir;
-    }),
-    handleFor: (dir) => handles.find((handle) => handle.path === dir),
-  };
+  const privateFiles = options.realPrivateFiles
+    ? {
+        openPrivateDir: jest.fn((dir) => realPrivateFiles.openPrivateDir(dir)),
+        ensurePrivateDir: jest.fn((dir) => realPrivateFiles.ensurePrivateDir(dir)),
+      }
+    : {
+        openPrivateDir: jest.fn((dir) => fakeDir(dir)),
+        // profile-paths creates the data directory through this.
+        ensurePrivateDir: jest.fn((dir) => {
+          if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          return dir;
+        }),
+        handleFor: (dir) => handles.find((handle) => handle.path === dir),
+      };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
   const saveSettings = jest.fn(() => true);
@@ -634,7 +646,7 @@ describe('ant-manager', () => {
     expect(ctx.privateFiles.openPrivateDir).toHaveBeenCalledWith(dataDir);
     const data = ctx.privateFiles.handleFor(dataDir);
     expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
-    expect(ctx.privateFiles.handleFor(keysDir).repair).toHaveBeenCalledWith('swarm.key');
+    expect(ctx.privateFiles.handleFor(keysDir).requirePrivate).toHaveBeenCalledWith('swarm.key');
     expect(data.read).toHaveBeenCalledWith('config.yaml');
     expect(data.write).toHaveBeenCalledWith('config.yaml', expect.any(String));
     expect(data.close).toHaveBeenCalled();
@@ -666,6 +678,117 @@ describe('ant-manager', () => {
     expect(ctx.mod.getStatus()).toEqual({
       status: 'error',
       error: expect.stringContaining('symbolic link'),
+    });
+  });
+
+  // Review #1029 R1: antd opens keys/swarm.key by its path, following a link
+  // there, and is handed the data directory by path. A key that is there
+  // but unsafe, or a directory or key that cannot be made owner-only, stops
+  // the start: antd never runs. Over the real file system.
+  describe('what antd is handed (K-3)', () => {
+    const posixTest = process.platform === 'win32' ? test.skip : test;
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(
+      PROJECT_ROOT,
+      'ant-bin',
+      `${platform}-${process.arch}`,
+      binaryName
+    );
+    let root;
+    let dataDir;
+    let keysDir;
+    let swarmKey;
+    let outside;
+    beforeEach(() => {
+      jest.useFakeTimers();
+      root = realFs.mkdtempSync(path.join(os.tmpdir(), 'ant-keys-'));
+      dataDir = path.join(root, 'ant-data');
+      keysDir = path.join(dataDir, 'keys');
+      swarmKey = path.join(keysDir, 'swarm.key');
+      realFs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+      realFs.writeFileSync(path.join(dataDir, 'config.yaml'), 'password: keystore-password\n', {
+        mode: 0o600,
+      });
+      outside = path.join(root, 'outside.key');
+      realFs.writeFileSync(outside, 'not yours');
+      realFs.chmodSync(outside, 0o644);
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      realFs.rmSync(root, { recursive: true, force: true });
+    });
+    const load = () =>
+      loadAntManagerModule({
+        realPrivateFiles: true,
+        userDataDir: root,
+        existsSync: (target) => target === antBinPath || realFs.existsSync(target),
+        portSequence: [false],
+        httpResponse: (url) =>
+          url === 'http://127.0.0.1:1633/health'
+            ? { statusCode: 200, body: { version: '2.1.0' } }
+            : { statusCode: 500, body: '' },
+      });
+    const startRefused = async (ctx, why) => {
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: expect.stringContaining(why) });
+    };
+    const configUntouched = () =>
+      expect(realFs.readFileSync(path.join(dataDir, 'config.yaml'), 'utf8')).toBe(
+        'password: keystore-password\n'
+      );
+
+    test('the real modules start antd on a regular key (control)', async () => {
+      realFs.writeFileSync(swarmKey, 'keystore', { mode: 0o600 });
+      const ctx = load();
+      ctx.mod.setUseInjectedIdentity(true);
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.spawn).toHaveBeenCalledTimes(1);
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await flushMicrotasks();
+      await stopPromise;
+    });
+
+    test.each([
+      ['a link to a key elsewhere', () => outside, true],
+      ['a dangling link', () => path.join(root, 'nothing'), false],
+    ])('a keys/swarm.key that is %s stops the start', async (_label, linkTarget, injected) => {
+      realFs.symlinkSync(linkTarget(), swarmKey, 'file');
+      const ctx = load();
+      // A dangling link reads as no key, which defers an injected start.
+      ctx.mod.setUseInjectedIdentity(injected);
+      await startRefused(ctx, 'symbolic link');
+      expect(realFs.lstatSync(swarmKey).isSymbolicLink()).toBe(true);
+      expect(realFs.readFileSync(outside, 'utf8')).toBe('not yours');
+      expect(realFs.statSync(outside).mode & 0o777).toBe(0o644);
+      configUntouched();
+    });
+
+    describe.each([
+      ['the data directory', () => dataDir, 0o755],
+      ['keys/', () => keysDir, 0o755],
+      ['keys/swarm.key', () => swarmKey, 0o644],
+    ])('%s cannot be made owner-only', (_label, target, mode) => {
+      posixTest('the start stops before antd runs', async () => {
+        if (!realFs.existsSync(swarmKey)) {
+          realFs.writeFileSync(swarmKey, 'keystore', { mode: 0o600 });
+        }
+        realFs.chmodSync(target(), mode);
+        jest.spyOn(realFs, 'fchmodSync').mockImplementation(() => {
+          throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), {
+            code: 'EPERM',
+          });
+        });
+        const ctx = load();
+        ctx.mod.setUseInjectedIdentity(true);
+        await startRefused(ctx, 'could not make it owner-only');
+        expect(realFs.statSync(target()).mode & 0o777).toBe(mode);
+        configUntouched();
+      });
     });
   });
 

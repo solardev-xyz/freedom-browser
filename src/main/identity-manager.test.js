@@ -1310,4 +1310,38 @@ describe('node identities are written into owner-only roots (K-3)', () => {
     );
     expect(modeAtWrite).toEqual({ bee: 0o700, radicle: 0o700 });
   });
+
+  // Review #1029 R1-2: a root that cannot be made owner-only is never handed
+  // to the core.
+  posixTest('a 0755 root whose fchmod fails is refused, and the core writes nothing', async () => {
+    const antDir = path.join(root, 'ant-data');
+    const radicleDir = path.join(root, 'radicle-data');
+    for (const dir of [antDir, radicleDir]) {
+      fs.mkdirSync(dir, { mode: 0o755 });
+      fs.chmodSync(dir, 0o755);
+    }
+    const backend = makeVaultBackendMock();
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+      extraMocks: {
+        ...vaultBackendMocks(backend),
+        [require.resolve('./profile-resolver')]: () => ({ getActiveProfile: jest.fn(() => null) }),
+        // The real modules: mocks an earlier describe registered stay registered.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+        [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+      },
+    });
+    jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
+    });
+
+    await expect(mod.injectBeeIdentity()).rejects.toThrow('could not make it owner-only');
+    await expect(mod.injectRadicleIdentity('Alias')).rejects.toThrow(
+      'could not make it owner-only'
+    );
+
+    expect(backend.writeNodeIdentity).not.toHaveBeenCalled();
+    expect(fs.statSync(antDir).mode & 0o777).toBe(0o755);
+    expect(fs.statSync(radicleDir).mode & 0o777).toBe(0o755);
+  });
 });

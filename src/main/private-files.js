@@ -13,8 +13,9 @@
  *    `openPrivateDir(dataDir)` for the root, `handle.openDir('keys')` for a
  *    directory inside it. Each is opened with O_NOFOLLOW | O_DIRECTORY,
  *    checked to be a directory this account owns, and narrowed to 0700
- *    through that descriptor. A managed directory that is a link, or not
- *    ours, is refused, so a caller stops instead of using it.
+ *    through that descriptor. A managed directory that is a link, not
+ *    ours, or not owner-only once narrowed, is refused, so a caller stops
+ *    instead of using it.
  *  - Every read, repair, temp-file creation and rename of a file in it goes
  *    through the handle. Each use is bracketed by a check that every
  *    managed component from the root down is still the directory the handle
@@ -44,7 +45,8 @@
  *    lstat'ed first and must not be a link (Windows has no O_NOFOLLOW: an
  *    ordinary open there follows a link to its target). The opened
  *    descriptor must be that same object, a regular file this account
- *    owns, before any I/O. It is then fchmod'ed and read through.
+ *    owns, before any I/O. It is then narrowed to 0600 (a file still open
+ *    to other accounts after that is refused) and read through.
  *  - Writes create an exclusive temp file (O_CREAT | O_EXCL | O_NOFOLLOW,
  *    0600) in the directory, fsync it and rename it over the name. A rename
  *    replaces a link itself, never its target.
@@ -113,15 +115,21 @@ function checkOpened(fd, target, { directory = false, owned = true } = {}) {
 }
 
 // Only when group or other have any access: an owner-only mode (0400, say)
-// is left as it is.
+// is left as it is. A mode that stays open to other accounts refuses the
+// use, so the caller stops rather than going on with it: the fchmod failed,
+// or it succeeded without effect, as on a file system that ignores modes.
 function narrow(fd, stat, mode, target) {
-  if (!POSIX || (stat.mode & 0o077) === 0) return false;
+  if (!POSIX || (stat.mode & 0o077) === 0) return;
   try {
     fs.fchmodSync(fd, mode);
-    return true;
   } catch (err) {
-    console.warn(`[PrivateFiles] Could not restrict ${target}:`, err.message);
-    return false;
+    throw new UnsafePrivatePathError(target, `could not make it owner-only (${err.message})`);
+  }
+  if ((fs.fstatSync(fd).mode & 0o077) !== 0) {
+    throw new UnsafePrivatePathError(
+      target,
+      'its mode is still open to other accounts after narrowing'
+    );
   }
 }
 
@@ -252,20 +260,34 @@ class PrivateDir {
    * narrowing it to 0600.
    * @returns {Buffer|null} null when it does not exist
    * @throws {UnsafePrivatePathError} a link, not a regular file, not ours,
-   *   or this directory changed
+   *   could not be narrowed, or this directory changed
    */
   read(name) {
     return this.withFile(name, (fd) => fs.readFileSync(fd));
   }
 
   /**
+   * The check before a node is handed a key it reads by path. Missing is
+   * fine: the node or the core creates it. One that is there must be a
+   * regular file this account owns, and is narrowed to 0600.
+   * @returns {boolean} whether the file is there
+   * @throws {UnsafePrivatePathError} it is there but a link, not a regular
+   *   file, not ours or could not be narrowed, or this directory changed
+   */
+  requirePrivate(name) {
+    return this.withFile(name, () => true) === true;
+  }
+
+  /**
    * Narrow an existing file to 0600 (startup repair). Missing is fine; a
-   * link or a file that is not ours is reported and left alone.
+   * link, a file that is not ours or one that could not be narrowed is
+   * reported and left alone. Not for a key a node is about to read: a
+   * refusal here does not stop anything (`requirePrivate` does).
    * @returns {boolean} whether a file was there and is now private
    */
   repair(name) {
     try {
-      return this.withFile(name, () => true) === true;
+      return this.requirePrivate(name);
     } catch (err) {
       console.warn(`[PrivateFiles] Not repairing ${path.join(this.path, name)}:`, err.message);
       return false;
@@ -331,8 +353,8 @@ class PrivateDir {
    * @param {{create?: boolean}} [options] create it (0700) when missing;
    *   without, a missing one is null
    * @returns {PrivateDir|null}
-   * @throws {UnsafePrivatePathError} it is a link, not a directory, or not
-   *   ours, or this directory changed
+   * @throws {UnsafePrivatePathError} it is a link, not a directory, not
+   *   ours, or could not be narrowed, or this directory changed
    */
   openDir(name, { create = true } = {}) {
     this.verify();
@@ -451,7 +473,8 @@ function openDirectory(
  *   trusted: a directory we do not manage (userData). Links are followed,
  *   it is not narrowed and need not be ours; uses still bind to it.
  * @returns {PrivateDir|null}
- * @throws {UnsafePrivatePathError} when `dir` is a link or not a directory
+ * @throws {UnsafePrivatePathError} when `dir` is a link, not a directory,
+ *   not ours, or could not be made owner-only
  */
 function openPrivateDir(dir, { create = true, trusted = false } = {}) {
   if (create && !trusted && !fs.lstatSync(dir, { throwIfNoEntry: false })) {
@@ -511,7 +534,8 @@ function inParent(target, use, { missing }) {
  * first.
  * @param {string} target
  * @returns {Buffer|null} null when it does not exist
- * @throws {UnsafePrivatePathError} a link (ELOOP), or not ours / not a file
+ * @throws {UnsafePrivatePathError} a link (ELOOP), not ours, not a file,
+ *   or could not be narrowed
  */
 function readPrivateFile(target) {
   return inParent(target, (dir, name) => dir.read(name), { missing: () => null });
@@ -519,7 +543,8 @@ function readPrivateFile(target) {
 
 /**
  * Narrow an existing private file to 0600 (startup repair). A missing file
- * is fine. A link or a file that is not ours is reported and left alone.
+ * is fine. A link, a file that is not ours or one that could not be
+ * narrowed is reported and left alone; a later read refuses it.
  * @returns {boolean} whether a file was there and is now private
  */
 function repairPrivateFile(target) {
@@ -549,7 +574,8 @@ function writePrivateFileSync(target, data) {
 /**
  * Create `dir` (and missing parents) owner-only, or narrow it if it exists.
  * @returns {string} dir
- * @throws {UnsafePrivatePathError} when `dir` is a link or not a directory
+ * @throws {UnsafePrivatePathError} when `dir` is a link, not a directory,
+ *   not ours, or could not be made owner-only
  */
 function ensurePrivateDir(dir) {
   openPrivateDir(dir).close();
@@ -558,7 +584,8 @@ function ensurePrivateDir(dir) {
 
 /**
  * Narrow an existing private directory (startup repair); missing is fine,
- * a link or a directory that is not ours is reported and left alone.
+ * a link, a directory that is not ours or one that could not be narrowed
+ * is reported and left alone.
  */
 function repairPrivateDir(dir) {
   try {

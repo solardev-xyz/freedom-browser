@@ -162,10 +162,15 @@ async function startRadicleInternal() {
   try {
     const radHome = await prepareRadicleDataDir();
     // The home is owner-only now (profile-paths). Its keys/ is opened
-    // through the home's handle, never through a link: one that is a link,
-    // or not ours, stops the start. Keys an older build left with the
-    // umask's modes are narrowed (K-3).
-    withPrivateDir(radHome, (home) => home.openDir('keys', { create: false })?.repair('radicle'));
+    // through the home's handle, never through a link. The node opens
+    // keys/radicle by its path, following a link there: missing is fine
+    // (the core writes it), but a key that is a link, not a regular file of
+    // ours, or not owner-only once narrowed stops the start, and so does
+    // such a home or keys/. Keys an older build left with the umask's modes
+    // are narrowed (K-3).
+    withPrivateDir(radHome, (home) =>
+      home.openDir('keys', { create: false })?.requirePrivate('radicle')
+    );
     // Again at the boundary: an identity write may have begun meanwhile.
     const blockedNow = nodeBlockReason('radicle');
     if (blockedNow) {
