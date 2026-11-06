@@ -1,0 +1,3 @@
+- Changing a site's x402 auto-pay allowance, its amount or how long it lasts, needs a single-use confirmation from the browser window where you make the change ([#1023](https://github.com/solardev-xyz/freedom-browser/issues/1023))
+- An automatic x402 payment is counted against the site's allowance before it is signed. When two payments arrive together and the allowance covers only one, only one is signed, and the other asks you first ([#1024](https://github.com/solardev-xyz/freedom-browser/issues/1024))
+  - A payment that was signed but never sent, because the tab closed or the page didn't load it again in time, is given back to the allowance

@@ -28,9 +28,24 @@ const {
   getDetectedPayment,
   clearDetectedPayment,
   setPendingPayment,
+  sendToHost,
 } = require('./intercept');
-const { grant: grantPermission } = require('./permissions');
+const { grant: grantPermission, charge: chargeCap, refund: refundCharge } = require('./permissions');
 const { tupleFromAccept } = require('./payment-utils');
+
+// An auto-pay whose cap no longer covers it, at the moment it would be
+// signed: nothing is signed, and the charge goes to the approval card.
+const CAP_NOT_COVERED = 'X402_CAP_NOT_COVERED';
+
+function capNotCoveredError() {
+  const err = new Error("This payment is no longer within the site's auto-pay allowance");
+  err.code = CAP_NOT_COVERED;
+  return err;
+}
+
+function isCapNotCoveredError(err) {
+  return err?.code === CAP_NOT_COVERED;
+}
 
 /**
  * Runway an EIP-3009 authorization must still have when we hand it to the
@@ -92,6 +107,18 @@ function authorizationRunwaySeconds(payload) {
  * confirmation token was checked against (x402:approve). Auto-pay omits
  * it and signs with the active account.
  *
+ * The cap is charged before anything is signed (#1024). An auto-pay
+ * (`authorizedBy: CAP`) is signed only against a charge: the one the
+ * detector took in the same turn as its coverage check (`opts.charge`),
+ * or one taken here. If the cap no longer covers it, nothing is signed
+ * and this throws CAP_NOT_COVERED. A payment the user approved is
+ * charged to a cap that covers it (the one granted with it, say) as its
+ * signature is stashed, as accounting; it goes out either way. The charge
+ * rides on the pending payment: it is given back if the signature is
+ * withheld (intercept.js), and here if this throws before stashing it.
+ * Once the header has been attached the charge stays, whatever the
+ * server answers: the seller holds the signed authorization.
+ *
  * @param {number} webContentsId
  * @param {{
  *   grant?: { capAmount: string, windowSeconds: number },
@@ -99,6 +126,7 @@ function authorizationRunwaySeconds(payload) {
  *   selectedAccept?: object,
  *   authorizedBy?: 'cap' | 'manual',
  *   walletIndex?: number,
+ *   charge?: object,
  * }} [opts]
  */
 async function signAndQueueRetry(webContentsId, opts = {}) {
@@ -107,6 +135,24 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   if (typeof webContentsId !== 'number' || webContentsId < 0) {
     throw new Error(`x402: invalid webContentsId: ${webContentsId}`);
   }
+  // The charge this call holds until the pending payment takes it over:
+  // one handed in, or one taken below. Given back if nothing is stashed.
+  const held = { charge: opts.charge ?? null };
+  try {
+    return await signAndStash(webContentsId, opts, held);
+  } catch (err) {
+    if (held.charge) refundAndTell(webContentsId, held.charge);
+    throw err;
+  }
+}
+
+function refundAndTell(webContentsId, charge) {
+  if (refundCharge(charge)) {
+    sendToHost(webContentsId, 'x402:cap-consumed', { origin: charge.origin });
+  }
+}
+
+async function signAndStash(webContentsId, opts, held) {
   const detected = opts.detection ?? getDetectedPayment(webContentsId);
   if (!detected) throw new Error('No pending x402 payment for this tab');
 
@@ -122,6 +168,16 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   }
   catch { throw new Error('Refusing to pay: unparseable URL'); }
   if (!origin) throw new Error('Refusing to pay: unnormalisable origin');
+
+  const tuple = tupleFromAccept(selectedAccept);
+  const authorizedBy = opts.authorizedBy ?? AUTHORIZED_BY.MANUAL;
+  // An auto-pay is charged before it is signed, with no await between
+  // the charge and the decision to sign.
+  if (authorizedBy === AUTHORIZED_BY.CAP && !held.charge) {
+    held.charge = tuple ? chargeCap(origin, tuple.chainId, tuple.asset, tuple.amount) : null;
+    if (!held.charge) throw capNotCoveredError();
+    sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  }
 
   const client = await createX402Client(opts.walletIndex ?? getActiveWalletIndex());
   // Pre-filter `accepts[]` down to the chosen entry so the SDK's default
@@ -166,8 +222,23 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
 
   const headerValue = Buffer.from(JSON.stringify(payload)).toString('base64');
   const headerName = outgoingHeaderForVersion(detected.requirements.x402Version);
-  const tuple = tupleFromAccept(selectedAccept);
   const payTo = selectedAccept.payTo ?? null;
+
+  // `grant` (create-a-cap) is an explicit user action from the approval
+  // card and happens here, at sign time, after the payment is signed.
+  if (tuple && opts.grant) {
+    try {
+      grantPermission(origin, tuple.chainId, tuple.asset, opts.grant.capAmount, opts.grant.windowSeconds);
+    } catch (err) {
+      log.warn(`[x402:sign] grant rejected: ${err.message}`);
+    }
+  }
+  // A payment the user approved counts against a cap that covers it (the
+  // one just granted with it, say). It goes out whether or not one does.
+  if (!held.charge && tuple) {
+    held.charge = chargeCap(origin, tuple.chainId, tuple.asset, tuple.amount);
+    if (held.charge) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  }
 
   setPendingPayment(
     webContentsId,
@@ -181,29 +252,20 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
       amount: tuple?.amount,
       payTo,
       fromAddress: client.address,
-      authorizedBy: opts.authorizedBy ?? AUTHORIZED_BY.MANUAL,
+      authorizedBy,
+      charge: held.charge,
     },
     detected.requestShape,
   );
+  // Stashed: the pending payment holds the charge now, and intercept.js
+  // gives it back if the signature is withheld.
+  held.charge = null;
   // Only clear the map when we sourced FROM it. With a snapshot we used
   // our own copy and clearing here would erase whatever detection has
   // since taken its place (e.g. a second 402 that fired during our async
   // sign and is now showing in the sidebar).
   if (!opts.detection) {
     clearDetectedPayment(webContentsId);
-  }
-
-  // `grant` (create-a-cap) is an explicit user action from the approval
-  // card and happens here, at sign time. `tryConsume` (burn-from-cap)
-  // lives in the inject handler so we only bump `spentAmount` when the
-  // signature actually rides out on a real request — subresource 402s
-  // that sign-but-never-retry must not burn cap headroom.
-  if (tuple && opts.grant) {
-    try {
-      grantPermission(origin, tuple.chainId, tuple.asset, opts.grant.capAmount, opts.grant.windowSeconds);
-    } catch (err) {
-      log.warn(`[x402:sign] grant rejected: ${err.message}`);
-    }
   }
 
   const wc = webContents.fromId(webContentsId);
@@ -233,5 +295,7 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
 
 module.exports = {
   signAndQueueRetry,
+  isCapNotCoveredError,
+  CAP_NOT_COVERED,
   X402_HEADERS,
 };
