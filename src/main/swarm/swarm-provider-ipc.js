@@ -648,7 +648,9 @@ async function handlePublishData(params, origin) {
 
 // Windows device names: a path segment named one of these (any case, with or
 // without an extension, trailing dots/spaces ignored) opens the device instead
-// of a file in the temp directory publishFilesFromContent writes to.
+// of a file on Windows. publishFiles no longer writes the files to disk
+// (#1052), but these paths stay refused: a site that uses them can't be saved
+// to a Windows disk, and the paths a page may publish stay what they were.
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
 
 function isWindowsReservedName(segment) {
@@ -693,8 +695,8 @@ function validateVirtualPath(p) {
       return { valid: false, message: '"." and ".." segments are not allowed' };
     }
     // Win32 path normalization trims a trailing dot or space from every
-    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
-    // temp directory) and '.. ' would trim toward '..'.
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it once
+    // saved to a Windows disk) and '.. ' would trim toward '..'.
     if (/[. ]$/.test(seg)) {
       return { valid: false, message: 'Path segments may not end in a dot or space' };
     }
@@ -725,7 +727,7 @@ function normalizeBytes(bytes) {
 }
 
 /**
- * Handle swarm_publishFiles: validate, enforce limits, write to temp dir, publish.
+ * Handle swarm_publishFiles: validate, enforce limits, publish the files as a collection.
  */
 async function handlePublishFiles(params, origin) {
   if (!params || typeof params !== 'object') {
