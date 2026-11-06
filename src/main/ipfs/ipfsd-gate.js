@@ -9,10 +9,8 @@
  *   removes the directory, while it does (profile delete); and the add-on,
  *   from before it opens its store until after it has closed it, so it is a
  *   writer the gate excludes too.
- * - **Its answers** (fc-service's `hold_lock`): `locked`, then exit 0 at
- *   stdin's EOF. 75 when another owner holds the gate after 5 s of retries,
- *   74 for storage it refuses (a network filesystem, a directory that isn't
- *   the user's own, any other locking error), 64 for usage.
+ * - **Its answers** (fc-service's `hold_lock`) are the core's: see
+ *   hold-lock.js.
  * - **The binary and environment** are the service's (`ipfsd-client.js`):
  *   the same resolution, and the shared client's scrubbed environment.
  * - **Without the binary:** a packaged build ships it (check-binaries
@@ -24,21 +22,11 @@
  */
 
 const fs = require('fs');
-const { spawn: spawnProcess } = require('child_process');
 const { app } = require('electron');
 const defaultLog = require('../logger');
-const { scrubbedEnv } = require('../core/service-client');
+const { holdLock, withHold, LOCK_TIMEOUT_MS, RELEASE_KILL_MS } = require('../hold-lock');
 const { getLockDir } = require('../service-locks');
 const { getIpfsdBinaryPath } = require('./ipfsd-client');
-
-/** Contention is retried for 5 s by the holder; this is the rest of the
- * margin before main gives up on hearing `locked`. */
-const LOCK_TIMEOUT_MS = 15_000;
-/** A released holder exits at its stdin's EOF; past this it is killed. */
-const RELEASE_KILL_MS = 1_000;
-const LOCKED = 'locked';
-const MAX_STDOUT = 64;
-const MAX_STDERR = 4096;
 
 const MESSAGES = {
   lock_held: 'The IPFS data is in use by another process. Close it and try again.',
@@ -48,11 +36,6 @@ const MESSAGES = {
   cancelled: "Taking the IPFS data directory's lock was cancelled",
   failed: "freedom-ipfsd couldn't hold the IPFS data directory's lock",
 };
-const EXIT_CODES = new Map([
-  [64, 'usage'],
-  [74, 'storage'],
-  [75, 'lock_held'],
-]);
 
 /** The gate couldn't be had: `code` is `lock_held` (75), `storage` (74),
  * `usage` (64), `missing`, `cancelled` (its signal) or `failed`. */
@@ -70,12 +53,12 @@ function isIpfsdAvailable() {
 }
 
 /**
- * Takes the gate of `dataDir` with `hold-lock`. Resolves once the holder has
- * written `locked`, to a hold whose `release()` closes its stdin and resolves
- * once it has exited (killed after 1 s); rejects with an IpfsGateError.
- * `onLost(exit)` runs if the holder ends without being released. `signal`
- * gives up a wait for `locked` (the holder is killed): a stop never waits
- * out another writer's hold.
+ * Takes the gate of `dataDir` with `hold-lock` (hold-lock.js's `holdLock`).
+ * Resolves once the holder has written `locked`, to a hold whose `release()`
+ * closes its stdin and resolves once it has exited (killed after 1 s);
+ * rejects with an IpfsGateError. `onLost(exit)` runs if the holder ends
+ * without being released. `signal` gives up a wait for `locked` (the holder
+ * is killed): a stop never waits out another writer's hold.
  *
  * @param {object} options
  * @param {string} options.dataDir - the directory the service would use
@@ -93,125 +76,18 @@ function isIpfsdAvailable() {
 function holdIpfsGate({
   dataDir,
   lockDir = getLockDir(),
-  onLost = null,
-  signal = null,
   command = getIpfsdBinaryPath(),
-  spawn = spawnProcess,
   log = defaultLog,
-  setTimer = setTimeout,
-  clearTimer = clearTimeout,
+  ...options
 }) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new IpfsGateError('cancelled'));
-      return;
-    }
-    let child;
-    try {
-      child = spawn(command, ['hold-lock', '--data-dir', dataDir, '--lock-dir', lockDir], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: scrubbedEnv(),
-        windowsHide: true,
-      });
-    } catch {
-      reject(new IpfsGateError('failed'));
-      return;
-    }
-    let stdout = '';
-    let stderr = '';
-    // pending → locked (resolved), or failed (rejected); then the exit.
-    let state = 'pending';
-    let exited = null;
-    let releasing = null;
-    const exitWaiters = [];
-    let lockTimer = null;
-
-    const onAbort = () => {
-      if (state !== 'pending') return;
-      fail(new IpfsGateError('cancelled'), null);
-      child.kill('SIGKILL');
-    };
-    const fail = (error, detail) => {
-      if (state !== 'pending') return;
-      state = 'failed';
-      clearTimer(lockTimer);
-      signal?.removeEventListener('abort', onAbort);
-      // A cancelled wait is the caller's own doing: nothing to report.
-      if (detail)
-        log.warn('[IPFS] freedom-ipfsd hold-lock failed', { code: error.code, ...detail });
-      reject(error);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    lockTimer = setTimer(() => {
-      if (state !== 'pending') return;
-      fail(new IpfsGateError('failed'), { reason: 'no answer' });
-      child.kill('SIGKILL');
-    }, LOCK_TIMEOUT_MS);
-
-    const hold = {
-      /** Closes the holder's stdin; resolves once it has exited. */
-      release() {
-        if (!releasing) {
-          releasing = new Promise((done) => {
-            if (exited) {
-              done();
-              return;
-            }
-            const killTimer = setTimer(() => child.kill('SIGKILL'), RELEASE_KILL_MS);
-            exitWaiters.push(() => {
-              clearTimer(killTimer);
-              done();
-            });
-            try {
-              child.stdin.end();
-            } catch {
-              child.kill('SIGKILL');
-            }
-          });
-        }
-        return releasing;
-      },
-    };
-
-    // A holder that dies takes nothing with it but its pipes.
-    child.stdin.on('error', () => {});
-    child.stdout.on('data', (chunk) => {
-      if (state !== 'pending' || stdout.length > MAX_STDOUT) return;
-      stdout += chunk.toString('utf8');
-      if (stdout.startsWith(`${LOCKED}\n`)) {
-        state = 'locked';
-        clearTimer(lockTimer);
-        signal?.removeEventListener('abort', onAbort);
-        resolve(hold);
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr = (stderr + chunk.toString('utf8')).slice(-MAX_STDERR);
-    });
-    child.on('error', () => fail(new IpfsGateError('failed'), { reason: 'spawn' }));
-    child.on('exit', (code, signal) => {
-      if (exited) return;
-      exited = { code, signal };
-      for (const waiter of exitWaiters.splice(0)) waiter();
-      if (state === 'pending') {
-        // The holder's last log line names the cause, without a path.
-        let cause = null;
-        try {
-          cause = JSON.parse(stderr.trim().split('\n').at(-1)).error ?? null;
-        } catch {
-          // Not one of its JSON lines.
-        }
-        fail(new IpfsGateError(EXIT_CODES.get(code) || 'failed'), { exit: code, signal, cause });
-        return;
-      }
-      if (state === 'locked' && !releasing) {
-        log.error('[IPFS] freedom-ipfsd hold-lock ended while holding the gate', {
-          exit: code,
-          signal,
-        });
-        onLost?.(exited);
-      }
-    });
+  return holdLock({
+    ...options,
+    command,
+    dataDir,
+    lockDir,
+    log,
+    gateError: (code) => new IpfsGateError(code),
+    logPrefix: '[IPFS] freedom-ipfsd',
   });
 }
 
@@ -239,19 +115,7 @@ async function takeIpfsGate(dataDir, { onLost = null, log = defaultLog, ...optio
  * right before each step that must not run ungated.
  */
 async function withIpfsGate(dataDir, fn, { onLost = null, ...options } = {}) {
-  let lost = false;
-  const hold = await takeIpfsGate(dataDir, {
-    ...options,
-    onLost: (exit) => {
-      lost = true;
-      onLost?.(exit);
-    },
-  });
-  try {
-    return await fn({ gated: hold !== null, held: () => hold !== null && !lost });
-  } finally {
-    await hold?.release();
-  }
+  return withHold((lost) => takeIpfsGate(dataDir, { ...options, onLost: lost }), fn, onLost);
 }
 
 module.exports = {
