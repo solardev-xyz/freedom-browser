@@ -24,14 +24,14 @@
  *
  * **Which file.** The vectors aren't copied into this repository: the file
  * is read from a freedom-core checkout. 0009's fifth amendment (abort codes
- * by connection and direction, freedom-core #247) came after the pinned
- * core, 0.9.1, so its file (`cored-v0.9.1:vectors/streams.json`) predates
- * it: its `abort_codes` are 0007's five, and its duplex cases end main's
- * pieces with 0007's codes, which the amendment refuses. The test tells the
- * two apart by the amendment's `abort_code` category. Against 0.9.1's file
- * it runs every case as before and its `core_streams` frames, and lists its
- * duplex cases as to do; against freedom-core main's (from #247 on) it runs
- * every case.
+ * by connection and direction, freedom-core #247) came after 0.9.1, so that
+ * release's file (`cored-v0.9.1:vectors/streams.json`) predates it: its
+ * `abort_codes` are 0007's five, and its duplex cases end main's pieces
+ * with 0007's codes, which the amendment refuses. The test tells the two
+ * apart by the amendment's `abort_code` category. Against 0.9.1's file it
+ * runs every case as before and its `core_streams` frames, and lists its
+ * duplex cases as to do; against the pinned core's, 0.10.0's (from #247
+ * on), it runs every case.
  *
  * Skipped unless the vectors are found: FREEDOM_CORE_STREAM_VECTORS names
  * the file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core

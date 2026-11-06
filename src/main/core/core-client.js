@@ -12,9 +12,11 @@
  * - **The protocol** is 1 unless the client is made with `protocol: 2`.
  *   Main and the core ship pinned together (0001), so main asks for the
  *   one its pinned core speaks, and a core that answers another is a
- *   mismatch: main fails, and doesn't restart it. The pinned core (0.9.1)
- *   speaks protocol 1 only; a core that speaks 2 also takes 1, without
- *   streams (design 0009, Streams in the core).
+ *   mismatch: main fails, and doesn't restart it. The pinned core (0.10.0)
+ *   speaks protocol 2, and the app's client (core-process.js) asks for it.
+ *   0.10.0 still takes protocol 1, without streams, until 0009's follow-up
+ *   removes it (design 0009, Streams in the core: the transitional note);
+ *   only tests and scripts still ask for 1.
  * - **Protocol 2** (design 0009) adds streams in both directions: main's
  *   hello offers `frames: ["fragment", "stream"]`, the core's capabilities
  *   must say `streams`, and from the hello on the connection reads all
@@ -50,8 +52,8 @@ const {
   POOL_EXEMPT_BYTES,
 } = require('./service-client');
 
-// The protocol main speaks to the pinned core (design 0001), and the one
-// that adds streams in both directions (design 0009).
+// Protocol 1 (design 0001), and protocol 2, which adds streams in both
+// directions (design 0009) and is the one main speaks to the pinned core.
 const PROTOCOL_VERSION = 1;
 const PROTOCOL_VERSION_STREAMS = 2;
 const PROTOCOL_VERSIONS = new Set([PROTOCOL_VERSION, PROTOCOL_VERSION_STREAMS]);
@@ -141,8 +143,9 @@ class CoreClient extends ServiceClient {
    * @param {object} options - ServiceClient's, without `service`, and:
    * @param {number} [options.autoLockMs] - the vault's auto-lock, sent in
    *   the handshake (15 minutes)
-   * @param {number} [options.protocol] - the protocol main asks for: 1 (the
-   *   pinned core's), or 2 for a core with streams (design 0009)
+   * @param {number} [options.protocol] - the protocol main asks for: 1
+   *   (the default), or 2 for a core with streams (design 0009), as the
+   *   app's client does
    */
   constructor(options) {
     const protocol = options.protocol ?? PROTOCOL_VERSION;

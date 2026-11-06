@@ -46,6 +46,8 @@
  */
 
 const { CoreError } = require('../core/core-client');
+// The time to the head (0009, Bounds: `dweb.verify`'s `head` deadline).
+const { HEAD_DEADLINE_MS } = require('../core/core-deadlines');
 const { CORE_BODY_ABORT_CODES } = require('../core/frame');
 const { isPrivateLogContext } = require('../private/private-log-context');
 const { idleBoundBody, NULL_BODY_STATUSES } = require('./plan-executor');
@@ -58,8 +60,6 @@ const {
   VERIFICATION_FAILED_CODE,
 } = require('./verify-failures');
 
-/** The time to the head (0009, Bounds: `dweb.verify`'s `head` deadline). */
-const HEAD_DEADLINE_MS = 360_000;
 /** The bundled node's URL space, where the core writes its redirects. */
 const VERIFIED_ORIGIN = 'http://verified.invalid';
 /** At most this many head headers: a head from the core names a few. */
