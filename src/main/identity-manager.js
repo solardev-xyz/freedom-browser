@@ -46,6 +46,26 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
+// Optional Radicle node lifecycle hook, wired by the main process (see
+// index.js). The embedded node writes node/, cobs/ and storage/ while it
+// runs, so a re-key must stop it, with proof that it stopped, before wiping
+// them (R-8). `withStopped(work)` runs `work` as one operation of the node's
+// lifecycle queue (radicle-manager withRadicleStopped): it stops the node
+// (throwing, without running `work`, when the stop is not proven), awaits
+// `work`, and restarts a node that was running. Starts, alias changes and
+// other re-keys queue behind it.
+let radicleLifecycle = { withStopped: null };
+
+/**
+ * Register the Radicle node lifecycle hook used around identity (re)injection.
+ * @param {{withStopped?: <T>(work: () => Promise<T>) => Promise<T>}} hooks
+ */
+function setRadicleLifecycle(hooks = {}) {
+  radicleLifecycle = {
+    withStopped: typeof hooks.withStopped === 'function' ? hooks.withStopped : null,
+  };
+}
+
 // Track which nodes have been injected
 let injectedNodes = {
   bee: false,
@@ -714,8 +734,10 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     const wasInjected = isRadicleIdentityInjected();
     results.radicle = await injectRadicleIdentity(radicleAlias);
     if (wasInjected && force) {
+      // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
+      // hook stops the node before the wipe and restarts it after), so it is
+      // not in needsRestart: the renderer would restart it a second time.
       results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
     }
   } else {
     results.radicle = { did: addresses.radicle.did, alreadyInjected: true };
