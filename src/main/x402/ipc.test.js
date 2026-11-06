@@ -692,7 +692,7 @@ describe('x402:approve', () => {
       payload: { authorization: {}, signature: '0xabc' },
     });
 
-    const result = await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+    const result = await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 42 });
     expect(result.success).toBe(true);
 
     // (4) Pending payment is for A (the resume token), not B: its cap
@@ -775,7 +775,7 @@ describe('x402:approve', () => {
   });
 
   test('x402:resume-unlock returns an error when no token is stashed', async () => {
-    const result = await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+    const result = await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 42 });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/no pending unlock-resume/i);
   });
@@ -785,7 +785,7 @@ describe('x402:approve', () => {
     // calling it would double-sign for the closure-driven attempt.
     const waitPromise = intercept.setPendingUnlockWait(42);
 
-    const result = await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+    const result = await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 42 });
     expect(result).toEqual({ success: true });
     expect(intercept.hasPendingUnlockWait(42)).toBe(false);
     await expect(waitPromise).resolves.toBeUndefined();
@@ -1167,7 +1167,7 @@ describe('x402:reject (subresource approval-card decline)', () => {
     });
     await Promise.resolve();
 
-    const result = await ipcHandlers['x402:reject'](senderEvent(42), { detectionId: 'req-9001' });
+    const result = await ipcHandlers['x402:reject'](fromChrome, { detectionId: 'req-9001' });
     expect(result).toEqual({ success: true, settled: true });
 
     // Detector returns null, page sees the 402.
@@ -1175,12 +1175,12 @@ describe('x402:reject (subresource approval-card decline)', () => {
   });
 
   test('returns settled=false when there is no pending approval for the detectionId', async () => {
-    const result = await ipcHandlers['x402:reject'](senderEvent(42), { detectionId: 'req-nonexistent' });
+    const result = await ipcHandlers['x402:reject'](fromChrome, { detectionId: 'req-nonexistent' });
     expect(result).toEqual({ success: true, settled: false });
   });
 
   test('refuses without a detectionId', async () => {
-    const result = await ipcHandlers['x402:reject'](senderEvent(42), {});
+    const result = await ipcHandlers['x402:reject'](fromChrome, {});
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/detectionId required/i);
   });
@@ -1944,6 +1944,136 @@ describe("x402 payment authority belongs to the window hosting the payment's tab
     expect(confirmations._outstandingCount()).toBe(0);
     nothingSigned();
   });
+
+  // Declining, cancelling and resuming sign nothing new, but each acts on
+  // the payment: another window must not deny it, navigate its tab away,
+  // or resume an allowance payment held for an unlock.
+  const NOT_THIS_WINDOW = { success: false, error: 'This payment is not on a tab of this window' };
+
+  // An allowance covers tab `tabId`'s paywall, the vault is locked when
+  // auto-pay signs, and main stashes the payment until the user unlocks.
+  // The allowance stays, so it still covers the payment on resume.
+  async function lockedAutoPayOn(tabId, id) {
+    mockGetPermission.mockReturnValue({
+      origin: 'https://api.example',
+      chainId: 8453,
+      asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      capAmount: '20000', spentAmount: '0',
+      createdAt: 1, expiresAt: 9999999999,
+    });
+    mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    detectOn(tabId, { id });
+    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+    mockCreateClient.mockClear();
+  }
+
+  // A subresource's allowance payment held for an unlock. Handled here so
+  // that one left over by a failed test doesn't crash the next one's reset.
+  function heldUnlockWait(tabId) {
+    const waiting = intercept.setPendingUnlockWait(tabId);
+    waiting.catch(() => {});
+    return waiting;
+  }
+
+  test("x402:reject: another window cannot decline this window's subresource payment, even naming its own tab", async () => {
+    const detecting = detectOn(42, { id: 8201, resourceType: 'xhr' });
+    expect(await ipcHandlers['x402:reject'](OTHER_WINDOW, { detectionId: 'req-8201' }))
+      .toEqual(NOT_THIS_WINDOW);
+    // Judged by the awaiting detection's tab, not one the caller names.
+    expect(await ipcHandlers['x402:reject'](OTHER_WINDOW, { webContentsId: 43, detectionId: 'req-8201' }))
+      .toEqual(NOT_THIS_WINDOW);
+    expect(intercept.hasPendingApproval('req-8201')).toBe(true);
+
+    // The hosting window's own decline still settles it.
+    expect(await ipcHandlers['x402:reject'](fromChrome, { detectionId: 'req-8201' }))
+      .toEqual({ success: true, settled: true });
+    expect(await detecting).toBeNull();
+  });
+
+  test("x402:reject refuses a closing tab's or a vanished tab's payment, and leaves it to the tab's cleanup", async () => {
+    tabs.set(45, hostedTab({ id: 45, loadURL }));
+    const detecting = detectOn(45, { id: 8202, resourceType: 'xhr' });
+    tabs.get(45).isDestroyed = () => true;
+    expect(await ipcHandlers['x402:reject'](fromChrome, { detectionId: 'req-8202' }))
+      .toEqual(NOT_THIS_WINDOW);
+    tabs.delete(45);
+    expect(await ipcHandlers['x402:reject'](fromChrome, { detectionId: 'req-8202' }))
+      .toEqual(NOT_THIS_WINDOW);
+    expect(intercept.hasPendingApproval('req-8202')).toBe(true);
+
+    intercept.cleanupWebContents(45);
+    expect(await detecting).toBeNull();
+    expect(intercept.hasPendingApproval('req-8202')).toBe(false);
+  });
+
+  test("x402:cancel: another window cannot clear this window's paywall or navigate its tab", async () => {
+    detectOn(42, { id: 8203 });
+    expect(await ipcHandlers['x402:cancel'](OTHER_WINDOW, { webContentsId: 42 })).toEqual(NOT_THIS_WINDOW);
+    expect(await ipcHandlers['x402:cancel'](OTHER_WINDOW, { webContentsId: 42, navigate: false }))
+      .toEqual(NOT_THIS_WINDOW);
+    expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-8203');
+    expect(loadURL).not.toHaveBeenCalled();
+
+    // The hosting window's own Cancel clears it and steps the tab away.
+    expect(await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 42 })).toEqual({ success: true });
+    expect(intercept.getDetectedPayment(42)).toBeNull();
+    expect(loadURL).toHaveBeenCalledWith('about:blank');
+  });
+
+  test("x402:cancel refuses a closing tab, and a call naming no tab is not taken for the sender's", async () => {
+    detectOn(44, { id: 8204 });
+    expect(await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 44 })).toEqual(NOT_THIS_WINDOW);
+    expect(intercept.getDetectedPayment(44)?.detectionId).toBe('req-8204');
+
+    // Even were the sender's own id a tab it hosts, an unnamed tab is none.
+    tabs.set(CHROME.id, hostedTab({ id: CHROME.id, loadURL }));
+    detectOn(CHROME.id, { id: 8205 });
+    expect(await ipcHandlers['x402:cancel'](fromChrome, {})).toEqual(NOT_THIS_WINDOW);
+    expect(intercept.getDetectedPayment(CHROME.id)?.detectionId).toBe('req-8205');
+    expect(loadURL).not.toHaveBeenCalled();
+  });
+
+  test("x402:resume-unlock: another window cannot release this window's held allowance payment", async () => {
+    const waiting = heldUnlockWait(42);
+    expect(await ipcHandlers['x402:resume-unlock'](OTHER_WINDOW, { webContentsId: 42 })).toEqual(NOT_THIS_WINDOW);
+    expect(intercept.hasPendingUnlockWait(42)).toBe(true);
+    // The hosting window's own resume releases it.
+    expect(await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 42 })).toEqual({ success: true });
+    await expect(waiting).resolves.toBeUndefined();
+
+    // A paywall's held payment, too: refused, nothing signed, and it is
+    // still there for this window's own resume.
+    await lockedAutoPayOn(42, 8206);
+    expect(await ipcHandlers['x402:resume-unlock'](OTHER_WINDOW, { webContentsId: 42 })).toEqual(NOT_THIS_WINDOW);
+    nothingSigned();
+    expect(await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 42 })).toEqual({ success: true });
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    expect(loadURL).toHaveBeenCalledWith('https://api.example/article');
+  });
+
+  test("x402:resume-unlock refuses a closing tab, and a call naming no tab is not taken for the sender's", async () => {
+    tabs.set(45, hostedTab({ id: 45, loadURL }));
+    await lockedAutoPayOn(45, 8207);
+    const waiting = heldUnlockWait(46);
+    tabs.set(46, hostedTab({ id: 46, loadURL, isDestroyed: () => true }));
+    tabs.get(45).isDestroyed = () => true;
+    expect(await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 45 })).toEqual(NOT_THIS_WINDOW);
+    expect(await ipcHandlers['x402:resume-unlock'](fromChrome, { webContentsId: 46 })).toEqual(NOT_THIS_WINDOW);
+    nothingSigned();
+    expect(intercept.hasPendingUnlockWait(46)).toBe(true);
+
+    tabs.set(CHROME.id, hostedTab({ id: CHROME.id, loadURL }));
+    const senderWaiting = heldUnlockWait(CHROME.id);
+    expect(await ipcHandlers['x402:resume-unlock'](fromChrome, {})).toEqual(NOT_THIS_WINDOW);
+    expect(intercept.hasPendingUnlockWait(CHROME.id)).toBe(true);
+
+    // The tabs' own cleanup is what ends them.
+    intercept.cleanupWebContents(46);
+    intercept.cleanupWebContents(CHROME.id);
+    await expect(waiting).rejects.toThrow('tab destroyed');
+    await expect(senderWaiting).rejects.toThrow('tab destroyed');
+    expect(intercept.consumePendingUnlockResume(45)).toMatchObject({ authorizedBy: 'cap' });
+  });
 });
 
 // === x402:cancel =========================================================
@@ -1961,13 +2091,9 @@ describe('x402:cancel', () => {
       },
     });
     const goBack = jest.fn();
-    webContents.fromId.mockReturnValue({
-      canGoBack: () => true,
-      goBack,
-      loadURL: jest.fn(),
-    });
+    webContents.fromId.mockReturnValue(hostedTab({ canGoBack: () => true, goBack, loadURL: jest.fn() }));
 
-    await ipcHandlers['x402:cancel'](senderEvent(42));
+    await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 42 });
 
     expect(goBack).toHaveBeenCalledTimes(1);
     expect(intercept.getDetectedPayment(42)).toBeNull();
@@ -1975,13 +2101,9 @@ describe('x402:cancel', () => {
 
   test('falls back to about:blank when no history is available', async () => {
     const loadURL = jest.fn().mockResolvedValue();
-    webContents.fromId.mockReturnValue({
-      canGoBack: () => false,
-      goBack: jest.fn(),
-      loadURL,
-    });
+    webContents.fromId.mockReturnValue(hostedTab({ canGoBack: () => false, goBack: jest.fn(), loadURL }));
 
-    await ipcHandlers['x402:cancel'](senderEvent(42));
+    await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 42 });
 
     expect(loadURL).toHaveBeenCalledWith('about:blank');
   });
@@ -2003,8 +2125,7 @@ describe('x402:cancel', () => {
     const loadURL = jest.fn().mockResolvedValue();
     webContents.fromId.mockReturnValue(hostedTab({ canGoBack: () => true, goBack, loadURL }));
 
-    const event = senderEvent(42);
-    const result = await ipcHandlers['x402:cancel'](event, { webContentsId: 42, navigate: false });
+    const result = await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 42, navigate: false });
 
     expect(result.success).toBe(true);
     expect(goBack).not.toHaveBeenCalled();
@@ -2012,10 +2133,10 @@ describe('x402:cancel', () => {
     expect(intercept.getDetectedPayment(42)).toBeNull();
   });
 
-  test('no-ops if the webContents has already gone away', async () => {
+  test('refuses a tab main can no longer find', async () => {
     webContents.fromId.mockReturnValue(null);
-    const result = await ipcHandlers['x402:cancel'](senderEvent(42));
-    expect(result.success).toBe(true);
+    const result = await ipcHandlers['x402:cancel'](fromChrome, { webContentsId: 42 });
+    expect(result).toEqual({ success: false, error: 'This payment is not on a tab of this window' });
   });
 });
 

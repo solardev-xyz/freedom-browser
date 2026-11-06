@@ -10,7 +10,7 @@
 
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
-const { CoreClient, ShellError, PROTOCOL_VERSION_STREAMS } = require('./core-client');
+const { CoreClient, ShellError } = require('./core-client');
 const {
   encodeFrame,
   encodeStreamCredit,
@@ -857,15 +857,13 @@ class FakeCore extends EventEmitter {
 
   onMessage(message) {
     if (message.method === 'core.hello') {
-      // A core that speaks both: the protocol main asks for.
-      const { protocol } = message.params;
-      const capabilities = protocol === 2 ? ['fragments', 'streams'] : ['fragments'];
+      // The pinned core: protocol 2, streams from the hello on.
       this.send({
         type: 'response',
         id: message.id,
-        result: { protocol, core_version: '0.10.0', capabilities },
+        result: { protocol: 2, core_version: '0.11.0', capabilities: ['fragments', 'streams'] },
       });
-      if (protocol === 2) this.decoder.setKinds(CORE_STREAM_KINDS);
+      this.decoder.setKinds(CORE_STREAM_KINDS);
     } else if (message.method === 'core.shutdown') {
       this.send({ type: 'response', id: message.id, result: {} });
     }
@@ -934,7 +932,7 @@ describe('through the core client at protocol 2', () => {
   let shell;
   let log;
 
-  async function start(protocol = PROTOCOL_VERSION_STREAMS) {
+  async function start() {
     log = quietLog();
     client = new CoreClient({
       spawn: jest.fn(() => {
@@ -945,7 +943,6 @@ describe('through the core client at protocol 2', () => {
       args: ['serve'],
       log,
       shellVersion: 'test',
-      protocol,
       setTimer: (fn, ms) => ({ fn, ms }),
       clearTimer: () => {},
     });
@@ -1003,15 +1000,6 @@ describe('through the core client at protocol 2', () => {
       await tick();
     }
   }
-
-  test('at protocol 1 nothing is registered, and the core would get unknown_method', async () => {
-    await start(1);
-    expect(shell).toBeNull();
-    expect(client.handlerFor('shell.dweb_get', {})).toBeUndefined();
-    const id = core.ask(1, chunk());
-    await until(() => core.reply(id), 'the reply');
-    expect(core.reply(id).error.code).toBe('unknown_method');
-  });
 
   test("onSent names main's request and its generation: the core's `for`", async () => {
     await start();
