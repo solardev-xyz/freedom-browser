@@ -114,7 +114,10 @@ beforeEach(() => {
   mockClient.createPaymentPayload.mockReset();
   mockCreateClient.mockReset().mockResolvedValue(mockClient);
   mockGetActiveWalletIndex.mockReturnValue(0);
-  webContents.fromId.mockReset();
+  intercept.clearAllApprovalClaims();
+  CHROME.send.mockReset();
+  // Every tab is one of CHROME's unless a test says otherwise.
+  webContents.fromId.mockReset().mockImplementation((id) => hostedTab({ id }));
   mockGetBalancesWithCache.mockReset().mockResolvedValue({ balances: {}, fromCache: true });
   mockGetAllBalances.mockReset().mockResolvedValue({});
   mockClearBalanceCache.mockReset();
@@ -152,6 +155,20 @@ const v2Detected = (overrides = {}) => ({
 
 const senderEvent = (id) => ({ sender: { id } });
 
+// The chrome window whose sidebar shows the payment card, and a tab guest
+// it hosts: x402:get-details and x402:approve answer only the window that
+// hosts the payment's tab.
+const CHROME = { id: 1, send: jest.fn() };
+const fromChrome = { sender: CHROME };
+function hostedTab(props = {}) {
+  return {
+    loadURL: jest.fn().mockResolvedValue(),
+    isDestroyed: () => false,
+    ...props,
+    hostWebContents: { ...CHROME, ...props.hostWebContents, id: CHROME.id },
+  };
+}
+
 // The payment as the approval card shows it for main's record of a
 // detection: the subresource detection awaiting `detectionId`, else the
 // tab-keyed one. What the card hands `wallet:confirm-signing` on Pay.
@@ -177,7 +194,7 @@ function confirmationFor(payment, walletIndex = 0) {
 // approve it with that token.
 function approveAsCard(tabId, opts = {}) {
   const payment = paymentAsShown(tabId, opts);
-  return ipcHandlers['x402:approve'](senderEvent(tabId), {
+  return ipcHandlers['x402:approve'](fromChrome, {
     webContentsId: tabId,
     detectionId: payment.detectionId,
     selectedAcceptIndex: payment.acceptIndex,
@@ -225,7 +242,7 @@ describe('x402:get-details', () => {
 
     mockGetToken.mockReturnValueOnce({ symbol: 'USDC', decimals: 6 });
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.success).toBe(true);
     expect(result.url).toBe(detected.url);
     expect(result.requirements.x402Version).toBe(2);
@@ -246,13 +263,13 @@ describe('x402:get-details', () => {
     });
     mockGetToken.mockReturnValueOnce(undefined);
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.success).toBe(true);
     expect(result.asset).toBeNull();
   });
 
   test('returns an error when no payment was detected for the tab', async () => {
-    const result = await ipcHandlers['x402:get-details'](senderEvent(999));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 999 });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/no pending/i);
   });
@@ -295,7 +312,7 @@ describe('x402:get-details', () => {
       fromCache: true,
     });
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.success).toBe(true);
     expect(result.accepts).toHaveLength(2);
     expect(result.accepts[0]).toMatchObject({
@@ -338,7 +355,7 @@ describe('x402:get-details', () => {
       fromCache: true,
     });
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.accepts[0].fundable).toBe(false);
     expect(result.accepts[1].fundable).toBe(true);
     expect(result.initialSelectionIndex).toBe(1);
@@ -358,7 +375,7 @@ describe('x402:get-details', () => {
     });
     mockGetBalancesWithCache.mockResolvedValueOnce({ balances: {}, fromCache: true });
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.accepts[0].fundable).toBe(false);
     expect(result.initialSelectionIndex).toBe(0);
   });
@@ -381,9 +398,9 @@ describe('x402:get-details', () => {
     mockGetBalancesWithCache.mockResolvedValueOnce({ balances: {}, fromCache: true });
     mockGetAllBalances.mockResolvedValueOnce(fresh);
     const sidebarSend = jest.fn();
-    webContents.fromId.mockReturnValue({ hostWebContents: { send: sidebarSend } });
+    webContents.fromId.mockReturnValue(hostedTab({ hostWebContents: { send: sidebarSend } }));
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     await Promise.resolve();
 
     expect(result.success).toBe(true);
@@ -420,7 +437,7 @@ describe('x402:approve', () => {
   test('signs, stashes a V2 pending payment, and re-navigates the webview', async () => {
     seedDetection(42);
     const loadURL = jest.fn().mockResolvedValue();
-    webContents.fromId.mockReturnValue({ loadURL });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -463,7 +480,7 @@ describe('x402:approve', () => {
   });
 
   test('refuses to sign if there is no detected payment for the tab', async () => {
-    const result = await ipcHandlers['x402:approve'](senderEvent(42));
+    const result = await ipcHandlers['x402:approve'](fromChrome);
     expect(result.success).toBe(false);
     expect(mockCreateClient).not.toHaveBeenCalled();
   });
@@ -480,7 +497,7 @@ describe('x402:approve', () => {
       requirements: v2Detected().requirements,
       resourceType: 'mainFrame',
     };
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -498,7 +515,7 @@ describe('x402:approve', () => {
     // Sanity-check that the lookup-by-id path retains its existing clear
     // behaviour.
     seedDetection(42);
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -514,7 +531,7 @@ describe('x402:approve', () => {
       requirements: v2Detected().requirements,
       resourceType: 'mainFrame',
     };
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -542,7 +559,7 @@ describe('x402:approve', () => {
     seedDetection(42);
     Object.assign(intercept.getDetectedPayment(42), { authorizedBy: 'cap' });
 
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -583,7 +600,7 @@ describe('x402:approve', () => {
     });
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
     // A cap answers only for a live user tab main can attribute the 402 to.
-    webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
+    webContents.fromId.mockReturnValue(hostedTab({ hostWebContents: { send: jest.fn() } }));
 
     intercept.detectPaymentRequiredHandler({
       webContentsId: 42,
@@ -607,7 +624,7 @@ describe('x402:approve', () => {
 
     // (3) User unlocks. Renderer fires the dedicated resume IPC.
     mockCreateClient.mockResolvedValueOnce(mockClient);
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -652,7 +669,7 @@ describe('x402:approve', () => {
     });
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
     // A cap answers only for a live user tab main can attribute the 402 to.
-    webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
+    webContents.fromId.mockReturnValue(hostedTab({ hostWebContents: { send: jest.fn() } }));
     intercept.detectPaymentRequiredHandler({
       webContentsId: 42, url: urlA,
       statusLine: 'HTTP/1.1 402 Payment Required',
@@ -671,7 +688,7 @@ describe('x402:approve', () => {
 
     // (3) User clicks Pay on B's manual approval card.
     mockCreateClient.mockResolvedValueOnce(mockClient);
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -715,7 +732,7 @@ describe('x402:approve', () => {
 
   test('manual approve path stamps authorizedBy=manual so a false consume still attaches the header', async () => {
     seedDetection(42);
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -738,7 +755,7 @@ describe('x402:approve', () => {
     // gets the injection on its next outbound request.
     const detecting = seedDetection(42, 'xhr');
     const loadURL = jest.fn().mockResolvedValue();
-    webContents.fromId.mockReturnValue({ loadURL });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -788,7 +805,7 @@ describe('x402:get-details autoPay', () => {
       expiresAt: 9999999999,
     });
 
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.autoPay).toMatchObject({ kind: 'cover', capAmount: '10000000' });
     expect(mockGetPermission).toHaveBeenCalledWith(
       'https://api.example',
@@ -808,7 +825,7 @@ describe('x402:get-details autoPay', () => {
       createdAt: 1,
       expiresAt: 9999999999,
     });
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.autoPay.kind).toBe('over-cap');
     expect(result.autoPay.remaining).toBe('1');
   });
@@ -816,7 +833,7 @@ describe('x402:get-details autoPay', () => {
   test('returns kind=none when no permission exists', async () => {
     seedDetection();
     mockGetPermission.mockReturnValueOnce(null);
-    const result = await ipcHandlers['x402:get-details'](senderEvent(42));
+    const result = await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42 });
     expect(result.autoPay).toEqual({ kind: 'none' });
   });
 });
@@ -837,7 +854,7 @@ describe('x402:approve permission interactions', () => {
 
   beforeEach(() => {
     seedDetection();
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -1023,7 +1040,7 @@ describe('x402:approve with detectionId — strict identity (P1)', () => {
     });
     await Promise.resolve();
 
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -1053,7 +1070,7 @@ describe('x402:approve with detectionId — strict identity (P1)', () => {
       },
     });
     // Map now has detectionId=req-9200 for tab 42. Click arrives for A.
-    const result = await ipcHandlers['x402:approve'](senderEvent(42), {
+    const result = await ipcHandlers['x402:approve'](fromChrome, {
       detectionId: 'req-NONEXISTENT-A',
     });
     expect(result.success).toBe(false);
@@ -1077,7 +1094,7 @@ describe('x402:approve with detectionId — strict identity (P1)', () => {
         ],
       },
     });
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -1105,7 +1122,7 @@ describe('x402:approve with detectionId (subresource approval-card sign-on-click
     });
     await Promise.resolve();
 
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL: jest.fn().mockResolvedValue() }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -1159,7 +1176,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
   let loadURL;
   beforeEach(() => {
     loadURL = jest.fn().mockResolvedValue();
-    webContents.fromId.mockReturnValue({ loadURL });
+    webContents.fromId.mockReturnValue(hostedTab({ loadURL }));
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -1174,7 +1191,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
 
   test('a paywall approval without a token is refused before anything is signed', async () => {
     detect(42, { id: 7001 });
-    const result = await ipcHandlers['x402:approve'](senderEvent(42), {
+    const result = await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7001',
       selectedAcceptIndex: 0,
@@ -1189,7 +1206,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
   test('a subresource approval without a token leaves the detector waiting', async () => {
     const detecting = detect(42, { id: 7002, resourceType: 'xhr' });
     for (const confirmation of [undefined, '', 'f'.repeat(64)]) {
-      const result = await ipcHandlers['x402:approve'](senderEvent(42), {
+      const result = await ipcHandlers['x402:approve'](fromChrome, {
         webContentsId: 42,
         detectionId: 'req-7002',
         confirmation,
@@ -1209,7 +1226,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     detect(42, { id: 7102, url: 'https://b.example/article' });
     const confirmation = confirmationFor(paymentAsShown(41));
 
-    const result = await ipcHandlers['x402:approve'](senderEvent(42), {
+    const result = await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7102',
       selectedAcceptIndex: 0,
@@ -1221,7 +1238,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     // Nor does a token that names tab A but B's detection: main binds the
     // tab it holds B's detection for.
     const relabelled = confirmationFor({ ...paymentAsShown(42), webContentsId: 41 });
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7102',
       confirmation: relabelled,
@@ -1235,7 +1252,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const detectingB = detect(42, { id: 7202, resourceType: 'xhr', url: 'https://b.example/seg' });
     const confirmation = confirmationFor(paymentAsShown(41, { detectionId: 'req-7201' }));
 
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7202',
       confirmation,
@@ -1253,7 +1270,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     detect(42, { id: 7301, requirements: twoAccepts() });
     const confirmation = confirmationFor(paymentAsShown(42, { acceptIndex: 0 }));
 
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7301',
       selectedAcceptIndex: 1,
@@ -1263,7 +1280,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
 
     // Nor does one that claims index 1 with entry 0's terms.
     const mislabelled = confirmationFor({ ...paymentAsShown(42, { acceptIndex: 0 }), acceptIndex: 1 });
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7301',
       selectedAcceptIndex: 1,
@@ -1281,7 +1298,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const detecting = detect(42, { id: 7302, resourceType: 'xhr', requirements: twoAccepts() });
     const confirmation = confirmationFor(paymentAsShown(42, { detectionId: 'req-7302', acceptIndex: 1 }));
     // No index: main checks entry 0, the entry it would sign.
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7302',
       confirmation,
@@ -1298,7 +1315,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const payment = paymentAsShown(42);
     const confirmation = confirmationFor(payment);
     for (const selectedAcceptIndex of [1, -1, 0.5, '0']) {
-      expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+      expect(await ipcHandlers['x402:approve'](fromChrome, {
         webContentsId: 42,
         detectionId: 'req-7303',
         selectedAcceptIndex,
@@ -1306,7 +1323,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
       })).toMatchObject({ success: false });
     }
     nothingSigned();
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7303',
       selectedAcceptIndex: 0,
@@ -1324,14 +1341,14 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     // The first use fails after the check (the vault locked); the payment
     // stays, and the same token can't be presented again.
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), args)).toMatchObject({
+    expect(await ipcHandlers['x402:approve'](fromChrome, args)).toMatchObject({
       success: false,
       error: VAULT_LOCKED_MESSAGE,
     });
     expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-7401');
     mockCreateClient.mockClear();
 
-    const replay = await ipcHandlers['x402:approve'](senderEvent(42), args);
+    const replay = await ipcHandlers['x402:approve'](fromChrome, args);
     expect(replay).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
     expect(replay.error).toMatch(/already used/);
     nothingSigned();
@@ -1344,7 +1361,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const confirmation = confirmationFor(paymentAsShown(42));
     clock += confirmations.CONFIRMATION_TTL_MS;
 
-    const result = await ipcHandlers['x402:approve'](senderEvent(42), {
+    const result = await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7402',
       selectedAcceptIndex: 0,
@@ -1360,7 +1377,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const confirmation = confirmationFor(paymentAsShown(42));
     // A newer 402 supersedes the one the token was minted for.
     detect(42, { id: 7404 });
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7403',
       confirmation,
@@ -1376,7 +1393,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     delete stored.detectionId;
     stored.authorizedBy = 'cap';
 
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       selectedAcceptIndex: 0,
     })).toMatchObject({ success: false, error: expect.stringMatching(/No pending x402 payment/) });
@@ -1388,7 +1405,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const confirmation = confirmationFor(paymentAsShown(42), 0);
     mockGetActiveWalletIndex.mockReturnValue(1);
 
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7501',
       selectedAcceptIndex: 0,
@@ -1420,7 +1437,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     const GRANT = { capAmount: '10000000', windowSeconds: 30 * 24 * 60 * 60 };
 
     const withoutGrant = confirmationFor(paymentAsShown(42));
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7601',
       selectedAcceptIndex: 0,
@@ -1429,7 +1446,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
     })).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
 
     const smallGrant = confirmationFor(paymentAsShown(42, { grant: GRANT }));
-    expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
       webContentsId: 42,
       detectionId: 'req-7601',
       selectedAcceptIndex: 0,
@@ -1458,7 +1475,7 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
       mockGetPermission.mockReturnValue(cap());
       // An allowance answers only for a live user tab main can attribute
       // the 402 to.
-      webContents.fromId.mockReturnValue({ loadURL, hostWebContents: { send: jest.fn() } });
+      webContents.fromId.mockReturnValue(hostedTab({ loadURL, hostWebContents: { send: jest.fn() } }));
     });
 
     test('a paywall the allowance covers is signed and reloaded', async () => {
@@ -1491,12 +1508,279 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
       await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
       expect(mockCreateClient).not.toHaveBeenCalled();
       expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-7703');
-      expect(await ipcHandlers['x402:approve'](senderEvent(42), {
+      expect(await ipcHandlers['x402:approve'](fromChrome, {
         webContentsId: 42,
         detectionId: 'req-7703',
       })).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(mockCreateClient).not.toHaveBeenCalled();
     });
+  });
+});
+
+// === One approval per detection, from the hosting window ==================
+
+const detectOn = (tabId, { id, resourceType = 'mainFrame', url = 'https://api.example/article' } = {}) =>
+  intercept.detectPaymentRequiredHandler({
+    id,
+    webContentsId: tabId,
+    url,
+    statusLine: 'HTTP/1.1 402 Payment Required',
+    resourceType,
+    responseHeaders: {
+      'PAYMENT-REQUIRED': [
+        Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64'),
+      ],
+    },
+  });
+
+// A sign held open the way a hardware wallet holds it: on the device until
+// the test lets it go.
+function signOnDevice() {
+  let release;
+  mockClient.createPaymentPayload.mockImplementation(() => new Promise((resolve) => {
+    release = () => resolve({ x402Version: 2, payload: { authorization: {}, signature: '0xabc' } });
+  }));
+  return () => release();
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+describe('x402:approve signs each detection once', () => {
+  const approveWith = (tabId, detectionId, confirmation) =>
+    ipcHandlers['x402:approve'](fromChrome, {
+      webContentsId: tabId,
+      detectionId,
+      selectedAcceptIndex: 0,
+      confirmation,
+    });
+
+  beforeEach(() => {
+    mockClient.createPaymentPayload.mockResolvedValue({
+      x402Version: 2,
+      payload: { authorization: {}, signature: '0xabc' },
+    });
+  });
+
+  test('two tokens for one subresource detection: the second approval is refused', async () => {
+    const detecting = detectOn(42, { id: 8001, resourceType: 'xhr', url: 'https://api.example/seg/1' });
+    const payment = paymentAsShown(42, { detectionId: 'req-8001' });
+    const [first, second, third] = [1, 2, 3].map(() => confirmationFor(payment));
+    const release = signOnDevice();
+
+    expect(await approveWith(42, 'req-8001', first)).toEqual({ success: true, pending: true });
+    // While the first approval's sign is on the device.
+    const again = await approveWith(42, 'req-8001', second);
+    expect(again).toMatchObject({ success: false, error: expect.stringMatching(/already been approved/) });
+    expect([again.success, mockClient.createPaymentPayload.mock.calls.length]).toEqual([false, 1]);
+
+    release();
+    expect(await detecting).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    // And after it was signed: the detection is still the tab's record,
+    // but it has been paid.
+    expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-8001');
+    expect(await approveWith(42, 'req-8001', third)).toMatchObject({ success: false });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    // Every token presented was burnt.
+    expect(confirmations._outstandingCount()).toBe(0);
+  });
+
+  test('two tokens for one paywall detection: the second approval is refused', async () => {
+    detectOn(42, { id: 8002 });
+    const payment = paymentAsShown(42);
+    const [first, second] = [1, 2].map(() => confirmationFor(payment));
+
+    expect(await approveWith(42, 'req-8002', first)).toEqual({ success: true });
+    const again = await approveWith(42, 'req-8002', second);
+    expect([again.success, mockClient.createPaymentPayload.mock.calls.length]).toEqual([false, 1]);
+    expect(confirmations._outstandingCount()).toBe(0);
+  });
+
+  test('two concurrent paywall approvals: the one that arrives while the first is signing is refused', async () => {
+    detectOn(42, { id: 8003 });
+    const payment = paymentAsShown(42);
+    const [first, second] = [1, 2].map(() => confirmationFor(payment));
+    const release = signOnDevice();
+
+    const paying = approveWith(42, 'req-8003', first);
+    await flush();
+    // The detection is still in the map: its sign hasn't finished.
+    expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-8003');
+    const again = await approveWith(42, 'req-8003', second);
+    expect(again).toMatchObject({ success: false, error: expect.stringMatching(/already been approved/) });
+
+    release();
+    expect(await paying).toEqual({ success: true });
+    expect([again.success, mockClient.createPaymentPayload.mock.calls.length]).toEqual([false, 1]);
+    expect(confirmations._outstandingCount()).toBe(0);
+  });
+
+  test("a failed paywall sign hands the detection back for the card's retry, which pays it once", async () => {
+    detectOn(42, { id: 8004 });
+    const payment = paymentAsShown(42);
+    const [first, retry, third] = [1, 2, 3].map(() => confirmationFor(payment));
+
+    mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    expect(await approveWith(42, 'req-8004', first)).toMatchObject({ success: false, error: VAULT_LOCKED_MESSAGE });
+    expect(await approveWith(42, 'req-8004', retry)).toEqual({ success: true });
+    expect(await approveWith(42, 'req-8004', third)).toMatchObject({ success: false });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed subresource sign re-arms the detection; the retry pays it once', async () => {
+    const detecting = detectOn(42, { id: 8005, resourceType: 'xhr', url: 'https://api.example/seg/2' });
+    mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    expect(await approveAsCard(42, { detectionId: 'req-8005' })).toEqual({ success: true, pending: true });
+    await flush();
+    // The detector told the card and re-armed the same detection.
+    expect(intercept.hasPendingApproval('req-8005')).toBe(true);
+    expect(CHROME.send).toHaveBeenCalledWith('x402:approval-result', {
+      detectionId: 'req-8005',
+      success: false,
+      error: VAULT_LOCKED_MESSAGE,
+    });
+
+    const retry = paymentAsShown(42, { detectionId: 'req-8005' });
+    const [paid, extra] = [1, 2].map(() => confirmationFor(retry));
+    expect(await approveWith(42, 'req-8005', paid)).toEqual({ success: true, pending: true });
+    expect(await approveWith(42, 'req-8005', extra)).toMatchObject({ success: false });
+    expect(await detecting).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+  });
+
+  test("a newer 402 with the same request id is a fresh card, not the paid one's claim", async () => {
+    // A followed retry whose signature never rode out 402s again under the
+    // same request id, so the detector mints the same detectionId.
+    const detecting = detectOn(42, { id: 8006, resourceType: 'xhr', url: 'https://api.example/seg/3' });
+    expect(await approveAsCard(42, { detectionId: 'req-8006' })).toEqual({ success: true, pending: true });
+    await detecting;
+
+    const again = detectOn(42, { id: 8006, resourceType: 'xhr', url: 'https://api.example/seg/3' });
+    expect(await approveAsCard(42, { detectionId: 'req-8006' })).toEqual({ success: true, pending: true });
+    expect(await again).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(2);
+  });
+
+  test('a closed tab drops its claims', async () => {
+    detectOn(42, { id: 8007 });
+    const [first, second] = [1, 2].map(() => confirmationFor(paymentAsShown(42)));
+    const release = signOnDevice();
+    const paying = approveWith(42, 'req-8007', first);
+    await flush();
+    expect(intercept.isApprovalClaimed('req-8007')).toBe(true);
+    intercept.cleanupWebContents(42);
+    expect(intercept.isApprovalClaimed('req-8007')).toBe(false);
+    // Its detection went with it, so nothing can approve it again.
+    expect(await approveWith(42, 'req-8007', second)).toMatchObject({ success: false, error: expect.stringMatching(/stale/) });
+    release();
+    await paying;
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("x402 payment authority belongs to the window hosting the payment's tab", () => {
+  const OTHER_WINDOW = { sender: { id: 2, send: jest.fn() } };
+  const SIGNED = { x402Version: 2, payload: { authorization: {}, signature: '0xabc' } };
+  let loadURL;
+  let tabs;
+
+  beforeEach(() => {
+    loadURL = jest.fn().mockResolvedValue();
+    // Tab 42 is CHROME's; tab 43 another window's; tab 44 is closing.
+    tabs = new Map([
+      [42, hostedTab({ id: 42, loadURL })],
+      [43, { ...hostedTab({ id: 43, loadURL }), hostWebContents: { id: 2, send: jest.fn() } }],
+      [44, hostedTab({ id: 44, loadURL, isDestroyed: () => true })],
+    ]);
+    webContents.fromId.mockImplementation((id) => tabs.get(id) ?? null);
+    mockClient.createPaymentPayload.mockResolvedValue(SIGNED);
+  });
+
+  const nothingSigned = () => {
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(loadURL).not.toHaveBeenCalled();
+  };
+
+  test("x402:get-details serves the hosting window, and refuses another window's or a closed tab's", async () => {
+    detectOn(42, { id: 8101 });
+    detectOn(44, { id: 8102 });
+    expect(await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 42, detectionId: 'req-8101' }))
+      .toMatchObject({ success: true, detectionId: 'req-8101' });
+    expect(await ipcHandlers['x402:get-details'](OTHER_WINDOW, { webContentsId: 42, detectionId: 'req-8101' }))
+      .toEqual({ success: false, error: 'This payment is not on a tab of this window' });
+    expect(await ipcHandlers['x402:get-details'](OTHER_WINDOW, { webContentsId: 42 }))
+      .toMatchObject({ success: false });
+    expect(await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 44, detectionId: 'req-8102' }))
+      .toMatchObject({ success: false, error: 'This payment is not on a tab of this window' });
+    // With no tab named, the sender itself is not a tab of its own.
+    expect(await ipcHandlers['x402:get-details'](fromChrome, { detectionId: 'req-8101' }))
+      .toMatchObject({ success: false });
+  });
+
+  test("x402:get-details for a subresource is judged by the awaiting detection's tab, not the one named", async () => {
+    detectOn(42, { id: 8103, resourceType: 'xhr' });
+    expect(await ipcHandlers['x402:get-details'](OTHER_WINDOW, { webContentsId: 43, detectionId: 'req-8103' }))
+      .toMatchObject({ success: false, error: 'This payment is not on a tab of this window' });
+    expect(await ipcHandlers['x402:get-details'](fromChrome, { webContentsId: 43, detectionId: 'req-8103' }))
+      .toMatchObject({ success: true, detectionId: 'req-8103' });
+  });
+
+  test("another window cannot approve this window's paywall; its token is burnt and the payment stays", async () => {
+    detectOn(42, { id: 8104 });
+    const confirmation = confirmationFor(paymentAsShown(42));
+    expect(await ipcHandlers['x402:approve'](OTHER_WINDOW, {
+      webContentsId: 42,
+      detectionId: 'req-8104',
+      selectedAcceptIndex: 0,
+      confirmation,
+    })).toEqual({ success: false, error: 'This payment is not on a tab of this window' });
+    expect(confirmations._outstandingCount()).toBe(0);
+    nothingSigned();
+    // Not claimed by the refusal: the hosting window's own Pay still works.
+    expect(intercept.getDetectedPayment(42)?.detectionId).toBe('req-8104');
+    expect(await approveAsCard(42)).toEqual({ success: true });
+    expect(loadURL).toHaveBeenCalledWith('https://api.example/article');
+  });
+
+  test("another window cannot settle this window's subresource approval", async () => {
+    const detecting = detectOn(42, { id: 8105, resourceType: 'xhr', url: 'https://api.example/seg/9' });
+    const confirmation = confirmationFor(paymentAsShown(42, { detectionId: 'req-8105' }));
+    expect(await ipcHandlers['x402:approve'](OTHER_WINDOW, {
+      webContentsId: 43,
+      detectionId: 'req-8105',
+      selectedAcceptIndex: 0,
+      confirmation,
+    })).toEqual({ success: false, error: 'This payment is not on a tab of this window' });
+    expect(confirmations._outstandingCount()).toBe(0);
+    expect(intercept.hasPendingApproval('req-8105')).toBe(true);
+    nothingSigned();
+
+    expect(await approveAsCard(42, { detectionId: 'req-8105' })).toEqual({ success: true, pending: true });
+    expect(await detecting).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+  });
+
+  test('a closed tab cannot be approved, and the token is burnt', async () => {
+    detectOn(44, { id: 8106 });
+    const confirmation = confirmationFor(paymentAsShown(44));
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
+      webContentsId: 44,
+      detectionId: 'req-8106',
+      selectedAcceptIndex: 0,
+      confirmation,
+    })).toEqual({ success: false, error: 'This payment is not on a tab of this window' });
+    expect(confirmations._outstandingCount()).toBe(0);
+    nothingSigned();
+
+    // Nor one main can no longer find at all.
+    tabs.delete(44);
+    const again = confirmationFor(paymentAsShown(44));
+    expect(await ipcHandlers['x402:approve'](fromChrome, {
+      webContentsId: 44,
+      detectionId: 'req-8106',
+      selectedAcceptIndex: 0,
+      confirmation: again,
+    })).toMatchObject({ success: false });
+    expect(confirmations._outstandingCount()).toBe(0);
+    nothingSigned();
   });
 });
 
@@ -1555,7 +1839,7 @@ describe('x402:cancel', () => {
     });
     const goBack = jest.fn();
     const loadURL = jest.fn().mockResolvedValue();
-    webContents.fromId.mockReturnValue({ canGoBack: () => true, goBack, loadURL });
+    webContents.fromId.mockReturnValue(hostedTab({ canGoBack: () => true, goBack, loadURL }));
 
     const event = senderEvent(42);
     const result = await ipcHandlers['x402:cancel'](event, { webContentsId: 42, navigate: false });
@@ -1583,7 +1867,7 @@ describe('x402:refresh-balances', () => {
     mockGetAllBalances.mockReset().mockResolvedValueOnce(fresh);
 
     const sidebarSend = jest.fn();
-    webContents.fromId.mockReturnValue({ hostWebContents: { send: sidebarSend } });
+    webContents.fromId.mockReturnValue(hostedTab({ hostWebContents: { send: sidebarSend } }));
 
     const result = await ipcHandlers['x402:refresh-balances'](senderEvent(42));
 
@@ -1608,7 +1892,7 @@ describe('x402:refresh-balances', () => {
   test('surfaces fetch errors instead of broadcasting stale state', async () => {
     mockGetAllBalances.mockReset().mockRejectedValueOnce(new Error('RPC down'));
     const sidebarSend = jest.fn();
-    webContents.fromId.mockReturnValue({ hostWebContents: { send: sidebarSend } });
+    webContents.fromId.mockReturnValue(hostedTab({ hostWebContents: { send: sidebarSend } }));
 
     const result = await ipcHandlers['x402:refresh-balances'](senderEvent(42));
 

@@ -5,6 +5,8 @@
  * browser-shell webContents, NOT in the webview that hit the 402).
  * All channels that operate on a specific tab take `webContentsId`
  * explicitly — the sender is the sidebar, not the paying webview.
+ * Reading a payment and approving it are for the chrome window that
+ * hosts its tab alone: another window's sidebar is refused.
  *
  *   x402:get-details(webContentsId) — return the parsed PaymentRequired
  *     the detector stashed for that webContents, plus asset metadata
@@ -45,8 +47,12 @@ const {
   settlePendingUnlockWait,
   getPendingApproval,
   settlePendingApproval,
+  claimApproval,
+  isApprovalClaimed,
+  releaseApprovalClaim,
   sendToHost,
 } = require('./intercept');
+const { guestHostedBy } = require('../wallet/agent-tab-custody');
 const {
   revoke: revokePermission,
   revokeAllForOrigin,
@@ -180,8 +186,15 @@ function refreshAndBroadcastBalances(webContentsId, address) {
 function registerX402Ipc() {
   // The tab-scoped handlers accept an explicit `webContentsId` from the
   // sidebar (which is the host webContents and doesn't know which
-  // webview the 402 came from). For test ergonomics we also fall back
-  // to `event.sender.id` — production callers pass it explicitly.
+  // webview the 402 came from). The ones that don't read or approve a
+  // payment also fall back to `event.sender.id` for test ergonomics;
+  // production callers pass it explicitly.
+  //
+  // x402:get-details and x402:approve serve only the chrome window that
+  // hosts the payment's tab (`guestHostedBy`): the sender policy admits
+  // any Freedom chrome renderer, and one window must not read, or pay,
+  // the payment on another window's card. A renderer can still approve a
+  // payment on its own window's tabs, with a token it minted for it.
   ipcMain.handle(IPC.X402_GET_DETAILS, async (event, args = {}) => {
     // When detectionId is provided, the lookup is strict — refusing to
     // serve a different detection's data avoids "user sees A's details
@@ -193,12 +206,14 @@ function registerX402Ipc() {
     // When detectionId is not provided (legacy / mainFrame callers
     // that haven't been updated), fall back to the tab-keyed entry.
     const { detectionId } = args;
-    const id = args.webContentsId ?? event.sender.id;
+    let id = args.webContentsId;
 
     let detected;
     if (detectionId) {
       detected = getPendingApproval(detectionId);
-      if (!detected) {
+      if (detected) {
+        id = detected.webContentsId;
+      } else {
         const stored = getDetectedPayment(id);
         if (stored && stored.detectionId === detectionId) {
           detected = stored;
@@ -212,6 +227,9 @@ function registerX402Ipc() {
       if (!detected) {
         return { success: false, error: 'No pending x402 payment for this tab' };
       }
+    }
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: 'This payment is not on a tab of this window' };
     }
 
     // Resolve origin + active address once for the whole enrichment
@@ -278,8 +296,16 @@ function registerX402Ipc() {
   // card (an allowance covered it) and can't be approved here. Auto-pay
   // within an allowance doesn't come through this handler: the detector
   // evaluates the cap in main and signs (intercept.js).
+  //
+  // Only the window hosting the payment's tab can approve it, and each
+  // detection is approved once: the token that checks out claims it in
+  // the same turn, before anything is settled or signed, and any later
+  // approval of it is refused with its token burnt — a second token
+  // minted for the same card included, while the first sign is on the
+  // device or after. A failed sign that queued nothing hands the claim
+  // back for the retry the card offers (below, and the detector's loop).
   ipcMain.handle(IPC.X402_APPROVE, async (event, args = {}) => {
-    const id = args.webContentsId ?? event.sender.id;
+    const id = args.webContentsId;
     const { detectionId, grant, selectedAcceptIndex, confirmation } = args;
 
     // Which payment this approves, from main's record. WP7.1 subresource
@@ -322,6 +348,14 @@ function registerX402Ipc() {
           : 'No pending x402 payment to approve',
       };
     }
+    if (!guestHostedBy(event.sender, record.webContentsId)) {
+      discardConfirmation(confirmation);
+      return { success: false, error: 'This payment is not on a tab of this window' };
+    }
+    if (isApprovalClaimed(detectionId)) {
+      discardConfirmation(confirmation);
+      return { success: false, error: 'This payment has already been approved' };
+    }
 
     const acceptIndex = selectedAcceptIndex ?? 0;
     const accept = Number.isInteger(acceptIndex) && acceptIndex >= 0
@@ -347,6 +381,9 @@ function registerX402Ipc() {
     } catch (err) {
       return { success: false, error: err.message, code: err.code };
     }
+    // Checked as unclaimed above, in this same turn: nothing in between
+    // awaits, so no other approval can have claimed it since.
+    claimApproval(detectionId, record.webContentsId);
 
     // Subresource: settle the detector's pending approval (it signs +
     // 307s). Returns `pending: true` so the renderer keeps the card in
@@ -385,6 +422,13 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
+      // The card offers Pay again after a failed sign. While the detection
+      // is still the tab's current one it was never signed (the sign
+      // clears it as it queues the signature), so it can be approved
+      // again; one that has since gone or been replaced keeps the claim.
+      if (getDetectedPayment(id)?.detectionId === detectionId) {
+        releaseApprovalClaim(detectionId);
+      }
       // Vault locked / unparseable URL / sdk error all surface verbatim
       // so the sidebar can prompt the right next step.
       return { success: false, error: err.message };

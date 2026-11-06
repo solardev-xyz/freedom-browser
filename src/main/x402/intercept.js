@@ -165,6 +165,18 @@ const UNLOCK_RESUME_TTL_MS = 5 * 60 * 1000;
 const pendingApprovals = new Map();
 const PENDING_APPROVAL_TTL_MS = 5 * 60 * 1000;
 
+// "The user's approval of this detection is being, or has been, signed."
+// Keyed by detectionId; value: `{ webContentsId }`. `x402:approve`
+// claims a detection in the same turn as its confirmation token checks out,
+// before it settles the detector or starts a sign, and refuses (burning the
+// token) any approval of a claimed detection: a second token minted for the
+// same card cannot sign it again, whether it arrives while the first sign is
+// on the device or after it. A claim is released only to re-arm a retry
+// after a failed sign (the detector's loop below; a paywall whose detection
+// is still unsigned in ipc.js), and dropped with the tab, or when a newer
+// card detection supersedes the tab's older ones.
+const approvalClaims = new Map();
+
 // "Cap-covered subresource detector hit `Vault is locked`; the original
 // page fetch is being held open while the sidebar prompts the user to
 // unlock." Keyed by webContentsId. Value: { resolve, reject, timer }.
@@ -497,6 +509,34 @@ function clearAllPendingApprovals() {
 }
 
 /**
+ * Claim a detection for the approval about to sign it. Synchronous, so a
+ * caller that checks `isApprovalClaimed` and claims in one turn is atomic.
+ * Returns false if it was already claimed.
+ */
+function claimApproval(detectionId, webContentsId) {
+  if (approvalClaims.has(detectionId)) return false;
+  approvalClaims.set(detectionId, { webContentsId });
+  return true;
+}
+
+function isApprovalClaimed(detectionId) {
+  return approvalClaims.has(detectionId);
+}
+
+/** Re-arm a detection whose sign failed before anything was queued. */
+function releaseApprovalClaim(detectionId) {
+  return approvalClaims.delete(detectionId);
+}
+
+function releaseApprovalClaimsForTab(webContentsId) {
+  deleteByWebContents(approvalClaims, webContentsId);
+}
+
+function clearAllApprovalClaims() {
+  approvalClaims.clear();
+}
+
+/**
  * Drop any state held for a webContents that is going away. Called from
  * the `'destroyed'` handler in `webcontents-setup.js` — without it, a tab
  * that hits a 402 (or gets an interstitial-approved pending payment) and
@@ -580,6 +620,7 @@ function cleanupWebContents(webContentsId) {
   // Abort any in-flight awaits for this tab — without this the detector
   // would hang forever and dispatcher callbacks would never release.
   abortPendingApprovalsForTab(webContentsId, new Error('tab destroyed'));
+  releaseApprovalClaimsForTab(webContentsId);
   abortPendingUnlockWait(webContentsId, new Error('tab destroyed'));
   // `pendingPayments` keys start with `${webContentsId}|` (the retry-key
   // format), so prefix match drops them in one pass.
@@ -980,6 +1021,11 @@ async function detectPaymentRequiredHandler(details) {
   // the older entry — the sidebar will have replaced the card anyway.
   const detectionId = mintDetectionId(details);
   abortPendingApprovalsForTab(details.webContentsId, new Error('superseded by newer 402'));
+  // The tab's older detections can no longer be approved (their entries are
+  // aborted, and the tab-keyed record is about to name this one), so their
+  // claims go. A retry of an in-flight request whose signature never rode
+  // out reaches here with the same `req-<id>`, and must not find it claimed.
+  releaseApprovalClaimsForTab(details.webContentsId);
   detectedPayments.set(details.webContentsId, {
     ...detectedPayments.get(details.webContentsId),
     detectionId,
@@ -1069,6 +1115,11 @@ async function detectPaymentRequiredHandler(details) {
         responseHeaders: { Location: [details.url] },
       };
     } catch (err) {
+      // Nothing was queued (signAndQueueRetry throws only before it stashes
+      // a signature), so the detection is unpaid: release x402:approve's
+      // claim on it, in this same turn as the re-arm below, so the user's
+      // next Pay can approve it again.
+      releaseApprovalClaim(detectionId);
       // Vault auto-locked between render and click is the expected
       // recoverable case — the retry loop re-arms pendingApproval so
       // the user can unlock + retry. Anything else is likely a real
@@ -1289,6 +1340,10 @@ module.exports = {
   abortPendingApproval,
   abortPendingApprovalsForTab,
   clearAllPendingApprovals,
+  claimApproval,
+  isApprovalClaimed,
+  releaseApprovalClaim,
+  clearAllApprovalClaims,
   clearAllHostSenders,
   cleanupWebContents,
 };

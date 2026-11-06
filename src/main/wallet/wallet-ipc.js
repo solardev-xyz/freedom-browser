@@ -51,7 +51,7 @@ const {
   feeCheckError,
   feeNotShownError,
 } = require('./fee-check');
-const { isAgentPage } = require('./agent-tab-custody');
+const { isAgentPage, guestHostedBy } = require('./agent-tab-custody');
 const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
@@ -613,15 +613,19 @@ function registerWalletIpc() {
   // approval screen (O-7). The signing handler below it will sign exactly
   // this request, once. A wallet send binds the account active right now,
   // and so does an x402 payment, which `x402:approve` signs with the active
-  // account (x402/ipc.js).
+  // account (x402/ipc.js). An x402 payment is confirmed only by the chrome
+  // window that hosts its tab, the one window `x402:approve` takes it from.
   //
   // A transaction's confirmation is also the moment of its approval for the
   // fee check (design 0005, A): judged against evidence at most 60 s old, a
   // send above the threshold gets no token unless the user confirmed it
   // again (`options.feeAcknowledged`), and the screen asks again with the
   // verdict it gets back.
-  ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload, options) => {
+  ipcMain.handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
     try {
+      if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
+        return { success: false, error: 'This payment is not on a tab of this window' };
+      }
       const index =
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
           ? getActiveWalletIndex()

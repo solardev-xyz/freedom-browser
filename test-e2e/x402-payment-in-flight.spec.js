@@ -104,22 +104,30 @@ function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT]) {
   }, { ledger, accepts });
 }
 
-// Put the app on the Ledger account and raise a 402 the way main does.
+// Put the app on the Ledger account and raise a 402 the way main does, on
+// the window's own tab: main mints a payment's confirmation only for the
+// window that hosts its tab. Returns that tab's webContents id.
 async function openPaymentCard(electronApp, window, ledger) {
   await window.evaluate(async (ledger) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     walletState.derivedWallets = [ledger];
     walletState.activeWalletIndex = ledger.index;
   }, ledger);
+  const guestId = await window.evaluate(async () => {
+    const tabs = await import('./lib/tabs.js');
+    return tabs.getActiveWebview()?.getWebContentsId() ?? null;
+  });
+  expect(typeof guestId).toBe('number');
 
-  await electronApp.evaluate(({ BrowserWindow }) => {
+  await electronApp.evaluate(({ BrowserWindow }, guestId) => {
     BrowserWindow.getAllWindows()[0].webContents.send('x402:approval-needed', {
-      webContentsId: 7,
+      webContentsId: guestId,
       detectionId: 'det-1',
       url: 'https://pay.example/article',
       resourceType: 'mainFrame',
     });
-  });
+  }, guestId);
+  return guestId;
 }
 
 function cancelCounts(electronApp) {
@@ -193,7 +201,7 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   window,
 }) => {
   await stubMainIpc(electronApp, LEDGER, [USDC_ACCEPT, DAI_ACCEPT]);
-  await openPaymentCard(electronApp, window, LEDGER);
+  const guestId = await openPaymentCard(electronApp, window, LEDGER);
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await expect(window.locator('#x402-approval-chooser')).toBeVisible();
@@ -241,7 +249,7 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
     }
   }, { confirmation: approveCalls[0].confirmation, payment });
   const shown = {
-    webContentsId: 7,
+    webContentsId: guestId,
     detectionId: 'det-1',
     url: 'https://pay.example/article',
     acceptIndex: 0,
