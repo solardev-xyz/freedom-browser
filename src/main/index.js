@@ -446,7 +446,6 @@ const { getIntentTracker } = require('./wallet/intent-tracker');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
-const { registerRpcManagerIpc } = require('./wallet/rpc-manager');
 const { registerNetworkConfigIpc } = require('./networks/network-ipc');
 const { registerDappPermissionsIpc } = require('./wallet/dapp-permissions');
 const {
@@ -659,7 +658,6 @@ async function bootstrap() {
   // this, the wipe fails with EPERM on Windows during onboarding (issue #90).
   setBeeLifecycle(createAntLifecycle());
   registerTokenRegistryIpc();
-  registerRpcManagerIpc();
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();
   registerPermissionsIpc();

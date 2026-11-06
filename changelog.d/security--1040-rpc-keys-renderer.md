@@ -1,0 +1,1 @@
+- RPC provider API keys stay out of the browser window, and out of the network details sent to a phone wallet ([#1040](https://github.com/solardev-xyz/freedom-browser/issues/1040))

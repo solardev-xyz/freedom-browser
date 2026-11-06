@@ -992,12 +992,10 @@ contextBridge.exposeInMainWorld('tokens', {
   removeToken: (key) => ipcRenderer.invoke('tokens:remove-token', key),
 });
 
-contextBridge.exposeInMainWorld('rpcManager', {
-  // Effective RPC URLs for a chain — the registry's resolved rpc pool.
-  // Used by the injected dApp provider; provider/API-key management now
-  // lives on the Networks settings page.
-  getEffectiveUrls: (chainId) => ipcRenderer.invoke('rpc:get-effective-urls', chainId),
-});
+// No bridge returns a chain's resolved RPC pool: a keyed provider's URL
+// carries the user's API key, and the chrome renderer is not trusted with
+// it (#1040). Chain reads go through wallet.requestChain; the settings
+// page reads only whether a key is set.
 
 // Site permissions (web permission prompts). The chrome renderer shows
 // the anchored prompt + the address-bar indicator; both live here.

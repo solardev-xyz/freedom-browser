@@ -34,11 +34,13 @@ const SIGNATURE_RE = /^0x[0-9a-fA-F]{130}$/;
  * (wallet_switchEthereumChain) — and, when the wallet doesn't know the
  * chain (4902), offer to add it, which needs this metadata. Only public
  * https RPC endpoints go over: the user's own node config is unreachable
- * from a phone and nobody else's business.
+ * from a phone and nobody else's business, and a keyed provider's URL
+ * carries the user's API key (#1040). The descriptor passes through the
+ * chrome renderer on its way to the phone.
  */
 function buildChainDescriptor(chainId) {
   const { getChain } = require('../chains');
-  const { getEffectiveRpcUrls } = require('../rpc-manager');
+  const { getKeylessRpcUrls } = require('../rpc-manager');
 
   const descriptor = { chainId: toQuantity(chainId) };
   const chain = getChain(chainId);
@@ -47,7 +49,7 @@ function buildChainDescriptor(chainId) {
   descriptor.chainName = chain.name;
   descriptor.nativeCurrency = chain.nativeCurrency;
   if (chain.blockExplorer) descriptor.blockExplorerUrls = [chain.blockExplorer];
-  const rpcUrls = (getEffectiveRpcUrls(chainId) || []).filter((url) => url.startsWith('https://'));
+  const rpcUrls = (getKeylessRpcUrls(chainId) || []).filter((url) => url.startsWith('https://'));
   if (rpcUrls.length) descriptor.rpcUrls = rpcUrls;
   return descriptor;
 }
