@@ -42,6 +42,7 @@ import { goBackInHistory } from '../history-traversal.js';
 import { refreshBalances } from './balance-display.js';
 import { showX402Permissions } from './permission-manage.js';
 import { showVaultUnlock } from './vault-unlock.js';
+import { confirmSigning } from './signing-confirmation.js';
 import {
   normalizeX402BannerOrigin,
   selectedAcceptChanged,
@@ -819,11 +820,25 @@ async function approve() {
   const grant = buildGrantPayloadFromInputs();
   let result;
   try {
+    // This click is the confirmation (O-7): main signs nothing for
+    // x402:approve without a single-use token bound to this payment as
+    // the card shows it — the tab and detection, the chosen entry, the
+    // account and the allowance granted with it.
+    const acceptIndex = request.selectedAcceptIndex ?? 0;
+    const { confirmation } = await confirmSigning('x402-payment', null, {
+      webContentsId: request.webContentsId,
+      detectionId: request.detectionId,
+      url: request.url,
+      acceptIndex,
+      accept: request.accepts?.[acceptIndex]?.accept,
+      grant: grant ?? null,
+    });
     result = await window.electronAPI.x402Approve({
       webContentsId: request.webContentsId,
       detectionId: request.detectionId,
       grant,
-      selectedAcceptIndex: request.selectedAcceptIndex,
+      selectedAcceptIndex: acceptIndex,
+      confirmation,
     });
   } catch (err) {
     restoreCardWithError(request, err?.message || 'Payment approval failed.');

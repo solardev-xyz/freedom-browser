@@ -72,9 +72,9 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(core.state).toBe('stopped');
   });
 
-  test('protocol 2: a core that speaks it says streams; one that speaks only 1 refuses it, without a restart', async () => {
-    // The pinned core (0.9.1) speaks protocol 1 only (design 0009, step 5
-    // moves the core to 2), so main asks it for 1.
+  test('protocol 2, which the app asks for: the core speaks it and says streams', async () => {
+    // From 0.10.0, the pinned core (design 0009, step 5). A core that speaks
+    // only 1 refuses it without a restart: core-client-streams.test.js.
     let spawned = 0;
     const core = new CoreClient({
       spawn: (...args) => {
@@ -96,13 +96,8 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
       protocol: 2,
     });
     running = core;
-    const hello = await core.start().catch((error) => ({ error }));
-    if (hello.error) {
-      expect(hello.error.code).toBe('core_unavailable');
-      expect(core.state).toBe('failed');
-      expect(spawned).toBe(1);
-      return;
-    }
+    const hello = await core.start();
+    expect(spawned).toBe(1);
     expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('streams');
     expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });

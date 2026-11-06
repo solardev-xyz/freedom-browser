@@ -9,7 +9,8 @@
 //
 // Driven through the real renderer card: the main-process IPC it talks to is
 // replaced for this app instance, and the approve handler is left hanging to
-// hold the UI in the device-prompt state.
+// hold the UI in the device-prompt state. The confirmation Pay mints
+// (`wallet:confirm-signing`) is main's real one.
 
 const { test, expect } = require('./fixtures');
 
@@ -29,6 +30,7 @@ const TX_PARAMS = {
 
 const USDC_ACCEPT = {
   accept: {
+    scheme: 'exact',
     amount: '2500000',
     asset: '0xUSDC',
     network: 'base',
@@ -45,6 +47,7 @@ const USDC_ACCEPT = {
 // chooser radios.
 const DAI_ACCEPT = {
   accept: {
+    scheme: 'exact',
     amount: '3000000000000000000',
     asset: '0xDAI',
     network: 'base',
@@ -101,22 +104,30 @@ function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT]) {
   }, { ledger, accepts });
 }
 
-// Put the app on the Ledger account and raise a 402 the way main does.
+// Put the app on the Ledger account and raise a 402 the way main does, on
+// the window's own tab: main mints a payment's confirmation only for the
+// window that hosts its tab. Returns that tab's webContents id.
 async function openPaymentCard(electronApp, window, ledger) {
   await window.evaluate(async (ledger) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     walletState.derivedWallets = [ledger];
     walletState.activeWalletIndex = ledger.index;
   }, ledger);
+  const guestId = await window.evaluate(async () => {
+    const tabs = await import('./lib/tabs.js');
+    return tabs.getActiveWebview()?.getWebContentsId() ?? null;
+  });
+  expect(typeof guestId).toBe('number');
 
-  await electronApp.evaluate(({ BrowserWindow }) => {
+  await electronApp.evaluate(({ BrowserWindow }, guestId) => {
     BrowserWindow.getAllWindows()[0].webContents.send('x402:approval-needed', {
-      webContentsId: 7,
+      webContentsId: guestId,
       detectionId: 'det-1',
       url: 'https://pay.example/article',
       resourceType: 'mainFrame',
     });
-  });
+  }, guestId);
+  return guestId;
 }
 
 function cancelCounts(electronApp) {
@@ -190,7 +201,7 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   window,
 }) => {
   await stubMainIpc(electronApp, LEDGER, [USDC_ACCEPT, DAI_ACCEPT]);
-  await openPaymentCard(electronApp, window, LEDGER);
+  const guestId = await openPaymentCard(electronApp, window, LEDGER);
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await expect(window.locator('#x402-approval-chooser')).toBeVisible();
@@ -221,6 +232,33 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   const approveCalls = await electronApp.evaluate(() => globalThis.__x402ApproveCalls);
   expect(approveCalls).toHaveLength(1);
   expect(approveCalls[0].selectedAcceptIndex).toBe(0);
+
+  // The one approval carries main's token for exactly that payment: the
+  // entry on the device, not the one the radio was flipped to, and only
+  // once. Checked with main's own confirmation store.
+  const spend = (payment) => electronApp.evaluate(({ app }, { confirmation, payment }) => {
+    const nodeRequire = process.mainModule.require.bind(process.mainModule);
+    const path = nodeRequire('path');
+    const confirmations = nodeRequire(path.join(app.getAppPath(), 'src/main/wallet/signing-confirmation.js'));
+    const { getActiveWalletIndex } = nodeRequire(path.join(app.getAppPath(), 'src/main/identity-manager.js'));
+    try {
+      confirmations.consumeConfirmation(confirmation, 'x402-payment', getActiveWalletIndex(), payment);
+      return 'spent';
+    } catch (err) {
+      return err.message;
+    }
+  }, { confirmation: approveCalls[0].confirmation, payment });
+  const shown = {
+    webContentsId: guestId,
+    detectionId: 'det-1',
+    url: 'https://pay.example/article',
+    acceptIndex: 0,
+    accept: USDC_ACCEPT.accept,
+    grant: null,
+  };
+  expect(typeof approveCalls[0].confirmation).toBe('string');
+  expect(await spend(shown)).toBe('spent');
+  expect(await spend(shown)).toMatch(/already used/);
 
   // The device confirms the one payment that was ever sent to it.
   await electronApp.evaluate(() => {
@@ -290,6 +328,7 @@ test('closing the paying tab mid-payment releases the sidebar instead of brickin
       url: 'https://pay.example/segment/0',
       accepts: [{
         accept: {
+          scheme: 'exact',
           amount: '2500000',
           asset: '0xUSDC',
           network: 'base',

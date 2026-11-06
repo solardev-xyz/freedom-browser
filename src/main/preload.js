@@ -115,6 +115,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // x402 payments. All tab-scoped calls take webContentsId explicitly —
   // the sidebar is the host webContents, not the paying webview.
   x402GetDetails: (args) => ipcRenderer.invoke('x402:get-details', args),
+  // `args.confirmation` is an 'x402-payment' token from confirmSigning for
+  // exactly this payment; main signs nothing without it.
   x402Approve: (args) => ipcRenderer.invoke('x402:approve', args),
   // Subresource approval-card reject (sign-on-click flow). For
   // mainFrame paywall cancel, use x402Cancel (which also navigates the
@@ -803,7 +805,7 @@ contextBridge.exposeInMainWorld('wallet', {
   // for a single-use token bound to exactly the request the user confirmed,
   // and hands it to the signing call as `{ confirmation: token }`.
   // kind: 'wallet-send' | 'dapp-send' | 'sign-message' | 'sign-typed-data'
-  //       | 'safe-send' | 'safe-message'.
+  //       | 'safe-send' | 'safe-message' | 'x402-payment' (x402Approve).
   // A transaction's confirmation is also its fee check's approval (design
   // 0005, A): `options.feeAcknowledged` once the user confirmed a fee above
   // the threshold again; without it, main may answer FEE_CHECK_ASK_AGAIN.
