@@ -5,8 +5,9 @@
  * browser-shell webContents, NOT in the webview that hit the 402).
  * All channels that operate on a specific tab take `webContentsId`
  * explicitly — the sender is the sidebar, not the paying webview.
- * Reading a payment and approving it are for the chrome window that
- * hosts its tab alone: another window's sidebar is refused.
+ * Reading a payment, approving it, declining it and resuming it after
+ * an unlock are for the chrome window that hosts its tab alone: another
+ * window's sidebar is refused, and its payment stays as it was.
  *
  *   x402:get-details(webContentsId) — return the parsed PaymentRequired
  *     the detector stashed for that webContents, plus asset metadata
@@ -191,18 +192,24 @@ function refreshAndBroadcastBalances(webContentsId, address) {
     });
 }
 
+// What a window is told when it names a payment on a tab it doesn't host.
+const NOT_THIS_WINDOW = 'This payment is not on a tab of this window';
+
 function registerX402Ipc() {
   // The tab-scoped handlers accept an explicit `webContentsId` from the
   // sidebar (which is the host webContents and doesn't know which
-  // webview the 402 came from). The ones that don't read or approve a
-  // payment also fall back to `event.sender.id` for test ergonomics;
-  // production callers pass it explicitly.
+  // webview the 402 came from). Only x402:refresh-balances, which acts on
+  // no payment, also falls back to `event.sender.id`.
   //
-  // x402:get-details and x402:approve serve only the chrome window that
-  // hosts the payment's tab (`guestHostedBy`): the sender policy admits
-  // any Freedom chrome renderer, and one window must not read, or pay,
-  // the payment on another window's card. A renderer can still approve a
-  // payment on its own window's tabs, with a token it minted for it.
+  // Every handler that acts on a payment (x402:get-details, x402:approve,
+  // x402:reject, x402:cancel, x402:resume-unlock) serves only the chrome
+  // window that hosts the payment's tab (`guestHostedBy`), and only while
+  // that tab lives: the sender policy admits any Freedom chrome renderer,
+  // and one window must not read, pay, decline, navigate or resume the
+  // payment on another window's card. A refused call changes nothing: the
+  // payment stays pending for its own window. A renderer can still act on
+  // payments on its own window's tabs (approving one with a token it
+  // minted for it).
   ipcMain.handle(IPC.X402_GET_DETAILS, async (event, args = {}) => {
     // When detectionId is provided, the lookup is strict — refusing to
     // serve a different detection's data avoids "user sees A's details
@@ -237,7 +244,7 @@ function registerX402Ipc() {
       }
     }
     if (!guestHostedBy(event.sender, id)) {
-      return { success: false, error: 'This payment is not on a tab of this window' };
+      return { success: false, error: NOT_THIS_WINDOW };
     }
 
     // Resolve origin + active address once for the whole enrichment
@@ -358,7 +365,7 @@ function registerX402Ipc() {
     }
     if (!guestHostedBy(event.sender, record.webContentsId)) {
       discardConfirmation(confirmation);
-      return { success: false, error: 'This payment is not on a tab of this window' };
+      return { success: false, error: NOT_THIS_WINDOW };
     }
     if (isApprovalClaimed(detectionId)) {
       discardConfirmation(confirmation);
@@ -443,13 +450,23 @@ function registerX402Ipc() {
     }
   });
 
-  ipcMain.handle(IPC.X402_REJECT, async (_event, args = {}) => {
+  ipcMain.handle(IPC.X402_REJECT, async (event, args = {}) => {
     // Subresource approval-card reject. Settles the pending Promise with
     // approved:false; the detector returns null and the page sees the
     // 402. mainFrame paywall cancel still goes through X402_CANCEL.
+    //
+    // Judged by the awaiting detection's own tab: the caller names only
+    // the detection. Another window's refusal leaves it awaiting.
     const { detectionId } = args;
     if (!detectionId) {
       return { success: false, error: 'detectionId required' };
+    }
+    const awaiting = getPendingApproval(detectionId);
+    if (!awaiting) {
+      return { success: true, settled: false };
+    }
+    if (!guestHostedBy(event.sender, awaiting.webContentsId)) {
+      return { success: false, error: NOT_THIS_WINDOW };
     }
     const settled = settlePendingApproval(detectionId, { approved: false });
     return { success: true, settled };
@@ -462,7 +479,13 @@ function registerX402Ipc() {
     // signAndQueueRetry (closure is gone). Discard any orphan resume
     // token alongside the wait — they pair to different paths and a
     // surviving token would be consumed by a stale future call.
-    const id = args.webContentsId ?? event.sender.id;
+    //
+    // Both are keyed by the tab, so the tab named is the one judged.
+    // Another window's call leaves the wait and the token in place.
+    const id = args.webContentsId;
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: NOT_THIS_WINDOW };
+    }
     if (hasPendingUnlockWait(id)) {
       consumePendingUnlockResume(id);
       settlePendingUnlockWait(id);
@@ -519,7 +542,12 @@ function registerX402Ipc() {
   });
 
   ipcMain.handle(IPC.X402_CANCEL, async (event, args = {}) => {
-    const id = args.webContentsId ?? event.sender.id;
+    // Clears the tab's detection and may navigate the tab, so another
+    // window's call is refused before either: the detection stays.
+    const id = args.webContentsId;
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: NOT_THIS_WINDOW };
+    }
     clearDetectedPayment(id);
     // The renderer drives the Back itself when it can (through
     // `goBackInHistory`, so the commit is counted as a traversal — see
