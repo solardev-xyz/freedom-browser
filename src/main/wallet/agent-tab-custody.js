@@ -40,10 +40,22 @@ function autoApproveRefused(sender, webContentsId) {
   return !Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id;
 }
 
+// Authority a chrome renderer exercises over a tab it names by guest id (an
+// x402 payment card's: reading the payment, confirming it, approving it)
+// belongs to the window that hosts that tab, and only while the tab lives.
+// Unlike `autoApproveRefused`, a tab in Agent custody passes: its charges
+// are exactly the ones that go to the user's card.
+function guestHostedBy(sender, webContentsId) {
+  const contents = guestForId(webContentsId);
+  if (!contents || contents.isDestroyed?.()) return false;
+  return Number.isInteger(sender?.id) && contents.hostWebContents?.id === sender.id;
+}
+
 module.exports = {
   setAgentPageCustody,
   isAgentPage,
   isAgentPageId,
   isUserPageId,
   autoApproveRefused,
+  guestHostedBy,
 };

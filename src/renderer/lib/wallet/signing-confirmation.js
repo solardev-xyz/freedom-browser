@@ -13,8 +13,11 @@
  *   to, value, data, gasLimit} with its new fees, signed again at its nonce)
  *   | 'intent-close' (a held payment's {intentId, chainId, sender, nonce,
  *   hashes}, closed by hand once it is shown as Couldn't confirm)
+ *   | 'x402-payment' (an HTTP 402 payment's {webContentsId, detectionId,
+ *   url, acceptIndex, accept, grant} as its approval card shows it)
  * @param {number|null} accountIndex - the signing wallet / Safe index
- *   (ignored for 'wallet-send': main binds the active account)
+ *   (ignored for 'wallet-send' and 'x402-payment': main binds the active
+ *   account)
  * @param {*} payload - the request exactly as it will be signed
  * @param {{ feeAcknowledged?: boolean }} [options] - for a transaction:
  *   whether the user confirmed a fee above the fee check's threshold again
