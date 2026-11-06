@@ -919,6 +919,12 @@
             </span>
           </button>
           <div class="ipfs-info">
+            <!-- An external gateway without raw blocks, while its "Verify
+                 content from this node" is on: its content loads unverified
+                 (freedom-core design 0009, Modes). Shown by ipfs-ui.js. -->
+            <p id="ipfs-unverifiable-notice" class="ipfs-info-notice" role="status" hidden>
+              This gateway doesn't serve verifiable responses
+            </p>
             <!-- Managed freedom-ipfs node: its own gateway counters. -->
             <div class="ipfs-info-row ipfs-managed-stat">
               <span class="ipfs-info-label">Active Requests:</span>

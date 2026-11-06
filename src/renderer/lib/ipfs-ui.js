@@ -16,6 +16,7 @@ let ipfsInfoPanel = null;
 let ipfsStatusRow = null;
 let ipfsStatusLabel = null;
 let ipfsStatusValue = null;
+let ipfsUnverifiableNotice = null;
 
 // Binary availability state
 let ipfsBinaryAvailable = true;
@@ -35,10 +36,25 @@ export const stopIpfsInfoPolling = () => {
   renderSandbox(null);
   if (ipfsPeersCount) ipfsPeersCount.textContent = '0';
   if (ipfsBandwidth) ipfsBandwidth.textContent = '';
+  renderGatewayVerifiability(null);
   if (ipfsVersionText)
     ipfsVersionText.textContent = versionText(
       state.ipfsVersionFetched ? state.ipfsVersionValue : ''
     );
+};
+
+// "This gateway doesn't serve verifiable responses" (freedom-core design 0009,
+// Modes): shown while the external gateway's activation probe found no raw
+// blocks (`externalSupport.raw === false`) and the profile's "Verify content
+// from this node" is on (`externalVerify`), so its content loads unverified
+// though verification was asked for. Nothing while the probe hasn't run
+// (null), on a gateway with raw blocks, or with the switch off, where Settings
+// already notes that nothing is verified.
+const renderGatewayVerifiability = (diagnostics) => {
+  if (!ipfsUnverifiableNotice) return;
+  ipfsUnverifiableNotice.hidden = !(
+    diagnostics?.externalSupport?.raw === false && diagnostics.externalVerify !== false
+  );
 };
 
 const formatBytes = (bytes) => {
@@ -193,10 +209,12 @@ const fetchNativeStats = async () => {
     syncIpfsInfoMode();
     if (isExternalMode()) {
       renderExternalNodeStats(status?.diagnostics?.externalNodeStats);
+      renderGatewayVerifiability(status?.diagnostics);
       if (ipfsVersionText) {
         ipfsVersionText.textContent = externalIdentityLabel(status?.diagnostics);
       }
     } else {
+      renderGatewayVerifiability(null);
       const stats = JSON.parse(status?.diagnostics?.nativeGatewayStats || '{}');
       if (ipfsActiveRequestsCount) {
         ipfsActiveRequestsCount.textContent = String(stats.active_native_handles ?? 0);
@@ -213,6 +231,7 @@ const fetchNativeStats = async () => {
     if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
     if (ipfsDataRead) ipfsDataRead.textContent = '';
     renderSandbox(null);
+    renderGatewayVerifiability(null);
     if (ipfsPeersCount) ipfsPeersCount.textContent = UNKNOWN;
     if (ipfsBandwidth) ipfsBandwidth.textContent = UNKNOWN;
   }
@@ -401,6 +420,7 @@ export const initIpfsUi = () => {
   ipfsStatusRow = document.getElementById('ipfs-status-row');
   ipfsStatusLabel = document.getElementById('ipfs-status-label');
   ipfsStatusValue = document.getElementById('ipfs-status-value');
+  ipfsUnverifiableNotice = document.getElementById('ipfs-unverifiable-notice');
 
   // Check binary availability
   if (window.ipfs) {
