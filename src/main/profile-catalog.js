@@ -811,13 +811,21 @@ function assertProfileDeletable(appRoot, catalog, id) {
   return { recordIndex, record, displayName, resolvedProfileDir, sharesAppRoot };
 }
 
+// The per-user lock directory's name (service-locks.js): `<appData>/Freedom/
+// locks`, which on macOS and Windows is inside the packaged app data root.
+// Not imported: that module pulls in electron.
+const SHARED_LOCK_DIR = 'locks';
+
 // Top-level entries of the app data root that belong to the app as a whole
 // rather than to the default profile stored alongside them in a packaged build:
 // the catalog and its write lock, every other profile's directory, the short
-// Radicle homes, the cross-profile updater ownership lock, and electron-log's
+// Radicle homes, the cross-profile updater ownership lock, electron-log's
 // default `logs/` dir (its default path does not follow userData, so every
-// profile writes there — see logger.js). Removing any of these while another
-// profile runs would break it; the updater lock in particular is live.
+// profile writes there — see logger.js), and on macOS and Windows the lock
+// directory every Freedom build and profile shares, which holds every core's
+// and service's gate (freedom-core design 0001: it is never deleted).
+// Removing any of these while another profile runs would break it; the
+// updater lock and the gates in particular are live.
 const APP_ROOT_SHARED_ENTRIES = new Set([
   PROFILE_REGISTRY_FILE,
   PROFILE_CATALOG_LOCK_TARGET,
@@ -827,6 +835,7 @@ const APP_ROOT_SHARED_ENTRIES = new Set([
   UPDATER_LOCK_TARGET,
   UPDATER_LOCK_DIR,
   'logs',
+  SHARED_LOCK_DIR,
 ]);
 
 function isAppRootSharedEntry(name) {
@@ -837,7 +846,7 @@ function isAppRootSharedEntry(name) {
 // Delete a packaged default profile whose data lives directly in the app data
 // root: remove every top-level entry except the app-wide ones above. The root
 // itself (and so every other profile) survives. `place` (gatedPlace) is the
-// gated IPFS directory's, which the removal spares.
+// gated directories', which the removal spares.
 async function removeDefaultProfileDataFromAppRoot(appRoot, { place = null } = {}) {
   const resolvedAppRoot = path.resolve(appRoot);
   if (place) {
@@ -864,11 +873,12 @@ function sameEntryName(entry, name) {
   return entry.normalize('NFC').toLowerCase() === name.normalize('NFC').toLowerCase();
 }
 
-// A gated delete's refusal of an IPFS layout it can't vouch for, thrown
-// before anything has changed.
-function ipfsLayoutRefused(detail) {
+// A gated delete's refusal of a gated directory's layout it can't vouch for
+// (`what`: "identity data", "IPFS data"), thrown before anything has
+// changed.
+function layoutRefused(what, detail) {
   return new Error(
-    `The profile's IPFS data ${detail}, so it can't be deleted safely while its lock is held. ` +
+    `The profile's ${what} ${detail}, so it can't be deleted safely while its lock is held. ` +
       'Nothing was deleted: replace the link with the directory itself, or remove it, and ' +
       'delete the profile again.'
   );
@@ -879,7 +889,7 @@ function ipfsLayoutRefused(detail) {
 function radicleLayoutRefused(link) {
   return new Error(
     `The profile's Radicle data is reached through a link (${link}), so the profile can't be ` +
-      "deleted safely while its IPFS lock is held. Nothing was deleted: replace the link with " +
+      'deleted safely while its locks are held. Nothing was deleted: replace the link with ' +
       'the directory itself, or remove it, and delete the profile again.'
   );
 }
@@ -919,97 +929,122 @@ async function identitiesUp(target) {
   }
 }
 
+// What is at `target`, without following a link there (lstat), or null if
+// nothing is.
+async function lstatIfThere(target) {
+  try {
+    return await fs.promises.lstat(target, { bigint: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
 /**
- * Where the gated IPFS directory is, for a delete that holds its gate
- * (freedom-core design 0007, "Lifetime lock"), or a refusal. The gate covers
- * the directory's canonical path, and a later owner's data can only be shown
- * safe from a removal that finds that directory where the profile names it.
- * So the layout must be the app's own:
- * - the data root, `ipfs-data` and `freedom-ipfs` each a real directory, or
- *   not there yet: no link or junction at any step;
- * - the canonical path the one named, not another spelling of it;
+ * Where the gated directories are, for a delete that holds their gates, or a
+ * refusal. `gatedDirs` lists them, each `{ dir, what, gate }`, in the order
+ * the fence moves them: the core's identity directory (freedom-core design
+ * 0001, "Lifetime lock"), then freedom-ipfsd's IPFS directory (design 0007,
+ * "Lifetime lock"). Each gate covers its directory's canonical path, and a
+ * later owner's data can only be shown safe from a removal that finds that
+ * directory where the profile names it. So the layout must be the app's own:
+ * - the data root and each step down to a gated directory (`identity`;
+ *   `ipfs-data` and `freedom-ipfs`) a real directory, or not there yet: no
+ *   link or junction at any step;
+ * - each canonical path the one named, not another spelling of it;
  * - nothing else this delete removes (`otherRoots`: the Radicle home and its
- *   staging siblings) inside the gated directory or around it, by identity;
+ *   staging siblings) inside a gated directory or around it, by identity;
  *   and the Radicle home's path (`radicle`: its app-owned base and the home)
- *   free of links at every step, as the IPFS path is, so its removal can't
- *   be carried through one.
+ *   free of links at every step, as the gated paths are, so its removal
+ *   can't be carried through one.
  * Anything else is refused before anything changes. Null when the data root
  * isn't there: nothing to remove, and nothing to spare.
  *
- * What it guards against: the writers the gate excludes (the service, the
- * add-on, `hold-lock`), which write only inside the gated directory, a holder
- * ending mid-delete, and a successor taking the gate. Not another process
- * reshaping the profile's tree while the delete runs (renaming its
- * directories, planting links after this check): the walk checks each entry
- * with lstat and then goes by path, as the ungated `fs.rm` does, and such a
- * process, with the user's own rights, needs no race to remove those files.
+ * What it guards against: the writers the gates exclude (the core; the IPFS
+ * service and the add-on; `hold-lock`), which write on their own only inside
+ * their gated directory, a holder ending mid-delete, and a successor taking
+ * the gate. Not another process reshaping the profile's tree while the
+ * delete runs (renaming its directories, planting links after this check):
+ * the walk checks each entry with lstat and then goes by path, as the
+ * ungated `fs.rm` does, and such a process, with the user's own rights,
+ * needs no race to remove those files.
  *
- * `gated` is the canonical path, which the fence moves; `steps` the
- * directories from the data root down to it, each one's name and identity
- * if it exists, the last the gated directory itself.
+ * `fences` are the gated directories, in `gatedDirs`' order, each with its
+ * canonical path (`dir`), which the fence moves. `nodes` are the directories
+ * from the data root (the first, whose canonical path is `root`) down to
+ * each gated one: each one's name, its identity if it exists, and its
+ * parent's index, the gated directories themselves marked `gated`.
  */
-async function gatedPlace(dataRoot, ipfsDataDir, { otherRoots = [], radicle = null } = {}) {
-  const names = [null, ...path.relative(dataRoot, ipfsDataDir).split(path.sep)];
-  const steps = [];
-  let current = dataRoot;
-  for (const name of names) {
-    if (name !== null) current = path.join(current, name);
-    let stat = null;
-    try {
-      stat = await fs.promises.lstat(current, { bigint: true });
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
-    }
-    if (stat && !stat.isDirectory()) {
-      throw ipfsLayoutRefused(`is reached through a link (${current})`);
-    }
-    if (!stat && name === null) return null;
-    steps.push({ name, id: stat ? identityOf(stat) : null });
+async function gatedPlace(dataRoot, gatedDirs, { otherRoots = [], radicle = null } = {}) {
+  const rootStat = await lstatIfThere(dataRoot);
+  if (!rootStat) return null;
+  if (!rootStat.isDirectory()) {
+    throw layoutRefused(gatedDirs[0].what, `is reached through a link (${dataRoot})`);
   }
-  const gated = path.join(await fs.promises.realpath(dataRoot), ...names.slice(1));
-  const exists = steps.at(-1).id !== null;
-  if (exists && (await fs.promises.realpath(ipfsDataDir)) !== gated) {
-    throw ipfsLayoutRefused(`is reached under another name (${ipfsDataDir})`);
+  const root = await fs.promises.realpath(dataRoot);
+  const nodes = [{ name: null, id: identityOf(rootStat), parent: -1, gated: false }];
+  const fences = [];
+  for (const { dir, what, gate } of gatedDirs) {
+    const names = path.relative(dataRoot, dir).split(path.sep);
+    let current = dataRoot;
+    let parent = 0;
+    let stat = null;
+    for (const [i, name] of names.entries()) {
+      current = path.join(current, name);
+      stat = await lstatIfThere(current);
+      if (stat && !stat.isDirectory()) {
+        throw layoutRefused(what, `is reached through a link (${current})`);
+      }
+      let index = nodes.findIndex((node) => node.parent === parent && node.name === name);
+      if (index === -1) {
+        const id = stat ? identityOf(stat) : null;
+        nodes.push({ name, id, parent, gated: i === names.length - 1 });
+        index = nodes.length - 1;
+      }
+      parent = index;
+    }
+    const gated = path.join(root, ...names);
+    if (stat && (await fs.promises.realpath(dir)) !== gated) {
+      throw layoutRefused(what, `is reached under another name (${dir})`);
+    }
+    fences.push({ dir: gated, what, gate, id: stat ? identityOf(stat) : null });
   }
   if (radicle) await refuseLinksBelow(radicle.base, radicle.dir);
-  const gatedId = steps.at(-1).id;
-  const around = await identitiesUp(gated);
-  for (const root of otherRoots) {
-    let stat;
-    try {
-      stat = await fs.promises.lstat(root, { bigint: true });
-    } catch (err) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
-    // A link is removed as a link, its target untouched.
-    if (!stat.isDirectory()) continue;
-    const within = exists && (await identitiesUp(await fs.promises.realpath(root))).has(gatedId);
-    if (around.has(identityOf(stat)) || within) {
-      throw ipfsLayoutRefused(`overlaps other data this delete removes (${root})`);
+  for (const fence of fences) {
+    const around = await identitiesUp(fence.dir);
+    for (const other of otherRoots) {
+      const stat = await lstatIfThere(other);
+      // Not there; or a link, which is removed as a link, its target
+      // untouched.
+      if (!stat?.isDirectory()) continue;
+      const within =
+        fence.id !== null && (await identitiesUp(await fs.promises.realpath(other))).has(fence.id);
+      if (around.has(identityOf(stat)) || within) {
+        throw layoutRefused(fence.what, `overlaps other data this delete removes (${other})`);
+      }
     }
   }
-  return { gated, steps };
+  return { root, nodes, fences };
 }
 
-// Which of `place`'s steps a directory is, by identity (-1 for none): the
-// data root's is 0. The gated directory itself is never walked into.
+// Which of `place`'s directories on the way to a gated one a directory is,
+// by identity (-1 for none): the data root's is 0. A gated directory itself
+// is never walked into.
 function stepOf(place, stat) {
   const id = identityOf(stat);
-  const { steps } = place;
-  return steps.findIndex((step, i) => i < steps.length - 1 && step.id === id);
+  return place.nodes.findIndex((node) => !node.gated && node.id === id);
 }
 
-// Removes the directory `dir`, step `index` of `place`'s path to the gated
-// directory, sparing that directory: it walks only into the directories on
-// the path (by identity, under any name), never through a link, and removes
-// everything else as the plain removal would. Inside a step, a directory
-// named as the next step is never removed whole: the next step's own is
-// walked into, and any other (the gated directory, or one created or
-// replaced since) is spared.
-// Directories on the path are only removed if they end up empty.
+// Removes the directory `dir`, `place`'s directory `index` on the way to the
+// gated directories, sparing them: it walks only into the directories on the
+// way (by identity, under any name), never through a link, and removes
+// everything else as the plain removal would. Inside one, a directory named
+// as one of its next steps is never removed whole: the next step's own is
+// walked into, and any other (a gated directory, or one created or replaced
+// since) is spared.
+// Directories on the way are only removed if they end up empty.
 async function removeSparing(dir, place, index, { skip = null, keepRoot = false } = {}) {
-  const next = place.steps[index + 1];
+  const next = place.nodes.filter((node) => node.parent === index);
   let names;
   try {
     names = await fs.promises.readdir(dir);
@@ -1020,19 +1055,17 @@ async function removeSparing(dir, place, index, { skip = null, keepRoot = false 
   for (const name of names) {
     if (skip?.(name)) continue;
     const target = path.join(dir, name);
-    let stat;
-    try {
-      stat = await fs.promises.lstat(target, { bigint: true });
-    } catch (err) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
+    const stat = await lstatIfThere(target);
+    if (!stat) continue;
     const step = stat.isDirectory() ? stepOf(place, stat) : -1;
     if (step > index) {
       await removeSparing(target, place, step);
-    } else if (step >= 0 || (stat.isDirectory() && sameEntryName(name, next.name))) {
-      // A directory of the path met again (a mount that loops back), or one
-      // named as the next step but not that directory: spared.
+    } else if (
+      step >= 0 ||
+      (stat.isDirectory() && next.some((node) => sameEntryName(name, node.name)))
+    ) {
+      // A directory on the way met again (a mount that loops back), or one
+      // named as a next step but not that directory: spared.
     } else {
       await fsOffload.removePath(target, { recursive: true, force: true });
     }
@@ -1045,44 +1078,140 @@ async function removeSparing(dir, place, index, { skip = null, keepRoot = false 
   }
 }
 
-// What a delete's callback gets where no IPFS gate is held (a development
-// build without freedom-ipfsd).
+// What a delete's callback gets where no gate is held (a development build
+// without freedom-cored or freedom-ipfsd).
 const UNGATED = Object.freeze({ gated: false, held: () => false });
+
+// Whether a gate the delete took has been lost since: its holder ended
+// unreleased. Never for no gate.
+function gateLost(gate) {
+  return gate.gated && !gate.held();
+}
+
 // Windows refuses a rename while a scanner or indexer has a file open; those
 // clear in a moment.
 const FENCE_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const FENCE_ATTEMPTS = 10;
 const FENCE_RETRY_MS = 100;
 
-// Under freedom-ipfsd's gate, the gated IPFS directory (its canonical path,
-// gatedPlace) is moved aside before anything else changes (freedom-core
-// design 0007, "Lifetime lock"), to `.freedom-ipfs.deleting-<pid>-<ts>`
-// beside it, which the removal then takes with the rest. Nothing after this
-// touches the gated directory itself (removeSparing): if
-// the gate's holder ends mid-delete (killed) and another writer takes the
-// gate and recreates the directory, the removal still running leaves that
-// writer's data alone. The gate is checked with nothing awaited before each
-// rename, and a gate lost before the move fails the delete with nothing
-// changed. What remains is the moment between a holder ending and main
-// hearing of it; on Windows a writer's open files refuse the rename too.
-async function fenceIpfsData(ipfsDataDir, gate) {
-  const fence = path.join(
-    path.dirname(ipfsDataDir),
-    `.${path.basename(ipfsDataDir)}.deleting-${process.pid}-${Date.now()}`
+// Where the fence moves a gated directory: `.<name>.deleting-<pid>-<ts>`
+// beside it, a name no core or service opens.
+function tombstoneOf(dir) {
+  return path.join(
+    path.dirname(dir),
+    `.${path.basename(dir)}.deleting-${process.pid}-${Date.now()}`
   );
+}
+
+// Puts back what one attempt of the fence moved, last first, in the same
+// step as its gate check: nothing has been awaited since, so no new holder
+// can have made a gated directory again meanwhile. One that can't be put
+// back is named, with where it is.
+function moveBack(moved, cause) {
+  const stuck = [];
+  for (const move of [...moved].reverse()) {
+    try {
+      fs.renameSync(move.tombstone, move.dir);
+    } catch {
+      stuck.push(move);
+    }
+  }
+  if (stuck.length > 0) {
+    const where = stuck.map((move) => `its ${move.what} is at ${move.tombstone}`).join(', and ');
+    throw new Error(
+      `The profile couldn't be deleted, and not all of its data could be put back: ${where}. ` +
+        'Move it back to its name without the leading dot and the ".deleting-…" suffix.',
+      { cause }
+    );
+  }
+}
+
+/**
+ * The delete's first change, made under every gate it holds (freedom-core
+ * designs 0001 and 0007, "Lifetime lock"): each gated directory (`fences`,
+ * gatedPlace) moves aside to its tombstone (`tombstoneOf`), and `commit`
+ * drops the profile from the catalog. The gates are checked first, the
+ * core's first, and the moves and `commit` follow with nothing awaited: a
+ * gate lost before then fails the delete with nothing changed. A move or
+ * `commit` that fails has the moves before it put back in that same step
+ * (`moveBack`); a Windows refusal (FENCE_RETRY_CODES) is waited out and the
+ * whole step tried again, gates checked first.
+ *
+ * Once moved, a gated directory is never reached by its old path again, and
+ * any directory made again there is spared (removeSparing): if a gate's
+ * holder ends mid-delete (killed) and a new holder takes the gate, a core
+ * on a new, empty identity directory or a service on a new IPFS one, the
+ * removal still running leaves it alone, and the delete reports the loss
+ * (reportLostGates). The tombstones go with the rest. What remains is the
+ * moment between a holder ending and main hearing of it.
+ */
+async function fenceAndCommit(fences, { coreGate, ipfsGate }, commit) {
+  const moves = fences.map((fence) => ({ ...fence, tombstone: tombstoneOf(fence.dir) }));
   for (let attempt = 1; ; attempt += 1) {
-    if (!gate.held()) {
+    if (gateLost(coreGate)) {
+      throw new Error("The profile's core lock was lost; nothing was deleted");
+    }
+    if (gateLost(ipfsGate)) {
       throw new Error("The IPFS data directory's lock was lost; nothing was deleted");
     }
+    const moved = [];
     try {
-      fs.renameSync(ipfsDataDir, fence);
+      for (const move of moves) {
+        try {
+          fs.renameSync(move.dir, move.tombstone);
+          moved.push(move);
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err;
+        }
+      }
+      commit();
       return;
     } catch (err) {
-      if (err.code === 'ENOENT') return;
+      moveBack(moved, err);
       if (!FENCE_RETRY_CODES.has(err.code) || attempt >= FENCE_ATTEMPTS) throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, FENCE_RETRY_MS));
   }
+}
+
+// After the removal, a gated directory made again since the fence: a core
+// or service that tried to start during the delete makes a missing one
+// (`hold-lock` and `serve` do), then waits out the gate. Under its gate,
+// still held, it is empty and no one's, so it goes, and so does each
+// directory above it that this leaves empty, up to the data root (`root`;
+// never the packaged app data root, `keepRoot`). Under a gate lost
+// meanwhile, it may be a new holder's, and stays.
+function removeEmptyRemade(place, { keepRoot = false } = {}) {
+  for (const fence of place.fences) {
+    if (!fence.gate.held()) continue;
+    for (let dir = fence.dir; !(keepRoot && dir === place.root); dir = path.dirname(dir)) {
+      try {
+        fs.rmdirSync(dir);
+      } catch {
+        break;
+      }
+      if (dir === place.root) break;
+    }
+  }
+}
+
+// What a gate lost after the delete's first change leaves: the delete went
+// on, sparing anything a new holder could own (fenceAndCommit), and says so.
+const LOST_GATES = [
+  ['coreGate', 'core lock', 'identity directory'],
+  ['ipfsGate', 'IPFS data lock', 'IPFS data directory'],
+];
+
+function reportLostGates(gates) {
+  const lost = LOST_GATES.filter(([key]) => gateLost(gates[key]));
+  if (lost.length === 0) return;
+  const locks = lost.map(([, lock]) => lock).join(' and ');
+  const dirs = lost.map(([, , dir]) => dir).join(' and ');
+  const [were, them] = lost.length > 1 ? ['were', 'them'] : ['was', 'it'];
+  throw new Error(
+    `The profile was deleted, but its ${locks} ${were} lost during the delete. A process ` +
+      `may have taken ${them} since, so its ${dirs}, if made again, ${were} left alone.`
+  );
 }
 
 function assertDisplayNameConfirmation(expectedDisplayName, displayName) {
@@ -1152,12 +1281,28 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       throw new Error(`Profile is currently open: ${displayName}`);
     }
 
-    // The profile's IPFS data goes under its gate (freedom-core design 0007,
-    // "Lifetime lock"): `withIpfsGate(dir, fn)` holds freedom-ipfsd's lock on
-    // it while `fn` runs, so a writer that holds it (the service, or the
-    // add-on under hold-lock) fails the delete before anything is changed,
-    // rather than having its directory removed under it.
+    // The whole delete runs under the profile's core gate (freedom-core
+    // design 0001, "Lifetime lock"): `withCoreGate(dir, fn)` holds
+    // freedom-cored's lock on the profile's identity directory while `fn`
+    // runs, so a core still running on it fails the delete before anything
+    // is changed, rather than having its vault and journal removed under it,
+    // and none can start until the delete is done. It is taken first: the
+    // core's lifetime lock, then a node's gate (design 0008, "Lock order").
+    //
+    // The profile's IPFS data goes under its gate too (freedom-core design
+    // 0007, "Lifetime lock"): `withIpfsGate(dir, fn)` holds freedom-ipfsd's
+    // lock on it while `fn` runs, so a writer that holds it (the service, or
+    // the add-on under hold-lock) fails the delete before anything is
+    // changed, rather than having its directory removed under it.
+    //
+    // A gate is held for the whole delete only while its holder lives. So
+    // under both, each gated directory moves aside before anything else
+    // changes (fenceAndCommit), and a holder lost after that leaves the
+    // removal nothing of a new holder's to reach: a core started meanwhile
+    // finds a new, empty identity directory, which is spared, and the delete
+    // reports the loss.
     const dataRoot = sharesAppRoot ? path.resolve(appRoot) : resolvedProfileDir;
+    const identityDir = path.join(dataRoot, 'identity');
     const ipfsDataDir = path.join(dataRoot, 'ipfs-data', 'freedom-ipfs');
     const radicleDir = getProfileRadicleDataDir(appRoot, record, options);
     const radicleRoot = options.dev
@@ -1166,24 +1311,41 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
     const resolvedRadicleDir = radicleDir
       ? assertPathInside(radicleRoot, radicleDir, 'Radicle data')
       : null;
+    const withCoreGate = options.withCoreGate ?? ((_dir, fn) => fn(UNGATED));
     const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
-    return withIpfsGate(ipfsDataDir, async (gate = UNGATED) => {
+    const removeUnderGates = async (coreGate, ipfsGate) => {
       // Held: the layout must be the app's own (gatedPlace refuses anything
-      // else, before any change), the gated directory moves aside first, and
-      // the removal never touches it again under any name (fenceIpfsData,
-      // removeSparing). Without a gate, today's removal, unchanged.
+      // else, before any change); each gated directory moves aside as the
+      // catalog changes, in one step under both gates (fenceAndCommit); and
+      // the removal never touches one again under any name, sparing any
+      // directory made again in its place (removeSparing). Without a gate,
+      // today's removal, unchanged.
+      const gatedDirs = [];
+      if (coreGate.gated) {
+        gatedDirs.push({ dir: identityDir, what: 'identity data', gate: coreGate });
+      }
+      if (ipfsGate.gated) {
+        gatedDirs.push({ dir: ipfsDataDir, what: 'IPFS data', gate: ipfsGate });
+      }
       const otherRoots = resolvedRadicleDir
         ? [resolvedRadicleDir, ...(await radicleStagingSiblings(resolvedRadicleDir, radicleRoot))]
         : [];
       const radicle = resolvedRadicleDir
         ? { base: path.dirname(radicleRoot), dir: resolvedRadicleDir }
         : null;
-      const place = gate.gated
-        ? await gatedPlace(dataRoot, ipfsDataDir, { otherRoots, radicle })
-        : null;
-      if (place) await fenceIpfsData(place.gated, gate);
-      catalog.profiles.splice(recordIndex, 1);
-      saveCatalog(appRoot, catalog);
+      const place =
+        gatedDirs.length > 0
+          ? await gatedPlace(dataRoot, gatedDirs, { otherRoots, radicle })
+          : null;
+      await fenceAndCommit(place?.fences ?? [], { coreGate, ipfsGate }, () => {
+        catalog.profiles.splice(recordIndex, 1);
+        try {
+          saveCatalog(appRoot, catalog);
+        } catch (err) {
+          catalog.profiles.splice(recordIndex, 0, record);
+          throw err;
+        }
+      });
       if (sharesAppRoot) {
         await removeDefaultProfileDataFromAppRoot(appRoot, { place });
       } else if (place) {
@@ -1202,6 +1364,13 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
        * length limit. Deleting a profile must remove this sibling Radicle home too;
        * otherwise a later profile that reuses the freed slot could inherit the old
        * Radicle identity, node database, and seeded repository state.
+       *
+       * It isn't one of the gated directories the fence moves. The profile's
+       * core writes it only when main asks, or to finish a journal from its
+       * identity directory, which the fence has moved: a core started since,
+       * on a new, empty identity directory, has no vault and no journal, so
+       * nothing of its own to write here. freedom-radicled's home gate
+       * (design 0013) is what will cover it.
        */
       if (resolvedRadicleDir) {
         await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
@@ -1211,11 +1380,16 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
         await removeRadicleStagingSiblings(resolvedRadicleDir, radicleRoot);
       }
 
+      if (place) removeEmptyRemade(place, { keepRoot: sharesAppRoot });
+      reportLostGates({ coreGate, ipfsGate });
       return {
         catalog,
         record,
       };
-    });
+    };
+    return withCoreGate(identityDir, (coreGate = UNGATED) =>
+      withIpfsGate(ipfsDataDir, (ipfsGate = UNGATED) => removeUnderGates(coreGate, ipfsGate))
+    );
   });
 }
 

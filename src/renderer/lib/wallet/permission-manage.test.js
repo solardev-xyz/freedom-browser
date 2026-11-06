@@ -192,6 +192,11 @@ async function loadPermissionManage(options = {}) {
 
   global.document = document;
   global.window = {
+    wallet: {
+      confirmSigning: jest.fn().mockResolvedValue(
+        options.mintResult || { success: true, token: 'cap-edit-token', expiresAt: 0 }
+      ),
+    },
     dappPermissions: {
       getPermission: jest.fn().mockResolvedValue(null),
       setSigningAutoApprove: jest.fn().mockResolvedValue({ success: true }),
@@ -256,6 +261,7 @@ async function loadPermissionManage(options = {}) {
     updateX402ConnectionBanner,
     disconnectX402,
     electronAPI: global.window.electronAPI,
+    wallet: global.window.wallet,
   };
 }
 
@@ -287,14 +293,35 @@ describe('permission-manage x402 subscreen', () => {
     capInput.value = '25';
     await capInput.fire('change');
 
-    expect(ctx.electronAPI.x402UpdatePermission).toHaveBeenCalledWith({
+    // The edit is confirmed with main first, then applied with that token.
+    const edit = {
       origin: 'https://pay.example',
       chainId: 8453,
       asset: '0xUSDC',
       capAmount: '25000000',
+    };
+    expect(ctx.wallet.confirmSigning).toHaveBeenCalledWith('x402-cap-update', null, edit);
+    expect(ctx.electronAPI.x402UpdatePermission).toHaveBeenCalledWith({
+      ...edit,
+      confirmation: 'cap-edit-token',
     });
     expect(ctx.updateX402ConnectionBanner).toHaveBeenCalledWith('https://pay.example');
     expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('a cap edit main refuses to confirm is not applied', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const ctx = await loadPermissionManage({
+      mintResult: { success: false, error: 'No such auto-pay cap' },
+    });
+
+    await ctx.mod.showX402Permissions('https://pay.example');
+    const capInput = ctx.elements['x402-perms-list'].children[0].querySelector('input');
+    capInput.value = '25';
+    await capInput.fire('change');
+
+    expect(ctx.electronAPI.x402UpdatePermission).not.toHaveBeenCalled();
+    expect(ctx.elements['x402-perms-error'].textContent).toBe('No such auto-pay cap');
   });
 
   test('surfaces failed cap edits and refreshes the permission views', async () => {

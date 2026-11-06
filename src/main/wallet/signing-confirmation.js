@@ -65,6 +65,15 @@
  *     `x402:approve` builds the binding from main's record of the
  *     detection and takes only the entry's index and the grant from the
  *     caller.
+ *   - x402-cap-update: one edit of a site's auto-pay cap (#1023): the
+ *     chrome window it was confirmed in, the cap's key (origin, chainId,
+ *     asset), the cap as main holds it (its amount, createdAt, expiresAt
+ *     and the generation of the grant it is: a cap revoked and granted
+ *     again within one second has the same createdAt) and the new amount
+ *     or window, or both. Main fills in the window and the cap itself,
+ *     when the token is minted and when `x402:update-permission` spends
+ *     it, so a token can't change another cap, make another change, apply
+ *     after the cap has changed, or be spent by another window.
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
@@ -93,6 +102,7 @@ const KINDS = Object.freeze({
   INTENT_CLOSE: 'intent-close',
   EXECUTOR_SEND: 'executor-send',
   X402_PAYMENT: 'x402-payment',
+  X402_CAP_UPDATE: 'x402-cap-update',
 });
 // The most hashes an intent-close binds: above the intent store's bound on
 // an intent's signatures (LIMITS.hashesPerIntent).
@@ -198,6 +208,38 @@ function x402Grant(value) {
     throw new Error('Invalid grant');
   }
   return { capAmount: value.capAmount ?? null, windowSeconds: value.windowSeconds ?? null };
+}
+
+/** An atomic amount as a digit string, or null for none. */
+function digits(value, field) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new Error(`Invalid ${field}`);
+  return value;
+}
+
+/** A positive number of seconds, or null for none. */
+function seconds(value, field) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid ${field}`);
+  }
+  return value;
+}
+
+/** An x402 cap as main holds it: which grant it is, its amount and its window. */
+function x402Cap(value) {
+  if (!value || typeof value !== 'object') throw new Error('No such auto-pay cap');
+  const capAmount = digits(value.capAmount, 'cap');
+  if (
+    capAmount === null ||
+    !Number.isSafeInteger(value.createdAt) ||
+    !Number.isSafeInteger(value.expiresAt) ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation <= 0
+  ) {
+    throw new Error('Invalid auto-pay cap');
+  }
+  return { capAmount, createdAt: value.createdAt, expiresAt: value.expiresAt, generation: value.generation };
 }
 
 /** A Safe payment's site, if it has one (a dApp's), as its permission key. */
@@ -357,6 +399,22 @@ function bindingFor(kind, accountIndex, payload) {
         payTo: text(accept.payTo, 'payTo'),
         acceptHash: sha256(stableStringify(accept)),
         grant: x402Grant(payload.grant),
+      };
+    }
+    case KINDS.X402_CAP_UPDATE: {
+      const origin = typeof payload?.origin === 'string' ? normalizeOrigin(payload.origin) : '';
+      if (!origin) throw new Error('An auto-pay cap needs the site it is for');
+      const capAmount = digits(payload.capAmount, 'cap');
+      const windowSeconds = seconds(payload.windowSeconds, 'window');
+      if (capAmount === null && windowSeconds === null) throw new Error('Nothing to change');
+      return {
+        window: index(payload.window, 'window'),
+        origin,
+        chainId: chain(payload.chainId),
+        asset: text(payload.asset, 'asset'),
+        current: x402Cap(payload.current),
+        capAmount,
+        windowSeconds,
       };
     }
     case KINDS.SAFE_MESSAGE:

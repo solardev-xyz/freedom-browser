@@ -113,6 +113,131 @@ test('pushes connection and repository metrics after native state changes', asyn
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
+const posixTest = process.platform === 'win32' ? test.skip : test;
+
+posixTest('narrows keys an older build left readable before the node starts (K-3)', async () => {
+  const ctx = loadManager();
+  const keysDir = path.join(ctx.dataDir, 'keys');
+  fs.mkdirSync(keysDir, { mode: 0o755 });
+  fs.chmodSync(keysDir, 0o755);
+  fs.writeFileSync(path.join(keysDir, 'radicle'), 'secret');
+  fs.chmodSync(path.join(keysDir, 'radicle'), 0o644);
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+  expect(fs.statSync(keysDir).mode & 0o777).toBe(0o700);
+  expect(fs.statSync(path.join(keysDir, 'radicle')).mode & 0o777).toBe(0o600);
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+// K-3 on integration: the core writes keys/radicle (0600) through its
+// journal, but core.hello sends no node_roots, so a keys/ an older build
+// created stays as it was until main's repair. The repair narrows modes
+// only: the key the core wrote is the same file, byte for byte.
+posixTest('the node starts only after keys/ is narrowed; the core-written key is kept as is (K-3)', async () => {
+  const ctx = loadManager();
+  const keysDir = path.join(ctx.dataDir, 'keys');
+  fs.mkdirSync(keysDir, { mode: 0o755 });
+  fs.chmodSync(keysDir, 0o755);
+  const keyPath = path.join(keysDir, 'radicle');
+  fs.writeFileSync(keyPath, 'core-written key', { mode: 0o600 });
+  fs.writeFileSync(path.join(keysDir, 'radicle.pub'), 'public key');
+  const before = fs.statSync(keyPath);
+  let modesAtStart = null;
+  ctx.embedded.start.mockImplementation(async () => {
+    modesAtStart = {
+      keys: fs.statSync(keysDir).mode & 0o777,
+      key: fs.statSync(keyPath).mode & 0o777,
+    };
+    return { did: 'did:key:z6MkNative' };
+  });
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+  expect(modesAtStart).toEqual({ keys: 0o700, key: 0o600 });
+  expect(fs.statSync(keyPath).ino).toBe(before.ino);
+  expect(fs.readFileSync(keyPath, 'utf8')).toBe('core-written key');
+  expect(fs.readFileSync(path.join(keysDir, 'radicle.pub'), 'utf8')).toBe('public key');
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+posixTest('a keys/ that is a link stops the start, nothing opened through it (K-3)', async () => {
+  const ctx = loadManager();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-outside-'));
+  fs.writeFileSync(path.join(outside, 'radicle'), 'not yours');
+  fs.chmodSync(path.join(outside, 'radicle'), 0o644);
+  fs.symlinkSync(outside, path.join(ctx.dataDir, 'keys'));
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({
+    status: 'error',
+    error: expect.stringContaining('symbolic link'),
+  });
+  expect(ctx.embedded.start).not.toHaveBeenCalled();
+  expect(fs.statSync(path.join(outside, 'radicle')).mode & 0o777).toBe(0o644);
+  expect(fs.readFileSync(path.join(outside, 'radicle'), 'utf8')).toBe('not yours');
+  fs.rmSync(outside, { recursive: true, force: true });
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+// Review #1029 R1: the node opens keys/radicle by its path, following a
+// link there. A key that is there but unsafe, or a home, keys/ or key that
+// cannot be made owner-only, stops the start: embedded.start never runs.
+describe('what the node is handed (K-3)', () => {
+  let ctx;
+  let keysDir;
+  let keyPath;
+  let outside;
+  beforeEach(() => {
+    ctx = loadManager();
+    keysDir = path.join(ctx.dataDir, 'keys');
+    keyPath = path.join(keysDir, 'radicle');
+    fs.mkdirSync(keysDir, { mode: 0o700 });
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-outside-'));
+    fs.writeFileSync(path.join(outside, 'radicle'), 'not yours');
+    fs.chmodSync(path.join(outside, 'radicle'), 0o644);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+  const startRefused = async (why) => {
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({
+      status: 'error',
+      error: expect.stringContaining(why),
+    });
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+  };
+
+  test.each([
+    ['a link to a key elsewhere', () => path.join(outside, 'radicle')],
+    ['a dangling link', () => path.join(outside, 'nothing')],
+  ])('a keys/radicle that is %s stops the start', async (_label, linkTarget) => {
+    fs.symlinkSync(linkTarget(), keyPath, 'file');
+    await startRefused('symbolic link');
+    expect(fs.lstatSync(keyPath).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(outside, 'radicle'), 'utf8')).toBe('not yours');
+    expect(fs.statSync(path.join(outside, 'radicle')).mode & 0o777).toBe(0o644);
+  });
+
+  describe.each([
+    ['the home', () => ctx.dataDir, 0o755],
+    ['keys/', () => keysDir, 0o755],
+    ['keys/radicle', () => keyPath, 0o644],
+  ])('%s cannot be made owner-only', (_label, target, mode) => {
+    posixTest('the start stops before the node gets it', async () => {
+      fs.writeFileSync(keyPath, 'core-written key', { mode: 0o600 });
+      fs.chmodSync(target(), mode);
+      jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
+      });
+      await startRefused('could not make it owner-only');
+      expect(fs.statSync(target()).mode & 0o777).toBe(mode);
+      expect(fs.readFileSync(keyPath, 'utf8')).toBe('core-written key');
+    });
+  });
+});
+
 test('fails closed when the addon is unavailable', async () => {
   const ctx = loadManager({ available: false });
   await expect(ctx.mod.startRadicle()).resolves.toEqual({

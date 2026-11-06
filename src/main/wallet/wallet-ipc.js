@@ -642,6 +642,11 @@ function registerWalletIpc() {
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
       }
+      // An auto-pay cap's edit (#1023) is bound to the window confirming
+      // it and to the cap as main holds it, never to the caller's word.
+      if (kind === CONFIRM_KINDS.X402_CAP_UPDATE) {
+        payload = require('../x402/permissions').capUpdateRequest(event?.sender?.id, payload);
+      }
       const index =
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
           ? getActiveWalletIndex()
