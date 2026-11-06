@@ -11,7 +11,7 @@ const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
 const { getLockDir } = require('../service-locks');
-const { CoreClient } = require('./core-client');
+const { CoreClient, PROTOCOL_VERSION_STREAMS } = require('./core-client');
 const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
@@ -19,8 +19,8 @@ const { registerDwebShell } = require('./dweb-shell');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 
 let client = null;
-// `shell.dweb_get`'s executor (design 0009), while a client that speaks
-// protocol 2 runs; null against the pinned core, which speaks 1.
+// `shell.dweb_get`'s executor (design 0009) on the client; null before
+// startCore() and after stopCore().
 let dwebShell = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
 let shutDown = false;
@@ -73,6 +73,10 @@ async function startCore() {
     ],
     log,
     shellVersion: app.getVersion(),
+    // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
+    // `dweb.forget`. The pinned core (0.10.0) is the first that speaks it;
+    // a core that answers another protocol is a mismatch, not restarted.
+    protocol: PROTOCOL_VERSION_STREAMS,
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
@@ -90,10 +94,10 @@ async function startCore() {
   // Chain data: its configuration, executors (under naming's bound on
   // verifier operations) and drivers.
   attachChain(client, { running: naming.running });
-  // Verified dweb fetches' pieces: registered only at protocol 2.
+  // Verified dweb fetches' pieces (`shell.dweb_get`, protocol 2).
   dwebShell = registerDwebShell(client);
   // `{ verify }` plans' `dweb.verify`, and `dweb.forget` as a private
-  // partition closes: likewise.
+  // partition closes.
   attachDwebVerify(client, dwebShell);
   const starting = client;
   let hello;
@@ -128,7 +132,7 @@ function getCoreClient() {
 }
 
 /** `shell.dweb_get`'s executor, whose `open()` a `dweb.verify` request
- * calls; null unless the core client speaks protocol 2. */
+ * calls; null while no core client runs. */
 function getDwebShell() {
   return dwebShell;
 }
