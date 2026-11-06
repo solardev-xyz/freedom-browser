@@ -4069,6 +4069,60 @@ describe('verification of an external gateway', () => {
     expect(stopped.externalVerify).toBeUndefined();
   });
 
+  // The nodes panel's "Your external node served content that failed
+  // verification" (0009, Failures) reads main's count off the same poll.
+  test("the nodes panel's poll carries the serving gateway's verification failures", async () => {
+    const { ctx } = await startExternal();
+    const failures = require('./dweb/verify-failures');
+    failures._resetVerificationFailures();
+    const polled = async () =>
+      (await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true })).diagnostics
+        .externalVerifyFailures;
+
+    expect(await polled()).toBe(0);
+    // A request that captured this gateway, and failed verification twice.
+    const captured = ctx.mod.ipfsBackend();
+    expect(captured.url).toBe(GATEWAY);
+    failures.noteVerificationFailure(captured);
+    failures.noteVerificationFailure(captured);
+    expect(await polled()).toBe(2);
+    // Another gateway's failure (a request captured before a switch) isn't
+    // this one's, and leaves its count.
+    failures.noteVerificationFailure({ ...captured, url: 'https://other.example' });
+    expect(await polled()).toBe(2);
+
+    // 10 minutes after the last failure, the notice goes (counted afresh on
+    // the fake clock).
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      failures._resetVerificationFailures();
+      failures.noteVerificationFailure(captured);
+      expect(await polled()).toBe(1);
+      jest.advanceTimersByTime(failures.FAILURE_WINDOW_MS);
+      expect(await polled()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+
+    // No gateway serving: nothing about one.
+    failures.noteVerificationFailure(captured);
+    await ctx.mod.stopIpfs();
+    expect((await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).diagnostics.externalVerifyFailures)
+      .toBeUndefined();
+  });
+
+  test('against a core without the verifier (protocol 1), the count stays 0', async () => {
+    const { ctx } = await startExternal({ attached: false });
+    const failures = require('./dweb/verify-failures');
+    failures._resetVerificationFailures();
+    // Its capture keeps the two-key reference: no verify plan, so no
+    // failure can be counted against it.
+    const captured = ctx.mod.ipfsBackend();
+    expect(captured.ref).toEqual({ ipfs: 'gateway', up: true });
+    failures.noteVerificationFailure(captured);
+    expect(ctx.mod.getNativeDiagnostics().externalVerifyFailures).toBe(0);
+  });
+
   test('a change of the setting applies to the backends captured after it (Binding)', async () => {
     const { ctx, activeProfile } = await startExternal();
     const before = ctx.mod.ipfsBackend();

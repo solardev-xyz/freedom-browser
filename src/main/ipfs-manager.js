@@ -34,6 +34,8 @@ const {
   isIpfsGatewayProbeResponse,
   isRawProbeResponse,
 } = require('./ipfs/ipfs-gateway-probe');
+// The nodes panel's count of the gateway's verification failures (0009).
+const { verificationFailures } = require('./dweb/verify-failures');
 // Every dial of the configured gateway goes through this one transport, so a
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
@@ -1417,6 +1419,10 @@ function getNativeDiagnostics() {
       // without raw blocks can't be verified only while verification is
       // asked for (freedom-core design 0009, Modes).
       externalVerify: verifiesExternalGateway(),
+      // Content this gateway served that failed verification in the last 10
+      // minutes, a count (0 for none), for the nodes panel's notice
+      // (freedom-core design 0009, Failures; dweb/verify-failures.js).
+      externalVerifyFailures: verificationFailures('gateway', externalGatewayUrl),
     };
   }
 

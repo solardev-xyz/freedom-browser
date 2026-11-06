@@ -45,6 +45,8 @@ const loadBeeModule = async (options = {}) => {
   const beeStatusRow = createElement('div');
   const beeStatusLabel = createElement('span');
   const beeStatusValue = createElement('span');
+  const beeVerifyFailedNotice = createElement('p');
+  beeVerifyFailedNotice.hidden = true; // as the markup ships it
   const body = createElement('body');
   body.appendChild(beeInfoPanel);
   const document = createDocument({
@@ -58,6 +60,7 @@ const loadBeeModule = async (options = {}) => {
       'bee-status-row': beeStatusRow,
       'bee-status-label': beeStatusLabel,
       'bee-status-value': beeStatusValue,
+      'bee-verify-failed-notice': beeVerifyFailedNotice,
     },
   });
   let statusHandler = null;
@@ -147,6 +150,7 @@ const loadBeeModule = async (options = {}) => {
       beeStatusRow,
       beeStatusLabel,
       beeStatusValue,
+      beeVerifyFailedNotice,
     },
   };
 };
@@ -299,5 +303,119 @@ describe('bee-ui', () => {
 
     expect(ctx.beeApi.stop).toHaveBeenCalled();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled Swarm Off');
+  });
+
+  // freedom-core design 0009, Failures: "The nodes panel counts verification
+  // failures per backend and shows "Your external node served content that
+  // failed verification" while any occurred in the last 10 minutes."
+  describe("the external Swarm node's verification failures", () => {
+    const running = (externalVerifyFailures) => ({
+      status: 'running',
+      error: null,
+      externalVerifyFailures,
+    });
+    // The status poll the Swarm section already runs every 5 s.
+    const statusPoll = (ctx) => ctx.setIntervalMock.mock.calls.find(([, ms]) => ms === 5000)[0];
+
+    test('shown while main counts a failure, read when the panel opens and at the status poll', async () => {
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        mode: 'reused',
+        statusResult: running(2),
+      });
+      const notice = ctx.elements.beeVerifyFailedNotice;
+      ctx.mod.initAntUi();
+      await flushMicrotasks();
+      // The first status read finds the node running and opens the section.
+      expect(ctx.elements.beeInfoPanel.classList.contains('visible')).toBe(true);
+      expect(notice.hidden).toBe(false);
+      // The rest of the section is unchanged.
+      expect(ctx.elements.beePeersCount.textContent).toBe('2');
+
+      // The window passed (main says 0), then another failure.
+      ctx.beeApi.getStatus.mockResolvedValue(running(0));
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(true);
+      ctx.beeApi.getStatus.mockResolvedValue(running(1));
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(false);
+
+      // A status push carries no count, and leaves the notice as it is.
+      ctx.getStatusHandler()({ status: 'running', error: null });
+      expect(notice.hidden).toBe(false);
+
+      // Closing the menu clears it; a poll while it is closed shows nothing,
+      // and the next open reads again.
+      ctx.state.antMenuOpen = false;
+      ctx.mod.stopAntInfoPolling();
+      expect(notice.hidden).toBe(true);
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(true);
+      ctx.state.antMenuOpen = true;
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(false);
+
+      // The node stopping closes the section, and the notice with it.
+      ctx.beeApi.getStatus.mockResolvedValue({ status: 'stopped', error: null });
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(ctx.elements.beeInfoPanel.classList.contains('visible')).toBe(false);
+      expect(notice.hidden).toBe(true);
+    });
+
+    test.each([
+      ['no count (an older main)', { status: 'running', error: null }],
+      ['zero', running(0)],
+      ['a negative count', running(-1)],
+      ['a string', running('3')],
+      ['a boolean', running(true)],
+      ['a fraction', running(0.5)],
+    ])('nothing for %s', async (_what, reply) => {
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        statusResult: reply,
+      });
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(ctx.elements.beeVerifyFailedNotice.hidden).toBe(true);
+    });
+
+    test('a failed read hides it, and a reply that lands after the menu closed is dropped', async () => {
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        statusResult: running(1),
+      });
+      const notice = ctx.elements.beeVerifyFailedNotice;
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(false);
+
+      ctx.beeApi.getStatus.mockRejectedValueOnce(new Error('ipc gone'));
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(true);
+
+      let answer;
+      ctx.beeApi.getStatus.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+      );
+      ctx.mod.startAntInfoPolling();
+      ctx.state.antMenuOpen = false;
+      ctx.mod.stopAntInfoPolling();
+      answer(running(4));
+      await flushMicrotasks();
+      expect(notice.hidden).toBe(true);
+    });
   });
 });

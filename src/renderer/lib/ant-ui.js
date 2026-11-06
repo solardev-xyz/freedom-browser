@@ -14,6 +14,7 @@ let beeInfoPanel = null;
 let beeStatusRow = null;
 let beeStatusLabel = null;
 let beeStatusValue = null;
+let beeVerifyFailedNotice = null;
 
 // Binary availability state
 let beeBinaryAvailable = true;
@@ -28,12 +29,38 @@ export const stopAntInfoPolling = () => {
     state.antVisibleInterval = null;
   }
   beeInfoPanel?.classList.remove('visible');
+  renderVerifyFailures(null);
   if (beePeersCount) beePeersCount.textContent = '0';
   if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
   if (beeVersionText)
     beeVersionText.textContent = versionText(
       state.antVersionFetched ? state.antVersionValue : ''
     );
+};
+
+// "Your external node served content that failed verification" (freedom-core
+// design 0009, Failures): shown while main counts a failure of the external
+// Swarm node serving now in the last 10 minutes (`externalVerifyFailures` in
+// `ant:getStatus`'s reply, a count; 0 for the bundled node). It informs: the
+// node stays in use, and only the failing requests failed. Read with the
+// status: when the panel opens, then at the status poll's pace.
+const renderVerifyFailures = (reply) => {
+  if (!beeVerifyFailedNotice) return;
+  const failures = reply?.externalVerifyFailures;
+  beeVerifyFailedNotice.hidden = !(Number.isSafeInteger(failures) && failures > 0);
+};
+
+// A status reply for the open panel; one that lands after it closed is dropped.
+const renderVerifyFailuresIfOpen = (reply) => {
+  if (beeInfoPanel?.classList.contains('visible')) renderVerifyFailures(reply);
+};
+
+const fetchVerifyFailures = async () => {
+  try {
+    renderVerifyFailuresIfOpen(await window.ant?.getStatus?.());
+  } catch {
+    renderVerifyFailuresIfOpen(null);
+  }
 };
 
 const fetchConnectedPeers = async () => {
@@ -117,6 +144,7 @@ export const startAntInfoPolling = () => {
 
   fetchConnectedPeers();
   fetchVisiblePeers();
+  fetchVerifyFailures();
   if (!state.antVersionFetched) fetchAntVersionOnce();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
@@ -249,6 +277,7 @@ export const initAntUi = () => {
   beeStatusRow = document.getElementById('bee-status-row');
   beeStatusLabel = document.getElementById('bee-status-label');
   beeStatusValue = document.getElementById('bee-status-value');
+  beeVerifyFailedNotice = document.getElementById('bee-verify-failed-notice');
 
   // Check binary availability
   if (window.ant) {
@@ -306,8 +335,9 @@ export const initAntUi = () => {
 
     // Initial status check
     const refreshBeeStatus = () => {
-      window.ant.getStatus().then(({ status, error }) => {
-        updateAntUi(status, error);
+      window.ant.getStatus().then((reply) => {
+        updateAntUi(reply.status, reply.error);
+        renderVerifyFailuresIfOpen(reply);
       });
     };
     refreshBeeStatus();

@@ -86,6 +86,7 @@ launch opens unchanged.
 - If you have a system-wide Swarm node or Tor SOCKS5 proxy running, configure external mode in **Settings → Nodes**. Radicle has no external mode; it always runs as the profile's embedded node
 - External mode is per profile and per protocol
 - The Nodes panel shows external/shared status when connected to an external node. For an IPFS gateway that doesn't serve raw blocks it also says "This gateway doesn't serve verifiable responses" while **Verify content from this node** is on: Freedom can't check what that gateway serves, so its content loads unverified
+- When content an external Swarm node or IPFS gateway served fails verification, that node's section of the Nodes panel says "Your external node served content that failed verification" until 10 minutes after the last failure. Freedom keeps using the node: only the page or file that failed doesn't load, and everything else it serves is still checked. A node that keeps failing is serving content that doesn't match its address; check its configuration, or use another node
 - Freedom does not stop external nodes on quit
 - A page that says "This profile loads only verified content" was refused by **Load only verified content from external nodes** in **Settings → Nodes**: the page says why it couldn't be verified. Turn on **Verify content from this node** if that's the cause, or turn the setting off to load unverified content again
 

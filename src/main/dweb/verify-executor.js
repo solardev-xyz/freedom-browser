@@ -38,6 +38,11 @@
  * - **After the head,** the core's `abort` errors the body, so Chromium
  *   sees it truncated; its code is logged, never a reference or a path in
  *   a private window.
+ * - **A failed check** (0009, Failures), the error plan with the plan's
+ *   node's "content verification failed" text or the abort
+ *   `verification_failed`, is counted against the captured backend for the
+ *   nodes panel's notice (`verify-failures.js`). Nothing else is, and the
+ *   count changes nothing about this request or the next.
  */
 
 const { CoreError } = require('../core/core-client');
@@ -47,6 +52,11 @@ const { idleBoundBody, NULL_BODY_STATUSES } = require('./plan-executor');
 const { backendKind, requestMethod, MAX_MESSAGE_UNITS } = require('./plan-validation');
 const { respond, sniffSmallText } = require('./response-operations');
 const { rootReference, VERIFIED_CONTENT } = require('./verify-plan');
+const {
+  isVerificationFailure,
+  noteVerificationFailure,
+  VERIFICATION_FAILED_CODE,
+} = require('./verify-failures');
 
 /** The time to the head (0009, Bounds: `dweb.verify`'s `head` deadline). */
 const HEAD_DEADLINE_MS = 360_000;
@@ -214,7 +224,10 @@ async function executeVerify(
   if (!head || Boolean(body) !== head.body) {
     body?.cancel().catch(() => {});
     end();
-    if (isErrorPlan(result)) return planError(result.error);
+    if (isErrorPlan(result)) {
+      if (isVerificationFailure(verify.node, result.error)) noteVerificationFailure(backend);
+      return planError(result.error);
+    }
     log.error(`[Core] dweb.verify answer refused for ${redactUrl(url)}`, { tag });
     return answer(502, 'dweb verification failed');
   }
@@ -239,6 +252,7 @@ async function executeVerify(
       err.code !== 'cancelled'
     ) {
       log.warn(`${tag} verified body truncated (${err.code}, ${kind}) for ${redactUrl(url)}`);
+      if (err.code === VERIFICATION_FAILED_CODE) noteVerificationFailure(backend);
     }
     end();
   });

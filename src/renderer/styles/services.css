@@ -291,8 +291,10 @@
   display: none;
 }
 
-/* "This gateway doesn't serve verifiable responses" (freedom-core design
-   0009): a sentence above the rows, flagged as Myotis's notices are. */
+/* "This gateway doesn't serve verifiable responses" and "Your external node
+   served content that failed verification" (freedom-core design 0009): a
+   sentence above the rows, flagged as Myotis's notices are. */
+.bee-info-notice,
 .ipfs-info-notice {
   margin: 0 0 4px;
   border-left: 2px solid var(--warning-fg);
@@ -302,6 +304,7 @@
   color: var(--text);
 }
 
+.bee-info-notice[hidden],
 .ipfs-info-notice[hidden] {
   display: none;
 }

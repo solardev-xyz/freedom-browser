@@ -345,7 +345,8 @@ function loadAntManagerModule(options = {}) {
         clearErrorState,
         clearService,
         getRegistry: () => ({ ant: { mode: 'bundled' } }),
-        getAntApiUrl: () => null,
+        getService: (service) => (service === 'ant' ? options.antService || null : null),
+        getAntApiUrl: () => options.antService?.api ?? null,
       }),
     },
   });  // The core has started and reported no pending node recovery.
@@ -427,10 +428,41 @@ describe('ant-manager', () => {
     await expect(ctx.ipcMain.invoke(IPC.ANT_GET_STATUS)).resolves.toEqual({
       status: 'stopped',
       error: null,
+      externalVerifyFailures: 0,
     });
     await expect(ctx.ipcMain.invoke(IPC.ANT_CHECK_BINARY)).resolves.toEqual({
       available: false,
     });
+  });
+
+  // The nodes panel's "Your external node served content that failed
+  // verification" (freedom-core design 0009, Failures) reads main's count off
+  // the Swarm section's status poll.
+  test("the status poll carries the external node's verification failures", async () => {
+    const api = 'http://127.0.0.1:1633';
+    const backend = { ref: { ant: 'reused', up: true, verify: true }, url: api };
+    const ctx = loadAntManagerModule({ antService: { mode: 'reused', api } });
+    ctx.mod.registerAntIpc();
+    const failures = require('./dweb/verify-failures');
+    failures._resetVerificationFailures();
+    const polled = async () =>
+      (await ctx.ipcMain.invoke(IPC.ANT_GET_STATUS)).externalVerifyFailures;
+
+    expect(await polled()).toBe(0);
+    failures.noteVerificationFailure(backend);
+    expect(await polled()).toBe(1);
+    // Another node's failure isn't this one's, and leaves its count.
+    failures.noteVerificationFailure({ ...backend, url: 'http://192.0.2.7:1633' });
+    expect(await polled()).toBe(1);
+    failures.noteVerificationFailure(backend);
+    expect(await polled()).toBe(2);
+
+    // The bundled node, even at the same address: never.
+    const bundled = loadAntManagerModule({ antService: { mode: 'bundled', api } });
+    bundled.mod.registerAntIpc();
+    const again = require('./dweb/verify-failures');
+    again.noteVerificationFailure(backend);
+    expect((await bundled.ipcMain.invoke(IPC.ANT_GET_STATUS)).externalVerifyFailures).toBe(0);
   });
 
   test('refuses to spawn the bundled node while the bee-data migration is pending', async () => {

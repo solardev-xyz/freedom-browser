@@ -1286,7 +1286,10 @@ jobs:
       # `ipfs-unverifiable-gateway.spec.js` drives a synthetic external IPFS
       # gateway status the same way: the Nodes menu says a gateway without raw
       # blocks can't be verified while its verification is on (freedom-core
-      # design 0009).
+      # design 0009). `verification-failure-notice.spec.js` counts failures in
+      # main's real per-backend count and checks both sections say "Your
+      # external node served content that failed verification" (0009,
+      # Failures).
       #
       # The other internal pages ride along: `internal-pages-csp.spec.js` drives
       # each page under `script-src 'self'` and fails on any CSP violation (#432),
@@ -1327,6 +1330,7 @@ jobs:
           test-e2e/myotis-recovery.spec.js
           test-e2e/myotis-upgrade-advisory.spec.js
           test-e2e/ipfs-unverifiable-gateway.spec.js
+          test-e2e/verification-failure-notice.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js

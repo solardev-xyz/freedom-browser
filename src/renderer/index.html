@@ -888,6 +888,12 @@
             </span>
           </button>
           <div class="bee-info">
+            <!-- Content the external Swarm node served failed verification in
+                 the last 10 minutes (freedom-core design 0009, Failures): it
+                 informs, and switches nothing. Shown by ant-ui.js. -->
+            <p id="bee-verify-failed-notice" class="bee-info-notice" role="status" hidden>
+              Your external node served content that failed verification
+            </p>
             <div class="bee-info-row node-status-row" id="bee-status-row">
               <span class="bee-info-label" id="bee-status-label"></span>
               <span id="bee-status-value"></span>
@@ -924,6 +930,12 @@
                  (freedom-core design 0009, Modes). Shown by ipfs-ui.js. -->
             <p id="ipfs-unverifiable-notice" class="ipfs-info-notice" role="status" hidden>
               This gateway doesn't serve verifiable responses
+            </p>
+            <!-- Content this gateway served failed verification in the last
+                 10 minutes (freedom-core design 0009, Failures): it informs,
+                 and switches nothing. Shown by ipfs-ui.js. -->
+            <p id="ipfs-verify-failed-notice" class="ipfs-info-notice" role="status" hidden>
+              Your external node served content that failed verification
             </p>
             <!-- Managed freedom-ipfs node: its own gateway counters. -->
             <div class="ipfs-info-row ipfs-managed-stat">
