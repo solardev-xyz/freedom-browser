@@ -9,6 +9,6 @@
  * guard (`ipfsd-pin.test.js`) fails when they differ.
  */
 
-const PINNED_IPFSD_VERSION = '0.3.0';
+const PINNED_IPFSD_VERSION = '0.4.0';
 
 module.exports = { PINNED_IPFSD_VERSION };
