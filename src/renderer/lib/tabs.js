@@ -632,6 +632,41 @@ const refreshOnchainProvenance = async (tab, url) => {
   }
 };
 
+// The content label of the dweb page a tab committed (freedom-core design
+// 0009, Labels): main keeps a navigation's label for its webContents, and a
+// subresource never changes it. Only the commit asks, so a same-document
+// navigation (`replaceState`, an anchor) keeps the document's label; the
+// sequence check drops an answer that lands after the tab moved on.
+const DWEB_PAGE_URL = /^(?:bzz|ipfs|ipns):\/\//i;
+
+const refreshDwebContentTrust = async (tab, url) => {
+  if (!tab?.navigationState) return;
+  const sequence = tab.navigationState.committedNavigationSequence;
+  if (tab.dwebContentTrust) {
+    tab.dwebContentTrust = null;
+    onOnchainProvenanceChange?.(tab.id);
+  }
+  if (!DWEB_PAGE_URL.test(url || '') || !electronAPI?.getDwebContentTrust) return;
+
+  let webContentsId;
+  try {
+    webContentsId = tab.webview.getWebContentsId();
+  } catch {
+    return;
+  }
+
+  try {
+    const content = await electronAPI.getDwebContentTrust(webContentsId, url);
+    const current = tabState.tabs.find((candidate) => candidate.id === tab.id);
+    if (!current || current.navigationState?.committedNavigationSequence !== sequence) return;
+    if (typeof content !== 'string' || !content) return;
+    current.dwebContentTrust = { url, content };
+    onOnchainProvenanceChange?.(current.id);
+  } catch (err) {
+    pushDebug(`[Tabs] Content label lookup failed: ${err.message}`);
+  }
+};
+
 // Create a webview element
 const createWebview = (tabId, initialUrl) => {
   const webview = document.createElement('webview');
@@ -853,6 +888,10 @@ const createWebview = (tabId, initialUrl) => {
           }
         }
         void refreshOnchainProvenance(tab, webviewUrl);
+        // The committed URL, not `getURL()`: the page may already have
+        // replaced its own by the time this runs. A view-source page shows
+        // the source, not the content, and gets no label.
+        void refreshDwebContentTrust(tab, tab.isViewingSource ? '' : event.url);
         // Clear any stale favicon from the previous page when navigating to
         // an internal page — page-favicon-updated will paint one back in if
         // the page declares a <link rel="icon">. Not when the commit reloads
@@ -1758,6 +1797,7 @@ export const createTab = (url = null, options = {}) => {
     webview,
     navigationState: createNavigationState(),
     onchainProvenance: null,
+    dwebContentTrust: null,
   };
 
   tabState.tabs.push(tab);

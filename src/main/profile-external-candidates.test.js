@@ -619,7 +619,11 @@ describe('profile external candidates', () => {
           expectIpfsGateway: true,
         },
       ]);
-      expect(definition.trustNote).toMatch(/does not verify content integrity/i);
+      expect(definition.trustNote).toBe(
+        'Freedom verifies the content this gateway serves, if the gateway supports it. ' +
+          'You can turn this off for the node in Settings → Nodes; ' +
+          'the gateway is then trusted for every ipfs:// page it serves.'
+      );
     });
   });
 });

@@ -238,6 +238,10 @@ function idleBoundBody(body, idleMs, stop, onEnd) {
  * @param {(status: number, message: string) => Response} [options.errorResponse] -
  *   main's `{ code, message }` answer: the JSON body, or a navigation's
  *   error page (error-page.js)
+ * @param {(trust: {name: string|null, content: string}) => void} [options.onTrust] -
+ *   the plan's trust, once the node has answered and just before its answer
+ *   is returned; never with main's own answer (freedom-core design 0009,
+ *   Labels)
  * @param {object} options.log
  * @param {string} options.tag - the handler's log prefix
  * @param {(url: string) => string} options.redactUrl
@@ -252,6 +256,7 @@ async function executeFetch(
     stop = null,
     onEnd = () => {},
     errorResponse = jsonErrorResponse,
+    onTrust = () => {},
     log,
     tag,
     redactUrl,
@@ -321,6 +326,7 @@ async function executeFetch(
   if (!keep) {
     if (bodyPresent) upstream.body.cancel().catch(() => {});
     end();
+    onTrust(fetch.trust);
     return new Response(null, {
       status: head.status,
       statusText: upstream.statusText,
@@ -337,6 +343,7 @@ async function executeFetch(
       return fail(err);
     }
   }
+  onTrust(fetch.trust);
   return new Response(body, {
     status: head.status,
     statusText: upstream.statusText,

@@ -29,6 +29,12 @@
  * (`error-page.js`). Every other request keeps the JSON body, and against a
  * protocol-1 core every request does.
  *
+ * **The content label** (0009, Labels): `onTrust` gets the trust of the
+ * content the request answers with, a verified head's or a fetch plan's,
+ * and the protocol handlers label the response for the trust panel
+ * (`content-trust.js`). Against a protocol-1 core every plan is a fetch, so
+ * the label is the plan's: `node_asserted` or `unverified`.
+ *
  * **One lifetime per request.** At entry the request is fenced to its
  * session, before anything is planned: its scope is the page's abort and its
  * session's close. Every wait in its life observes it (`dweb.open`, its
@@ -153,7 +159,11 @@ function openFailure(err, url, tag, answer) {
  * @param {string|null} [options.partition] - a private session's partition
  * @param {string} options.tag - the handler's log prefix
  * @param {(trust: {name: string|null, content: string}) => void} [options.onTrust] -
- *   a verified head's trust, for the trust panel (0009, Labels)
+ *   the trust of the content the request answers with, for the trust panel
+ *   (0009, Labels): a verified head's, whose label is final, or a fetch
+ *   plan's once the node has answered. Called at most once, just before
+ *   that response is returned, and never for main's own answers (an error
+ *   or redirect plan, a refusal, a failed dial)
  * @returns {Promise<Response>}
  */
 async function handleDwebRequest(request, options) {
@@ -303,6 +313,7 @@ async function handle(request, { backend, partition = null, tag, onTrust }, rele
       stop: fence.signal,
       onEnd: finish,
       errorResponse: answer,
+      onTrust,
       log,
       tag,
       redactUrl: redactUrlForLog,

@@ -245,6 +245,176 @@ describe('navigation-utils', () => {
     });
   });
 
+  // freedom-core design 0009, Labels: a bzz:/ipfs:/ipns: page's content
+  // label, which main keeps for the navigation that loaded the tab's page.
+  describe('the content label', () => {
+    const HASH = 'ab'.repeat(32);
+    const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+    const IPNS_KEY = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+    const verifiedTrust = { level: 'verified', agreed: ['a', 'b'], queried: ['a', 'b', 'c'] };
+
+    test('the four sentences are the design\'s proposed wording', async () => {
+      const { CONTENT_TRUST_SENTENCE } = await loadNavigationUtils();
+      expect(CONTENT_TRUST_SENTENCE).toEqual({
+        verified: 'Content verified by Freedom',
+        latest_asserted: 'Content verified; latest version as reported by your node',
+        node_asserted: "Content retrieved by Freedom's node",
+        unverified: 'Content not verified: served by your external node as is',
+      });
+    });
+
+    test('a hash or CID page shows its content label as its own shield', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const dwebContent = { url: `bzz://${HASH}/index.html`, content: 'unverified' };
+
+      expect(resolveTrustBadge({ value: `bzz://${HASH}/index.html`, dwebContent })).toEqual({
+        kind: 'content',
+        level: 'unverified',
+        name: `bzz://${'ab'.repeat(6)}…${'ab'.repeat(5)}`,
+        trust: dwebContent,
+        content: 'unverified',
+        description: 'Content not verified: served by your external node as is',
+        uri: `bzz://${HASH}`,
+      });
+
+      const levels = {
+        verified: 'verified',
+        latest_asserted: 'verified',
+        node_asserted: 'user-configured',
+        unverified: 'unverified',
+      };
+      for (const [content, level] of Object.entries(levels)) {
+        const badge = resolveTrustBadge({
+          value: `ipfs://${CID}/docs/`,
+          dwebContent: { url: `ipfs://${CID}/`, content },
+        });
+        expect(badge.level).toBe(level);
+        expect(badge.uri).toBe(`ipfs://${CID}`);
+      }
+    });
+
+    test('the label follows the page, not a path within it or an edited address', async () => {
+      const { resolveTrustBadge, resolveDwebContent } = await loadNavigationUtils();
+      const dwebContent = { url: `bzz://${HASH}/index.html`, content: 'verified' };
+      // A same-document navigation to another path keeps the document's label.
+      expect(resolveDwebContent({ value: `BZZ://${HASH.toUpperCase()}/app#/route`, dwebContent }))
+        .toBe('verified');
+      for (const value of [
+        `bzz://${'cd'.repeat(32)}/`,
+        `ipfs://${HASH}/`,
+        'https://example.com/',
+        `bzz://${HASH}x/`,
+        `view-source:bzz://${HASH}/`,
+        '',
+      ]) {
+        expect(resolveDwebContent({ value, dwebContent })).toBeNull();
+        expect(resolveTrustBadge({ value, dwebContent })).toBeNull();
+      }
+      // No record, or one that isn't a label or a dweb page: nothing.
+      for (const record of [
+        null,
+        { url: `bzz://${HASH}/`, content: 'trusted' },
+        { url: `bzz://${HASH}/`, content: 'constructor' },
+        { url: 'https://example.com/', content: 'verified' },
+      ]) {
+        expect(resolveTrustBadge({ value: `bzz://${HASH}/`, dwebContent: record })).toBeNull();
+      }
+    });
+
+    test("a name's shield stays its resolution's, and carries the content label", async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['meinhard.eth', verifiedTrust]]);
+      const dwebContent = { url: 'bzz://meinhard.eth/', content: 'unverified' };
+
+      for (const value of ['bzz://meinhard.eth/', 'meinhard.eth', 'ens://meinhard.eth/about']) {
+        expect(resolveTrustBadge({ value, ensTrustByName, dwebContent })).toEqual({
+          level: 'verified',
+          name: 'meinhard.eth',
+          trust: verifiedTrust,
+          content: 'unverified',
+        });
+      }
+      // Another name in the address bar: its own badge, with no label.
+      const other = new Map([...ensTrustByName, ['other.eth', verifiedTrust]]);
+      expect(
+        resolveTrustBadge({ value: 'other.eth', ensTrustByName: other, dwebContent })
+      ).toEqual({ level: 'verified', name: 'other.eth', trust: verifiedTrust });
+    });
+
+    test('a name shown as ens:// over the key it resolved to', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['site.box', verifiedTrust]]);
+      const ensUriByName = new Map([['site.box', `ipns://${IPNS_KEY}`]]);
+      const dwebContent = { url: `ipns://${IPNS_KEY}/`, content: 'latest_asserted' };
+
+      expect(
+        resolveTrustBadge({ value: 'ens://site.box', ensTrustByName, ensUriByName, dwebContent })
+          .content
+      ).toBe('latest_asserted');
+      expect(
+        resolveTrustBadge({ value: 'ens://site.box', ensTrustByName, dwebContent }).content
+      ).toBeUndefined();
+    });
+
+    test('a name page the chrome did not resolve gets a content badge under its name', async () => {
+      const { resolveTrustBadge, buildTrustRows } = await loadNavigationUtils();
+      const dwebContent = { url: 'ipfs://vitalik.eth/', content: 'node_asserted' };
+      const badge = resolveTrustBadge({ value: 'ipfs://vitalik.eth/', dwebContent });
+      expect(badge).toMatchObject({
+        kind: 'content',
+        level: 'user-configured',
+        name: 'ipfs://vitalik.eth',
+        content: 'node_asserted',
+      });
+      // No hash row: a name names none.
+      expect(buildTrustRows(badge)).toEqual({
+        status: "Content retrieved by Freedom's node",
+        trustRows: [],
+        contentRows: [{ label: 'Network', display: 'IPFS', copy: '' }],
+      });
+    });
+
+    test("a content badge's popover: the label as status, the page's reference below", async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+      expect(
+        buildTrustRows({ kind: 'content', content: 'verified', uri: `bzz://${HASH}` })
+      ).toEqual({
+        status: 'Content verified by Freedom',
+        trustRows: [],
+        contentRows: [
+          { label: 'Network', display: 'Swarm', copy: '' },
+          { label: 'Hash', display: HASH, copy: HASH, autoFit: HASH },
+        ],
+      });
+    });
+
+    test("a name's popover: the content row follows what the name resolved to", async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+      const rows = (content) =>
+        buildTrustRows({
+          level: 'verified',
+          trust: verifiedTrust,
+          uri: `ipfs://${CID}`,
+          content,
+        }).contentRows;
+
+      expect(rows('latest_asserted')).toEqual([
+        { label: 'Network', display: 'IPFS', copy: '' },
+        { label: 'CID', display: CID, copy: CID, autoFit: CID },
+        {
+          label: '',
+          display: 'Content verified; latest version as reported by your node',
+          copy: '',
+          wrap: true,
+        },
+      ]);
+      // No label (not loaded yet, or main's error page): the rows as before.
+      expect(rows(null)).toEqual(rows(undefined));
+      expect(rows(null)).toHaveLength(2);
+      expect(rows('trusted')).toHaveLength(2);
+    });
+  });
+
   describe('buildTrustRows', () => {
     // The fixtures below mirror the four user-visible levels surfaced by
     // the ENS resolver. Each test pins the exact row sequence so a future

@@ -570,3 +570,76 @@ async function waitForRelease(backend) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+
+// freedom-core design 0009, Labels: `onTrust` gets the trust of the content
+// the request answers with, once, and never with main's own answer. Against
+// a protocol-1 core every plan is a fetch, so the label is the plan's.
+describe('the content label (onTrust)', () => {
+  const external = (answer) => ({ ...antBackend(answer), ref: { ant: 'external', up: true } });
+  const unverified = { fetch: { ...FETCH.fetch, trust: { name: null, content: 'unverified' } } };
+  const labelled = async (request, backend) => {
+    const onTrust = jest.fn();
+    const res = await handleDwebRequest(request, { backend, tag: '[bzz-protocol]', onTrust });
+    return { res, onTrust };
+  };
+
+  test("the bundled node's answer: the plan's node_asserted, once, before the response", async () => {
+    const order = [];
+    const backend = antBackend(() => new Response('content'));
+    const onTrust = jest.fn(() => order.push('trust'));
+    const res = await handleDwebRequest(new Request(`bzz://${HASH}/index.html`), {
+      backend,
+      tag: '[bzz-protocol]',
+      onTrust,
+    });
+    order.push('response');
+    expect(onTrust).toHaveBeenCalledTimes(1);
+    expect(onTrust).toHaveBeenCalledWith({ name: null, content: 'node_asserted' });
+    expect(order).toEqual(['trust', 'response']);
+    await expect(res.text()).resolves.toBe('content');
+  });
+
+  test("an external node's answer: the plan's unverified, a 404 and a HEAD included", async () => {
+    mockDriver = scriptedDriver({ plan: unverified });
+    const get = await labelled(
+      new Request(`bzz://${HASH}/index.html`),
+      external(() => new Response('missing', { status: 404 }))
+    );
+    expect(get.res.status).toBe(404);
+    expect(get.onTrust).toHaveBeenCalledWith({ name: null, content: 'unverified' });
+
+    const head = await labelled(
+      new Request(`bzz://${HASH}/index.html`, { method: 'HEAD' }),
+      external(() => new Response(null, { status: 200 }))
+    );
+    expect(head.res.body).toBeNull();
+    expect(head.onTrust).toHaveBeenCalledWith({ name: null, content: 'unverified' });
+  });
+
+  test("main's own answers carry no label", async () => {
+    const plans = [
+      { error: { status: 404, code: 404, message: 'Not found' } },
+      { redirect: { status: 307, location: `bzz://${HASH}/`, headers: [] } },
+      // Refused: the content label isn't the backend's.
+      { fetch: { ...FETCH.fetch, trust: { name: null, content: 'verified' } } },
+    ];
+    for (const plan of plans) {
+      mockDriver = scriptedDriver({ plan });
+      const { res, onTrust } = await labelled(
+        new Request(`bzz://${HASH}/index.html`),
+        antBackend()
+      );
+      expect(res.status).not.toBe(200);
+      expect(onTrust).not.toHaveBeenCalled();
+    }
+
+    // A node that can't be reached: main's 503, not the node's content.
+    mockDriver = scriptedDriver();
+    const refused = antBackend(() => {
+      throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    });
+    const { res, onTrust } = await labelled(new Request(`bzz://${HASH}/index.html`), refused);
+    expect(res.status).toBe(503);
+    expect(onTrust).not.toHaveBeenCalled();
+  });
+});
