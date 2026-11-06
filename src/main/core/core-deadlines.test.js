@@ -3,8 +3,10 @@
  * gives (freedom-core design 0001). Against freedom-core's
  * `protocol/schema.json` too, when it is found: FREEDOM_CORE_SCHEMA names
  * the file, or it is in the freedom-core checkout FREEDOM_CORED_PATH was
- * built in. The check itself runs on files written here as well: one of
- * main's table, and one with design 0009's `"protocol": 2` rows.
+ * built in. CI checks out freedom-core's at a reviewed commit and names
+ * it; a file named there that is missing fails the suite rather than
+ * skipping it. The check itself runs on files written here as well: one of
+ * main's table, and ones with design 0009's `"protocol": 2` rows.
  */
 
 const fs = require('fs');
@@ -85,11 +87,12 @@ const PROTOCOL_2_DEADLINES = Object.freeze({
 });
 
 /**
- * The check against the core's file. Its rows of protocol 1 are main's
- * table: every method, in order, with its class. A row marked
- * `"protocol": 2` is set aside, and must be one of PROTOCOL_2_DEADLINES with
- * its deadline. A row of any other protocol stays with protocol 1's, which
- * it fails.
+ * The check against the core's file. A row's `protocol`, when it has one,
+ * is the number 2: the core writes the member only on a row it serves from
+ * protocol 2 on. The rows without it are main's table: every method, in
+ * order, with its class. The rows marked 2 are set aside, and are either
+ * none (a core before 0009's protocol 2, as 0.9.1) or exactly
+ * PROTOCOL_2_DEADLINES's two, once each, in its order, with their deadlines.
  */
 function checkSchema(schema) {
   const classOf = {
@@ -97,13 +100,16 @@ function checkSchema(schema) {
     [VAULT_DEADLINE_MS]: 'vault',
     [SESSION_DEADLINE_MS]: 'session',
   };
-  const later = (m) => m.protocol === PROTOCOL_VERSION_STREAMS;
+  const marked = (m) => Object.hasOwn(m, 'protocol');
+  expect(
+    schema.methods.filter((m) => marked(m) && m.protocol !== PROTOCOL_VERSION_STREAMS)
+  ).toEqual([]);
   const theirs = schema.methods
-    .filter((m) => !later(m))
+    .filter((m) => !marked(m))
     .map((m) => [m.name, classOf[m.deadline_ms] ?? m.deadline_ms]);
   expect(Object.entries(METHOD_CLASSES)).toEqual(theirs);
-  const marked = schema.methods.filter(later).map((m) => [m.name, m.deadline_ms]);
-  expect(Object.entries(PROTOCOL_2_DEADLINES)).toEqual(expect.arrayContaining(marked));
+  const later = schema.methods.filter(marked).map((m) => [m.name, m.deadline_ms]);
+  expect([[], Object.entries(PROTOCOL_2_DEADLINES)]).toContainEqual(later);
 }
 
 const DEADLINE_OF = { immediate: null, vault: VAULT_DEADLINE_MS, session: SESSION_DEADLINE_MS };
@@ -143,19 +149,31 @@ describe("the check against the core's file", () => {
 
   test('the rows marked "protocol": 2 are set aside (0009, amendment 3)', () => {
     expect(() => checkSchema(schemaOf(VERIFY, FORGET))).not.toThrow();
-    expect(() => checkSchema(schemaOf(VERIFY))).not.toThrow();
   });
 
-  test("only 0009's two rows are set aside, and only with their deadlines", () => {
+  test('a protocol other than the number 2 fails, on any row', () => {
+    for (const protocol of [1, 3, '2', null]) {
+      for (const name of ['core.hello', 'dweb.open', 'chain.html']) {
+        const written = schemaOf(VERIFY, FORGET);
+        written.methods.find((m) => m.name === name).protocol = protocol;
+        expect(() => checkSchema(written)).toThrow();
+      }
+      expect(() => checkSchema(schemaOf({ ...VERIFY, protocol }, FORGET))).toThrow();
+    }
+  });
+
+  test("the marked rows are none or exactly 0009's two, once each, with their deadlines", () => {
     const fails = [
-      { ...VERIFY, deadline_ms: SESSION_DEADLINE_MS },
-      { ...FORGET, deadline_ms: VAULT_DEADLINE_MS },
-      { ...FORGET, name: 'dweb.pin' },
-      { ...VERIFY, protocol: 1 },
-      { ...VERIFY, protocol: 3 },
-      { ...FORGET, protocol: '2' },
+      [VERIFY],
+      [FORGET],
+      [VERIFY, VERIFY],
+      [VERIFY, FORGET, FORGET],
+      [FORGET, VERIFY],
+      [{ ...VERIFY, deadline_ms: SESSION_DEADLINE_MS }, FORGET],
+      [VERIFY, { ...FORGET, deadline_ms: VAULT_DEADLINE_MS }],
+      [VERIFY, FORGET, { ...FORGET, name: 'dweb.pin' }],
     ];
-    for (const row of fails) expect(() => checkSchema(schemaOf(row))).toThrow();
+    for (const rows of fails) expect(() => checkSchema(schemaOf(...rows))).toThrow();
   });
 });
 
@@ -173,6 +191,13 @@ function schemaPath() {
 const file = schemaPath();
 const schema = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 const describeIfSchema = schema ? describe : describe.skip;
+// Named outright (CI does): it must be there.
+const required = Boolean(process.env.FREEDOM_CORE_SCHEMA);
+
+(required ? test : test.skip)('the schema FREEDOM_CORE_SCHEMA names is there', () => {
+  expect(fs.existsSync(file)).toBe(true);
+  expect(schema?.methods?.length).toBeGreaterThan(0);
+});
 
 describeIfSchema("the core's method table (protocol/schema.json)", () => {
   test('every method of protocol 1, in order, with its class; the protocol-2 rows set aside', () => {
