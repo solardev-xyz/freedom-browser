@@ -314,8 +314,12 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
-      const chainId = getOnchainApp(webview)?.chainId || permission.chainId ||
-        parseInt(await getCurrentChainId(webview), 16);
+      // The chain this page sees: what eth_chainId answers it
+      // (getCurrentChainId, pinned to an onchain app's own chain), never
+      // the chain saved with the grant, which the wallet's chain selector
+      // doesn't update. The page built this transaction for it, and the
+      // Safe check, the auto-approve rule, the quote and the send all use it.
+      const chainId = parseInt(await getCurrentChainId(webview), 16);
 
       assertSafeOnGnosis(permission, chainId, 'transact');
 
@@ -339,8 +343,9 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
-      const chainId = getOnchainApp(webview)?.chainId || permission.chainId ||
-        parseInt(await getCurrentChainId(webview), 16);
+      // The chain this page sees, as for a transaction: a Safe signs only
+      // when that is Gnosis.
+      const chainId = parseInt(await getCurrentChainId(webview), 16);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
       if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && permission.autoApprove?.signing) {
