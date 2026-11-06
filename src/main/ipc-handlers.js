@@ -189,9 +189,11 @@ const PROFILE_NODE_MODES = {
   radicle: new Set(['managed', 'disabled']),
   tor: new Set(['managed', 'external', 'disabled']),
 };
+// `verify` is "Verify content from this node" (freedom-core design 0009,
+// Modes), a boolean kept beside the external node's endpoint.
 const PROFILE_NODE_FIELDS = {
-  bee: ['mode', 'externalApi'],
-  ipfs: ['mode', 'externalGateway'],
+  bee: ['mode', 'externalApi', 'verify'],
+  ipfs: ['mode', 'externalGateway', 'verify'],
   myotis: ['mode'],
   radicle: ['mode'],
   tor: ['mode', 'externalSocks'],
@@ -247,6 +249,19 @@ function validateProfileNodeConfigUpdate(protocol, patch = {}) {
         };
       }
       sanitized.mode = patch.mode;
+      continue;
+    }
+
+    if (field === 'verify') {
+      if (typeof patch.verify !== 'boolean') {
+        return {
+          ok: false,
+          response: failure('INVALID_PROFILE_NODE_CONFIG', 'Node verification must be on or off', {
+            field,
+          }),
+        };
+      }
+      sanitized.verify = patch.verify;
       continue;
     }
 

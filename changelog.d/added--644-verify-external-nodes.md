@@ -1,0 +1,5 @@
+- Verify content from this node, on by default for an external Swarm node or IPFS gateway under Settings > Nodes, checks what the node serves against the address you opened ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A Swarm node Freedom finds already running and reuses counts as external, and is checked too
+  - Freedom asks an IPFS gateway once, when it connects, whether it serves raw blocks; a gateway that doesn't can't be verified, and its content stays unverified
+  - An encrypted Swarm reference, a DNSLink name, and an IPNS name whose key type can't be checked still load unverified
+  - Turning the switch off, or on, applies to the pages loaded after it, with no restart

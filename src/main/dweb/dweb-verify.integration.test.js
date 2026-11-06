@@ -196,6 +196,72 @@ describeIfCore('verified page loads with the real freedom-cored at protocol 2', 
     expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
   });
 
+  test("the verifier's 8 KiB bound: a long IPFS query verifies; past it, the core's 414 or 431", async () => {
+    // An IPFS query isn't counted: it only ties the plan to its URL.
+    const query = `?${'q'.repeat(32_767)}`;
+    const long = await load(`ipfs://${SITE_V1}/index.html${query}`, gateway());
+    expect(long.status).toBe(200);
+    expect(await long.text()).toBe(INDEX_HTML);
+    // A path past it, a Swarm path and query together, a kept header.
+    for (const [url, backend, headers, status, message] of [
+      [
+        `ipfs://${SITE_V1}/${'p'.repeat(8192)}`,
+        gateway(),
+        {},
+        414,
+        'request URL too long to verify',
+      ],
+      [
+        `bzz://${SITE_A}/index.html?${'q'.repeat(8192)}`,
+        ant(),
+        {},
+        414,
+        'request URL too long to verify',
+      ],
+      [
+        `bzz://${SITE_A}/style.css`,
+        ant(),
+        { Range: `bytes=${'0'.repeat(8186)}-` },
+        431,
+        'request header too large to verify',
+      ],
+    ]) {
+      const res = await load(url, backend, { init: { headers } });
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ code: status, message });
+    }
+    // Each an error plan main took: no refused plan, no core fault.
+    expect(log.error).not.toHaveBeenCalled();
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  // The members main captures from the setting and the probe
+  // (ipfs-manager.js, bzz-protocol.js): a gateway the probe found without
+  // raw blocks, and a node whose verification is off, get today's fetch.
+  test('`unsupported`, and verification off: the core plans an unverified fetch', async () => {
+    for (const ref of [
+      { ipfs: 'gateway', up: true, unsupported: true },
+      { ipfs: 'gateway', up: true },
+    ]) {
+      node.asked.length = 0;
+      const res = await load(`ipfs://${SITE_V1}/index.html`, loopbackBackend(ref, node.url));
+      // The fake node serves blocks only: the fetch's own 404, passed on.
+      expect(res.status).toBe(404);
+      await res.arrayBuffer();
+      expect(node.asked.map(({ url }) => url)).toEqual([`/ipfs/${SITE_V1}/index.html`]);
+    }
+    const off = await load(
+      `bzz://${SITE_A}/index.html`,
+      loopbackBackend({ ant: 'external', up: true }, node.url)
+    );
+    expect(off.status).toBe(404);
+    await off.arrayBuffer();
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+    expect(mockAdmission.stats().active).toBe(0);
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
   test("a node that is down: the core's error plan, and the error page for a navigation", async () => {
     const down = await fakeNode(world);
     const downUrl = down.url;

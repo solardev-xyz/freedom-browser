@@ -22,9 +22,16 @@ const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { ipfsGrantRefusal } = require('./service-grant');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
+const { dwebVerifier } = require('./core/dweb-verify');
 const {
+  IPFS_CAR_ACCEPT,
+  IPFS_CAR_PROBE_PATH,
   IPFS_GATEWAY_PROBE_PATH,
+  IPFS_RAW_ACCEPT,
+  IPFS_RAW_PROBE_PATH,
+  isCarProbeResponse,
   isIpfsGatewayProbeResponse,
+  isRawProbeResponse,
 } = require('./ipfs/ipfs-gateway-probe');
 // Every dial of the configured gateway goes through this one transport, so a
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
@@ -133,6 +140,13 @@ let externalBytesServed = 0;
 // Null until detected / when the gateway exposes no recognizable RPC.
 let externalGatewayVersion = null;
 
+// What the serving gateway's trustless probe found at its activation
+// (freedom-core design 0009, Modes): `{ raw, car }`, fixed until the gateway
+// is activated again, so a gateway that later stops answering trustless
+// requests fails them rather than falling back to an unverified fetch. Null
+// while no gateway serves.
+let externalGatewaySupport = null;
+
 // Serializes start/stop transitions. The renderer's optimistic toggle awaits
 // start()/stop() and treats the resolved status as the *settled* backend state
 // (see reconcileIpfsToggle in renderer/lib/ipfs-ui.js). To honor that contract
@@ -202,6 +216,14 @@ function isDisabledIpfsConfig(config = getProfileIpfsConfig()) {
 
 function isExternalIpfsConfig(config = getProfileIpfsConfig()) {
   return config?.mode === 'external';
+}
+
+// "Verify content from this node" (freedom-core design 0009, Modes): per
+// profile, beside the gateway's endpoint, on unless the profile turned it
+// off. Read when a request's backend is captured, so a change applies to the
+// requests admitted after it (design 0006, Binding).
+function verifiesExternalGateway(config = getProfileIpfsConfig()) {
+  return config?.verify !== false;
 }
 
 // Accept a bare host:port or a full URL and return a canonical http(s) origin
@@ -446,6 +468,37 @@ async function probeBodyBytes(res) {
   }
 }
 
+// The trustless probe (ipfs-gateway-probe.js), run once when a gateway that
+// answered the `bafkqaaa` probe is activated: `{ raw, car }`. The two
+// requests go out together, each bounded like the probe above and never
+// following a redirect; a failed or late answer reads as "not served". CARs
+// count only beside raw blocks, without which nothing can be verified.
+async function probeGatewaySupport(gatewayUrl, { timeoutMs = 2000 } = {}) {
+  const ask = async (probePath, accept, check) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await gatewayFetch(`${gatewayUrl}${probePath}`, {
+        method: 'GET',
+        headers: { Accept: accept },
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+      res.body?.cancel?.().catch(() => {});
+      return check({ status: res.status, headers: res.headers });
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const [raw, car] = await Promise.all([
+    ask(IPFS_RAW_PROBE_PATH, IPFS_RAW_ACCEPT, isRawProbeResponse),
+    ask(IPFS_CAR_PROBE_PATH, IPFS_CAR_ACCEPT, isCarProbeResponse),
+  ]);
+  return { raw, car: raw && car };
+}
+
 function updateState(newState, error = null) {
   currentState = newState;
   lastError = error;
@@ -504,6 +557,7 @@ function clearExternalGatewayState() {
   currentMode = MODE.BUNDLED;
   externalGatewayUrl = null;
   externalGatewayVersion = null;
+  externalGatewaySupport = null;
 }
 
 function handleNativeNodeFailure(reason, node = activeNode) {
@@ -568,8 +622,14 @@ function startHealthCheck() {
       if (externalProbeTarget() !== probedUrl || isServing !== wasServing) return;
       if (!wasServing) {
         // Standby: the gateway that was down at start is answering now. Bring it
-        // up through the same activation the start path uses.
-        if (isHealthy && currentState === STATUS.ERROR) activateExternalGateway(probedUrl);
+        // up through the same activation the start path uses, its trustless
+        // support probed first, as there — unless the state moved on while
+        // that probe was out.
+        if (!isHealthy || currentState !== STATUS.ERROR) return;
+        const support = await probeGatewaySupport(probedUrl);
+        if (externalStateGeneration !== probedGeneration) return;
+        if (externalProbeTarget() !== probedUrl || currentMode === MODE.EXTERNAL) return;
+        if (currentState === STATUS.ERROR) activateExternalGateway(probedUrl, support);
         return;
       }
       if (!isHealthy && currentState === STATUS.RUNNING) {
@@ -683,8 +743,9 @@ function enterExternalStandby(url) {
 
 // The external gateway answered: serve `ipfs://` from it. Shared by the start
 // path and by the standby retry, so a gateway that was down at launch comes up
-// exactly the way one started against a live gateway does.
-function activateExternalGateway(url) {
+// exactly the way one started against a live gateway does. `support` is its
+// trustless probe's result (probeGatewaySupport), fixed for this activation.
+function activateExternalGateway(url, support) {
   externalStandby = null;
   externalStateGeneration += 1;
   const activationGeneration = externalStateGeneration;
@@ -693,6 +754,7 @@ function activateExternalGateway(url) {
   externalActiveRequests = 0;
   externalBytesServed = 0;
   externalGatewayVersion = null;
+  externalGatewaySupport = { raw: support.raw === true, car: support.car === true };
   clearService('ipfs');
   publishExternalIpfsMode(url, { serving: true });
   clearErrorState('ipfs');
@@ -700,6 +762,10 @@ function activateExternalGateway(url) {
   updateState(STATUS.RUNNING);
   startHealthCheck();
   log.info('[IPFS] Connected to external gateway at', url);
+  log.info(
+    `[IPFS] External gateway serves raw blocks: ${externalGatewaySupport.raw ? 'yes' : 'no'}, ` +
+      `ordered CARs: ${externalGatewaySupport.car ? 'yes' : 'no'}`
+  );
 
   // Identify the gateway in the background. The nodes menu picks
   // it up on its next stats poll. Ignored if the mode/endpoint changed meanwhile
@@ -768,7 +834,9 @@ async function startExternalIpfs(config) {
     return;
   }
 
-  activateExternalGateway(url);
+  // The gateway answers: which trustless responses it serves is probed now,
+  // once, before it serves anything (freedom-core design 0009, Modes).
+  activateExternalGateway(url, await probeGatewaySupport(url));
 }
 
 async function doStartIpfs(requestedAt = stopsRequested) {
@@ -1187,18 +1255,37 @@ async function requestExternalGateway(
  * instance of its own, which the lease pins (`privateBackend`); everything
  * else is served by the profile's node, and its lease holds nothing.
  *
+ * The gateway's verification (freedom-core design 0009, Verify plans) is
+ * captured with it: with the profile's setting on, `verify: true` in the
+ * reference when the activation's probe found raw blocks, else
+ * `unsupported: true`, and `car`, the probe's word on ordered CARs, which
+ * `dweb.verify` carries for an IPFS plan. Each is absent when off, so the
+ * native node, and a gateway whose verification is off, keep the two-key
+ * reference. A core without the verifier (protocol 1) can't serve a verify
+ * plan, so against it the reference keeps that form too.
+ *
  * @param {{partition?: string|null}} [options] - the request's partition
- * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean}, url: string|null,
- *   request: Function, release: Function}}
+ * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean, verify?: true,
+ *   unsupported?: true}, url: string|null, car?: boolean, request: Function,
+ *   release: Function}}
  * @throws {BackendBusy} a private partition that needs an instance while
  *   all 8 are pinned by others
  */
 function ipfsBackend({ partition = null } = {}) {
   if (currentMode === MODE.EXTERNAL) {
     const url = currentState === STATUS.RUNNING && externalGatewayUrl ? externalGatewayUrl : null;
+    const support = externalGatewaySupport;
+    const verifying = verifiesExternalGateway() && dwebVerifier() !== null;
+    const verify = verifying && support?.raw === true;
     return {
-      ref: { ipfs: 'gateway', up: Boolean(url) },
+      ref: {
+        ipfs: 'gateway',
+        up: Boolean(url),
+        ...(verify && { verify: true }),
+        ...(verifying && !verify && { unsupported: true }),
+      },
       url,
+      car: verify && support.car === true,
       request: (init) => requestExternalGateway(url, init),
       release() {},
     };
@@ -1316,6 +1403,7 @@ function getNativeDiagnostics() {
       nativeBuildInfo: null,
       externalGateway: externalGatewayUrl,
       externalVersion: externalGatewayVersion,
+      externalSupport: getExternalGatewaySupport(),
     };
   }
 
@@ -1344,6 +1432,17 @@ function getNativeDiagnostics() {
     activeNode.refreshStats();
   }
   return diagnostics;
+}
+
+/**
+ * The serving gateway's trustless probe (freedom-core design 0009, Modes):
+ * `{ raw, car }` as its activation found it, or null while no gateway
+ * serves. `raw: false` is a gateway whose content can't be verified, which
+ * the nodes panel names.
+ */
+function getExternalGatewaySupport() {
+  if (currentMode !== MODE.EXTERNAL || !externalGatewaySupport) return null;
+  return { ...externalGatewaySupport };
 }
 
 function setUseInjectedIdentity(enabled) {
@@ -1404,10 +1503,12 @@ module.exports = {
   ipfsBackend,
   serveNativeGatewayRequest,
   getNativeDiagnostics,
+  getExternalGatewaySupport,
   getStatus,
   checkHealth,
   isExternalIpfsConfig,
   normalizeExternalGatewayUrl,
   probeExternalGateway,
+  probeGatewaySupport,
   STATUS,
 };

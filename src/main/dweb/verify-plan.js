@@ -13,6 +13,11 @@
  *   CID in its canonical form (a CIDv0 converted to its CIDv1 in base32,
  *   base32 lowercased); or an IPNS name whose key is an inlined Ed25519 key
  *   or a sha2-256 multihash.
+ * - **The verifier's bound** (fc-dweb's `MAX_PATH`, 8 KiB): past it the
+ *   plan is a 414 (the path, with a Swarm plan's query) or a 431 (a header
+ *   the verifier keeps) instead, each with fixed words. An IPFS or IPNS
+ *   plan's query isn't counted: the walk never reads it, and it stays in
+ *   the plan only to tie it to the admitted URL.
  * - **Strict mode** (a 403 where content would be unverified) is not here
  *   yet: it comes with the profile setting.
  */
@@ -29,6 +34,15 @@ const VERIFY_RESPONSE_OPS = {
 };
 /** The labels a verified head may carry (0009, Labels). */
 const VERIFIED_CONTENT = new Set(['verified', 'latest_asserted']);
+
+/** The most bytes the verifier takes from a plan's path, with a Swarm
+ * plan's query, and from each header's value (0009, Bounds). */
+const MAX_VERIFY_PATH = 8192;
+/** The error plans in place of a verify plan past the bound. */
+const VERIFY_BOUND_ERRORS = {
+  url: { status: 414, code: 414, message: 'request URL too long to verify' },
+  header: { status: 431, code: 431, message: 'request header too large to verify' },
+};
 
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
 const B36 = '0123456789abcdefghijklmnopqrstuvwxyz';
@@ -204,6 +218,17 @@ function splitTarget(node, path) {
   return { root: { ipns: target }, below, query };
 }
 
+/** What of a verify plan passes the verifier's bound, in UTF-8 bytes as
+ * the core counts them: `url`, `header`, or null. */
+function pastBound(verify) {
+  const bytes = (text) => Buffer.byteLength(text, 'utf8');
+  const path = bytes(verify.path);
+  if (path > MAX_VERIFY_PATH) return 'url';
+  if (verify.node === 'ant' && path + bytes(verify.query) > MAX_VERIFY_PATH) return 'url';
+  if (verify.headers.some(([, value]) => bytes(value) > MAX_VERIFY_PATH)) return 'header';
+  return null;
+}
+
 /** Whether a fetch's target is one 0009 keeps a fetch for when
  * verification is on; any other target the core verifies. */
 function staysUnverified(node, path) {
@@ -213,7 +238,8 @@ function staysUnverified(node, path) {
 /**
  * What a fetch plan becomes for `backend`: a verify plan when its
  * verification is on and the content can be verified, else the fetch as it
- * is. `smallText` is the request's: a GET navigation.
+ * is; a verify plan past the verifier's bound is its 414 or 431 instead.
+ * `smallText` is the request's: a GET navigation.
  */
 function composeVerify(plan, backend, smallText) {
   if (backend?.verify !== true || !plan.fetch) return plan;
@@ -223,19 +249,19 @@ function composeVerify(plan, backend, smallText) {
   const response = [...VERIFY_RESPONSE_OPS[fetch.node]];
   if (fetch.node === 'ipfs' && smallText) response.push('small_text');
   const keep = VERIFY_HEADERS[fetch.node];
-  return {
-    verify: {
-      node: fetch.node,
-      root: split.root,
-      path: split.below,
-      query: split.query,
-      headers: fetch.headers.filter(([name]) => keep.includes(name)),
-      retry: fetch.retry,
-      timers: fetch.timers,
-      response,
-      trust: { name: fetch.trust.name, content: 'verified' },
-    },
+  const verify = {
+    node: fetch.node,
+    root: split.root,
+    path: split.below,
+    query: split.query,
+    headers: fetch.headers.filter(([name]) => keep.includes(name)),
+    retry: fetch.retry,
+    timers: fetch.timers,
+    response,
+    trust: { name: fetch.trust.name, content: 'verified' },
   };
+  const past = pastBound(verify);
+  return past ? { error: { ...VERIFY_BOUND_ERRORS[past] } } : { verify };
 }
 
 /** A root's reference, and its URL-space namespace. */
@@ -256,4 +282,6 @@ module.exports = {
   VERIFY_RESPONSE_OPS,
   VERIFIED_CONTENT,
   MAX_CID_TEXT,
+  MAX_VERIFY_PATH,
+  VERIFY_BOUND_ERRORS,
 };
