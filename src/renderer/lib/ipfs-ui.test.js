@@ -281,6 +281,27 @@ describe('ipfs-ui', () => {
       'Partial'
     );
     expect(mod.sandboxLabel({ mechanism: 'landlock-4', ...all, files: 'blocked' })).toBe('Partial');
+    // Windows from freedom-ipfsd 0.4.0: the job, with files and local IPC
+    // still unconfined.
+    const job = {
+      mechanism: 'job',
+      files: 'unavailable',
+      exec: 'partial',
+      ipc: 'unavailable',
+      network: 'none',
+      gaps: ['parent_process'],
+    };
+    expect(mod.sandboxLabel(job)).toBe('Partial');
+    expect(mod.sandboxDetail(job)).toBe(
+      [
+        'Files: unavailable',
+        'Programs: partial',
+        'Local IPC: unavailable',
+        'Network: none',
+        'Open: parent_process',
+        'Mechanism: job',
+      ].join('\n')
+    );
     expect(mod.sandboxLabel({ mechanism: 'none', files: 'unavailable' })).toBe('Unavailable');
     expect(mod.sandboxLabel(null)).toBe('Unknown');
     expect(mod.sandboxDetail(null)).toBe('');
