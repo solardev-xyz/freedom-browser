@@ -108,6 +108,15 @@ const DEFAULT_SETTINGS = {
   // from that pill's popover, the trust popover, or Settings → Networks →
   // Name Resolution.
   openWithoutGateway: false,
+  // Strict mode (freedom-core design 0009; Settings → Nodes, "Load only
+  // verified content from external nodes"): when true, content from an
+  // external Swarm node or IPFS gateway that Freedom can't verify is refused
+  // with a 403 that says why, instead of loading unverified. Off by default.
+  // Read when a request's backend is captured (dweb/strict-mode.js), so a
+  // change applies to the pages loaded after it, with no restart. Stored only
+  // as a boolean, and written over IPC only by Settings or the chrome
+  // (ipc-sender-policy.js): turning it off is a downgrade.
+  loadOnlyVerifiedContent: false,
   // Experimental: when true, IPFS request progress phases ("Finding
   // providers…", "Searching the DHT…", etc.) are surfaced in the link
   // hover preview bar during ipfs:// / ipns:// loads. Off by default so the
@@ -272,6 +281,7 @@ function loadSettings() {
       }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
       cachedSettings.enableAi = parsed.enableAi === true;
+      cachedSettings.loadOnlyVerifiedContent = parsed.loadOnlyVerifiedContent === true;
       cachedSettings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
     } else {
       cachedSettings = { ...DEFAULT_SETTINGS };
@@ -348,6 +358,7 @@ function saveSettings(newSettings) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
 
         if (key === 'enableAi' && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'loadOnlyVerifiedContent' && typeof newSettings[key] !== 'boolean') continue;
         if (key === 'aiInvitationDismissed' && !isAiInvitationDismissed(newSettings[key])) continue;
 
         if (key === 'shortcutOverrides') {

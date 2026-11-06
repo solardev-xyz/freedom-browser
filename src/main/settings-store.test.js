@@ -54,6 +54,7 @@ describe('settings-store', () => {
         sidebarWidth: 320,
         blockUnverifiedEns: true,
         openWithoutGateway: false,
+        loadOnlyVerifiedContent: false,
         showIpfsProgressStatus: false,
       })
     );
@@ -72,6 +73,23 @@ describe('settings-store', () => {
     mod.saveSettings({ enableAi: false });
     const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
     expect(persisted).toMatchObject({ enableAi: false, aiInvitationDismissed: 'connect' });
+  });
+
+  // Strict mode (freedom-core design 0009): off unless the file holds `true`,
+  // and a save takes only a boolean.
+  test.each([undefined, 'true', 1, null, false])('strict mode is on only for an explicit boolean (stored %p)', value => {
+    fs.writeFileSync(path.join(userDataDir, 'settings.json'), JSON.stringify({ loadOnlyVerifiedContent: value }));
+    const { mod } = loadSettingsStore({ userDataDir });
+    expect(mod.loadSettings().loadOnlyVerifiedContent).toBe(false);
+    expect(mod.saveSettings({ loadOnlyVerifiedContent: true })).toBe(true);
+    expect(mod.loadSettings().loadOnlyVerifiedContent).toBe(true);
+    for (const junk of ['false', 0, null, {}]) {
+      mod.saveSettings({ loadOnlyVerifiedContent: junk });
+      expect(mod.loadSettings().loadOnlyVerifiedContent).toBe(true);
+    }
+    mod.saveSettings({ loadOnlyVerifiedContent: false });
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.loadOnlyVerifiedContent).toBe(false);
   });
 
   // #881: a dismissal records the setup step it hid, so later steps still show.
@@ -674,6 +692,33 @@ describe('settings-store', () => {
     expect(save(page('history.html'), { enableAi: false })).toBe(false);
     expect(save(sender('window', CHROME_INDEX), { enableAi: false })).toBe(true);
     expect(mod.loadSettings().enableAi).toBe(false);
+  });
+
+  // Strict mode (freedom-core design 0009) is a protection: no internal page
+  // but Settings may switch it, on or off.
+  test('only Settings or the chrome can change strict mode over IPC', async () => {
+    const { pathToFileURL } = require('url');
+    const { CHROME_INDEX, PAGES_DIR } = require('./ipc-sender-policy');
+    const ipcMain = createIpcMainMock();
+    const { mod, logger } = loadSettingsStore({ userDataDir, ipcMain });
+    mod.registerSettingsIpc();
+    const save = ipcMain.handlers.get(IPC.SETTINGS_SAVE);
+    const sender = (type, file) => {
+      const mainFrame = { url: pathToFileURL(file).href };
+      return { sender: { getType: () => type, mainFrame }, senderFrame: mainFrame };
+    };
+    const page = (name) => sender('webview', path.join(PAGES_DIR, name));
+
+    expect(save(page('settings.html'), { loadOnlyVerifiedContent: true })).toBe(true);
+    expect(mod.loadSettings().loadOnlyVerifiedContent).toBe(true);
+    for (const name of ['home.html', 'history.html', 'downloads.html', 'error.html']) {
+      expect(save(page(name), { loadOnlyVerifiedContent: false })).toBe(false);
+      expect(save(page(name), { loadOnlyVerifiedContent: false, showBookmarkBar: true })).toBe(false);
+    }
+    expect(mod.loadSettings()).toMatchObject({ loadOnlyVerifiedContent: true, showBookmarkBar: false });
+    expect(logger.warn).toHaveBeenCalledWith('[settings] refused loadOnlyVerifiedContent from webview/file');
+    expect(save(sender('window', CHROME_INDEX), { loadOnlyVerifiedContent: false })).toBe(true);
+    expect(mod.loadSettings().loadOnlyVerifiedContent).toBe(false);
   });
 
   // #233: the sandboxed webview preload reads the Appearance theme

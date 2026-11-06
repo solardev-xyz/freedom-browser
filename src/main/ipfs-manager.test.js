@@ -3894,13 +3894,14 @@ describe('verification of an external gateway', () => {
     };
   }
 
-  async function startExternal({ ipfs = {}, attached = true, ...answers } = {}) {
+  async function startExternal({ ipfs = {}, attached = true, settings, ...answers } = {}) {
     global.fetch = gatewayAnswering(answers);
     const activeProfile = profileWith(ipfs);
     const ctx = loadIpfsManagerModule({
       nativeAvailable: false,
       activeProfile,
       verifierAttached: attached,
+      settings,
     });
     ctx.mod.registerIpfsIpc();
     await ctx.mod.startIpfs();
@@ -4244,6 +4245,84 @@ describe('verification of an external gateway', () => {
     });
     expect(ctx.mod.getExternalGatewaySupport()).toBeNull();
     expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: false });
+  });
+
+  // Strict mode (0009, Strict mode): the profile's "Load only verified
+  // content from external nodes", read when the backend is captured.
+  const STRICT = { loadOnlyVerifiedContent: true };
+
+  test('strict mode adds `strict` to the gateway, whatever its verification', async () => {
+    const verified = await startExternal({ settings: STRICT });
+    expect(backendOf(verified.ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true, verify: true, strict: true },
+      car: true,
+    });
+    await verified.ctx.mod.stopIpfs();
+    // A gateway without raw blocks: the core refuses its content with
+    // strict mode's second message.
+    const unsupported = await startExternal({
+      settings: STRICT,
+      raw: new Response('', { status: 404 }),
+    });
+    expect(backendOf(unsupported.ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true, unsupported: true, strict: true },
+      car: false,
+    });
+    await unsupported.ctx.mod.stopIpfs();
+    // Verification off: its first.
+    const off = await startExternal({ settings: STRICT, ipfs: { verify: false } });
+    expect(backendOf(off.ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true, strict: true },
+      car: false,
+    });
+  });
+
+  test('strict mode is off by default, and on only for `true`', async () => {
+    for (const value of [undefined, false, 'true', 1, null]) {
+      const { ctx } = await startExternal({ settings: { loadOnlyVerifiedContent: value } });
+      expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+      await ctx.mod.stopIpfs();
+    }
+  });
+
+  test('a change of strict mode applies to the backends captured after it (Binding)', async () => {
+    const { ctx } = await startExternal();
+    const before = ctx.mod.ipfsBackend();
+    ctx.changeSettings(STRICT);
+    const on = ctx.mod.ipfsBackend();
+    ctx.changeSettings({ loadOnlyVerifiedContent: false });
+    const off = ctx.mod.ipfsBackend();
+    expect(before.ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    expect(on.ref).toEqual({ ipfs: 'gateway', up: true, verify: true, strict: true });
+    expect(off.ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    // Nothing restarts or probes again for it.
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+  });
+
+  test('strict mode against a core without the verifier (protocol 1): the two-key reference', async () => {
+    const { ctx } = await startExternal({ settings: STRICT, attached: false });
+    expect(backendOf(ctx)).toEqual({ ref: { ipfs: 'gateway', up: true }, car: false });
+    const off = await startExternal({
+      settings: STRICT,
+      attached: false,
+      ipfs: { verify: false },
+    });
+    expect(backendOf(off.ctx).ref).toEqual({ ipfs: 'gateway', up: true });
+    off.ctx.verifier.attached = true;
+    expect(backendOf(off.ctx).ref).toEqual({ ipfs: 'gateway', up: true, strict: true });
+  });
+
+  test('strict mode leaves the bundled node, and a private instance, untouched', async () => {
+    const ctx = loadIpfsManagerModule({
+      activeProfile: { metadata: { nodes: { ipfs: { mode: 'managed' } } } },
+      verifierAttached: true,
+      settings: STRICT,
+    });
+    await ctx.mod.startIpfs();
+    expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: true });
+    const priv = ctx.mod.ipfsBackend({ partition: 'private-1' });
+    expect(priv.ref).toEqual({ ipfs: 'native', up: true });
+    priv.release();
   });
 
   test('the bundled node keeps its two-key reference, with the setting and the verifier', async () => {

@@ -53,6 +53,7 @@ const { registerDwebShell } = require('../core/dweb-shell');
 const { attachDwebVerify, detachDwebVerify } = require('../core/dweb-verify');
 const { handleDwebRequest } = require('./dweb-handler');
 const { createFetchAdmission } = require('./fetch-admission');
+const { STRICT_MESSAGE } = require('./verify-plan');
 const log = require('../logger');
 
 const binary = process.env.FREEDOM_CORED_PATH;
@@ -260,6 +261,83 @@ describeIfCore('verified page loads with the real freedom-cored at protocol 2', 
     expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
     expect(mockAdmission.stats().active).toBe(0);
     expect(log.error).not.toHaveBeenCalled();
+  });
+
+  // Strict mode (0009, Strict mode): the members main captures from the
+  // profile's setting (bzz-protocol.js, ipfs-manager.js). The core plans each
+  // unverified cause's 403 before anything is fetched, main takes it, and a
+  // navigation gets the error page; verified content, and the verifier's
+  // bound, are as without it.
+  test("strict mode: the core's 403 for each unverified cause; verified content still loads", async () => {
+    const strict = (ref) => loopbackBackend({ ...ref, strict: true }, node.url);
+    // A secp256k1 peer ID: an IPNS name whose key type can't be verified.
+    const secp256k1 = '16Uiu2HAmSWMwdVs6WACXRjGWiBRqkfBV1tFnL4yhAxscizU2PeRA';
+    for (const [url, ref, message] of [
+      [`bzz://${SITE_A}/index.html`, { ant: 'external', up: true }, STRICT_MESSAGE.off],
+      [`ipfs://${SITE_V1}/index.html`, { ipfs: 'gateway', up: true }, STRICT_MESSAGE.off],
+      [
+        `ipfs://${SITE_V1}/index.html`,
+        { ipfs: 'gateway', up: true, unsupported: true },
+        STRICT_MESSAGE.unsupported,
+      ],
+      [
+        'ipns://docs.example.org/',
+        { ipfs: 'gateway', up: true, verify: true },
+        STRICT_MESSAGE.dnslink,
+      ],
+      [`ipns://${secp256k1}/`, { ipfs: 'gateway', up: true, verify: true }, STRICT_MESSAGE.key],
+      [
+        `bzz://${SITE_A}${'a1b2'.repeat(16)}/`,
+        { ant: 'external', up: true, verify: true },
+        STRICT_MESSAGE.encrypted,
+      ],
+    ]) {
+      const res = await load(url, strict(ref));
+      expect([url, res.status]).toEqual([url, 403]);
+      expect(await res.json()).toEqual({ code: 403, message });
+    }
+    expect(node.asked).toEqual([]);
+
+    // A navigation: the error page, in plain words, with the core's text.
+    const nav = await load(
+      'ipns://docs.example.org/',
+      strict({ ipfs: 'gateway', up: true, verify: true }),
+      {
+        init: { headers: NAVIGATION },
+      }
+    );
+    expect(nav.status).toBe(403);
+    expect(nav.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    const html = await nav.text();
+    expect(html).toContain('<title>This profile loads only verified content</title>');
+    expect(html).toContain('a DNSLink name, which Freedom can&#39;t verify');
+
+    // Verified content loads, byte for byte, Swarm's and IPFS's.
+    const swarm = await load(
+      `bzz://${SITE_A}/index.html`,
+      strict({ ant: 'external', up: true, verify: true })
+    );
+    expect(swarm.status).toBe(200);
+    expect(Buffer.from(await swarm.arrayBuffer()).equals(content('site-index', 300))).toBe(true);
+    const ipfs = await load(
+      `ipfs://${SITE_V1}/index.html`,
+      strict({ ipfs: 'gateway', up: true, verify: true })
+    );
+    expect(ipfs.status).toBe(200);
+    expect(await ipfs.text()).toBe(INDEX_HTML);
+
+    // Past the verifier's bound, still the 414.
+    const long = await load(
+      `ipfs://${SITE_V1}/${'p'.repeat(8192)}`,
+      strict({ ipfs: 'gateway', up: true, verify: true })
+    );
+    expect(long.status).toBe(414);
+    expect(await long.json()).toEqual({ code: 414, message: 'request URL too long to verify' });
+
+    // Every plan one main took: no refused plan, no core fault.
+    expect(log.error).not.toHaveBeenCalled();
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
   });
 
   test("a node that is down: the core's error plan, and the error page for a navigation", async () => {

@@ -1726,6 +1726,35 @@
             <div class="profile-node-empty">Loading…</div>
           </div>
           <p id="profile-nodes-status" class="rpc-status"></p>
+          <!-- Strict mode (freedom-core design 0009): beside the nodes'
+               "Verify content from this node", one switch for the profile.
+               It applies to the pages loaded after it, with no restart. -->
+          <div class="card" style="margin-top: 12px">
+            <div class="row" id="load-only-verified-row">
+              <div class="row-body">
+                <p class="row-label">
+                  <label for="load-only-verified">Load only verified content from external nodes</label>
+                </p>
+                <p class="row-help" id="load-only-verified-help">
+                  Content from an external Swarm node or IPFS gateway that Freedom can't verify
+                  doesn't load, and the page says why: content from a node whose verification is
+                  off or a gateway that can't be verified, a DNSLink name, an IPNS name whose key
+                  type can't be checked, and an encrypted Swarm reference. Freedom's own nodes
+                  aren't affected.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    id="load-only-verified"
+                    aria-describedby="load-only-verified-help"
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
           <div class="card" style="margin-top: 12px">
             <div class="row" id="swarm-publishing-row">
               <div class="row-body">

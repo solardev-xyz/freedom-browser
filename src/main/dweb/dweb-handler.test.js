@@ -217,6 +217,32 @@ describe('the plans', () => {
     expect(mockLog.info.mock.calls.flat().join(' ')).not.toContain('secret');
   });
 
+  // Strict mode (freedom-core design 0009): its 403s are fixed texts, so a
+  // private log keeps them; a 403 for a backend that isn't strict is refused.
+  test("strict mode's 403 is answered, its fixed message logged even in a private log", async () => {
+    const { STRICT_MESSAGE } = require('./verify-plan');
+    const message = STRICT_MESSAGE.off;
+    mockDriver = scriptedDriver({ plan: { error: { status: 403, code: 403, message } } });
+    const backend = { ...antBackend(), ref: { ant: 'external', up: true, strict: true } };
+    const res = await runWithPrivateLogContext(true, () =>
+      handle(new Request(`bzz://${HASH}/`), backend)
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ code: 403, message });
+    expect(backend.request).not.toHaveBeenCalled();
+    expect(mockLog.info.mock.calls.flat().join(' ')).toContain(message);
+    expect(mockAdmission.stats().active).toBe(0);
+
+    const lenient = { ...antBackend(), ref: { ant: 'external', up: true } };
+    const refused = await handle(new Request(`bzz://${HASH}/`), lenient);
+    expect(refused.status).toBe(502);
+    expect(await refused.json()).toEqual({ code: 502, message: 'dweb plan refused' });
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.stringContaining('dweb plan refused (error)'),
+      expect.anything()
+    );
+  });
+
   test('a redirect plan is answered as itself, with no node and no slot', async () => {
     const location = 'ipfs://bafybeie5nqv6kd3qnfjupgvz34woh3oksc3iau6abmyajn7qvtf6d2ho34/a';
     mockDriver = scriptedDriver({

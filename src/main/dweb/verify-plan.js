@@ -18,8 +18,13 @@
  *   the verifier keeps) instead, each with fixed words. An IPFS or IPNS
  *   plan's query isn't counted: the walk never reads it, and it stays in
  *   the plan only to tie it to the admitted URL.
- * - **Strict mode** (a 403 where content would be unverified) is not here
- *   yet: it comes with the profile setting.
+ * - **Strict mode** (0009, "Strict mode"): a backend whose reference
+ *   carries `strict: true` never gets a fetch. Where its content would be
+ *   `unverified`, the plan is a 403 with one of five fixed messages, the
+ *   first cause that applies: verification off, a gateway without raw
+ *   blocks (`unsupported`), a DNSLink name, an IPNS name's key type, an
+ *   encrypted Swarm reference. A verify plan stays one, and a verify plan
+ *   past the bound stays its 414 or 431.
  */
 
 const { cidV0ToV1Base32 } = require('../../shared/cid-utils');
@@ -43,6 +48,27 @@ const VERIFY_BOUND_ERRORS = {
   url: { status: 414, code: 414, message: 'request URL too long to verify' },
   header: { status: 431, code: 431, message: 'request header too large to verify' },
 };
+
+/** Strict mode's status: the profile's refusal, not a node's failure. */
+const STRICT_STATUS = 403;
+/** Strict mode's messages, by cause, fixed (fc-dweb's `STRICT_*`). */
+const STRICT_MESSAGE = {
+  off: 'This profile loads only verified content, and verification is off for this node',
+  unsupported:
+    "This profile loads only verified content, and this gateway doesn't serve verifiable responses",
+  dnslink: "This profile loads only verified content, and a DNSLink name can't be verified",
+  key: "This profile loads only verified content, and this IPNS name's key type can't be verified",
+  encrypted:
+    "This profile loads only verified content, and an encrypted Swarm reference can't be verified with an external node",
+};
+/** The five, in the order 0009 gives them. */
+const STRICT_MESSAGES = [
+  STRICT_MESSAGE.off,
+  STRICT_MESSAGE.unsupported,
+  STRICT_MESSAGE.dnslink,
+  STRICT_MESSAGE.key,
+  STRICT_MESSAGE.encrypted,
+];
 
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
 const B36 = '0123456789abcdefghijklmnopqrstuvwxyz';
@@ -238,14 +264,39 @@ function staysUnverified(node, path) {
 /**
  * What a fetch plan becomes for `backend`: a verify plan when its
  * verification is on and the content can be verified, else the fetch as it
- * is; a verify plan past the verifier's bound is its 414 or 431 instead.
- * `smallText` is the request's: a GET navigation.
+ * is; or, for a strict backend, strict mode's 403 where the content would
+ * be unverified. A verify plan past the verifier's bound is its 414 or 431
+ * instead, strict mode or not. `smallText` is the request's: a GET
+ * navigation.
  */
 function composeVerify(plan, backend, smallText) {
-  if (backend?.verify !== true || !plan.fetch) return plan;
-  const { fetch } = plan;
+  if (!plan.fetch) return plan;
+  const strict = backend?.strict === true;
+  // Why the content would stay unverified, as the core judges it: the
+  // backend first (verification off, a gateway without raw blocks), then
+  // the target (a DNSLink name, an IPNS name's key, an encrypted reference).
+  let cause;
+  if (backend?.verify === true) {
+    const verified = verifyFor(plan.fetch, smallText);
+    if (!verified.unverified) return verified;
+    cause = verified.unverified;
+  } else {
+    cause = backend?.unsupported === true ? 'unsupported' : 'off';
+  }
+  return strict ? strictError(cause) : plan;
+}
+
+/** Strict mode's error plan for a cause (`STRICT_MESSAGE`'s keys). */
+function strictError(cause) {
+  const message = STRICT_MESSAGE[cause];
+  return { error: { status: STRICT_STATUS, code: STRICT_STATUS, message } };
+}
+
+/** The verify plan a fetch becomes (or its 414 or 431 past the bound), or
+ * `{ unverified }` with why its content can't be verified. */
+function verifyFor(fetch, smallText) {
   const split = splitTarget(fetch.node, fetch.path);
-  if (split.unverified) return plan;
+  if (split.unverified) return split;
   const response = [...VERIFY_RESPONSE_OPS[fetch.node]];
   if (fetch.node === 'ipfs' && smallText) response.push('small_text');
   const keep = VERIFY_HEADERS[fetch.node];
@@ -284,4 +335,7 @@ module.exports = {
   MAX_CID_TEXT,
   MAX_VERIFY_PATH,
   VERIFY_BOUND_ERRORS,
+  STRICT_STATUS,
+  STRICT_MESSAGE,
+  STRICT_MESSAGES,
 };

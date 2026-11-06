@@ -65,6 +65,7 @@ const { executeFetch, jsonErrorResponse } = require('./plan-executor');
 const { executeVerify } = require('./verify-executor');
 const { isNavigation } = require('./dweb-open');
 const { errorPage } = require('./error-page');
+const { STRICT_MESSAGES } = require('./verify-plan');
 const { dwebVerifier } = require('../core/dweb-verify');
 const { acquireDwebFetch, fenceDwebSession } = require('./fetch-admission');
 const { redactForLog, redactUrlForLog } = require('../private/private-log-context');
@@ -96,6 +97,8 @@ const PLAIN_ERROR_MESSAGES = new Set([
       `gateway-form ${scheme} URL has no canonical ipfs:// or ipns:// form; ` +
       "not serving it under the gateway host's origin"
   ),
+  // Strict mode's refusals (freedom-core design 0009): fixed, one per cause.
+  ...STRICT_MESSAGES,
 ]);
 
 /** Today's `nameSystemLabelForHost`, for the driver's own "changed
