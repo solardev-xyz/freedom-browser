@@ -5,12 +5,11 @@
  * its plan's retry and timers, and answered whole or as a stream under the
  * core's credit.
  *
- * - **Protocol 2 only.** `registerDwebShell` registers the handler only on
- *   a client that asks for protocol 2, so only once a hello has settled it
- *   (any other answer is a mismatch), with `streams: true`. A request that
- *   comes without the duplex is `unknown_method`, as it is at protocol 1.
- *   core-process.js asks for protocol 2, which the pinned core (0.10.0)
- *   speaks, so the app's client registers it.
+ * - **Protocol 2.** `registerDwebShell` registers the handler, with
+ *   `streams: true`, on the core client, which speaks only protocol 2 (the
+ *   pinned core, 0.11.0, refuses 1), so it serves once a hello has settled
+ *   it (any other answer is a mismatch). A request that comes without the
+ *   duplex is `unknown_method`.
  * - **`for`** is the envelope ID of main's `dweb.verify`, in the generation
  *   that asks: `open()` keys it by the ID and generation `onSent` reports
  *   (service-client.js). A piece gets that request's captured backend, its
@@ -62,7 +61,7 @@
  */
 
 const defaultLog = require('../logger');
-const { ShellError, StreamedReply, PROTOCOL_VERSION_STREAMS } = require('./core-client');
+const { ShellError, StreamedReply } = require('./core-client');
 // The most one read of a streamed body takes: one data frame.
 const { MAX_DATA } = require('./frame');
 const { backendKind, checkPath, SWARM_HEADERS } = require('../dweb/plan-validation');
@@ -582,15 +581,14 @@ class DwebShell {
 }
 
 /**
- * Registers `shell.dweb_get` on `client` when it speaks protocol 2: the
- * shell, whose `open()` a `dweb.verify` request calls, or null.
+ * Registers `shell.dweb_get` on `client`: the shell, whose `open()` a
+ * `dweb.verify` request calls.
  *
  * @param {import('./core-client').CoreClient} client
  * @param {object} [deps] - test seams: log
- * @returns {DwebShell|null}
+ * @returns {DwebShell}
  */
 function registerDwebShell(client, deps = {}) {
-  if (client.protocol !== PROTOCOL_VERSION_STREAMS) return null;
   const shell = new DwebShell(deps);
   client.handle('shell.dweb_get', (params, context) => shell.get(params, context), {
     streams: true,

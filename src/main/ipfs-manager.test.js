@@ -4111,7 +4111,7 @@ describe('verification of an external gateway', () => {
       .toBeUndefined();
   });
 
-  test('against a core without the verifier (protocol 1), the count stays 0', async () => {
+  test('without the verifier attached, the count stays 0', async () => {
     const { ctx } = await startExternal({ attached: false });
     const failures = require('./dweb/verify-failures');
     failures._resetVerificationFailures();
@@ -4141,7 +4141,7 @@ describe('verification of an external gateway', () => {
     expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
   });
 
-  test('against a core without the verifier (protocol 1), the two-key reference', async () => {
+  test('without the verifier attached, the two-key reference', async () => {
     const { ctx } = await startExternal({ attached: false });
     expect(backendOf(ctx)).toEqual({ ref: { ipfs: 'gateway', up: true }, car: false });
     // The probe's result is kept all the same.
@@ -4299,7 +4299,7 @@ describe('verification of an external gateway', () => {
     expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
   });
 
-  test('strict mode against a core without the verifier (protocol 1): the two-key reference', async () => {
+  test('strict mode without the verifier attached: the two-key reference', async () => {
     const { ctx } = await startExternal({ settings: STRICT, attached: false });
     expect(backendOf(ctx)).toEqual({ ref: { ipfs: 'gateway', up: true }, car: false });
     const off = await startExternal({

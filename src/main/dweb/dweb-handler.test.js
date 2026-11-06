@@ -598,8 +598,8 @@ async function waitForRelease(backend) {
 }
 
 // freedom-core design 0009, Labels: `onTrust` gets the trust of the content
-// the request answers with, once, and never with main's own answer. Against
-// a protocol-1 core every plan is a fetch, so the label is the plan's.
+// the request answers with, once, and never with main's own answer. Without
+// the verifier attached every plan is a fetch, so the label is the plan's.
 describe('the content label (onTrust)', () => {
   const external = (answer) => ({ ...antBackend(answer), ref: { ant: 'external', up: true } });
   const unverified = { fetch: { ...FETCH.fetch, trust: { name: null, content: 'unverified' } } };

@@ -651,7 +651,7 @@ describe("the nodes panel's count of verification failures", () => {
     expect(counted()).toEqual({ ant: 1, gateway: 0 });
   });
 
-  test('against a core without the verifier (protocol 1), nothing is counted', async () => {
+  test('without the verifier attached, nothing is counted', async () => {
     // A verify plan can't reach it: refused at shape, as before 0009.
     mockVerifier = null;
     await handle(`bzz://${HASH}/`);
@@ -677,7 +677,7 @@ describe("the nodes panel's count of verification failures", () => {
   });
 });
 
-describe('against a core without the verifier (protocol 1)', () => {
+describe('without the verifier attached', () => {
   test('a verify plan is refused at shape, as before 0009, and nothing is sent', async () => {
     mockVerifier = null;
     const use = backend();

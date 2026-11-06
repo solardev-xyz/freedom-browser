@@ -52,7 +52,7 @@ class FakeChild extends EventEmitter {
     this.requests.push(message);
     let result;
     if (message.method === 'core.hello') {
-      result = { protocol: 1, core_version: '0.1.0', capabilities: [] };
+      result = { protocol: 2, core_version: '0.1.0', capabilities: ['streams'] };
     } else if (message.method === 'core.shutdown') {
       result = {};
     } else {
