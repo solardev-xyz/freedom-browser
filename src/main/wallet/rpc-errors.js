@@ -105,9 +105,16 @@ function providerRpcError(err, chainId, chainName) {
   return coded(`No RPC endpoint for ${name} answered${status}`);
 }
 
+// How deep a reply's error is walked. Past it, the rest is dropped, never
+// passed on unread: a node's JSON-RPC `data` reaches here as the node sent
+// it (design 0005), and a keyed endpoint could nest its URL or key in it.
+const MAX_REDACT_DEPTH = 8;
+const TOO_DEEP = '[redacted: nested too deep]';
+
 function redactValue(value, depth = 0) {
   if (typeof value === 'string') return redactRpcText(value);
-  if (depth >= 4 || value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_REDACT_DEPTH) return TOO_DEEP;
   if (Array.isArray(value)) return value.map((item) => redactValue(item, depth + 1));
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [key, redactValue(item, depth + 1)])

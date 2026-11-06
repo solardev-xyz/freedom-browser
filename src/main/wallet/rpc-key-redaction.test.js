@@ -412,6 +412,20 @@ describe('redactedHandler', () => {
     });
   });
 
+  test('a nested error is redacted at every depth, and dropped past the bound', () => {
+    // Six levels down: the old four-level walk passed this through as it was.
+    const nested = { cause: { errors: [{ cause: { details: { url: URL_WITH_KEY } } }] } };
+    // Ten levels down: past the bound, so dropped rather than passed on.
+    let deep = { text: `key=${KEY} at ${URL_WITH_KEY}` };
+    for (let i = 0; i < 10; i += 1) deep = { inner: deep };
+    const wrapped = redactedHandler(() => ({ success: false, error: { nested, deep } }));
+    const reply = JSON.stringify(wrapped());
+    expect(reply).not.toContain(KEY);
+    expect(reply).not.toContain('/v2/');
+    expect(reply).toContain('https://eth-mainnet.g.alchemy.com/[path redacted]');
+    expect(reply).toContain('[redacted: nested too deep]');
+  });
+
   test('a reply without an error is passed as it is', () => {
     const reply = { success: true, explorerUrl: 'https://gnosisscan.io/tx/0xabc' };
     expect(redactedHandler(() => reply)()).toBe(reply);
