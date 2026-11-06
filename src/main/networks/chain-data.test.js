@@ -150,7 +150,9 @@ describe('SOURCE_CAPABILITIES', () => {
     const single = [...SINGLE_NODE_METHODS].sort();
     expect(unsupported('myotis')).toEqual(single);
     expect(unsupported('quorum')).toEqual(single);
-    expect(unsupported('colibri')).toEqual([...single, 'eth_getLogs'].sort());
+    expect(unsupported('colibri')).toEqual(
+      [...single, 'eth_getLogs', 'eth_gasPrice', 'eth_feeHistory'].sort()
+    );
     expect(unsupported('direct')).toEqual([]);
     expect(unsupported('blockscout')).toEqual(
       [...new Set([...READ_METHODS, ...SINGLE_NODE_METHODS])]
