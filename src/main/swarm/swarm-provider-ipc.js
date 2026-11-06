@@ -369,6 +369,20 @@ function reservePermissionFreeReadBytes(origin, bytes) {
 }
 
 /**
+ * The read budget as feed-service meters a feed read (readFeedPayload):
+ * what came off the network is charged, what is about to be read is
+ * reserved first, and an entry larger than the whole byte budget is refused
+ * as data_too_large.
+ */
+function permissionFreeReadMeter(origin) {
+  return {
+    maxBytes: getReadBudget(origin).maxBytes,
+    charge: (bytes) => consumePermissionFreeReadBudget(origin, { bytes }),
+    reserve: (bytes) => reservePermissionFreeReadBytes(origin, bytes),
+  };
+}
+
+/**
  * Execute a Swarm provider method.
  * @param {string} method
  * @param {*} params
@@ -1511,7 +1525,14 @@ async function handleWriteFeedEntry(params, origin) {
 
 /**
  * Handle swarm_readFeedEntry: validate, resolve topic/owner, read feed entry.
- * Does NOT require feed grant or vault — read-only operation.
+ * Does NOT require feed grant or vault — read-only operation. One request
+ * against the permission-free read budget, like swarm_readData, and the
+ * entry's bytes against the byte budget as they are read: an explicit
+ * index's SOC is charged once read and the size its wrapped chunk's span
+ * gives is reserved before the node joins it; the latest entry is reserved
+ * from its declared length, or as it streams. An entry larger than the whole
+ * byte budget is data_too_large, and one that does not fit what is left of
+ * the window is rate_limited, without reading the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1593,23 +1614,25 @@ async function handleReadFeedEntry(params, origin) {
   }
 
   try {
-    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index);
-
-    const base64Data = result.payload.toString('base64');
-    const byteBudgetError = consumePermissionFreeReadBudget(origin, {
-      bytes: result.payload.length,
-    });
-    if (byteBudgetError) return byteBudgetError;
+    // The entry's bytes are paid for as they are read, before they are held.
+    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index, permissionFreeReadMeter(origin));
 
     return {
       result: {
-        data: base64Data,
+        data: result.payload.toString('base64'),
         encoding: 'base64',
         index: result.index,
         nextIndex: result.nextIndex,
       },
     };
   } catch (err) {
+    if (err.refusal) return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
     if (err.reason === 'feed_empty') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'feed_empty' } } };
     }

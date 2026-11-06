@@ -2098,6 +2098,7 @@ describe('swarm-provider-ipc', () => {
         'cd'.repeat(20),
         expect.any(MockTopic),
         5,
+        expect.objectContaining({ maxBytes: 5 * 1024 * 1024 }),
       );
     });
 
@@ -2119,6 +2120,7 @@ describe('swarm-provider-ipc', () => {
         'ee'.repeat(20),
         expect.any(MockTopic),
         undefined,
+        expect.objectContaining({ maxBytes: 5 * 1024 * 1024 }),
       );
     });
 
@@ -2173,6 +2175,75 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.error.code).toBe(-32602);
       expect(result.error.data.reason).toBe('entry_not_found');
+    });
+
+    describe('the read budget (#1051)', () => {
+      const KIB = 1024;
+
+      beforeEach(() => {
+        mockGetPermission.mockReturnValue(null);
+        mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+        global.fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+      });
+      afterEach(() => {
+        global.fetch.mockReset();
+      });
+
+      // What feed-service does with the meter, end to end in
+      // feed-read-budget.http.test.js: reserve before reading, or give up.
+      function readReserving(bytes) {
+        mockReadFeedPayload.mockImplementation(async (_owner, _topic, _index, meter) => {
+          const refusal = meter.reserve(bytes);
+          if (refusal) throw Object.assign(new Error('refused'), { refusal });
+          return { payload: Buffer.alloc(bytes), index: 0, nextIndex: 1 };
+        });
+      }
+
+      test('the meter reserves against the origin\'s byte budget, before the read', async () => {
+        readReserving(400 * KIB);
+        const first = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(Buffer.from(first.result.data, 'base64')).toHaveLength(400 * KIB);
+
+        const second = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(second.error.code).toBe(-32602);
+        expect(second.error.data).toMatchObject({ reason: 'rate_limited', maxBytes: 512 * KIB });
+
+        // The refused 400 KiB were never reserved: 112 KiB are left.
+        readReserving(100 * KIB);
+        const third = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(third.result).toBeDefined();
+      });
+
+      test('nothing more is charged after the read', async () => {
+        readReserving(512 * KIB);
+        const whole = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        // The whole budget, reserved once: not charged a second time.
+        expect(whole.result).toBeDefined();
+      });
+
+      test('the meter\'s limit is the origin\'s byte budget', async () => {
+        await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(mockReadFeedPayload.mock.calls[0][3].maxBytes).toBe(512 * KIB);
+      });
+
+      test('an entry larger than the budget is data_too_large', async () => {
+        const tooLarge = Object.assign(new Error('Feed entry exceeds the maximum read size of 524288 bytes'), {
+          reason: 'data_too_large',
+          limit: 512 * KIB,
+          actual: 10 * 1024 * KIB,
+        });
+        mockReadFeedPayload.mockRejectedValueOnce(tooLarge);
+        const known = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER, index: 2 }, 'unknown.eth');
+        expect(known.error.code).toBe(-32602);
+        expect(known.error.message).toBe('Feed entry exceeds the maximum read size of 524288 bytes');
+        expect(known.error.data).toEqual({ reason: 'data_too_large', limit: 512 * KIB, actual: 10 * 1024 * KIB });
+
+        // A body with no declared length: its size is not known.
+        delete tooLarge.actual;
+        mockReadFeedPayload.mockRejectedValueOnce(tooLarge);
+        const unknown = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(unknown.error.data).toEqual({ reason: 'data_too_large', limit: 512 * KIB });
+      });
     });
 
     test('returns NODE_UNAVAILABLE when Bee is not reachable', async () => {
