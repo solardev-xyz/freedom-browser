@@ -40,6 +40,8 @@ const {
   revokePermissionsForWalletIndex,
   getAllPermissions,
   addTransactionAutoApprove,
+  isTransactionAutoApproved,
+  removeTransactionAutoApprove,
   registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
@@ -245,5 +247,109 @@ describe('dapp-permissions — the auto-approve question, paused while a payment
     await expect(ask(SITE, '0x12345678')).resolves.toBe(false);
     await expect(ask('https://other.example')).resolves.toBe(false);
     expect(transactionAutoApprovePaused).not.toHaveBeenCalled();
+  });
+});
+
+// A transaction rule covers its call with no more value than the confirmed
+// send it was recorded from. Before, a rule recorded from a send of 0.01 ETH
+// covered the same call with any value.
+describe('dapp-permissions — a transaction rule covers no more value than its send', () => {
+  const SITE = 'https://swap.example';
+  const TO = '0x' + '66'.repeat(20);
+  const SELECTOR = '0xabcdef12';
+  const CENT = '10000000000000000'; // 0.01 ETH, in wei
+  const CENT_HEX = '0x2386f26fc10000';
+  const TWO_CENTS_HEX = '0x470de4df820000';
+  const covers = (value, site = SITE) => isTransactionAutoApproved(site, TO, SELECTOR, 1, value);
+
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    transactionAutoApprovePaused.mockReset().mockResolvedValue(false);
+    grantPermission(SITE, 0, 1);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('a rule from a send of 0.01 ETH covers 0.01 ETH and less, never more', () => {
+    expect(addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT)).toBe(true);
+    expect(covers(CENT)).toBe(true);
+    expect(covers(CENT_HEX)).toBe(true);
+    expect(covers('0')).toBe(true);
+    expect(covers(undefined)).toBe(true);
+    expect(covers(BigInt(CENT) + 1n)).toBe(false);
+    expect(covers(TWO_CENTS_HEX)).toBe(false);
+    expect(covers('1000000000000000000000')).toBe(false);
+  });
+
+  test('a rule from a send of no value covers only calls of no value', () => {
+    expect(addTransactionAutoApprove(SITE, TO, SELECTOR, 1, '0x0')).toBe(true);
+    expect(covers('0')).toBe(true);
+    expect(covers('0x0')).toBe(true);
+    expect(covers('1')).toBe(false);
+    expect(covers('0x1')).toBe(false);
+  });
+
+  test('the rule records the value; the call, chain and site still have to match', () => {
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT_HEX);
+    expect(getPermission(SITE).autoApprove.transactions).toEqual([
+      { to: TO, selector: SELECTOR, chainId: 1, maxValue: CENT },
+    ]);
+    expect(isTransactionAutoApproved(SITE, TO, '0x12345678', 1, '0')).toBe(false);
+    expect(isTransactionAutoApproved(SITE, TO, SELECTOR, 100, '0')).toBe(false);
+    expect(covers('0', 'https://other.example')).toBe(false);
+  });
+
+  test('a value that is not a non-negative integer is never covered, nor recorded', () => {
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
+    for (const value of ['-1', 'lots', '0.5', 1.5, -1, {}, true]) {
+      expect(covers(value)).toBe(false);
+    }
+    expect(addTransactionAutoApprove(SITE, '0x' + '77'.repeat(20), SELECTOR, 1, 'lots')).toBe(false);
+    expect(getPermission(SITE).autoApprove.transactions).toHaveLength(1);
+  });
+
+  test('added again for the same call, the rule covers the larger value confirmed', () => {
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, '0');
+    expect(covers(CENT)).toBe(true);
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, TWO_CENTS_HEX);
+    expect(covers(TWO_CENTS_HEX)).toBe(true);
+    expect(getPermission(SITE).autoApprove.transactions).toHaveLength(1);
+  });
+
+  test('a rule stored without a value, by an older build, covers only calls of no value', () => {
+    const file = path.join(tmpDir, 'dapp-permissions.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        [SITE]: {
+          origin: SITE,
+          walletIndex: 0,
+          chainId: 1,
+          autoApprove: { signing: false, transactions: [{ to: TO, selector: SELECTOR, chainId: 1 }] },
+        },
+      })
+    );
+    _resetCache();
+    expect(covers('0')).toBe(true);
+    expect(covers(undefined)).toBe(true);
+    expect(covers(CENT)).toBe(false);
+    // Confirmed again with "Always allow", it covers that send's value.
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
+    expect(covers(CENT)).toBe(true);
+  });
+
+  test("the renderer's question carries the value", async () => {
+    registerDappPermissionsIpc();
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
+    const ask = (value) => ipcHandlers['dapp:is-tx-auto-approved']({}, SITE, TO, SELECTOR, 1, value);
+    await expect(ask(CENT_HEX)).resolves.toBe(true);
+    await expect(ask(TWO_CENTS_HEX)).resolves.toBe(false);
+  });
+
+  test('removing a rule still works on its call alone', () => {
+    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
+    expect(removeTransactionAutoApprove(SITE, TO, SELECTOR, 1)).toBe(true);
+    expect(covers('0')).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ const registry = require('./networks/network-registry');
 const { nodeBlockReason } = require('./core/node-identity-guard');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
+const { openPrivateDir } = require('./private-files');
 const {
   getActiveProfile,
   getReservedProfilePorts,
@@ -307,6 +308,26 @@ function isManagedAntNode() {
 }
 
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
+  // The data directory and its keys/ are opened once, never through a link,
+  // and every key and config read or write below goes through those
+  // handles. A data directory or keys/ that is a link, not ours or not
+  // owner-only once narrowed stops the start before anything is written
+  // (K-3).
+  const data = openPrivateDir(dataDir);
+  try {
+    const keys = data.openDir('keys', { create: false });
+    // antd opens keys/swarm.key by its path, following a link there. Missing
+    // is fine (antd self-initializes); a key that is a link, not a regular
+    // file of ours, or not owner-only once narrowed, stops the start here.
+    // An older build left keys with the umask's modes: they are narrowed.
+    keys?.requirePrivate('swarm.key');
+    return writeConfig(data, dataDir, apiPort, p2pPort);
+  } finally {
+    data.close();
+  }
+}
+
+function writeConfig(data, dataDir, apiPort, p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   const crypto = require('crypto');
 
@@ -314,7 +335,8 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   let password;
   if (fs.existsSync(configPath)) {
     try {
-      const existingConfig = fs.readFileSync(configPath, 'utf-8');
+      // Never through a link planted at the name (K-3).
+      const existingConfig = data.read(CONFIG_FILE)?.toString('utf-8') || '';
       const passwordMatch = existingConfig.match(/^password:\s*(.+)$/m);
       if (passwordMatch) {
         password = passwordMatch[1].trim();
@@ -355,7 +377,8 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     cacheCapacityBytes: resolveCacheCapacityBytes(dataDir),
   });
 
-  fs.writeFileSync(configPath, configContent);
+  // config.yaml holds the keystore password: owner-only (K-3).
+  data.write(CONFIG_FILE, configContent);
   log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
   // Identity handling. Unlike bee, antd has no `init` subcommand: when an
@@ -746,7 +769,17 @@ async function startAnt() {
     return;
   }
 
-  const dataDir = getAntDataPath();
+  let dataDir;
+  try {
+    // Owner-only (K-3): one that is a link, not ours or cannot be narrowed
+    // stops the start.
+    dataDir = getAntDataPath();
+  } catch (err) {
+    log.error('[Ant] Data directory refused:', err.message);
+    updateState(STATUS.ERROR, err.message);
+    setStatusMessage('ant', 'Node failed to start');
+    return;
+  }
 
   // In injected-identity mode (an identity vault exists) never spawn antd
   // without the injected keystore: antd would self-generate a throwaway
