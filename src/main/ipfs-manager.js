@@ -1404,6 +1404,11 @@ function getNativeDiagnostics() {
       externalGateway: externalGatewayUrl,
       externalVersion: externalGatewayVersion,
       externalSupport: getExternalGatewaySupport(),
+      // The profile's "Verify content from this node", read at each poll as
+      // a request's capture reads it, so the nodes panel says a gateway
+      // without raw blocks can't be verified only while verification is
+      // asked for (freedom-core design 0009, Modes).
+      externalVerify: verifiesExternalGateway(),
     };
   }
 
@@ -1438,7 +1443,8 @@ function getNativeDiagnostics() {
  * The serving gateway's trustless probe (freedom-core design 0009, Modes):
  * `{ raw, car }` as its activation found it, or null while no gateway
  * serves. `raw: false` is a gateway whose content can't be verified, which
- * the nodes panel names.
+ * the nodes panel names while its verification is on (`externalVerify` in
+ * the diagnostics).
  */
 function getExternalGatewaySupport() {
   if (currentMode !== MODE.EXTERNAL || !externalGatewaySupport) return null;
