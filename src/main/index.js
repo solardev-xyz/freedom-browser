@@ -466,6 +466,7 @@ const {
 } = require('./swarm/publish-history');
 const paymentHistory = require('./payment-history');
 const { getTransactionStatus: getTxStatus } = require('./wallet/transaction-service');
+const { resumePhoneChecks } = require('./wallet/tx-recorder');
 const { registerSwarmPermissionsIpc } = require('./swarm/swarm-permissions');
 const { registerSwarmProviderIpc } = require('./swarm/swarm-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle/radicle-permissions');
@@ -728,6 +729,9 @@ async function bootstrap() {
   paymentHistory.repollPending(getTxStatus).catch((err) => {
     log.warn(`[App] payment-history repoll failed: ${err.message}`);
   });
+  // Phone payments an earlier run couldn't check yet: their fields are
+  // compared once their transactions are visible (design 0012, PHN-2).
+  resumePhoneChecks();
 
   if (!TEST_MODE) {
     // Skip registering the real bzz/ipfs/ipns/web3 handlers in test mode —

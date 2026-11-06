@@ -13,9 +13,10 @@
  * Phone wallets expose `eth_sendTransaction`, not raw transaction
  * signing, so this backend implements the optional `sendTransaction`
  * capability instead of `signTransaction`: the phone picks the nonce,
- * estimates gas, and broadcasts through its own RPC. The reported hash's
- * `from` is verified on-chain by transaction-service (the provider layer
- * — this module never touches RPC).
+ * estimates gas, and broadcasts through its own RPC. The reported
+ * transaction is checked on-chain by transaction-service against every
+ * field the job names (`from`, `to`, `value`, `data`, the chain), once it
+ * is visible (the provider layer — this module never touches RPC).
  */
 
 const { verifyMessage, verifyTypedData, toQuantity } = require('ethers');
