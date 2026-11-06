@@ -1313,6 +1313,70 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  // x402:approve (x402/ipc.js) spends these; it signs with the active
+  // account, so that is the account the confirmation binds.
+  const X402_PAYMENT = {
+    webContentsId: 42,
+    detectionId: 'req-9100',
+    url: 'https://api.example/article',
+    acceptIndex: 0,
+    accept: {
+      scheme: 'exact',
+      network: 'eip155:8453',
+      amount: '10000',
+      asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+    },
+    grant: null,
+  };
+  // The card that mints it is the sidebar of the window hosting the tab.
+  const mintX402 = async (index, payload = X402_PAYMENT, event = AUTO) => {
+    const result = await handlers['wallet:confirm-signing'](event, 'x402-payment', index, payload);
+    expect(result.success).toBe(true);
+    return result.token;
+  };
+
+  test('an x402-payment confirmation binds the active account, whatever index the renderer names', async () => {
+    const feeCheck = require('./fee-check');
+    feeCheck.checkAtApproval.mockClear();
+    guest(42, 'https://api.example/article');
+    getActiveWalletIndex.mockReturnValue(4);
+    const token = await mintX402(9);
+    expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
+    let refused;
+    try {
+      confirmations.consumeConfirmation(token, 'x402-payment', 9, X402_PAYMENT);
+    } catch (err) {
+      refused = err;
+    }
+    expect(refused?.code).toBe('SIGNING_NOT_CONFIRMED');
+
+    const again = await mintX402(9);
+    expect(() => confirmations.consumeConfirmation(again, 'x402-payment', 4, X402_PAYMENT)).not.toThrow();
+  });
+
+  test("an x402-payment confirmation is minted only by the window hosting the payment's tab", async () => {
+    const refusal = { success: false, error: 'This payment is not on a tab of this window' };
+    // Another window's tab.
+    guest(42, 'https://api.example/article', { host: { id: 2 } });
+    expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual(refusal);
+    // A tab that is closing, and one that is gone.
+    guest(42, 'https://api.example/article', { destroyed: true });
+    expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual(refusal);
+    guests.delete(42);
+    expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual(refusal);
+    // No tab named, or a sender that names no window.
+    guest(42, 'https://api.example/article');
+    expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, { ...X402_PAYMENT, webContentsId: undefined }))
+      .toEqual(refusal);
+    expect(await handlers['wallet:confirm-signing']({}, 'x402-payment', 0, X402_PAYMENT)).toEqual(refusal);
+    expect(confirmations._outstandingCount()).toBe(0);
+
+    // The hosting window's sidebar gets its token.
+    const token = await mintX402(0);
+    expect(() => confirmations.consumeConfirmation(token, 'x402-payment', 0, X402_PAYMENT)).not.toThrow();
+  });
+
   test('wallet:confirm-signing refuses a malformed request', async () => {
     const result = await handlers['wallet:confirm-signing']({}, 'dapp-send', 2, { ...TX, gasLimit: 'x' });
     expect(result).toMatchObject({ success: false });
