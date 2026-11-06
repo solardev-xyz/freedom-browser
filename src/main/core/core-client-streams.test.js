@@ -4,8 +4,9 @@
  * both directions on the one connection. Main's own requests' bodies come
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
- * the core's credit and end only with a piece's codes. Protocol 1, which
- * the pinned core speaks, stays exactly as it was.
+ * the core's credit and end only with a piece's codes. Protocol 1,
+ * CoreClient's default, stays exactly as it was: the app asks for 2
+ * (core-process.js), and the pinned core (0.10.0) still takes 1.
  */
 
 const { EventEmitter } = require('events');
@@ -255,7 +256,7 @@ function source(id, length, chunk = MAX_DATA, { fail = null } = {}) {
   return state;
 }
 
-describe('the core at protocol 1 (the pinned core)', () => {
+describe("the core at protocol 1 (the client's default)", () => {
   test('main asks for protocol 1 with fragments only, and reads no stream frame', async () => {
     makeClient(coreAt(PROTOCOL_VERSION, () => {}, hello(1, ['vault.status', 'fragments'])));
     const ready = await client.start();
@@ -340,7 +341,7 @@ describe('the hello at protocol 2', () => {
     expect(log.error).toHaveBeenCalledWith('[Core] invalid core.hello result');
   });
 
-  test("a core that answers protocol 1, or refuses 2 as the pinned core does, is a mismatch: it isn't restarted", async () => {
+  test("a core that answers protocol 1, or refuses 2 as cores before 0.10.0 do, is a mismatch: it isn't restarted", async () => {
     for (const reply of [
       (message, fake) => fake.send({ type: 'response', id: message.id, result: hello(1) }),
       (message, fake) =>

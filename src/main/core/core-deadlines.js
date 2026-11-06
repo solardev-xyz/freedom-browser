@@ -7,7 +7,8 @@
  * - immediate: answered at once, with no deadline;
  * - vault: 30 s from admission, queue time included (the vault queue);
  * - session: 120 s, or the caller's shorter `deadline_ms` (designs 0004,
- *   0005).
+ *   0005);
+ * - head: `dweb.verify`'s time to the head, 360 s (design 0009, Bounds).
  *
  * The core enforces its deadlines and always replies. Main runs only a hang
  * watchdog on every request: the core's deadline + 15 s, or 15 s for an
@@ -18,11 +19,11 @@
  * its 10 s handshake timeout and 3 s shutdown grace bound them instead.
  *
  * Main's copy, checked against the core's file when it is found
- * (core-deadlines.test.js). It holds protocol 1's methods: the rows the
- * file marks `"protocol": 2`, `dweb.verify` and `dweb.forget` (design 0009,
- * amendment 3), aren't here until main adopts protocol 2. dweb-verify.js
- * sends those two with watchdogs of its own, and the check compares only
- * their deadlines.
+ * (core-deadlines.test.js). It holds the rows the file marks
+ * `"protocol": 2` too, `dweb.verify` and `dweb.forget` (design 0009,
+ * amendment 3): the core serves them only on a protocol-2 connection, which
+ * is the one main asks for (core-process.js). dweb-verify.js sends those
+ * two with the same watchdogs.
  */
 
 /** The watchdog's margin past the core's deadline. */
@@ -33,10 +34,14 @@ const IMMEDIATE_WATCHDOG_MS = WATCHDOG_MARGIN_MS;
 const VAULT_DEADLINE_MS = 30_000;
 /** A session's deadline, and the longest `deadline_ms` it takes. */
 const SESSION_DEADLINE_MS = 120_000;
+/** The time to the head (design 0009, Bounds: `dweb.verify`'s `head`
+ * deadline kind). */
+const HEAD_DEADLINE_MS = 360_000;
 
 const IMMEDIATE = 'immediate';
 const VAULT = 'vault';
 const SESSION = 'session';
+const HEAD = 'head';
 
 /** Every method the core serves, by class, in the core's table order. */
 const METHOD_CLASSES = Object.freeze({
@@ -78,6 +83,8 @@ const METHOD_CLASSES = Object.freeze({
   'naming.invalidate_content': IMMEDIATE,
   'naming.invalidate_tezos': IMMEDIATE,
   'dweb.open': SESSION,
+  'dweb.verify': HEAD,
+  'dweb.forget': IMMEDIATE,
   'chain.configure': IMMEDIATE,
   'chain.availability': IMMEDIATE,
   'chain.request': SESSION,
@@ -86,6 +93,10 @@ const METHOD_CLASSES = Object.freeze({
   'chain.broadcast': SESSION,
   'chain.html': SESSION,
 });
+
+/** The methods the core serves only at protocol 2, the rows its file marks
+ * `"protocol": 2` (design 0009, amendment 3), in the table's order. */
+const PROTOCOL_2_METHODS = Object.freeze(['dweb.verify', 'dweb.forget']);
 
 /**
  * A request's hang watchdog, in ms. A method the core doesn't serve is
@@ -102,6 +113,8 @@ function watchdogMs(method, deadlineMs) {
       const deadline = own ? Math.min(deadlineMs, SESSION_DEADLINE_MS) : SESSION_DEADLINE_MS;
       return deadline + WATCHDOG_MARGIN_MS;
     }
+    case HEAD:
+      return HEAD_DEADLINE_MS + WATCHDOG_MARGIN_MS;
     default:
       return IMMEDIATE_WATCHDOG_MS;
   }
@@ -112,6 +125,8 @@ module.exports = {
   IMMEDIATE_WATCHDOG_MS,
   VAULT_DEADLINE_MS,
   SESSION_DEADLINE_MS,
+  HEAD_DEADLINE_MS,
   METHOD_CLASSES,
+  PROTOCOL_2_METHODS,
   watchdogMs,
 };

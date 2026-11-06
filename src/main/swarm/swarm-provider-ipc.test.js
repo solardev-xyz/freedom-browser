@@ -125,6 +125,10 @@ const mockSetFeed = jest.fn();
 const mockUpdateFeedReference = jest.fn();
 const mockHasFeedGrant = jest.fn();
 const mockGetAllFeeds = jest.fn();
+// The real rule's mode half; app-scoped sharing is set per test.
+const mockIsIdentityShared = jest.fn(
+  (_origin, identity) => (identity?.mode || identity?.identityMode) !== 'app-scoped'
+);
 jest.mock('./feed-store', () => ({
   getOriginEntry: mockGetOriginEntry,
   getFeed: mockGetFeed,
@@ -132,6 +136,7 @@ jest.mock('./feed-store', () => ({
   updateFeedReference: mockUpdateFeedReference,
   hasFeedGrant: mockHasFeedGrant,
   getAllFeeds: mockGetAllFeeds,
+  isIdentitySharedWithOtherOrigins: (...args) => mockIsIdentityShared(...args),
 }));
 
 // The Swarm signer for an identity (swarm-signer.js resolves a key
@@ -1359,6 +1364,57 @@ describe('swarm-provider-ipc', () => {
       expect(mockGetUserWalletKey).not.toHaveBeenCalled();
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
       expect(mockWriteSingleOwnerChunk).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['an app-scoped key another site also holds', 'app-scoped:2'],
+    ])('refuses an SOC under %s: the identity is shared (SW-1)', async (_label, identityId) => {
+      mockV2FeedCapability('myapp.eth', identityId);
+      if (identityId.startsWith('app-scoped')) mockIsIdentityShared.mockReturnValueOnce(true);
+      mockPreFlightOk();
+      mockGetUserWalletKey.mockResolvedValue({ privateKey: '0xwalletkey' });
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+
+      const result = await invokeProvider('swarm_writeSingleOwnerChunk', {
+        identifier: VALID_IDENTIFIER,
+        data: 'hello',
+      }, 'myapp.eth');
+
+      expect(result.error.code).toBe(4100);
+      expect(result.error.data).toEqual({ reason: 'shared_identity' });
+      expect(mockIsIdentityShared).toHaveBeenCalledWith(
+        'myapp.eth',
+        expect.objectContaining({ id: identityId })
+      );
+      expect(mockGetUserWalletKey).not.toHaveBeenCalled();
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockWriteSingleOwnerChunk).not.toHaveBeenCalled();
+      expect(mockAddEntry).not.toHaveBeenCalled();
+    });
+
+    test('refuses an SOC under the Ant wallet identity (SW-1)', async () => {
+      mockFeedCapability('myapp.eth', 'bee-wallet', null);
+      mockPreFlightOk();
+      mockGetDerivedKeys.mockReturnValue({ beeWallet: { privateKey: '0xbee' } });
+
+      const result = await invokeProvider('swarm_writeSingleOwnerChunk', {
+        identifier: VALID_IDENTIFIER,
+        data: 'hello',
+      }, 'myapp.eth');
+
+      expect(result.error.data).toEqual({ reason: 'shared_identity' });
+      expect(mockWriteSingleOwnerChunk).not.toHaveBeenCalled();
+    });
+
+    test('a shared identity still signs feeds and discloses its owner (SW-1)', async () => {
+      mockFeedCapability('myapp.eth', 'bee-wallet', null);
+      mockGetDerivedKeys.mockReturnValue({ beeWallet: { privateKey: '0xbee' } });
+      mockGetSignerAddress.mockReturnValue(VALID_OWNER);
+
+      const result = await invokeProvider('swarm_getSigningIdentity', {}, 'myapp.eth');
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({ owner: VALID_OWNER, identityMode: 'bee-wallet' });
     });
 
     test('rejects SOC writes without feed grant', async () => {

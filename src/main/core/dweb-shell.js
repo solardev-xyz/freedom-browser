@@ -9,8 +9,8 @@
  *   a client that asks for protocol 2, so only once a hello has settled it
  *   (any other answer is a mismatch), with `streams: true`. A request that
  *   comes without the duplex is `unknown_method`, as it is at protocol 1.
- *   Against the pinned core, which speaks protocol 1, nothing is
- *   registered.
+ *   core-process.js asks for protocol 2, which the pinned core (0.10.0)
+ *   speaks, so the app's client registers it.
  * - **`for`** is the envelope ID of main's `dweb.verify`, in the generation
  *   that asks: `open()` keys it by the ID and generation `onSent` reports
  *   (service-client.js). A piece gets that request's captured backend, its
@@ -68,6 +68,7 @@ const { MAX_DATA } = require('./frame');
 const { backendKind, checkPath, SWARM_HEADERS } = require('../dweb/plan-validation');
 const { dialWithRetry, idleBoundBody, UNREACHABLE_CODES } = require('../dweb/plan-executor');
 const { ipfsCid, ipnsKey } = require('./cid-text');
+const { errorCodeForLog } = require('../private/private-log-context');
 
 /** The headers a reply may carry: those the core reads (design 0009). */
 const REPLY_HEADERS = ['content-type', 'content-length', 'content-range', 'swarm-feed-index'];
@@ -511,7 +512,7 @@ class DwebShell {
           onRetry: (i, delay, result) =>
             this.log.debug?.(
               `[Core] shell.dweb_get retry ${i + 1}/${verify.retry.attempts - 1} in ${delay}ms ` +
-                `(status=${result.response?.status ?? result.error?.code ?? 'error'})`
+                `(status=${result.response?.status ?? (errorCodeForLog(result.error) || 'error')})`
             ),
         });
       } catch (err) {
