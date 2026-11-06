@@ -9,8 +9,8 @@
  *   a client that asks for protocol 2, so only once a hello has settled it
  *   (any other answer is a mismatch), with `streams: true`. A request that
  *   comes without the duplex is `unknown_method`, as it is at protocol 1.
- *   Against the pinned core, which speaks protocol 1, nothing is
- *   registered.
+ *   core-process.js asks for protocol 2, which the pinned core (0.10.0)
+ *   speaks, so the app's client registers it.
  * - **`for`** is the envelope ID of main's `dweb.verify`, in the generation
  *   that asks: `open()` keys it by the ID and generation `onSent` reports
  *   (service-client.js). A piece gets that request's captured backend, its
