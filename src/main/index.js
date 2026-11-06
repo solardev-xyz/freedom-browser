@@ -437,7 +437,12 @@ const {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
-const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-manager');
+const {
+  registerIdentityIpc,
+  hasVault,
+  setBeeLifecycle,
+  setRadicleLifecycle,
+} = require('./identity-manager');
 const { startCore, stopCore } = require('./core/core-process');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');

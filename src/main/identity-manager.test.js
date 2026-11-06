@@ -980,10 +980,14 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     }
   });
 
-  function loadIdentityManager(dataDirsForLoad, fsOffloadOverrides = null) {
+  function loadIdentityManager(
+    dataDirsForLoad,
+    fsOffloadOverrides = null,
+    backend = makeVaultBackendMock()
+  ) {
     return loadMainModule(require.resolve('./identity-manager'), {
       extraMocks: {
-        ...vaultBackendMocks(makeVaultBackendMock()),
+        ...vaultBackendMocks(backend),
         ...(fsOffloadOverrides
           ? {
               [require.resolve('./fs-offload')]: () => ({
@@ -1024,12 +1028,16 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 
     const mgr = loadIdentityManager(dataDirs);
     await mgr.createNewVault('password-123');
+    const withStopped = jest.fn((work) => work());
+    mgr.setRadicleLifecycle({ withStopped });
 
     const results = await mgr.injectAllIdentities('FreedomBrowser', true);
 
     expect(results.needsRestart).toEqual([]);
     expect(results.bee.reinjected).toBe(true);
     expect(results.radicle.reinjected).toBe(true);
+    // Radicle's restart is the section's (withRadicleStopped restarts it).
+    expect(withStopped).toHaveBeenCalledTimes(1);
     expect(results.ipfs).toMatchObject({
       mode: 'ephemeral',
       active: false,
@@ -1038,82 +1046,110 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     });
   });
 
-  test('a Radicle re-key wipes and writes the key inside the stopped-node section (R-8)', async () => {
+  // R-8 on integration: the core writes the key (vaultBackend.writeNodeIdentity),
+  // so these script the core's mock instead of the JS identity module.
+  async function loadForRekey() {
     seedRadicleInjected();
     const storage = path.join(dataDirs.radicle, 'storage');
     fs.mkdirSync(storage, { recursive: true });
-    const mgr = loadIdentityManager(dataDirs);
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    const backend = makeVaultBackendMock();
+    const mgr = loadIdentityManager(dataDirs, null, backend);
+    const guard = require('./core/node-identity-guard');
+    guard.setStartupRecovery(null);
     await mgr.createNewVault('password-123');
+    backend.writeNodeIdentity.mockClear();
+    return { mgr, backend, guard, storage, keyPath };
+  }
 
+  test('a Radicle re-key stops the node first, then wipes and writes the key (R-8)', async () => {
+    const { mgr, backend, guard, storage } = await loadForRekey();
     const steps = [];
-    let finishStop;
+    const write = backend.writeNodeIdentity.getMockImplementation();
+    backend.writeNodeIdentity.mockImplementation(async (spec, ...rest) => {
+      steps.push(`key written (storage ${fs.existsSync(storage) ? 'kept' : 'wiped'})`);
+      return write(spec, ...rest);
+    });
     mgr.setRadicleLifecycle({
       withStopped: async (work) => {
-        steps.push('stop requested');
-        await new Promise((resolve) => {
-          finishStop = resolve;
-        });
         steps.push('stopped');
         try {
           return await work();
         } finally {
-          steps.push(`restarted (storage ${fs.existsSync(storage) ? 'kept' : 'wiped'})`);
+          steps.push(`restart (${guard.nodeBlockReason('radicle') ? 'blocked' : 'allowed'})`);
         }
+      },
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).resolves.toEqual({
+      did: 'did:key:zTest',
+    });
+    expect(steps).toEqual(['stopped', 'key written (storage wiped)', 'restart (allowed)']);
+    expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
+    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ node: 'radicle', alias: 'Alias' }),
+      expect.any(String)
+    );
+  });
+
+  test('a Radicle re-key wipes nothing before the stop completes (R-8)', async () => {
+    const { mgr, backend, storage } = await loadForRekey();
+    let finishStop;
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        await new Promise((resolve) => {
+          finishStop = resolve;
+        });
+        return work();
       },
     });
 
     const injecting = mgr.injectRadicleIdentity('Alias');
     for (let i = 0; i < 50 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
-    // The node has not stopped yet: nothing is wiped.
+    expect(finishStop).toEqual(expect.any(Function));
+    // Anything that ran outside the section has had its turn by now.
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
     expect(fs.existsSync(storage)).toBe(true);
+    expect(backend.writeNodeIdentity).not.toHaveBeenCalled();
+
     finishStop();
-    const { did } = await injecting;
-    expect(did).toMatch(/^did:key:/);
-    expect(steps).toEqual(['stop requested', 'stopped', 'restarted (storage wiped)']);
+    await expect(injecting).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(fs.existsSync(storage)).toBe(false);
+    expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
   });
 
-  test('a Radicle re-key whose node will not stop wipes nothing (R-8)', async () => {
-    seedRadicleInjected();
-    const storage = path.join(dataDirs.radicle, 'storage');
-    fs.mkdirSync(storage, { recursive: true });
-    const mgr = loadIdentityManager(dataDirs);
-    await mgr.createNewVault('password-123');
-    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
-    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
+  test('a Radicle re-key whose node will not stop leaves storage/ and the key (R-8)', async () => {
+    const { mgr, backend, guard, storage, keyPath } = await loadForRekey();
     mgr.setRadicleLifecycle({
       withStopped: async () => {
-        throw new Error('shutdown failed');
+        throw new Error('The Radicle node did not stop, so its data was not reset');
       },
     });
 
-    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('shutdown failed');
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('did not stop');
     expect(fs.existsSync(storage)).toBe(true);
-    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+    expect(fs.readFileSync(keyPath, 'utf8')).toBe('key');
+    expect(backend.writeNodeIdentity).not.toHaveBeenCalled();
+    // Nothing was wiped, so nothing blocks the node.
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
   });
 
-  test('a revocation inside the stopped-node section refuses the new key (R-8)', async () => {
-    seedRadicleInjected();
-    const mgr = loadIdentityManager(dataDirs);
-    await mgr.createNewVault('password-123');
-    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
-    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
-    let sawError = null;
+  test('a failed Radicle key write keeps the node blocked for the restart (R-8)', async () => {
+    const { mgr, backend, guard } = await loadForRekey();
+    backend.writeNodeIdentity.mockResolvedValueOnce({ status: 'corrupt', reconciled: true });
+    let atRestart;
     mgr.setRadicleLifecycle({
       withStopped: async (work) => {
-        // The vault's authority ends (as on quit) once the node is stopped.
-        mgr.closeVaultAuthority();
         try {
           return await work();
-        } catch (err) {
-          sawError = err;
-          throw err;
+        } finally {
+          atRestart = guard.nodeBlockReason('radicle');
         }
       },
     });
 
-    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow();
-    expect(sawError).not.toBeNull();
-    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('(corrupt)');
+    expect(atRestart).toMatch(/set up node identities again/);
   });
 
   test('first-time injection reports nothing for restart', async () => {
