@@ -39,7 +39,7 @@ jest.mock('./permissions', () => ({
   getPermission: jest.fn(() => null),
   tryConsume: jest.fn(() => true),
   // A cap that covers everything unless a test says otherwise (#1024).
-  charge: jest.fn((origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 })),
+  charge: jest.fn((origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, generation: 1 })),
   refund: jest.fn(() => true),
   chargeStands: jest.fn(() => true),
 }));
@@ -78,7 +78,7 @@ beforeEach(() => {
   permissions.grant.mockClear();
   permissions.tryConsume.mockClear().mockReturnValue(true);
   permissions.charge.mockClear().mockImplementation(
-    (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 }));
+    (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, generation: 1 }));
   permissions.refund.mockClear().mockReturnValue(true);
   permissions.chargeStands.mockClear().mockReturnValue(true);
 });

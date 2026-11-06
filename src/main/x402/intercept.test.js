@@ -42,7 +42,7 @@ const mockTryConsume = jest.fn(() => true);
 const mockCharge = jest.fn();
 const mockRefund = jest.fn(() => true);
 const mockChargeStands = jest.fn(() => true);
-const chargeFor = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 });
+const chargeFor = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, generation: 1 });
 jest.mock('./permissions', () => ({
   getPermission: (...args) => mockGetPermission(...args),
   tryConsume: (...args) => mockTryConsume(...args),
@@ -525,7 +525,7 @@ describe('detectPaymentRequiredHandler', () => {
         }),
         authorizedBy: 'cap',  // matches AUTHORIZED_BY.CAP
         // Charged at the decision, before the sign (#1024).
-        charge: expect.objectContaining({ amount: '10000', createdAt: 1 }),
+        charge: expect.objectContaining({ amount: '10000', generation: 1 }),
       });
       // No card: only the spend counter is told about the charge.
       expect(mockHostSend.mock.calls.map(([channel]) => channel)).toEqual(['x402:cap-consumed']);

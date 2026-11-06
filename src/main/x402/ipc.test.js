@@ -92,10 +92,10 @@ const mockChargeStands = jest.fn();
 const coveringCharge = (origin, chainId, asset, amount) => {
   const cap = mockGetPermission(origin, chainId, asset);
   if (!cap || BigInt(cap.capAmount) - BigInt(cap.spentAmount ?? '0') < BigInt(amount)) return null;
-  return { origin, chainId, asset, amount, createdAt: cap.createdAt };
+  return { origin, chainId, asset, amount, generation: cap.generation ?? 1 };
 };
 // A cap that takes any charge.
-const anyCharge = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 });
+const anyCharge = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, generation: 1 });
 jest.mock('./permissions', () => ({
   grant: (...a) => mockGrant(...a),
   getPermission: (...a) => mockGetPermission(...a),
@@ -107,7 +107,8 @@ jest.mock('./permissions', () => ({
   revokeAllForOrigin: (...a) => mockRevokeAllForOrigin(...a),
   updatePermission: (...a) => mockUpdatePermission(...a),
   // An edit as main confirms and checks it: the window, the key, the cap
-  // as the store holds it, and the change (#1023).
+  // as the store holds it (its grant's generation among it), and the
+  // change (#1023).
   capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => {
     const cap = mockGetPermission(origin, chainId, asset);
     return {
@@ -117,7 +118,9 @@ jest.mock('./permissions', () => ({
       asset,
       capAmount,
       windowSeconds,
-      current: cap ? { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt } : null,
+      current: cap
+        ? { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt, generation: cap.generation ?? 1 }
+        : null,
     };
   },
   getAllPermissions: (...a) => mockGetAllPermissions(...a),
@@ -1097,7 +1100,15 @@ describe('x402:get-all-permissions + x402:revoke-permission', () => {
     test('a cap that changed since the token was minted is not edited by it', async () => {
       const confirmation = mintFor(EDIT);
       // Granted again with a new window in between.
-      mockGetPermission.mockReturnValue({ ...CAP, createdAt: 2000, expiresAt: 2000 + 86400 });
+      mockGetPermission.mockReturnValue({ ...CAP, createdAt: 2000, expiresAt: 2000 + 86400, generation: 2 });
+      const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('nor is one granted again in the same second, the same in all but its generation', async () => {
+      const confirmation = mintFor(EDIT);
+      mockGetPermission.mockReturnValue({ ...CAP, generation: 2 });
       const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(mockUpdatePermission).not.toHaveBeenCalled();

@@ -64,7 +64,7 @@ jest.mock('../core/vault-backend', () => {
 });
 // An x402 cap edit as main confirms it (#1023): the sending window, the
 // key, the cap as the store holds it, and the change.
-const mockCapHeld = { current: { capAmount: '10000000', createdAt: 1000, expiresAt: 87400 } };
+const mockCapHeld = { current: { capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 3 } };
 jest.mock('../x402/permissions', () => ({
   capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => ({
     window: windowId,
@@ -1396,7 +1396,7 @@ describe('signing handlers require a main-side confirmation', () => {
     const held = (windowId) => ({ ...edit, window: windowId, windowSeconds: undefined, current: mockCapHeld.current });
     // What the renderer says about the window or the cap is not used.
     const result = await handlers['wallet:confirm-signing'](
-      AUTO, 'x402-cap-update', null, { ...edit, window: 9, current: { capAmount: '1', createdAt: 1, expiresAt: 2 } });
+      AUTO, 'x402-cap-update', null, { ...edit, window: 9, current: { capAmount: '1', createdAt: 1, expiresAt: 2, generation: 1 } });
     expect(result.success).toBe(true);
     expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held(9)))
       .toThrow(/differs/);

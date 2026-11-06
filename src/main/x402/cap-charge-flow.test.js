@@ -296,6 +296,58 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     expect(spent()).toBe('0');
   });
 
+  // A cap's createdAt is in whole seconds: one revoked and granted again
+  // within the same second is still another cap (#1028 review).
+  describe('the cap revoked and granted again within the same second', () => {
+    let realNow;
+    beforeEach(() => {
+      realNow = Date.now;
+      const fixed = realNow();
+      Date.now = () => fixed;
+    });
+    afterEach(() => {
+      Date.now = realNow;
+    });
+
+    test('a new cap that does not cover it: the old charge does not stand, and the header is withheld', async () => {
+      await signedAutoPay(27);
+      const { createdAt } = permissions.getPermission(ORIGIN, CHAIN, USDC);
+      permissions.revoke(ORIGIN, CHAIN, USDC);
+      grantCap('1');
+      expect(permissions.getPermission(ORIGIN, CHAIN, USDC).createdAt).toBe(createdAt);
+
+      expect(retry(42, `${ORIGIN}/seg/27`, 37)).toBeNull();
+      expect(spent()).toBe('0');
+    });
+
+    test('a new cap the same as the old: withheld, and the old charge is not given back to it', async () => {
+      await signedAutoPay(28);
+      permissions.revoke(ORIGIN, CHAIN, USDC);
+      grantCap('20000');
+      // The new cap's own charge, which the old one's refund must not undo.
+      expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
+
+      expect(retry(42, `${ORIGIN}/seg/28`, 38)).toBeNull();
+      expect(spent()).toBe(PRICE);
+    });
+
+    test('the tab closing: the old charge is not given back to the new cap', async () => {
+      await signedAutoPay(29);
+      permissions.revoke(ORIGIN, CHAIN, USDC);
+      grantCap('20000');
+      expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
+
+      intercept.cleanupWebContents(42);
+      expect(spent()).toBe(PRICE);
+    });
+
+    test('the cap left alone: the header goes out', async () => {
+      await signedAutoPay(30);
+      expect(retry(42, `${ORIGIN}/seg/30`, 40)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+      expect(spent()).toBe(PRICE);
+    });
+  });
+
   test('once the header has gone out, the charge stays whatever the server answers', async () => {
     await signedAutoPay(24);
     expect(retry(42, `${ORIGIN}/seg/24`, 34)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
@@ -384,6 +436,30 @@ describe('x402:update-permission needs a confirmation for the edit (#1023)', () 
     await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation }))
       .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
     expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
+  });
+
+  test('a token minted before the cap was revoked and granted again, in the same second, does not apply after', async () => {
+    const realNow = Date.now;
+    const fixed = realNow();
+    Date.now = () => fixed;
+    try {
+      const old = grantCap(PRICE);
+      const confirmation = mint(EDIT);
+      permissions.revoke(ORIGIN, CHAIN, USDC);
+      // The same cap again, to the second: amount, createdAt and expiresAt.
+      const replacement = grantCap(PRICE);
+      expect(replacement).toEqual(old);
+
+      await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation }))
+        .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
+
+      // A token minted for the replacement applies to it.
+      await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation: mint(EDIT) }))
+        .resolves.toMatchObject({ success: true, permission: { capAmount: '99000000' } });
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 

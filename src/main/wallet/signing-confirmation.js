@@ -67,8 +67,10 @@
  *     caller.
  *   - x402-cap-update: one edit of a site's auto-pay cap (#1023): the
  *     chrome window it was confirmed in, the cap's key (origin, chainId,
- *     asset), the cap as main holds it (its amount, createdAt and
- *     expiresAt) and the new amount or window, or both. Main fills in the
+ *     asset), the cap as main holds it (its amount, createdAt, expiresAt
+ *     and the generation of the grant it is: a cap revoked and granted
+ *     again within one second has the same createdAt) and the new amount
+ *     or window, or both. Main fills in the
  *     window and the cap itself, when the token is minted and when
  *     `x402:update-permission` spends it, so a token can't change another
  *     cap, make another change, apply after the cap has changed, or be
@@ -225,14 +227,20 @@ function seconds(value, field) {
   return value;
 }
 
-/** An x402 cap as main holds it: its amount and its window. */
+/** An x402 cap as main holds it: which grant it is, its amount and its window. */
 function x402Cap(value) {
   if (!value || typeof value !== 'object') throw new Error('No such auto-pay cap');
   const capAmount = digits(value.capAmount, 'cap');
-  if (capAmount === null || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.expiresAt)) {
+  if (
+    capAmount === null ||
+    !Number.isSafeInteger(value.createdAt) ||
+    !Number.isSafeInteger(value.expiresAt) ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation <= 0
+  ) {
     throw new Error('Invalid auto-pay cap');
   }
-  return { capAmount, createdAt: value.createdAt, expiresAt: value.expiresAt };
+  return { capAmount, createdAt: value.createdAt, expiresAt: value.expiresAt, generation: value.generation };
 }
 
 /** A Safe payment's site, if it has one (a dApp's), as its permission key. */

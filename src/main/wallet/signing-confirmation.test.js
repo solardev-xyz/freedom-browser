@@ -502,7 +502,7 @@ describe('signing-confirmation', () => {
       origin: 'https://pay.example',
       chainId: 8453,
       asset: '0xabc',
-      current: Object.freeze({ capAmount: '10000000', createdAt: 1000, expiresAt: 87400 }),
+      current: Object.freeze({ capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 7 }),
       capAmount: '20000000',
       windowSeconds: undefined,
     });
@@ -525,7 +525,9 @@ describe('signing-confirmation', () => {
       'another asset': { asset: '0xdef' },
       'another amount': { capAmount: '30000000' },
       'a window added': { windowSeconds: 86400 },
-      'the cap granted again': { current: { ...EDIT.current, createdAt: 2000 } },
+      'the cap granted again': { current: { ...EDIT.current, createdAt: 2000, generation: 8 } },
+      // Revoked and granted again within one second: only the generation tells.
+      'the cap granted again in the same second': { current: { ...EDIT.current, generation: 8 } },
       'the cap edited meanwhile': { current: { ...EDIT.current, capAmount: '15000000' } },
       'its window moved meanwhile': { current: { ...EDIT.current, expiresAt: 99999 } },
     };
@@ -552,6 +554,9 @@ describe('signing-confirmation', () => {
         [{ asset: '' }, /asset/],
         [{ current: null }, /No such auto-pay cap/],
         [{ current: { ...EDIT.current, createdAt: 'then' } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: undefined } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: 0 } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: '7' } }, /auto-pay cap/],
         [{ capAmount: undefined }, /Nothing to change/],
         [{ capAmount: '1.5' }, /cap/],
         [{ capAmount: 5 }, /cap/],

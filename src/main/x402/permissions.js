@@ -19,7 +19,8 @@
  *
  *   - refund(charge) / chargeStands(charge)
  *       Give a charge back for a payment that was never sent; whether
- *       the cap it was taken from still stands.
+ *       the cap it was taken from still stands. A charge names its cap by
+ *       the grant's generation, never by its `createdAt`.
  *
  *   - revoke(origin, chainId, asset)
  *       Drop a cap. Idempotent.
@@ -40,6 +41,40 @@ const PERMISSIONS_FILE = 'x402-permissions.json';
 // In-memory cache; lazy-loaded on first access. Always wins over disk
 // (writes go through `save()`).
 let cache = null;
+
+// Which grant each cap is: origin -> assetKey -> generation. `createdAt`
+// is in whole seconds, so a cap revoked and granted again within one
+// second has the same one, and a charge or an x402-cap-update token for
+// the old cap would pass for the new. Every grant, and every record read
+// from disk, takes a number no grant in this process has had before; a
+// charge and a token name the cap by it. It lives in memory only, beside
+// the record: the pending signatures and confirmations that name it are
+// process-local too, and the file keeps the format older builds read.
+// Editing a cap (`updatePermission`) keeps its generation.
+let lastGeneration = 0;
+const generations = new Map();
+
+function newGeneration(origin, key) {
+  lastGeneration += 1;
+  let byAsset = generations.get(origin);
+  if (!byAsset) {
+    byAsset = new Map();
+    generations.set(origin, byAsset);
+  }
+  byAsset.set(key, lastGeneration);
+  return lastGeneration;
+}
+
+function generationOf(origin, key) {
+  return generations.get(origin)?.get(key) ?? null;
+}
+
+function dropGeneration(origin, key) {
+  const byAsset = generations.get(origin);
+  if (!byAsset) return;
+  byAsset.delete(key);
+  if (byAsset.size === 0) generations.delete(origin);
+}
 
 function permissionsPath() {
   return path.join(app.getPath('userData'), PERMISSIONS_FILE);
@@ -67,6 +102,9 @@ function load() {
     const raw = fs.readFileSync(permissionsPath(), 'utf-8');
     const parsed = JSON.parse(raw);
     cache = parsed && typeof parsed === 'object' ? compactExpired(parsed) : {};
+    for (const [origin, byAsset] of Object.entries(cache)) {
+      for (const key of Object.keys(byAsset)) newGeneration(origin, key);
+    }
   } catch (err) {
     if (err.code !== 'ENOENT') {
       console.error('[x402:permissions] failed to load:', err.message);
@@ -124,8 +162,11 @@ function grant(origin, chainId, asset, capAmount, windowSeconds) {
   };
 
   const byAsset = all[normalized] ?? {};
-  byAsset[assetKey(chainId, asset)] = record;
+  const key = assetKey(chainId, asset);
+  byAsset[key] = record;
   all[normalized] = byAsset;
+  // Another cap, even if granted in the same second as the one it replaces.
+  newGeneration(normalized, key);
   cache = all;
   save();
   return { origin: normalized, chainId, asset, ...record };
@@ -148,9 +189,9 @@ function getPermission(origin, chainId, asset) {
 /**
  * Charge `amount` to the cap if it fits inside what is left; if it does,
  * bump `spentAmount` and persist. Returns the charge — which cap it was
- * taken from (its `createdAt`) and how much — so that it can be given
- * back (`refund`), or `null` if there is no cap, it has expired, or the
- * amount doesn't fit.
+ * taken from (the grant's generation) and how much — so that it can be
+ * given back (`refund`), or `null` if there is no cap, it has expired, or
+ * the amount doesn't fit.
  *
  * An auto-pay charges its cap before it signs (sign-flow.js), so two
  * payments can never both be signed against headroom for one.
@@ -158,7 +199,7 @@ function getPermission(origin, chainId, asset) {
  * Strings + BigInt arithmetic so atomic units bigger than 2^53 don't
  * round.
  *
- * @returns {{ origin: string, chainId: number, asset: string, amount: string, createdAt: number } | null}
+ * @returns {{ origin: string, chainId: number, asset: string, amount: string, generation: number } | null}
  */
 function charge(origin, chainId, asset, amount) {
   if (typeof amount !== 'string' || !/^\d+$/.test(amount)) return null;
@@ -179,7 +220,7 @@ function charge(origin, chainId, asset, amount) {
   byAsset[key] = { ...record, spentAmount: next.toString() };
   cache = all;
   save();
-  return { origin: normalized, chainId, asset, amount, createdAt: record.createdAt };
+  return { origin: normalized, chainId, asset, amount, generation: generationOf(normalized, key) };
 }
 
 /**
@@ -191,10 +232,12 @@ function tryConsume(origin, chainId, asset, amount) {
 
 /** The live cap a charge was taken from, or null if it has gone. */
 function capOf(taken) {
-  if (!taken || typeof taken !== 'object') return null;
-  const record = load()[taken.origin]?.[assetKey(taken.chainId, taken.asset)];
-  // A cap granted again since is another cap: the charge isn't its.
-  return record && record.createdAt === taken.createdAt ? record : null;
+  if (!taken || typeof taken !== 'object' || !Number.isSafeInteger(taken.generation)) return null;
+  const key = assetKey(taken.chainId, taken.asset);
+  const record = load()[taken.origin]?.[key];
+  // A cap granted again since is another cap, even within the same
+  // second: the charge isn't its.
+  return record && generationOf(taken.origin, key) === taken.generation ? record : null;
 }
 
 /**
@@ -236,6 +279,7 @@ function revoke(origin, chainId, asset) {
   const byAsset = all[normalized];
   if (!byAsset) return;
   delete byAsset[assetKey(chainId, asset)];
+  dropGeneration(normalized, assetKey(chainId, asset));
   if (Object.keys(byAsset).length === 0) {
     delete all[normalized];
   }
@@ -251,6 +295,7 @@ function revokeAllForOrigin(origin) {
   const normalized = normalizeOrigin(origin);
   if (!all[normalized]) return;
   delete all[normalized];
+  generations.delete(normalized);
   cache = all;
   save();
 }
@@ -300,8 +345,9 @@ function updatePermission(origin, chainId, asset, patch = {}) {
 
 /**
  * An edit of a cap as main confirms it and checks it (#1023): the chrome
- * window it comes from, the cap's key, the cap as main holds it now and
- * the change. `wallet:confirm-signing` mints an `x402-cap-update` token
+ * window it comes from, the cap's key, the cap as main holds it now (its
+ * grant's generation among it, so a cap granted again in the same second
+ * is not the one the token was minted for) and the change. `wallet:confirm-signing` mints an `x402-cap-update` token
  * for this, and `x402:update-permission` spends it against this, each
  * from its own sender and main's own record, never from the caller's.
  *
@@ -309,6 +355,7 @@ function updatePermission(origin, chainId, asset, patch = {}) {
  */
 function capUpdateRequest(windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) {
   const current = getPermission(origin, chainId, asset);
+  const generation = current ? generationOf(current.origin, assetKey(chainId, asset)) : null;
   return {
     window: windowId,
     origin,
@@ -317,7 +364,7 @@ function capUpdateRequest(windowId, { origin, chainId, asset, capAmount, windowS
     capAmount,
     windowSeconds,
     current: current
-      ? { capAmount: current.capAmount, createdAt: current.createdAt, expiresAt: current.expiresAt }
+      ? { capAmount: current.capAmount, createdAt: current.createdAt, expiresAt: current.expiresAt, generation }
       : null,
   };
 }
@@ -340,8 +387,11 @@ function getAllPermissions() {
   return out;
 }
 
+// Tests: read the file again, as a new process would. Generations are not
+// reused: the counter carries on.
 function _resetCache() {
   cache = null;
+  generations.clear();
 }
 
 module.exports = {
