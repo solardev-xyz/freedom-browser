@@ -256,9 +256,10 @@ describe('signing handlers require a main-side confirmation', () => {
       const result = await handlers['wallet:dapp-send-transaction'](
         AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
       expect(result).toMatchObject({ success: true, hash: '0xhash' });
-      // Main derives the rule key from the transaction it is signing.
+      // Main derives the rule key from the transaction it is signing, its
+      // value included.
       expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
-        SITE, TX.to, '0x095ea7b3', 100);
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
     });
 
     // D12: a matching rule is paused while one of the site's payments is in
@@ -483,7 +484,51 @@ describe('signing handlers require a main-side confirmation', () => {
         {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: SITE });
       expect(result).toMatchObject({ success: true, autoApproveAdded: true });
       expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
-        SITE, TX.to, '0x095ea7b3', 100);
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
+    });
+
+    test('"always allow" records the value of the send the user confirmed', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      const payable = { ...TX, value: '0x2386f26fc10000' };
+      const confirmation = await mint('dapp-send', 2, { ...payable, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, payable, 2, { origin: SITE }, { confirmation, rememberAutoApprove: SITE });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: true });
+      expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
+        SITE, TX.to, '0x095ea7b3', 100, '0x2386f26fc10000');
+    });
+
+    test('an auto-approved send is checked with the value main signs', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      dappPermissions.isTransactionAutoApproved.mockImplementation(
+        (_site, _to, _selector, _chainId, value) => BigInt(value ?? 0) <= 10n);
+      const send = (value) => handlers['wallet:dapp-send-transaction'](
+        AUTO, { ...TX, value }, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12 });
+      await expect(send('11')).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(signAndRecord).not.toHaveBeenCalled();
+      await expect(send('10')).resolves.toMatchObject({ success: true });
+    });
+
+    test('"always allow" naming another site than the one confirmed adds no rule', async () => {
+      // Both sites are connected on the account; the token is for SITE.
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: 'https://other.example' });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: false });
+      expect(signAndRecord).toHaveBeenCalledTimes(1);
+      expect(dappPermissions.addTransactionAutoApprove).not.toHaveBeenCalled();
+    });
+
+    test('"always allow" is recorded under the confirmed site, however the flag spells it', async () => {
+      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
+      const confirmation = await mint('dapp-send', 2, { ...TX, origin: SITE });
+      const result = await handlers['wallet:dapp-send-transaction'](
+        {}, TX, 2, { origin: SITE }, { confirmation, rememberAutoApprove: `${SITE}/swap` });
+      expect(result).toMatchObject({ success: true, autoApproveAdded: true });
+      expect(dappPermissions.addTransactionAutoApprove).toHaveBeenCalledWith(
+        SITE, TX.to, '0x095ea7b3', 100, TX.value);
     });
 
     test('an auto-approved send cannot add rules', async () => {

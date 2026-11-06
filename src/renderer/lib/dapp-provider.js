@@ -323,9 +323,10 @@ async function handleProviderRequest(webview, request) {
 
       // Auto-approve only for contract calls with a matching rule (never
       // plain ETH transfers, never Safes — their sends are a multi-step
-      // signature ceremony, not a background signature)
+      // signature ceremony, not a background signature), and no more value
+      // than the send the rule was recorded from
       if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && !isSafeAccount(permission.walletIndex) && selector && txParams?.to
-        && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId)
+        && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId, txParams.value)
       ) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {

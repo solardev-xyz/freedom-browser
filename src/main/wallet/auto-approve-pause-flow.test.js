@@ -554,3 +554,78 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     ).resolves.toMatchObject({ success: true, signature: expect.stringMatching(/^0x/) });
   });
 });
+
+// "Always allow" for a transaction, through main's real handlers: the rule
+// is recorded for the site the confirmation was for, and covers its call
+// with no more value than the confirmed send's.
+describe('"Always allow" binds the confirmed send\'s value and site', () => {
+  const PAYABLE = '0x' + '77'.repeat(20);
+  const CENT = '0x2386f26fc10000'; // 0.01 ETH
+  const TWO_CENTS = '0x470de4df820000';
+
+  async function confirmWithAlwaysAllow(running, site, payment, rememberAutoApprove = site) {
+    const { token } = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
+      ...payment,
+      origin: site,
+    });
+    return running.handlers['wallet:dapp-send-transaction'](
+      CHROME_EVENT,
+      payment,
+      0,
+      { origin: site },
+      { confirmation: token, rememberAutoApprove }
+    );
+  }
+
+  test('a rule from a send of 0.01 ETH signs that call for 0.01 ETH, and asks for more', async () => {
+    const running = start();
+    const payment = { ...running.tx, to: PAYABLE, value: CENT };
+    const confirmed = await confirmWithAlwaysAllow(running, SWAP, payment);
+    expect(confirmed).toMatchObject({ success: true, autoApproveAdded: true });
+    await mine(confirmed.hash);
+
+    const ask = (value) =>
+      running.handlers['dapp:is-tx-auto-approved']({}, SWAP, PAYABLE, SELECTOR, CHAIN, value);
+    await expect(ask(CENT)).resolves.toBe(true);
+    await expect(ask(TWO_CENTS)).resolves.toBe(false);
+
+    const silent = (value) =>
+      running.handlers['wallet:dapp-send-transaction'](
+        CHROME_EVENT,
+        { ...payment, value },
+        0,
+        { origin: SWAP },
+        fromTab({ autoApprove: SWAP })
+      );
+    const same = await silent(CENT);
+    expect(same).toMatchObject({ success: true });
+    await mine(same.hash);
+    await expect(silent(TWO_CENTS)).resolves.toMatchObject({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: expect.stringContaining("not covered by the site's auto-approve rules"),
+    });
+    expect(signed()).toBe(2);
+  });
+
+  test("a confirmed send for one site records no rule for another site it names", async () => {
+    const running = start();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const payment = { ...running.tx, to: PAYABLE };
+    // PLAIN is connected on the same account, with no "Always allow".
+    const confirmed = await confirmWithAlwaysAllow(running, SWAP, payment, PLAIN);
+    expect(confirmed).toMatchObject({ success: true, autoApproveAdded: false });
+    expect(running.permissions.isTransactionAutoApproved(PLAIN, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
+    expect(running.permissions.isTransactionAutoApproved(SWAP, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
+    await expect(
+      running.handlers['wallet:dapp-send-transaction'](
+        CHROME_EVENT,
+        payment,
+        0,
+        { origin: PLAIN },
+        fromTab({ autoApprove: PLAIN })
+      )
+    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    jest.restoreAllMocks();
+  });
+});

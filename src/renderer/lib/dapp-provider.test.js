@@ -660,6 +660,25 @@ describe('dapp-provider only serves the guest main frame', () => {
     ]);
   });
 
+  // A transaction rule covers no more value than the send it was recorded
+  // from: main is asked with this transaction's value.
+  test('the auto-approve question carries the transaction value', async () => {
+    const { sendRequest, dappPermissions } = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    const data = '0x095ea7b3' + '00'.repeat(64);
+
+    sendRequest({
+      id: 26,
+      method: 'eth_sendTransaction',
+      params: [{ to: '0xc0ffee', data, value: '0x2386f26fc10000' }],
+    });
+    await flushMicrotasks();
+
+    expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
+      'https://app.example', '0xc0ffee', '0x095ea7b3', 100, '0x2386f26fc10000');
+  });
+
   // D13: a phone account's payment whose answer was lost may have been sent.
   // The site hears that its outcome is unknown, never 4001 ("rejected"),
   // which would invite the same request again.
@@ -1086,9 +1105,9 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
     await flushMicrotasks();
 
     expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
-      BACKGROUND, '0xc0ffee', '0x095ea7b3', 100);
+      BACKGROUND, '0xc0ffee', '0x095ea7b3', 100, undefined);
     expect(dappPermissions.isTransactionAutoApproved).not.toHaveBeenCalledWith(
-      VISIBLE, expect.anything(), expect.anything(), expect.anything());
+      VISIBLE, expect.anything(), expect.anything(), expect.anything(), expect.anything());
     expect(walletMocks.dappSendTransaction).not.toHaveBeenCalled();
     expect(walletUi.showDappTxApproval).toHaveBeenCalledWith(
       background, BACKGROUND, expect.objectContaining({ to: '0xc0ffee' }), 100);
