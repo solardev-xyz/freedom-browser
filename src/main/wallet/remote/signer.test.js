@@ -39,8 +39,14 @@ jest.mock('../chains', () => ({
       : null),
 }));
 jest.mock('../rpc-manager', () => ({
-  // The localhost entry must never reach the phone.
-  getEffectiveRpcUrls: jest.fn(() => ['https://rpc.gnosischain.com', 'http://127.0.0.1:8545']),
+  // The localhost entry must never reach the phone, nor a keyed provider's
+  // URL, which carries the user's API key (#1040).
+  getEffectiveRpcUrls: jest.fn(() => [
+    'https://rpc.gnosischain.com',
+    'https://gnosis-mainnet.g.alchemy.com/v2/user-api-key',
+    'http://127.0.0.1:8545',
+  ]),
+  getKeylessRpcUrls: jest.fn(() => ['https://rpc.gnosischain.com', 'http://127.0.0.1:8545']),
 }));
 
 const { createRemoteBackend } = require('./signer');
@@ -179,7 +185,8 @@ describe('sendTransaction', () => {
         },
       ]);
       // EIP-3085 descriptor for the pre-flight chain switch: public
-      // https endpoints only — the localhost RPC must not leak.
+      // https endpoints only — neither the localhost RPC nor the keyed
+      // provider's URL may leak.
       expect(chain).toEqual({
         chainId: '0x64',
         chainName: 'Gnosis Chain',

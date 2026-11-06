@@ -48,6 +48,7 @@ const { getIntentTracker } = require('./intent-tracker');
 const { OBSERVED } = require('./intent-labels');
 const { withAccountLock } = require('./nonce-reservations');
 const { getTxExplorerUrl } = require('./chains');
+const { redactedHandler } = require('./rpc-errors');
 
 const OUTCOME_ATTENTION = Object.freeze({
   rejected: 'refused',
@@ -364,6 +365,12 @@ async function closeHeldIntent(intentId, authorization) {
   return { intentId: closed.intentId, intent: intentSummary(closed) };
 }
 
+// A failed send's text can quote an RPC error; it reaches the renderer
+// redacted, as every wallet handler's does (wallet-ipc.js, #1040).
+function handle(channel, listener) {
+  ipcMain.handle(channel, redactedHandler(listener));
+}
+
 /**
  * @param {object} [options]
  * @param {() => Electron.BrowserWindow[]} [options.windows] the chrome
@@ -372,7 +379,7 @@ async function closeHeldIntent(intentId, authorization) {
 function registerIntentIpc({
   windows = () => require('../windows/mainWindow').getMainWindows(),
 } = {}) {
-  ipcMain.handle('wallet:intents-list', async () => {
+  handle('wallet:intents-list', async () => {
     try {
       return { success: true, intents: await listHeldIntents() };
     } catch (err) {
@@ -380,7 +387,7 @@ function registerIntentIpc({
     }
   });
 
-  ipcMain.handle('wallet:intent-resend', async (_event, intentId, authorization) => {
+  handle('wallet:intent-resend', async (_event, intentId, authorization) => {
     try {
       return { success: true, ...(await resendHeldIntent(intentId, authorization)) };
     } catch (err) {
@@ -394,7 +401,7 @@ function registerIntentIpc({
     }
   });
 
-  ipcMain.handle('wallet:intent-replacement-fees', async (_event, intentId) => {
+  handle('wallet:intent-replacement-fees', async (_event, intentId) => {
     try {
       return { success: true, fees: await replacementFees(intentId) };
     } catch (err) {
@@ -407,7 +414,7 @@ function registerIntentIpc({
     }
   });
 
-  ipcMain.handle('wallet:intent-replace', async (_event, intentId, fees, authorization) => {
+  handle('wallet:intent-replace', async (_event, intentId, fees, authorization) => {
     try {
       return { success: true, ...(await replaceHeldIntent(intentId, fees, authorization)) };
     } catch (err) {
@@ -421,7 +428,7 @@ function registerIntentIpc({
     }
   });
 
-  ipcMain.handle('wallet:intent-close', async (_event, intentId, authorization) => {
+  handle('wallet:intent-close', async (_event, intentId, authorization) => {
     try {
       return { success: true, ...(await closeHeldIntent(intentId, authorization)) };
     } catch (err) {

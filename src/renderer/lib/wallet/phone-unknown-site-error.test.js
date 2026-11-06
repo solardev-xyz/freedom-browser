@@ -49,7 +49,10 @@ jest.mock('electron', () => ({
 }));
 jest.mock('qrcode', () => ({}));
 jest.mock('../../../main/wallet/balance-service', () => ({}));
-jest.mock('../../../main/wallet/rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
+jest.mock('../../../main/wallet/rpc-manager', () => ({
+  getEffectiveRpcUrls: () => [],
+  getKeylessRpcUrls: () => [],
+}));
 jest.mock('../../../main/wallet/chains', () => ({
   getChain: () => null,
   getAllChains: () => [],

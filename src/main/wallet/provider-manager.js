@@ -9,6 +9,12 @@
 const { FallbackProvider, JsonRpcProvider } = require('ethers');
 const { getChain, getAllChains } = require('./chains');
 const registry = require('../networks/network-registry');
+const {
+  RPC_UNAVAILABLE,
+  endpointFailure,
+  providerRpcError,
+  redactRpcText,
+} = require('./rpc-errors');
 
 // Cache providers by chain ID
 const providerCache = new Map();
@@ -21,6 +27,38 @@ const PROVIDER_CONFIG = {
   retries: 2, // Number of retries for failed requests
   retryDelay: 500, // Delay between retries in ms
 };
+
+/**
+ * A JsonRpcProvider whose failed exchange throws no URL (#1040). Its URL
+ * can be a keyed provider's, with the user's API key in it, and ethers
+ * would quote it in the error's message, `info`, `request` and `response`
+ * (rpc-errors.js). `_send` is where every exchange happens; a JSON-RPC
+ * error answer is no failed exchange, and ethers builds its error from
+ * the answer and the payload alone.
+ */
+class PoolProvider extends JsonRpcProvider {
+  #chainId;
+
+  constructor(url, chainId, options) {
+    super(url, chainId, options);
+    this.#chainId = chainId;
+  }
+
+  async _send(payload) {
+    try {
+      return await super._send(payload);
+    } catch (err) {
+      const method = Array.isArray(payload)
+        ? payload.map((entry) => entry?.method).join(',')
+        : payload?.method;
+      throw endpointFailure(err, { chainId: this.#chainId, method });
+    }
+  }
+}
+
+function chainName(chainId) {
+  return getChain(chainId)?.name || `chain ${chainId}`;
+}
 
 /**
  * The chain's rpc-role endpoint pool as JsonRpcProviders: keyless builtin
@@ -40,7 +78,7 @@ function createProviderPool(chainId) {
 
   return rpcUrls.map(
     (url) =>
-      new JsonRpcProvider(url, chainId, {
+      new PoolProvider(url, chainId, {
         staticNetwork: true,
         batchMaxCount: 1, // Disable batching for public RPCs
       })
@@ -75,6 +113,10 @@ function createFallbackProvider(chainId) {
  * stay on the FallbackProvider paths — so retrying on the next URL is
  * always safe.
  *
+ * The last failure is thrown as a provider RPC error (rpc-errors.js): a
+ * node's JSON-RPC error with its code, text and data, or RPC_UNAVAILABLE.
+ * The Safe handlers send its text to the renderer.
+ *
  * @param {number} chainId
  * @returns {{request: (args: {method: string, params?: any[]}) => Promise<any>}}
  */
@@ -91,7 +133,7 @@ function getEip1193Provider(chainId) {
             lastError = err;
           }
         }
-        throw lastError;
+        throw providerRpcError(lastError, chainId, chainName(chainId));
       },
     });
   }
@@ -115,7 +157,7 @@ async function withRetry(fn, retries = PROVIDER_CONFIG.retries, chainId = null) 
       return await fn();
     } catch (err) {
       lastError = err;
-      console.warn(`[ProviderManager] Attempt ${attempt + 1} failed:`, err.message);
+      console.warn(`[ProviderManager] Attempt ${attempt + 1} failed:`, redactRpcText(err.message));
 
       // If we hit a server error (403, 429, etc.), the FallbackProvider may be in a bad state
       // Clear the cache so the next attempt creates fresh providers
@@ -138,6 +180,7 @@ async function withRetry(fn, retries = PROVIDER_CONFIG.retries, chainId = null) 
 function isServerError(err) {
   const msg = err.message || '';
   return (
+    err.code === RPC_UNAVAILABLE ||
     err.code === 'SERVER_ERROR' ||
     msg.includes('SERVER_ERROR') ||
     msg.includes('403') ||
@@ -217,7 +260,9 @@ async function testProvider(chainId) {
     const blockNumber = await provider.getBlockNumber();
     return { success: true, blockNumber };
   } catch (err) {
-    return { success: false, error: err.message };
+    // The renderer's answer (`wallet:test-provider`).
+    const { message, code } = providerRpcError(err, chainId, chainName(chainId));
+    return { success: false, error: message, code };
   }
 }
 

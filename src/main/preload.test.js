@@ -107,7 +107,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -130,7 +130,6 @@ describe('preload', () => {
       'networks',
       'payments',
       'tokens',
-      'rpcManager',
       'sitePermissions',
       'externalProtocol',
       'dappPermissions',
@@ -914,6 +913,51 @@ describe('preload', () => {
       antApi: null,
       openlvSignaling: null,
     });
+  });
+
+  test('no bridge reaches the channel that answered with a chain\'s RPC pool (#1040)', async () => {
+    // A keyed provider's resolved RPC URL carries the user's API key, and the
+    // chrome renderer is not trusted with it. Call every exposed function and
+    // record each channel it reaches.
+    jest.useFakeTimers();
+    try {
+      const { exposures, ipcRenderer } = loadPreloadModule();
+      const seen = new Set();
+      const callAll = (value) => {
+        if (!value || typeof value !== 'object' || seen.has(value)) return;
+        seen.add(value);
+        for (const member of Object.values(value)) {
+          if (typeof member !== 'function') {
+            callAll(member);
+            continue;
+          }
+          try {
+            const result = member(1, {}, jest.fn());
+            if (typeof result?.catch === 'function') result.catch(() => {});
+            if (typeof result === 'function') result();
+          } catch {
+            // A bridge that refuses these arguments reached no channel.
+          }
+        }
+      };
+      callAll(exposures);
+      await flushMicrotasks();
+
+      const reached = new Set(
+        [ipcRenderer.invoke, ipcRenderer.send, ipcRenderer.sendSync].flatMap((fn) =>
+          fn.mock.calls.map(([channel]) => channel)
+        )
+      );
+      // The walk does call the bridges: the networks reads are among them.
+      expect(reached).toContain('networks:get-chains');
+      expect(reached).toContain('wallet:chain-request');
+      expect(exposures).not.toHaveProperty('rpcManager');
+      expect(reached).not.toContain('rpc:get-effective-urls');
+      expect([...reached].filter((channel) => String(channel).startsWith('rpc:'))).toEqual([]);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   test('contains an eager Myotis status failure inside the preload bridge', async () => {
