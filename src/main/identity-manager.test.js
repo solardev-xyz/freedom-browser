@@ -1233,4 +1233,81 @@ describe('identity file repair at startup (K-3)', () => {
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
   });
+
+  posixTest('narrows an older 0644 credential that is a regular file, its bytes kept', () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    fs.chmodSync(dir, 0o755);
+    const credentialPath = path.join(dir, 'quick-unlock.dat');
+    fs.writeFileSync(credentialPath, 'encrypted:legacy');
+    fs.chmodSync(credentialPath, 0o644);
+
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.repairIdentityFiles();
+
+    expect(fs.statSync(credentialPath).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(credentialPath, 'utf8')).toBe('encrypted:legacy');
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+  });
+});
+
+// K-3 on integration: the core writes node keys and configs (nodes.write_identity)
+// below the data directory main hands it, through handles anchored there, but
+// leaves that directory itself alone. Main makes it owner-only first.
+describe('node identities are written into owner-only roots (K-3)', () => {
+  const posixTest = process.platform === 'win32' ? test.skip : test;
+  let root;
+  let envSnapshot;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-roots-'));
+    envSnapshot = snapshotEnv();
+    for (const key of ENV_KEYS) delete process.env[key];
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  posixTest("an older build's 0755 Ant data dir and Radicle home are 0700 when the core writes", async () => {
+    const antDir = path.join(root, 'ant-data');
+    const radicleDir = path.join(root, 'radicle-data');
+    for (const dir of [antDir, radicleDir]) {
+      fs.mkdirSync(dir, { mode: 0o755 });
+      fs.chmodSync(dir, 0o755);
+    }
+    const backend = makeVaultBackendMock();
+    const modeAtWrite = {};
+    const write = backend.writeNodeIdentity.getMockImplementation();
+    backend.writeNodeIdentity.mockImplementation(async (spec) => {
+      modeAtWrite[spec.node] = fs.statSync(spec.data_dir || spec.home).mode & 0o777;
+      return write(spec);
+    });
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+      extraMocks: {
+        ...vaultBackendMocks(backend),
+        [require.resolve('./profile-resolver')]: () => ({ getActiveProfile: jest.fn(() => null) }),
+        // The real modules: mocks an earlier describe registered stay registered.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+        [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+      },
+    });
+
+    await mod.injectBeeIdentity();
+    await mod.injectRadicleIdentity('Alias');
+
+    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ node: 'bee', data_dir: antDir }),
+      expect.any(String)
+    );
+    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+      { node: 'radicle', home: radicleDir, alias: 'Alias' },
+      expect.any(String)
+    );
+    expect(modeAtWrite).toEqual({ bee: 0o700, radicle: 0o700 });
+  });
 });

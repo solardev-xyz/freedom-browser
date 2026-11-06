@@ -130,6 +130,37 @@ posixTest('narrows keys an older build left readable before the node starts (K-3
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
+// K-3 on integration: the core writes keys/radicle (0600) through its
+// journal, but core.hello sends no node_roots, so a keys/ an older build
+// created stays as it was until main's repair. The repair narrows modes
+// only: the key the core wrote is the same file, byte for byte.
+posixTest('the node starts only after keys/ is narrowed; the core-written key is kept as is (K-3)', async () => {
+  const ctx = loadManager();
+  const keysDir = path.join(ctx.dataDir, 'keys');
+  fs.mkdirSync(keysDir, { mode: 0o755 });
+  fs.chmodSync(keysDir, 0o755);
+  const keyPath = path.join(keysDir, 'radicle');
+  fs.writeFileSync(keyPath, 'core-written key', { mode: 0o600 });
+  fs.writeFileSync(path.join(keysDir, 'radicle.pub'), 'public key');
+  const before = fs.statSync(keyPath);
+  let modesAtStart = null;
+  ctx.embedded.start.mockImplementation(async () => {
+    modesAtStart = {
+      keys: fs.statSync(keysDir).mode & 0o777,
+      key: fs.statSync(keyPath).mode & 0o777,
+    };
+    return { did: 'did:key:z6MkNative' };
+  });
+
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+  expect(modesAtStart).toEqual({ keys: 0o700, key: 0o600 });
+  expect(fs.statSync(keyPath).ino).toBe(before.ino);
+  expect(fs.readFileSync(keyPath, 'utf8')).toBe('core-written key');
+  expect(fs.readFileSync(path.join(keysDir, 'radicle.pub'), 'utf8')).toBe('public key');
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
 posixTest('a keys/ that is a link stops the start, nothing opened through it (K-3)', async () => {
   const ctx = loadManager();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-outside-'));

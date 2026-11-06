@@ -404,6 +404,58 @@ describe('quick-unlock', () => {
       expect(fs.readFileSync(oldInode, 'utf8')).toBe('encrypted:legacy');
       fs.rmSync(oldInode);
     });
+
+    // On integration the core writes the vault; main only hashes it, to bind
+    // a credential to it, and reads it through the identity directory's
+    // handle as well.
+    posixTest('a vault that is a link is never hashed: quick unlock is off, nothing prompted', async () => {
+      const { mod, credentialPath, systemPreferences, identityManager, verifyPassword } = setUp();
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+
+      // The same vault bytes, now behind a link at the vault's name.
+      const identityDir = path.dirname(credentialPath);
+      const vaultPath = path.join(identityDir, 'identity-vault.json');
+      const outsideVault = path.join(path.dirname(identityDir), 'outside-vault.json');
+      fs.renameSync(vaultPath, outsideVault);
+      fs.chmodSync(outsideVault, 0o644);
+      fs.symlinkSync(outsideVault, vaultPath);
+      systemPreferences.promptTouchID.mockClear();
+      verifyPassword.mockClear();
+      const credential = fs.readFileSync(credentialPath);
+
+      expect(mod.isQuickUnlockEnabled()).toBe(false);
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+
+      // Nor is a new credential bound to it.
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('symbolic link'),
+      });
+      expect(fs.readFileSync(credentialPath)).toEqual(credential);
+      expect(modeOf(outsideVault)).toBe(0o644);
+    });
+
+    // completeQuickSetup (freedom-core design 0001) stores the credential
+    // for a Quick Setup whose reply was lost: the same handle and writer.
+    posixTest("a lost Quick Setup's credential is stored owner-only, a planted link replaced", async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
+      const identityDir = path.dirname(credentialPath);
+      fs.chmodSync(identityDir, 0o755);
+      plantLink();
+
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
+      expectOwnCredential(mod, credentialPath);
+      expect(modeOf(identityDir)).toBe(0o700);
+      outsideUntouched();
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+    });
   });
 
   // Security audit O-8: after Touch ID, main finishes the job itself and
