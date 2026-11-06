@@ -636,7 +636,9 @@ const refreshOnchainProvenance = async (tab, url) => {
 // 0009, Labels): main keeps a navigation's label for its webContents, and a
 // subresource never changes it. Only the commit asks, so a same-document
 // navigation (`replaceState`, an anchor) keeps the document's label; the
-// sequence check drops an answer that lands after the tab moved on.
+// sequence check drops an answer that lands after the tab moved on. Main
+// answers each navigation once, so a later document at the same URL that no
+// dweb response answered (a service worker's) gets none.
 const DWEB_PAGE_URL = /^(?:bzz|ipfs|ipns):\/\//i;
 
 const refreshDwebContentTrust = async (tab, url) => {

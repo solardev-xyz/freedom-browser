@@ -54,8 +54,7 @@ const readRows = (window, containerId) =>
     (id) =>
       [...document.querySelectorAll(`#${id} .trust-popover-field`)].map((row) => ({
         label:
-          row.querySelector('.trust-popover-field-label')?.textContent.replace(/:\s*$/, '') ??
-          null,
+          row.querySelector('.trust-popover-field-label')?.textContent.replace(/:\s*$/, '') ?? null,
         value: row.dataset.autoFit || row.querySelector('.trust-popover-field-value')?.textContent,
         wraps: row.classList.contains('trust-popover-field-wrap'),
       })),
@@ -192,8 +191,78 @@ test('a page without a label shows no shield, and leaves no label behind', async
   await expect(shield).toHaveAttribute('data-trust', 'user-configured');
   await expect(shield).toHaveAttribute('aria-label', SENTENCE.node_asserted);
 
+  // A reload the node answers again carries that answer's label: the first
+  // read took the first one, and the reload's own response replaced it.
+  await harness.setContentFixture(labelled, {
+    headers: { [LABEL]: 'unverified' },
+    body: '<!doctype html><h1>reloaded</h1>',
+  });
+  await inGuest(window, 'setTimeout(() => location.reload(), 0); true');
+  await expect
+    .poll(() => inGuest(window, "document.querySelector('h1')?.textContent"), {
+      timeout: 15_000,
+    })
+    .toBe('reloaded');
+  await expect(shield).toHaveAttribute('data-trust', 'unverified', { timeout: 15_000 });
+  await expect(shield).toHaveAttribute('aria-label', SENTENCE.unverified);
+
   await navigateTo(window, plain);
   await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(plain);
   await expect(shield).toBeHidden();
   await expect(window.locator('#protocol-icon')).toHaveAttribute('data-protocol', 'ipfs');
+});
+
+// A same-URL navigation that no dweb response answers (codex review of #1010,
+// finding 1). The labelled page installs a service worker; the reload it then
+// makes is answered by the worker, so main sees no main-frame response for it.
+// The tab must lose the label: main forgets it when the navigation starts, and
+// the chrome's one read at the earlier commit took it.
+test('a same-URL page a service worker answers shows no label', async ({ window, harness }) => {
+  const page = `bzz://${'5e'.repeat(32)}/`;
+  await harness.setContentFixture(`${page}sw.js`, {
+    contentType: 'text/javascript; charset=utf-8',
+    body:
+      "self.addEventListener('install', () => self.skipWaiting());" +
+      "self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));" +
+      "self.addEventListener('fetch', (event) => {" +
+      "  if (event.request.mode !== 'navigate') return;" +
+      '  event.respondWith(new Response(' +
+      '    \'<!doctype html><title>worker</title><h1 id="from">worker</h1>\',' +
+      "    { headers: { 'Content-Type': 'text/html; charset=utf-8' } }));" +
+      '});',
+  });
+  await harness.setContentFixture(page, {
+    headers: { [LABEL]: 'verified' },
+    body:
+      '<!doctype html><title>network</title><h1 id="from">network</h1>' +
+      '<script>' +
+      "window.__worker = navigator.serviceWorker.register('sw.js')" +
+      '.then(() => navigator.serviceWorker.ready)' +
+      ".then((reg) => (reg.active ? 'active' : 'none'), (err) => `error: ${err.message}`);" +
+      '</script>',
+  });
+
+  await navigateTo(window, page);
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(page);
+  const shield = window.locator('#trust-shield');
+  await expect(shield).toBeVisible({ timeout: 15_000 });
+  await expect(shield).toHaveAttribute('data-trust', 'verified');
+  await expect.poll(() => inGuest(window, 'window.__worker'), { timeout: 15_000 }).toBe('active');
+
+  // The same URL again, now answered by the worker.
+  await inGuest(window, 'setTimeout(() => location.reload(), 0); true');
+  await expect
+    .poll(() => inGuest(window, "document.getElementById('from')?.textContent"), {
+      timeout: 15_000,
+    })
+    .toBe('worker');
+  expect(await webviewUrl(window)).toBe(page);
+  expect(await inGuest(window, 'navigator.serviceWorker.controller?.scriptURL')).toBe(
+    `${page}sw.js`
+  );
+  // The chrome asks main once the reload commits. Give its answer time to
+  // land: before the fix it brought the earlier response's label back.
+  await window.waitForTimeout(1_000);
+  await expect(shield).toBeHidden();
+  await expect(window.locator('#protocol-icon')).toHaveAttribute('data-protocol', 'swarm');
 });

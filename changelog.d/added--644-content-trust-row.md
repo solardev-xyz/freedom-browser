@@ -1,3 +1,4 @@
 - The trust popover shows whether a `bzz://`, `ipfs://` or `ipns://` page's content was verified ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
   - A page opened by its hash or CID shows the trust shield too
   - What the page loads afterwards doesn't change it
+  - A page a site's service worker answers has none

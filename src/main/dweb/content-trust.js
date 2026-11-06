@@ -19,9 +19,18 @@
  *   so no page ever reads it, and keeps a main frame's label for its
  *   `webContents`. Only a navigation sets the tab's label: a subresource,
  *   a subframe or a page's own `fetch` keeps its label to itself.
+ * - **Which navigation it belongs to:** each top-level cross-document
+ *   navigation a `webContents` starts begins a new generation and forgets
+ *   the label it had. A main-frame request is tied to the generation it
+ *   started in (`onBeforeRequest`), and only a response to a request of the
+ *   current generation is kept. So a document no dweb response answers (a
+ *   service worker's, say) has no label, and a response that lands after a
+ *   later navigation started is ignored.
  * - **Who reads it:** the renderer that hosts the tab, once the navigation
- *   commits (`dweb:get-content-trust`), for the committed URL. A response
- *   without a label (main's error page, say) leaves the tab with none.
+ *   commits (`dweb:get-content-trust`), for the committed URL. The read
+ *   takes the label: a later document at the same URL can't read it again.
+ *   A response without a label (main's error page, say) leaves the tab with
+ *   none.
  *
  * An in-process caller that calls a handler directly
  * (`permission-manifests.js`) gets no header.
@@ -33,9 +42,15 @@ const CONTENT_TRUST_HEADER = 'X-Freedom-Content-Trust';
 const CONTENT_LABELS = new Set(['verified', 'latest_asserted', 'node_asserted', 'unverified']);
 const DWEB_URL = /^(?:bzz|ipfs|ipns):/i;
 
-/** The latest main-frame label per `webContents`: `{ url, content }`. */
-const labelByWebContentsId = new Map();
-const observedWebContentsIds = new Set();
+/**
+ * Per `webContents`, its current top-level navigation:
+ * - `generation`: counts the cross-document navigations it has started;
+ * - `requests`: each main-frame dweb request still open, by request id, with
+ *   the generation it started in;
+ * - `label`: the label of the current generation's response,
+ *   `{ url, content }`, until the chrome reads it.
+ */
+const navigationByWebContentsId = new Map();
 
 /** The known label `trust` carries, or null. */
 function contentLabel(trust) {
@@ -118,21 +133,73 @@ function takeHeader(responseHeaders, name) {
   return { value, rest: found ? rest : null };
 }
 
-function remember(contents, url, content) {
-  labelByWebContentsId.set(contents.id, { url, content });
-  if (observedWebContentsIds.has(contents.id)) return;
-  observedWebContentsIds.add(contents.id);
-  contents.once?.('destroyed', () => {
-    labelByWebContentsId.delete(contents.id);
-    observedWebContentsIds.delete(contents.id);
+/** `contents`' current navigation; watches its navigations from the first
+ * call on. */
+function navigationOf(contents) {
+  const known = navigationByWebContentsId.get(contents.id);
+  if (known) return known;
+  const navigation = { generation: 0, requests: new Map(), label: null };
+  navigationByWebContentsId.set(contents.id, navigation);
+  // A new document is coming: whatever answers it, the label so far isn't
+  // its. Only a navigation known to keep the document (an anchor,
+  // `pushState`) or known to be a subframe's leaves the label alone.
+  // Electron 45 passes `isMainFrame` and `isSameDocument` on the event; the
+  // older positional arguments are the fallback.
+  contents.on?.('did-start-navigation', (event, _url, isInPlace, isMainFrame) => {
+    const mainFrame = typeof event?.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
+    const sameDocument =
+      typeof event?.isSameDocument === 'boolean' ? event.isSameDocument : isInPlace;
+    if (mainFrame === false || sameDocument === true) return;
+    navigation.generation += 1;
+    navigation.label = null;
   });
+  contents.once?.('destroyed', () => {
+    if (navigationByWebContentsId.get(contents.id) === navigation) {
+      navigationByWebContentsId.delete(contents.id);
+    }
+  });
+  return navigation;
+}
+
+/** Whether `details` is a dweb main-frame request a tab made. */
+function isTabMainFrame(details) {
+  return (
+    details?.resourceType === 'mainFrame' &&
+    DWEB_URL.test(details.url || '') &&
+    Boolean(details.webContents?.id) &&
+    details.id !== undefined &&
+    details.id !== null
+  );
+}
+
+/**
+ * The session's `onBeforeRequest` handler: ties a tab's main-frame dweb
+ * request to the navigation it starts in. A redirect's next leg keeps the
+ * generation its request started in.
+ *
+ * @param {object} details - Electron's `onBeforeRequest` details
+ * @returns {null} - never changes the request
+ */
+function trackContentTrustRequest(details) {
+  if (!isTabMainFrame(details)) return null;
+  const navigation = navigationOf(details.webContents);
+  if (!navigation.requests.has(details.id)) {
+    navigation.requests.set(details.id, navigation.generation);
+  }
+  return null;
+}
+
+/** `onCompleted` / `onErrorOccurred`: a request that is over is forgotten. */
+function forgetContentTrustRequest(details) {
+  if (!isTabMainFrame(details)) return;
+  navigationByWebContentsId.get(details.webContents.id)?.requests.delete(details.id);
 }
 
 /**
  * The session's `onHeadersReceived` handler: takes the label off every dweb
- * response, and keeps a main frame's for its `webContents`. A main frame
- * with no label (or one that isn't a label) keeps none, so a failed reload
- * can't show the page before it.
+ * response, and keeps a main frame's for its `webContents`' current
+ * navigation. A main frame with no label (or one that isn't a label) keeps
+ * none, so a failed reload can't show the page before it.
  *
  * @param {object} details - Electron's `onHeadersReceived` details
  * @returns {{responseHeaders: object}|null}
@@ -140,29 +207,42 @@ function remember(contents, url, content) {
 function captureContentTrust(details) {
   if (!DWEB_URL.test(details?.url || '')) return null;
   const { value, rest } = takeHeader(details.responseHeaders, CONTENT_TRUST_HEADER);
-  const contents = details.webContents;
-  if (details.resourceType === 'mainFrame' && contents?.id) {
-    const content = value !== null && CONTENT_LABELS.has(value) ? value : null;
-    remember(contents, documentUrl(details.url), content);
+  if (isTabMainFrame(details)) {
+    const navigation = navigationByWebContentsId.get(details.webContents.id);
+    // Only a response to a request of the tab's current navigation: one
+    // that started before it (a cancelled reload's, say) is no label of the
+    // document it leads to.
+    if (navigation && navigation.requests.get(details.id) === navigation.generation) {
+      const content = value !== null && CONTENT_LABELS.has(value) ? value : null;
+      navigation.label = { url: documentUrl(details.url), content };
+    }
   }
   return rest ? { responseHeaders: rest } : null;
 }
 
 /**
- * The label of the page `webContentsId` committed at `url`, or null: one
- * only while it is still that `webContents`' latest main frame.
+ * The label of the page `webContentsId` committed at `url`, or null: the
+ * label of its current navigation's response, if that response was for
+ * `url`. The read takes it, so it answers once: the chrome asks at each
+ * commit, and a later document at the same URL that no response answered
+ * reads none.
  */
 function contentTrustFor(webContentsId, url) {
-  const record = labelByWebContentsId.get(webContentsId);
+  const navigation = navigationByWebContentsId.get(webContentsId);
+  const label = navigation?.label;
+  if (!label) return null;
+  navigation.label = null;
   const wanted = documentUrl(url);
-  if (!record || !wanted || record.url !== wanted) return null;
-  return record.content;
+  return wanted && label.url === wanted ? label.content : null;
 }
 
 /** Registers the capture with the webRequest dispatcher: before it attaches
  * to a session, on every session (tests' stubs included). */
 function installContentTrustCapture() {
+  registerWebRequestHandler('onBeforeRequest', 'dweb-content-trust', trackContentTrustRequest);
   registerWebRequestHandler('onHeadersReceived', 'dweb-content-trust', captureContentTrust);
+  registerWebRequestHandler('onCompleted', 'dweb-content-trust', forgetContentTrustRequest);
+  registerWebRequestHandler('onErrorOccurred', 'dweb-content-trust', forgetContentTrustRequest);
 }
 
 /** `dweb:get-content-trust`: a tab's label, for the renderer that hosts it. */
@@ -182,8 +262,7 @@ function registerContentTrustIpc() {
 
 /** Test-only: forget every tab's label. */
 function _resetContentTrust() {
-  labelByWebContentsId.clear();
-  observedWebContentsIds.clear();
+  navigationByWebContentsId.clear();
 }
 
 module.exports = {
@@ -191,9 +270,11 @@ module.exports = {
   CONTENT_LABELS,
   captureContentTrust,
   contentTrustFor,
+  forgetContentTrustRequest,
   installContentTrustCapture,
   labelResponse,
   registerContentTrustIpc,
   serveLabelled,
+  trackContentTrustRequest,
   _resetContentTrust,
 };
