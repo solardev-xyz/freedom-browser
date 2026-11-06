@@ -386,7 +386,14 @@ describe("the wallet handlers' own redaction", () => {
 });
 
 describe('redactedHandler', () => {
-  const { redactedHandler } = require('./rpc-errors');
+  let redactedHandler;
+  // A fresh module over this test's own user data, with the key stored, so a
+  // bare key (not only a keyed URL) is known to the redactor whatever ran
+  // before.
+  beforeEach(async () => {
+    await writePool([{ keyed: true, status: 403 }]);
+    ({ redactedHandler } = loadMainModule(require.resolve('./rpc-errors'), { userDataDir }).mod);
+  });
   const URL_WITH_KEY = `https://eth-mainnet.g.alchemy.com/v2/${KEY}`;
 
   test('a synchronous handler stays synchronous', () => {
@@ -475,6 +482,41 @@ describe('redactedHandler', () => {
         expect(reply).not.toContain(KEY);
         expect(reply).not.toContain('/v2/');
       }
+    }
+  });
+
+  test('a string code is redacted: in an error, thrown, and beside the error', async () => {
+    const coded = () =>
+      Object.assign(new Error(`at ${URL_WITH_KEY}`), { code: `C ${URL_WITH_KEY}` });
+    const replies = [
+      redactedHandler(() => ({ success: false, error: coded() }))(),
+      await redactedHandler(async () => ({ success: false, error: coded() }))(),
+      redactedHandler(() => ({ success: false, error: 'failed', code: `C ${URL_WITH_KEY}` }))(),
+      await redactedHandler(async () => ({ success: false, error: 'x', code: `k=${KEY}` }))(),
+    ];
+    for (const reply of replies) {
+      expect(JSON.stringify(reply)).not.toContain(KEY);
+      expect(JSON.stringify(reply)).not.toContain('/v2/');
+    }
+    for (const run of [
+      () =>
+        redactedHandler(() => {
+          throw coded();
+        })(),
+      () =>
+        redactedHandler(async () => {
+          throw coded();
+        })(),
+    ]) {
+      let caught;
+      try {
+        await run();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      expect(String(caught.code)).not.toContain(KEY);
+      expect(String(caught.message)).not.toContain(KEY);
     }
   });
 

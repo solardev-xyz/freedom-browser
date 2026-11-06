@@ -116,8 +116,12 @@ const MAX_REDACT_ITEMS = 256;
 const NOT_PLAIN = '[redacted: not a plain value]';
 
 // A code a renderer may see: a string or an integer, nothing else.
-const scalarCode = (code) =>
-  typeof code === 'string' || Number.isInteger(code) ? code : undefined;
+// A string code is redacted like any text: another error source could put
+// a keyed URL in it.
+const scalarCode = (code) => {
+  if (typeof code === 'string') return redactRpcText(code);
+  return Number.isInteger(code) ? code : undefined;
+};
 
 // What a value's own data property holds, or undefined. Accessors are never
 // called: a getter can throw text of its own or change between reads.
@@ -172,7 +176,11 @@ function redactedReply(reply) {
     return reply;
   }
   try {
-    return { ...reply, error: redactValue(ownData(reply, 'error')) };
+    const out = { ...reply, error: redactValue(ownData(reply, 'error')) };
+    // A failed reply's own code sits beside its error (`code: err.code`), so
+    // it is redacted too.
+    if (Object.hasOwn(reply, 'code')) out.code = scalarCode(ownData(reply, 'code'));
+    return out;
   } catch {
     // Redaction itself failed (a proxy's trap threw, say): send nothing of it.
     return { ...reply, error: 'RPC error' };
