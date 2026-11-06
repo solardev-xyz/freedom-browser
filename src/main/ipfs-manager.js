@@ -23,6 +23,7 @@ const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { ipfsGrantRefusal } = require('./service-grant');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const { dwebVerifier } = require('./core/dweb-verify');
+const { verificationFailures } = require('./dweb/verify-failures');
 const {
   IPFS_CAR_ACCEPT,
   IPFS_CAR_PROBE_PATH,
@@ -1409,6 +1410,10 @@ function getNativeDiagnostics() {
       // without raw blocks can't be verified only while verification is
       // asked for (freedom-core design 0009, Modes).
       externalVerify: verifiesExternalGateway(),
+      // Content this gateway served that failed verification in the last 10
+      // minutes, a count (0 for none), for the nodes panel's notice
+      // (freedom-core design 0009, Failures; dweb/verify-failures.js).
+      externalVerifyFailures: verificationFailures('gateway', externalGatewayUrl),
     };
   }
 

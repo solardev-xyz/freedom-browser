@@ -51,6 +51,8 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsStatusValue = createElement('span');
   const ipfsUnverifiableNotice = createElement('p');
   ipfsUnverifiableNotice.hidden = true; // as the markup ships it
+  const ipfsVerifyFailedNotice = createElement('p');
+  ipfsVerifyFailedNotice.hidden = true;
   const body = createElement('body');
   body.appendChild(ipfsInfoPanel);
   const document = createDocument({
@@ -68,6 +70,7 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-status-label': ipfsStatusLabel,
       'ipfs-status-value': ipfsStatusValue,
       'ipfs-unverifiable-notice': ipfsUnverifiableNotice,
+      'ipfs-verify-failed-notice': ipfsVerifyFailedNotice,
     },
   });
   let statusHandler = null;
@@ -155,6 +158,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfsStatusLabel,
       ipfsStatusValue,
       ipfsUnverifiableNotice,
+      ipfsVerifyFailedNotice,
     },
   };
 };
@@ -796,6 +800,120 @@ describe('ipfs-ui', () => {
     });
     await poll();
     expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(false);
+    expect(notice.hidden).toBe(true);
+
+    // External again, then a status read that fails: nothing is claimed.
+    ctx.state.registry.ipfs.mode = 'external';
+    ctx.ipfsApi.getStatus.mockResolvedValue(external);
+    await poll();
+    expect(notice.hidden).toBe(false);
+    ctx.ipfsApi.getStatus.mockRejectedValue(new Error('ipc gone'));
+    await poll();
+    expect(notice.hidden).toBe(true);
+  });
+
+  // freedom-core design 0009, Failures: "The nodes panel counts verification
+  // failures per backend and shows "Your external node served content that
+  // failed verification" while any occurred in the last 10 minutes."
+  test('says the external gateway served content that failed verification while main counts a failure', async () => {
+    const diagnostics = {
+      externalGateway: 'http://127.0.0.1:8080',
+      externalVersion: 'Kubo 0.30.0',
+      externalNodeStats: null,
+      externalSupport: { raw: true, car: true },
+      externalVerify: true,
+      externalVerifyFailures: 2,
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+    });
+    ctx.ipfsApi.getStatus.mockImplementation(async () => ({
+      status: 'running',
+      error: null,
+      diagnostics,
+    }));
+    const notice = ctx.elements.ipfsVerifyFailedNotice;
+    const poll = async () => {
+      ctx.mod.startIpfsInfoPolling();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    };
+
+    ctx.mod.initIpfsUi();
+    await poll();
+    expect(notice.hidden).toBe(false);
+    // #1012's line is its own: this gateway serves raw blocks.
+    expect(ctx.elements.ipfsUnverifiableNotice.hidden).toBe(true);
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Kubo 0.30.0');
+
+    // The window passed (main says 0), then another failure.
+    diagnostics.externalVerifyFailures = 0;
+    await poll();
+    expect(notice.hidden).toBe(true);
+    diagnostics.externalVerifyFailures = 1;
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // It follows main's count, not the switch: content that failed is
+    // reported whatever the setting is now.
+    diagnostics.externalVerify = false;
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // Closing the menu clears it; the next poll decides again.
+    ctx.mod.stopIpfsInfoPolling();
+    expect(notice.hidden).toBe(true);
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // Anything but a positive count shows nothing.
+    for (const value of [undefined, null, -1, '3', true, 0.5]) {
+      diagnostics.externalVerifyFailures = value;
+      await poll();
+      expect(notice.hidden).toBe(true);
+    }
+  });
+
+  test('the failure notice goes with the external gateway, and on a failed read', async () => {
+    const external = {
+      status: 'running',
+      error: null,
+      diagnostics: {
+        externalGateway: 'http://127.0.0.1:8080',
+        externalNodeStats: null,
+        externalSupport: { raw: true, car: false },
+        externalVerify: true,
+        externalVerifyFailures: 1,
+      },
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+      statusResult: external,
+    });
+    const notice = ctx.elements.ipfsVerifyFailedNotice;
+    const poll = async () => {
+      ctx.mod.startIpfsInfoPolling();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    };
+
+    ctx.mod.initIpfsUi();
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // The profile back on its managed node while the menu stays open, even
+    // with a count in the diagnostics.
+    ctx.state.registry.ipfs.mode = 'bundled';
+    ctx.ipfsApi.getStatus.mockResolvedValue({
+      status: 'running',
+      error: null,
+      diagnostics: { nativeGatewayStats: '{"active_native_handles":1}', externalVerifyFailures: 1 },
+    });
+    await poll();
     expect(notice.hidden).toBe(true);
 
     // External again, then a status read that fails: nothing is claimed.

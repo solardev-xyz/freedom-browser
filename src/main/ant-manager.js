@@ -37,6 +37,7 @@ const {
 const { antApiGet } = require('./swarm/ant-api-chrome');
 const { loadSettings, saveSettings } = require('./settings-store');
 const antCache = require('./swarm/ant-cache');
+const { verificationFailures } = require('./dweb/verify-failures');
 
 // States
 const STATUS = {
@@ -1130,6 +1131,19 @@ function getStatus() {
   return { status: currentState, error: lastError };
 }
 
+/**
+ * Content the external Swarm node serving now (a reused one included, as
+ * `antBackend()` counts it) served that failed verification in the last 10
+ * minutes: a count, 0 for none or for the bundled node, for the nodes
+ * panel's notice (freedom-core design 0009, Failures;
+ * dweb/verify-failures.js).
+ */
+function externalVerifyFailures() {
+  const { getService, getAntApiUrl } = require('./service-registry');
+  if (getService('ant')?.mode === MODE.BUNDLED) return 0;
+  return verificationFailures('ant', getAntApiUrl() || null);
+}
+
 function registerAntIpc() {
   ipcMain.handle(IPC.ANT_START, async () => {
     await startAnt();
@@ -1141,8 +1155,14 @@ function registerAntIpc() {
     return { status: currentState, error: lastError };
   });
 
+  // The Swarm section's 5 s status poll; it also carries the external
+  // node's verification failures for the nodes panel.
   ipcMain.handle(IPC.ANT_GET_STATUS, () => {
-    return { status: currentState, error: lastError };
+    return {
+      status: currentState,
+      error: lastError,
+      externalVerifyFailures: externalVerifyFailures(),
+    };
   });
 
   ipcMain.handle(IPC.ANT_CHECK_BINARY, () => {
@@ -1296,6 +1316,7 @@ module.exports = {
   stopAnt,
   getActivePort,
   getStatus,
+  externalVerifyFailures,
   onStatusChange,
   waitForStartSettled,
   getSpawnedAt,

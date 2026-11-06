@@ -27,6 +27,7 @@ const { createFetchAdmission } = require('./fetch-admission');
 const { CoreError } = require('../core/core-client');
 const { createFakeDwebDriver } = require('../../../test/helpers/fake-dweb-core');
 const { runWithPrivateLogContext } = require('../private/private-log-context');
+const { verificationFailures, _resetVerificationFailures } = require('./verify-failures');
 
 const HASH = 'c0ffee'.repeat(10) + 'beef';
 const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
@@ -111,6 +112,7 @@ beforeEach(() => {
   mockDriver = createFakeDwebDriver();
   mockAdmission = createFetchAdmission();
   mockVerifier = null;
+  _resetVerificationFailures();
 });
 
 describe('a head and its verified body', () => {
@@ -464,6 +466,214 @@ describe('error plans and failures before the head', () => {
     expect(res.status).toBe(502);
     expect(use.release).toHaveBeenCalledTimes(1);
     expect(mockVerifier.calls[0].closed).toBe(1);
+  });
+});
+
+// 0009, Failures: "The nodes panel counts verification failures per backend
+// [...] The notice informs the user; it switches nothing."
+describe("the nodes panel's count of verification failures", () => {
+  const NODE = 'http://127.0.0.1:1633';
+  const SWARM_FAILED = 'Swarm content verification failed';
+  const IPFS_FAILED = 'IPFS content verification failed';
+  const errorPlan = (status, message) => ({
+    result: { error: { status, code: status, message } },
+    body: null,
+  });
+  const counted = () => ({
+    ant: verificationFailures('ant', NODE),
+    gateway: verificationFailures('gateway', NODE),
+  });
+
+  test("before the head: the error plan with the plan's node's text, against its backend", async () => {
+    mockVerifier = scriptedVerifier((params) =>
+      errorPlan(502, params.plan.verify.node === 'ant' ? SWARM_FAILED : IPFS_FAILED)
+    );
+    const swarm = await handle(`bzz://${HASH}/`);
+    expect(swarm.status).toBe(502);
+    expect(await swarm.json()).toEqual({ code: 502, message: SWARM_FAILED });
+    expect(counted()).toEqual({ ant: 1, gateway: 0 });
+
+    const ipfs = await handle(`ipfs://${CID}/`, { use: backend('ipfs') });
+    expect(await ipfs.json()).toEqual({ code: 502, message: IPFS_FAILED });
+    expect(counted()).toEqual({ ant: 1, gateway: 1 });
+
+    // A navigation's error page counts the same.
+    await handle(`bzz://${HASH}/`, { init: { headers: NAVIGATION } });
+    expect(counted()).toEqual({ ant: 2, gateway: 1 });
+  });
+
+  test.each([
+    ["the other node's text", 502, 'IPFS content verification failed'],
+    ['unverifiable', 502, "This content can't be verified with the external Swarm node"],
+    ['the memory limit', 502, MEMORY],
+    ['not found', 404, 'Not found on the external Swarm node'],
+    ["the node's own status", 500, 'The external Swarm node answered 500'],
+    ['a dial that failed', 503, 'bee gateway unreachable'],
+    ['busy', 503, 'Too many requests'],
+    ['the deadline', 504, 'Deadline passed'],
+  ])('before the head, not %s', async (_what, status, message) => {
+    mockVerifier = scriptedVerifier(() => errorPlan(status, message));
+    const res = await handle(`bzz://${HASH}/`);
+    expect(res.status).toBe(status);
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+  });
+
+  test.each([
+    ['an IPFS plan', 'malformed', 'This IPFS content is malformed'],
+    [
+      'an IPFS plan',
+      'unverifiable',
+      "This content can't be verified with the external IPFS gateway",
+    ],
+  ])('before the head, not %s that is %s', async (_plan, _what, message) => {
+    mockVerifier = scriptedVerifier(() => errorPlan(502, message));
+    await handle(`ipfs://${CID}/`, { use: backend('ipfs') });
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+  });
+
+  test.each(['busy', 'cancelled', 'core_unavailable', 'invalid_argument'])(
+    'not a `%s` reply to dweb.verify',
+    async (code) => {
+      mockVerifier = scriptedVerifier(() => new CoreError(code, 'x'));
+      await handle(`bzz://${HASH}/`);
+      expect(counted()).toEqual({ ant: 0, gateway: 0 });
+    }
+  );
+
+  test("not an answer main refuses (the core's fault)", async () => {
+    mockVerifier = scriptedVerifier(() => ({
+      result: { error: { status: 502, code: 500, message: SWARM_FAILED } },
+      body: null,
+    }));
+    const res = await handle(`bzz://${HASH}/`);
+    expect(await res.json()).toEqual({ code: 502, message: 'dweb verification failed' });
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+  });
+
+  test("after the head: the core's abort `verification_failed`", async () => {
+    const abort = new CoreError('verification_failed', SWARM_FAILED);
+    mockVerifier = scriptedVerifier(() => ({
+      result: head(200, [['content-length', '8192']]),
+      body: streamOf(['first bytes'], { fail: abort }),
+    }));
+    const res = await handle(`bzz://${HASH}/video.mp4`);
+    // Not before the body fails.
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+    await expect(res.arrayBuffer()).rejects.toBe(abort);
+    expect(counted()).toEqual({ ant: 1, gateway: 0 });
+  });
+
+  test("after the head: one that ends a body main's small-text sniff was reading", async () => {
+    const abort = new CoreError('verification_failed', IPFS_FAILED);
+    mockVerifier = scriptedVerifier(() => ({
+      result: head(200, [
+        ['content-type', 'application/octet-stream'],
+        ['content-length', '6'],
+      ]),
+      body: streamOf([], { fail: abort }),
+    }));
+    const res = await handle(`ipfs://${CID}/readme`, {
+      use: backend('ipfs'),
+      init: { headers: NAVIGATION },
+    });
+    expect(res.status).toBe(502);
+    expect(counted()).toEqual({ ant: 0, gateway: 1 });
+  });
+
+  test.each([
+    ['unverifiable', "This content can't be verified with the external Swarm node"],
+    ['unverifiable', MEMORY],
+    ['malformed', 'This IPFS content is malformed'],
+    ['piece_failed', 'The external Swarm node stopped sending'],
+    ['busy', 'Too many requests'],
+    ['cancelled', 'The request was cancelled'],
+  ])('after the head, not the abort `%s` (%s)', async (code, message) => {
+    const abort = new CoreError(code, message);
+    mockVerifier = scriptedVerifier(() => ({
+      result: head(200, []),
+      body: streamOf(['x'], { fail: abort }),
+    }));
+    const res = await handle(`bzz://${HASH}/`);
+    await expect(res.arrayBuffer()).rejects.toBe(abort);
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+  });
+
+  test("not the page's cancel, the session's close or the body idle bound", async () => {
+    mockVerifier = scriptedVerifier(() => ({ result: head(200, []), body: streamOf(['a', 'b']) }));
+    const cancelled = await handle(`bzz://${HASH}/`);
+    await cancelled.body.cancel();
+    const closing = await handle(`bzz://${HASH}/`, { partition: 'private-3' });
+    mockAdmission.closeSession('private-3');
+    await expect(closing.text()).rejects.toThrow('The session closed');
+
+    jest.useFakeTimers();
+    try {
+      const stalled = new ReadableStream({ pull: () => new Promise(() => {}) });
+      mockVerifier = scriptedVerifier(() => ({ result: head(200, []), body: stalled }));
+      const res = await handle(`bzz://${HASH}/`);
+      const read = res.arrayBuffer();
+      const failed = expect(read).rejects.toThrow();
+      await jest.advanceTimersByTimeAsync(10 * 60 * 1000);
+      await failed;
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
+  });
+
+  test("a private window's failure counts, and the count keeps nothing of the request", async () => {
+    mockVerifier = scriptedVerifier(() => errorPlan(502, SWARM_FAILED));
+    await runWithPrivateLogContext(true, () =>
+      handle(`bzz://${HASH}/secret/page.html`, { partition: 'private-1' })
+    );
+    expect(counted()).toEqual({ ant: 1, gateway: 0 });
+    // The log line is the core's fixed text with the URL redacted, as before.
+    const logged = mockLog.info.mock.calls.map(([line]) => line).join('\n');
+    expect(logged).not.toContain(HASH);
+    expect(logged).not.toContain('secret');
+  });
+
+  test('it switches nothing: the next request to the node is verified as usual', async () => {
+    let fail = true;
+    mockVerifier = scriptedVerifier(() =>
+      fail
+        ? errorPlan(502, SWARM_FAILED)
+        : { result: head(200, [['content-type', 'text/plain']]), body: streamOf(['ok']) }
+    );
+    const use = backend();
+    await handle(`bzz://${HASH}/a`, { use });
+    fail = false;
+    const res = await handle(`bzz://${HASH}/b`, { use });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok');
+    expect(mockVerifier.calls).toHaveLength(2);
+    expect(mockVerifier.calls[1].capture.backend).toBe(use);
+    expect(counted()).toEqual({ ant: 1, gateway: 0 });
+  });
+
+  test('against a core without the verifier (protocol 1), nothing is counted', async () => {
+    // A verify plan can't reach it: refused at shape, as before 0009.
+    mockVerifier = null;
+    await handle(`bzz://${HASH}/`);
+    // The capture there keeps the two-key reference, so every plan is a
+    // fetch: a node's answer with the core's very text (a 404, final) is
+    // the node's content, not a count.
+    const twoKey = {
+      ref: { ant: 'external', up: true },
+      url: NODE,
+      request: jest.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 404, message: SWARM_FAILED }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          })
+      ),
+      release: jest.fn(),
+    };
+    const res = await handle(`bzz://${HASH}/`, { use: twoKey });
+    expect(await res.json()).toEqual({ code: 404, message: SWARM_FAILED });
+    expect(twoKey.request).toHaveBeenCalledTimes(1);
+    expect(counted()).toEqual({ ant: 0, gateway: 0 });
   });
 });
 

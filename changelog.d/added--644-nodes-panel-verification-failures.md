@@ -1,0 +1,2 @@
+- Verify content from this node, on by default for an external Swarm node or IPFS gateway under Settings > Nodes, checks what the node serves against the address you opened ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The Nodes panel says "Your external node served content that failed verification" for 10 minutes after content from that Swarm node or IPFS gateway fails its check; Freedom keeps using the node, and only what failed doesn't load
