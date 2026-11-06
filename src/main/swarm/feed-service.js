@@ -109,24 +109,6 @@ function makeFeedIdentifier(topic, index) {
   ])).toUint8Array());
 }
 
-async function downloadExactFeedPayload(bee, owner, topic, index) {
-  const feedIndex = normalizeFeedIndex(index);
-  const identifier = makeFeedIdentifier(topic, feedIndex);
-  const reference = bee.calculateSingleOwnerChunkAddress(identifier, owner);
-  const raw = await bee.chunk.download(reference);
-  const soc = bee.unmarshalSingleOwnerChunk(raw, reference);
-  const cac = bee.makeContentAddressedChunk(soc.payload, soc.span);
-  const payload = cac.span.toBigInt() <= 4096n
-    ? cac.payload
-    : await bee.data.download(cac.address);
-
-  return {
-    payload,
-    feedIndex,
-    feedIndexNext: feedIndex.next(),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Metered reads — a page's feed read is paid for before its bytes are held
 // ---------------------------------------------------------------------------
@@ -350,6 +332,30 @@ async function readLatestFeedEntry(bee, owner, topic, meter) {
   return { payload, feedIndex, feedIndexNext };
 }
 
+/**
+ * Whether feed entry `index` exists, for a write at that index: its update
+ * chunk (the SOC) is read and checked against its address. The SOC is the
+ * entry, so the content it wraps is not fetched.
+ *
+ * Only a 404 means the index is free. A 500, a network error or timeout, or
+ * an answer that is not that SOC can't tell a free index from an entry the
+ * node failed to fetch, so it throws, and the write is refused rather than
+ * written over an entry a reader would otherwise see (#1054). The caller
+ * reports it as a node error, which the page may retry.
+ */
+async function feedEntryExists(bee, owner, topic, index) {
+  const reference = bee.calculateSingleOwnerChunkAddress(makeFeedIdentifier(topic, index), owner);
+  let raw;
+  try {
+    raw = await bee.chunk.download(reference);
+  } catch (err) {
+    if (err instanceof BeeResponseError && err.status === 404) return false;
+    throw err;
+  }
+  bee.unmarshalSingleOwnerChunk(raw, reference);
+  return true;
+}
+
 // Highest index the head probe will look for: 2^40 updates is far beyond any
 // real feed, and it bounds the probe to ~80 chunk reads.
 const MAX_PROBED_FEED_INDEX = 2 ** 40;
@@ -559,15 +565,10 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
     let writeIndex;
     if (index !== undefined && index !== null) {
       // Explicit index — check for existing entry (overwrite protection)
-      try {
-        await downloadExactFeedPayload(bee, privateKey.publicKey().address(), topic, index);
+      if (await feedEntryExists(bee, privateKey.publicKey().address(), topic, index)) {
         const err = new Error(`Feed entry already exists at index ${index}`);
         err.reason = 'index_already_exists';
         throw err;
-      } catch (e) {
-        if (e.reason === 'index_already_exists') throw e;
-        // Only treat "not found" as "index available". Other errors propagate.
-        if (!isNotFoundError(e)) throw e;
       }
       writeIndex = index;
     } else {

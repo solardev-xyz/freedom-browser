@@ -176,7 +176,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 `gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s).
 Bee 5xx responses and network errors are `-32603`, with two exceptions where
 the node reports a missing entry as a 500: feed reads (and the next-index
-lookup behind feed writes) treat any Bee 500 like a 404, so a node-internal
+lookup behind feed writes without an `index`) treat any Bee 500 like a 404, so a node-internal
 500 surfaces as `-32602 feed_empty` / `entry_not_found`; chunk reads map a
 500 whose body is exactly `read chunk failed` to `-32602 chunk_not_found`.
 So a `-32602` "not found" on a feed read means "not found, or the node
@@ -563,7 +563,9 @@ the identity that created the feed. Errors: `invalid_reference`,
 
 Writes an arbitrary payload as a feed entry. Without `index`, it is written at
 the next free index; with an explicit `index`, an existing entry is never
-overwritten (`index_already_exists`). The feed must exist (`feed_not_found`:
+overwritten (`index_already_exists`). Only the node's 404 for that entry
+means the index is free: any other answer (a 500, a timeout, a chunk that is
+not the entry) refuses the write with `-32603`, and it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
 wrapped by the node; one too large for that is `payload_too_large`. Writes to
 one feed are serialized, so concurrent writes get distinct indexes.

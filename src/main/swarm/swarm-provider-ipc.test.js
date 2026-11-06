@@ -1947,6 +1947,23 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.data.reason).toBe('index_already_exists');
     });
 
+    test('a node error from the overwrite check is a retryable -32603, not a free index (#1054)', async () => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      // feed-service throws the node's 500 for the entry instead of writing.
+      mockWriteFeedPayload.mockRejectedValue(
+        Object.assign(new Error('Internal Server Error: read chunk failed'), { status: 500 })
+      );
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 0 }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(result.error.message).toBe('Internal Server Error: read chunk failed');
+      expect(result.error.data).toBeUndefined();
+    });
+
     test('translates payload too large error', async () => {
       mockFeedCapability('myapp.eth');
       mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
