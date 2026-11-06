@@ -1018,8 +1018,9 @@ describe('dapp-provider uses the chain the page sees', () => {
     await flushMicrotasks();
 
     expect(responsesSentTo(webview)[0][1]).toEqual({ id: 1, result: '0x64', error: null });
+    // The rule lookup also gets the call's value (#1026); this tx sends none.
     expect(dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
-      'https://app.example', '0xc0ffee', '0x095ea7b3', 100);
+      'https://app.example', '0xc0ffee', '0x095ea7b3', 100, undefined);
     expect(walletUi.showDappTxApproval).toHaveBeenCalledWith(webview, 'https://app.example', tx, 100);
   });
 
