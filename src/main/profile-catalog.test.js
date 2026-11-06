@@ -22,6 +22,10 @@ function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-profile-catalog-'));
 }
 
+// What a delete reports when a gate it held was lost after its first change.
+const CORE_LOCK_LOST = 'The profile was deleted, but its core lock was lost during the delete';
+const IPFS_LOCK_LOST = 'The profile was deleted, but its IPFS data lock was lost during the delete';
+
 function waitForPath(filePath, timeoutMs = 1000) {
   const startedAt = Date.now();
 
@@ -849,7 +853,8 @@ describe('profile catalog', () => {
 
     // The gate's holder can end mid-delete (killed); another writer may then
     // take the gate and recreate the directory. The gated directory is moved
-    // aside first, so the removal still running never reaches its path.
+    // aside first, so the removal still running never reaches its path, and
+    // the delete reports the loss.
     const gateLostOnFirstRemoval = (ipfsDir) => {
       let lost = false;
       const realRemovePath = fsOffload.removePath;
@@ -878,7 +883,9 @@ describe('profile catalog', () => {
       const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
 
       try {
-        await deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate });
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', { ...options, withIpfsGate })
+        ).rejects.toThrow(IPFS_LOCK_LOST);
       } finally {
         rmSpy.mockRestore();
       }
@@ -902,7 +909,9 @@ describe('profile catalog', () => {
       const { rmSpy, withIpfsGate } = gateLostOnFirstRemoval(ipfsDir);
 
       try {
-        await deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate });
+        await expect(
+          deleteProfile(appRoot, 'default', 'My Profile', { withIpfsGate })
+        ).rejects.toThrow(IPFS_LOCK_LOST);
       } finally {
         rmSpy.mockRestore();
       }
@@ -1370,14 +1379,19 @@ describe('profile catalog', () => {
 
     test('a core gate lost while the IPFS move waits out a Windows refusal fails the delete, and changes nothing', async () => {
       const { appRoot, options, record, vault } = devWorkProfile();
-      const ipfsDir = path.join(record.dir, 'ipfs-data', 'freedom-ipfs');
+      const ipfsDir = path.join(fs.realpathSync.native(record.dir), 'ipfs-data', 'freedom-ipfs');
       let coreHeld = true;
+      let atRefusal = null;
       const realRename = fs.renameSync;
-      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        coreHeld = false;
-        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (from === ipfsDir && atRefusal === null) {
+          // The identity directory has moved by now; the refusal puts it back.
+          atRefusal = fs.readdirSync(record.dir).sort();
+          coreHeld = false;
+          throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+        }
+        return realRename(from, to);
       });
-      renameSpy.mockImplementation((...args) => realRename(...args));
       const rmSpy = jest.spyOn(fsOffload, 'removePath');
 
       try {
@@ -1393,6 +1407,12 @@ describe('profile catalog', () => {
         renameSpy.mockRestore();
         rmSpy.mockRestore();
       }
+      expect(atRefusal).toEqual([
+        expect.stringMatching(/^\.identity\.deleting-\d+-\d+$/),
+        'ipfs-data',
+        'profile.json',
+      ]);
+      expect(fs.readdirSync(record.dir).sort()).toEqual(['identity', 'ipfs-data', 'profile.json']);
       expect(fs.existsSync(ipfsDir)).toBe(true);
       expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
@@ -1426,6 +1446,663 @@ describe('profile catalog', () => {
 
       expect(fs.existsSync(record.dir)).toBe(false);
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+    // A gate is held for the whole delete only while its holder lives: one
+    // killed mid-delete releases it, and a core or service can then start on
+    // the profile's directories while the removal still runs. Each gated
+    // directory moves aside, as the catalog changes, before anything else
+    // does; nothing is removed by its path after that, and a directory made
+    // again there is spared. The tombstones go with the rest.
+    describe('a gate lost after the first change', () => {
+      const realpathOf = (dir) => fs.realpathSync.native(dir);
+      const tombstones = (dir) =>
+        fs.readdirSync(dir).filter((name) => /\.deleting-\d+-\d+$/.test(name));
+
+      // A profile with all it can have: its identity, its IPFS data, the
+      // rest of its data, its Radicle home and a staging copy beside it.
+      function fullWorkProfile() {
+        const { appRoot, options, record, vault } = devWorkProfile();
+        const identityDir = path.join(record.dir, 'identity');
+        const ipfsDir = path.join(record.dir, 'ipfs-data', 'freedom-ipfs');
+        fs.writeFileSync(path.join(ipfsDir, 'freedom-ipfs.sqlite3'), 'blocks');
+        fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
+        const radicleDir = path.join(path.dirname(appRoot), 'R', 'abcdef12', String(record.slot));
+        fs.mkdirSync(radicleDir, { recursive: true });
+        fs.writeFileSync(path.join(radicleDir, 'node.db'), 'radicle');
+        const staging = `${radicleDir}.migrating-4242-1700000000000`;
+        fs.mkdirSync(staging);
+        fs.writeFileSync(path.join(staging, 'blob'), 'x');
+        return { appRoot, options, record, vault, identityDir, ipfsDir, radicleDir, staging };
+      }
+
+      // Both gates, each held until `lose(name)`.
+      function losableGates() {
+        const held = { core: true, ipfs: true };
+        return {
+          lose: (name) => {
+            held[name] = false;
+          },
+          withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => held.core }),
+          withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => held.ipfs }),
+        };
+      }
+
+      // Runs `act(target)` once, as the first removal `when(target)` picks
+      // begins, and lets that removal go on.
+      function onRemoval(when, act) {
+        const realRemovePath = fsOffload.removePath;
+        let done = false;
+        return jest.spyOn(fsOffload, 'removePath').mockImplementation(async (target, opts) => {
+          if (!done && when(target)) {
+            done = true;
+            await act(target);
+          }
+          return realRemovePath(target, opts);
+        });
+      }
+
+      const named = (prefix) => (target) => path.basename(target).startsWith(prefix);
+      const STAGES = [
+        ['its first removal', () => () => true],
+        ["the identity directory's removal", () => named('.identity.deleting-')],
+        ["the IPFS directory's removal", () => named('.freedom-ipfs.deleting-')],
+        ["the rest of the profile's removal", () => named('history.db')],
+        ["the Radicle home's removal", (p) => (target) => target === p.radicleDir],
+        ["a Radicle staging copy's removal", (p) => (target) => target === p.staging],
+      ];
+
+      // What a new holder makes once it has the gate: a core its identity
+      // directory and vault, the IPFS service its store.
+      const NEW_HOLDERS = {
+        core: {
+          message: CORE_LOCK_LOST,
+          start: (p) => {
+            fs.mkdirSync(p.identityDir, { recursive: true });
+            fs.writeFileSync(path.join(p.identityDir, 'vault.json'), 'the new core');
+          },
+          expectKept: (p) => {
+            expect(fs.readdirSync(p.record.dir)).toEqual(['identity']);
+            expect(fs.readdirSync(p.identityDir)).toEqual(['vault.json']);
+            expect(fs.readFileSync(path.join(p.identityDir, 'vault.json'), 'utf-8')).toBe(
+              'the new core'
+            );
+          },
+        },
+        ipfs: {
+          message: IPFS_LOCK_LOST,
+          start: (p) => {
+            fs.mkdirSync(p.ipfsDir, { recursive: true });
+            fs.writeFileSync(path.join(p.ipfsDir, 'new-owner'), 'theirs');
+          },
+          expectKept: (p) => {
+            expect(fs.readdirSync(p.record.dir)).toEqual(['ipfs-data']);
+            expect(fs.readdirSync(path.dirname(p.ipfsDir))).toEqual(['freedom-ipfs']);
+            expect(fs.readdirSync(p.ipfsDir)).toEqual(['new-owner']);
+          },
+        },
+      };
+
+      describe.each(Object.keys(NEW_HOLDERS))('the %s gate', (gateName) => {
+        test.each(STAGES)(
+          'lost at %s: a new holder keeps what it made, the rest goes, and the loss is reported',
+          async (_stage, pick) => {
+            const profile = fullWorkProfile();
+            const holder = NEW_HOLDERS[gateName];
+            const { lose, withCoreGate, withIpfsGate } = losableGates();
+            const rmSpy = onRemoval(pick(profile), () => {
+              lose(gateName);
+              holder.start(profile);
+            });
+
+            try {
+              await expect(
+                deleteProfile(profile.appRoot, 'work', 'Work', {
+                  ...profile.options,
+                  withCoreGate,
+                  withIpfsGate,
+                })
+              ).rejects.toThrow(holder.message);
+            } finally {
+              rmSpy.mockRestore();
+            }
+
+            holder.expectKept(profile);
+            expect(fs.existsSync(profile.radicleDir)).toBe(false);
+            expect(fs.existsSync(profile.staging)).toBe(false);
+            expect(loadCatalog(profile.appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+          }
+        );
+      });
+
+      // Before the walk reads the data root: the directory made again is one
+      // of the entries it meets.
+      test.each(Object.keys(NEW_HOLDERS))(
+        'the %s gate lost as the walk begins: its new holder keeps what it made',
+        async (gateName) => {
+          const profile = fullWorkProfile();
+          const holder = NEW_HOLDERS[gateName];
+          const { lose, withCoreGate, withIpfsGate } = losableGates();
+          const realReaddir = fs.promises.readdir;
+          let done = false;
+          const readdirSpy = jest
+            .spyOn(fs.promises, 'readdir')
+            .mockImplementation(async (dir, ...rest) => {
+              if (!done && path.resolve(dir) === path.resolve(profile.record.dir)) {
+                done = true;
+                lose(gateName);
+                holder.start(profile);
+              }
+              return realReaddir(dir, ...rest);
+            });
+
+          try {
+            await expect(
+              deleteProfile(profile.appRoot, 'work', 'Work', {
+                ...profile.options,
+                withCoreGate,
+                withIpfsGate,
+              })
+            ).rejects.toThrow(holder.message);
+          } finally {
+            readdirSpy.mockRestore();
+          }
+
+          expect(done).toBe(true);
+          holder.expectKept(profile);
+        }
+      );
+
+      test('both gates lost: both new holders keep theirs, and both losses are reported', async () => {
+        const profile = fullWorkProfile();
+        const { lose, withCoreGate, withIpfsGate } = losableGates();
+        const rmSpy = onRemoval(
+          () => true,
+          () => {
+            lose('core');
+            lose('ipfs');
+            NEW_HOLDERS.core.start(profile);
+            NEW_HOLDERS.ipfs.start(profile);
+          }
+        );
+
+        try {
+          await expect(
+            deleteProfile(profile.appRoot, 'work', 'Work', {
+              ...profile.options,
+              withCoreGate,
+              withIpfsGate,
+            })
+          ).rejects.toThrow(
+            'The profile was deleted, but its core lock and IPFS data lock were lost during the ' +
+              'delete. A process may have taken them since, so its identity directory and IPFS ' +
+              'data directory, if made again, were left alone.'
+          );
+        } finally {
+          rmSpy.mockRestore();
+        }
+
+        expect(fs.readdirSync(profile.record.dir).sort()).toEqual(['identity', 'ipfs-data']);
+        expect(fs.readdirSync(profile.identityDir)).toEqual(['vault.json']);
+        expect(fs.readdirSync(profile.ipfsDir)).toEqual(['new-owner']);
+      });
+
+      test("packaged layout: a core gate lost while the identity directory goes leaves the new core the app root's identity", async () => {
+        const appRoot = track(makeTempDir());
+        ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+        const { record: work } = ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+        const identityDir = path.join(appRoot, 'identity');
+        fs.mkdirSync(identityDir);
+        fs.writeFileSync(path.join(identityDir, 'vault.json'), 'secret');
+        fs.mkdirSync(path.join(appRoot, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+        fs.writeFileSync(path.join(appRoot, 'Cookies'), 'cookies');
+        const { lose, withCoreGate, withIpfsGate } = losableGates();
+        const rmSpy = onRemoval(named('.identity.deleting-'), () => {
+          lose('core');
+          fs.mkdirSync(identityDir);
+          fs.writeFileSync(path.join(identityDir, 'vault.json'), 'the new core');
+        });
+
+        try {
+          await expect(
+            deleteProfile(appRoot, 'default', 'My Profile', { withCoreGate, withIpfsGate })
+          ).rejects.toThrow(CORE_LOCK_LOST);
+        } finally {
+          rmSpy.mockRestore();
+        }
+
+        expect(fs.readFileSync(path.join(identityDir, 'vault.json'), 'utf-8')).toBe('the new core');
+        expect(tombstones(appRoot)).toEqual([]);
+        for (const gone of ['ipfs-data', 'Cookies', 'profile.json']) {
+          expect(fs.existsSync(path.join(appRoot, gone))).toBe(false);
+        }
+        expect(fs.existsSync(work.dir)).toBe(true);
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['work']);
+      });
+
+      test('under the core gate alone, the identity directory is fenced and spared; the IPFS data goes with the rest', async () => {
+        const profile = fullWorkProfile();
+        const { lose, withCoreGate } = losableGates();
+        const rmSpy = onRemoval(named('.identity.deleting-'), () => {
+          lose('core');
+          NEW_HOLDERS.core.start(profile);
+        });
+
+        try {
+          await expect(
+            deleteProfile(profile.appRoot, 'work', 'Work', { ...profile.options, withCoreGate })
+          ).rejects.toThrow(CORE_LOCK_LOST);
+        } finally {
+          rmSpy.mockRestore();
+        }
+
+        NEW_HOLDERS.core.expectKept(profile);
+      });
+
+      test('with the gates held throughout: the tombstones are removed, and nothing by a gated path', async () => {
+        const profile = fullWorkProfile();
+        const profileDir = realpathOf(profile.record.dir);
+        const { withCoreGate, withIpfsGate } = losableGates();
+        const realRename = fs.renameSync;
+        const renames = [];
+        const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+          renames.push({
+            from,
+            to,
+            catalogIds: loadCatalog(profile.appRoot).profiles.map((p) => p.id),
+          });
+          return realRename(from, to);
+        });
+        const realRemovePath = fsOffload.removePath;
+        const removals = [];
+        const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation((target, opts) => {
+          removals.push(target);
+          return realRemovePath(target, opts);
+        });
+
+        try {
+          await deleteProfile(profile.appRoot, 'work', 'Work', {
+            ...profile.options,
+            withCoreGate,
+            withIpfsGate,
+          });
+        } finally {
+          renameSpy.mockRestore();
+          rmSpy.mockRestore();
+        }
+
+        // The identity directory, then the IPFS directory, each to a
+        // tombstone beside it, and then the catalog, in that order.
+        const identityTomb = expect.stringMatching(/[/\\]\.identity\.deleting-\d+-\d+$/);
+        const ipfsTomb = expect.stringMatching(/[/\\]\.freedom-ipfs\.deleting-\d+-\d+$/);
+        expect(renames.slice(0, 2)).toEqual([
+          {
+            from: path.join(profileDir, 'identity'),
+            to: identityTomb,
+            catalogIds: ['default', 'work'],
+          },
+          {
+            from: path.join(profileDir, 'ipfs-data', 'freedom-ipfs'),
+            to: ipfsTomb,
+            catalogIds: ['default', 'work'],
+          },
+        ]);
+        expect(path.dirname(renames[0].to)).toBe(profileDir);
+        expect(path.dirname(renames[1].to)).toBe(path.join(profileDir, 'ipfs-data'));
+        expect(renames[2].to).toBe(
+          path.join(path.resolve(profile.appRoot), 'profile-registry.json')
+        );
+        expect(renames).toHaveLength(3);
+
+        const resolvedDir = path.resolve(profile.record.dir);
+        const gatedPaths = [
+          path.join(resolvedDir, 'identity'),
+          path.join(resolvedDir, 'ipfs-data', 'freedom-ipfs'),
+        ];
+        for (const gated of gatedPaths) expect(removals).not.toContain(gated);
+        expect(removals).toEqual(
+          expect.arrayContaining([
+            path.join(resolvedDir, path.basename(renames[0].to)),
+            path.join(resolvedDir, 'ipfs-data', path.basename(renames[1].to)),
+          ])
+        );
+        expect(fs.existsSync(profile.record.dir)).toBe(false);
+        expect(fs.existsSync(profile.radicleDir)).toBe(false);
+      });
+
+      // A core or service that tries to start while the delete holds its
+      // gate makes its missing directory, then waits out the gate.
+      describe('a directory made again under a gate still held', () => {
+        test.each([
+          ['a core', (p) => p.identityDir],
+          ['an IPFS service', (p) => p.ipfsDir],
+        ])(
+          'by %s that only tried to start: removed, and the profile with it',
+          async (_who, dirOf) => {
+            const profile = fullWorkProfile();
+            const { withCoreGate, withIpfsGate } = losableGates();
+            const rmSpy = onRemoval(
+              () => true,
+              () => fs.mkdirSync(dirOf(profile), { recursive: true })
+            );
+
+            try {
+              await deleteProfile(profile.appRoot, 'work', 'Work', {
+                ...profile.options,
+                withCoreGate,
+                withIpfsGate,
+              });
+            } finally {
+              rmSpy.mockRestore();
+            }
+
+            expect(fs.existsSync(profile.record.dir)).toBe(false);
+          }
+        );
+
+        test('made again after the walk passed it: removed too', async () => {
+          const profile = fullWorkProfile();
+          const { withCoreGate, withIpfsGate } = losableGates();
+          // The last removal: the profile's directory has gone by then.
+          const rmSpy = onRemoval(
+            (target) => target === profile.staging,
+            () => fs.mkdirSync(profile.identityDir, { recursive: true })
+          );
+
+          try {
+            await deleteProfile(profile.appRoot, 'work', 'Work', {
+              ...profile.options,
+              withCoreGate,
+              withIpfsGate,
+            });
+          } finally {
+            rmSpy.mockRestore();
+          }
+
+          expect(fs.existsSync(profile.record.dir)).toBe(false);
+        });
+
+        test('packaged layout: removed, and the app data root kept', async () => {
+          const appRoot = track(makeTempDir());
+          ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+          ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+          fs.mkdirSync(path.join(appRoot, 'identity'));
+          fs.writeFileSync(path.join(appRoot, 'Cookies'), 'cookies');
+          const { withCoreGate, withIpfsGate } = losableGates();
+          const rmSpy = onRemoval(
+            () => true,
+            () => fs.mkdirSync(path.join(appRoot, 'identity'))
+          );
+
+          try {
+            await deleteProfile(appRoot, 'default', 'My Profile', { withCoreGate, withIpfsGate });
+          } finally {
+            rmSpy.mockRestore();
+          }
+
+          expect(fs.existsSync(path.join(appRoot, 'identity'))).toBe(false);
+          expect(fs.existsSync(path.join(appRoot, 'Cookies'))).toBe(false);
+          expect(fs.existsSync(path.join(appRoot, 'profile-registry.json'))).toBe(true);
+        });
+
+        test('under a gate lost meanwhile, even an empty one stays', async () => {
+          const profile = fullWorkProfile();
+          const { lose, withCoreGate, withIpfsGate } = losableGates();
+          const rmSpy = onRemoval(
+            () => true,
+            () => {
+              lose('core');
+              fs.mkdirSync(profile.identityDir);
+            }
+          );
+
+          try {
+            await expect(
+              deleteProfile(profile.appRoot, 'work', 'Work', {
+                ...profile.options,
+                withCoreGate,
+                withIpfsGate,
+              })
+            ).rejects.toThrow(CORE_LOCK_LOST);
+          } finally {
+            rmSpy.mockRestore();
+          }
+
+          expect(fs.readdirSync(profile.record.dir)).toEqual(['identity']);
+          expect(fs.readdirSync(profile.identityDir)).toEqual([]);
+        });
+      });
+    });
+
+    // The fence moves both gated directories and changes the catalog in one
+    // step: a move Windows refuses (a scanner holding a file open) puts back
+    // what that attempt moved before it waits, so nothing has changed at any
+    // moment the delete awaits.
+    describe("the fence's Windows retries", () => {
+      const refusal = (code = 'EPERM') =>
+        Object.assign(new Error(`${code}: operation not permitted`), { code });
+      const heldGates = {
+        withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+        withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+      };
+      const listed = (dir) => fs.readdirSync(dir).sort();
+
+      // `refuse(from, to, calls)` throws to refuse a rename; anything else
+      // runs.
+      function renamesRefusing(refuse) {
+        const realRename = fs.renameSync;
+        const calls = [];
+        const spy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+          calls.push({ from, to });
+          refuse(from, to, calls);
+          return realRename(from, to);
+        });
+        return { spy, calls };
+      }
+
+      test('a refused identity move is tried again, and the delete completes', async () => {
+        const { appRoot, options, record } = devWorkProfile();
+        const identityDir = path.join(fs.realpathSync.native(record.dir), 'identity');
+        const { spy, calls } = renamesRefusing((from, _to, all) => {
+          if (from === identityDir && all.filter((c) => c.from === identityDir).length === 1) {
+            throw refusal();
+          }
+        });
+
+        try {
+          await deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates });
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(calls.filter((c) => c.from === identityDir)).toHaveLength(2);
+        expect(fs.existsSync(record.dir)).toBe(false);
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+      });
+
+      test('a refused IPFS move puts the identity directory back before waiting, then both move', async () => {
+        const { appRoot, options, record, vault } = devWorkProfile();
+        const profileDir = fs.realpathSync.native(record.dir);
+        const identityDir = path.join(profileDir, 'identity');
+        const ipfsDir = path.join(profileDir, 'ipfs-data', 'freedom-ipfs');
+        let refused = false;
+        let atRetry = null;
+        const { spy } = renamesRefusing((from) => {
+          if (from === ipfsDir && !refused) {
+            refused = true;
+            throw refusal('EBUSY');
+          }
+          // The next attempt's first move: what the wait saw.
+          if (from === identityDir && refused && atRetry === null) {
+            atRetry = { listed: listed(record.dir), vault: fs.readFileSync(vault, 'utf-8') };
+          }
+        });
+
+        try {
+          await deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates });
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(atRetry).toEqual({
+          listed: ['identity', 'ipfs-data', 'profile.json'],
+          vault: 'secret',
+        });
+        expect(fs.existsSync(record.dir)).toBe(false);
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+      });
+
+      test('a move still refused after every retry fails the delete, with everything back in place', async () => {
+        const { appRoot, options, record, vault } = devWorkProfile();
+        const ipfsDir = path.join(fs.realpathSync.native(record.dir), 'ipfs-data', 'freedom-ipfs');
+        const { spy, calls } = renamesRefusing((from) => {
+          if (from === ipfsDir) throw refusal('EACCES');
+        });
+        const rmSpy = jest.spyOn(fsOffload, 'removePath');
+
+        try {
+          await expect(
+            deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates })
+          ).rejects.toMatchObject({ code: 'EACCES' });
+          expect(rmSpy).not.toHaveBeenCalled();
+        } finally {
+          spy.mockRestore();
+          rmSpy.mockRestore();
+        }
+
+        expect(calls.filter((c) => c.from === ipfsDir)).toHaveLength(10);
+        expect(listed(record.dir)).toEqual(['identity', 'ipfs-data', 'profile.json']);
+        expect(fs.existsSync(ipfsDir)).toBe(true);
+        expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+      });
+
+      test('a move that fails otherwise is not retried, and puts back what moved', async () => {
+        const { appRoot, options, record, vault } = devWorkProfile();
+        const ipfsDir = path.join(fs.realpathSync.native(record.dir), 'ipfs-data', 'freedom-ipfs');
+        const { spy, calls } = renamesRefusing((from) => {
+          if (from === ipfsDir) throw refusal('EIO');
+        });
+
+        try {
+          await expect(
+            deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates })
+          ).rejects.toMatchObject({ code: 'EIO' });
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(calls.filter((c) => c.from === ipfsDir)).toHaveLength(1);
+        expect(listed(record.dir)).toEqual(['identity', 'ipfs-data', 'profile.json']);
+        expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+      });
+
+      test("a move that can't be put back is named, with where it is", async () => {
+        const { appRoot, options, record } = devWorkProfile();
+        const profileDir = fs.realpathSync.native(record.dir);
+        const ipfsDir = path.join(profileDir, 'ipfs-data', 'freedom-ipfs');
+        const { spy } = renamesRefusing((from) => {
+          if (from === ipfsDir) throw refusal('EIO');
+          if (path.basename(from).startsWith('.identity.deleting-')) throw refusal('EBUSY');
+        });
+
+        let failure;
+        try {
+          failure = await deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates }).then(
+            () => null,
+            (err) => err
+          );
+        } finally {
+          spy.mockRestore();
+        }
+
+        const [tombstone] = fs
+          .readdirSync(profileDir)
+          .filter((name) => name.startsWith('.identity.'));
+        expect(failure.message).toBe(
+          "The profile couldn't be deleted, and not all of its data could be put back: its " +
+            `identity data is at ${path.join(profileDir, tombstone)}. Move it back to its name ` +
+            'without the leading dot and the ".deleting-…" suffix.'
+        );
+        expect(failure.cause).toMatchObject({ code: 'EIO' });
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+      });
+
+      test('a refused catalog write puts the moves back, and the retry drops only the deleted profile', async () => {
+        const { appRoot, options, record } = devWorkProfile();
+        ensureProfile(appRoot, 'play', options);
+        const registry = path.join(path.resolve(appRoot), 'profile-registry.json');
+        let refused = false;
+        let atRetry = null;
+        const identityDir = path.join(fs.realpathSync.native(record.dir), 'identity');
+        const { spy } = renamesRefusing((from, to) => {
+          if (to === registry && !refused) {
+            refused = true;
+            throw refusal();
+          }
+          if (from === identityDir && refused && atRetry === null) {
+            atRetry = listed(record.dir);
+          }
+        });
+
+        try {
+          await deleteProfile(appRoot, 'work', 'Work', { ...options, ...heldGates });
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(atRetry).toEqual(['identity', 'ipfs-data', 'profile.json']);
+        expect(fs.existsSync(record.dir)).toBe(false);
+        expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'play']);
+      });
+    });
+
+    test('a held core gate with the identity directory a link: refused, and nothing changes', async () => {
+      const { appRoot, options, record } = devWorkProfile();
+      const elsewhere = path.join(path.dirname(appRoot), 'elsewhere');
+      fs.renameSync(path.join(record.dir, 'identity'), elsewhere);
+      fs.symlinkSync(
+        elsewhere,
+        path.join(record.dir, 'identity'),
+        process.platform === 'win32' ? 'junction' : 'dir'
+      );
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+        })
+      ).rejects.toThrow("The profile's identity data is reached through a link");
+
+      expect(fs.readFileSync(path.join(elsewhere, 'vault.json'), 'utf-8')).toBe('secret');
+      expect(fs.lstatSync(path.join(record.dir, 'identity')).isSymbolicLink()).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a held core gate alone with the Radicle path through a link: refused, and nothing changes', async () => {
+      const { appRoot, options, record, vault } = devWorkProfile();
+      const outside = path.join(path.dirname(path.dirname(appRoot)), 'outside');
+      fs.mkdirSync(path.join(outside, String(record.slot)), { recursive: true });
+      fs.writeFileSync(path.join(outside, String(record.slot), 'unrelated'), 'keep me');
+      fs.mkdirSync(path.join(path.dirname(appRoot), 'R'), { recursive: true });
+      fs.symlinkSync(
+        outside,
+        path.join(path.dirname(appRoot), 'R', 'abcdef12'),
+        process.platform === 'win32' ? 'junction' : 'dir'
+      );
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+        })
+      ).rejects.toThrow("The profile's Radicle data is reached through a link");
+
+      expect(fs.readFileSync(path.join(outside, String(record.slot), 'unrelated'), 'utf-8')).toBe(
+        'keep me'
+      );
+      expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });
   });
 
@@ -1527,12 +2204,20 @@ describe('profile catalog', () => {
           'under a held IPFS gate',
           { withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => true }) },
         ],
+        [
+          'under held core and IPFS gates',
+          {
+            withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+            withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+          },
+        ],
       ])("survives the default profile's delete, %s", async (_label, options) => {
         const { appRoot, held } = packagedLayout();
 
         await deleteProfile(appRoot, 'default', 'My Profile', options);
 
         for (const file of held) expect(fs.existsSync(file)).toBe(true);
+        expect(fs.readdirSync(appRoot).filter((name) => name.includes('.deleting-'))).toEqual([]);
         expect(fs.existsSync(path.join(appRoot, 'identity'))).toBe(false);
         expect(fs.existsSync(path.join(appRoot, 'ipfs-data'))).toBe(false);
         expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['work']);

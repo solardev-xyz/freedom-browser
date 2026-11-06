@@ -8,11 +8,16 @@
  *
  * - a delete while the profile's core runs waits out the binary's 5 s of
  *   retries, then fails, and changes nothing; once the core has stopped, it
- *   goes through, and no core starts on the profile while it runs;
+ *   goes through, and no core starts on the profile while it runs, before
+ *   the identity directory moves aside or after (the empty directory such a
+ *   core makes goes too);
  * - the packaged default profile's delete, in the macOS and Windows layout
  *   (the lock directory inside the app data root), leaves another
  *   profile's running core its gate: a second core on that profile still
- *   can't start.
+ *   can't start;
+ * - a delete whose `hold-lock` is killed mid-delete, as the old identity
+ *   directory's removal or the walk begins, leaves a core started then its
+ *   new identity directory, and reports the loss.
  */
 
 const fs = require('fs');
@@ -26,6 +31,7 @@ jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true })
 const { CoreClient } = require('./core-client');
 const { getCoredBinaryPath } = require('./cored-binary');
 const { withCoreGate } = require('./core-gate');
+const fsOffload = require('../fs-offload');
 const { deleteProfile, ensureProfile, loadCatalog } = require('../profile-catalog');
 
 const required = process.env.FREEDOM_CORED_GATE_TEST === '1';
@@ -105,26 +111,125 @@ describeIfBinary("profile delete and the real freedom-cored's gate", () => {
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
 
       await workCore.stop();
+      const tryCore = async () => {
+        const late = core(identityDir, lockDir);
+        running.push(late);
+        return late.start().then(
+          () => 'started',
+          (err) => err.code
+        );
+      };
       let coreDuringDelete = null;
-      await deleteProfile(appRoot, 'work', 'Work', {
-        ...options,
-        withCoreGate: gate,
-        // Under the core's gate, before anything is removed: no core starts.
-        withIpfsGate: async (_dir, fn) => {
-          const late = core(identityDir, lockDir);
-          running.push(late);
-          coreDuringDelete = await late.start().then(
-            () => 'started',
-            (err) => err.code
-          );
-          return fn();
-        },
+      let coreAfterFence = null;
+      const realRemovePath = fsOffload.removePath;
+      // Once the identity directory has moved aside: a core makes a new one,
+      // then waits out the gate and gives up.
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation(async (target, opts) => {
+        if (coreAfterFence === null) {
+          coreAfterFence = await tryCore();
+          expect(fs.readdirSync(identityDir)).toEqual([]);
+        }
+        return realRemovePath(target, opts);
       });
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withCoreGate: gate,
+          // Under the core's gate, before anything is removed: no core starts.
+          withIpfsGate: async (_dir, fn) => {
+            coreDuringDelete = await tryCore();
+            return fn();
+          },
+        });
+      } finally {
+        rmSpy.mockRestore();
+      }
       expect(coreDuringDelete).toBe('core_unavailable');
+      expect(coreAfterFence).toBe('core_unavailable');
+      // That empty directory went too, under the gate still held.
       expect(fs.existsSync(record.dir)).toBe(false);
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
     },
-    REFUSAL_MS * 2
+    REFUSAL_MS * 3
+  );
+
+  // The gate is held for the whole delete only while its holder lives:
+  // killed, it releases the lock, and a core can start on the profile while
+  // the removal runs. The identity directory moved aside first, so that core
+  // makes a new one, which the removal leaves alone.
+  test.each([
+    [
+      "as the old identity directory's removal begins",
+      {
+        spied: [fsOffload, 'removePath'],
+        at: (target) => path.basename(target).startsWith('.identity.deleting-'),
+      },
+    ],
+    [
+      'as the walk of the profile begins',
+      {
+        spied: [fs.promises, 'readdir'],
+        at: (dir, record) => path.resolve(dir) === path.resolve(record.dir),
+      },
+    ],
+  ])(
+    'a delete whose hold-lock is killed %s leaves a core started then its identity directory',
+    async (_moment, { spied, at }) => {
+      const appRoot = path.join(root, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const lockDir = path.join(root, 'Freedom', 'locks');
+      const options = {
+        checkoutHash: 'abcdef12',
+        defaultProfileDir: path.join(appRoot, 'Profiles', 'default'),
+        dev: true,
+      };
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const identityDir = path.join(record.dir, 'identity');
+      const oldCore = await started(identityDir, lockDir);
+      await oldCore.stop();
+      fs.writeFileSync(path.join(identityDir, 'old-marker'), 'the deleted profile');
+      fs.writeFileSync(path.join(record.dir, 'history.db'), 'h');
+
+      let holder = null;
+      const gate = (dir, fn) =>
+        withCoreGate(dir, fn, {
+          lockDir,
+          log: quietLog,
+          spawn: (...args) => {
+            holder = spawn(...args);
+            return holder;
+          },
+        });
+      let replacement = null;
+      const [object, method] = spied;
+      const real = object[method];
+      const spy = jest.spyOn(object, method).mockImplementation(async (target, ...rest) => {
+        if (!replacement && at(target, record)) {
+          const exited = new Promise((resolve) => holder.once('exit', resolve));
+          holder.kill('SIGKILL');
+          await exited;
+          replacement = await started(identityDir, lockDir);
+          fs.writeFileSync(path.join(identityDir, 'new-marker'), 'the new core');
+        }
+        return real.call(object, target, ...rest);
+      });
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', { ...options, withCoreGate: gate })
+        ).rejects.toThrow('The profile was deleted, but its core lock was lost during the delete');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(replacement).not.toBeNull();
+      await expect(replacement.request('vault.status')).resolves.toMatchObject({ exists: false });
+      expect(fs.readFileSync(path.join(identityDir, 'new-marker'), 'utf-8')).toBe('the new core');
+      expect(fs.existsSync(path.join(identityDir, 'old-marker'))).toBe(false);
+      expect(fs.readdirSync(record.dir)).toEqual(['identity']);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    },
+    REFUSAL_MS
   );
 
   // macOS and Windows: <appData>/Freedom is both the packaged app data root
