@@ -6,13 +6,16 @@
  * built in. CI checks out freedom-core's at a reviewed commit and names
  * it; a file named there that is missing fails the suite rather than
  * skipping it. The check itself runs on files written here as well: one of
- * main's table, and ones with design 0009's `"protocol": 2` rows.
+ * main's table, with design 0009's `"protocol": 2` rows, and ones that
+ * differ from it.
  */
 
 const fs = require('fs');
 const path = require('path');
 const {
+  HEAD_DEADLINE_MS,
   METHOD_CLASSES,
+  PROTOCOL_2_METHODS,
   SESSION_DEADLINE_MS,
   VAULT_DEADLINE_MS,
   WATCHDOG_MARGIN_MS,
@@ -23,7 +26,7 @@ const { CONTROL_WATCHDOG_MS: CHAIN_CONTROL } = require('./chain-config');
 const naming = require('./naming-driver');
 const chain = require('./chain-driver');
 const { PROTOCOL_VERSION_STREAMS } = require('./core-client');
-const { HEAD_DEADLINE_MS } = require('../dweb/verify-executor');
+const verifyExecutor = require('../dweb/verify-executor');
 
 // Design 0001's vault queue: every method that waits for the vault worker.
 const VAULT_QUEUE = [
@@ -62,6 +65,14 @@ describe('core deadlines', () => {
     }
   });
 
+  test("dweb.verify gets its head deadline plus 15 s, and dweb.forget an immediate one's", () => {
+    expect(watchdogMs('dweb.verify')).toBe(375_000);
+    expect(watchdogMs('dweb.verify', 10_000)).toBe(375_000);
+    expect(watchdogMs('dweb.forget')).toBe(15_000);
+    // The executor asks the core for the table's deadline.
+    expect(verifyExecutor.HEAD_DEADLINE_MS).toBe(HEAD_DEADLINE_MS);
+  });
+
   test('a method the core does not serve is refused at once: 15 s', () => {
     expect(watchdogMs('vault.unknown')).toBe(15_000);
     expect(watchdogMs('toString')).toBe(15_000);
@@ -77,103 +88,113 @@ describe('core deadlines', () => {
   });
 });
 
-// Design 0009's rows marked `"protocol": 2` (amendment 3), by deadline:
-// `dweb.verify`'s head deadline, which dweb-verify.js's watchdog adds the
-// margin to, and none for `dweb.forget`, which gets an immediate one. Main's
-// table leaves them out until main adopts protocol 2.
-const PROTOCOL_2_DEADLINES = Object.freeze({
-  'dweb.verify': HEAD_DEADLINE_MS,
-  'dweb.forget': null,
-});
-
 /**
- * The check against the core's file. A row's `protocol`, when it has one,
- * is the number 2: the core writes the member only on a row it serves from
- * protocol 2 on. The rows without it are main's table: every method, in
- * order, with its class. The rows marked 2 are set aside, and are either
- * none (a core before 0009's protocol 2, as 0.9.1) or exactly
- * PROTOCOL_2_DEADLINES's two, once each, in its order, with their deadlines.
+ * The check against the core's file: every method, in order, with its
+ * class, main's table whole. A row's `protocol`, when it has one, is the
+ * number 2, and the rows that carry it are exactly PROTOCOL_2_METHODS, in
+ * its order (design 0009, amendment 3). Main asks for protocol 2
+ * (core-process.js), so a file without those rows (a core before 0009's
+ * protocol 2, as 0.9.1) fails.
  */
 function checkSchema(schema) {
   const classOf = {
     null: 'immediate',
     [VAULT_DEADLINE_MS]: 'vault',
     [SESSION_DEADLINE_MS]: 'session',
+    [HEAD_DEADLINE_MS]: 'head',
   };
-  const marked = (m) => Object.hasOwn(m, 'protocol');
-  expect(
-    schema.methods.filter((m) => marked(m) && m.protocol !== PROTOCOL_VERSION_STREAMS)
-  ).toEqual([]);
-  const theirs = schema.methods
-    .filter((m) => !marked(m))
-    .map((m) => [m.name, classOf[m.deadline_ms] ?? m.deadline_ms]);
+  const theirs = schema.methods.map((m) => [m.name, classOf[m.deadline_ms] ?? m.deadline_ms]);
   expect(Object.entries(METHOD_CLASSES)).toEqual(theirs);
-  const later = schema.methods.filter(marked).map((m) => [m.name, m.deadline_ms]);
-  expect([[], Object.entries(PROTOCOL_2_DEADLINES)]).toContainEqual(later);
+  const marked = schema.methods
+    .filter((m) => Object.hasOwn(m, 'protocol'))
+    .map((m) => [m.name, m.protocol]);
+  expect(marked).toEqual(PROTOCOL_2_METHODS.map((name) => [name, PROTOCOL_VERSION_STREAMS]));
 }
 
-const DEADLINE_OF = { immediate: null, vault: VAULT_DEADLINE_MS, session: SESSION_DEADLINE_MS };
+const DEADLINE_OF = {
+  immediate: null,
+  vault: VAULT_DEADLINE_MS,
+  session: SESSION_DEADLINE_MS,
+  head: HEAD_DEADLINE_MS,
+};
 
-/** A file of main's table, as the core writes it, with `rows` after `dweb.open`. */
-function schemaOf(...rows) {
+/** Main's table as the core writes it: the protocol-2 rows marked. */
+function schemaOf() {
   const methods = Object.entries(METHOD_CLASSES).map(([name, kind]) => ({
     name,
     callers: ['shell'],
     mutates: false,
     deadline_ms: DEADLINE_OF[kind],
+    ...(PROTOCOL_2_METHODS.includes(name) && { protocol: 2 }),
   }));
-  methods.splice(methods.findIndex((m) => m.name === 'dweb.open') + 1, 0, ...rows);
   return { protocol: 1, methods };
 }
 
-// As freedom-core's main writes them.
-const VERIFY = {
-  name: 'dweb.verify',
-  callers: ['shell'],
-  mutates: false,
-  deadline_ms: 360_000,
-  protocol: 2,
-};
-const FORGET = {
-  name: 'dweb.forget',
-  callers: ['shell'],
-  mutates: false,
-  deadline_ms: null,
-  protocol: 2,
-};
+/** `schemaOf()` with `edit(methods)` applied. */
+function edited(edit) {
+  const written = schemaOf();
+  edit(written.methods);
+  return written;
+}
+
+const at = (methods, name) => methods.findIndex((m) => m.name === name);
 
 describe("the check against the core's file", () => {
-  test("a file of protocol 1's rows only (core 0.9.1's) passes", () => {
-    expect(() => checkSchema(schemaOf())).not.toThrow();
+  test('main\'s table, the rows marked "protocol": 2 with it (0009, amendment 3), passes', () => {
+    const written = schemaOf();
+    expect(written.methods.filter((m) => m.protocol === 2).map((m) => m.name)).toEqual([
+      'dweb.verify',
+      'dweb.forget',
+    ]);
+    expect(() => checkSchema(written)).not.toThrow();
   });
 
-  test('the rows marked "protocol": 2 are set aside (0009, amendment 3)', () => {
-    expect(() => checkSchema(schemaOf(VERIFY, FORGET))).not.toThrow();
+  test("a file of protocol 1's rows only (core 0.9.1's) fails: main asks for protocol 2", () => {
+    const written = edited((methods) => {
+      for (const name of PROTOCOL_2_METHODS) methods.splice(at(methods, name), 1);
+    });
+    expect(() => checkSchema(written)).toThrow();
   });
 
   test('a protocol other than the number 2 fails, on any row', () => {
     for (const protocol of [1, 3, '2', null]) {
-      for (const name of ['core.hello', 'dweb.open', 'chain.html']) {
-        const written = schemaOf(VERIFY, FORGET);
-        written.methods.find((m) => m.name === name).protocol = protocol;
+      for (const name of ['core.hello', 'dweb.open', 'dweb.verify', 'dweb.forget', 'chain.html']) {
+        const written = edited((methods) => {
+          methods[at(methods, name)].protocol = protocol;
+        });
         expect(() => checkSchema(written)).toThrow();
       }
-      expect(() => checkSchema(schemaOf({ ...VERIFY, protocol }, FORGET))).toThrow();
     }
   });
 
-  test("the marked rows are none or exactly 0009's two, once each, with their deadlines", () => {
+  test("the marked rows are exactly 0009's two, once each, in order, with their deadlines", () => {
     const fails = [
-      [VERIFY],
-      [FORGET],
-      [VERIFY, VERIFY],
-      [VERIFY, FORGET, FORGET],
-      [FORGET, VERIFY],
-      [{ ...VERIFY, deadline_ms: SESSION_DEADLINE_MS }, FORGET],
-      [VERIFY, { ...FORGET, deadline_ms: VAULT_DEADLINE_MS }],
-      [VERIFY, FORGET, { ...FORGET, name: 'dweb.pin' }],
+      // A row unmarked, or another marked.
+      (methods) => delete methods[at(methods, 'dweb.verify')].protocol,
+      (methods) => delete methods[at(methods, 'dweb.forget')].protocol,
+      (methods) => (methods[at(methods, 'dweb.open')].protocol = 2),
+      // One alone, twice, or reversed.
+      (methods) => methods.splice(at(methods, 'dweb.verify'), 1),
+      (methods) => methods.splice(at(methods, 'dweb.forget'), 1),
+      (methods) =>
+        methods.splice(at(methods, 'dweb.verify'), 0, { ...methods[at(methods, 'dweb.verify')] }),
+      (methods) =>
+        methods.splice(at(methods, 'dweb.forget'), 0, { ...methods[at(methods, 'dweb.forget')] }),
+      (methods) => {
+        const i = at(methods, 'dweb.verify');
+        methods.splice(i, 2, methods[i + 1], methods[i]);
+      },
+      // Another deadline.
+      (methods) => (methods[at(methods, 'dweb.verify')].deadline_ms = SESSION_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'dweb.forget')].deadline_ms = VAULT_DEADLINE_MS),
+      // A third marked row.
+      (methods) =>
+        methods.splice(at(methods, 'dweb.forget') + 1, 0, {
+          ...methods[at(methods, 'dweb.forget')],
+          name: 'dweb.pin',
+        }),
     ];
-    for (const rows of fails) expect(() => checkSchema(schemaOf(...rows))).toThrow();
+    for (const edit of fails) expect(() => checkSchema(edited(edit))).toThrow();
   });
 });
 
@@ -200,7 +221,7 @@ const required = Boolean(process.env.FREEDOM_CORE_SCHEMA);
 });
 
 describeIfSchema("the core's method table (protocol/schema.json)", () => {
-  test('every method of protocol 1, in order, with its class; the protocol-2 rows set aside', () => {
+  test('every method, in order, with its class; the protocol-2 rows marked', () => {
     checkSchema(schema);
   });
 });

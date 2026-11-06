@@ -56,10 +56,20 @@
  *     hand: its id, chainId, sender, nonce and every hash it was signed
  *     as, in order (the revision the user saw). Nothing is signed; the
  *     handler builds the binding from main's record (`wallet:intent-close`).
+ *   - x402-payment: one HTTP 402 payment on its approval card: the
+ *     account (the active one when the user confirms, as for a
+ *     wallet-send), the detection it is for (the tab's webContentsId,
+ *     the detectionId and the URL), the chosen `accepts[]` entry (its
+ *     index, scheme, network, asset, amount and payTo, plus a digest of
+ *     the whole entry) and the allowance granted with it, or none.
+ *     `x402:approve` builds the binding from main's record of the
+ *     detection and takes only the entry's index and the grant from the
+ *     caller.
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
- * decision.
+ * decision. Likewise an x402 payment a site's allowance covers is paid by
+ * main's detector without a token (`x402/intercept.js`).
  */
 
 const crypto = require('crypto');
@@ -82,6 +92,7 @@ const KINDS = Object.freeze({
   INTENT_REPLACE: 'intent-replace',
   INTENT_CLOSE: 'intent-close',
   EXECUTOR_SEND: 'executor-send',
+  X402_PAYMENT: 'x402-payment',
 });
 // The most hashes an intent-close binds: above the intent store's bound on
 // an intent's signatures (LIMITS.hashesPerIntent).
@@ -158,6 +169,35 @@ function txHash(value) {
     throw new Error('Invalid transaction hash');
   }
   return value.toLowerCase();
+}
+
+/** A detection's id as intercept.js mints it (`req-<n>`, `gen-<uuid>`). */
+function detectionId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) {
+    throw new Error('Invalid detection id');
+  }
+  return value;
+}
+
+/** A non-empty string, compared exactly. */
+function text(value, field) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Invalid ${field}`);
+  }
+  return value;
+}
+
+/**
+ * An x402 payment's allowance, as the card hands it to `x402:approve`:
+ * none, or its cap and window exactly as given. The permissions store
+ * validates them when it records the grant.
+ */
+function x402Grant(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid grant');
+  }
+  return { capAmount: value.capAmount ?? null, windowSeconds: value.windowSeconds ?? null };
 }
 
 /** A Safe payment's site, if it has one (a dApp's), as its permission key. */
@@ -296,6 +336,29 @@ function bindingFor(kind, accountIndex, payload) {
         hashes: hashes.map(txHash),
       };
     }
+    case KINDS.X402_PAYMENT: {
+      const accept = payload?.accept;
+      if (!accept || typeof accept !== 'object' || Array.isArray(accept)) {
+        throw new Error('Payment option is required');
+      }
+      // V2 entries carry `amount`; V1 entries `maxAmountRequired`.
+      const amount = quantity(accept.amount ?? accept.maxAmountRequired, 'amount');
+      if (amount === null) throw new Error('Invalid amount');
+      return {
+        walletIndex: index(accountIndex, 'wallet index'),
+        webContentsId: index(payload.webContentsId, 'tab'),
+        detectionId: detectionId(payload.detectionId),
+        url: text(payload.url, 'url'),
+        acceptIndex: index(payload.acceptIndex, 'payment option'),
+        scheme: text(accept.scheme, 'scheme'),
+        network: text(accept.network, 'network'),
+        asset: text(accept.asset, 'asset'),
+        amount,
+        payTo: text(accept.payTo, 'payTo'),
+        acceptHash: sha256(stableStringify(accept)),
+        grant: x402Grant(payload.grant),
+      };
+    }
     case KINDS.SAFE_MESSAGE:
       if (!payload || typeof payload.method !== 'string' || !Array.isArray(payload.params)) {
         throw new Error('Signature request is required');
@@ -384,6 +447,14 @@ function consumeConfirmation(token, kind, accountIndex, payload) {
   return { ...entry.bound };
 }
 
+/**
+ * Burn a token without spending it: for a call refused before it named a
+ * request to check the token against (a stale or unknown payment).
+ */
+function discardConfirmation(token) {
+  if (typeof token === 'string') outstanding.delete(token);
+}
+
 function _reset() {
   outstanding.clear();
   now = () => Date.now();
@@ -405,6 +476,7 @@ module.exports = {
   bindingFor,
   issueConfirmation,
   consumeConfirmation,
+  discardConfirmation,
   _reset,
   _setNow,
   _outstandingCount,

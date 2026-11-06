@@ -5,6 +5,7 @@ const {
   NOT_CONFIRMED,
   issueConfirmation,
   consumeConfirmation,
+  discardConfirmation,
   _reset,
   _setNow,
   _outstandingCount,
@@ -375,6 +376,124 @@ describe('signing-confirmation', () => {
       );
     }
   });
+  describe('x402 payments bind the detection, the entry, the account and the grant', () => {
+    const ACCEPT = Object.freeze({
+      scheme: 'exact',
+      network: 'eip155:8453',
+      amount: '10000',
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      maxTimeoutSeconds: 60,
+      extra: { name: 'USD Coin', version: '2' },
+    });
+    const PAYMENT = Object.freeze({
+      webContentsId: 42,
+      detectionId: 'req-9100',
+      url: 'https://api.example/article',
+      acceptIndex: 0,
+      accept: ACCEPT,
+      grant: null,
+    });
+
+    test('the payment as confirmed signs, once', () => {
+      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      expect(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, {
+        ...PAYMENT,
+        // Key order and an absent grant are not differences.
+        accept: { ...ACCEPT, extra: { version: '2', name: 'USD Coin' } },
+        grant: undefined,
+      })).not.toThrow();
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, PAYMENT)).message)
+        .toMatch(/unknown or already used/);
+    });
+
+    const changes = {
+      'another tab': { webContentsId: 43 },
+      'another detection on the same tab': { detectionId: 'req-9101' },
+      'another URL': { url: 'https://api.example/other' },
+      'another entry index': { acceptIndex: 1 },
+      'another scheme': { accept: { ...ACCEPT, scheme: 'upto' } },
+      'another network': { accept: { ...ACCEPT, network: 'eip155:1' } },
+      'another asset': { accept: { ...ACCEPT, asset: '0x' + '22'.repeat(20) } },
+      'another amount': { accept: { ...ACCEPT, amount: '10001' } },
+      'another payee': { accept: { ...ACCEPT, payTo: '0x' + '33'.repeat(20) } },
+      'any other field of the entry': { accept: { ...ACCEPT, extra: { name: 'USD Coin', version: '1' } } },
+      'a grant added': { grant: { capAmount: '10000000', windowSeconds: 2592000 } },
+    };
+    for (const [name, change] of Object.entries(changes)) {
+      test(name, () => {
+        const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+        expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, { ...PAYMENT, ...change })).code)
+          .toBe(NOT_CONFIRMED);
+      });
+    }
+
+    test('the account', () => {
+      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 1, PAYMENT)).code)
+        .toBe(NOT_CONFIRMED);
+    });
+
+    test("the grant's cap and window, and its removal", () => {
+      const GRANTED = { ...PAYMENT, grant: { capAmount: '10000000', windowSeconds: 2592000 } };
+      for (const grant of [
+        { capAmount: '1000000000', windowSeconds: 2592000 },
+        { capAmount: '10000000', windowSeconds: 31536000 },
+        null,
+      ]) {
+        const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, GRANTED);
+        expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, { ...GRANTED, grant })).code)
+          .toBe(NOT_CONFIRMED);
+      }
+    });
+
+    test('a V1 entry binds maxAmountRequired as its amount', () => {
+      const V1 = { ...PAYMENT, accept: { scheme: 'exact', network: 'base', maxAmountRequired: '10000', asset: ACCEPT.asset, payTo: ACCEPT.payTo } };
+      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, V1);
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, {
+        ...V1,
+        accept: { ...V1.accept, maxAmountRequired: '20000' },
+      })).code).toBe(NOT_CONFIRMED);
+    });
+
+    test('no other kind spends it, and it spends no other kind', () => {
+      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      expect(refusal(() => consumeConfirmation(token, KINDS.SIGN_TYPED_DATA, 0, PAYMENT)).code)
+        .toBe(NOT_CONFIRMED);
+      const other = issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'pay');
+      expect(refusal(() => consumeConfirmation(other.token, KINDS.X402_PAYMENT, 0, PAYMENT)).code)
+        .toBe(NOT_CONFIRMED);
+    });
+
+    test('a malformed payment is not issued a token', () => {
+      for (const [change, message] of [
+        [{ accept: undefined }, /Payment option/],
+        [{ accept: { ...ACCEPT, scheme: '' } }, /scheme/],
+        [{ accept: { ...ACCEPT, amount: undefined } }, /amount/],
+        [{ accept: { ...ACCEPT, amount: 'lots' } }, /amount/],
+        [{ accept: { ...ACCEPT, payTo: 7 } }, /payTo/],
+        [{ webContentsId: -1 }, /tab/],
+        [{ webContentsId: '42' }, /tab/],
+        [{ detectionId: '' }, /detection/],
+        [{ detectionId: 'req 1' }, /detection/],
+        [{ url: '' }, /url/],
+        [{ acceptIndex: 0.5 }, /payment option/],
+        [{ grant: 'all of it' }, /grant/],
+      ]) {
+        expect(() => issueConfirmation(KINDS.X402_PAYMENT, 0, { ...PAYMENT, ...change })).toThrow(message);
+      }
+      expect(_outstandingCount()).toBe(0);
+    });
+
+    test('a discarded token no longer spends', () => {
+      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      discardConfirmation(token);
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, PAYMENT)).message)
+        .toMatch(/unknown or already used/);
+      expect(() => discardConfirmation(undefined)).not.toThrow();
+    });
+  });
+
   test('malformed requests are not issued a token', () => {
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, chainId: 0 })).toThrow(/chainId/);

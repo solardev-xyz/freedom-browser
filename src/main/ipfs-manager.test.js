@@ -255,8 +255,8 @@ function loadIpfsManagerModule(options = {}) {
   // Main's grant check (freedom-core design 0010), which the service node
   // calls before each spawn: here it records the path it was asked about.
   const ipfsGrantRefusal = jest.fn(() => null);
-  // The core's verifier (core/dweb-verify.js), attached only when the core
-  // speaks protocol 2: none by default, as against the pinned core today.
+  // The core's verifier (core/dweb-verify.js), attached when the core
+  // speaks protocol 2, as the app's does: none unless a test asks for one.
   const verifier = { attached: options.verifierAttached === true };
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {

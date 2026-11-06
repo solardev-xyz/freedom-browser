@@ -5,15 +5,21 @@
  * browser-shell webContents, NOT in the webview that hit the 402).
  * All channels that operate on a specific tab take `webContentsId`
  * explicitly — the sender is the sidebar, not the paying webview.
+ * Reading a payment and approving it are for the chrome window that
+ * hosts its tab alone: another window's sidebar is refused.
  *
  *   x402:get-details(webContentsId) — return the parsed PaymentRequired
  *     the detector stashed for that webContents, plus asset metadata
  *     for amount formatting and the auto-pay state for cap rendering.
  *
- *   x402:approve({webContentsId, grant?}) — drive the vault-backed
- *     x402Client to sign, stash the signed header for the dispatcher
- *     to inject, optionally grant a per-origin allowance, and re-issue
- *     the original navigation.
+ *   x402:approve({webContentsId, detectionId, selectedAcceptIndex?,
+ *     grant?, confirmation}) — drive the vault-backed x402Client to
+ *     sign, stash the signed header for the dispatcher to inject,
+ *     optionally grant a per-origin allowance, and re-issue the original
+ *     navigation. Signs nothing without `confirmation`: an
+ *     'x402-payment' token the card minted through
+ *     `wallet:confirm-signing` when the user pressed Pay, for exactly
+ *     this detection, entry, account and grant.
  *
  *   x402:cancel({webContentsId, navigate?}) — discard the detected
  *     payment and step the webview back one history entry (or
@@ -39,11 +45,14 @@ const {
   consumePendingUnlockResume,
   hasPendingUnlockWait,
   settlePendingUnlockWait,
-  hasPendingApproval,
   getPendingApproval,
   settlePendingApproval,
+  claimApproval,
+  isApprovalClaimed,
+  releaseApprovalClaim,
   sendToHost,
 } = require('./intercept');
+const { guestHostedBy } = require('../wallet/agent-tab-custody');
 const {
   revoke: revokePermission,
   revokeAllForOrigin,
@@ -53,7 +62,12 @@ const {
 const paymentHistory = require('../payment-history');
 const { signAndQueueRetry } = require('./sign-flow');
 const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
-const { getActiveWalletAddress } = require('../identity-manager');
+const { getActiveWalletAddress, getActiveWalletIndex } = require('../identity-manager');
+const {
+  KINDS: CONFIRM_KINDS,
+  consumeConfirmation,
+  discardConfirmation,
+} = require('../wallet/signing-confirmation');
 const { getBalancesWithCache, getAllBalances, clearBalanceCache } = require('../wallet/balance-service');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
@@ -172,8 +186,15 @@ function refreshAndBroadcastBalances(webContentsId, address) {
 function registerX402Ipc() {
   // The tab-scoped handlers accept an explicit `webContentsId` from the
   // sidebar (which is the host webContents and doesn't know which
-  // webview the 402 came from). For test ergonomics we also fall back
-  // to `event.sender.id` — production callers pass it explicitly.
+  // webview the 402 came from). The ones that don't read or approve a
+  // payment also fall back to `event.sender.id` for test ergonomics;
+  // production callers pass it explicitly.
+  //
+  // x402:get-details and x402:approve serve only the chrome window that
+  // hosts the payment's tab (`guestHostedBy`): the sender policy admits
+  // any Freedom chrome renderer, and one window must not read, or pay,
+  // the payment on another window's card. A renderer can still approve a
+  // payment on its own window's tabs, with a token it minted for it.
   ipcMain.handle(IPC.X402_GET_DETAILS, async (event, args = {}) => {
     // When detectionId is provided, the lookup is strict — refusing to
     // serve a different detection's data avoids "user sees A's details
@@ -185,12 +206,14 @@ function registerX402Ipc() {
     // When detectionId is not provided (legacy / mainFrame callers
     // that haven't been updated), fall back to the tab-keyed entry.
     const { detectionId } = args;
-    const id = args.webContentsId ?? event.sender.id;
+    let id = args.webContentsId;
 
     let detected;
     if (detectionId) {
       detected = getPendingApproval(detectionId);
-      if (!detected) {
+      if (detected) {
+        id = detected.webContentsId;
+      } else {
         const stored = getDetectedPayment(id);
         if (stored && stored.detectionId === detectionId) {
           detected = stored;
@@ -204,6 +227,9 @@ function registerX402Ipc() {
       if (!detected) {
         return { success: false, error: 'No pending x402 payment for this tab' };
       }
+    }
+    if (!guestHostedBy(event.sender, id)) {
+      return { success: false, error: 'This payment is not on a tab of this window' };
     }
 
     // Resolve origin + active address once for the whole enrichment
@@ -258,49 +284,121 @@ function registerX402Ipc() {
     };
   });
 
-  // Not gated by wallet:confirm-signing (O-7). This handler signs an
-  // EIP-3009 authorization on a bare chrome call: there is no
-  // param-bound confirmation token, and `webContentsId`,
-  // `detectionId`, `selectedAcceptIndex` and `grant` are all taken from
-  // the renderer as-is. What bounds it is that the payment requirements
-  // themselves are main-held (a detected 402, so the renderer can only
-  // pick among a seller's own `accepts[]`), and that the channel is
-  // exposed only through the chrome preload. Note the renderer also
-  // chooses *which* detection is signed: on the tab-keyed path (no
-  // detectionId) `webContentsId` selects the tab, so a compromised
-  // chrome can approve any tab's pending main-held 402, not just the
-  // one on screen. Bringing x402 under the signing
-  // confirmation is a separate follow-up, not covered by O-7.
+  // Gated by a signing confirmation (O-7), like the wallet's other
+  // signing handlers. The card mints an 'x402-payment' token through
+  // `wallet:confirm-signing` when the user presses Pay, for the payment
+  // as it shows it; this handler rebuilds that binding from main's own
+  // record of the detection named (its tab, detectionId and URL, and the
+  // `accepts[]` entry at the chosen index), with the active account and
+  // the grant passed, and signs only if the token matches exactly. A
+  // token is single use, lives two minutes and is burnt by any call that
+  // presents it. A detection without a detectionId was never put on a
+  // card (an allowance covered it) and can't be approved here. Auto-pay
+  // within an allowance doesn't come through this handler: the detector
+  // evaluates the cap in main and signs (intercept.js).
+  //
+  // Only the window hosting the payment's tab can approve it, and each
+  // detection is approved once: the token that checks out claims it in
+  // the same turn, before anything is settled or signed, and any later
+  // approval of it is refused with its token burnt — a second token
+  // minted for the same card included, while the first sign is on the
+  // device or after. A failed sign that queued nothing hands the claim
+  // back for the retry the card offers (below, and the detector's loop).
   ipcMain.handle(IPC.X402_APPROVE, async (event, args = {}) => {
-    const id = args.webContentsId ?? event.sender.id;
-    const { detectionId, grant, selectedAcceptIndex } = args;
+    const id = args.webContentsId;
+    const { detectionId, grant, selectedAcceptIndex, confirmation } = args;
 
-    // WP7.1 subresource path: detector is awaiting the approval Promise.
-    // Settle it (the detector handler does sign + 307). Returns
-    // `pending: true` so the renderer keeps the card in "Signing..."
-    // state and waits for the x402:approval-result event — the actual
-    // sign happens inside the detector after this IPC returns, and we
-    // need to surface its success/failure back to the UI. The selected
-    // accept rides through on the decision so the detector signs the
-    // entry the chooser highlighted, not whichever is at position 0.
-    if (detectionId && hasPendingApproval(detectionId)) {
-      settlePendingApproval(detectionId, { approved: true, grant, selectedAcceptIndex });
-      return { success: true, pending: true };
+    // Which payment this approves, from main's record. WP7.1 subresource
+    // path: the detector is awaiting the approval Promise for this
+    // detectionId. mainFrame approval card: the tab-keyed detection,
+    // only while it still carries the same detectionId.
+    //
+    // P1: a stale detectionId must NOT fall through to the tab-keyed
+    // record. If A's card click arrives after B's 402 has superseded A
+    // in main, we MUST refuse — falling through would sign B (whatever's
+    // currently in detectedPayments[id]) and re-create the "approved A,
+    // paid B" race we designed against.
+    const awaiting = detectionId ? getPendingApproval(detectionId) : null;
+    let record = null;
+    if (awaiting) {
+      record = {
+        webContentsId: awaiting.webContentsId,
+        url: awaiting.url,
+        requirements: awaiting.requirements,
+      };
+    } else if (detectionId) {
+      const stored = getDetectedPayment(id);
+      if (stored && stored.detectionId === detectionId) {
+        record = {
+          webContentsId: id,
+          url: stored.url,
+          requirements: stored.requirements,
+          // Defence in depth: a cap tag rides through so the inject
+          // handler still withholds on a raced-over cap.
+          authorizedBy: stored.authorizedBy,
+        };
+      }
+    }
+    if (!record) {
+      discardConfirmation(confirmation);
+      return {
+        success: false,
+        error: detectionId
+          ? 'Approval is stale — the detection has been superseded'
+          : 'No pending x402 payment to approve',
+      };
+    }
+    if (!guestHostedBy(event.sender, record.webContentsId)) {
+      discardConfirmation(confirmation);
+      return { success: false, error: 'This payment is not on a tab of this window' };
+    }
+    if (isApprovalClaimed(detectionId)) {
+      discardConfirmation(confirmation);
+      return { success: false, error: 'This payment has already been approved' };
     }
 
-    // P1: stale detectionId must NOT silently fall through to the
-    // tab-keyed mainFrame path. If A's card click arrives after B's
-    // 402 has superseded A in main, we MUST refuse — falling through
-    // would sign B (whatever's currently in detectedPayments[id]) and
-    // re-create the "approved A, paid B" race we designed against.
-    // Only allow fallback when the tab-keyed detection's detectionId
-    // still matches (i.e. the mainFrame approval-card flow where the
-    // map entry carries the same detectionId).
-    if (detectionId) {
-      const stored = getDetectedPayment(id);
-      if (!stored || stored.detectionId !== detectionId) {
-        return { success: false, error: 'Approval is stale — the detection has been superseded' };
-      }
+    const acceptIndex = selectedAcceptIndex ?? 0;
+    const accept = Number.isInteger(acceptIndex) && acceptIndex >= 0
+      ? record.requirements?.accepts?.[acceptIndex]
+      : undefined;
+    if (!accept) {
+      discardConfirmation(confirmation);
+      return { success: false, error: 'No such payment option for this payment' };
+    }
+
+    // The account that signs is the one the token was minted for: the
+    // active account now, handed down so the signature can't use another.
+    const walletIndex = getActiveWalletIndex();
+    try {
+      consumeConfirmation(confirmation, CONFIRM_KINDS.X402_PAYMENT, walletIndex, {
+        webContentsId: record.webContentsId,
+        detectionId,
+        url: record.url,
+        acceptIndex,
+        accept,
+        grant,
+      });
+    } catch (err) {
+      return { success: false, error: err.message, code: err.code };
+    }
+    // Checked as unclaimed above, in this same turn: nothing in between
+    // awaits, so no other approval can have claimed it since.
+    claimApproval(detectionId, record.webContentsId);
+
+    // Subresource: settle the detector's pending approval (it signs +
+    // 307s). Returns `pending: true` so the renderer keeps the card in
+    // "Signing..." state and waits for the x402:approval-result event —
+    // the actual sign happens inside the detector after this IPC
+    // returns. The entry, account and grant confirmed ride through on
+    // the decision so the detector signs exactly those.
+    if (awaiting) {
+      settlePendingApproval(detectionId, {
+        approved: true,
+        grant,
+        selectedAcceptIndex: acceptIndex,
+        walletIndex,
+      });
+      return { success: true, pending: true };
     }
 
     try {
@@ -311,28 +409,26 @@ function registerX402Ipc() {
       // the two would let a click on B's approval card consume A's
       // resume token and sign A.
       //
-      // detectedPayments may carry `authorizedBy` if the auto-pay
-      // detector tagged the map — pure defence-in-depth here, since the
-      // normal cap-covered flow signs without UI and never reaches this
-      // handler. sign-flow defaults to MANUAL when undefined.
-      const detected = getDetectedPayment(id);
-      // Explicit-index path threads the chooser's pick through;
-      // omitted-index path lets sign-flow's fallback chain run
-      // (preserves `detected.selectedAccept` precedence used by the
-      // unlock-resume path before falling back to accepts[0]). Pay
-      // click never blocks on a balance RPC — fundability gating is
-      // the chooser's job (cached balances) and the seller's
-      // facilitator is the real settlement-time gate.
-      const selectedAccept = selectedAcceptIndex != null
-        ? detected?.requirements?.accepts?.[selectedAcceptIndex]
-        : undefined;
+      // signAndQueueRetry reads the tab-keyed detection synchronously,
+      // in this same turn, so it signs the record checked above. Pay
+      // click never blocks on a balance RPC — fundability gating is the
+      // chooser's job (cached balances) and the seller's facilitator is
+      // the real settlement-time gate.
       await signAndQueueRetry(id, {
         grant,
-        authorizedBy: detected?.authorizedBy,
-        selectedAccept,
+        authorizedBy: record.authorizedBy,
+        selectedAccept: accept,
+        walletIndex,
       });
       return { success: true };
     } catch (err) {
+      // The card offers Pay again after a failed sign. While the detection
+      // is still the tab's current one it was never signed (the sign
+      // clears it as it queues the signature), so it can be approved
+      // again; one that has since gone or been replaced keeps the claim.
+      if (getDetectedPayment(id)?.detectionId === detectionId) {
+        releaseApprovalClaim(detectionId);
+      }
       // Vault locked / unparseable URL / sdk error all surface verbatim
       // so the sidebar can prompt the right next step.
       return { success: false, error: err.message };
