@@ -10,7 +10,6 @@
  * through a link; K-5).
  */
 
-const { ipcMain } = require('electron');
 const registry = require('../networks/network-registry');
 const { readRpcApiKeys, writeRpcApiKeys } = require('./rpc-api-key-store');
 
@@ -124,6 +123,22 @@ function getEffectiveRpcUrls(chainId) {
 }
 
 /**
+ * The chain's RPC pool without the keyed providers, in the same order:
+ * the URLs that may leave main. A keyed provider's resolved URL carries
+ * the user's API key (#1040).
+ * @param {number|string} chainId - Chain ID
+ * @returns {string[]} - Array of RPC URLs
+ */
+function getKeylessRpcUrls(chainId) {
+  const cid = String(chainId);
+  return registry
+    .getEndpointSources(cid, 'rpc')
+    .filter((src) => !src.keyed)
+    .map((src) => src.coverage[cid])
+    .filter((url) => typeof url === 'string');
+}
+
+/**
  * Test a candidate API key by making a simple eth_chainId call.
  * @param {string} providerId - Provider ID
  * @param {string} apiKey - API key to test
@@ -168,20 +183,11 @@ async function testApiKey(providerId, apiKey) {
   }
 }
 
-function registerRpcManagerIpc() {
-  // The injected dApp provider resolves a chain's RPC pool through this.
-  ipcMain.handle('rpc:get-effective-urls', (_event, chainId) => {
-    return { success: true, urls: getEffectiveRpcUrls(chainId) };
-  });
-
-  console.log('[RpcManager] IPC handlers registered');
-}
-
 module.exports = {
   setApiKey,
   removeApiKey,
   hasApiKey,
   getEffectiveRpcUrls,
+  getKeylessRpcUrls,
   testApiKey,
-  registerRpcManagerIpc,
 };

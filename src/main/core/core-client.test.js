@@ -161,7 +161,12 @@ class FakeCore extends EventEmitter {
 const quietLog = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
 
 function helloResult(extra = {}) {
-  return { protocol: 1, core_version: '0.1.0', capabilities: ['vault.status'], ...extra };
+  return {
+    protocol: 2,
+    core_version: '0.1.0',
+    capabilities: ['vault.status', 'streams'],
+    ...extra,
+  };
 }
 
 function helloHandler(extra = () => {}) {
@@ -247,7 +252,7 @@ describe('CoreClient', () => {
     expect(children[0].requests[0]).toMatchObject({
       type: 'request',
       method: 'core.hello',
-      params: { protocol: 1 },
+      params: { protocol: 2, frames: ['fragment', 'stream'] },
       context: { caller: 'shell' },
     });
 
@@ -405,13 +410,16 @@ describe('CoreClient', () => {
   });
 
   test('a protocol mismatch is never retried', async () => {
+    // A core that refuses 2 (`data` names the one it speaks), or answers
+    // another protocol, 1 or a later one.
     const variants = [
       (m) => ({
         type: 'response',
         id: m.id,
-        error: { code: 'protocol_mismatch', message: 'Protocol mismatch', data: { core: 2 } },
+        error: { code: 'protocol_mismatch', message: 'Protocol mismatch', data: { core: 3 } },
       }),
-      (m) => ({ type: 'response', id: m.id, result: helloResult({ protocol: 2 }) }),
+      (m) => ({ type: 'response', id: m.id, result: helloResult({ protocol: 1 }) }),
+      (m) => ({ type: 'response', id: m.id, result: helloResult({ protocol: 3 }) }),
     ];
     for (const reply of variants) {
       const { client, children, spawn } = makeClient([
@@ -719,7 +727,7 @@ describe('CoreClient', () => {
     });
 
     const badHellos = [
-      ['missing fields', { protocol: 1 }],
+      ['missing fields', { protocol: 2 }],
       ['null', null],
       ['a bad version', helloResult({ core_version: 'x y' })],
       ['non-string capabilities', helloResult({ capabilities: [1] })],
@@ -1044,7 +1052,7 @@ describe('CoreClient', () => {
           for (const { message: m } of decoder.push(chunk)) {
             if (m?.method !== 'core.hello') continue;
             const reply = { type: 'response', id: m.id,
-              result: { protocol: 1, core_version: '0.0.0', capabilities: [] } };
+              result: { protocol: 2, core_version: '0.0.0', capabilities: ['streams'] } };
             process.stdout.write(encodeFrame(reply), () => {
               const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'],
                 { stdio: ['ignore', 'inherit', 'inherit'] });
@@ -1435,7 +1443,7 @@ describe('CoreClient', () => {
 
     test('main offers them, takes one whole, and returns the credit once its caller has it', async () => {
       const { client, core, first, a } = await twoHeld();
-      expect(core.requests[0].params.frames).toEqual(['fragment']);
+      expect(core.requests[0].params.frames).toEqual(['fragment', 'stream']);
       const result = { big: 'x'.repeat(3 * MIB) };
       core.replyFragmented({ type: 'response', id: a, result }, 4);
       await tick();
@@ -1540,7 +1548,8 @@ describe('CoreClient', () => {
           return [begin(a, bad.length), raw(KIND_LAST, bad)];
         },
       ],
-      ['unknown_kind', () => [raw(0x02, SENTINEL)]],
+      // 0x06: no frame kind (0x02 is a stream's data at protocol 2).
+      ['unknown_kind', () => [raw(0x06, SENTINEL)]],
     ])('%s closes the connection', async (category, frames) => {
       const held = await twoHeld();
       const { core, log } = held;
@@ -1808,7 +1817,9 @@ describe('CoreClient', () => {
     /** A ready client whose core offers fragments, or not, and sends it
      * requests; `poolBytes` sizes main's pool. */
     async function served(register, { offer = true, poolBytes } = {}) {
-      const capabilities = offer ? ['vault.status', 'fragments'] : ['vault.status'];
+      const capabilities = offer
+        ? ['vault.status', 'streams', 'fragments']
+        : ['vault.status', 'streams'];
       const made = makeClient(
         [
           (message, core) => {

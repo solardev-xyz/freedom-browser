@@ -1,7 +1,7 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the pinned core's (0.10.0): core-process.js asks for it, so
- * `shell.dweb_get` is registered and the `dweb.verify` verifier attaches.
+ * 6), the only one the pinned core (0.11.0) takes, so `shell.dweb_get` is
+ * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
  * `dweb.forget` as a private partition closes. The client here is the real
@@ -27,14 +27,14 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.10.0',
+  core_version: '0.11.0',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
 
 afterEach(() => jest.restoreAllMocks());
 
-test('the app asks the core for protocol 2, and the dweb shell and verifier attach', async () => {
+test('the app speaks protocol 2 to the core, and the dweb shell and verifier attach', async () => {
   const start = jest.spyOn(CoreClient.prototype, 'start').mockResolvedValue(HELLO);
   const stop = jest.spyOn(CoreClient.prototype, 'stop').mockResolvedValue();
   const handle = jest.spyOn(CoreClient.prototype, 'handle');

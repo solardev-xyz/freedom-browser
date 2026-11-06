@@ -108,7 +108,6 @@ describeIfCore('verified page loads with the real freedom-cored at protocol 2', 
       ],
       log: quietLog,
       shellVersion: 'jest',
-      protocol: 2,
     });
     const config = new NamingConfig({ client, sources: sources(), log: quietLog });
     registerNamingShell(client, config, {

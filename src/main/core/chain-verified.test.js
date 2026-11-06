@@ -319,10 +319,10 @@ describe('Myotis broadcasts', () => {
     const refusal = (message, code, myotisRefusal) =>
       Object.assign(new Error(message), { code, myotisRefusal });
     const reads = {
-      protocol: 1,
-      capabilities: ['vault.status', 'fragments', 'myotis_refusal_codes'],
+      protocol: 2,
+      capabilities: ['vault.status', 'fragments', 'streams', 'myotis_refusal_codes'],
     };
-    const older = { protocol: 1, capabilities: ['vault.status', 'fragments'] };
+    const older = { protocol: 2, capabilities: ['vault.status', 'fragments', 'streams'] };
     test.each([
       [
         '-32602, to a core that reads the code',

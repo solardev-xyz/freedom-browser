@@ -23,8 +23,8 @@
  *   unreachable or stopping), a node's 404 or other status, `busy`,
  *   `cancelled`, the deadline's 504, strict mode's 403, the 414 and 431, a
  *   refused plan or answer (the core's fault), and the core being
- *   unavailable. A fetch plan is never counted, so against a core without
- *   the verifier (protocol 1) nothing is.
+ *   unavailable. A fetch plan is never counted, so without the verifier
+ *   attached nothing is.
  * - **Per backend:** a record per external Ant (a reused one included) or
  *   external IPFS gateway, by the endpoint the failing request captured.
  *   The panel reads only the record of the endpoint serving now, so a

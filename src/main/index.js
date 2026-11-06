@@ -452,7 +452,6 @@ const { getIntentTracker } = require('./wallet/intent-tracker');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
 const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
-const { registerRpcManagerIpc } = require('./wallet/rpc-manager');
 const { repairRpcApiKeys } = require('./wallet/rpc-api-key-store');
 const { registerNetworkConfigIpc } = require('./networks/network-ipc');
 const { registerDappPermissionsIpc } = require('./wallet/dapp-permissions');
@@ -674,7 +673,6 @@ async function bootstrap() {
   // before wiping node/, cobs/ and storage/ (R-8).
   setRadicleLifecycle(createRadicleLifecycle());
   registerTokenRegistryIpc();
-  registerRpcManagerIpc();
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();
   registerPermissionsIpc();

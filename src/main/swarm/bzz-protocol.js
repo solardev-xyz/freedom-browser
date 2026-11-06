@@ -173,8 +173,8 @@ function verifiesExternalAnt() {
  * "Load only verified content from external nodes" is on, its verification
  * on or off (`dweb/strict-mode.js`). The bundled Ant, and an external one
  * with both settings off, keep the two-key reference, as does every Ant
- * against a core without the verifier (protocol 1), which can't serve a
- * verify plan or know strict mode.
+ * while the core's verifier isn't attached: the core can't serve a verify
+ * plan or know strict mode then.
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session
