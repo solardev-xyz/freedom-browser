@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
 const fsOffload = require('./fs-offload');
+const { ensurePrivateDir } = require('./private-files');
 
 const RADICLE_SOCKET_PATH_LIMIT = 100;
 const RADICLE_SHORT_HOME_DIR = 'R';
@@ -27,12 +28,13 @@ function overrideDir(envName) {
   return override ? path.resolve(override) : null;
 }
 
-function resolveDir(envName, fallbackName) {
+function resolveDir(envName, fallbackName, { owned = false } = {}) {
+  const ensure = owned ? ensurePrivateDir : ensureDir;
   const override = overrideDir(envName);
   if (override) {
-    return ensureDir(override);
+    return ensure(override);
   }
-  return ensureDir(path.join(app.getPath('userData'), fallbackName));
+  return ensure(path.join(app.getPath('userData'), fallbackName));
 }
 
 async function hasEntriesAsync(dirPath) {
@@ -175,16 +177,18 @@ function getProfileUserDataDir() {
   return app.getPath('userData');
 }
 
+// The identity vault and the node data dirs hold key material, so they are
+// owner-only (0700) on POSIX, narrowed if an older build made them 0755 (K-3).
 function getIdentityDataDir() {
-  return resolveDir('FREEDOM_IDENTITY_DATA', 'identity');
+  return resolveDir('FREEDOM_IDENTITY_DATA', 'identity', { owned: true });
 }
 
 function getBeeDataDir() {
-  return resolveDir('FREEDOM_BEE_DATA', 'bee-data');
+  return resolveDir('FREEDOM_BEE_DATA', 'bee-data', { owned: true });
 }
 
 function getAntDataDir() {
-  return resolveDir('FREEDOM_ANT_DATA', 'ant-data');
+  return resolveDir('FREEDOM_ANT_DATA', 'ant-data', { owned: true });
 }
 
 function getIpfsDataDir() {
@@ -208,7 +212,7 @@ function getTorDataDir() {
 function getRadicleDataDir() {
   const override = overrideDir('FREEDOM_RADICLE_DATA');
   if (override) {
-    return ensureDir(override);
+    return ensurePrivateDir(override);
   }
 
   const profileRadicleDir = path.join(app.getPath('userData'), 'radicle-data');
@@ -253,7 +257,7 @@ function getRadicleDataDir() {
     // callers cope with that (missing file), and prepareRadicleDataDir creates
     // it once the migration has settled.
     if (radicleMigrationsInFlight.has(catalogRadicleDir)) return catalogRadicleDir;
-    return ensureDir(catalogRadicleDir);
+    return ensurePrivateDir(catalogRadicleDir);
   }
 
   const socketPath = path.join(profileRadicleDir, 'node', 'control.sock');
@@ -263,7 +267,7 @@ function getRadicleDataDir() {
     );
   }
 
-  return ensureDir(profileRadicleDir);
+  return ensurePrivateDir(profileRadicleDir);
 }
 
 /**
@@ -276,7 +280,7 @@ async function prepareRadicleDataDir() {
   const radicleDir = getRadicleDataDir();
   const pending = radicleMigrations.get(radicleDir);
   if (pending) await pending;
-  return ensureDir(radicleDir);
+  return ensurePrivateDir(radicleDir);
 }
 
 // Each managed component's data directory: its default name under a
