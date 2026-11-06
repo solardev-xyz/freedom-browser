@@ -1211,3 +1211,53 @@ describe('send review: the fee check at confirmation (design 0005, A)', () => {
     expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
   });
 });
+
+// freedom-core design 0012, "Unverified payments": a phone account's payment
+// whose transaction the wallet hasn't seen yet is sent from the phone, not
+// checked, and the screen says so rather than "Transaction Sent".
+describe("a phone payment's result", () => {
+  afterEach(() => {
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    jest.useRealTimers();
+  });
+
+  const { PHONE_CHECK } = require('./intent-texts.js');
+
+  async function sent(reply) {
+    const { mod, elements, send } = await loadSendScreen();
+    const view = elements['send-success-view'];
+    view.appendChild(createElement('h3', { classes: ['send-success-title'] }));
+    view.appendChild(createElement('p', { classes: ['send-success-text'] }));
+    await confirmFromReview(mod, elements);
+    await flush();
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface', ...reply });
+    await flush();
+    return {
+      shown: !view.classList.contains('hidden'),
+      title: view.querySelector('.send-success-title').textContent,
+      text: view.querySelector('.send-success-text').textContent,
+    };
+  }
+
+  test.each(['unverified', 'unknown'])('%s: sent from the phone, and not called checked', async (phoneCheck) => {
+    const result = await sent({ phoneCheck });
+    expect(result).toEqual({
+      shown: true,
+      title: PHONE_CHECK[phoneCheck].title,
+      text: PHONE_CHECK[phoneCheck].note,
+    });
+    expect(result.title).not.toBe('Transaction Sent');
+  });
+
+  test('verified at the answer: sent, as any other payment', async () => {
+    expect(await sent({ phoneCheck: 'verified' })).toEqual({
+      shown: true,
+      title: 'Transaction Sent',
+      text: 'Your transaction has been broadcast to the network.',
+    });
+  });
+});
