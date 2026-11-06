@@ -22,6 +22,7 @@ const { signAndRecord, KINDS: PAYMENT_KINDS } = require('./tx-recorder');
 const { intentFailure } = require('./intent-ipc');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
+const { redactedHandler } = require('./rpc-errors');
 const chainData = require('../networks/chain-data');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
@@ -441,11 +442,21 @@ async function handleSendTransaction(
 }
 
 /**
+ * A wallet handler, registered with its replies redacted (#1040): many
+ * answer a failure with `err.message`, and an RPC error can quote a keyed
+ * provider's URL, with the user's API key in it. Main's providers already
+ * throw none (rpc-errors.js); this is the second line, for every handler.
+ */
+function handle(channel, listener) {
+  ipcMain.handle(channel, redactedHandler(listener));
+}
+
+/**
  * Register wallet IPC handlers
  */
 function registerWalletIpc() {
   // Get all balances for an address (always fetches fresh)
-  ipcMain.handle('wallet:get-balances', async (_event, address) => {
+  handle('wallet:get-balances', async (_event, address) => {
     try {
       if (!address) {
         return { success: false, error: 'Address is required' };
@@ -459,7 +470,7 @@ function registerWalletIpc() {
   });
 
   // Startup display reads cached data only; visible wallet refresh owns fetching.
-  ipcMain.handle('wallet:get-balances-cached', async (_event, address) => {
+  handle('wallet:get-balances-cached', async (_event, address) => {
     try {
       if (!address) {
         return { success: false, error: 'Address is required' };
@@ -473,7 +484,7 @@ function registerWalletIpc() {
   });
 
   // Clear balance cache
-  ipcMain.handle('wallet:clear-balance-cache', async (_event, address) => {
+  handle('wallet:clear-balance-cache', async (_event, address) => {
     try {
       clearBalanceCache(address);
       return { success: true };
@@ -483,7 +494,7 @@ function registerWalletIpc() {
   });
 
   // Get chain configuration
-  ipcMain.handle('wallet:get-chain', async (_event, chainId) => {
+  handle('wallet:get-chain', async (_event, chainId) => {
     try {
       const chain = getChain(chainId);
       if (!chain) {
@@ -496,7 +507,7 @@ function registerWalletIpc() {
   });
 
   // Get all supported chains
-  ipcMain.handle('wallet:get-chains', async () => {
+  handle('wallet:get-chains', async () => {
     try {
       const chains = getAllChains();
       return { success: true, chains };
@@ -506,7 +517,7 @@ function registerWalletIpc() {
   });
 
   // Test provider connectivity
-  ipcMain.handle('wallet:test-provider', async (_event, chainId) => {
+  handle('wallet:test-provider', async (_event, chainId) => {
     try {
       const result = await testProvider(chainId);
       return result;
@@ -516,7 +527,7 @@ function registerWalletIpc() {
   });
 
   // Generate QR code as data URL
-  ipcMain.handle('wallet:generate-qr', async (_event, text, options = {}) => {
+  handle('wallet:generate-qr', async (_event, text, options = {}) => {
     try {
       if (!text) {
         return { success: false, error: 'Text is required' };
@@ -542,7 +553,7 @@ function registerWalletIpc() {
   // ============================================
 
   // Estimate gas for a transaction
-  ipcMain.handle('wallet:estimate-gas', async (_event, params) => {
+  handle('wallet:estimate-gas', async (_event, params) => {
     try {
       const { from, to, value, data, chainId } = params;
       if (!from || !to || chainId === undefined) {
@@ -557,7 +568,7 @@ function registerWalletIpc() {
   });
 
   // Get current gas prices
-  ipcMain.handle('wallet:get-gas-price', async (_event, chainId) => {
+  handle('wallet:get-gas-price', async (_event, chainId) => {
     try {
       if (chainId === undefined) {
         return { success: false, error: 'Chain ID is required' };
@@ -571,7 +582,7 @@ function registerWalletIpc() {
   });
 
   // Build ERC-20 transfer data
-  ipcMain.handle('wallet:build-erc20-data', async (_event, to, amount) => {
+  handle('wallet:build-erc20-data', async (_event, to, amount) => {
     try {
       if (!to || !amount) {
         return { success: false, error: 'Recipient and amount are required' };
@@ -585,7 +596,7 @@ function registerWalletIpc() {
   });
 
   // Parse amount to smallest unit
-  ipcMain.handle('wallet:parse-amount', async (_event, amount, decimals = 18) => {
+  handle('wallet:parse-amount', async (_event, amount, decimals = 18) => {
     try {
       if (amount === undefined || amount === null || amount === '') {
         return { success: false, error: 'Amount is required' };
@@ -601,7 +612,7 @@ function registerWalletIpc() {
   // The fee check of a transaction about to be shown for confirmation
   // (design 0005, A): the most it can cost and how its fee compares with
   // today's network fee, from evidence main keeps for up to 60 s.
-  ipcMain.handle('wallet:fee-check', async (_event, tx) => {
+  handle('wallet:fee-check', async (_event, tx) => {
     try {
       return { success: true, feeCheck: await checkFees(tx) };
     } catch (err) {
@@ -621,7 +632,7 @@ function registerWalletIpc() {
   // send above the threshold gets no token unless the user confirmed it
   // again (`options.feeAcknowledged`), and the screen asks again with the
   // verdict it gets back.
-  ipcMain.handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
+  handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
     try {
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
@@ -655,7 +666,7 @@ function registerWalletIpc() {
   // What a dApp's signing request signs, before its prompt (#88). Typed
   // data: the core's view, for every signer kind; a request it refuses
   // (malformed, or a view too large for one reply) fails here, unprompted.
-  ipcMain.handle('wallet:typed-data-view', async (_event, typedData, chainId) => {
+  handle('wallet:typed-data-view', async (_event, typedData, chainId) => {
     try {
       return { success: true, ...(await typedDataViewFor(typedData, chainId)) };
     } catch (err) {
@@ -663,7 +674,7 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:message-view', async (_event, message) => {
+  handle('wallet:message-view', async (_event, message) => {
     try {
       return { success: true, ...messageViewFor(message) };
     } catch (err) {
@@ -671,7 +682,7 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:send-transaction', (_event, params, context, authorization) =>
+  handle('wallet:send-transaction', (_event, params, context, authorization) =>
     handleSendTransaction(
       getActiveWalletIndex(),
       params,
@@ -681,7 +692,7 @@ function registerWalletIpc() {
     ));
 
   // Get transaction status
-  ipcMain.handle('wallet:get-transaction-status', async (_event, txHash, chainId) => {
+  handle('wallet:get-transaction-status', async (_event, txHash, chainId) => {
     try {
       if (!txHash || chainId === undefined) {
         return { success: false, error: 'Transaction hash and chain ID are required' };
@@ -695,7 +706,7 @@ function registerWalletIpc() {
   });
 
   // Wait for transaction confirmation
-  ipcMain.handle('wallet:wait-for-transaction', async (_event, txHash, chainId, confirmations = 1) => {
+  handle('wallet:wait-for-transaction', async (_event, txHash, chainId, confirmations = 1) => {
     try {
       if (!txHash || chainId === undefined) {
         return { success: false, error: 'Transaction hash and chain ID are required' };
@@ -714,11 +725,11 @@ function registerWalletIpc() {
 
   // Renderer threads the dapp's permissionKey through as context.origin
   // so payment-history rows match the x402 permission store's keying.
-  ipcMain.handle('wallet:dapp-send-transaction', (event, params, walletIndex, context, authorization) =>
+  handle('wallet:dapp-send-transaction', (event, params, walletIndex, context, authorization) =>
     handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization, event?.sender));
 
   // Sign a personal message (EIP-191) for a dApp
-  ipcMain.handle('wallet:sign-message', async (event, message, walletIndex, authorization) => {
+  handle('wallet:sign-message', async (event, message, walletIndex, authorization) => {
     try {
       if (!message) {
         return { success: false, error: 'Message is required' };
@@ -738,7 +749,7 @@ function registerWalletIpc() {
 
   // Sign typed data (EIP-712) for a dApp. `context.chainId` is the dApp's
   // active chain, which an auto-approved request's view compares (#88).
-  ipcMain.handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization, context) => {
+  handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization, context) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
@@ -777,7 +788,7 @@ function registerWalletIpc() {
 
   // Safe account lifecycle (chain-touching — see safe/safe-service.js).
   // Lazily required so wallet-ipc doesn't load protocol-kit at startup.
-  ipcMain.handle('wallet:create-safe', async (_event, name, ownerIndexes, threshold) => {
+  handle('wallet:create-safe', async (_event, name, ownerIndexes, threshold) => {
     try {
       const { createSafeAccount } = require('./safe/safe-service');
       const wallet = await createSafeAccount({ name, ownerIndexes, threshold });
@@ -787,7 +798,7 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:get-safe-status', async (_event, index) => {
+  handle('wallet:get-safe-status', async (_event, index) => {
     try {
       const { getSafeStatus } = require('./safe/safe-service');
       const status = await getSafeStatus(index);
@@ -799,7 +810,7 @@ function registerWalletIpc() {
 
   // `options.feeConfirmation`: an 'executor-send' confirmation of the fee
   // the fee check stopped for, with that fee (safe-executor.js).
-  ipcMain.handle('wallet:activate-safe', async (_event, index, options) => {
+  handle('wallet:activate-safe', async (_event, index, options) => {
     try {
       const { activateSafe } = require('./safe/safe-service');
       const result = await activateSafe(index, { feeConfirmation: options?.feeConfirmation });
@@ -830,7 +841,7 @@ function registerWalletIpc() {
     }
   };
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-send',
     safeStateHandler(async (safeIndex, tx, display, chainId, authorization) => {
       // Creating the SafeTx is the confirmation point: it silently collects
@@ -855,7 +866,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-sign',
     safeStateHandler((safeIndex, ownerIndex) => {
       const { signSafePending } = require('./safe/safe-transactions');
@@ -863,7 +874,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-execute',
     safeStateHandler((safeIndex, options) => {
       const { executeSafePending } = require('./safe/safe-transactions');
@@ -871,7 +882,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-state',
     safeStateHandler((safeIndex) => {
       const { getSafeSendState } = require('./safe/safe-transactions');
@@ -879,7 +890,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-cancel-pending',
     safeStateHandler((safeIndex) => {
       const { cancelSafeSend } = require('./safe/safe-transactions');
@@ -887,7 +898,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle('wallet:safe-pending-list', async () => {
+  handle('wallet:safe-pending-list', async () => {
     try {
       const { getAllSafeSendStates } = require('./safe/safe-transactions');
       return { success: true, states: getAllSafeSendStates() };
@@ -902,7 +913,7 @@ function registerWalletIpc() {
   // session is bound to its requesting page: start takes the requester
   // identity and returns a per-session token that every other call must
   // present.
-  ipcMain.handle('wallet:safe-message-start', (event, ...args) =>
+  handle('wallet:safe-message-start', (event, ...args) =>
     safeStateHandler(async (safeIndex, request, display, requester, authorization) => {
       // Same confirmation point as safe-send; follow-up calls are bound to
       // the session token this returns. A dApp's signing auto-approve is
@@ -927,7 +938,7 @@ function registerWalletIpc() {
     })(event, ...args)
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-message-sign',
     safeStateHandler((safeIndex, ownerIndex, token) => {
       const { signSafeMessage } = require('./safe/safe-messages');
@@ -935,7 +946,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-message-state',
     safeStateHandler((safeIndex, token) => {
       const { getSafeMessageState } = require('./safe/safe-messages');
@@ -943,7 +954,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle(
+  handle(
     'wallet:safe-message-cancel',
     safeStateHandler((safeIndex, token) => {
       const { cancelSafeMessage } = require('./safe/safe-messages');
@@ -951,7 +962,7 @@ function registerWalletIpc() {
     })
   );
 
-  ipcMain.handle('wallet:safe-message-complete', async (_event, safeIndex, token) => {
+  handle('wallet:safe-message-complete', async (_event, safeIndex, token) => {
     try {
       const { completeSafeMessage } = require('./safe/safe-messages');
       const { signature } = completeSafeMessage(safeIndex, token);
@@ -963,7 +974,7 @@ function registerWalletIpc() {
 
   // Capability-aware chain request. Myotis and Colibri are attempted before
   // quorum/direct RPC according to the selected chain's access policy.
-  ipcMain.handle(
+  handle(
     'wallet:chain-request',
     async (_event, { chainId, method, params, routingContext }) => {
       try {
@@ -984,7 +995,7 @@ function registerWalletIpc() {
   );
 
   // Legacy endpoint-specific proxy retained for existing internal callers.
-  ipcMain.handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {
+  handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {
     try {
       if (!isAllowedRpcUrl(rpcUrl)) {
         return { success: false, error: { code: -32603, message: 'RPC URL not in allowlist' } };

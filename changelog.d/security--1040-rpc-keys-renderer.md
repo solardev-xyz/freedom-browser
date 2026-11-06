@@ -1,1 +1,2 @@
 - RPC provider API keys stay out of the browser window, and out of the network details sent to a phone wallet ([#1040](https://github.com/solardev-xyz/freedom-browser/issues/1040))
+  - A failed RPC request no longer quotes the provider's URL, and with it the key, in the error the wallet shows, such as a Safe account's status or the RPC connection test

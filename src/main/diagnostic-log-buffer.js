@@ -1,6 +1,7 @@
 'use strict';
 
 const util = require('util');
+const { redactUrls } = require('./url-redaction');
 
 const DEFAULT_MAX_ENTRIES = 5_000;
 const MAX_CAPTURE_LINE_BYTES = 16_384;
@@ -96,10 +97,7 @@ class DiagnosticLogBuffer {
           level,
           source,
           ...(service && { service }),
-          text: truncateUtf8(rawLine.replace(/\b(?:https?|wss?|bzz|ipfs|ipns|rad|web3):\/\/[^\s"'<>]+/gi, value => {
-            try { const url = new URL(value); return (url.origin === 'null' ? url.protocol : url.origin) + '/[path redacted]'; }
-            catch { return '[URL redacted]'; }
-          }), MAX_CAPTURE_LINE_BYTES),
+          text: truncateUtf8(redactUrls(rawLine), MAX_CAPTURE_LINE_BYTES),
         })
       );
     }
