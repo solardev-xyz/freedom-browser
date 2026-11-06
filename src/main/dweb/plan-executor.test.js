@@ -284,12 +284,21 @@ describe('the response operations', () => {
   });
 
   test('small text relabels a small octet-stream navigation; a failed sniff is a 502', async () => {
-    const text = run(NATIVE_FETCH, 'native', [
-      new Response('hello\n', {
-        headers: { 'content-type': 'application/octet-stream', 'content-length': '6' },
-      }),
-    ]);
+    // The content label (freedom-core design 0009, Labels) goes with the
+    // node's answer only: never with main's 502.
+    const onTrust = jest.fn();
+    const text = run(
+      NATIVE_FETCH,
+      'native',
+      [
+        new Response('hello\n', {
+          headers: { 'content-type': 'application/octet-stream', 'content-length': '6' },
+        }),
+      ],
+      { onTrust }
+    );
     const res = await text.response;
+    expect(onTrust).toHaveBeenCalledWith({ name: null, content: 'node_asserted' });
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     await expect(res.text()).resolves.toBe('hello\n');
@@ -299,13 +308,20 @@ describe('the response operations', () => {
         controller.error(new Error('freedom-ipfs native read failed'));
       },
     });
-    const broken = run(NATIVE_FETCH, 'native', [
-      new Response(failing, {
-        headers: { 'content-type': 'application/octet-stream', 'content-length': '6' },
-      }),
-    ]);
+    const unlabelled = jest.fn();
+    const broken = run(
+      NATIVE_FETCH,
+      'native',
+      [
+        new Response(failing, {
+          headers: { 'content-type': 'application/octet-stream', 'content-length': '6' },
+        }),
+      ],
+      { onTrust: unlabelled }
+    );
     const failed = await broken.response;
     expect(failed.status).toBe(502);
+    expect(unlabelled).not.toHaveBeenCalled();
     expect(await failed.json()).toEqual({ code: 502, message: 'freedom-ipfs native read failed' });
     expect(broken.onEnd).toHaveBeenCalledTimes(1);
   });

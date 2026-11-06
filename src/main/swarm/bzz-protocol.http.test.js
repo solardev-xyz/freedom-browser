@@ -786,3 +786,35 @@ describe('bzz: node not ready', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 });
+
+// freedom-core design 0009, Labels: the handler registered on a session
+// labels each response for the trust panel, and no node names its own label.
+describe('bzz: the content label', () => {
+  const LABEL = 'x-freedom-content-trust';
+
+  test("the bundled Ant's answer is node_asserted, whatever label the node sent", async () => {
+    ant.handle((req, res) => {
+      res.writeHead(req.url.endsWith('/missing') ? 404 : 200, {
+        'Content-Type': 'text/html',
+        [LABEL]: 'verified',
+      });
+      res.end('<p>hi</p>');
+    });
+    const page = await handle(bzz('/index.html'));
+    expect(page.headers.get(LABEL)).toBe('node_asserted');
+    expect(await page.text()).toBe('<p>hi</p>');
+    // A 404 the node answers is still its content.
+    const missing = await handle(bzz('/missing'));
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get(LABEL)).toBe('node_asserted');
+    await missing.arrayBuffer();
+  });
+
+  test("main's own answer carries none", async () => {
+    mockResolveEnsContent.mockResolvedValue({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+    const res = await handle(new Request('bzz://no-content.eth/'));
+    expect(res.status).toBe(404);
+    expect(res.headers.has(LABEL)).toBe(false);
+    expect(ant.requests).toHaveLength(0);
+  });
+});

@@ -291,6 +291,21 @@
   display: none;
 }
 
+/* "This gateway doesn't serve verifiable responses" (freedom-core design
+   0009): a sentence above the rows, flagged as Myotis's notices are. */
+.ipfs-info-notice {
+  margin: 0 0 4px;
+  border-left: 2px solid var(--warning-fg);
+  padding-left: 8px;
+  line-height: 1.5;
+  white-space: normal;
+  color: var(--text);
+}
+
+.ipfs-info-notice[hidden] {
+  display: none;
+}
+
 #ipfs-active-requests-count,
 #ipfs-data-read,
 #ipfs-peers-count,

@@ -30,8 +30,11 @@
  *   request: the admission slot, the fence and the lease go then. A HEAD,
  *   or a head without a body, ends it at once.
  * - **The trust** (`{ name, content }`) is the plan's name trust and the
- *   final content label, `verified` or `latest_asserted`: the label goes
- *   to `onTrust`, for the trust panel to read (its PR wires it).
+ *   final content label, `verified` or `latest_asserted`. It goes to
+ *   `onTrust` just before the head's response is returned, and never with
+ *   main's own answer (a body that fails its small-text sniff, say): the
+ *   protocol handlers label that response for the trust panel
+ *   (`content-trust.js`).
  * - **After the head,** the core's `abort` errors the body, so Chromium
  *   sees it truncated; its code is logged, never a reference or a path in
  *   a private window.
@@ -129,7 +132,8 @@ function bodyFailure(err) {
  * @param {AbortSignal} [options.signal] - the page's
  * @param {AbortSignal} [options.stop] - aborts when the session closes
  * @param {() => void} [options.onEnd] - once the request is over
- * @param {(trust: {name: string|null, content: string}) => void} [options.onTrust]
+ * @param {(trust: {name: string|null, content: string}) => void} [options.onTrust] -
+ *   the head's trust, just before its response is returned
  * @param {(status: number, message: string) => Response} options.answer -
  *   main's `{ code, message }` answer (the JSON body, or the error page)
  * @param {(error: {status: number, message: string}) => Response} options.planError -
@@ -214,7 +218,6 @@ async function executeVerify(
     log.error(`[Core] dweb.verify answer refused for ${redactUrl(url)}`, { tag });
     return answer(502, 'dweb verification failed');
   }
-  onTrust(head.trust);
 
   const { namespace, reference } = rootReference(verify.root);
   const requestUrl = `${VERIFIED_ORIGIN}/${namespace}/${reference}${verify.path}${verify.query}`;
@@ -223,6 +226,7 @@ async function executeVerify(
   if (!operated.body || NULL_BODY_STATUSES.has(head.status)) {
     body?.cancel().catch(() => {});
     end();
+    onTrust(head.trust);
     return new Response(null, { status: head.status, headers: head.headers });
   }
 
@@ -247,6 +251,7 @@ async function executeVerify(
       return answer(status, message);
     }
   }
+  onTrust(head.trust);
   return new Response(out, { status: head.status, headers: head.headers });
 }
 

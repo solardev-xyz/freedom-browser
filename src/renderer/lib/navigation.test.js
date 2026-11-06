@@ -4147,6 +4147,107 @@ describe('navigation', () => {
     });
   });
 
+  // freedom-core design 0009, Labels: the tab's dweb content label reaches
+  // the shield and the popover through resolveTrustBadge / buildTrustRows
+  // (navigation-utils.test.js pins their rows).
+  describe('the content label', () => {
+    const HASH = 'ab'.repeat(32);
+    const contentBadge = (dwebContent) => ({
+      kind: 'content',
+      level: 'unverified',
+      name: 'bzz://abab…abab',
+      trust: dwebContent,
+      content: dwebContent.content,
+      description: 'Content not verified: served by your external node as is',
+      uri: `bzz://${HASH}`,
+    });
+
+    test("a hash page's shield: the tab's label, and its sentence as the aria-label", async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const dwebContent = { url: `bzz://${HASH}/`, content: 'unverified' };
+      ctx.activeRef.tab.dwebContentTrust = dwebContent;
+      ctx.navigationUtilsMocks.resolveTrustBadge.mockImplementation((args) =>
+        args.dwebContent ? contentBadge(args.dwebContent) : null
+      );
+
+      ctx.elements.addressInput.value = `bzz://${HASH}/`;
+      ctx.elements.addressInput.dispatch('input');
+
+      expect(ctx.navigationUtilsMocks.resolveTrustBadge).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dwebContent, ensUriByName: ctx.state.ensUriByName })
+      );
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+      expect(ctx.elements.trustShield.getAttribute('aria-label')).toBe(
+        'Content not verified: served by your external node as is'
+      );
+    });
+
+    test("the popover's content row is a sentence with no label, and wraps", async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const dwebContent = { url: `bzz://${HASH}/`, content: 'unverified' };
+      ctx.activeRef.tab.dwebContentTrust = dwebContent;
+      ctx.navigationUtilsMocks.resolveTrustBadge.mockImplementation((args) =>
+        args.dwebContent ? contentBadge(args.dwebContent) : null
+      );
+      ctx.navigationUtilsMocks.buildTrustRows.mockReturnValue({
+        status: 'Content not verified: served by your external node as is',
+        trustRows: [],
+        contentRows: [
+          { label: 'Network', display: 'Swarm', copy: '' },
+          { label: '', display: 'A sentence', copy: '', wrap: true },
+        ],
+      });
+      ctx.elements.trustPopover.hidden = true;
+      ctx.elements.addressInput.value = `bzz://${HASH}/`;
+      ctx.elements.addressInput.dispatch('input');
+      ctx.elements.trustShield.dispatch('click');
+
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+      expect(ctx.navigationUtilsMocks.buildTrustRows).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'content', content: 'unverified', uri: `bzz://${HASH}` })
+      );
+      expect(document.getElementById('trust-popover-content-title').textContent).toBe(
+        'Loads from'
+      );
+      const [network, sentence] = document.getElementById('trust-popover-content-fields').children;
+      expect(network.querySelector('.trust-popover-field-label').textContent).toBe('Network: ');
+      expect(network.classList.contains('trust-popover-field-wrap')).toBe(false);
+      expect(sentence.querySelector('.trust-popover-field-label')).toBeNull();
+      expect(sentence.querySelector('.trust-popover-field-value').textContent).toBe('A sentence');
+      expect(sentence.classList.contains('trust-popover-field-wrap')).toBe(true);
+      expect(sentence.classList.contains('trust-popover-field-uncopyable')).toBe(true);
+      // No resolution rows: their section is hidden, not left empty.
+      expect(document.getElementById('trust-popover-trust-fields').hidden).toBe(true);
+    });
+
+    test("the popover closes when the tab's label changes under it", async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const trust = { level: 'verified', queried: ['a'], agreed: ['a'] };
+      ctx.state.ensTrustByName.set('vitalik.eth', trust);
+      ctx.navigationUtilsMocks.resolveTrustBadge.mockImplementation((args) => {
+        const content = args.dwebContent?.content;
+        return { level: 'verified', name: 'vitalik.eth', trust, ...(content && { content }) };
+      });
+      ctx.elements.trustPopover.hidden = true;
+      ctx.elements.addressInput.value = 'bzz://vitalik.eth/';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.elements.trustShield.dispatch('click');
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+
+      // The label lands after the popover opened (tabs.js asks once the
+      // navigation commits).
+      ctx.activeRef.tab.dwebContentTrust = { url: 'bzz://vitalik.eth/', content: 'verified' };
+      ctx.tabsMocks.onchainProvenanceChangeHandler(ctx.activeRef.tab.id);
+
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+      expect(ctx.elements.trustPopover.hidden).toBe(true);
+    });
+  });
+
   describe('trust popover staleness', () => {
     // The popover is a security/trust surface. Leaving it open on a stale
     // ENS resolution after the user has navigated away (or switched

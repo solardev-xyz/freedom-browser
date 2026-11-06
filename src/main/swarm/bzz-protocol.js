@@ -34,6 +34,7 @@ const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-trans
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
 const { unlessAborted } = require('../lib/unless-aborted');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
+const { serveLabelled } = require('../dweb/content-trust');
 
 // Chromium's network errors, read as the codes undici gives the same
 // failures, so a remote Ant that refuses a connection is still "bee gateway
@@ -210,6 +211,8 @@ function antBackend({ session = null, fetchImpl = fetch } = {}) {
  * @param {string|null} [options.partition] - a private session's partition
  * @param {boolean} [options.isPrivate] - a private window's request
  * @param {typeof fetch} [options.fetchImpl] - the loopback Ant dial
+ * @param {(trust: object) => void} [options.onTrust] - the content's trust
+ *   (dweb-handler.js), for the trust panel
  */
 function handleBzzRequest(
   request,
@@ -218,6 +221,7 @@ function handleBzzRequest(
     partition = null,
     isPrivate = isPrivateLogContext(),
     fetchImpl = (...args) => fetch(...args),
+    onTrust,
   } = {}
 ) {
   return runWithPrivateLogContext(isPrivate, () =>
@@ -225,6 +229,7 @@ function handleBzzRequest(
       backend: antBackend({ session, fetchImpl }),
       partition,
       tag: '[bzz-protocol]',
+      onTrust,
     })
   );
 }
@@ -247,12 +252,18 @@ function registerBzzProtocol(targetSession, { privatePartition = null } = {}) {
   // AND marks its plan private for the core (see private-log-context.js).
   const isPrivate = !!privatePartition;
   try {
+    // Each response carries its content label for the trust panel
+    // (dweb/content-trust.js), which the session takes off before any page
+    // can read it.
     targetSession.protocol.handle('bzz', (request) =>
-      handleBzzRequest(request, {
-        session: targetSession,
-        partition: privatePartition,
-        isPrivate,
-      })
+      serveLabelled((onTrust) =>
+        handleBzzRequest(request, {
+          session: targetSession,
+          partition: privatePartition,
+          isPrivate,
+          onTrust,
+        })
+      )
     );
     log.info('[bzz-protocol] handler registered');
   } catch (err) {

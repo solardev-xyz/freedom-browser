@@ -49,6 +49,8 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsStatusRow = createElement('div');
   const ipfsStatusLabel = createElement('span');
   const ipfsStatusValue = createElement('span');
+  const ipfsUnverifiableNotice = createElement('p');
+  ipfsUnverifiableNotice.hidden = true; // as the markup ships it
   const body = createElement('body');
   body.appendChild(ipfsInfoPanel);
   const document = createDocument({
@@ -65,6 +67,7 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-status-row': ipfsStatusRow,
       'ipfs-status-label': ipfsStatusLabel,
       'ipfs-status-value': ipfsStatusValue,
+      'ipfs-unverifiable-notice': ipfsUnverifiableNotice,
     },
   });
   let statusHandler = null;
@@ -151,6 +154,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfsStatusRow,
       ipfsStatusLabel,
       ipfsStatusValue,
+      ipfsUnverifiableNotice,
     },
   };
 };
@@ -686,6 +690,122 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
     expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
     expect(ctx.elements.ipfsVersionText.textContent).toBe('External · gw.example.com');
+  });
+
+  // freedom-core design 0009, Modes: "A gateway that fails the first [probe]
+  // serves `unverified`, and the nodes panel says "This gateway doesn't serve
+  // verifiable responses"" -- while its verification is on.
+  test("says an external gateway without raw blocks can't be verified, while verification is on", async () => {
+    const diagnostics = {
+      externalGateway: 'http://127.0.0.1:8080',
+      externalVersion: 'Kubo 0.30.0',
+      externalNodeStats: null,
+      externalSupport: { raw: false, car: false },
+      externalVerify: true,
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+    });
+    ctx.ipfsApi.getStatus.mockImplementation(async () => ({
+      status: 'running',
+      error: null,
+      diagnostics,
+    }));
+    const notice = ctx.elements.ipfsUnverifiableNotice;
+    const poll = async () => {
+      ctx.mod.startIpfsInfoPolling();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    };
+
+    ctx.mod.initIpfsUi();
+    await poll();
+    expect(notice.hidden).toBe(false);
+    // The rest of the external rows are unchanged.
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Kubo 0.30.0');
+
+    // The switch off: nothing is verified anyway, and Settings says so.
+    diagnostics.externalVerify = false;
+    await poll();
+    expect(notice.hidden).toBe(true);
+    diagnostics.externalVerify = true;
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // Closing the menu clears it; the next poll decides again.
+    ctx.mod.stopIpfsInfoPolling();
+    expect(notice.hidden).toBe(true);
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // A gateway with raw blocks, with or without ordered CARs.
+    for (const support of [
+      { raw: true, car: true },
+      { raw: true, car: false },
+    ]) {
+      diagnostics.externalSupport = support;
+      await poll();
+      expect(notice.hidden).toBe(true);
+    }
+
+    // No probe's result yet, or none in the diagnostics at all.
+    diagnostics.externalSupport = null;
+    await poll();
+    expect(notice.hidden).toBe(true);
+    delete diagnostics.externalSupport;
+    await poll();
+    expect(notice.hidden).toBe(true);
+  });
+
+  test("the unverifiable gateway's notice goes with the external node, and on a failed read", async () => {
+    const external = {
+      status: 'running',
+      error: null,
+      diagnostics: {
+        externalGateway: 'http://127.0.0.1:8080',
+        externalNodeStats: null,
+        externalSupport: { raw: false, car: false },
+        externalVerify: true,
+      },
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+      statusResult: external,
+    });
+    const notice = ctx.elements.ipfsUnverifiableNotice;
+    const poll = async () => {
+      ctx.mod.startIpfsInfoPolling();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    };
+
+    ctx.mod.initIpfsUi();
+    await poll();
+    expect(notice.hidden).toBe(false);
+
+    // The profile back on its managed node while the menu stays open.
+    ctx.state.registry.ipfs.mode = 'bundled';
+    ctx.ipfsApi.getStatus.mockResolvedValue({
+      status: 'running',
+      error: null,
+      diagnostics: { nativeGatewayStats: '{"active_native_handles":1}' },
+    });
+    await poll();
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(false);
+    expect(notice.hidden).toBe(true);
+
+    // External again, then a status read that fails: nothing is claimed.
+    ctx.state.registry.ipfs.mode = 'external';
+    ctx.ipfsApi.getStatus.mockResolvedValue(external);
+    await poll();
+    expect(notice.hidden).toBe(false);
+    ctx.ipfsApi.getStatus.mockRejectedValue(new Error('ipc gone'));
+    await poll();
+    expect(notice.hidden).toBe(true);
   });
 
   test('falls back to the menu-wide Unknown placeholder when diagnostics are missing', async () => {

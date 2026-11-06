@@ -70,6 +70,9 @@ module.exports = {
   // Contract-hosted application provenance (host chrome only)
   ONCHAIN_APP_GET_PROVENANCE: 'onchain-app:get-provenance',
 
+  // A dweb page's content label, for the trust panel (host chrome only)
+  DWEB_GET_CONTENT_TRUST: 'dweb:get-content-trust',
+
   // Tezos Domains website resolution
   TEZOS_DOMAINS_RESOLVE: 'tezos-domains:resolve',
   TEZOS_DOMAINS_INVALIDATE: 'tezos-domains:invalidate',

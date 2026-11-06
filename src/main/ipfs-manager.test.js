@@ -4038,6 +4038,37 @@ describe('verification of an external gateway', () => {
     });
   });
 
+  // The nodes panel's "This gateway doesn't serve verifiable responses" reads
+  // both off the status its stats poll already asks for.
+  test("the nodes panel's poll carries the probe's result and the setting", async () => {
+    const { ctx, activeProfile } = await startExternal({
+      raw: new Response('', { status: 404 }),
+    });
+    const polled = async () =>
+      (await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true })).diagnostics;
+
+    expect(await polled()).toMatchObject({
+      externalSupport: { raw: false, car: false },
+      externalVerify: true,
+    });
+    // The switch is read at each poll, as a capture reads it: no restart and
+    // no new probe.
+    activeProfile.metadata.nodes.ipfs.verify = false;
+    expect(await polled()).toMatchObject({
+      externalSupport: { raw: false, car: false },
+      externalVerify: false,
+    });
+    activeProfile.metadata.nodes.ipfs.verify = true;
+    expect((await polled()).externalVerify).toBe(true);
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+
+    // No gateway serving: no probe's result, and nothing about the setting.
+    await ctx.mod.stopIpfs();
+    const stopped = await polled();
+    expect(stopped.externalSupport).toBeUndefined();
+    expect(stopped.externalVerify).toBeUndefined();
+  });
+
   test('a change of the setting applies to the backends captured after it (Binding)', async () => {
     const { ctx, activeProfile } = await startExternal();
     const before = ctx.mod.ipfsBackend();
