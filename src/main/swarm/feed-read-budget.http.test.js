@@ -41,6 +41,8 @@ jest.mock('./publish-service', () => ({}));
 jest.mock('./publish-history', () => ({ addEntry: jest.fn(), updateEntry: jest.fn() }));
 jest.mock('./feed-store', () => ({ getFeed: () => null }));
 jest.mock('../identity-manager', () => ({}));
+// Signing is not on the read path; the real signer loads the identity core.
+jest.mock('./swarm-signer', () => ({ getIdentityMode: () => null, resolveSwarmSigner: jest.fn() }));
 let mockAntUrl = null;
 jest.mock('../service-registry', () => ({ getAntApiUrl: () => mockAntUrl }));
 

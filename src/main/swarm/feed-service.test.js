@@ -635,14 +635,16 @@ describe('feed-service', () => {
 
     describe('only a 404 frees an explicit index (#1054)', () => {
       test('a 404 for the update chunk writes at the index', async () => {
-        const writer = createMockWriter();
+        mockMakeFeedReader.mockReturnValue(createMockReader());
         mockDownloadChunk.mockRejectedValue(make404());
-        mockMakeFeedWriter.mockReturnValue(writer);
         mockBatchForAutoSelect();
+        const signer = makeSigner();
 
-        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
-          .resolves.toEqual({ index: 5 });
-        expect(writer.uploadPayload.mock.calls[0][2]).toEqual({ index: 5 });
+        await expect(writeFeedPayload(signer, 'myapp.eth/blog', 'data', { index: 5 })).resolves.toEqual({
+          index: 5,
+        });
+        expect(signer.signSoc).toHaveBeenCalledTimes(1);
+        expect(mockUploadSingleOwnerChunk).toHaveBeenCalledTimes(1);
       });
 
       test.each([
@@ -650,44 +652,49 @@ describe('feed-service', () => {
         ['a 503', () => new MockBeeResponseError(503, 'Service Unavailable'), 'Service Unavailable'],
         ['a timeout', () => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }), 'timeout'],
       ])('%s refuses the write with that error', async (_label, makeError, message) => {
-        const writer = createMockWriter();
+        mockMakeFeedReader.mockReturnValue(createMockReader());
         mockDownloadChunk.mockRejectedValue(makeError());
-        mockMakeFeedWriter.mockReturnValue(writer);
         mockBatchForAutoSelect();
+        const signer = makeSigner();
 
-        const failure = writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 });
+        const failure = writeFeedPayload(signer, 'myapp.eth/blog', 'data', { index: 5 });
 
         await expect(failure).rejects.toThrow(message);
         await expect(failure).rejects.not.toHaveProperty('reason', 'index_already_exists');
-        expect(writer.uploadPayload).not.toHaveBeenCalled();
+        expect(signer.signSoc).not.toHaveBeenCalled();
+        expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
       });
 
       test('an answer that is not the SOC at that address refuses the write', async () => {
-        const writer = createMockWriter();
+        mockMakeFeedReader.mockReturnValue(createMockReader());
         mockDownloadChunk.mockResolvedValue(new MockBytes('not a soc'));
         mockUnmarshalSingleOwnerChunk.mockImplementationOnce(() => {
           throw new Error('SOC data does not match given address');
         });
-        mockMakeFeedWriter.mockReturnValue(writer);
         mockBatchForAutoSelect();
+        const signer = makeSigner();
 
-        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
-          .rejects.toThrow('SOC data does not match given address');
-        expect(writer.uploadPayload).not.toHaveBeenCalled();
+        await expect(writeFeedPayload(signer, 'myapp.eth/blog', 'data', { index: 5 })).rejects.toThrow(
+          'SOC data does not match given address'
+        );
+        expect(signer.signSoc).not.toHaveBeenCalled();
+        expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
       });
 
       test('an entry whose wrapped content is gone still holds its index', async () => {
         // The SOC is there; the large payload it wraps can no longer be joined.
-        const writer = createMockWriter();
+        mockMakeFeedReader.mockReturnValue(createMockReader());
         mockExactFeedPayload('root chunk', 10_000n);
         mockDownloadData.mockRejectedValue(make404());
-        mockMakeFeedWriter.mockReturnValue(writer);
         mockBatchForAutoSelect();
+        const signer = makeSigner();
 
-        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
-          .rejects.toMatchObject({ reason: 'index_already_exists' });
+        await expect(writeFeedPayload(signer, 'myapp.eth/blog', 'data', { index: 5 })).rejects.toMatchObject({
+          reason: 'index_already_exists',
+        });
         expect(mockDownloadData).not.toHaveBeenCalled();
-        expect(writer.uploadPayload).not.toHaveBeenCalled();
+        expect(signer.signSoc).not.toHaveBeenCalled();
+        expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
       });
     });
 
